@@ -213,25 +213,91 @@ but every arm must succeed before the graph rejoins:
 1. Confirm every release bar and the final-candidate checklist are green on
    the exact candidate commit, including sanitizer evidence, required secrets,
    and branch protection.
-2. Create the signed tag only after the preceding evidence is recorded.
-3. Let the release workflow build and publish the signed platform assets and
+2. Before creating the signed tag, publish the candidate playground image from
+   the exact reviewed playground commit that introduced the candidate contract:
+
+   ```bash
+   PLAYGROUND_CONTRACT_REF=21be84bb97436436b640f2acd09fb6dd2e0fbf94
+   PLAYGROUND_REF=<exact-reviewed-40-character-playground-sha>
+   HEW_RELEASE_SHA=<exact-40-character-hew-sha>
+   VERSION=<version-without-v-prefix>
+   PLAYGROUND_CHECKOUT="$(mktemp -d)"
+   git clone https://github.com/hew-lang/playground.git "${PLAYGROUND_CHECKOUT}"
+   git -C "${PLAYGROUND_CHECKOUT}" checkout --detach "${PLAYGROUND_REF}"
+   test "$(git -C "${PLAYGROUND_CHECKOUT}" rev-parse HEAD)" = "${PLAYGROUND_REF}"
+   git -C "${PLAYGROUND_CHECKOUT}" merge-base --is-ancestor \
+     "${PLAYGROUND_CONTRACT_REF}" HEAD
+   test -z "$(git -C "${PLAYGROUND_CHECKOUT}" status --porcelain)"
+   (
+     cd "${PLAYGROUND_CHECKOUT}"
+     . ./toolchains.env
+     test "${HEW_DEFAULT_VERSION}" = "${VERSION}"
+     test "${HEW_CANDIDATE_SHA}" = "${HEW_RELEASE_SHA}"
+     env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES -u MAKEFILES -u GNUMAKEFLAGS \
+       HEW_EXAMPLES_REF="${HEW_RELEASE_SHA}" \
+       HEW_VERSION="${VERSION}" \
+       PLAYGROUND_PLATFORM=linux/amd64 \
+       PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground \
+       scripts/publish-release-image.sh candidate
+   )
+   PLAYGROUND_IMAGE=ghcr.io/hew-lang/playground:v${VERSION}
+   PLAYGROUND_IMAGE_DIGEST="$(docker buildx imagetools inspect \
+     "${PLAYGROUND_IMAGE}" --format '{{json .Manifest}}' | jq -er '.digest')"
+   if ! [[ "${PLAYGROUND_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+     echo "invalid playground image digest" >&2
+     exit 1
+   fi
+   gh variable set PLAYGROUND_RELEASE_IMAGE_LOCK \
+     --body "v${VERSION}@${PLAYGROUND_IMAGE_DIGEST}" --repo hew-lang/hew
+   ```
+
+   After the Hew candidate SHA is fixed, first merge a separately reviewed,
+   minimal playground `toolchains.env` bump that sets `HEW_DEFAULT_VERSION` to
+   the candidate version and `HEW_CANDIDATE_SHA` to that exact Hew commit.
+   `PLAYGROUND_REF` is the resulting exact clean playground commit; the
+   `merge-base` check proves it contains the candidate publisher merged in #34.
+   `HEW_EXAMPLES_REF` is the exact candidate commit. The playground publisher
+   accepts the untagged repository path and itself publishes the exact
+   `ghcr.io/hew-lang/playground:v${VERSION}` tag. It stages the authorized Hew
+   checkout, scrubs inherited GNU Make parser controls, uses candidate authority,
+   and stamps the SHA as `org.opencontainers.image.revision`. Record the clean
+   playground SHA, candidate SHA, platform, image digest, and smoke result before
+   continuing. The version-scoped `PLAYGROUND_RELEASE_IMAGE_LOCK` is the
+   pre-tag handoff: it records the immutable raw manifest/index digest without
+   requiring another Hew or playground commit. Do not use a Make target or the
+   `publish` mode before tagging: publish authority requires the remote signed tag.
+3. Create the signed tag only after the preceding evidence is recorded.
+4. Let the release workflow build and publish the signed platform assets and
    checksums. Its curated body must be the exact
    `docs/releases/<tag>.md` file for that tag.
-4. After the assets exist, complete both independent publication arms:
+5. After the assets exist, complete the npm publication arm:
    - Manually dispatch `.github/workflows/publish-npm-packages.yml` with
      `release_tag=v0.6.0-rc1` for
      `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1`, and wait for each
      result. The workflow checks out that immutable tag and rejects a workspace
      or sandbox package version mismatch. A tag does not publish these packages.
-   - Wait for the release workflow's automated playground dispatch, then
-     verify the published image, API, and `hew run` smoke path against the
-     candidate version.
-5. Only after both arms are green, pin the candidate and cut over the banner in
+6. The tag-push release workflow only observes the pre-tag candidate image; it
+   never dispatches mutable downstream state. The tag must resolve to the exact
+   digest recorded in `PLAYGROUND_RELEASE_IMAGE_LOCK`, expose exactly the
+   `linux/amd64` release platform, and its
+   `org.opencontainers.image.revision` label must bind the release commit. The
+   workflow validates the registry's digest header and the raw manifest/index
+   bytes before inspecting the platform and revision. Then verify the published
+   image, API, and `hew run` smoke path against the candidate version. Running
+   `scripts/assert-playground-release-image.sh` outside Actions requires
+   `GHCR_USERNAME` and `GHCR_TOKEN`; the token must be a classic GitHub PAT with
+   the `read:packages` scope (and organization SSO authorization when the
+   organization requires it).
+   Any intentional post-tag rebuild must use
+   `scripts/publish-release-image.sh publish` manually from that same exact clean
+   playground checkout. Reconfirm the new digest and update the version-scoped
+   lock before rerunning the assertion; never dispatch a mutable remote branch.
+7. Only after both independent publication arms are green, pin the candidate and cut over the banner in
    `hew.sh` and `hew.run`.
-6. Rebuild Android from the tagged candidate and verify its artifact.
+8. Rebuild Android from the tagged candidate and verify its artifact.
 
 Homebrew intentionally skips prerelease tags; its optional tap update is
-separate from the required playground dispatch. Do not run obsolete downstream
+separate from the required playground release image. Do not run obsolete downstream
 vendoring commands for npm consumers until their vendoring assumptions are
 repaired or the commands are removed.
 

@@ -3,6 +3,7 @@
     reason = "shared integration-test helpers are not used by every test target"
 )]
 
+pub mod http_canned;
 pub mod leak_slope;
 
 use hew_testutil::{BoundedExecError, DEFAULT_EXEC_TIMEOUT};

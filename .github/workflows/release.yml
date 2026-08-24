@@ -19,9 +19,10 @@
 #   APPLE_API_KEY_ID            — App Store Connect API key ID
 #   APPLE_API_ISSUER_ID         — App Store Connect API issuer ID
 #
-# Required variable and secret for the required playground dispatch:
-#   secrets.PLAYGROUND_APP_ID — GitHub App ID for the playground dispatch App
-#   secrets.PLAYGROUND_APP_PRIVATE_KEY — Private key for the playground dispatch App
+# Required variable for the prepublished playground release image:
+#   vars.PLAYGROUND_RELEASE_IMAGE_LOCK — exact version-scoped immutable image
+#     identity, e.g. `v0.6.0-rc2@sha256:<64 lowercase hex digits>`. The
+#     maintainer records it only after the pre-tag candidate publish succeeds.
 #
 # Homebrew tap updates use a separate optional credential and are skipped for
 # prereleases:
@@ -1566,17 +1567,21 @@ jobs:
             -f version="${VERSION}"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Playground — trigger Docker image rebuild in hew-lang/playground
+  # Playground — assert the immutable prepublished release image
   # ─────────────────────────────────────────────────────────────────────────
+  # The job's contract is the release image itself: for this tag, an image
+  # exists in the registry and its exact operator-recorded digest binds this
+  # release commit and linux/amd64. Publishing happens before the tag from a
+  # pinned clean playground checkout; this workflow never follows or dispatches
+  # mutable playground state.
   playground:
     needs: release
     runs-on: ubuntu-24.04
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    # The downstream publish path is bounded at 5 + 5 + 45 + 30 + 5 minutes
-    # across its authority, contract-verify, smoke, publish, and result jobs
-    # (90 minutes sequential worst case). Leave another 30 minutes for dispatch
-    # visibility and runner scheduling while still failing closed.
-    timeout-minutes: 120
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Resolve release commit identity
@@ -1594,122 +1599,68 @@ jobs:
           fi
           echo "hew_sha=${HEW_SHA}" >> "${GITHUB_OUTPUT}"
 
-      - name: Validate playground GitHub App configuration
+      - name: Validate immutable playground image handoff
+        id: image-lock
         shell: bash
         env:
-          PLAYGROUND_APP_ID: ${{ secrets.PLAYGROUND_APP_ID }}
-          PLAYGROUND_APP_PRIVATE_KEY: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}
+          PLAYGROUND_RELEASE_IMAGE_LOCK: ${{ vars.PLAYGROUND_RELEASE_IMAGE_LOCK }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${PLAYGROUND_APP_ID}" || -z "${PLAYGROUND_APP_PRIVATE_KEY}" ]]; then
-            echo "::error::Playground dispatch requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY; configure both before running a release"
+          JOB_TIMEOUT_MINUTES=15
+          FINALIZATION_RESERVE_MINUTES=2
+          ASSERTION_BUDGET_MINUTES=$((JOB_TIMEOUT_MINUTES - FINALIZATION_RESERVE_MINUTES))
+          ASSERTION_DEADLINE_EPOCH=$(($(date +%s) + ASSERTION_BUDGET_MINUTES * 60))
+
+          if ! [[ "${PLAYGROUND_RELEASE_IMAGE_LOCK:-}" =~ ^v[0-9A-Za-z.-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::vars.PLAYGROUND_RELEASE_IMAGE_LOCK must be <release-tag>@sha256:<64 lowercase hex digits>"
             exit 1
           fi
+          LOCK_TAG="${PLAYGROUND_RELEASE_IMAGE_LOCK%%@*}"
+          IMAGE_DIGEST="${PLAYGROUND_RELEASE_IMAGE_LOCK#*@}"
+          if [[ "${LOCK_TAG}" != "${RELEASE_TAG}" ]]; then
+            echo "::error::playground image lock is for ${LOCK_TAG}, not ${RELEASE_TAG}"
+            exit 1
+          fi
+          {
+            echo "image_digest=${IMAGE_DIGEST}"
+            echo "assert_deadline_epoch=${ASSERTION_DEADLINE_EPOCH}"
+          } >> "${GITHUB_OUTPUT}"
 
-      - name: Mint playground GitHub App token
-        id: playground-app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2.2.2
+      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
-          app-id: ${{ secrets.PLAYGROUND_APP_ID }}
-          private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}
-          owner: hew-lang
-          repositories: playground
+          ref: ${{ github.sha }}
+          path: release-machinery
 
-      - name: Trigger playground image rebuild
+      - name: Report immutable prepublished playground image
         shell: bash
         env:
-          GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}
-          HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}
+          HEW_EXAMPLES_REF: ${{ steps.release-commit.outputs.hew_sha }}
+          EXPECTED_DIGEST: ${{ steps.image-lock.outputs.image_digest }}
         run: |
           set -euo pipefail
 
-          if ! [[ "${HEW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+          if ! [[ "${HEW_EXAMPLES_REF}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::release commit identity is not an exact lowercase 40-character commit SHA"
             exit 1
           fi
-          VERSION="${RELEASE_TAG#v}"
-          CORRELATION_ID="hew-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          EXPECTED_DISPLAY_TITLE="Build Playground mode=publish sha=${HEW_SHA} version=${VERSION} correlation=${CORRELATION_ID}"
-          if ! gh repo view hew-lang/playground --json name >/dev/null 2>&1; then
-            echo "::error::hew-lang/playground is unavailable"
-            exit 1
-          fi
-          PLAYGROUND_REF=$(gh api repos/hew-lang/playground --jq '.default_branch')
-          PLAYGROUND_SHA=$(gh api \
-            "repos/hew-lang/playground/commits/${PLAYGROUND_REF}" \
-            --jq '.sha')
-          DISPATCH_ACTOR=$(gh api user --jq '.login')
-          WORKFLOW_STATE=$(gh workflow view build.yml \
-            -R hew-lang/playground --json state --jq '.state')
-          if [ "${WORKFLOW_STATE}" != "active" ]; then
-            echo "::error::hew-lang/playground build.yml is not active"
-            exit 1
-          fi
-          PRE_DISPATCH_MAX_ID=$(gh api -X GET \
-            repos/hew-lang/playground/actions/workflows/build.yml/runs \
-            -f event=workflow_dispatch \
-            -f branch="${PLAYGROUND_REF}" \
-            -f per_page=100 \
-            --jq '[.workflow_runs[].id] | max // 0')
-          gh workflow run build.yml \
-            -R hew-lang/playground \
-            --ref "${PLAYGROUND_REF}" \
-            -f publish=true \
-            -f hew_sha="${HEW_SHA}" \
-            -f version="${VERSION}" \
-            -f correlation_id="${CORRELATION_ID}"
-          RUN_ID=""
-          LAST_CANDIDATE_ID=""
-          for _ in $(seq 1 30); do
-            if ! RUNS_JSON=$(gh api -X GET \
-              repos/hew-lang/playground/actions/workflows/build.yml/runs \
-              -f event=workflow_dispatch \
-              -f branch="${PLAYGROUND_REF}" \
-              -f per_page=100); then
-              echo "::error::failed to list playground workflow runs"
-              exit 1
-            fi
-            if ! RUN_IDS_OUTPUT=$(jq -r \
-                --argjson floor "${PRE_DISPATCH_MAX_ID}" \
-                --arg sha "${PLAYGROUND_SHA}" \
-                --arg actor "${DISPATCH_ACTOR}" \
-                --arg display_title "${EXPECTED_DISPLAY_TITLE}" \
-                '.workflow_runs[]
-                  | select(.id > $floor)
-                  | select(.head_sha == $sha)
-                  | select(.actor.login == $actor)
-                  | select(.display_title == $display_title)
-                  | .id' <<< "${RUNS_JSON}"); then
-              echo "::error::failed to parse playground workflow runs"
-              exit 1
-            fi
-            RUN_IDS=()
-            while IFS= read -r CANDIDATE_ID; do
-              if [ -n "${CANDIDATE_ID}" ]; then
-                RUN_IDS[${#RUN_IDS[@]}]="${CANDIDATE_ID}"
-              fi
-            done <<< "${RUN_IDS_OUTPUT}"
-            if [ "${#RUN_IDS[@]}" -gt 1 ]; then
-              echo "::error::ambiguous playground workflow dispatch correlation"
-              exit 1
-            fi
-            if [ "${#RUN_IDS[@]}" -eq 1 ]; then
-              if [ "${RUN_IDS[0]}" = "${LAST_CANDIDATE_ID}" ]; then
-                RUN_ID="${RUN_IDS[0]}"
-                break
-              fi
-              LAST_CANDIDATE_ID="${RUN_IDS[0]}"
-            else
-              LAST_CANDIDATE_ID=""
-            fi
-            sleep 2
-          done
-          if [ -z "${RUN_ID}" ]; then
-            echo "::error::could not correlate the playground workflow dispatch with a run"
-            exit 1
-          fi
-          gh run watch "${RUN_ID}" -R hew-lang/playground --exit-status
+          PLAYGROUND_RELEASE_IMAGE="ghcr.io/hew-lang/playground"
+          EXPECTED_RELEASE_IMAGE="${PLAYGROUND_RELEASE_IMAGE}:${RELEASE_TAG}"
+          echo "Asserting immutable pre-tag image ${EXPECTED_RELEASE_IMAGE}@${EXPECTED_DIGEST} for linux/amd64 and ${HEW_EXAMPLES_REF}."
+
+      - name: Assert immutable release image identity
+        shell: bash
+        env:
+          IMAGE_REPOSITORY: hew-lang/playground
+          IMAGE_TAG: ${{ env.RELEASE_TAG }}
+          EXPECTED_DIGEST: ${{ steps.image-lock.outputs.image_digest }}
+          EXPECTED_PLATFORM: linux/amd64
+          EXPECTED_REVISION: ${{ steps.release-commit.outputs.hew_sha }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USERNAME: ${{ github.actor }}
+          DEADLINE_EPOCH: ${{ steps.image-lock.outputs.assert_deadline_epoch }}
+        run: release-machinery/scripts/assert-playground-release-image.sh
 
   # ─────────────────────────────────────────────────────────────────────────
   # VS Code Extension — package + publish with bundled hew-lsp per platform

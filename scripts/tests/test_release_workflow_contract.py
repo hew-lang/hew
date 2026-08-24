@@ -1,5 +1,7 @@
 """Static contract tests for the release workflow's prerelease handoff."""
 
+import ast
+import hashlib
 import json
 import os
 import re
@@ -10,11 +12,19 @@ import tarfile
 import tempfile
 import textwrap
 import tomllib
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from time import time
+from urllib.error import HTTPError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[2]
 HEW_SHA = "0123456789abcdef0123456789abcdef01234567"
+BEARER_SCHEME = "Bearer"
 WORKSPACE_MANIFEST = ROOT / "Cargo.toml"
 SANDBOX_VM_MANIFEST = ROOT / "hew-sandbox-vm" / "package.json"
 SANDBOX_VM_LOCKFILE = ROOT / "hew-sandbox-vm" / "package-lock.json"
@@ -40,6 +50,7 @@ RELEASE_LINK_MANIFEST = (
 WINDOWS_RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.ps1"
 WINDOWS_RELEASE_BUILD = ROOT / "scripts" / "windows-release-build.ps1"
 SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
+RELEASE_IMAGE_ASSERTION = ROOT / "scripts" / "assert-playground-release-image.sh"
 MAKEFILE = ROOT / "Makefile"
 RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
 PACKAGE_BUILDER = ROOT / "installers" / "build-packages.sh"
@@ -54,6 +65,7 @@ WINDOWS_LLVM_TOOLCHAIN_VERSION = "22.1.0-windows-msvc-v1"
 WINDOWS_LLVM_TOOLCHAIN_TAG = f"llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}"
 WINDOWS_LLVM_TOOLCHAIN_ASSET = f"hew-llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}.tar.gz"
 BINARYEN_SHA256 = "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212"
+PLAYGROUND_CONTRACT_REF = "21be84bb97436436b640f2acd09fb6dd2e0fbf94"
 
 
 def workflow() -> str:
@@ -74,205 +86,239 @@ def playground_job(text: str | None = None) -> str:
     return text[start:end]
 
 
-def playground_script(text: str | None = None) -> str:
-    """Extract the exact Bash program executed by the playground job."""
-    job = playground_job() if text is None else text
-    step = job.index("      - name: Trigger playground image rebuild\n")
-    run = job.index("        run: |\n", step) + len("        run: |\n")
-    return textwrap.dedent(job[run:]).rstrip() + "\n"
+def step_of(job: str, name: str) -> str:
+    """Extract one named step's YAML from a job, bounded at the next step."""
+    start = job.index(f"      - name: {name}\n")
+    end = job.find("\n      - name: ", start + 1)
+    return job[start:] if end == -1 else job[start : end + 1]
 
 
-def assert_exact_dispatch_correlation(job: str) -> None:
-    """Require the unique caller identity in both dispatch and run selection."""
-    assert 'CORRELATION_ID="hew-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"' in job
-    assert (
-        'EXPECTED_DISPLAY_TITLE="Build Playground mode=publish'
-        ' sha=${HEW_SHA} version=${VERSION} correlation=${CORRELATION_ID}"' in job
-    )
-
-    dispatch_start = job.index("          gh workflow run build.yml")
-    dispatch_end = job.index('          RUN_ID=""', dispatch_start)
-    dispatch = job[dispatch_start:dispatch_end]
-    assert "-f publish=true \\\n" in dispatch
-    assert '-f hew_sha="${HEW_SHA}" \\\n' in dispatch
-    assert '-f version="${VERSION}" \\\n' in dispatch
-    assert '-f correlation_id="${CORRELATION_ID}"' in dispatch
-
-    query_start = job.index("            if ! RUN_IDS_OUTPUT=$(jq -r")
-    query_end = job.index("            RUN_IDS=()", query_start)
-    query = job[query_start:query_end]
-    expected = """            if ! RUN_IDS_OUTPUT=$(jq -r \\
-                --argjson floor "${PRE_DISPATCH_MAX_ID}" \\
-                --arg sha "${PLAYGROUND_SHA}" \\
-                --arg actor "${DISPATCH_ACTOR}" \\
-                --arg display_title "${EXPECTED_DISPLAY_TITLE}" \\
-                '.workflow_runs[]
-                  | select(.id > $floor)
-                  | select(.head_sha == $sha)
-                  | select(.actor.login == $actor)
-                  | select(.display_title == $display_title)
-                  | .id' <<< "${RUNS_JSON}"); then
-              echo "::error::failed to parse playground workflow runs"
-              exit 1
-            fi
-"""
-    assert query == expected
+def image_handoff_script() -> str:
+    """Extract the exact Bash program that validates the immutable handoff."""
+    job = playground_job()
+    step = step_of(job, "Validate immutable playground image handoff")
+    run = step.index("        run: |\n") + len("        run: |\n")
+    return textwrap.dedent(step[run:]).rstrip() + "\n"
 
 
-def assert_fail_closed_run_retrieval(job: str) -> None:
-    """Require API retrieval and jq parsing to have independent status checks."""
-    assert "        shell: bash\n" in job
-    script = playground_script(job)
-    assert script.startswith("set -euo pipefail\n")
-    start = job.index("            if ! RUNS_JSON=$(gh api -X GET")
-    end = job.index("            if ! RUN_IDS_OUTPUT=$(jq -r", start)
-    retrieval = job[start:end]
-    assert "| jq" not in retrieval
-    assert 'echo "::error::failed to list playground workflow runs"' in retrieval
-    assert "              exit 1\n" in retrieval
-
-
-_MOCK_GH = r"""#!/usr/bin/env python3
-import json
-import os
-import sys
-from pathlib import Path
-
-args = sys.argv[1:]
-state = Path(os.environ["MOCK_STATE"])
-log = Path(os.environ["MOCK_LOG"])
-with log.open("a") as stream:
-    stream.write("gh " + " ".join(args) + "\n")
-
-if args[:2] == ["repo", "view"]:
-    raise SystemExit(0)
-if args[:2] == ["workflow", "view"]:
-    print("active")
-    raise SystemExit(0)
-if args[:2] == ["workflow", "run"]:
-    raise SystemExit(0)
-if args[:2] == ["run", "watch"]:
-    raise SystemExit(0 if args[2] == "101" else 91)
-if not args or args[0] != "api":
-    raise SystemExit(92)
-
-joined = " ".join(args)
-if "repos/hew-lang/playground/commits/main" in joined:
-    print("sha-good")
-    raise SystemExit(0)
-if "repos/hew-lang/playground/actions/workflows/build.yml/runs" in joined:
-    if "--jq" in args:
-        print("100")
-        raise SystemExit(0)
-    scenario = os.environ["MOCK_SCENARIO"]
-    if scenario == "api-failure":
-        print("mock API failure", file=sys.stderr)
-        raise SystemExit(42)
-    poll = int(state.read_text() or "0") + 1 if state.exists() else 1
-    state.write_text(str(poll))
-    matching = {
-        "id": 101,
-        "head_sha": "sha-good",
-        "actor": {"login": "actor-good"},
-        "display_title": (
-            "Build Playground mode=publish"
-            " sha=0123456789abcdef0123456789abcdef01234567"
-            " version=0.6.0-rc1 correlation=hew-777-2"
-        ),
-    }
-    if scenario == "empty":
-        runs = []
-    elif scenario == "ambiguous":
-        runs = [matching, {**matching, "id": 102}]
-    elif scenario in {"title", "head", "actor", "floor"}:
-        candidate = dict(matching)
-        if scenario == "title":
-            candidate["display_title"] = "Build Playground wrong"
-        elif scenario == "head":
-            candidate["head_sha"] = "sha-wrong"
-        elif scenario == "actor":
-            candidate["actor"] = {"login": "actor-wrong"}
-        else:
-            candidate["id"] = 100
-        runs = [candidate]
-    else:
-        runs = [
-            {**matching, "id": 100},
-            {**matching, "head_sha": "sha-wrong", "id": 103},
-            {**matching, "actor": {"login": "actor-wrong"}, "id": 104},
-            {**matching, "display_title": "Build Playground wrong", "id": 105},
-            matching,
-        ]
-    print(json.dumps({"workflow_runs": runs}))
-    raise SystemExit(0)
-if "repos/hew-lang/playground" in joined:
-    print("main")
-    raise SystemExit(0)
-if args[1:] == ["user", "--jq", ".login"]:
-    print("actor-good")
-    raise SystemExit(0)
-raise SystemExit(93)
-"""
-
-
-def run_playground(
-    scenario: str, *, jq_failure: bool = False, hew_sha: str = HEW_SHA
-) -> tuple:
-    """Execute the workflow's exact Bash with deterministic command doubles."""
+def run_image_handoff(lock: str | None, script: str | None = None) -> tuple:
+    """Execute the immutable handoff validator with a repository variable."""
     with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        bin_dir = root / "bin"
-        bin_dir.mkdir()
-        gh = bin_dir / "gh"
-        gh.write_text(_MOCK_GH)
-        gh.chmod(0o755)
-        sleep = bin_dir / "sleep"
-        sleep.write_text("#!/usr/bin/env bash\nexit 0\n")
-        sleep.chmod(0o755)
-        if jq_failure:
-            jq = bin_dir / "jq"
-            jq.write_text("#!/usr/bin/env bash\nexit 23\n")
-            jq.chmod(0o755)
-        state = root / "state"
-        log = root / "calls.log"
+        output = Path(directory) / "github_output"
+        output.touch()
         env = os.environ.copy()
-        env.update(
-            {
-                "PATH": f"{bin_dir}:{env['PATH']}",
-                "GH_TOKEN": "test-token",
-                "HEW_SHA": hew_sha,
-                "RELEASE_TAG": "v0.6.0-rc1",
-                "GITHUB_RUN_ID": "777",
-                "GITHUB_RUN_ATTEMPT": "2",
-                "MOCK_SCENARIO": scenario,
-                "MOCK_STATE": str(state),
-                "MOCK_LOG": str(log),
-            }
-        )
+        env["GITHUB_OUTPUT"] = str(output)
+        env["RELEASE_TAG"] = "v0.6.0-rc2"
+        env.pop("PLAYGROUND_RELEASE_IMAGE_LOCK", None)
+        if lock is not None:
+            env["PLAYGROUND_RELEASE_IMAGE_LOCK"] = lock
         result = subprocess.run(
-            ["bash", "-c", playground_script()],
+            ["bash", "-c", image_handoff_script() if script is None else script],
             cwd=ROOT,
             env=env,
             check=False,
             capture_output=True,
             text=True,
         )
-        calls = log.read_text().splitlines() if log.exists() else []
-        polls = int(state.read_text()) if state.exists() else 0
-        return result, calls, polls
+        outputs = dict(
+            line.split("=", 1)
+            for line in output.read_text().splitlines()
+            if "=" in line
+        )
+        return result, outputs
 
 
-def assert_wait_budget(job: str) -> None:
-    """Keep caller time above the downstream 5+5+45+30+5 minute maximum."""
-    match = re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)
-    assert match is not None
-    assert int(match.group(1)) >= 100
+def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProcess:
+    """Execute the release-image assertion with a fixed environment."""
+    env = os.environ.copy()
+    for key in (
+        "IMAGE_REPOSITORY",
+        "IMAGE_TAG",
+        "EXPECTED_DIGEST",
+        "EXPECTED_PLATFORM",
+        "EXPECTED_REVISION",
+        "GHCR_TOKEN",
+        "GHCR_USERNAME",
+        "DEADLINE_MINUTES",
+        "DEADLINE_EPOCH",
+        "IMAGE_REGISTRY",
+        "IMAGE_REGISTRY_SCHEME",
+        "POLL_INTERVAL_SECONDS",
+    ):
+        env.pop(key, None)
+    env.update(env_overrides)
+    return subprocess.run(
+        [str(RELEASE_IMAGE_ASSERTION)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+@contextmanager
+def canned_registry(
+    responses: dict[str, list[tuple[int, dict]]],
+    digest_headers: dict[str, str] | None = None,
+):
+    digest_headers = digest_headers or {}
+
+    class RequestLog(list[str]):
+        authorization_headers: dict[str, list[str]]
+        raw_authorization_headers: dict[str, list[str]]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.authorization_headers = {}
+            self.raw_authorization_headers = {}
+
+    requests = RequestLog()
+    counts: dict[str, int] = {}
+    issued_token: str | None = None
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            nonlocal issued_token
+            path = urlparse(self.path).path
+            requests.append(path)
+            authorization = self.headers.get("Authorization", "")
+            requests.raw_authorization_headers.setdefault(path, []).append(
+                authorization
+            )
+            logged_authorization = (
+                "******"
+                if authorization.startswith(f"{BEARER_SCHEME} ")
+                else authorization
+            )
+            requests.authorization_headers.setdefault(path, []).append(
+                logged_authorization
+            )
+            sequence = responses.get(path, [(404, {"error": "not found"})])
+            index = counts.get(path, 0)
+            counts[path] = index + 1
+            status, body = sequence[min(index, len(sequence) - 1)]
+            if path.startswith("/v2/") and (
+                issued_token is None
+                or authorization != f"{BEARER_SCHEME} {issued_token}"
+            ):
+                status, body = 401, {"error": "invalid bearer token"}
+            elif path == "/token":
+                issued_token = body.get("token")
+            encoded = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            if path.startswith("/v2/") and status == 200:
+                self.send_header(
+                    "Docker-Content-Digest",
+                    digest_headers.get(path, content_digest(body)),
+                )
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield server.server_address[1], requests
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def image_manifest(config_digest: str) -> dict:
+    return {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": config_digest,
+            "size": 1,
+        },
+        "layers": [],
+    }
+
+
+def content_digest(document: dict) -> str:
+    encoded = json.dumps(document).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def named_digest(name: str) -> str:
+    return f"sha256:{hashlib.sha256(name.encode()).hexdigest()}"
+
+
+def image_config(labels: dict[str, str] | None) -> dict:
+    config = {}
+    if labels is not None:
+        config["Labels"] = labels
+    return {
+        "architecture": "amd64",
+        "os": "linux",
+        "config": config,
+    }
+
+
+def run_canned_release_image_assertion(
+    responses: dict[str, list[tuple[int, dict]]],
+    *,
+    deadline_epoch: int | None = None,
+    expected_digest: str | None = None,
+    expected_platform: str = "linux/amd64",
+    digest_headers: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess, list[str]]:
+    responses = {
+        "/token": [(200, {"token": "pull-token"})],
+        **responses,
+    }
+    with canned_registry(responses, digest_headers) as (port, requests):
+        manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+        if expected_digest is None:
+            expected_digest = content_digest(responses[manifest_path][-1][1])
+        env = {
+            "IMAGE_REPOSITORY": "hew-lang/playground",
+            "IMAGE_TAG": "v0.6.0-rc2",
+            "EXPECTED_DIGEST": expected_digest,
+            "EXPECTED_PLATFORM": expected_platform,
+            "EXPECTED_REVISION": HEW_SHA,
+            "GHCR_TOKEN": "test-token",
+            "GHCR_USERNAME": "test-user",
+            "IMAGE_REGISTRY": f"127.0.0.1:{port}",
+            "IMAGE_REGISTRY_SCHEME": "http",
+            "POLL_INTERVAL_SECONDS": "1",
+        }
+        if deadline_epoch is None:
+            env["DEADLINE_MINUTES"] = "1"
+        else:
+            env["DEADLINE_EPOCH"] = str(deadline_epoch)
+        result = run_release_image_assertion(env)
+    return result, requests
+
+
+def registry_request_status(
+    port: int, path: str, authorization: str | None = None
+) -> int:
+    headers = {"X-Registry-Contract": "direct"}
+    if authorization is not None:
+        headers["Authorization"] = authorization
+    request = Request(f"http://127.0.0.1:{port}{path}", headers=headers)
+    try:
+        with urlopen(request) as response:
+            return response.status
+    except HTTPError as error:
+        return error.code
 
 
 def test_rc_tag_normalization_and_exact_release_body() -> None:
     text = workflow()
     assert "RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}" in text
-    assert 'VERSION="${RELEASE_TAG#v}"' in playground_job()
+    assert 'LOCK_TAG="${PLAYGROUND_RELEASE_IMAGE_LOCK%%@*}"' in playground_job()
+    assert 'if [[ "${LOCK_TAG}" != "${RELEASE_TAG}" ]]' in playground_job()
     assert "body_path: docs/releases/${{ env.RELEASE_TAG }}.md" in text
     assert RELEASE_NOTES.exists()
 
@@ -350,229 +396,572 @@ def test_current_sandbox_vm_version_matches_workspace_version() -> None:
     assert lockfile["packages"][""]["version"] == workspace_version
 
 
-def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
-    text = workflow()
-    job = playground_job()
-    assert "      - name: Resolve release commit identity\n" in job
-    assert (
-        "gh api \"repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}\" --jq '.sha'"
-    ) in job
-    assert "did not resolve to an exact lowercase" in job
-    assert "HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}" in job
-    assert "PLAYGROUND_DISPATCH_TOKEN" not in text
-    assert "HOMEBREW_TAP_TOKEN" not in job
-    assert "#   secrets.PLAYGROUND_APP_ID" in text
-    assert "#   secrets.PLAYGROUND_APP_PRIVATE_KEY" in text
-
-    validate = job.index("      - name: Validate playground GitHub App configuration\n")
-    mint = job.index("      - name: Mint playground GitHub App token\n")
-    trigger = job.index("      - name: Trigger playground image rebuild\n")
-    assert validate < mint < trigger
-    validation_step = job[validate:mint]
-    token_step = job[mint:trigger]
-    trigger_step = job[trigger:]
-
-    assert "PLAYGROUND_APP_ID: ${{ secrets.PLAYGROUND_APP_ID }}" in validation_step
-    assert (
-        "PLAYGROUND_APP_PRIVATE_KEY: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}"
-        in validation_step
-    )
-    assert (
-        "requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY"
-        in validation_step
-    )
-    assert "exit 1" in validation_step
-    assert "if:" not in validation_step
-    assert "continue-on-error:" not in validation_step
-
-    assert "id: playground-app-token" in token_step
-    assert re.search(
-        r"uses: actions/create-github-app-token@[0-9a-f]{40}  # v2\.2\.2$",
-        token_step,
-        re.MULTILINE,
-    )
-    assert "app-id: ${{ secrets.PLAYGROUND_APP_ID }}" in token_step
-    assert "private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}" in token_step
-    assert "owner: hew-lang" in token_step
-    assert "repositories: playground" in token_step
-    assert "if:" not in token_step
-    assert "continue-on-error:" not in token_step
-    assert "GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}" in trigger_step
-    assert "gh repo view hew-lang/playground" in job
-    assert "gh api repos/hew-lang/playground --jq '.default_branch'" in job
-    assert "gh workflow view build.yml" in job
-    assert '!= "active"' in job
-    assert "could not correlate" in job
-
-
-def test_dispatch_uses_exact_playground_workflow_input_and_ref() -> None:
-    job = playground_job()
-    assert "gh workflow run build.yml" in job
-    assert '--ref "${PLAYGROUND_REF}"' in job
-    assert "-f publish=true" in job
-    assert '-f hew_sha="${HEW_SHA}"' in job
-    assert '-f version="${VERSION}"' in job
-    assert "-f event=workflow_dispatch" in job
-    assert '-f branch="${PLAYGROUND_REF}"' in job
-    assert 'gh run watch "${RUN_ID}" -R hew-lang/playground --exit-status' in job
-
-
-def test_dispatch_correlation_is_unique_and_bounded() -> None:
-    job = playground_job()
-    assert_wait_budget(job)
-    assert_exact_dispatch_correlation(job)
-    assert "PLAYGROUND_SHA=" in job
-    assert "PRE_DISPATCH_MAX_ID=" in job
-    assert '--argjson floor "${PRE_DISPATCH_MAX_ID}"' in job
-    assert '--arg sha "${PLAYGROUND_SHA}"' in job
-    assert "DISPATCH_ACTOR=" in job
-    assert '--arg actor "${DISPATCH_ACTOR}"' in job
-    assert "select(.id > $floor)" in job
-    assert "select(.head_sha == $sha)" in job
-    assert "select(.actor.login == $actor)" in job
-    assert_fail_closed_run_retrieval(job)
-    assert "if ! RUN_IDS_OUTPUT=$(jq -r" in job
-    assert 'if [ -n "${CANDIDATE_ID}" ]; then' in job
-    assert "mapfile -t RUN_IDS < <(" not in job
-    assert "LAST_CANDIDATE_ID" in job
-    assert "ambiguous playground workflow dispatch correlation" in job
-
-
-def test_exact_workflow_shell_accepts_one_stable_matching_run() -> None:
-    result, calls, polls = run_playground("success")
+def test_playground_release_uses_only_an_immutable_pretag_handoff() -> None:
+    digest = named_digest("candidate-index")
+    result, outputs = run_image_handoff(f"v0.6.0-rc2@{digest}")
     assert result.returncode == 0, result.stderr
-    assert polls == 2
-    dispatches = [call for call in calls if call.startswith("gh workflow run")]
-    assert dispatches == [
-        "gh workflow run build.yml -R hew-lang/playground --ref main"
-        f" -f publish=true -f hew_sha={HEW_SHA}"
-        " -f version=0.6.0-rc1 -f correlation_id=hew-777-2"
-    ]
-    watches = [call for call in calls if call.startswith("gh run watch")]
-    assert watches == ["gh run watch 101 -R hew-lang/playground --exit-status"]
+    assert outputs["image_digest"] == digest
 
+    for bad_lock in (
+        None,
+        "",
+        digest,
+        f"v0.6.0-rc3@{digest}",
+        "v0.6.0-rc2@sha256:short",
+        f"v0.6.0-rc2@{digest.upper()}",
+        f"v0.6.0-rc2@sha512:{'a' * 64}",
+    ):
+        rejected, rejected_outputs = run_image_handoff(bad_lock)
+        assert rejected.returncode != 0, bad_lock
+        assert rejected_outputs == {}, bad_lock
 
-def test_malformed_release_commit_identity_is_terminal() -> None:
-    for bad_sha in ("", "not-a-sha", HEW_SHA[:39], HEW_SHA.upper()):
-        result, calls, polls = run_playground("success", hew_sha=bad_sha)
-        assert result.returncode != 0, repr(bad_sha)
-        assert "release commit identity is not an exact lowercase" in result.stdout, (
-            repr(bad_sha)
-        )
-        assert polls == 0, repr(bad_sha)
-        assert not any(call.startswith("gh workflow run") for call in calls), repr(
-            bad_sha
-        )
-
-
-def test_run_listing_api_failure_is_terminal() -> None:
-    result, calls, polls = run_playground("api-failure")
-    assert result.returncode != 0
-    assert "failed to list playground workflow runs" in result.stdout
-    assert polls == 0
-    assert not any(call.startswith("gh run watch") for call in calls)
-
-
-def test_run_listing_jq_failure_is_terminal() -> None:
-    result, calls, polls = run_playground("success", jq_failure=True)
-    assert result.returncode != 0
-    assert "failed to parse playground workflow runs" in result.stdout
-    assert polls == 1
-    assert not any(call.startswith("gh run watch") for call in calls)
-
-
-def test_successful_empty_polls_exhaust_the_bound() -> None:
-    result, calls, polls = run_playground("empty")
-    assert result.returncode != 0
-    assert "could not correlate" in result.stdout
-    assert polls == 30
-    assert not any(call.startswith("gh run watch") for call in calls)
-
-
-def test_ambiguous_correlation_fails_on_the_first_poll() -> None:
-    result, calls, polls = run_playground("ambiguous")
-    assert result.returncode != 0
-    assert "ambiguous playground workflow dispatch correlation" in result.stdout
-    assert polls == 1
-    assert not any(call.startswith("gh run watch") for call in calls)
-
-
-def test_each_exact_run_identity_dimension_is_mandatory() -> None:
-    for scenario in ("title", "head", "actor", "floor"):
-        result, calls, polls = run_playground(scenario)
-        assert result.returncode != 0, scenario
-        assert "could not correlate" in result.stdout, scenario
-        assert polls == 30, scenario
-        assert not any(call.startswith("gh run watch") for call in calls), scenario
-
-
-def test_timeout_undercut_mutation_is_rejected() -> None:
-    mutated = playground_job().replace(
-        "    timeout-minutes: 120", "    timeout-minutes: 80"
-    )
-    try:
-        assert_wait_budget(mutated)
-    except AssertionError:
-        return
-    raise AssertionError(
-        "the upstream wait accepted the downstream maximum without margin"
-    )
-
-
-def test_publish_mode_downgrade_mutation_is_rejected() -> None:
-    mutated = playground_job().replace("-f publish=true", "-f publish=false")
-    mutated += "\n# -f publish=true\n"
-    try:
-        assert_exact_dispatch_correlation(mutated)
-    except (AssertionError, ValueError):
-        return
-    raise AssertionError("a publish-mode downgrade was hidden by padding")
-
-
-def test_correlation_swap_with_padding_is_rejected() -> None:
-    mutated = playground_job().replace(
-        "select(.display_title == $display_title)",
-        "select(.display_title == $actor)",
-    )
-    mutated += "\n# select(.display_title == $display_title)\n"
-    try:
-        assert_exact_dispatch_correlation(mutated)
-    except (AssertionError, ValueError):
-        return
-    raise AssertionError("a swapped selector was hidden by padding outside its query")
-
-
-def test_correlation_argument_swap_with_padding_is_rejected() -> None:
-    mutated = playground_job().replace(
-        '--arg sha "${PLAYGROUND_SHA}"',
-        '--arg sha "${DISPATCH_ACTOR}"',
-    )
-    mutated += '\n# --arg sha "${PLAYGROUND_SHA}"\n'
-    try:
-        assert_exact_dispatch_correlation(mutated)
-    except (AssertionError, ValueError):
-        return
-    raise AssertionError("a swapped argument was hidden by padding outside its query")
-
-
-def test_pipeline_status_masking_mutation_is_rejected() -> None:
-    mutated = playground_job().replace(
-        "            if ! RUNS_JSON=$(gh api -X GET \\",
-        "            RUNS_JSON=$(gh api -X GET \\",
-    )
-    mutated += "\n# if ! RUNS_JSON=$(gh api -X GET\n"
-    try:
-        assert_fail_closed_run_retrieval(mutated)
-    except (AssertionError, ValueError):
-        return
-    raise AssertionError("an unchecked API retrieval was hidden by padding")
-
-
-def test_required_downstream_failure_is_not_masked() -> None:
     job = playground_job()
-    assert "gh run watch" in job
-    assert "continue-on-error" not in job
-    assert "skipping playground trigger" not in job
+    assert (
+        "PLAYGROUND_RELEASE_IMAGE_LOCK: ${{ vars.PLAYGROUND_RELEASE_IMAGE_LOCK }}"
+        in job
+    )
+    assert "EXPECTED_DIGEST: ${{ steps.image-lock.outputs.image_digest }}" in job
+    assert "EXPECTED_PLATFORM: linux/amd64" in job
+    assert "gh workflow run" not in job
+    assert "actions/create-github-app-token" not in job
+    assert "PLAYGROUND_PUBLISH_MODE" not in job
+    assert "PLAYGROUND_APP" not in job
+    assert "packages: read" in job
+
+
+def test_pretag_runbook_pins_candidate_command_digest_and_posttag_authority() -> None:
+    runbook = RUNBOOK.read_text()
+    pre_tag = runbook[
+        runbook.index("## Phase 5") : runbook.index(
+            "3. Create the signed tag", runbook.index("## Phase 5")
+        )
+    ]
+    assert f"PLAYGROUND_CONTRACT_REF={PLAYGROUND_CONTRACT_REF}" in pre_tag
+    assert "PLAYGROUND_REF=<exact-reviewed-40-character-playground-sha>" in pre_tag
+    assert 'test -z "$(git -C "${PLAYGROUND_CHECKOUT}" status --porcelain)"' in pre_tag
+    for inherited in (
+        "MAKEFLAGS",
+        "MFLAGS",
+        "MAKEOVERRIDES",
+        "MAKEFILES",
+        "GNUMAKEFLAGS",
+    ):
+        assert f"-u {inherited}" in pre_tag
+    assert 'HEW_EXAMPLES_REF="${HEW_RELEASE_SHA}"' in pre_tag
+    assert 'HEW_VERSION="${VERSION}"' in pre_tag
+    assert "PLAYGROUND_PLATFORM=linux/amd64" in pre_tag
+    assert "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground" in pre_tag
+    assert "scripts/publish-release-image.sh candidate" in pre_tag
+    assert "docker buildx imagetools inspect" in pre_tag
+    assert "--format '{{json .Manifest}}' | jq -er '.digest'" in pre_tag
+    assert "^sha256:[0-9a-f]{64}$" in pre_tag
+    assert "gh variable set PLAYGROUND_RELEASE_IMAGE_LOCK" in pre_tag
+    assert '"v${VERSION}@${PLAYGROUND_IMAGE_DIGEST}"' in pre_tag
+    assert "scripts/publish-release-image.sh publish" not in pre_tag
+    assert "PLAYGROUND_PUBLISH_MODE" not in runbook
+    assert "gh workflow run" not in runbook
+    assert "scripts/publish-release-image.sh publish" in runbook
+
+
+def test_release_image_assertion_rejects_unusable_inputs() -> None:
+    valid = {
+        "IMAGE_REPOSITORY": "hew-lang/playground",
+        "IMAGE_TAG": "v0.6.0-rc2",
+        "EXPECTED_DIGEST": named_digest("candidate"),
+        "EXPECTED_PLATFORM": "linux/amd64",
+        "EXPECTED_REVISION": HEW_SHA,
+        "GHCR_TOKEN": "test-token",
+        "GHCR_USERNAME": "test-user",
+        "DEADLINE_MINUTES": "1",
+    }
+    # Each case is rejected before any network call, so the assertion can never
+    # reach a registry with an identity it has not fully resolved.
+    cases = {
+        "IMAGE_REPOSITORY": "",
+        "IMAGE_TAG": "",
+        "EXPECTED_DIGEST": "",
+        "EXPECTED_PLATFORM": "",
+        "GHCR_TOKEN": "",
+    }
+    for key, value in cases.items():
+        env = dict(valid, **{key: value})
+        result = run_release_image_assertion(env)
+        assert result.returncode != 0, key
+        assert f"{key} must be set" in result.stderr, key
+
+    without_deadline = {
+        key: value for key, value in valid.items() if key != "DEADLINE_MINUTES"
+    }
+    result = run_release_image_assertion(without_deadline)
+    assert result.returncode != 0
+    assert "DEADLINE_EPOCH or DEADLINE_MINUTES must be set" in result.stderr
+
+    for bad_sha in ("not-a-sha", HEW_SHA[:39], HEW_SHA.upper()):
+        result = run_release_image_assertion(dict(valid, EXPECTED_REVISION=bad_sha))
+        assert result.returncode != 0, bad_sha
+        assert "exact lowercase 40-character commit SHA" in result.stderr, bad_sha
+
+    for bad_digest in (
+        "not-a-digest",
+        "sha256:short",
+        f"sha256:{'A' * 64}",
+        f"sha512:{'a' * 64}",
+    ):
+        result = run_release_image_assertion(dict(valid, EXPECTED_DIGEST=bad_digest))
+        assert result.returncode != 0, bad_digest
+        assert "exactly 64 lowercase hexadecimal" in result.stderr, bad_digest
+
+    for bad_platform in ("", "linux", "linux/arm64", "darwin/amd64"):
+        result = run_release_image_assertion(
+            dict(valid, EXPECTED_PLATFORM=bad_platform)
+        )
+        assert result.returncode != 0, bad_platform
+        expected = (
+            "EXPECTED_PLATFORM must be set"
+            if bad_platform == ""
+            else "EXPECTED_PLATFORM must be exactly linux/amd64"
+        )
+        assert expected in result.stderr, bad_platform
+
+    result = run_release_image_assertion(dict(valid, DEADLINE_MINUTES="soon"))
+    assert result.returncode != 0
+    assert "whole number of minutes" in result.stderr
+
+    result = run_release_image_assertion(dict(valid, POLL_INTERVAL_SECONDS="0"))
+    assert result.returncode != 0
+    assert "POLL_INTERVAL_SECONDS must be a positive whole number" in result.stderr
+
+
+def test_release_image_assertion_accepts_matching_single_manifest() -> None:
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config_digest = content_digest(config)
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
+                (200, image_manifest(config_digest))
+            ],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [(200, config)],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert requests.count("/token") == 1
+    assert requests.authorization_headers[
+        "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    ] == ["******"]
+    assert requests.authorization_headers[
+        f"/v2/hew-lang/playground/blobs/{config_digest}"
+    ] == ["******"]
+
+
+def test_canned_registry_rejects_missing_masked_wrong_and_stale_bearer_tokens() -> None:
+    manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    with canned_registry(
+        {
+            "/token": [
+                (200, {"token": "first-pull-token"}),
+                (200, {"token": "second-pull-token"}),
+            ],
+            manifest_path: [(200, image_manifest(named_digest("config-good")))],
+        }
+    ) as (port, requests):
+        assert registry_request_status(port, manifest_path) == 401
+        assert registry_request_status(port, manifest_path, "******") == 401
+        assert registry_request_status(port, manifest_path, "Bearer wrong-token") == 401
+        assert registry_request_status(port, "/token") == 200
+        assert (
+            registry_request_status(port, manifest_path, "Bearer first-pull-token")
+            == 200
+        )
+        assert registry_request_status(port, "/token") == 200
+        assert (
+            registry_request_status(port, manifest_path, "Bearer first-pull-token")
+            == 401
+        )
+        assert (
+            registry_request_status(port, manifest_path, "Bearer second-pull-token")
+            == 200
+        )
+    assert requests.authorization_headers[manifest_path] == [
+        "",
+        "******",
+        "******",
+        "******",
+        "******",
+        "******",
+    ]
+
+
+def test_canned_registry_requires_the_current_issued_bearer_token() -> None:
+    manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    with canned_registry(
+        {
+            "/token": [
+                (200, {"token": "first-pull-token"}),
+                (200, {"token": "second-pull-token"}),
+            ],
+            manifest_path: [(200, image_manifest(named_digest("config-good")))],
+        }
+    ) as (port, requests):
+        assert registry_request_status(port, manifest_path) == 401
+        assert registry_request_status(port, manifest_path, "******") == 401
+        assert (
+            registry_request_status(port, manifest_path, f"{BEARER_SCHEME} wrong-token")
+            == 401
+        )
+        assert registry_request_status(port, "/token") == 200
+        assert (
+            registry_request_status(
+                port, manifest_path, f"{BEARER_SCHEME} first-pull-token"
+            )
+            == 200
+        )
+        assert registry_request_status(port, "/token") == 200
+        assert (
+            registry_request_status(
+                port, manifest_path, f"{BEARER_SCHEME} first-pull-token"
+            )
+            == 401
+        )
+        assert (
+            registry_request_status(
+                port, manifest_path, f"{BEARER_SCHEME} second-pull-token"
+            )
+            == 200
+        )
+    assert requests.raw_authorization_headers[manifest_path] == [
+        "",
+        "******",
+        f"{BEARER_SCHEME} wrong-token",
+        f"{BEARER_SCHEME} first-pull-token",
+        f"{BEARER_SCHEME} first-pull-token",
+        f"{BEARER_SCHEME} second-pull-token",
+    ]
+
+
+def test_release_image_assertion_sends_issued_token_for_manifest_and_config() -> None:
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config_digest = content_digest(config)
+    manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
+    result, requests = run_canned_release_image_assertion(
+        {
+            manifest_path: [(200, image_manifest(config_digest))],
+            config_path: [(200, config)],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert requests.raw_authorization_headers[manifest_path] == [
+        f"{BEARER_SCHEME} pull-token"
+    ]
+    assert requests.raw_authorization_headers[config_path] == [
+        f"{BEARER_SCHEME} pull-token"
+    ]
+
+
+def test_release_image_assertion_redacts_raw_tokens_on_terminal_failure() -> None:
+    issued_token = "issued-super-secret-token"
+    config_digest = named_digest("missing-config")
+    manifest = image_manifest(config_digest)
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/token": [(200, {"token": issued_token})],
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [
+                (403, {"error": "terminal"})
+            ],
+        }
+    )
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert issued_token not in combined
+    assert "test-token" not in combined
+    assert requests.raw_authorization_headers[
+        f"/v2/hew-lang/playground/blobs/{config_digest}"
+    ] == [f"{BEARER_SCHEME} {issued_token}"]
+
+
+def test_release_image_assertion_uses_acquired_token_for_manifest_and_config() -> None:
+    script = RELEASE_IMAGE_ASSERTION.read_text()
+    assert script.count('--oauth2-bearer "${token}"') == 2
+    assert "Authorization: ******" not in script
+
+
+def test_release_image_assertion_rejects_a_mutable_tag_digest_immediately() -> None:
+    stale_digest = named_digest("config-stale")
+    good_digest = named_digest("config-good")
+    tag_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    result, requests = run_canned_release_image_assertion(
+        {
+            tag_path: [
+                (200, image_manifest(stale_digest)),
+                (200, image_manifest(good_digest)),
+            ],
+            f"/v2/hew-lang/playground/blobs/{stale_digest}": [
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": "f" * 40}),
+                )
+            ],
+            f"/v2/hew-lang/playground/blobs/{good_digest}": [
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
+                )
+            ],
+        }
+    )
+    assert result.returncode != 0
+    assert requests.count(tag_path) == 1
+    assert "registry digest is" in result.stderr
+
+
+def test_release_image_assertion_rejects_missing_revision_label() -> None:
+    config = image_config({})
+    config_digest = content_digest(config)
+    config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
+                (200, image_manifest(config_digest))
+            ],
+            config_path: [(200, config)],
+        }
+    )
+    assert result.returncode != 0
+    assert config_path in requests
+    assert "carries no org.opencontainers.image.revision label" in result.stderr
+    assert "publisher must stamp the hew release commit" in result.stderr
+
+
+def test_release_image_assertion_rejects_wrong_revision_label() -> None:
+    wrong_revision = "f" * 40
+    config = image_config({"org.opencontainers.image.revision": wrong_revision})
+    config_digest = content_digest(config)
+    config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
+                (200, image_manifest(config_digest))
+            ],
+            config_path: [(200, config)],
+        },
+        deadline_epoch=int(time()) + 2,
+    )
+    assert result.returncode != 0
+    assert config_path in requests
+    assert f"binds {wrong_revision}, not {HEW_SHA}" in result.stderr
+
+
+def test_release_image_assertion_rejects_wrong_manifest_platform() -> None:
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config["architecture"] = "arm64"
+    config_digest = content_digest(config)
+    manifest = image_manifest(config_digest)
+    result, _requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [(200, config)],
+        }
+    )
+    assert result.returncode != 0
+    assert "config is linux/arm64, not linux/amd64" in result.stderr
+
+
+def test_release_image_assertion_rejects_wrong_recorded_digest() -> None:
+    config_digest = named_digest("config-good")
+    manifest = image_manifest(config_digest)
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
+                )
+            ],
+        },
+        expected_digest=named_digest("wrong-recorded-digest"),
+    )
+    assert result.returncode != 0
+    assert requests.count("/v2/hew-lang/playground/manifests/v0.6.0-rc2") == 1
+    assert "registry digest is" in result.stderr
+
+
+def test_release_image_assertion_hashes_raw_manifest_bytes() -> None:
+    config_digest = named_digest("config-good")
+    manifest = image_manifest(config_digest)
+    forged_digest = named_digest("forged-header")
+    manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    result, _requests = run_canned_release_image_assertion(
+        {
+            manifest_path: [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
+                )
+            ],
+        },
+        expected_digest=forged_digest,
+        digest_headers={manifest_path: forged_digest},
+    )
+    assert result.returncode != 0
+    assert "raw manifest digest is" in result.stderr
+
+
+def test_release_image_assertion_selects_linux_amd64_from_an_index() -> None:
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config_digest = content_digest(config)
+    child = image_manifest(config_digest)
+    child_digest = content_digest(child)
+    attestation_digest = named_digest("attestation")
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": child_digest,
+                "platform": {"os": "linux", "architecture": "amd64"},
+            },
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": attestation_digest,
+                "annotations": {"vnd.docker.reference.type": "attestation-manifest"},
+                "platform": {"os": "unknown", "architecture": "unknown"},
+            },
+        ],
+    }
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)],
+            f"/v2/hew-lang/playground/manifests/{child_digest}": [(200, child)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [(200, config)],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"/v2/hew-lang/playground/manifests/{attestation_digest}" not in requests
+    assert f"/v2/hew-lang/playground/manifests/{child_digest}" in requests
+
+
+def test_release_image_assertion_rejects_an_additional_runnable_platform() -> None:
+    descriptors = []
+    responses = {
+        "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [],
+    }
+    for architecture in ("amd64", "arm64"):
+        config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+        config["architecture"] = architecture
+        config_digest = content_digest(config)
+        child = image_manifest(config_digest)
+        child_digest = content_digest(child)
+        descriptors.append(
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": child_digest,
+                "platform": {"os": "linux", "architecture": architecture},
+            }
+        )
+        responses[f"/v2/hew-lang/playground/manifests/{child_digest}"] = [(200, child)]
+        responses[f"/v2/hew-lang/playground/blobs/{config_digest}"] = [(200, config)]
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": descriptors,
+    }
+    responses["/v2/hew-lang/playground/manifests/v0.6.0-rc2"] = [(200, index)]
+
+    result, requests = run_canned_release_image_assertion(responses)
+
+    assert result.returncode != 0
+    assert "contains additional runnable platform linux/arm64" in result.stderr
+    arm64_digest = descriptors[1]["digest"]
+    assert f"/v2/hew-lang/playground/manifests/{arm64_digest}" not in requests
+
+
+def test_release_image_assertion_rejects_mislabeled_runnable_attestation() -> None:
+    descriptor_digest = named_digest("mislabeled-attestation")
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": descriptor_digest,
+                "annotations": {"vnd.docker.reference.type": "attestation-manifest"},
+                "platform": {"os": "linux", "architecture": "amd64"},
+            }
+        ],
+    }
+    result, requests = run_canned_release_image_assertion(
+        {"/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)]}
+    )
+    assert result.returncode != 0
+    assert "not a narrowly recognized non-runnable attestation" in result.stderr
+    assert f"/v2/hew-lang/playground/manifests/{descriptor_digest}" not in requests
+
+
+def test_release_image_assertion_hashes_index_child_response_bytes() -> None:
+    declared_child_digest = named_digest("declared-child")
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config_digest = content_digest(config)
+    served_child = image_manifest(config_digest)
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": declared_child_digest,
+                "platform": {"os": "linux", "architecture": "amd64"},
+            }
+        ],
+    }
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)],
+            f"/v2/hew-lang/playground/manifests/{declared_child_digest}": [
+                (200, served_child)
+            ],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [(200, config)],
+        }
+    )
+    assert result.returncode != 0
+    assert "raw response digest is" in result.stderr
+    assert "not its descriptor digest" in result.stderr
+    assert f"/v2/hew-lang/playground/blobs/{config_digest}" not in requests
+
+
+def test_release_image_assertion_hashes_config_response_bytes() -> None:
+    declared_config_digest = named_digest("declared-config")
+    manifest = image_manifest(declared_config_digest)
+    served_config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    result, _requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{declared_config_digest}": [
+                (200, served_config)
+            ],
+        }
+    )
+    assert result.returncode != 0
+    assert "raw response digest is" in result.stderr
+    assert "not its descriptor digest" in result.stderr
+
+
+def test_release_image_assertion_rejects_unclassified_platformless_child() -> None:
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [{"digest": named_digest("unclassified")}],
+    }
+    result, _requests = run_canned_release_image_assertion(
+        {"/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)]}
+    )
+    assert result.returncode != 0
+    assert (
+        "has no runnable platform and is not marked as an attestation" in result.stderr
+    )
 
 
 def test_prerelease_policy_uses_selected_release_tag() -> None:
@@ -1119,7 +1508,7 @@ def test_release_record_is_durable_and_tag_ready() -> None:
     assert "every release bar and the final-candidate checklist are green" in runbook
     assert "Manually dispatch" in runbook
     assert "both independent publication arms" in runbook
-    assert "Only after both arms are green" in runbook
+    assert "Only after both independent publication arms are green" in runbook
     assert "Homebrew" in runbook and "prerelease" in runbook
     assert "publish-npm-packages.yml" in runbook
 
@@ -1557,7 +1946,11 @@ def test_ci_wasm_consumers_provision_unknown_target() -> None:
     for job_name in ("playground-wasm-build", "build-and-test"):
         job = workflow_job(ci, job_name)
         assert "uses: ./.github/actions/setup-rust-build" in job
-        assert "targets: wasm32-unknown-unknown" in job
+        assert re.search(
+            r"^\s+targets:\s+['\"]?[^\n]*\bwasm32-unknown-unknown\b",
+            job,
+            re.MULTILINE,
+        )
 
 
 def test_binaryen_prefetch_pin_mutations_are_rejected() -> None:
@@ -2207,64 +2600,28 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
         raise AssertionError("foundational release-gate mutation escaped")
 
 
-_TESTS = [
-    test_rc_tag_normalization_and_exact_release_body,
-    test_release_tag_must_match_cargo_version_before_build,
-    test_npm_publication_is_pinned_to_a_version_matching_release_tag,
-    test_current_sandbox_vm_version_matches_workspace_version,
-    test_playground_dispatch_is_purpose_scoped_and_fail_closed,
-    test_dispatch_uses_exact_playground_workflow_input_and_ref,
-    test_dispatch_correlation_is_unique_and_bounded,
-    test_exact_workflow_shell_accepts_one_stable_matching_run,
-    test_malformed_release_commit_identity_is_terminal,
-    test_run_listing_api_failure_is_terminal,
-    test_run_listing_jq_failure_is_terminal,
-    test_successful_empty_polls_exhaust_the_bound,
-    test_ambiguous_correlation_fails_on_the_first_poll,
-    test_each_exact_run_identity_dimension_is_mandatory,
-    test_timeout_undercut_mutation_is_rejected,
-    test_publish_mode_downgrade_mutation_is_rejected,
-    test_correlation_swap_with_padding_is_rejected,
-    test_correlation_argument_swap_with_padding_is_rejected,
-    test_pipeline_status_masking_mutation_is_rejected,
-    test_required_downstream_failure_is_not_masked,
-    test_prerelease_policy_uses_selected_release_tag,
-    test_public_ecosystem_artifacts_follow_canonical_release,
-    test_unix_installer_accepts_every_published_freebsd_architecture,
-    test_release_checksums_require_every_platform_asset,
-    test_prerelease_validator_proves_external_staticlib_linking,
-    test_every_release_lane_executes_the_library_consumer_proof,
-    test_cross_release_machinery_resolves_from_workflow_ref,
-    test_npm_publish_machinery_resolves_from_workflow_ref,
-    test_cross_release_libraries_are_target_keyed_and_natively_proved,
-    test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
-    test_freebsd_x86_64_release_uses_repository_pinned_rust,
-    test_freebsd_aarch64_release_uses_cross_built_consumer,
-    test_sanitizer_gate_is_behavioral_and_release_scoped,
-    test_release_record_is_durable_and_tag_ready,
-    test_contract_oracle_runs_in_required_ci,
-    test_workflow_rust_tests_use_prebuilt_shared_artifact,
-    test_workflow_shared_artifact_build_mutations_are_rejected,
-    test_coverage_builds_shared_artifacts_in_instrumented_target,
-    test_coverage_failure_propagates_before_report,
-    test_coverage_failure_propagation_mutations_are_rejected,
-    test_coverage_instrumented_target_mutations_are_rejected,
-    test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen,
-    test_binaryen_prefetch_pin_mutations_are_rejected,
-    test_windows_test_workflows_initialise_msvc_before_lld_link,
-    test_windows_test_workflow_msvc_ordering_mutations_are_rejected,
-    test_windows_llvm_prebuild_workflow_is_not_owned_by_this_repository,
-    test_windows_llvm_toolchain_pin_is_coherent_across_consumers,
-    test_windows_llvm_toolchain_pin_mutations_are_rejected,
-    test_release_binary_smoke_honors_absolute_and_relative_target_dirs,
-    test_local_release_builds_and_assembles_every_shipped_binary,
-    test_windows_completion_packaging_fails_closed,
-    test_make_release_surfaces_quote_spacious_cargo_target_dir,
-    test_staged_install_and_uninstall_preserve_spacious_path_boundaries,
-    test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive,
-    test_musl_packaging_uses_explicit_target_release_lib_output,
-    test_foundational_release_gates_are_platform_scoped_and_mandatory,
-]
+def _discover_tests() -> tuple[object, ...]:
+    return tuple(
+        test
+        for name, test in globals().items()
+        if name.startswith("test_") and callable(test)
+    )
+
+
+def _test_function_count_in_file() -> int:
+    tree = ast.parse(Path(__file__).read_text())
+    return sum(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+        for node in tree.body
+    )
+
+
+_TESTS = _discover_tests()
+_EXPECTED_TEST_COUNT = _test_function_count_in_file()
+assert len(_TESTS) == _EXPECTED_TEST_COUNT, (
+    f"discovered {len(_TESTS)} tests, expected {_EXPECTED_TEST_COUNT}"
+)
 
 
 if __name__ == "__main__":

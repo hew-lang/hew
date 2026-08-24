@@ -20,6 +20,7 @@ tests run when they run nowhere, which is the exact failure this file exists
 to make impossible to reintroduce.
 """
 
+import ast
 import importlib.util
 import os
 import re

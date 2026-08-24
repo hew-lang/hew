@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import textwrap
@@ -37,7 +38,10 @@ COVERAGE_NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "coverage-nightly.y
 DEPLOY_DOCS_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-docs.yml"
 WORKFLOW_DIRECTORY = ROOT / ".github" / "workflows"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
+WASM_CAPABILITY_MATRIX = ROOT / "docs" / "wasm-capability-matrix.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
+WORKSPACE_VERSION_HELPER = ROOT / "scripts" / "workspace-version.py"
+NIGHTLY_SANITIZERS = ROOT / ".github" / "workflows" / "nightly-sanitizers.yml"
 UNIX_INSTALLER = ROOT / "installers" / "install.sh"
 PRE_RELEASE_VALIDATOR = ROOT / "scripts" / "pre-release-validate.sh"
 RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.sh"
@@ -408,6 +412,31 @@ def test_current_sandbox_vm_version_matches_workspace_version() -> None:
     )
     assert lockfile["version"] == workspace_version
     assert lockfile["packages"][""]["version"] == workspace_version
+
+
+def test_workspace_version_command_is_python310_compatible() -> None:
+    source = WORKSPACE_VERSION_HELPER.read_text()
+    ast.parse(source, filename=str(WORKSPACE_VERSION_HELPER), feature_version=(3, 10))
+    assert "import tomllib" not in source
+    assert "import toml_compat" in source
+
+    env = os.environ.copy()
+    env["HEW_FORCE_TOML_FALLBACK"] = "1"
+    result = subprocess.run(
+        [sys.executable, str(WORKSPACE_VERSION_HELPER)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == WORKSPACE_VERSION
+
+    runbook = RUNBOOK.read_text()
+    assert "import tomllib" not in runbook
+    assert runbook.count('release_version="$(scripts/workspace-version.py)"') == 3
 
 
 def test_playground_release_uses_only_an_immutable_pretag_handoff() -> None:
@@ -1048,6 +1077,241 @@ def test_release_checksums_require_every_platform_asset() -> None:
     assert 'sha256sum "${assets[@]}"' in release
 
 
+def assert_release_platform_document_contract(
+    release: str, gate: str, runbook: str
+) -> None:
+    phase_three = runbook[runbook.index("## Phase 3") : runbook.index("## Phase 4")]
+    for platform in (
+        "Linux x86_64",
+        "Linux aarch64",
+        "macOS arm64",
+        "macOS x86_64 (`macos-15-intel`)",
+        "Windows x86_64",
+        "FreeBSD x86_64",
+        "FreeBSD aarch64",
+    ):
+        assert platform in phase_three
+
+    release_job = workflow_job(release, "release")
+    required_block = re.search(
+        r"required_assets=\(\n(?P<assets>.*?)\n\s*\)", release_job, re.DOTALL
+    )
+    assert required_block is not None
+    assets = re.findall(r'"hew-v\$\{VERSION\}-([^"]+)"', required_block.group("assets"))
+    assert assets == [
+        "darwin-aarch64.tar.gz",
+        "darwin-x86_64.tar.gz",
+        "windows-x86_64.zip",
+        "linux-x86_64.tar.gz",
+        "linux-aarch64.tar.gz",
+        "freebsd-x86_64.tar.gz",
+        "freebsd-aarch64.tar.gz",
+    ]
+    assert "seven platform archives and one\n   checksum manifest" in runbook
+    assert "six `.tar.gz` Unix archives" in runbook
+    assert "one `windows-x86_64.zip`" in runbook
+    assert "`hew-v<version>-checksums.txt`" in runbook
+    assert "macos-13" not in runbook
+    assert "os: macos-15-intel" in gate
+    assert "target: darwin-x86_64\n            os: macos-15-intel" in release
+
+
+def test_release_platform_and_archive_documentation_matches_workflows() -> None:
+    release = workflow()
+    gate = RELEASE_GATE.read_text()
+    runbook = RUNBOOK.read_text()
+    assert_release_platform_document_contract(release, gate, runbook)
+
+    mutations = (
+        (
+            release.replace(
+                '"hew-v${VERSION}-freebsd-aarch64.tar.gz"',
+                '"hew-v${VERSION}-linux-aarch64.tar.gz"',
+                1,
+            ),
+            gate,
+            runbook,
+        ),
+        (release, gate, runbook.replace("| FreeBSD aarch64", "| Removed", 1)),
+        (release, gate, runbook.replace("seven platform archives", "five tarballs", 1)),
+        (release, gate.replace("os: macos-15-intel", "os: macos-13", 1), runbook),
+    )
+    for mutated in mutations:
+        try:
+            assert_release_platform_document_contract(*mutated)
+        except AssertionError:
+            continue
+        raise AssertionError("a platform/archive truth mutation escaped")
+
+
+def assert_wasm_release_document_contract(
+    runbook: str, notes: str, matrix: str
+) -> None:
+    assert "`channel.new`" in matrix
+    assert "`Receiver<T>.try_recv/close`" in matrix
+    assert "Blocking channel receive operations" in matrix
+    assert "I/O streams require the OS threading and networking stack" in matrix
+    for document in (runbook, notes):
+        assert "bounded nonblocking channel" in document
+        assert "Blocking receive" in document or "Blocking receiver" in document
+        assert "unsupported I/O" in document
+    assert "Channels and I/O streams are rejected" not in runbook
+    assert "Channels and I/O streams remain unavailable" not in notes
+
+
+def test_release_docs_match_wasm_capability_authority() -> None:
+    runbook = RUNBOOK.read_text()
+    notes = RELEASE_NOTES.read_text()
+    matrix = WASM_CAPABILITY_MATRIX.read_text()
+    assert_wasm_release_document_contract(runbook, notes, matrix)
+
+    for mutated_runbook, mutated_notes in (
+        (
+            runbook.replace("The bounded nonblocking channel slice", "All channels", 1),
+            notes,
+        ),
+        (
+            runbook,
+            notes.replace(
+                "The bounded nonblocking channel slice remains available",
+                "Channels and I/O streams remain unavailable",
+                1,
+            ),
+        ),
+    ):
+        try:
+            assert_wasm_release_document_contract(
+                mutated_runbook, mutated_notes, matrix
+            )
+        except AssertionError:
+            continue
+        raise AssertionError("a blanket WASM channel refusal escaped")
+
+
+def assert_sanitizer_workflow_document_contract(
+    nightly: str, gate: str, runbook: str
+) -> None:
+    assert 'cron: "0 6 * * *"' in nightly
+    tsan = workflow_job(nightly, "rust-runtime-tsan")
+    miri = workflow_job(nightly, "rust-runtime-miri")
+    for job, command in ((tsan, "make tsan"), (miri, "make miri")):
+        assert "continue-on-error: true" in job
+        assert command in job
+    gate_asan = workflow_job(gate, "gate-sanitizers")
+    assert "make asan" in gate_asan
+    assert "continue-on-error" not in gate_asan
+    assert "TSan is a recurring executed advisory lane" in runbook
+    assert "Miri is a recurring executed advisory lane" in runbook
+    assert "not yet a recurring gate" not in runbook
+    assert "non-executed axis" not in runbook
+    assert (
+        "FFI,\n  syscall, socket, and subprocess paths remain outside Miri" in runbook
+    )
+
+
+def test_sanitizer_docs_match_recurring_workflow_contract() -> None:
+    nightly = NIGHTLY_SANITIZERS.read_text()
+    gate = RELEASE_GATE.read_text()
+    runbook = RUNBOOK.read_text()
+    assert_sanitizer_workflow_document_contract(nightly, gate, runbook)
+
+    mutations = (
+        (
+            nightly,
+            gate,
+            runbook.replace("Miri is a recurring", "Miri is not recurring", 1),
+        ),
+        (
+            nightly.replace("continue-on-error: true", "continue-on-error: false", 1),
+            gate,
+            runbook,
+        ),
+        (nightly, gate.replace("if make asan; then", "if true; then", 1), runbook),
+    )
+    for mutated in mutations:
+        try:
+            assert_sanitizer_workflow_document_contract(*mutated)
+        except AssertionError:
+            continue
+        raise AssertionError("a sanitizer workflow/document mutation escaped")
+
+
+def assert_candidate_publication_order(runbook: str) -> None:
+    phase = runbook[runbook.index("## Phase 5") : runbook.index("## Phase 6")]
+    clean_identity = 'test "$(git status --porcelain)" = ""'
+    candidate = "scripts/publish-release-image.sh candidate"
+    digest_inspection = "docker buildx imagetools inspect"
+    version_lock = "gh variable set PLAYGROUND_RELEASE_IMAGE_LOCK"
+    signed_tag = 'git tag -s "$release_tag" -m "Hew $release_tag"'
+    tag_push = 'git push origin "$release_tag"'
+    image_assertion = "scripts/assert-playground-release-image.sh"
+    publish = "scripts/publish-release-image.sh publish"
+    positions = [
+        phase.index(clean_identity),
+        phase.index(candidate),
+        phase.index(digest_inspection),
+        phase.index(version_lock),
+        phase.index(signed_tag),
+        phase.index(tag_push),
+        phase.index(image_assertion),
+        phase.index(publish),
+    ]
+    assert positions == sorted(positions)
+    assert phase.count(candidate) == 1
+    assert phase.count(publish) == 1
+    assert (
+        phase.count(
+            "env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES -u MAKEFILES -u GNUMAKEFLAGS"
+        )
+        == 1
+    )
+    assert 'HEW_EXAMPLES_REF="${HEW_RELEASE_SHA}"' in phase
+    assert "PLAYGROUND_PLATFORM=linux/amd64" in phase
+    assert "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground" in phase
+    assert (
+        "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground:v${VERSION}" not in phase
+    )
+    assert '--body "v${VERSION}@${PLAYGROUND_IMAGE_DIGEST}"' in phase
+    assert "version-scoped `PLAYGROUND_RELEASE_IMAGE_LOCK`" in phase
+    assert "raw manifest/index digest" in phase
+    assert "same exact clean\n   playground checkout" in phase
+    assert "Reconfirm the new digest and update the version-scoped\n   lock" in phase
+    assert "make release-candidate-publish" not in phase
+    assert "make release-publish" not in phase
+    assert "gh workflow run build.yml" not in phase
+    assert "mutable remote branch" in phase
+    assert "--body actions" not in phase
+
+
+def test_candidate_image_is_published_and_selected_before_tagging() -> None:
+    runbook = RUNBOOK.read_text()
+    assert_candidate_publication_order(runbook)
+
+    lock_line = "gh variable set PLAYGROUND_RELEASE_IMAGE_LOCK"
+    tag_line = 'git push origin "$release_tag"'
+    mutations = (
+        runbook.replace(
+            "scripts/publish-release-image.sh candidate",
+            "make release-candidate-publish",
+            1,
+        ),
+        runbook.replace(
+            "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground",
+            "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground:v${VERSION}",
+            1,
+        ),
+        runbook.replace(lock_line, "", 1).replace(
+            tag_line, f"{tag_line}\n   {lock_line}", 1
+        ),
+    )
+    for mutated in mutations:
+        try:
+            assert_candidate_publication_order(mutated)
+        except (AssertionError, ValueError):
+            continue
+        raise AssertionError("a candidate publication order/mode mutation escaped")
+
+
 def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     validator = PRE_RELEASE_VALIDATOR.read_text()
     windows_build = WINDOWS_RELEASE_BUILD.read_text()
@@ -1265,8 +1529,8 @@ def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> Non
     assert gate.count("git gmake bash pkgconf") == 2
     assert release.count("command -v bash") == 2
     assert gate.count("command -v bash") == 2
-    assert release.count("bash scripts/test-release-lib-link.sh") == 1
-    assert release.count("bash release-machinery/scripts/test-release-lib-link.sh") == 1
+    assert release.count("bash scripts/test-release-lib-link.sh") == 0
+    assert release.count("bash release-machinery/scripts/test-release-lib-link.sh") == 2
     # Gate: FreeBSD x86_64 only — the aarch64 gate leg is intentionally
     # scoped to build+smoke (coverage retained on freebsd-x86_64/linux-aarch64).
     assert gate.count("bash scripts/test-release-lib-link.sh") == 1
@@ -1467,18 +1731,28 @@ def test_sanitizer_gate_is_behavioral_and_release_scoped() -> None:
         "expires =",
     ):
         assert ledger.count(field) >= 2
+    assert "134 passed, 0 failed, 28 ignored, and 2274 filtered tests" in ledger
+    assert "2270 filtered" not in ledger
+    assert "https://github.com/hew-lang/hew/issues/1826" in ledger
+    assert "Issue #1826 is closed" in ledger
 
 
 def assert_release_record(
-    changelog: str, notes: str, runbook: str, *, notes_exist: bool = True
+    changelog: str,
+    notes: str,
+    runbook: str,
+    *,
+    version: str = WORKSPACE_VERSION,
+    notes_exist: bool = True,
 ) -> None:
     assert notes_exist
+    release_tag = f"v{version}"
     notes_words = " ".join(notes.split())
     runbook_words = " ".join(runbook.split())
 
     unreleased_start = changelog.index("## [Unreleased]")
     current_header = re.search(
-        rf"^## \[{re.escape(WORKSPACE_VERSION)}\] - \d{{4}}-\d{{2}}-\d{{2}}$",
+        rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$",
         changelog,
         re.MULTILINE,
     )
@@ -1486,7 +1760,7 @@ def assert_release_record(
     current_start = current_header.start()
     assert unreleased_start < current_start
     unreleased = changelog[unreleased_start:current_start]
-    assert WORKSPACE_VERSION not in unreleased
+    assert version not in unreleased
 
     next_release = changelog.find("\n## [", current_start + 1)
     current_record = (
@@ -1504,18 +1778,32 @@ def assert_release_record(
     ):
         assert provisional not in current_record.lower()
 
-    assert notes.startswith(f"# Hew {RELEASE_TAG}\n")
-    assert RELEASE_TAG in notes_words
-    if "-rc" in WORKSPACE_VERSION:
-        base_version = WORKSPACE_VERSION.split("-", 1)[0]
+    assert notes.startswith(f"# Hew {release_tag}\n")
+    assert release_tag in notes_words
+    if re.fullmatch(r"\d+\.\d+\.\d+-rc\d+", version):
+        base_version = version.split("-", 1)[0]
         assert f"release candidate for v{base_version}" in notes_words
         assert f"not the final v{base_version} release" in notes_words
-    assert "Publication for this RC is deliberately staged" in notes_words
-    assert (
-        "The signed tag publishes the platform assets and checksums first"
-        in notes_words
-    )
-    assert "npm publication is not inferred from the tag" in notes_words
+        assert "Publication for this RC is deliberately staged" in notes_words
+        assert (
+            "The signed tag publishes the platform assets and checksums first"
+            in notes_words
+        )
+        assert "npm publication is not inferred from the tag" in notes_words
+    else:
+        assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+        assert "release candidate" not in notes_words.lower()
+        assert "Publication for this RC" not in notes_words
+        assert (
+            "Publication for this final release is complete only after" in notes_words
+        )
+        assert (
+            "The signed tag publishes the platform assets and checksums" in notes_words
+        )
+        assert (
+            "npm packages and the playground image are verified before live cutover"
+            in notes_words
+        )
     for pre_tag_only in (
         "tag and final changelog date remain intentionally unset",
         "This candidate does not claim",
@@ -1551,6 +1839,29 @@ def test_release_record_is_durable_and_tag_ready() -> None:
     )
 
 
+def test_rc2_notes_record_key_registration_and_raw_image_identity() -> None:
+    notes = RELEASE_NOTES.read_text()
+
+    def assert_rc2_authority(text: str) -> None:
+        assert "`hew key register`" in text
+        assert "`v<tag>@sha256:<raw-manifest-or-index-digest>`" in text
+        assert "hashes the raw registry response" in text
+        assert "exactly one\nrunnable `linux/amd64` image" in text
+        assert "exact\nHew candidate commit" in text
+
+    assert_rc2_authority(notes)
+    for old, new in (
+        ("`hew key register`", "key registration"),
+        ("raw registry response", "registry metadata"),
+        ("exactly one\nrunnable `linux/amd64` image", "a runnable image"),
+    ):
+        try:
+            assert_rc2_authority(notes.replace(old, new, 1))
+        except AssertionError:
+            continue
+        raise AssertionError("an rc2 authority mutation escaped")
+
+
 def test_release_record_rejects_missing_or_wrong_current_files() -> None:
     changelog = CHANGELOG.read_text()
     notes = RELEASE_NOTES.read_text()
@@ -1579,6 +1890,115 @@ def test_release_record_rejects_missing_or_wrong_current_files() -> None:
         except AssertionError:
             continue
         raise AssertionError("missing or wrong current release record escaped")
+
+
+def test_release_record_publication_prose_is_semver_stage_aware() -> None:
+    runbook = RUNBOOK.read_text()
+    changelog_template = """# Changelog
+
+## [Unreleased]
+
+## [{version}] - 2026-08-23
+
+### Fixed
+
+- Qualified the release.
+"""
+    rc_version = "0.6.0-rc9"
+    rc_notes = """# Hew v0.6.0-rc9
+
+Hew v0.6.0-rc9 is a release candidate for v0.6.0 and is not the final v0.6.0 release.
+Publication for this RC is deliberately staged. The signed tag publishes the
+platform assets and checksums first. npm publication is not inferred from the tag.
+"""
+    final_version = "0.6.0"
+    final_notes = """# Hew v0.6.0
+
+Publication for this final release is complete only after all follow-through is green.
+The signed tag publishes the platform assets and checksums. npm packages and the
+playground image are verified before live cutover.
+"""
+
+    assert_release_record(
+        changelog_template.format(version=rc_version),
+        rc_notes,
+        runbook,
+        version=rc_version,
+    )
+    assert_release_record(
+        changelog_template.format(version=final_version),
+        final_notes,
+        runbook,
+        version=final_version,
+    )
+
+    counterfactuals = (
+        (rc_version, final_notes.replace("v0.6.0", "v0.6.0-rc9", 1)),
+        (
+            final_version,
+            rc_notes.replace("v0.6.0-rc9", "v0.6.0", 1).replace(
+                "release candidate for v0.6.0 and is not the final v0.6.0 release.",
+                "",
+                1,
+            ),
+        ),
+    )
+    for version, notes in counterfactuals:
+        try:
+            assert_release_record(
+                changelog_template.format(version=version),
+                notes,
+                runbook,
+                version=version,
+            )
+        except AssertionError:
+            continue
+        raise AssertionError(
+            f"{version} accepted publication prose for the wrong stage"
+        )
+
+
+def assert_rc3_to_final_contract(notes: str, versioning: str) -> None:
+    notes_words = " ".join(notes.split())
+    for requirement in (
+        "ownership advisory corpus to zero",
+        "compiler pipeline crash",
+        "crash-cleanup frame protocol stages 1–3",
+        "nested enum and `Option` payloads",
+        "drain every other remaining `TODO.md` release item",
+        "zero-surprise walkthrough",
+        "fresh dogfood",
+        "full release qualification",
+        "publish and exercise rc3",
+        "defect-only fixes",
+        "Any accepted-set change after rc3 forces rc4",
+    ):
+        assert requirement in notes_words
+    assert (
+        "If a fix taken during promotion changes the accepted program set" in versioning
+    )
+    assert "promotion stops and a new candidate is cut" in versioning
+
+
+def test_rc3_to_final_release_boundary_is_complete() -> None:
+    notes = RELEASE_NOTES.read_text()
+    versioning = (ROOT / "docs" / "versioning.md").read_text()
+    assert_rc3_to_final_contract(notes, versioning)
+
+    mutations = (
+        notes.replace(
+            "change after rc3 forces rc4",
+            "change after rc3 may ship in final",
+            1,
+        ),
+        notes.replace("publish and exercise rc3", "tag rc3", 1),
+    )
+    for mutated in mutations:
+        try:
+            assert_rc3_to_final_contract(mutated, versioning)
+        except AssertionError:
+            continue
+        raise AssertionError("an incomplete rc3-to-final boundary escaped")
 
 
 def test_contract_oracle_runs_in_required_ci() -> None:
@@ -1693,6 +2113,99 @@ def workflow_steps(job: str) -> list[str]:
         ]
         for index, start in enumerate(starts)
     ]
+
+
+RELEASE_HELPER_REFERENCE = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?P<path>(?:\./)?(?:release-machinery/)?"
+    r"scripts/[A-Za-z0-9_./-]+)"
+)
+
+
+def tag_checkout_jobs(text: str) -> dict[str, str]:
+    """Discover every job that checks out the immutable release tag."""
+    return {
+        name: job
+        for name, job in workflow_jobs_section(text).items()
+        if any(
+            "uses: actions/checkout@" in step and "ref: ${{ env.RELEASE_TAG }}" in step
+            for step in workflow_steps(job)
+        )
+    }
+
+
+def assert_tag_checkout_release_helpers_use_machinery(text: str) -> None:
+    """Bind all release helper execution to the workflow-ref checkout."""
+    tagged_jobs = tag_checkout_jobs(text)
+    assert tagged_jobs, "release workflow has no tag-checkout jobs"
+    helper_jobs = 0
+    for name, job in tagged_jobs.items():
+        references = list(RELEASE_HELPER_REFERENCE.finditer(job))
+        if not references:
+            continue
+        helper_jobs += 1
+        machinery_steps = [
+            step
+            for step in workflow_steps(job)
+            if "uses: actions/checkout@" in step
+            and "ref: ${{ github.sha }}" in step
+            and "path: release-machinery" in step
+        ]
+        assert len(machinery_steps) == 1, (
+            f"{name} executes release helpers without one release-machinery checkout"
+        )
+        machinery_position = job.index(machinery_steps[0])
+        for reference in references:
+            path = reference.group("path").removeprefix("./")
+            assert path.startswith("release-machinery/scripts/"), (
+                f"{name} executes a release helper from the tag checkout: {path}"
+            )
+            assert machinery_position < reference.start(), (
+                f"{name} executes {path} before copying release machinery"
+            )
+    assert helper_jobs, "release workflow has no helper-using tag-checkout jobs"
+
+
+def test_tag_checkout_release_helpers_use_workflow_ref_machinery() -> None:
+    assert_tag_checkout_release_helpers_use_machinery(workflow())
+
+
+def test_tag_checkout_release_helper_mutations_are_rejected() -> None:
+    text = workflow()
+    helper_jobs = {
+        name: job
+        for name, job in tag_checkout_jobs(text).items()
+        if RELEASE_HELPER_REFERENCE.search(job)
+    }
+    assert helper_jobs
+    first_job = next(iter(helper_jobs.values()))
+    machinery_step = next(
+        step
+        for step in workflow_steps(first_job)
+        if "ref: ${{ github.sha }}" in step and "path: release-machinery" in step
+    )
+    missing_copy = text.replace(machinery_step, "", 1)
+    direct_path = text.replace("release-machinery/scripts/", "scripts/", 1)
+    reordered_job = first_job.replace(machinery_step, "", 1) + machinery_step
+    copy_after_use = text.replace(first_job, reordered_job, 1)
+    undiscovered_job = (
+        text
+        + """
+  added-tag-builder:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - run: scripts/test-release-lib-link.sh
+"""
+    )
+
+    for mutation in (missing_copy, direct_path, copy_after_use, undiscovered_job):
+        try:
+            assert_tag_checkout_release_helpers_use_machinery(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("a tag-checkout release helper mutation escaped")
 
 
 def workflow_jobs_section(text: str) -> dict[str, str]:
@@ -2756,6 +3269,8 @@ def test_direct_runner_discovery_rejects_an_omitted_test() -> None:
         assert "test_omitted" in str(exc)
         return
     raise AssertionError("an omitted test escaped direct runner discovery parity")
+
+
 if __name__ == "__main__":
     failures = 0
     discovered = _discover_tests()

@@ -46,7 +46,7 @@ expires = "2026-09-10"
 [[waiver]]
 axis = "miri"
 release = "0.6.0-rc2"
-behavior = "The curated runtime Miri lane reports 134 passed, 0 failed, 28 ignored, and 2270 filtered tests; FFI, syscall, socket, and subprocess paths are deliberately outside the interpreted set."
+behavior = "The curated runtime Miri lane reports 134 passed, 0 failed, 28 ignored, and 2274 filtered tests; FFI, syscall, socket, and subprocess paths are deliberately outside the interpreted set."
 reason = "The executed subset is green but cannot represent the runtime's foreign and operating-system boundaries, so it is evidence for the curated unsafe core rather than an authoritative whole-runtime gate."
 tracking = "https://github.com/hew-lang/hew/issues/1826"
 owner = "Hew runtime maintainers"

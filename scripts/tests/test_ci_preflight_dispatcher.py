@@ -2944,6 +2944,7 @@ def test_generated_and_release_markdown_routes_to_its_consumers() -> None:
         *release_notes,
         "docs/release-runbook.md",
         "docs/cross-platform-build-guide.md",
+        "scripts/workspace-version.py",
     ):
         assert_gates(run_dispatcher(path), "test-release-workflow-contract")
 

@@ -76,7 +76,7 @@ cargo update --manifest-path hew-parser/fuzz/Cargo.toml \
   -p hew-parser --precise X.Y.Z --offline
 
 # Confirm the identity that all later commands derive.
-release_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+release_version="$(scripts/workspace-version.py)"
 release_tag="v${release_version}"
 test -f "docs/releases/${release_tag}.md"
 
@@ -88,7 +88,7 @@ git commit -m "chore(release): prepare ${release_tag}"
 ## Phase 3 — Push release branch (triggers release-gate CI)
 
 ```bash
-release_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+release_version="$(scripts/workspace-version.py)"
 release_tag="v${release_version}"
 git checkout -b "release/${release_tag}"
 git push origin "release/${release_tag}"
@@ -98,10 +98,13 @@ This triggers `.github/workflows/release-gate.yml`, which runs:
 
 | Platform       | Build scope                              | Test scope                          |
 |----------------|------------------------------------------|-------------------------------------|
-| Linux x86_64   | hew-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
-| Linux aarch64  | hew-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
-| macOS arm64    | hew-cli, hew-lsp, hew-lib     | Rust workspace, codegen E2E (native) |
+| Linux x86_64   | hew-cli, hew-lsp, hew-observe, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
+| Linux aarch64  | hew-cli, hew-lsp, hew-observe, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
+| macOS arm64    | hew-cli, hew-lsp, hew-observe, hew-lib | Rust workspace, codegen E2E (native) |
+| macOS x86_64 (`macos-15-intel`) | hew-cli, hew-lsp, hew-observe, hew-lib | Rust workspace, codegen E2E (native) |
 | Windows x86_64 | hew-cli, hew-lsp, hew-observe, hew-lib | Rust workspace + C-ABI + executable release-library consumer |
+| FreeBSD x86_64 | hew-cli, hew-lsp, hew-observe, hew-lib | Rust workspace + C-ABI + executable release-library consumer |
+| FreeBSD aarch64 | hew-cli | Native compiler build + compiled-program smoke under QEMU |
 
 **Wait for all release gate jobs to go green, including `gate-sanitizers`.**
 The sanitizer job executes ASan and rejects missing, ambiguous, expired, vague,
@@ -224,8 +227,11 @@ but every arm must succeed before the graph rejoins:
 All identities below are derived from the checked-out candidate:
 
 ```bash
-release_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+release_version="$(scripts/workspace-version.py)"
 release_tag="v${release_version}"
+release_sha="$(git rev-parse HEAD)"
+test "$(git status --porcelain)" = ""
+test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/release/${release_tag}")"
 ```
 
 1. Confirm every release bar and the final-candidate checklist are green on
@@ -284,9 +290,15 @@ release_tag="v${release_version}"
    pre-tag handoff: it records the immutable raw manifest/index digest without
    requiring another Hew or playground commit. Do not use a Make target or the
    `publish` mode before tagging: publish authority requires the remote signed tag.
-3. Create the signed tag only after the preceding evidence is recorded.
-4. Let the release workflow build and publish the signed platform assets and
-   checksums. Its curated body must be the exact
+3. Create the signed tag and push it only after the preceding evidence is recorded:
+
+   ```bash
+   git tag -s "$release_tag" -m "Hew $release_tag"
+   git push origin "$release_tag"
+   ```
+
+4. Let the release workflow build and publish seven platform archives and one
+   checksum manifest from the signed tag. Its curated body must be the exact
    `docs/releases/<tag>.md` file for that tag.
 5. After the assets exist, complete the npm publication arm:
    - Manually dispatch `.github/workflows/publish-npm-packages.yml` with
@@ -323,17 +335,15 @@ Do not tag until `.github/workflows/release-gate.yml` is green on the release
 branch. In particular, `gate-sanitizers` must have executed ASan successfully
 and accepted the bounded TSan/Miri behavioral ledger for the release version.
 
-```bash
-release_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
-release_tag="v${release_version}"
-git tag -s "$release_tag" -m "Hew $release_tag"
-git push origin "$release_tag"
-```
-
 This triggers `.github/workflows/release.yml`, which:
-- Builds release tarballs for linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64, windows-x86_64
+- Builds seven platform archives: six `.tar.gz` Unix archives for linux-x86_64,
+  linux-aarch64, darwin-x86_64, darwin-aarch64, freebsd-x86_64, and
+  freebsd-aarch64, plus one `windows-x86_64.zip`, with the complete
+  `hew-v<version>-checksums.txt` manifest
 - Extracts staged release archives and runs `hew run` from the packaged layout on Unix targets, with `HEW_STD` pointed at the extracted `std/`
-- Runs `scripts/verify-macos-binary.sh` on macOS artifacts before signing
+- Runs the workflow-ref
+  `release-machinery/scripts/verify-macos-binary.sh` on macOS artifacts before
+  signing
 - Runs package-layout smoke inside the FreeBSD VM after the tarball is assembled
 - Runs Ubuntu clean-room tarball smoke for linux-x86_64 and linux-aarch64
 - For final tags, builds Linux distro packages and smoke-tests the installable
@@ -349,7 +359,8 @@ This triggers `.github/workflows/release.yml`, which:
 
 macOS release notes:
 
-- arm64 release builds run on `macos-15`; Intel release builds stay on `macos-13`
+- arm64 release builds run on `macos-15`; Intel release builds run on
+  `macos-15-intel`
 - `MACOSX_DEPLOYMENT_TARGET=13.0` is exported in the release workflow so the
   shipped binaries remain compatible with macOS 13+
 - Tag releases require all of:
@@ -382,8 +393,8 @@ macOS release notes:
 
 ## Phase 7 — Post-release verification
 
-- [ ] GitHub Release page has all platform tarballs
-- [ ] Download and smoke-test at least one tarball
+- [ ] GitHub Release page has all seven platform archives and the checksum manifest
+- [ ] Download and smoke-test at least one platform archive
 - [ ] Homebrew formula updated (if applicable): `brew install hew-lang/hew/hew`
 - [ ] VS Code extension published (if applicable)
 - [ ] Author blog post at `hew-lang/hew.sh/src/content/blog/<YYYY>/<MM>/release-v<XYZ>.md` — required for any release with breaking changes; recommended for all minor releases.
@@ -431,8 +442,8 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Windows build + tests        | ci.yml + release-gate.yml    | Yes       |
 | FreeBSD build + tests        | release-gate.yml (x86_64 + aarch64), freebsd.yml (nightly) | Yes for release branches |
 | ASan                         | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml | Yes for release branches |
-| TSan (Rust runtime)          | nightly-sanitizers.yml + `release-sanitizer-waiver.toml` | Bounded behavioral ledger for releases |
-| Miri                         | `release-sanitizer-waiver.toml` | Bounded behavioral ledger for releases |
+| TSan (Rust runtime)          | nightly-sanitizers.yml + `release-sanitizer-waiver.toml` | Bounded recurring advisory lane and behavioral ledger for releases |
+| Miri                         | nightly-sanitizers.yml + `release-sanitizer-waiver.toml` | Bounded recurring advisory lane and behavioral ledger for releases |
 | Codegen silent-failure lint  | codegen-lint.yml (PR)        | Advisory  |
 | Local cross-platform build   | `make pre-release`           | Recommended |
 
@@ -447,12 +458,16 @@ The release branch gate is the release-time authority for sanitizer evidence:
   `make asan`, records the result, and invokes
   `scripts/check-sanitizer-gate.sh "${RELEASE_VERSION}" ...`. The validator
   fails closed when ASan is absent, red, skipped, or ambiguous.
-- **TSan has a bounded release-version behavioral ledger while the upstream
-  `build-std`/TSan link failure remains unresolved.** The nightly lane still
-  provides signal, but a release needs an explicit `axis = "tsan"` row that
+- **TSan is a recurring executed advisory lane with a bounded release-version
+  behavioral ledger while the upstream `build-std`/TSan link failure remains
+  unresolved.** Its uninstrumented standard library prevents authoritative
+  race classification, so a release needs an explicit `axis = "tsan"` row that
   records observed behavior, rationale, owner, tracking issue, and expiry.
-- **Miri is not yet a recurring gate.** It uses the same bounded behavioral
-  ledger until a representative recurring FFI subset exists.
+- **Miri is a recurring executed advisory lane over the curated pure-Rust unsafe
+  subset.** A green run is positive evidence for that subset, while FFI,
+  syscall, socket, and subprocess paths remain outside Miri and prevent it from
+  being authoritative whole-runtime coverage. It uses the same bounded
+  behavioral ledger for release decisions.
 - **ASan coverage is only as broad as `make asan`.** Today that command runs
   the `hew-runtime --lib` ASan suite. It does not prove integration-only free
   sites, thread-reachable handle leaks, or every packaged binary path are
@@ -460,7 +475,7 @@ The release branch gate is the release-time authority for sanitizer evidence:
   `make asan` grows, the release gate inherits that coverage automatically.
 
 To record a limitation, edit `release-sanitizer-waiver.toml` and add exactly
-one `[[waiver]]` row per non-executed axis:
+one `[[waiver]]` row per bounded advisory axis:
 
 ```toml
 [[waiver]]
@@ -502,9 +517,11 @@ rows fail the gate.
   as of 2026-04. Keep the nightly signal and record bounded release-version
   behavior only via `release-sanitizer-waiver.toml`; re-evaluate when upstream
   resolves.
-- **WASM capability gaps**: Channels and I/O streams are rejected at compile
-  time when targeting wasm32-wasi.  Timers (`sleep`/`sleep_until`) now have
-  cooperative semantics on WASM (actor parks at message boundary) and emit a
-  warning rather than an error.  See
+- **WASM capability gaps**: The bounded nonblocking channel slice
+  (`channel.new`, sender `send`/clone/close, receiver `try_recv`/close) is
+  supported on wasm32-wasi. Blocking receive and unsupported I/O paths remain
+  compile-time refusals. Timers (`sleep`/`sleep_until`) have cooperative
+  semantics on WASM (actor parks at message boundary) and emit a warning rather
+  than an error. See
   [`docs/wasm-capability-matrix.md`](wasm-capability-matrix.md) for the full
   Tier 1 / Tier 2 disposition table and the WASM-TODO backlog.

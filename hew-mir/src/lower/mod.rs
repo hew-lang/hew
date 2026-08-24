@@ -330,6 +330,10 @@ const SYNTHETIC_DISCARDED_CALL_RESULT_NAME: &str = "__hew_discarded_call_result"
 /// once at caller scope exit. Gated on the target param being BORROW (a CONSUME
 /// target's temporary is the callee's obligation — no caller drop).
 const SYNTHETIC_TEMP_ARG_NAME: &str = "__hew_temp_arg";
+/// Name for the owned aggregate behind a borrowing field projection used as an
+/// anonymous call argument. The field load owns its retained read-copy; this
+/// parent owner releases the aggregate's original fields at scope exit.
+const SYNTHETIC_TEMP_PROJECTION_PARENT_NAME: &str = "__hew_temp_projection_parent";
 /// Name for a provisional owned result completed when a resolved method borrows
 /// it as an anonymous receiver. Named receivers keep their ordinary binding;
 /// specialised cursor rewrites keep their dedicated transfer authority.

@@ -1594,6 +1594,65 @@ impl Builder {
                 && self.binding_locals.get(&entry.binding) == Some(source_place)
         })
     }
+
+    /// Complete the exact parent owner behind a borrowed string projection.
+    ///
+    /// A retained field read owns its independent read-copy, while the parent
+    /// aggregate still owns the original field. A direct call-result
+    /// projection (`println(make_record().field)`) therefore needs both the
+    /// leaf's inline release and the parent's recursive scope-exit drop. Merely
+    /// observing the provisional parent owner is insufficient: unresolved
+    /// synthetic publications are intentionally withheld from the exit LIFO.
+    /// Finalizing that exact publication makes the original aggregate owner
+    /// eligible without minting a second owner.
+    pub(crate) fn finalize_typed_projection_parent_owner(&mut self, expr: &HirExpr) -> bool {
+        let Some(fact) = self.param_ownership.produced_value_facts.get(&expr.site) else {
+            return false;
+        };
+        if !matches!(fact.ownership, ProducedValueOwnership::Borrowed) {
+            return false;
+        }
+        let HirProducedValueRelation::Projection(source_site) = fact.relation else {
+            return false;
+        };
+        if !self
+            .param_ownership
+            .produced_value_facts
+            .get(&source_site)
+            .is_some_and(|source| matches!(source.ownership, ProducedValueOwnership::Owned { .. }))
+        {
+            return false;
+        }
+        let Some(source_place) = self.published_value_places.get(&source_site).copied() else {
+            return false;
+        };
+        let mut live_parents = self.owned_locals.iter().filter(|entry| {
+            entry.disposition == Disposition::ScopeExit
+                && self.binding_locals.get(&entry.binding) == Some(&source_place)
+        });
+        let Some(parent) = live_parents.next() else {
+            return false;
+        };
+        if live_parents.next().is_some() {
+            return false;
+        }
+        let parent_binding = parent.binding;
+        match self
+            .synthetic_owner_publication_sites
+            .get(&parent_binding)
+            .copied()
+        {
+            None => true,
+            Some(site) if site == source_site => !self
+                .finalize_typed_produced_value_owners(
+                    super::SYNTHETIC_TEMP_PROJECTION_PARENT_NAME,
+                    source_site,
+                    source_place,
+                )
+                .is_empty(),
+            Some(_) => false,
+        }
+    }
     pub(crate) fn register_while_let_iteration_owner(
         &mut self,
         scrutinee: &HirExpr,

@@ -1059,9 +1059,16 @@ mod tests {
         let reader = std::thread::spawn(move || {
             let mut first_read = true;
             while !reader_stop.load(Ordering::Relaxed) {
-                let active = resolve_published_dir(&reader_target).unwrap();
+                // Read through the same pinning authority used by package
+                // consumers.  Resolving the pointer alone neither serializes
+                // with pointer replacement nor leases the returned generation:
+                // Windows may report the former race as a sharing violation,
+                // and a collector may retire the generation before `state` is
+                // opened.  The pin couples the slot lock and generation lease
+                // for the entire tree read.
+                let active = pin_published_dir(&reader_target).unwrap();
                 if !matches!(
-                    fs::read_to_string(active.join("state")).as_deref(),
+                    fs::read_to_string(active.path().join("state")).as_deref(),
                     Ok("old" | "new")
                 ) {
                     reader_partial.store(true, Ordering::Relaxed);
@@ -1090,8 +1097,9 @@ mod tests {
 
         assert!(!saw_partial.load(Ordering::Relaxed));
         assert!(reads.load(Ordering::Relaxed) > 0);
+        let active = pin_published_dir(&target).unwrap();
         assert!(matches!(
-            fs::read_to_string(resolve_published_dir(&target).unwrap().join("state")).as_deref(),
+            fs::read_to_string(active.path().join("state")).as_deref(),
             Ok("old" | "new")
         ));
     }

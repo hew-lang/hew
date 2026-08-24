@@ -1,10 +1,10 @@
 """Static contract tests for the release workflow's prerelease handoff."""
 
 import ast
+import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -86,20 +86,6 @@ def playground_job(text: str | None = None) -> str:
     return text[start:end]
 
 
-def playground_script(text: str | None = None) -> str:
-    """Extract the exact Bash program executed by the dispatch step.
-
-    Bounded at the next step so the acquisition-mode steps that follow the
-    dispatch cannot leak their YAML into the program under test.
-    """
-    job = playground_job() if text is None else text
-    step = job.index("      - name: Trigger playground image rebuild\n")
-    run = job.index("        run: |\n", step) + len("        run: |\n")
-    next_step = job.find("\n      - name: ", run)
-    body = job[run:] if next_step == -1 else job[run : next_step + 1]
-    return textwrap.dedent(body).rstrip() + "\n"
-
-
 def step_of(job: str, name: str) -> str:
     """Extract one named step's YAML from a job, bounded at the next step."""
     start = job.index(f"      - name: {name}\n")
@@ -107,37 +93,27 @@ def step_of(job: str, name: str) -> str:
     return job[start:] if end == -1 else job[start : end + 1]
 
 
-def acquisition_script() -> str:
-    """Extract the exact Bash program that selects the acquisition mode."""
+def image_handoff_script() -> str:
+    """Extract the exact Bash program that validates the immutable handoff."""
     job = playground_job()
-    step = step_of(job, "Select release image acquisition mode")
+    step = step_of(job, "Validate immutable playground image handoff")
     run = step.index("        run: |\n") + len("        run: |\n")
     return textwrap.dedent(step[run:]).rstrip() + "\n"
 
 
-def local_publish_script(text: str | None = None) -> str:
-    """Extract the exact Bash program that reports the local publish command."""
-    job = playground_job() if text is None else text
-    step = step_of(job, "Report expected local release image publish")
-    run = step.index("        run: |\n") + len("        run: |\n")
-    return textwrap.dedent(step[run:]).rstrip() + "\n"
-
-
-def run_acquisition(
-    mode: str | None, event_name: str = "push", script: str | None = None
-) -> tuple:
-    """Execute the acquisition-mode selection with a given repository variable."""
+def run_image_handoff(lock: str | None, script: str | None = None) -> tuple:
+    """Execute the immutable handoff validator with a repository variable."""
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "github_output"
         output.touch()
         env = os.environ.copy()
         env["GITHUB_OUTPUT"] = str(output)
-        env["GITHUB_EVENT_NAME"] = event_name
-        env.pop("PLAYGROUND_PUBLISH_MODE", None)
-        if mode is not None:
-            env["PLAYGROUND_PUBLISH_MODE"] = mode
+        env["RELEASE_TAG"] = "v0.6.0-rc2"
+        env.pop("PLAYGROUND_RELEASE_IMAGE_LOCK", None)
+        if lock is not None:
+            env["PLAYGROUND_RELEASE_IMAGE_LOCK"] = lock
         result = subprocess.run(
-            ["bash", "-c", acquisition_script() if script is None else script],
+            ["bash", "-c", image_handoff_script() if script is None else script],
             cwd=ROOT,
             env=env,
             check=False,
@@ -152,63 +128,14 @@ def run_acquisition(
         return result, outputs
 
 
-def assert_actions_push_is_rejected(script: str) -> None:
-    result, outputs = run_acquisition("actions", "push", script)
-    assert result.returncode != 0
-    assert "actions is post-tag only" in result.stdout
-    assert outputs == {}
-
-
-def run_local_publish_report(
-    release_ref: str = HEW_SHA, script: str | None = None
-) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env.update(
-        {
-            "HEW_EXAMPLES_REF": release_ref,
-            "RELEASE_TAG": "v0.6.0-rc1",
-            "DEADLINE_EPOCH": str(int(time()) + 60),
-        }
-    )
-    env.pop("HEW_SHA", None)
-    return subprocess.run(
-        ["bash", "-c", local_publish_script() if script is None else script],
-        cwd=ROOT,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-
-def assert_candidate_publish_command(command: str) -> None:
-    assert shlex.split(command) == [
-        "env",
-        "-u",
-        "MAKEFLAGS",
-        "-u",
-        "MFLAGS",
-        "-u",
-        "MAKEOVERRIDES",
-        "-u",
-        "MAKEFILES",
-        "-u",
-        "GNUMAKEFLAGS",
-        f"HEW_EXAMPLES_REF={HEW_SHA}",
-        "HEW_VERSION=0.6.0-rc1",
-        "PLAYGROUND_PLATFORM=linux/amd64",
-        "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground",
-        "scripts/publish-release-image.sh",
-        "candidate",
-    ]
-
-
 def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProcess:
     """Execute the release-image assertion with a fixed environment."""
     env = os.environ.copy()
     for key in (
         "IMAGE_REPOSITORY",
         "IMAGE_TAG",
+        "EXPECTED_DIGEST",
+        "EXPECTED_PLATFORM",
         "EXPECTED_REVISION",
         "GHCR_TOKEN",
         "GHCR_USERNAME",
@@ -231,7 +158,12 @@ def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProc
 
 
 @contextmanager
-def canned_registry(responses: dict[str, list[tuple[int, dict]]]):
+def canned_registry(
+    responses: dict[str, list[tuple[int, dict]]],
+    digest_headers: dict[str, str] | None = None,
+):
+    digest_headers = digest_headers or {}
+
     class RequestLog(list[str]):
         authorization_headers: dict[str, list[str]]
         raw_authorization_headers: dict[str, list[str]]
@@ -254,33 +186,33 @@ def canned_registry(responses: dict[str, list[tuple[int, dict]]]):
             requests.raw_authorization_headers.setdefault(path, []).append(
                 authorization
             )
-            if authorization == f"{BEARER_SCHEME} {issued_token}":
-                authorization = "******"
-            elif (
-                self.headers.get("User-Agent", "").startswith("curl/")
-                and authorization == "******"
-            ):
-                # The test runner redacts curl's Authorization header in transit.
-                authorization = "******"
-            if (
-                authorization == "******"
-                and self.headers.get("X-Registry-Contract", "") == "direct"
-            ):
-                authorization = ""
-            requests.authorization_headers.setdefault(path, []).append(authorization)
+            logged_authorization = (
+                "******"
+                if authorization.startswith(f"{BEARER_SCHEME} ")
+                else authorization
+            )
+            requests.authorization_headers.setdefault(path, []).append(
+                logged_authorization
+            )
             sequence = responses.get(path, [(404, {"error": "not found"})])
             index = counts.get(path, 0)
             counts[path] = index + 1
             status, body = sequence[min(index, len(sequence) - 1)]
-            if path.startswith("/v2/") and authorization != f"Bearer {issued_token}":
+            if path.startswith("/v2/") and (
+                issued_token is None
+                or authorization != f"{BEARER_SCHEME} {issued_token}"
+            ):
                 status, body = 401, {"error": "invalid bearer token"}
             elif path == "/token":
                 issued_token = body.get("token")
-            if path.startswith("/v2/") and "X-Registry-Contract" not in self.headers:
-                status, body = sequence[min(index, len(sequence) - 1)]
             encoded = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
+            if path.startswith("/v2/") and status == 200:
+                self.send_header(
+                    "Docker-Content-Digest",
+                    digest_headers.get(path, content_digest(body)),
+                )
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
@@ -312,6 +244,15 @@ def image_manifest(config_digest: str) -> dict:
     }
 
 
+def content_digest(document: dict) -> str:
+    encoded = json.dumps(document).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def named_digest(name: str) -> str:
+    return f"sha256:{hashlib.sha256(name.encode()).hexdigest()}"
+
+
 def image_config(labels: dict[str, str] | None) -> dict:
     config = {}
     if labels is not None:
@@ -327,15 +268,23 @@ def run_canned_release_image_assertion(
     responses: dict[str, list[tuple[int, dict]]],
     *,
     deadline_epoch: int | None = None,
+    expected_digest: str | None = None,
+    expected_platform: str = "linux/amd64",
+    digest_headers: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     responses = {
         "/token": [(200, {"token": "pull-token"})],
         **responses,
     }
-    with canned_registry(responses) as (port, requests):
+    with canned_registry(responses, digest_headers) as (port, requests):
+        manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+        if expected_digest is None:
+            expected_digest = content_digest(responses[manifest_path][-1][1])
         env = {
             "IMAGE_REPOSITORY": "hew-lang/playground",
             "IMAGE_TAG": "v0.6.0-rc2",
+            "EXPECTED_DIGEST": expected_digest,
+            "EXPECTED_PLATFORM": expected_platform,
             "EXPECTED_REVISION": HEW_SHA,
             "GHCR_TOKEN": "test-token",
             "GHCR_USERNAME": "test-user",
@@ -365,200 +314,11 @@ def registry_request_status(
         return error.code
 
 
-def assert_exact_dispatch_correlation(job: str) -> None:
-    """Require the unique dispatch identity in both dispatch and run selection."""
-    assert 'CORRELATION_ID="hew-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"' in job
-    assert (
-        'EXPECTED_DISPLAY_TITLE="Build Playground mode=publish'
-        ' sha=${HEW_SHA} version=${VERSION} correlation=${CORRELATION_ID}"' in job
-    )
-
-    dispatch_start = job.index("          gh workflow run build.yml")
-    dispatch_end = job.index('          RUN_ID=""', dispatch_start)
-    dispatch = job[dispatch_start:dispatch_end]
-    assert "-f publish=true \\\n" in dispatch
-    assert '-f hew_sha="${HEW_SHA}" \\\n' in dispatch
-    assert '-f version="${VERSION}" \\\n' in dispatch
-    assert '-f correlation_id="${CORRELATION_ID}"' in dispatch
-
-    query_start = job.index("            if ! RUN_IDS_OUTPUT=$(jq -r")
-    query_end = job.index("            RUN_IDS=()", query_start)
-    query = job[query_start:query_end]
-    expected = """            if ! RUN_IDS_OUTPUT=$(jq -r \\
-                --argjson floor "${PRE_DISPATCH_MAX_ID}" \\
-                --arg actor "${DISPATCH_ACTOR}" \\
-                --arg display_title "${EXPECTED_DISPLAY_TITLE}" \\
-                '.workflow_runs[]
-                  | select(.id > $floor)
-                  | select(.actor.login == $actor)
-                  | select(.display_title == $display_title)
-                  | .id' <<< "${RUNS_JSON}"); then
-              echo "::error::failed to parse playground workflow runs"
-              exit 1
-            fi
-"""
-    assert query == expected
-
-
-def assert_fail_closed_run_retrieval(job: str) -> None:
-    """Require API retrieval and jq parsing to have independent status checks."""
-    assert "        shell: bash\n" in job
-    script = playground_script(job)
-    assert script.startswith("set -euo pipefail\n")
-    start = job.index("            if ! RUNS_JSON=$(gh api -X GET")
-    end = job.index("            if ! RUN_IDS_OUTPUT=$(jq -r", start)
-    retrieval = job[start:end]
-    assert "| jq" not in retrieval
-    assert 'echo "::error::failed to list playground workflow runs"' in retrieval
-    assert "              exit 1\n" in retrieval
-
-
-_MOCK_GH = r"""#!/usr/bin/env python3
-import json
-import os
-import sys
-from pathlib import Path
-
-args = sys.argv[1:]
-state = Path(os.environ["MOCK_STATE"])
-log = Path(os.environ["MOCK_LOG"])
-with log.open("a") as stream:
-    stream.write("gh " + " ".join(args) + "\n")
-
-if args[:2] == ["repo", "view"]:
-    raise SystemExit(0)
-if args[:2] == ["workflow", "view"]:
-    print("active")
-    raise SystemExit(0)
-if args[:2] == ["workflow", "run"]:
-    raise SystemExit(0)
-if args[:2] == ["run", "watch"]:
-    raise SystemExit(0 if args[2] == "101" else 91)
-if not args or args[0] != "api":
-    raise SystemExit(92)
-
-joined = " ".join(args)
-if args[1:] == ["user", "--jq", ".login"]:
-    print("GET /user is unavailable to installation tokens", file=sys.stderr)
-    raise SystemExit(43)
-if "repos/hew-lang/playground/actions/workflows/build.yml/runs" in joined:
-    if "--jq" in args:
-        print("100")
-        raise SystemExit(0)
-    scenario = os.environ["MOCK_SCENARIO"]
-    if scenario == "api-failure":
-        print("mock API failure", file=sys.stderr)
-        raise SystemExit(42)
-    poll = int(state.read_text() or "0") + 1 if state.exists() else 1
-    state.write_text(str(poll))
-    matching = {
-        "id": 101,
-        "head_sha": "sha-after" if scenario == "moving-head" else "sha-good",
-        "actor": {"login": "playground-app[bot]"},
-        "display_title": (
-            "Build Playground mode=publish"
-            " sha=0123456789abcdef0123456789abcdef01234567"
-            " version=0.6.0-rc1 correlation=hew-777-2"
-        ),
-    }
-    if scenario == "empty":
-        runs = []
-    elif scenario == "ambiguous":
-        runs = [matching, {**matching, "id": 102}]
-    elif scenario in {"title", "actor", "floor"}:
-        candidate = dict(matching)
-        if scenario == "title":
-            candidate["display_title"] = "Build Playground wrong"
-        elif scenario == "actor":
-            candidate["actor"] = {"login": "actor-wrong"}
-        else:
-            candidate["id"] = 100
-        runs = [candidate]
-    else:
-        runs = [
-            {**matching, "id": 100},
-            {**matching, "actor": {"login": "actor-wrong"}, "id": 104},
-            {**matching, "display_title": "Build Playground wrong", "id": 105},
-            matching,
-        ]
-    print(json.dumps({"workflow_runs": runs}))
-    raise SystemExit(0)
-if "repos/hew-lang/playground" in joined:
-    print("main")
-    raise SystemExit(0)
-raise SystemExit(93)
-"""
-
-
-def run_playground(
-    scenario: str,
-    *,
-    jq_failure: bool = False,
-    hew_sha: str = HEW_SHA,
-    script: str | None = None,
-) -> tuple:
-    """Execute the workflow's exact Bash with deterministic command doubles."""
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        bin_dir = root / "bin"
-        bin_dir.mkdir()
-        gh = bin_dir / "gh"
-        gh.write_text(_MOCK_GH)
-        gh.chmod(0o755)
-        sleep = bin_dir / "sleep"
-        sleep.write_text("#!/usr/bin/env bash\nexit 0\n")
-        sleep.chmod(0o755)
-        if jq_failure:
-            jq = bin_dir / "jq"
-            jq.write_text("#!/usr/bin/env bash\nexit 23\n")
-            jq.chmod(0o755)
-        state = root / "state"
-        log = root / "calls.log"
-        env = os.environ.copy()
-        env.update(
-            {
-                "PATH": f"{bin_dir}:{env['PATH']}",
-                "GH_TOKEN": "test-token",
-                "HEW_SHA": hew_sha,
-                "DISPATCH_ACTOR": "playground-app[bot]",
-                "RELEASE_TAG": "v0.6.0-rc1",
-                "GITHUB_RUN_ID": "777",
-                "GITHUB_RUN_ATTEMPT": "2",
-                "MOCK_SCENARIO": scenario,
-                "MOCK_STATE": str(state),
-                "MOCK_LOG": str(log),
-            }
-        )
-        result = subprocess.run(
-            ["bash", "-c", playground_script() if script is None else script],
-            cwd=ROOT,
-            env=env,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        calls = log.read_text().splitlines() if log.exists() else []
-        polls = int(state.read_text()) if state.exists() else 0
-        return result, calls, polls
-
-
-def assert_wait_budget(job: str) -> None:
-    """Keep the shell's budget authority equal to the enforced job timeout."""
-    match = re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)
-    assert match is not None
-    shell_budget = re.search(r"^\s+JOB_TIMEOUT_MINUTES=(\d+)$", job, re.MULTILINE)
-    assert shell_budget is not None
-    assert int(match.group(1)) == int(shell_budget.group(1))
-    assert (
-        "ASSERTION_BUDGET_MINUTES=$((JOB_TIMEOUT_MINUTES - FINALIZATION_RESERVE_MINUTES))"
-        in job
-    )
-
-
 def test_rc_tag_normalization_and_exact_release_body() -> None:
     text = workflow()
     assert "RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}" in text
-    assert 'VERSION="${RELEASE_TAG#v}"' in playground_job()
+    assert 'LOCK_TAG="${PLAYGROUND_RELEASE_IMAGE_LOCK%%@*}"' in playground_job()
+    assert 'if [[ "${LOCK_TAG}" != "${RELEASE_TAG}" ]]' in playground_job()
     assert "body_path: docs/releases/${{ env.RELEASE_TAG }}.md" in text
     assert RELEASE_NOTES.exists()
 
@@ -636,299 +396,79 @@ def test_current_sandbox_vm_version_matches_workspace_version() -> None:
     assert lockfile["packages"][""]["version"] == workspace_version
 
 
-def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
-    text = workflow()
+def test_playground_release_uses_only_an_immutable_pretag_handoff() -> None:
+    digest = named_digest("candidate-index")
+    result, outputs = run_image_handoff(f"v0.6.0-rc2@{digest}")
+    assert result.returncode == 0, result.stderr
+    assert outputs["image_digest"] == digest
+
+    for bad_lock in (
+        None,
+        "",
+        digest,
+        f"v0.6.0-rc3@{digest}",
+        "v0.6.0-rc2@sha256:short",
+        f"v0.6.0-rc2@{digest.upper()}",
+        f"v0.6.0-rc2@sha512:{'a' * 64}",
+    ):
+        rejected, rejected_outputs = run_image_handoff(bad_lock)
+        assert rejected.returncode != 0, bad_lock
+        assert rejected_outputs == {}, bad_lock
+
     job = playground_job()
-    assert "      - name: Resolve release commit identity\n" in job
     assert (
-        "gh api \"repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}\" --jq '.sha'"
-    ) in job
-    assert "did not resolve to an exact lowercase" in job
-    assert "HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}" in job
-    assert "PLAYGROUND_DISPATCH_TOKEN" not in text
-    assert "HOMEBREW_TAP_TOKEN" not in job
-    assert "#   secrets.PLAYGROUND_APP_ID" in text
-    assert "#   secrets.PLAYGROUND_APP_PRIVATE_KEY" in text
-
-    validate = job.index("      - name: Validate playground GitHub App configuration\n")
-    mint = job.index("      - name: Mint playground GitHub App token\n")
-    trigger = job.index("      - name: Trigger playground image rebuild\n")
-    assert validate < mint < trigger
-    validation_step = job[validate:mint]
-    token_step = job[mint:trigger]
-    trigger_step = job[trigger:]
-
-    assert "PLAYGROUND_APP_ID: ${{ secrets.PLAYGROUND_APP_ID }}" in validation_step
-    assert (
-        "PLAYGROUND_APP_PRIVATE_KEY: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}"
-        in validation_step
+        "PLAYGROUND_RELEASE_IMAGE_LOCK: ${{ vars.PLAYGROUND_RELEASE_IMAGE_LOCK }}"
+        in job
     )
-    assert (
-        "requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY"
-        in validation_step
-    )
-    assert "exit 1" in validation_step
-    assert "if: steps.acquisition.outputs.mode == 'actions'" in validation_step
-    assert "continue-on-error:" not in validation_step
-
-    assert "id: playground-app-token" in token_step
-    assert re.search(
-        r"uses: actions/create-github-app-token@[0-9a-f]{40}  # v2\.2\.2$",
-        token_step,
-        re.MULTILINE,
-    )
-    assert "app-id: ${{ secrets.PLAYGROUND_APP_ID }}" in token_step
-    assert "private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}" in token_step
-    assert "owner: hew-lang" in token_step
-    assert "repositories: playground" in token_step
-    assert "if: steps.acquisition.outputs.mode == 'actions'" in token_step
-    assert "continue-on-error:" not in token_step
-    assert "GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}" in trigger_step
-    assert (
-        "DISPATCH_ACTOR: ${{ steps.playground-app-token.outputs.app-slug }}[bot]"
-        in trigger_step
-    )
-    assert "gh api user" not in trigger_step
-    assert "gh repo view hew-lang/playground" in job
-    assert "gh api repos/hew-lang/playground --jq '.default_branch'" in job
-    assert "gh workflow view build.yml" in job
-    assert '!= "active"' in job
-    assert "could not correlate" in job
-
-
-def test_dispatch_uses_exact_playground_workflow_input_and_ref() -> None:
-    job = playground_job()
-    assert "gh workflow run build.yml" in job
-    assert '--ref "${PLAYGROUND_REF}"' in job
-    assert "-f publish=true" in job
-    assert '-f hew_sha="${HEW_SHA}"' in job
-    assert '-f version="${VERSION}"' in job
-    assert "-f event=workflow_dispatch" in job
-    assert '-f branch="${PLAYGROUND_REF}"' in job
-    assert 'gh run watch "${RUN_ID}" -R hew-lang/playground --exit-status' in job
-
-
-def test_dispatch_correlation_is_unique_and_bounded() -> None:
-    job = playground_job()
-    assert_wait_budget(job)
-    assert_exact_dispatch_correlation(job)
-    assert "PLAYGROUND_SHA" not in job
-    assert "PRE_DISPATCH_MAX_ID=" in job
-    assert '--argjson floor "${PRE_DISPATCH_MAX_ID}"' in job
-    assert (
-        "DISPATCH_ACTOR: ${{ steps.playground-app-token.outputs.app-slug }}[bot]" in job
-    )
-    assert '--arg actor "${DISPATCH_ACTOR}"' in job
-    assert "select(.id > $floor)" in job
-    assert "select(.head_sha" not in job
-    assert "select(.actor.login == $actor)" in job
-    assert_fail_closed_run_retrieval(job)
-    assert "if ! RUN_IDS_OUTPUT=$(jq -r" in job
-    assert 'if [ -n "${CANDIDATE_ID}" ]; then' in job
-    assert "mapfile -t RUN_IDS < <(" not in job
-    assert "LAST_CANDIDATE_ID" in job
-    assert "ambiguous playground workflow dispatch correlation" in job
-
-
-def test_release_image_acquisition_mode_is_exhaustive_and_fails_closed() -> None:
-    accepted = (
-        ("local", "push"),
-        ("local", "workflow_dispatch"),
-        ("actions", "workflow_dispatch"),
-    )
-    for mode, event_name in accepted:
-        before = int(time())
-        result, outputs = run_acquisition(mode, event_name)
-        after = int(time())
-        assert result.returncode == 0, result.stderr
-        assert outputs["mode"] == mode
-        assert outputs["assert_budget_minutes"] == "115"
-        deadline = int(outputs["assert_deadline_epoch"])
-        assert before + 115 * 60 <= deadline <= after + 115 * 60
-
-    script = acquisition_script()
-    assert_actions_push_is_rejected(script)
-    mutations = (
-        script.replace(
-            'if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then',
-            "if false; then",
-        ),
-        script.replace(
-            "actions)\n    if [[",
-            "actions)\n    GITHUB_EVENT_NAME=workflow_dispatch\n    if [[",
-        ),
-    )
-    for mutation in mutations:
-        try:
-            assert_actions_push_is_rejected(mutation)
-        except AssertionError:
-            continue
-        raise AssertionError("tag-push actions-mode mutation escaped")
-
-    for rejected in (None, "", "Actions", "LOCAL", "skip", "true", "actions local"):
-        result, outputs = run_acquisition(rejected)
-        assert result.returncode != 0, repr(rejected)
-        assert "must be exactly 'actions' or 'local'" in result.stdout, repr(rejected)
-        assert outputs == {}, repr(rejected)
-
-
-def test_release_image_assertion_covers_every_acquisition_mode() -> None:
-    job = playground_job()
-    mode_step = step_of(job, "Select release image acquisition mode")
-    assert "id: acquisition" in mode_step
-    assert "PLAYGROUND_PUBLISH_MODE: ${{ vars.PLAYGROUND_PUBLISH_MODE }}" in mode_step
-    assert "if:" not in mode_step
-    assert "continue-on-error:" not in mode_step
-
-    trigger_step = step_of(job, "Trigger playground image rebuild")
-    assert "if: steps.acquisition.outputs.mode == 'actions'" in trigger_step
-
-    local_step = step_of(job, "Report expected local release image publish")
-    assert "if: steps.acquisition.outputs.mode == 'local'" in local_step
-    assert "gh workflow run" not in local_step
-    assert "HEW_EXAMPLES_REF: ${{ steps.release-commit.outputs.hew_sha }}" in local_step
-    assert "HEW_SHA:" not in local_step
-
-    assert_step = step_of(
-        job, "Assert release image exists and binds the release commit"
-    )
-    assert (
-        "if: ${{ !cancelled() && steps.acquisition.outputs.mode != '' }}" in assert_step
-    )
-    assert "continue-on-error:" not in assert_step
-    assert "IMAGE_REPOSITORY: hew-lang/playground" in assert_step
-    assert "IMAGE_TAG: ${{ env.RELEASE_TAG }}" in assert_step
-    assert (
-        "EXPECTED_REVISION: ${{ steps.release-commit.outputs.hew_sha }}" in assert_step
-    )
-    assert "GHCR_TOKEN: ${{ github.token }}" in assert_step
-    assert "GHCR_USERNAME: ${{ github.actor }}" in assert_step
-    assert (
-        "DEADLINE_EPOCH: ${{ steps.acquisition.outputs.assert_deadline_epoch }}"
-        in assert_step
-    )
+    assert "EXPECTED_DIGEST: ${{ steps.image-lock.outputs.image_digest }}" in job
+    assert "EXPECTED_PLATFORM: linux/amd64" in job
+    assert "gh workflow run" not in job
+    assert "actions/create-github-app-token" not in job
+    assert "PLAYGROUND_PUBLISH_MODE" not in job
+    assert "PLAYGROUND_APP" not in job
     assert "packages: read" in job
-    assert "run: release-machinery/scripts/assert-playground-release-image.sh" in (
-        assert_step
-    )
-
-    machinery_step = step_of(job, "Checkout release machinery")
-    assert "ref: ${{ github.sha }}" in machinery_step
-    assert "path: release-machinery" in machinery_step
-
-    assert RELEASE_IMAGE_ASSERTION.exists()
-    assert RELEASE_IMAGE_ASSERTION.stat().st_mode & stat.S_IXUSR
 
 
-def test_local_publish_command_requires_pre_tag_candidate_publisher() -> None:
-    report = run_local_publish_report()
-    assert report.returncode == 0, report.stderr
-    commands = [
-        line.strip()
-        for line in report.stdout.splitlines()
-        if "scripts/publish-release-image.sh candidate" in line
-    ]
-    assert len(commands) == 1
-    assert_candidate_publish_command(commands[0])
-    local_step = step_of(
-        playground_job(), "Report expected local release image publish"
-    )
-    assert "make " not in local_step
-    assert "HEW_SHA" not in local_step
-    assert 'PLAYGROUND_RELEASE_IMAGE="ghcr.io/hew-lang/playground"' in local_step
-    assert (
-        'EXPECTED_RELEASE_IMAGE="${PLAYGROUND_RELEASE_IMAGE}:${RELEASE_TAG}"'
-        in local_step
-    )
-    assert "PLAYGROUND_PLATFORM=linux/amd64" in local_step
-    inherited_make_controls = (
-        "MAKEFLAGS",
-        "MFLAGS",
-        "MAKEOVERRIDES",
-        "MAKEFILES",
-        "GNUMAKEFLAGS",
-    )
-    for inherited in inherited_make_controls:
-        assert f"-u {inherited}" in local_step
-
+def test_pretag_runbook_pins_candidate_command_digest_and_posttag_authority() -> None:
     runbook = RUNBOOK.read_text()
     pre_tag = runbook[
         runbook.index("## Phase 5") : runbook.index(
             "3. Create the signed tag", runbook.index("## Phase 5")
         )
     ]
-    assert "scripts/publish-release-image.sh candidate" in pre_tag
     assert f"PLAYGROUND_CONTRACT_REF={PLAYGROUND_CONTRACT_REF}" in pre_tag
     assert "PLAYGROUND_REF=<exact-reviewed-40-character-playground-sha>" in pre_tag
-    assert '"${PLAYGROUND_CONTRACT_REF}" HEAD' in pre_tag
     assert 'test -z "$(git -C "${PLAYGROUND_CHECKOUT}" status --porcelain)"' in pre_tag
+    for inherited in (
+        "MAKEFLAGS",
+        "MFLAGS",
+        "MAKEOVERRIDES",
+        "MAKEFILES",
+        "GNUMAKEFLAGS",
+    ):
+        assert f"-u {inherited}" in pre_tag
+    assert 'HEW_EXAMPLES_REF="${HEW_RELEASE_SHA}"' in pre_tag
+    assert 'HEW_VERSION="${VERSION}"' in pre_tag
     assert "PLAYGROUND_PLATFORM=linux/amd64" in pre_tag
     assert "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground" in pre_tag
-    assert 'test "${HEW_DEFAULT_VERSION}" = "${VERSION}"' in pre_tag
-    assert 'test "${HEW_CANDIDATE_SHA}" = "${HEW_RELEASE_SHA}"' in pre_tag
-    assert "minimal playground `toolchains.env` bump" in pre_tag
-    assert "gh variable set PLAYGROUND_PUBLISH_MODE --body local" in pre_tag
-    assert "org.opencontainers.image.revision" in pre_tag
+    assert "scripts/publish-release-image.sh candidate" in pre_tag
+    assert "docker buildx imagetools inspect" in pre_tag
+    assert "--format '{{json .Manifest}}' | jq -er '.digest'" in pre_tag
+    assert "^sha256:[0-9a-f]{64}$" in pre_tag
+    assert "gh variable set PLAYGROUND_RELEASE_IMAGE_LOCK" in pre_tag
+    assert '"v${VERSION}@${PLAYGROUND_IMAGE_DIGEST}"' in pre_tag
     assert "scripts/publish-release-image.sh publish" not in pre_tag
-    assert "make release-candidate-publish" not in pre_tag
-
-    release_publish_mutation = local_publish_script().replace(" candidate", " publish")
-    mutated = run_local_publish_report(script=release_publish_mutation)
-    assert mutated.returncode == 0, mutated.stderr
-    mutated_commands = [
-        line.strip()
-        for line in mutated.stdout.splitlines()
-        if "scripts/publish-release-image.sh publish" in line
-    ]
-    assert len(mutated_commands) == 1
-    try:
-        assert_candidate_publish_command(mutated_commands[0])
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError("publish authority escaped the pre-tag command contract")
-
-
-def test_local_publish_contract_rejects_interface_mutations() -> None:
-    command = next(
-        line.strip()
-        for line in run_local_publish_report().stdout.splitlines()
-        if "scripts/publish-release-image.sh candidate" in line
-    )
-    mutations = (
-        command.replace("-u MAKEFLAGS ", ""),
-        command.replace("PLAYGROUND_PLATFORM=linux/amd64 ", ""),
-        command.replace("PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground ", ""),
-        command.replace("HEW_EXAMPLES_REF=", "HEW_SHA="),
-        command.replace(
-            "scripts/publish-release-image.sh", "make release-candidate-publish"
-        ),
-    )
-    for mutation in mutations:
-        try:
-            assert_candidate_publish_command(mutation)
-        except AssertionError:
-            continue
-        raise AssertionError(f"candidate interface mutation escaped: {mutation}")
-
-
-def test_local_publish_report_rejects_mutated_or_malformed_authority() -> None:
-    for bad_sha in ("not-a-sha", HEW_SHA[:39], HEW_SHA.upper()):
-        result = run_local_publish_report(bad_sha)
-        assert result.returncode != 0, bad_sha
-        assert "release commit identity is not an exact lowercase" in result.stdout
-        assert "scripts/publish-release-image.sh candidate" not in result.stdout
-
-    mutation = local_publish_script().replace("${HEW_EXAMPLES_REF}", "${HEW_SHA}")
-    result = run_local_publish_report(script=mutation)
-    assert result.returncode != 0
-    assert "HEW_SHA: unbound variable" in result.stderr
+    assert "PLAYGROUND_PUBLISH_MODE" not in runbook
+    assert "gh workflow run" not in runbook
+    assert "scripts/publish-release-image.sh publish" in runbook
 
 
 def test_release_image_assertion_rejects_unusable_inputs() -> None:
     valid = {
         "IMAGE_REPOSITORY": "hew-lang/playground",
         "IMAGE_TAG": "v0.6.0-rc2",
+        "EXPECTED_DIGEST": named_digest("candidate"),
+        "EXPECTED_PLATFORM": "linux/amd64",
         "EXPECTED_REVISION": HEW_SHA,
         "GHCR_TOKEN": "test-token",
         "GHCR_USERNAME": "test-user",
@@ -939,6 +479,8 @@ def test_release_image_assertion_rejects_unusable_inputs() -> None:
     cases = {
         "IMAGE_REPOSITORY": "",
         "IMAGE_TAG": "",
+        "EXPECTED_DIGEST": "",
+        "EXPECTED_PLATFORM": "",
         "GHCR_TOKEN": "",
     }
     for key, value in cases.items():
@@ -959,6 +501,28 @@ def test_release_image_assertion_rejects_unusable_inputs() -> None:
         assert result.returncode != 0, bad_sha
         assert "exact lowercase 40-character commit SHA" in result.stderr, bad_sha
 
+    for bad_digest in (
+        "not-a-digest",
+        "sha256:short",
+        f"sha256:{'A' * 64}",
+        f"sha512:{'a' * 64}",
+    ):
+        result = run_release_image_assertion(dict(valid, EXPECTED_DIGEST=bad_digest))
+        assert result.returncode != 0, bad_digest
+        assert "exactly 64 lowercase hexadecimal" in result.stderr, bad_digest
+
+    for bad_platform in ("", "linux", "linux/arm64", "darwin/amd64"):
+        result = run_release_image_assertion(
+            dict(valid, EXPECTED_PLATFORM=bad_platform)
+        )
+        assert result.returncode != 0, bad_platform
+        expected = (
+            "EXPECTED_PLATFORM must be set"
+            if bad_platform == ""
+            else "EXPECTED_PLATFORM must be exactly linux/amd64"
+        )
+        assert expected in result.stderr, bad_platform
+
     result = run_release_image_assertion(dict(valid, DEADLINE_MINUTES="soon"))
     assert result.returncode != 0
     assert "whole number of minutes" in result.stderr
@@ -968,8 +532,8 @@ def test_release_image_assertion_rejects_unusable_inputs() -> None:
     assert "POLL_INTERVAL_SECONDS must be a positive whole number" in result.stderr
 
 
-def _test_release_image_assertion_accepts_matching_single_manifest() -> None:
-    config_digest = "sha256:config-good"
+def test_release_image_assertion_accepts_matching_single_manifest() -> None:
+    config_digest = named_digest("config-good")
     result, requests = run_canned_release_image_assertion(
         {
             "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
@@ -987,15 +551,13 @@ def _test_release_image_assertion_accepts_matching_single_manifest() -> None:
     assert requests.count("/token") == 1
     assert requests.authorization_headers[
         "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
-    ] == ["Bearer pull-token"]
+    ] == ["******"]
     assert requests.authorization_headers[
         f"/v2/hew-lang/playground/blobs/{config_digest}"
-    ] == ["Bearer pull-token"]
+    ] == ["******"]
 
 
-def _test_canned_registry_rejects_missing_masked_wrong_and_stale_bearer_tokens() -> (
-    None
-):
+def test_canned_registry_rejects_missing_masked_wrong_and_stale_bearer_tokens() -> None:
     manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
     with canned_registry(
         {
@@ -1003,7 +565,7 @@ def _test_canned_registry_rejects_missing_masked_wrong_and_stale_bearer_tokens()
                 (200, {"token": "first-pull-token"}),
                 (200, {"token": "second-pull-token"}),
             ],
-            manifest_path: [(200, image_manifest("sha256:config-good"))],
+            manifest_path: [(200, image_manifest(named_digest("config-good")))],
         }
     ) as (port, requests):
         assert registry_request_status(port, manifest_path) == 401
@@ -1026,14 +588,14 @@ def _test_canned_registry_rejects_missing_masked_wrong_and_stale_bearer_tokens()
     assert requests.authorization_headers[manifest_path] == [
         "",
         "******",
-        "Bearer wrong-token",
-        "Bearer first-pull-token",
-        "Bearer first-pull-token",
-        "Bearer second-pull-token",
+        "******",
+        "******",
+        "******",
+        "******",
     ]
 
 
-def _test_canned_registry_requires_the_current_issued_bearer_token() -> None:
+def test_canned_registry_requires_the_current_issued_bearer_token() -> None:
     manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
     with canned_registry(
         {
@@ -1041,7 +603,7 @@ def _test_canned_registry_requires_the_current_issued_bearer_token() -> None:
                 (200, {"token": "first-pull-token"}),
                 (200, {"token": "second-pull-token"}),
             ],
-            manifest_path: [(200, image_manifest("sha256:config-good"))],
+            manifest_path: [(200, image_manifest(named_digest("config-good")))],
         }
     ) as (port, requests):
         assert registry_request_status(port, manifest_path) == 401
@@ -1080,8 +642,8 @@ def _test_canned_registry_requires_the_current_issued_bearer_token() -> None:
     ]
 
 
-def _test_release_image_assertion_sends_issued_token_for_manifest_and_config() -> None:
-    config_digest = "sha256:config-issued-token"
+def test_release_image_assertion_sends_issued_token_for_manifest_and_config() -> None:
+    config_digest = named_digest("config-issued-token")
     manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
     config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
     result, requests = run_canned_release_image_assertion(
@@ -1101,15 +663,37 @@ def _test_release_image_assertion_sends_issued_token_for_manifest_and_config() -
     ]
 
 
+def test_release_image_assertion_redacts_raw_tokens_on_terminal_failure() -> None:
+    issued_token = "issued-super-secret-token"
+    config_digest = named_digest("missing-config")
+    manifest = image_manifest(config_digest)
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/token": [(200, {"token": issued_token})],
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [
+                (403, {"error": "terminal"})
+            ],
+        }
+    )
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert issued_token not in combined
+    assert "test-token" not in combined
+    assert requests.raw_authorization_headers[
+        f"/v2/hew-lang/playground/blobs/{config_digest}"
+    ] == [f"{BEARER_SCHEME} {issued_token}"]
+
+
 def test_release_image_assertion_uses_acquired_token_for_manifest_and_config() -> None:
     script = RELEASE_IMAGE_ASSERTION.read_text()
     assert script.count('--oauth2-bearer "${token}"') == 2
     assert "Authorization: ******" not in script
 
 
-def test_release_image_assertion_polls_past_a_stale_tag() -> None:
-    stale_digest = "sha256:config-stale"
-    good_digest = "sha256:config-good"
+def test_release_image_assertion_rejects_a_mutable_tag_digest_immediately() -> None:
+    stale_digest = named_digest("config-stale")
+    good_digest = named_digest("config-good")
     tag_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
     result, requests = run_canned_release_image_assertion(
         {
@@ -1131,13 +715,13 @@ def test_release_image_assertion_polls_past_a_stale_tag() -> None:
             ],
         }
     )
-    assert result.returncode == 0, result.stderr
-    assert requests.count(tag_path) == 2
-    assert "still binds" in result.stderr
+    assert result.returncode != 0
+    assert requests.count(tag_path) == 1
+    assert "registry digest is" in result.stderr
 
 
 def test_release_image_assertion_rejects_missing_revision_label() -> None:
-    config_digest = "sha256:config-missing-revision"
+    config_digest = named_digest("config-missing-revision")
     config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
     result, requests = run_canned_release_image_assertion(
         {
@@ -1155,7 +739,7 @@ def test_release_image_assertion_rejects_missing_revision_label() -> None:
 
 def test_release_image_assertion_rejects_wrong_revision_label() -> None:
     wrong_revision = "f" * 40
-    config_digest = "sha256:config-wrong-revision"
+    config_digest = named_digest("config-wrong-revision")
     config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
     result, requests = run_canned_release_image_assertion(
         {
@@ -1173,14 +757,70 @@ def test_release_image_assertion_rejects_wrong_revision_label() -> None:
     )
     assert result.returncode != 0
     assert config_path in requests
-    assert f"still binds {wrong_revision}; waiting for {HEW_SHA}" in result.stderr
-    assert f"did not bind {HEW_SHA}" in result.stderr
+    assert f"binds {wrong_revision}, not {HEW_SHA}" in result.stderr
 
 
-def test_release_image_assertion_checks_every_platform_in_an_index() -> None:
-    child_digests = ("sha256:manifest-amd64", "sha256:manifest-arm64")
-    config_digests = ("sha256:config-amd64", "sha256:config-arm64")
-    attestation_digest = "sha256:attestation"
+def test_release_image_assertion_rejects_wrong_manifest_platform() -> None:
+    config_digest = named_digest("config-arm64")
+    manifest = image_manifest(config_digest)
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config["architecture"] = "arm64"
+    result, _requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [(200, config)],
+        }
+    )
+    assert result.returncode != 0
+    assert "config is linux/arm64, not linux/amd64" in result.stderr
+
+
+def test_release_image_assertion_rejects_wrong_recorded_digest() -> None:
+    config_digest = named_digest("config-good")
+    manifest = image_manifest(config_digest)
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
+                )
+            ],
+        },
+        expected_digest=named_digest("wrong-recorded-digest"),
+    )
+    assert result.returncode != 0
+    assert requests.count("/v2/hew-lang/playground/manifests/v0.6.0-rc2") == 1
+    assert "registry digest is" in result.stderr
+
+
+def test_release_image_assertion_hashes_raw_manifest_bytes() -> None:
+    config_digest = named_digest("config-good")
+    manifest = image_manifest(config_digest)
+    forged_digest = named_digest("forged-header")
+    manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    result, _requests = run_canned_release_image_assertion(
+        {
+            manifest_path: [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
+                )
+            ],
+        },
+        expected_digest=forged_digest,
+        digest_headers={manifest_path: forged_digest},
+    )
+    assert result.returncode != 0
+    assert "raw manifest digest is" in result.stderr
+
+
+def test_release_image_assertion_selects_linux_amd64_from_an_index() -> None:
+    child_digests = (named_digest("manifest-amd64"), named_digest("manifest-arm64"))
+    config_digests = (named_digest("config-amd64"), named_digest("config-arm64"))
+    attestation_digest = named_digest("attestation")
     index = {
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.index.v1+json",
@@ -1224,189 +864,21 @@ def test_release_image_assertion_checks_every_platform_in_an_index() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert f"/v2/hew-lang/playground/manifests/{attestation_digest}" not in requests
+    assert f"/v2/hew-lang/playground/manifests/{child_digests[0]}" in requests
+    assert f"/v2/hew-lang/playground/manifests/{child_digests[1]}" not in requests
 
 
 def test_release_image_assertion_rejects_unclassified_platformless_child() -> None:
     index = {
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.index.v1+json",
-        "manifests": [{"digest": "sha256:unclassified"}],
+        "manifests": [{"digest": named_digest("unclassified")}],
     }
     result, _requests = run_canned_release_image_assertion(
         {"/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)]}
     )
     assert result.returncode != 0
     assert "has no platform.os and is not marked as an attestation" in result.stderr
-
-
-def test_exact_workflow_shell_accepts_one_stable_matching_run() -> None:
-    result, calls, polls = run_playground("success")
-    assert result.returncode == 0, result.stderr
-    assert polls == 2
-    dispatches = [call for call in calls if call.startswith("gh workflow run")]
-    assert dispatches == [
-        "gh workflow run build.yml -R hew-lang/playground --ref main"
-        f" -f publish=true -f hew_sha={HEW_SHA}"
-        " -f version=0.6.0-rc1 -f correlation_id=hew-777-2"
-    ]
-    watches = [call for call in calls if call.startswith("gh run watch")]
-    assert watches == ["gh run watch 101 -R hew-lang/playground --exit-status"]
-    assert not any(call.startswith("gh api user") for call in calls)
-
-
-def test_moving_default_branch_does_not_break_dispatch_correlation() -> None:
-    result, calls, polls = run_playground("moving-head")
-    assert result.returncode == 0, result.stderr
-    assert polls == 2
-    assert not any("/commits/main" in call for call in calls)
-
-    stale_sha_job = (
-        playground_job()
-        .replace(
-            '                --arg actor "${DISPATCH_ACTOR}" \\\n',
-            '                --arg sha "sha-before" \\\n'
-            '                --arg actor "${DISPATCH_ACTOR}" \\\n',
-        )
-        .replace(
-            "                  | select(.actor.login == $actor)\n",
-            "                  | select(.head_sha == $sha)\n"
-            "                  | select(.actor.login == $actor)\n",
-        )
-        .replace(
-            "          for _ in $(seq 1 30); do",
-            "          for _ in $(seq 1 1); do",
-        )
-    )
-    stale_result, stale_calls, stale_polls = run_playground(
-        "moving-head", script=playground_script(stale_sha_job)
-    )
-    assert stale_result.returncode != 0
-    assert "could not correlate" in stale_result.stdout
-    assert stale_polls == 1
-    assert not any(call.startswith("gh run watch") for call in stale_calls)
-
-
-def test_malformed_release_commit_identity_is_terminal() -> None:
-    for bad_sha in ("", "not-a-sha", HEW_SHA[:39], HEW_SHA.upper()):
-        result, calls, polls = run_playground("success", hew_sha=bad_sha)
-        assert result.returncode != 0, repr(bad_sha)
-        assert "release commit identity is not an exact lowercase" in result.stdout, (
-            repr(bad_sha)
-        )
-        assert polls == 0, repr(bad_sha)
-        assert not any(call.startswith("gh workflow run") for call in calls), repr(
-            bad_sha
-        )
-
-
-def test_run_listing_api_failure_is_terminal() -> None:
-    result, calls, polls = run_playground("api-failure")
-    assert result.returncode != 0
-    assert "failed to list playground workflow runs" in result.stdout
-    assert polls == 0
-    assert not any(call.startswith("gh run watch") for call in calls)
-
-
-def test_run_listing_jq_failure_is_terminal() -> None:
-    result, calls, polls = run_playground("success", jq_failure=True)
-    assert result.returncode != 0
-    assert "failed to parse playground workflow runs" in result.stdout
-    assert polls == 1
-    assert not any(call.startswith("gh run watch") for call in calls)
-
-
-def test_successful_empty_polls_exhaust_the_bound() -> None:
-    result, calls, polls = run_playground("empty")
-    assert result.returncode != 0
-    assert "could not correlate" in result.stdout
-    assert polls == 30
-    assert not any(call.startswith("gh run watch") for call in calls)
-
-
-def test_ambiguous_correlation_fails_on_the_first_poll() -> None:
-    result, calls, polls = run_playground("ambiguous")
-    assert result.returncode != 0
-    assert "ambiguous playground workflow dispatch correlation" in result.stdout
-    assert polls == 1
-    assert not any(call.startswith("gh run watch") for call in calls)
-
-
-def test_each_exact_run_identity_dimension_is_mandatory() -> None:
-    for scenario in ("title", "actor", "floor"):
-        result, calls, polls = run_playground(scenario)
-        assert result.returncode != 0, scenario
-        assert "could not correlate" in result.stdout, scenario
-        assert polls == 30, scenario
-        assert not any(call.startswith("gh run watch") for call in calls), scenario
-
-
-def test_timeout_undercut_mutation_is_rejected() -> None:
-    mutated = playground_job().replace(
-        "    timeout-minutes: 120", "    timeout-minutes: 80"
-    )
-    try:
-        assert_wait_budget(mutated)
-    except AssertionError:
-        return
-    raise AssertionError(
-        "the upstream wait accepted the downstream maximum without margin"
-    )
-
-
-def test_publish_mode_downgrade_mutation_is_rejected() -> None:
-    mutated = playground_job().replace("-f publish=true", "-f publish=false")
-    mutated += "\n# -f publish=true\n"
-    try:
-        assert_exact_dispatch_correlation(mutated)
-    except (AssertionError, ValueError):
-        return
-    raise AssertionError("a publish-mode downgrade was hidden by padding")
-
-
-def test_correlation_swap_with_padding_is_rejected() -> None:
-    mutated = playground_job().replace(
-        "select(.display_title == $display_title)",
-        "select(.display_title == $actor)",
-    )
-    mutated += "\n# select(.display_title == $display_title)\n"
-    try:
-        assert_exact_dispatch_correlation(mutated)
-    except (AssertionError, ValueError):
-        return
-    raise AssertionError("a swapped selector was hidden by padding outside its query")
-
-
-def test_correlation_argument_swap_with_padding_is_rejected() -> None:
-    mutated = playground_job().replace(
-        '--arg actor "${DISPATCH_ACTOR}"',
-        '--arg actor "${EXPECTED_DISPLAY_TITLE}"',
-    )
-    mutated += '\n# --arg actor "${DISPATCH_ACTOR}"\n'
-    try:
-        assert_exact_dispatch_correlation(mutated)
-    except (AssertionError, ValueError):
-        return
-    raise AssertionError("a swapped argument was hidden by padding outside its query")
-
-
-def test_pipeline_status_masking_mutation_is_rejected() -> None:
-    mutated = playground_job().replace(
-        "            if ! RUNS_JSON=$(gh api -X GET \\",
-        "            RUNS_JSON=$(gh api -X GET \\",
-    )
-    mutated += "\n# if ! RUNS_JSON=$(gh api -X GET\n"
-    try:
-        assert_fail_closed_run_retrieval(mutated)
-    except (AssertionError, ValueError):
-        return
-    raise AssertionError("an unchecked API retrieval was hidden by padding")
-
-
-def test_required_downstream_failure_is_not_masked() -> None:
-    job = playground_job()
-    assert "gh run watch" in job
-    assert "continue-on-error" not in job
-    assert "skipping playground trigger" not in job
 
 
 def test_prerelease_policy_uses_selected_release_tag() -> None:

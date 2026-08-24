@@ -240,7 +240,15 @@ but every arm must succeed before the graph rejoins:
        PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground \
        scripts/publish-release-image.sh candidate
    )
-   gh variable set PLAYGROUND_PUBLISH_MODE --body local --repo hew-lang/hew
+   PLAYGROUND_IMAGE=ghcr.io/hew-lang/playground:v${VERSION}
+   PLAYGROUND_IMAGE_DIGEST="$(docker buildx imagetools inspect \
+     "${PLAYGROUND_IMAGE}" --format '{{json .Manifest}}' | jq -er '.digest')"
+   if ! [[ "${PLAYGROUND_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+     echo "invalid playground image digest" >&2
+     exit 1
+   fi
+   gh variable set PLAYGROUND_RELEASE_IMAGE_LOCK \
+     --body "v${VERSION}@${PLAYGROUND_IMAGE_DIGEST}" --repo hew-lang/hew
    ```
 
    After the Hew candidate SHA is fixed, first merge a separately reviewed,
@@ -254,8 +262,10 @@ but every arm must succeed before the graph rejoins:
    checkout, scrubs inherited GNU Make parser controls, uses candidate authority,
    and stamps the SHA as `org.opencontainers.image.revision`. Record the clean
    playground SHA, candidate SHA, platform, image digest, and smoke result before
-   continuing. Do not use a Make target or the `publish` mode before tagging:
-   publish authority requires the remote signed tag.
+   continuing. The version-scoped `PLAYGROUND_RELEASE_IMAGE_LOCK` is the
+   pre-tag handoff: it records the immutable raw manifest/index digest without
+   requiring another Hew or playground commit. Do not use a Make target or the
+   `publish` mode before tagging: publish authority requires the remote signed tag.
 3. Create the signed tag only after the preceding evidence is recorded.
 4. Let the release workflow build and publish the signed platform assets and
    checksums. Its curated body must be the exact
@@ -266,24 +276,22 @@ but every arm must succeed before the graph rejoins:
      `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1`, and wait for each
      result. The workflow checks out that immutable tag and rejects a workspace
      or sandbox package version mismatch. A tag does not publish these packages.
-6. The tag-push release workflow requires `PLAYGROUND_PUBLISH_MODE=local` and
-   verifies the pre-tag candidate image without dispatching a replacement:
-   `ghcr.io/hew-lang/playground:<tag>` must exist and its
+6. The tag-push release workflow only observes the pre-tag candidate image; it
+   never dispatches mutable downstream state. The tag must resolve to the exact
+   digest recorded in `PLAYGROUND_RELEASE_IMAGE_LOCK`, expose exactly the
+   `linux/amd64` release platform, and its
    `org.opencontainers.image.revision` label must bind the release commit. The
-   repository variable `PLAYGROUND_PUBLISH_MODE` selects whether the job
-   dispatches and watches the playground build workflow (`actions`) or observes
-   the pre-tag candidate image (`local`). The job fails if the image does not
-   arrive. Then verify the published image, API, and `hew run` smoke path against
-   the candidate version. Running
+   workflow validates the registry's digest header and the raw manifest/index
+   bytes before inspecting the platform and revision. Then verify the published
+   image, API, and `hew run` smoke path against the candidate version. Running
    `scripts/assert-playground-release-image.sh` outside Actions requires
    `GHCR_USERNAME` and `GHCR_TOKEN`; the token must be a classic GitHub PAT with
    the `read:packages` scope (and organization SSO authorization when the
    organization requires it).
-   An explicit post-tag workflow dispatch may use `PLAYGROUND_PUBLISH_MODE=actions`;
-   that path invokes playground publish authority and watches the authenticated
-   downstream workflow before applying the same image assertion. A maintainer
-   publishing directly after the tag must use
-   `scripts/publish-release-image.sh publish` from the same pinned clean checkout.
+   Any intentional post-tag rebuild must use
+   `scripts/publish-release-image.sh publish` manually from that same exact clean
+   playground checkout. Reconfirm the new digest and update the version-scoped
+   lock before rerunning the assertion; never dispatch a mutable remote branch.
 7. Only after both independent publication arms are green, pin the candidate and cut over the banner in
    `hew.sh` and `hew.run`.
 8. Rebuild Android from the tagged candidate and verify its artifact.

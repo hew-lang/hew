@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Assert that the playground release image for a Hew release tag exists in the
-# container registry and that its image config binds the exact release commit.
+# container registry and that its immutable digest, target platform, and image
+# config bind the exact release commit.
 #
-# This is the release's acquisition contract: whoever publishes the image -
-# the playground repository's Actions workflow, or a maintainer running the
-# direct, sanitized `scripts/publish-release-image.sh candidate` entrypoint from
-# its pinned clean checkout - satisfies the identical assertion. Post-tag
-# publication uses `scripts/publish-release-image.sh publish` and publish authority.
+# This is the release's handoff contract. A maintainer runs the direct,
+# sanitized `scripts/publish-release-image.sh candidate` entrypoint from a pinned
+# clean checkout, records the pushed digest, and only then creates the tag.
 # The script observes only; it never publishes or mutates.
 #
 # Inputs (environment):
 #   IMAGE_REPOSITORY       registry repository, e.g. `hew-lang/playground`
 #   IMAGE_TAG              image tag to assert, e.g. `v0.6.0-rc2`
+#   EXPECTED_DIGEST        exact immutable manifest/index sha256 digest
+#   EXPECTED_PLATFORM      exact normalized platform (required: linux/amd64)
 #   EXPECTED_REVISION      exact lowercase 40-character hew commit SHA
 #   GHCR_TOKEN             token with pull access to IMAGE_REPOSITORY. Local
 #                          GHCR runs require a classic PAT with read:packages.
@@ -39,7 +40,7 @@ IMAGE_REGISTRY_SCHEME="${IMAGE_REGISTRY_SCHEME:-https}"
 GHCR_USERNAME="${GHCR_USERNAME:-${GITHUB_ACTOR:-${USER:-}}}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-20}"
 
-for var in IMAGE_REPOSITORY IMAGE_TAG EXPECTED_REVISION GHCR_TOKEN GHCR_USERNAME; do
+for var in IMAGE_REPOSITORY IMAGE_TAG EXPECTED_DIGEST EXPECTED_PLATFORM EXPECTED_REVISION GHCR_TOKEN GHCR_USERNAME; do
     if [ -z "${!var:-}" ]; then
         fail "${var} must be set"
     fi
@@ -48,6 +49,14 @@ done
 if ! [[ "${EXPECTED_REVISION}" =~ ^[0-9a-f]{40}$ ]]; then
     fail "EXPECTED_REVISION must be an exact lowercase 40-character commit SHA, got '${EXPECTED_REVISION}'"
 fi
+if ! [[ "${EXPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    fail "EXPECTED_DIGEST must be sha256 followed by exactly 64 lowercase hexadecimal digits"
+fi
+if [ "${EXPECTED_PLATFORM}" != "linux/amd64" ]; then
+    fail "EXPECTED_PLATFORM must be exactly linux/amd64"
+fi
+readonly EXPECTED_OS="${EXPECTED_PLATFORM%%/*}"
+readonly EXPECTED_ARCH="${EXPECTED_PLATFORM#*/}"
 if [ -n "${DEADLINE_EPOCH:-}" ] && [ -n "${DEADLINE_MINUTES:-}" ]; then
     fail "set only one of DEADLINE_EPOCH or DEADLINE_MINUTES"
 fi
@@ -69,6 +78,7 @@ if [ "${IMAGE_REGISTRY_SCHEME}" != "https" ] &&
 fi
 
 readonly IMAGE_REF="${IMAGE_REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+readonly IMMUTABLE_IMAGE_REF="${IMAGE_REGISTRY}/${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}"
 if [ -n "${DEADLINE_EPOCH:-}" ]; then
     deadline="${DEADLINE_EPOCH}"
     deadline_description="the job deadline"
@@ -117,20 +127,29 @@ registry_get() {
 }
 
 body_file=$(mktemp)
-trap 'rm -f "${body_file}"' EXIT
+headers_file=$(mktemp)
+trap 'rm -f "${body_file}" "${headers_file}"' EXIT
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
 
 manifest_status() {
     local token="$1"
-    curl_before_deadline -sSL -o "${body_file}" -w '%{http_code}' \
+    : >"${headers_file}"
+    curl_before_deadline -sSL -D "${headers_file}" -o "${body_file}" -w '%{http_code}' \
         --oauth2-bearer "${token}" \
         -H "Accept: ${MANIFEST_ACCEPT}" \
         "${IMAGE_REGISTRY_SCHEME}://${IMAGE_REGISTRY}/v2/${IMAGE_REPOSITORY}/manifests/${IMAGE_TAG}"
 }
 
-manifest_binds_expected_revision() {
+manifest_binds_expected_identity() {
     local token="$1" manifest="$2" descriptor child_digest child config_digest
-    local annotation platform_os config revision
-    local stale=0
+    local annotation platform_os platform_arch config config_os config_arch revision
     local config_digests=()
 
     jq -e . >/dev/null <<<"${manifest}" ||
@@ -144,12 +163,16 @@ manifest_binds_expected_revision() {
                 continue
             fi
             platform_os=$(jq -r '.platform.os // ""' <<<"${descriptor}")
+            platform_arch=$(jq -r '.platform.architecture // ""' <<<"${descriptor}")
             child_digest=$(jq -r '.digest // ""' <<<"${descriptor}")
             if [ -z "${platform_os}" ] || [ "${platform_os}" = "unknown" ]; then
                 fail "${IMAGE_REF} index child ${child_digest:-<missing digest>} has no platform.os and is not marked as an attestation manifest"
             fi
-            if [ -z "${child_digest}" ]; then
-                fail "${IMAGE_REF} index contains a runnable child with no digest"
+            if ! [[ "${child_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                fail "${IMAGE_REF} index contains a runnable child with an invalid digest"
+            fi
+            if [ "${platform_os}" != "${EXPECTED_OS}" ] || [ "${platform_arch}" != "${EXPECTED_ARCH}" ]; then
+                continue
             fi
             child=$(registry_get "${token}" "manifests/${child_digest}" "${MANIFEST_ACCEPT}") ||
                 fail "could not read image manifest ${child_digest}"
@@ -163,27 +186,32 @@ manifest_binds_expected_revision() {
         config_digests+=("${config_digest}")
     fi
 
-    if [ "${#config_digests[@]}" -eq 0 ]; then
-        fail "${IMAGE_REF} resolves to no runnable image manifest"
+    if [ "${#config_digests[@]}" -ne 1 ]; then
+        fail "${IMMUTABLE_IMAGE_REF} must resolve to exactly one ${EXPECTED_PLATFORM} image manifest"
     fi
 
     for config_digest in "${config_digests[@]}"; do
+        if ! [[ "${config_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            fail "image manifest has an invalid config digest"
+        fi
         config=$(registry_get "${token}" "blobs/${config_digest}" "${CONFIG_ACCEPT}") ||
             fail "could not read image config ${config_digest}"
+        config_os=$(jq -r '.os // ""' <<<"${config}")
+        config_arch=$(jq -r '.architecture // ""' <<<"${config}")
+        if [ "${config_os}/${config_arch}" != "${EXPECTED_PLATFORM}" ]; then
+            fail "${IMMUTABLE_IMAGE_REF} config is ${config_os:-<missing>}/${config_arch:-<missing>}, not ${EXPECTED_PLATFORM}"
+        fi
         revision=$(jq -r --arg label "${REVISION_LABEL}" '.config.Labels[$label] // ""' <<<"${config}")
         if [ -z "${revision}" ]; then
             fail "${IMAGE_REF} (config ${config_digest}) carries no ${REVISION_LABEL} label; the publisher must stamp the hew release commit onto the image"
         fi
         if [ "${revision}" != "${EXPECTED_REVISION}" ]; then
-            echo "${IMAGE_REF} (config ${config_digest}) still binds ${revision}; waiting for ${EXPECTED_REVISION}" >&2
-            stale=1
+            fail "${IMMUTABLE_IMAGE_REF} (config ${config_digest}) binds ${revision}, not ${EXPECTED_REVISION}"
         fi
     done
-
-    [ "${stale}" -eq 0 ]
 }
 
-echo "waiting until ${deadline} for ${IMAGE_REF} to bind ${EXPECTED_REVISION}"
+echo "waiting until ${deadline} for ${IMAGE_REF} to resolve to ${EXPECTED_DIGEST}"
 while :; do
     check_deadline
     if ! token=$(pull_token); then
@@ -194,11 +222,24 @@ while :; do
     fi
     case "${status}" in
     200)
-        manifest=$(cat "${body_file}")
-        if manifest_binds_expected_revision "${token}" "${manifest}"; then
-            echo "${IMAGE_REF} exists and binds release commit ${EXPECTED_REVISION}"
-            exit 0
+        registry_digest=$(awk '
+            tolower($1) == "docker-content-digest:" {
+                value=$2
+                sub(/\r$/, "", value)
+                print value
+            }
+        ' "${headers_file}" | tail -n 1)
+        if [ "${registry_digest}" != "${EXPECTED_DIGEST}" ]; then
+            fail "${IMAGE_REF} registry digest is ${registry_digest:-<missing>}, not ${EXPECTED_DIGEST}"
         fi
+        raw_digest="sha256:$(sha256_file "${body_file}")"
+        if [ "${raw_digest}" != "${EXPECTED_DIGEST}" ]; then
+            fail "${IMAGE_REF} raw manifest digest is ${raw_digest}, not ${EXPECTED_DIGEST}"
+        fi
+        manifest=$(cat "${body_file}")
+        manifest_binds_expected_identity "${token}" "${manifest}"
+        echo "${IMMUTABLE_IMAGE_REF} is ${EXPECTED_PLATFORM} and binds release commit ${EXPECTED_REVISION}"
+        exit 0
         ;;
     404) ;;
     401 | 403)

@@ -1241,6 +1241,34 @@ if (( COMPREHENSIVE == 1 )); then
     add_command "make check-counterfactual-output-artifacts"
 fi
 
+# Decide whether the selected lane exercises compiled artifacts before command
+# overrides and sharding change the command list.  Comprehensive and Rust
+# closure lanes are compile routes by definition.  A narrower non-Rust lane is
+# a compile route when one of its real gates has a non-empty build form.
+REQUIRES_COMPILE=false
+if (( COMPREHENSIVE == 1 || NEEDS_RUST_CLOSURE == 1 )); then
+    REQUIRES_COMPILE=true
+elif [[ -z "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
+    plan_make_build_forms
+    for cmd in "${COMMANDS[@]}"; do
+        derive_warmup "$cmd"
+    done
+    if [[ ${WARMUP_COMMANDS[0]+set} == set ]]; then
+        REQUIRES_COMPILE=true
+    fi
+    # The real warm-up is derived again after shard selection so each shard
+    # builds only the artifacts needed by its own commands.
+    WARMUP_COMMANDS=()
+    PLAN_TARGETS_WITH_WORK=""
+fi
+
+# The profile assertion is part of the normal command list, so it participates
+# in an exhaustive shard plan.  A test-only override below still replaces the
+# whole list exactly, as its contract promises.
+if [[ "$REQUIRES_COMPILE" == "true" ]]; then
+    add_command "make hew-profile-check"
+fi
+
 # Test-only override for dispatcher command execution. This keeps failure-policy
 # tests deterministic without widening the public command-substitution surface.
 if [[ -n "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
@@ -1405,23 +1433,10 @@ if [[ -n "${PREFLIGHT_TEST_WARMUP_COMMANDS:-}" ]]; then
     done <<< "$PREFLIGHT_TEST_WARMUP_COMMANDS"
 fi
 
-# Whether a toolchain is needed is read off the routing decision and the
-# warm-up pass, never derived a second time here: a Rust input in the diff means
-# the closure clippy and nextest runs compile, and a non-empty warm-up set means
-# make itself planned work for a selected gate's build form.
-#
-# Both are properties of the SELECTION, so the answer survives the test-only
-# command override, which replaces the gate list with a no-op.
-REQUIRES_COMPILE=false
-if (( COMPREHENSIVE == 1 || NEEDS_RUST_CLOSURE == 1 )) \
-    || [[ ${WARMUP_COMMANDS[0]+set} == set ]]; then
+# A synthetic warm-up also advertises a compile route to tests of the output
+# contract, but it must not append a real command to the overridden list.
+if [[ ${WARMUP_COMMANDS[0]+set} == set ]]; then
     REQUIRES_COMPILE=true
-fi
-
-# Assert the supported developer compiler profile on every route that can
-# exercise code or build configuration.
-if [[ "$REQUIRES_COMPILE" == "true" ]]; then
-    add_command "make hew-profile-check"
 fi
 
 if [[ -n "$GITHUB_OUTPUT_PATH" ]]; then

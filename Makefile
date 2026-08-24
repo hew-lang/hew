@@ -158,7 +158,7 @@ MAKEFILE_PARSE_INPUTS := \
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure
+.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure dogfood-compile-measure-build
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 
@@ -357,6 +357,7 @@ hew-debug: hew-native
 	@echo "compiler path: $(DEBUG_HEW)"
 	@test -f "$(DEBUG_HEW)"
 
+# inputs: Makefile Cargo.toml Cargo.lock
 hew-profile-check: hew
 	@actual="$$(readlink "$(BUILD_DIR)/bin/hew")"; \
 	expected="$(LINK_UP2)$(RELEASE_LIB_HEW)"; \
@@ -1304,10 +1305,15 @@ ll-golden: hew-native
 # The gate measures define blocks, excluding host-specific module headers.
 #         build/bin/hew (release-lib profile)
 LINT_GATES += dogfood-compile-measure
-dogfood-compile-measure: hew
+dogfood-compile-measure: hew $(LIBHEW_READY)
 	@args=""; \
 	if [ "$(DOGFOOD_MEASURE_UPDATE)" = "1" ]; then args="--update"; fi; \
 	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/dogfood-compile-measure.sh $$args
+
+# Warm the release-lib compiler and the table-derived shared artifacts without
+# running the measurement gate.
+dogfood-compile-measure-build: hew $(LIBHEW_READY)
+	@:
 
 # Self-test for the ll-byte-identity normaliser: six independently-failable
 # cases that prove string-content changes and numeric-const NAME changes are

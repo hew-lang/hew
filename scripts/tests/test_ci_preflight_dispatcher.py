@@ -2554,7 +2554,10 @@ def test_counterfactual_rosters_follow_shared_artifact_requirements() -> None:
         if (fields := line.split("\t")) and fields[0] == "gate"
     }
 
-    assert requirements == {"test-leak-oracle-selftest": "shared-artifacts"}
+    assert requirements == {
+        "test-leak-oracle-selftest": "shared-artifacts",
+        "dogfood-compile-measure": "shared-artifacts",
+    }
     assert set(requirements) <= roster
     assert "COUNTERFACTUAL_GATE_REQUIREMENTS_FILE" in dispatcher
     assert 'requirement="$(counterfactual_gate_requirement "$target")"' in dispatcher

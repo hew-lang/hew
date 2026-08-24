@@ -6269,27 +6269,41 @@ fn retained_string_share_owners_at_aggregate_sites(
     let retained_edges: Vec<(Place, Place)> = builder
         .string_local_share_sites
         .iter()
-        .filter(|(site, (source, _destination))| {
-            blocks
-                .iter()
-                .flat_map(|block| &block.statements)
-                .any(|statement| {
-                    matches!(
-                        statement,
-                        MirStatement::Use {
-                            binding,
-                            site: use_site,
-                            intent: IntentKind::Read,
-                            ..
-                        } if binding == source && use_site == *site
-                    )
-                })
-        })
-        .filter_map(|(_site, (source, destination))| {
-            Some((
-                *builder.binding_locals.get(source)?,
-                *builder.binding_locals.get(destination)?,
-            ))
+        .filter_map(|(_site, (source_binding, destination_binding))| {
+            let source = *builder.binding_locals.get(source_binding)?;
+            let destination = *builder.binding_locals.get(destination_binding)?;
+            let move_sites: Vec<(u32, usize)> =
+                blocks
+                    .iter()
+                    .flat_map(|block| {
+                        block.instructions.iter().enumerate().filter_map(
+                            move |(index, instruction)| {
+                                matches!(
+                                    instruction,
+                                    Instr::Move { dest, src }
+                                        if *dest == destination && *src == source
+                                )
+                                .then_some((block.id, index))
+                            },
+                        )
+                    })
+                    .collect();
+            let retained = match move_sites.as_slice() {
+                [(block, index)] => {
+                    blocks.first().map(|entry| entry.id) != Some(*block)
+                        || base_local(source).is_some_and(|local| {
+                            local_is_used_after(
+                                blocks,
+                                &builder.suspend_kinds,
+                                local,
+                                *block,
+                                *index,
+                            )
+                        })
+                }
+                _ => true,
+            };
+            retained.then_some((source, destination))
         })
         .collect();
 

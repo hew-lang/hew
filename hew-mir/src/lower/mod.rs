@@ -6223,6 +6223,75 @@ fn returned_aggregate_member_source_targets(
         .collect()
 }
 
+/// String binders from an unneutralizable projected payload that flow into a
+/// returned aggregate.
+///
+/// A nested destructure first byte-copies its parent payload into a transient
+/// carrier, then byte-copies the leaf into the binder local. Neither local is
+/// the matched call result's owning slot, so clearing the binder after record
+/// construction cannot transfer the carrier's owner. The returned record must
+/// instead gain an independent `+1` before the carrier's recursive drop.
+///
+/// Keep this authority string-only: `CoW` strings have an explicit retain
+/// primitive. Other heap-owning projected payloads remain under the existing
+/// fail-closed transfer rules rather than acquiring an invented ownership
+/// protocol here.
+fn nested_projected_returned_string_sources(
+    candidates: &[(BindingId, String, ResolvedTy)],
+    returned_members: &HashSet<BindingId>,
+    builder: &Builder,
+) -> HashSet<Place> {
+    candidates
+        .iter()
+        .filter(|(binding, _name, ty)| {
+            returned_members.contains(binding) && matches!(ty, ResolvedTy::String)
+        })
+        .filter_map(|(binding, _name, _ty)| {
+            matches!(
+                builder
+                    .projected_payload_provenance
+                    .get(binding)
+                    .map(|provenance| &provenance.origin),
+                Some(ProjectedPayloadOrigin::Reject(
+                    ProjectedPayloadRejectReason::NestedDestructure
+                ))
+            )
+            .then(|| builder.binding_locals.get(binding).copied())
+            .flatten()
+        })
+        .collect()
+}
+
+fn retain_nested_projected_returned_strings(
+    block: &mut BasicBlock,
+    sources: &[Place],
+    nested_projected_strings: &HashSet<Place>,
+    share_reuse_exclusions: &HashSet<Place>,
+    already_neutralized: &HashSet<Place>,
+    index: &mut usize,
+    builder: &mut Builder,
+) {
+    for source in sources.iter().copied().filter(|source| {
+        nested_projected_strings.contains(source)
+            && !share_reuse_exclusions.contains(source)
+            && !already_neutralized.contains(source)
+    }) {
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block.id,
+            u32::try_from(*index).unwrap_or(u32::MAX),
+        );
+        block.instructions.insert(
+            *index,
+            Instr::StringRetain {
+                value: source,
+                condition: StringRetainCondition::Always,
+            },
+        );
+        *index += 1;
+    }
+}
+
 fn aggregate_member_consumed_sources(blocks: &[BasicBlock]) -> HashSet<Place> {
     blocks
         .iter()
@@ -6320,23 +6389,8 @@ fn returned_member_share_reuse_exclusions(
     excluded
 }
 
-fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let candidates = builder.owned_locals_exit_candidates();
-    let returned_members =
-        derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
-    if returned_members.is_empty() {
-        return;
-    }
-
-    let candidate_places =
-        returned_aggregate_member_source_targets(&candidates, &returned_members, builder);
-    let already_neutralized = aggregate_member_consumed_sources(blocks);
-
-    // Reverse the exact whole-value move graph from the return slot. A
-    // constructor qualifies only when its own destination is in this closure;
-    // another aggregate built from the same source in the same block cannot
-    // trigger an early neutralize.
-    let mut returned_value_locals: HashSet<u32> = blocks
+fn returned_aggregate_value_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let mut returned: HashSet<u32> = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instr| match instr {
@@ -6353,16 +6407,37 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
             let Instr::Move { dest, src } = instr else {
                 continue;
             };
-            if base_local(*dest).is_some_and(|dest| returned_value_locals.contains(&dest)) {
+            if base_local(*dest).is_some_and(|dest| returned.contains(&dest)) {
                 if let Some(source) = base_local(*src) {
-                    changed |= returned_value_locals.insert(source);
+                    changed |= returned.insert(source);
                 }
             }
         }
         if !changed {
-            break;
+            return returned;
         }
     }
+}
+
+fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidates = builder.owned_locals_exit_candidates();
+    let returned_members =
+        derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
+    if returned_members.is_empty() {
+        return;
+    }
+
+    let candidate_places =
+        returned_aggregate_member_source_targets(&candidates, &returned_members, builder);
+    let nested_projected_returned_strings =
+        nested_projected_returned_string_sources(&candidates, &returned_members, builder);
+    let already_neutralized = aggregate_member_consumed_sources(blocks);
+
+    // Reverse the exact whole-value move graph from the return slot. A
+    // constructor qualifies only when its own destination is in this closure;
+    // another aggregate built from the same source in the same block cannot
+    // trigger an early neutralize.
+    let returned_value_locals = returned_aggregate_value_locals(blocks);
 
     // A member source that is read after its aggregate construction is a
     // retained co-owner (a SHARE), not a transfer, and must keep its scope-exit
@@ -6392,6 +6467,22 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
                 index += 1;
                 continue;
             }
+
+            // A rejected projected string source aliases an owner that this
+            // local cannot neutralize. Mint the returned field's owner before
+            // the byte-copying constructor, unless a later use already makes
+            // this a SHARE handled by `finalize_string_ownership`. Retains are
+            // per field occurrence: two returned fields need two independent
+            // owner counts even when they read the same alias.
+            retain_nested_projected_returned_strings(
+                block,
+                &sources,
+                &nested_projected_returned_strings,
+                &share_reuse_exclusions,
+                &already_neutralized,
+                &mut index,
+                builder,
+            );
 
             let mut neutralized = HashSet::new();
             let sources: Vec<Place> = sources

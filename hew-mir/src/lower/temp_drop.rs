@@ -3,17 +3,17 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     base_local, binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
-    block_by_id, blocks_reachable_from, call_terminator_next, cow_value_leaf_drop_symbol, dataflow,
-    derive_local_bytes_drop_allowed, generator_yield_instr_escapes,
-    generator_yield_terminator_escapes, instr_source_places, local_is_used_after,
-    place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
-    propagate_whole_value_alias_roots_excluding_moves, shift_instr_spans_on_insert,
-    terminator_source_places, vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock,
-    BindingId, Builder, BytesDropDerivation, BytesRetainPlacement, BytesRetainSite,
-    ClosureEnvFieldOwnership, DischargeSite, Disposition, DropKind, ElabDrop, FieldOffset, HashMap,
-    HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
-    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
-    StringRetainSite, SuspendKind, Terminator,
+    block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
+    cow_value_leaf_drop_symbol, dataflow, derive_local_bytes_drop_allowed,
+    generator_yield_instr_escapes, generator_yield_terminator_escapes, instr_source_places,
+    local_is_used_after, place_is_interior_projection, place_refs_local,
+    propagate_whole_value_alias_roots, propagate_whole_value_alias_roots_excluding_moves,
+    shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_layout_key,
+    ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
+    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, DischargeSite, Disposition,
+    DropKind, ElabDrop, FieldOffset, HashMap, HashSet, Instr, IntentKind, MirStatement,
+    NestedDefSite, NestedUseSite, Place, RawMirFunction, ResolvedTy, SelectArmKind, SiteId,
+    StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
 };
 
 const STRING_RETURN_SOURCE_BORROWED: u8 = 0b001;
@@ -177,14 +177,106 @@ pub(super) fn unique_move_generation_reaches_site(
     target_block: u32,
     target_instr_index: usize,
 ) -> bool {
-    typed_handoff_owner_reaches_site(
+    let mut definitions = blocks.iter().flat_map(|block| {
+        block
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, instruction)| {
+                matches!(instruction, Instr::Move { dest, src }
+                    if *dest == destination && *src == source)
+                .then_some((block.id, index))
+            })
+    });
+    let Some((definition_block, definition_index)) = definitions.next() else {
+        return false;
+    };
+    if definitions.next().is_some() {
+        return false;
+    }
+    local_generation_survives_to_site(
         blocks,
         suspend_kinds,
-        &HashSet::from([(source, destination)]),
         destination,
+        definition_block,
+        definition_index,
         target_block,
         target_instr_index,
     )
+}
+
+/// Whether a local's generation after `definition_index` reaches `target`
+/// without an intervening write on any path that can reach the target.
+pub(super) fn local_generation_survives_to_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    value: Place,
+    definition_block: u32,
+    definition_index: usize,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    let Some(local) = base_local(value) else {
+        return false;
+    };
+    let dominators = block_dominators(blocks);
+    if !dominators
+        .get(&target_block)
+        .is_some_and(|set| set.contains(&definition_block))
+    {
+        return false;
+    }
+    let reachable_from_definition = blocks_reachable_from(blocks, definition_block);
+    if definition_block != target_block && !reachable_from_definition.contains(&target_block) {
+        return false;
+    }
+
+    for block in blocks {
+        let reaches_target = block.id == target_block
+            || blocks_reachable_from(blocks, block.id).contains(&target_block);
+        let reached_from_definition =
+            block.id == definition_block || reachable_from_definition.contains(&block.id);
+        if !reaches_target || !reached_from_definition {
+            continue;
+        }
+        if blocks_reachable_from(blocks, block.id).contains(&block.id) {
+            return false;
+        }
+        let start = if block.id == definition_block {
+            definition_index.saturating_add(1)
+        } else {
+            0
+        };
+        let end = if block.id == target_block {
+            target_instr_index
+        } else {
+            block.instructions.len()
+        };
+        if start > end
+            || block.instructions[start..end].iter().any(|instruction| {
+                crate::dataflow::instr_reads_writes(instruction)
+                    .1
+                    .into_iter()
+                    .any(|place| base_local(place) == Some(local))
+            })
+        {
+            return false;
+        }
+        if block.id != target_block
+            && crate::dataflow::terminator_write_places(&block.terminator)
+                .into_iter()
+                .chain(
+                    suspend_kinds
+                        .get(&block.id)
+                        .into_iter()
+                        .flat_map(crate::dataflow::suspend_kind_write_places),
+                )
+                .any(|place| base_local(place) == Some(local))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Prove that a direct typed publication still carries the same generation at

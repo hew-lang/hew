@@ -6262,11 +6262,11 @@ fn nested_projected_returned_string_sources(
         .collect()
 }
 
-fn retained_string_share_owners_at_aggregate_sites(
+fn retained_string_share_edges(
     blocks: &[BasicBlock],
     builder: &Builder,
-) -> HashSet<(u32, Place, Place)> {
-    let retained_edges: Vec<(Place, Place)> = builder
+) -> Vec<(Place, Place, u32, usize)> {
+    builder
         .string_local_share_sites
         .iter()
         .filter_map(|(_site, (source_binding, destination_binding))| {
@@ -6303,10 +6303,19 @@ fn retained_string_share_owners_at_aggregate_sites(
                 }
                 _ => true,
             };
-            retained.then_some((source, destination))
+            let [(move_block, move_index)] = move_sites.as_slice() else {
+                return None;
+            };
+            retained.then_some((source, destination, *move_block, *move_index))
         })
-        .collect();
+        .collect()
+}
 
+fn retained_string_share_owners_at_aggregate_sites(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+) -> HashSet<(u32, Place, Place)> {
+    let retained_edges = retained_string_share_edges(blocks, builder);
     let mut owners = HashSet::new();
     for block in blocks {
         for (index, instruction) in block.instructions.iter().enumerate() {
@@ -6318,21 +6327,48 @@ fn retained_string_share_owners_at_aggregate_sites(
                 ),
                 _ => continue,
             };
+            let mut owner_sources = HashSet::new();
+            let mut stable_links = HashMap::<Place, Vec<Place>>::new();
+            for (fork_source, fork_destination, move_block, move_index) in &retained_edges {
+                if !temp_drop::unique_move_generation_reaches_site(
+                    blocks,
+                    &builder.suspend_kinds,
+                    *fork_source,
+                    *fork_destination,
+                    block.id,
+                    index,
+                ) {
+                    continue;
+                }
+                owner_sources.insert(*fork_destination);
+                if temp_drop::local_generation_survives_to_site(
+                    blocks,
+                    &builder.suspend_kinds,
+                    *fork_source,
+                    *move_block,
+                    *move_index,
+                    block.id,
+                    index,
+                ) {
+                    stable_links
+                        .entry(*fork_source)
+                        .or_default()
+                        .push(*fork_destination);
+                }
+            }
             for source in sources {
-                if retained_edges
-                    .iter()
-                    .any(|(fork_source, fork_destination)| {
-                        *fork_destination == source
-                            && temp_drop::unique_move_generation_reaches_site(
-                                blocks,
-                                &builder.suspend_kinds,
-                                *fork_source,
-                                *fork_destination,
-                                block.id,
-                                index,
-                            )
-                    })
-                {
+                let mut family = vec![source];
+                let mut seen = HashSet::from([source]);
+                let mut has_owner = false;
+                while let Some(member) = family.pop() {
+                    has_owner |= owner_sources.contains(&member);
+                    for next in stable_links.get(&member).into_iter().flatten() {
+                        if seen.insert(*next) {
+                            family.push(*next);
+                        }
+                    }
+                }
+                if has_owner {
                     owners.insert((block.id, destination, source));
                 }
             }

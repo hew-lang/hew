@@ -239,9 +239,6 @@ pub(super) fn local_generation_survives_to_site(
         if !reaches_target || !reached_from_definition {
             continue;
         }
-        if blocks_reachable_from(blocks, block.id).contains(&block.id) {
-            return false;
-        }
         let start = if block.id == definition_block {
             definition_index.saturating_add(1)
         } else {
@@ -1681,9 +1678,128 @@ fn stable_string_fork_families_at_site(
     (owner_destinations, stable_family)
 }
 
+struct FreshTransferableStringOwnerProof<'a> {
+    blocks: &'a [BasicBlock],
+    suspend_kinds: &'a HashMap<u32, SuspendKind>,
+    locals: &'a [ResolvedTy],
+    owned_string_return_carrier_symbols: &'a HashSet<String>,
+}
+
+fn fresh_transferable_string_owner_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    owned_string_return_carrier_symbols: &HashSet<String>,
+    value: Place,
+    target_block: u32,
+    target_index: usize,
+) -> bool {
+    fn reaches(
+        proof: &FreshTransferableStringOwnerProof<'_>,
+        value: Place,
+        target_block: u32,
+        target_index: usize,
+        visiting: &mut HashSet<(Place, u32, usize)>,
+    ) -> bool {
+        let Place::Local(local) = value else {
+            return false;
+        };
+        if !visiting.insert((value, target_block, target_index)) {
+            return false;
+        }
+        let definitions: Vec<(u32, usize, &Instr)> = proof
+            .blocks
+            .iter()
+            .flat_map(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(index, instruction)| {
+                        crate::dataflow::instr_reads_writes(instruction)
+                            .1
+                            .contains(&value)
+                            .then_some((block.id, index, instruction))
+                    })
+            })
+            .filter(|(block, index, _instruction)| {
+                local_generation_survives_to_site(
+                    proof.blocks,
+                    proof.suspend_kinds,
+                    value,
+                    *block,
+                    *index,
+                    target_block,
+                    target_index,
+                )
+            })
+            .collect();
+        let [(_block, _index, definition)] = definitions.as_slice() else {
+            return false;
+        };
+        let producer =
+            fresh_string_producer_dest(definition, proof.owned_string_return_carrier_symbols)
+                .or_else(|| string_field_load_producer_dest(definition, proof.locals))
+                .or_else(|| wire_codec_string_producer_dest(definition, proof.locals));
+        if producer == Some(value) {
+            return true;
+        }
+        let Instr::Move { dest, src } = definition else {
+            return false;
+        };
+        if *dest != Place::Local(local) {
+            return false;
+        }
+        let (definition_block, definition_index, _) = definitions[0];
+        reaches(proof, *src, definition_block, definition_index, visiting)
+    }
+
+    if base_local(value).is_none() {
+        return false;
+    }
+    let proof = FreshTransferableStringOwnerProof {
+        blocks,
+        suspend_kinds,
+        locals,
+        owned_string_return_carrier_symbols,
+    };
+    reaches(
+        &proof,
+        value,
+        target_block,
+        target_index,
+        &mut HashSet::new(),
+    )
+}
+
+fn returned_aggregate_consumes_source(
+    block: &BasicBlock,
+    constructor_index: usize,
+    source: Place,
+    destination: Place,
+) -> bool {
+    block
+        .instructions
+        .iter()
+        .skip(constructor_index.saturating_add(1))
+        .take_while(|instruction| matches!(instruction, Instr::NeutralizePayloadSlot { .. }))
+        .any(|instruction| {
+            matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot {
+                    place,
+                    transferee: Some(transferee),
+                    authority: crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
+                } if *place == source && *transferee == destination
+            )
+        })
+}
+
 fn suppress_aggregate_retains_covered_by_stable_forks(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    owned_string_return_carrier_symbols: &HashSet<String>,
     retain_sites: &mut Vec<StringRetainSite>,
 ) {
     let forks: Vec<(Place, Place, u32, usize)> = retain_sites
@@ -1702,11 +1818,12 @@ fn suppress_aggregate_retains_covered_by_stable_forks(
     let mut remove = HashMap::<(u32, usize, Place), usize>::new();
     for block in blocks {
         for (index, instruction) in block.instructions.iter().enumerate() {
-            let sources: Vec<Place> = match instruction {
-                Instr::TupleConstruct { elements, .. } => elements.clone(),
-                Instr::RecordInit { fields, .. } => {
-                    fields.iter().map(|(_offset, source)| *source).collect()
-                }
+            let (destination, sources): (Place, Vec<Place>) = match instruction {
+                Instr::TupleConstruct { elements, dest } => (*dest, elements.clone()),
+                Instr::RecordInit { fields, dest, .. } => (
+                    *dest,
+                    fields.iter().map(|(_offset, source)| *source).collect(),
+                ),
                 _ => continue,
             };
             let aggregate_sites: Vec<&StringRetainSite> = retain_sites
@@ -1743,7 +1860,22 @@ fn suppress_aggregate_retains_covered_by_stable_forks(
                     .iter()
                     .filter(|owner| family.contains(owner))
                     .count();
-                let required = occurrences.saturating_sub(preminted);
+                let transferable_base = family.iter().any(|member| {
+                    sources.contains(member)
+                        && returned_aggregate_consumes_source(block, index, *member, destination)
+                        && fresh_transferable_string_owner_reaches_site(
+                            blocks,
+                            suspend_kinds,
+                            locals,
+                            owned_string_return_carrier_symbols,
+                            *member,
+                            block.id,
+                            index,
+                        )
+                });
+                let required = occurrences
+                    .saturating_sub(preminted)
+                    .saturating_sub(usize::from(transferable_base));
                 let family_sites: Vec<&StringRetainSite> = aggregate_sites
                     .iter()
                     .copied()
@@ -5101,6 +5233,10 @@ pub(super) fn finalize_string_ownership(
     suppress_aggregate_retains_covered_by_stable_forks(
         &raw.blocks,
         &builder.suspend_kinds,
+        &builder.locals,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
         &mut derivation.retain_sites,
     );
     apply_string_retain_sites(

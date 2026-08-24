@@ -176,6 +176,103 @@ fn main() {{
     )
 }
 
+fn stable_loop_alias_source(frames: usize) -> String {
+    format!(
+        r#"
+enum CleanupError {{
+    Dirty(string);
+}}
+
+type Pair {{
+    first: string;
+    second: string;
+}}
+
+fn persist(value: string) {{
+    if value.is_empty() {{
+        panic("empty");
+    }}
+}}
+
+fn cleanup() -> Result<(), CleanupError> {{
+    Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
+}}
+
+fn build() -> Result<Pair, string> {{
+    match cleanup() {{
+        .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
+        .Err(CleanupError.Dirty(message)) => {{
+            let alias = message;
+            for _ in 0..1 {{
+                persist(alias.clone());
+            }}
+            Ok(Pair {{ first: message, second: alias }})
+        }},
+    }}
+}}
+
+fn main() {{
+    for _ in 0..{frames} {{
+        match build() {{
+            .Err(message) => panic(message),
+            .Ok(pair) => {{
+                if pair.first != pair.second {{
+                    panic("wrong pair");
+                }}
+            }},
+        }}
+        println("frame");
+    }}
+}}
+"#
+    )
+}
+
+fn overwritten_before_fork_source(frames: usize) -> String {
+    format!(
+        r#"
+enum CleanupError {{
+    Dirty(string);
+}}
+
+type Pair {{
+    first: string;
+    second: string;
+}}
+
+fn cleanup() -> Result<(), CleanupError> {{
+    Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
+}}
+
+fn build(i: i64) -> Result<Pair, string> {{
+    match cleanup() {{
+        .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
+        .Err(CleanupError.Dirty(message)) => {{
+            var current = message;
+            current = "replacement " + f"{{i}}";
+            let alias = current;
+            Ok(Pair {{ first: current, second: alias }})
+        }},
+    }}
+}}
+
+fn main() {{
+    for i in 0..{frames} {{
+        match build(i) {{
+            .Err(message) => panic(message),
+            .Ok(pair) => {{
+                if pair.first != pair.second {{
+                    panic("wrong pair");
+                }}
+            }},
+        }}
+        println("frame");
+    }}
+}}
+"#
+    )
+}
+
 fn dump_raw_mir(source: &str, name: &str) -> String {
     let dir = tempfile::Builder::new()
         .prefix("returned-record-projected-string-mir-")
@@ -277,6 +374,27 @@ fn nested_payload_return_mints_only_the_missing_owner() {
         "an overwritten binding must not join its replacement generation to a historical alias:\n\
          {overwritten_build}"
     );
+
+    let looped_raw = dump_raw_mir(&stable_loop_alias_source(1), "stable_loop_alias");
+    let looped_build = function_section(&looped_raw, "build");
+    assert_eq!(
+        looped_build.match_indices("string.retain").count(),
+        2,
+        "a read-only loop preserves the forked generation and needs no extra owner:\n\
+         {looped_build}"
+    );
+
+    let before_fork_raw = dump_raw_mir(
+        &overwritten_before_fork_source(1),
+        "overwritten_before_fork",
+    );
+    let before_fork_build = function_section(&before_fork_raw, "build");
+    assert_eq!(
+        before_fork_build.match_indices("string.retain").count(),
+        2,
+        "the fresh replacement base owner and its retained fork are sufficient:\n\
+         {before_fork_build}"
+    );
 }
 
 #[test]
@@ -324,6 +442,34 @@ fn overwritten_alias_generations_have_no_per_iteration_leak() {
     assert_frame_slope_below_tolerance_exact_lines(
         "overwritten_returned_string_alias_generations",
         overwritten_alias_source,
+        |frames| frames,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the low/high leak-slope oracle requires macOS leaks(1)"
+)]
+#[test]
+fn stable_alias_across_read_only_loop_has_no_per_iteration_leak() {
+    require_codegen();
+    assert_frame_slope_below_tolerance_exact_lines(
+        "stable_alias_across_read_only_loop",
+        stable_loop_alias_source,
+        |frames| frames,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the low/high leak-slope oracle requires macOS leaks(1)"
+)]
+#[test]
+fn fresh_overwrite_before_fork_has_no_per_iteration_leak() {
+    require_codegen();
+    assert_frame_slope_below_tolerance_exact_lines(
+        "fresh_overwrite_before_fork",
+        overwritten_before_fork_source,
         |frames| frames,
     );
 }

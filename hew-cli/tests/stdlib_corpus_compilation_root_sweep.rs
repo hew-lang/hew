@@ -99,7 +99,7 @@ fn compile_to_mir(file: &std::path::Path) -> Verdict {
 }
 
 /// Every `.hew` file under `std/`, which is exactly the set
-/// `scripts/stdlib-ratchet.sh` walks.
+/// `scripts/corpus-ratchet.sh stdlib` walks.
 fn corpus() -> Vec<std::path::PathBuf> {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {

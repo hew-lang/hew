@@ -11,11 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKER = ROOT / "scripts/canonical-keyspace-lint.py"
-AST_GREP = (
-    Path(sys.argv[1]).resolve()
-    if len(sys.argv) > 1
-    else ROOT / ".ast-grep/tool/bin/ast-grep"
-)
+AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 
 SOURCE = """
 use std::collections::{HashMap, HashSet};
@@ -67,48 +63,63 @@ def run(source: str, inventory_rows: str = "") -> subprocess.CompletedProcess[st
         )
 
 
-red = run(SOURCE)
-if red.returncode != 1 or "bare identifier `name`" not in red.stderr:
-    raise SystemExit(
-        f"RED bare-key counterfactual did not fail with a fix hint:\n{red.stderr}"
+def main() -> None:
+    global AST_GREP
+    if len(sys.argv) > 1:
+        AST_GREP = Path(sys.argv[1]).resolve()
+
+    red = run(SOURCE)
+    if red.returncode != 1 or "bare identifier `name`" not in red.stderr:
+        raise SystemExit(
+            f"RED bare-key counterfactual did not fail with a fix hint:\n{red.stderr}"
+        )
+
+    allow = (
+        "# canonical-keyspace-allow\thew-types/src/lib.rs\titem_defs\t1\t"
+        "hew-types\ta316-keyspace-item-defs\treviewed pre-existing key\n"
     )
+    green = run(SOURCE, allow)
+    if green.returncode != 0:
+        raise SystemExit(
+            f"allowlisted pre-existing counterfactual failed:\n{green.stderr}"
+        )
 
-allow = (
-    "# canonical-keyspace-allow\thew-types/src/lib.rs\titem_defs\t1\t"
-    "hew-types\ta316-keyspace-item-defs\treviewed pre-existing key\n"
-)
-green = run(SOURCE, allow)
-if green.returncode != 0:
-    raise SystemExit(f"allowlisted pre-existing counterfactual failed:\n{green.stderr}")
+    stale = run(SOURCE, allow.replace("\t1\t", "\t2\t", 1))
+    if stale.returncode != 1 or "allowlisted 2, found 1" not in stale.stderr:
+        raise SystemExit(
+            f"stale allowlist counterfactual did not fail closed:\n{stale.stderr}"
+        )
 
-stale = run(SOURCE, allow.replace("\t1\t", "\t2\t", 1))
-if stale.returncode != 1 or "allowlisted 2, found 1" not in stale.stderr:
-    raise SystemExit(
-        f"stale allowlist counterfactual did not fail closed:\n{stale.stderr}"
+    fixed_family = run(
+        SOURCE.replace(
+            "tables.item_defs.insert(name, 1);",
+            "tables.machine_layout_names.insert(name);",
+        ),
+        "# canonical-keyspace-allow\thew-types/src/lib.rs\tmachine_layout_names\t1\t"
+        "hew-types\ta316-keyspace-layouts\tinvalid canonical-only exception\n",
     )
+    if (
+        fixed_family.returncode == 0
+        or "canonical-only keyspace cannot be allowlisted" not in fixed_family.stderr
+    ):
+        raise SystemExit(
+            "canonical-only family allowlist unexpectedly passed:\n"
+            f"{fixed_family.stderr}"
+        )
 
-fixed_family = run(
-    SOURCE.replace(
-        "tables.item_defs.insert(name, 1);", "tables.machine_layout_names.insert(name);"
-    ),
-    "# canonical-keyspace-allow\thew-types/src/lib.rs\tmachine_layout_names\t1\t"
-    "hew-types\ta316-keyspace-layouts\tinvalid canonical-only exception\n",
-)
-if (
-    fixed_family.returncode == 0
-    or "canonical-only keyspace cannot be allowlisted" not in fixed_family.stderr
-):
-    raise SystemExit(
-        f"canonical-only family allowlist unexpectedly passed:\n{fixed_family.stderr}"
+    fixed = run(
+        SOURCE.replace(
+            "tables.item_defs.insert(name, 1);",
+            "tables.item_defs.insert(machine_layout_key(&name), 1);",
+        )
     )
+    if fixed.returncode != 0:
+        raise SystemExit(
+            f"canonical constructor counterfactual failed:\n{fixed.stderr}"
+        )
 
-fixed = run(
-    SOURCE.replace(
-        "tables.item_defs.insert(name, 1);",
-        "tables.item_defs.insert(machine_layout_key(&name), 1);",
-    )
-)
-if fixed.returncode != 0:
-    raise SystemExit(f"canonical constructor counterfactual failed:\n{fixed.stderr}")
+    print("canonical keyspace lint counterfactuals: PASS")
 
-print("canonical keyspace lint counterfactuals: PASS")
+
+if __name__ == "__main__":
+    main()

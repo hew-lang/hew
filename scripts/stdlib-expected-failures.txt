@@ -1,4 +1,4 @@
-# Tracked stdlib type-check failures — consumed by scripts/stdlib-ratchet.sh.
+# Tracked stdlib type-check failures — consumed by scripts/corpus-ratchet.sh stdlib.
 #
 # Format: one entry per line.
 #   <path-relative-to-repo-root>  # reason  # lane-reference

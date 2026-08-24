@@ -747,24 +747,6 @@ def test_containment_refuses_an_env_prefixed_command() -> None:
     ), "a sanitizer-flagged run proves something the plain CI run does not"
 
 
-def test_containment_accepts_the_verify_only_test_prefix() -> None:
-    recipes = {
-        "verify-only": "HEW_TEST_NO_BUILD=1 cargo nextest run --workspace --profile ci"
-    }
-    blobs = ["cargo nextest run --workspace --profile ci"]
-    assert gate.prove_contained(
-        "verify-only",
-        {},
-        recipes,
-        set(),
-        {"verify-only"},
-        [],
-        blobs,
-        ["hew-cabi"],
-        set(),
-    ), "the no-build sentinel narrows artifact mutation without changing test selection"
-
-
 def test_containment_accepts_a_narrower_selection_of_what_ci_runs() -> None:
     recipes = {"test-cabi-only": "cargo nextest run --profile ci -p hew-cabi"}
     blobs = ["cargo nextest run --workspace --profile ci"]
@@ -1020,68 +1002,197 @@ def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
     assert result.returncode == 0, result.stderr
 
 
-_TESTS = [
-    test_a_yaml_comment_naming_a_target_is_not_an_edge,
-    test_a_shell_comment_inside_a_run_body_is_not_an_edge,
-    test_an_echoed_target_name_is_not_an_edge,
-    test_a_statically_false_job_is_not_an_edge,
-    test_a_statically_false_step_is_not_an_edge,
-    test_a_workflow_nothing_can_trigger_is_not_ci,
-    test_a_called_workflow_is_ci_when_a_live_workflow_calls_it,
-    test_an_unknown_trigger_fails_closed,
-    test_yaml_subset_parser_rejects_what_it_cannot_model,
-    test_the_real_release_gate_workflow_no_longer_claims_the_wasi_gate,
-    test_leading_not_is_counted_as_an_exclusion,
-    test_every_negation_spelling_is_counted,
-    test_a_filter_whose_subtracted_set_cannot_be_named_fails_closed,
-    test_the_real_profile_ci_filter_has_five_exclusions,
-    test_every_dash_e_spelling_is_recognised,
-    test_a_positional_test_name_filter_counts_as_filtering,
-    test_an_unfiltered_run_is_not_reported_as_filtered,
-    test_an_unclassified_flag_with_a_value_fails_closed,
-    test_a_workspace_run_that_excludes_the_package_does_not_compensate,
-    test_a_competing_filter_does_not_compensate,
-    test_a_genuine_unfiltered_run_does_compensate,
-    test_a_prerequisite_bundle_behind_a_variable_is_an_edge,
-    test_a_prerequisite_of_an_unreached_target_confers_no_reachability,
-    test_a_conditionally_assigned_variable_is_not_inlined,
-    test_a_variable_the_expander_cannot_evaluate_is_not_inlined,
-    test_expansion_leaves_an_opaque_reference_standing_as_one_token,
-    test_a_reference_cycle_terminates,
-    test_a_shell_dollar_in_a_recipe_is_not_a_variable_reference,
-    test_the_real_makefile_reaches_check_libhew_fresh_through_its_consumers,
-    test_a_precondition_on_a_declared_prerequisite_is_scaffolding,
-    test_a_precondition_on_a_path_the_target_never_declared_is_not,
-    test_a_real_command_is_not_smuggled_in_as_a_precondition,
-    test_real_ci_reaches_the_complete_test_prerequisite_graph,
-    test_a_parity_cmd_marker_is_not_an_edge,
-    test_the_gate_has_no_marker_convention_at_all,
-    test_a_new_unwired_generic_oracle_or_e2e_is_red,
-    test_a_named_host_authority_requires_a_real_uncommented_runner_port,
-    test_macos_leak_runner_rejects_a_non_darwin_host_before_measuring,
-    test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_authority,
-    test_containment_refuses_an_opaque_command,
-    test_containment_refuses_an_env_prefixed_command,
-    test_containment_accepts_the_verify_only_test_prefix,
-    test_containment_accepts_a_narrower_selection_of_what_ci_runs,
-    test_containment_refuses_a_binary_profile_ci_subtracts,
-    test_real_repo_state_passes_the_full_check,
-    test_script_stays_python_3_10_compatible_with_no_new_dependency,
-    test_a_dead_target_in_a_doc_code_span_is_a_reference,
-    test_the_verb_make_in_prose_is_not_a_reference,
-    test_a_hyphenated_english_compound_is_the_accepted_residual,
-    test_a_hyphenated_target_in_prose_is_still_a_reference,
-    test_a_commit_subject_in_backticks_is_prose,
-    test_a_metavariable_target_is_not_a_reference,
-    test_flags_and_variable_overrides_are_not_targets,
-    test_every_target_of_a_multi_target_invocation_is_a_reference,
-    test_a_python_string_is_data_and_its_comment_is_not,
-    test_a_dead_reference_in_a_tracked_doc_is_found_end_to_end,
-]
+# ── A11: harness self-tests under scripts/tests/ are invoked ──────────────────
+
+
+def _synthetic_repo(tmp: str) -> Path:
+    root = Path(tmp)
+    (root / "scripts" / "tests").mkdir(parents=True)
+    (root / "scripts" / "tests" / "test_wired.py").write_text("")
+    (root / "scripts" / "tests" / "test_orphan.sh").write_text("")
+    return root
+
+
+def test_a_harness_test_a_reached_recipe_runs_is_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        text = gate.harness_invocation_text(
+            [], {"gate": "\tpython3 scripts/tests/test_wired.py"}, {"gate"}, root
+        )
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_named_only_in_a_comment_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        recipe = "\t# see scripts/tests/test_orphan.sh for the counterfactual\n\ttrue"
+        text = gate.harness_invocation_text([], {"gate": recipe}, {"gate"}, root)
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_only_echoed_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        recipe = '\techo "run scripts/tests/test_orphan.sh yourself"'
+        text = gate.harness_invocation_text([], {"gate": recipe}, {"gate"}, root)
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_shell_script_a_reached_recipe_runs_carries_its_harness_tests() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        (root / "scripts" / "wrapper.sh").write_text(
+            "python3 scripts/tests/test_orphan.sh\n"
+        )
+        text = gate.harness_invocation_text(
+            [], {"gate": "\tscripts/wrapper.sh"}, {"gate"}, root
+        )
+        assert "scripts/tests/test_orphan.sh" in text
+
+
+def test_a_python_file_naming_a_harness_test_is_not_an_indirection() -> None:
+    """A Python gate asserting something ABOUT a test does not run it.
+
+    A checker can carry the literal path of a rule counterfactual because it
+    asserts that a wrapper invokes it exactly once. Following that would let an
+    assertion about an edge stand in for the edge.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        (root / "scripts" / "asserter.py").write_text(
+            '("python3", "scripts/tests/test_orphan.sh")\n'
+        )
+        text = gate.harness_invocation_text(
+            [], {"gate": "\tpython3 scripts/asserter.py"}, {"gate"}, root
+        )
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_host_release_authority_can_invoke_its_own_counterfactuals() -> None:
+    """A Darwin-only oracle is unreachable from CI BY DESIGN (A1H).
+
+    Requiring its self-tests to be CI-reached would demand deleting the
+    counterfactuals that keep it from certifying a skip as a measurement.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        authority = gate.HOST_RELEASE_AUTHORITIES[0].target
+        text = gate.harness_invocation_text(
+            [], {authority: "\tscripts/tests/test_orphan.sh"}, set(), root
+        )
+        assert "scripts/tests/test_orphan.sh" in text
+
+
+def _synthetic_workflow(extra_step: str) -> str:
+    return f"""name: synthetic
+on: push
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: live owner
+        run: python3 scripts/tests/test_wired.py
+{extra_step}"""
+
+
+def _workflow_harness_text(root: Path, workflow: str) -> str:
+    model = gate._parse_workflow(workflow, "synthetic.yml")
+    commands = gate.ci_step_commands([model])
+    return gate.harness_invocation_text(commands, {}, set(), root)
+
+
+def test_a_harness_test_named_only_in_a_workflow_comment_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow("      # python3 scripts/tests/test_orphan.sh\n")
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_only_echoed_by_a_workflow_step_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow(
+            "      - name: mention only\n"
+            "        run: echo 'python3 scripts/tests/test_orphan.sh'\n"
+        )
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_only_stored_by_a_workflow_step_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow(
+            "      - name: string mention only\n"
+            "        run: |\n"
+            "          TEST_PATH='scripts/tests/test_orphan.sh'\n"
+            '          echo "$TEST_PATH"\n'
+        )
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_in_a_disabled_workflow_step_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow(
+            "      - name: disabled owner\n"
+            "        if: false\n"
+            "        run: python3 scripts/tests/test_orphan.sh\n"
+        )
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_under_a_dynamic_condition_can_be_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow(
+            "      - name: conditional owner\n"
+            "        if: ${{ needs.changes.outputs.scripts == 'true' }}\n"
+            "        run: bash scripts/tests/test_orphan.sh\n"
+        )
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" in text
+
+
+def test_every_real_harness_test_is_invoked() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    count = len(gate.harness_tests())
+    assert f"{count}/{count} self-tests are invoked." in result.stdout, result.stdout
+
+
+# The runner enumerates this module rather than reading a hand-maintained list.
+# The list form had already lost four tests: they were defined, never listed,
+# and never run — a self-test file quietly asserting less than it appeared to,
+# which is the same defect A11 exists to catch one level out. Discovery cannot
+# drift.
+def _tests() -> list:
+    return [
+        value
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
+
 
 if __name__ == "__main__":
+    tests = _tests()
     failures = 0
-    for test in _TESTS:
+    for test in tests:
         try:
             test()
             print(f"PASS {test.__name__}")
@@ -1089,5 +1200,5 @@ if __name__ == "__main__":
             print(f"FAIL {test.__name__}: {exc}")
             failures += 1
     if failures:
-        raise SystemExit(f"{failures}/{len(_TESTS)} tests failed")
-    print(f"All {len(_TESTS)} tests passed.")
+        raise SystemExit(f"{failures}/{len(tests)} tests failed")
+    print(f"All {len(tests)} tests passed.")

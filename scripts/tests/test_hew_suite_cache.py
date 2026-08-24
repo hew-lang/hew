@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RATCHET = ROOT / "scripts/hew-suite-ratchet.sh"
+RATCHET = ROOT / "scripts/corpus-ratchet.sh"
 
 
 def run(env: dict[str, str], expected: Path, report: Path) -> None:
@@ -17,6 +17,7 @@ def run(env: dict[str, str], expected: Path, report: Path) -> None:
         [
             "bash",
             str(RATCHET),
+            "hew-suite",
             "--expected-failures",
             str(expected),
             "--junit-output",
@@ -64,3 +65,8 @@ def test_cache_key_tracks_fixture_and_compiler_content() -> None:
         compiler.write_text(compiler.read_text() + "# rebuilt\n")
         run(env, expected, work / "report.xml")
         assert counter.read_text() == "xxx"
+
+
+if __name__ == "__main__":
+    test_cache_key_tracks_fixture_and_compiler_content()
+    print("PASS: Hew suite cache reuses only identical source/compiler results")

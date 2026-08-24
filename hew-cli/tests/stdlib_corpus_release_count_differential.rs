@@ -106,7 +106,7 @@ fn capture_mode() -> bool {
 }
 
 /// Every `.hew` file under `std/` and `examples/` — the shipped corpora, the
-/// same sets `scripts/stdlib-ratchet.sh` and the example gates walk.
+/// same sets `scripts/corpus-ratchet.sh stdlib` and the example gates walk.
 fn corpus() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {

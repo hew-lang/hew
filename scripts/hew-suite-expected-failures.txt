@@ -1,7 +1,7 @@
 # hew-suite-expected-failures.txt
 #
 # Known failing tests in tests/hew/.
-# The ratchet (scripts/hew-suite-ratchet.sh) enforces:
+# The ratchet (scripts/corpus-ratchet.sh hew-suite) enforces:
 #   - Every test listed here MUST fail (unexpected pass = gate failure).
 #   - Every test NOT listed here MUST pass (unexpected failure = gate failure).
 #

@@ -11,6 +11,11 @@ or malformed input raises ``TOMLDecodeError`` instead of guessing.
 
 Set ``HEW_FORCE_TOML_FALLBACK=1`` in a test to exercise the Python 3.10 path
 on a newer interpreter.
+
+WHEN OBSOLETE: when Python 3.11 is the floor on every builder and CI runner.
+Then delete this module and import ``tomllib`` directly at each call site; the
+fallback parser exists only to span that gap, not to be a TOML implementation
+this project maintains.
 """
 
 from __future__ import annotations

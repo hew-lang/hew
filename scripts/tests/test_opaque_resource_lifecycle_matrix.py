@@ -161,7 +161,7 @@ def run_counterfactuals(candidates: list[dict], rows: list[dict]) -> None:
     assert len(value_keys) >= 2 and value_keys <= set(joined)
 
 
-def test_body(source: str, name: str) -> str:
+def rust_function_body(source: str, name: str) -> str:
     match = re.search(rf"\bfn\s+{re.escape(name)}\s*(?:<[^>{{}}]*>)?\s*\(", source)
     if match is None:
         fail(f"stale runtime test: {name}")
@@ -181,7 +181,7 @@ def test_body(source: str, name: str) -> str:
 def assert_runtime_semantics(
     candidate: dict, anchor: dict[str, object], source: str
 ) -> None:
-    body = test_body(source, str(anchor["test"]))
+    body = rust_function_body(source, str(anchor["test"]))
     release = str(candidate["release_symbol"])
     if release not in body:
         fail(
@@ -196,7 +196,7 @@ def assert_runtime_semantics(
             continue
         visited.add(function)
         try:
-            helper = test_body(source, function)
+            helper = rust_function_body(source, function)
         except AssertionError:
             continue
         reachable += helper
@@ -526,7 +526,7 @@ def wasm_public_programs(
 
 
 def assert_wasm_program_has_producer(carrier: str, program: str) -> None:
-    main = test_body(program, "main")
+    main = rust_function_body(program, "main")
     if not re.search(
         r"\blet\s+(?:[A-Za-z_][A-Za-z0-9_]*|\([^)]*\))(?:\s*:\s*[^=;{}]+)?\s*=\s*[^;{}]+\(",
         main,

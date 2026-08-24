@@ -2,7 +2,7 @@
 //!
 //! # What went wrong
 //!
-//! `scripts/stdlib-ratchet.sh` detects a failure with an unpiped run and then
+//! `scripts/corpus-ratchet.sh stdlib` detects a failure with an unpiped run and then
 //! REPORTS it through a pipe:
 //!
 //! ```sh

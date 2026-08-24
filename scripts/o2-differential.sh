@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# o2-differential.sh — the -O0-vs-O2 differential-exec parity gate (RC9).
+# o2-differential.sh — the -O0-vs-O2 differential-exec parity gate.
 #
 # The no-miscompile oracle for the LLVM middle-end pipeline: every compiled
 # `.hew` program must behave IDENTICALLY at -O0 and -O2. The optimizer may
@@ -26,7 +26,7 @@
 #   scripts/o2-differential.sh --o0-outcomes <path>
 #
 # --o0-outcomes <path> skips this gate's own O0 pass and reuses a pre-captured
-# outcome file instead (produced by scripts/hew-suite-ratchet.sh's
+# outcome file instead (produced by scripts/corpus-ratchet.sh hew-suite's
 # --emit-o0-outcomes, which runs the byte-identical `hew test $TESTS_DIR`
 # invocation at O0 one step earlier in the same CI job). This is the CI-only
 # fast path; a

@@ -313,6 +313,13 @@ jobs:
       - name: Verify structural lint bootstrap contract
         run: make test-ast-grep-contract test-structural-lint-bootstrap
 
+      # The preflight dispatcher routes every branch gate, so its own routing
+      # and timeout counterfactuals belong on the required job rather than on
+      # the path-filtered scripts job that a compiler-only change skips.
+      # Stub-driven and temporary-tree only; no compiler build.
+      - name: Verify build harness contracts
+        run: make test-build-harness
+
       # >>> CI-PARITY-STEPS
       # This job is an active required status check on main. Keep the workflow
       # contract here unconditionally so nightly/release-gate drift cannot merge
@@ -331,6 +338,9 @@ jobs:
 
       - name: Run structural authority lint
         run: make structural-lint
+
+      - name: Check shell scripts
+        run: make shell-script-lint
       # <<< CI-PARITY-STEPS
 
       - name: Check .hew formatting
@@ -423,9 +433,6 @@ jobs:
         # Runs the checker's own self-test first
         # (test-sandbox-parity-coverage-check).
         run: make sandbox-parity-coverage-check
-
-      - name: Assert complete lint authority coverage
-        run: make lint-ci-coverage-check
 
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown

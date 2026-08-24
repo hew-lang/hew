@@ -2,7 +2,7 @@
 """Parse `hew test --format junit` output for a shell ratchet gate.
 
 `hew test` supports `--format junit` (hew-cli/src/test_runner/output.rs), but
-nothing consumed it before this: scripts/hew-suite-ratchet.sh regex-parsed the
+nothing consumed it before this: the Hew-suite ratchet regex-parsed the
 human-readable text output instead. Regex-parsing human output means a
 harmless text-format tweak (colour, spacing, a renamed status word) silently
 breaks the ratchet's pass/fail extraction without a compiler change. Reading
@@ -14,7 +14,7 @@ Usage (from bash):
 Prints, on stdout, one line per test in the form:
     <outcome>\t<test-name>
 where <outcome> is one of: ok, FAILED, ignored — the exact vocabulary
-scripts/hew-suite-ratchet.sh and scripts/o2-differential.sh already compare
+scripts/corpus-ratchet.sh and scripts/o2-differential.sh already compare
 against, so existing consumers of the emitted outcome-line format need no
 change.
 

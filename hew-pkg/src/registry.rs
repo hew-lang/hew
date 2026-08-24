@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::package_fs::{CACHE_ARCHIVE_FILE, CACHE_METADATA_FILE};
 
@@ -10,6 +11,7 @@ use crate::package_fs::{CACHE_ARCHIVE_FILE, CACHE_METADATA_FILE};
 struct CacheMetadata {
     name: String,
     version: String,
+    registry: String,
     registry_checksum: String,
     tree_checksum: String,
 }
@@ -26,8 +28,26 @@ pub struct InstalledPackage {
 }
 
 #[derive(Debug)]
-pub(crate) struct VerifiedCacheEntry {
+pub(crate) struct PinnedInstalledPackage {
+    pub(crate) name: String,
+    pub(crate) version: String,
     pub(crate) path: PathBuf,
+    pub(crate) pin: crate::atomic_fs::PinnedDir,
+}
+
+impl PinnedInstalledPackage {
+    fn into_installed(self) -> InstalledPackage {
+        InstalledPackage {
+            name: self.name,
+            version: self.version,
+            path: self.path,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct VerifiedCacheEntry {
+    pub(crate) pin: crate::atomic_fs::PinnedDir,
     pub(crate) tree_checksum: String,
 }
 
@@ -35,10 +55,10 @@ pub(crate) struct VerifiedCacheEntry {
 ///
 /// Package layout on disk:
 /// ```text
-/// ~/.hew/packages/{package}/{version}/hew.toml
+/// ~/.hew/packages/.registries/{sha256(registry-id)}/{package}/{version}/hew.toml
 /// ```
-/// e.g. `~/.hew/packages/std.net.http/1.0.0/hew.toml`
-/// corresponds to the package `std.net.http` at version `1.0.0`.
+/// The legacy unnamespaced layout is consulted only by explicit offline
+/// default-registry resolution and is migrated before a new lockfile is used.
 #[derive(Debug)]
 pub struct Registry {
     root: PathBuf,
@@ -75,6 +95,37 @@ impl Registry {
         })
     }
 
+    /// Return the active package generation for a canonical registry identity.
+    #[must_use]
+    pub fn package_dir_for(&self, registry: &str, name: &str, version: &str) -> PathBuf {
+        self.package_dir_for_checked(registry, name, version)
+            .unwrap_or_else(|_| {
+                self.source_root(registry)
+                    .join(name)
+                    .join(format!(".{version}.invalid-generation-pointer"))
+            })
+    }
+
+    pub(crate) fn package_dir_for_checked(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> std::io::Result<PathBuf> {
+        crate::atomic_fs::resolve_published_dir(&self.package_slot_for(registry, name, version))
+    }
+
+    pub(crate) fn pin_package_dir_for_if_present(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> std::io::Result<Option<crate::atomic_fs::PinnedDir>> {
+        crate::atomic_fs::pin_published_dir_if_present(
+            &self.package_slot_for(registry, name, version),
+        )
+    }
+
     pub(crate) fn package_dir_checked(
         &self,
         name: &str,
@@ -89,6 +140,25 @@ impl Registry {
         self.root.join(name).join(version)
     }
 
+    /// Return the source-namespaced logical package slot.
+    #[must_use]
+    pub(crate) fn package_slot_for(&self, registry: &str, name: &str, version: &str) -> PathBuf {
+        self.source_root(registry).join(name).join(version)
+    }
+
+    /// Return the cache root dedicated to one canonical registry identity.
+    #[must_use]
+    pub(crate) fn source_root(&self, registry: &str) -> PathBuf {
+        use std::fmt::Write as _;
+
+        let digest = Sha256::digest(registry.as_bytes());
+        let mut namespace = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            write!(&mut namespace, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        self.root.join(".registries").join(namespace)
+    }
+
     /// Return `true` if `name@version` is present in the registry.
     #[must_use]
     pub fn is_installed(&self, name: &str, version: &str) -> bool {
@@ -98,19 +168,38 @@ impl Registry {
 
     pub(crate) fn verified_online_cache_entry(
         &self,
+        registry: &str,
         name: &str,
         version: &str,
         registry_checksum: &str,
     ) -> Result<Option<VerifiedCacheEntry>, String> {
-        let package_dir = self
-            .package_dir_checked(name, version)
-            .map_err(|error| format!("cannot resolve cache for {name}@{version}: {error}"))?;
-        if !is_package_dir(&package_dir) {
+        let pin = match self.pin_package_dir_for_if_present(registry, name, version) {
+            Ok(pin) => pin,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot resolve cache for {name}@{version}: {error}"
+                ));
+            }
+        };
+        let Some(pin) = pin else {
+            return Ok(None);
+        };
+        let package_dir = pin.path();
+        if !is_package_dir(package_dir) {
             return Ok(None);
         }
-        let package_dir = package_dir
+        let pin = pin
             .canonicalize()
             .map_err(|error| format!("cannot pin cache for {name}@{version}: {error}"))?;
+        let package_dir = pin.path();
 
         let metadata_text = match std::fs::read_to_string(package_dir.join(CACHE_METADATA_FILE)) {
             Ok(text) => text,
@@ -127,6 +216,7 @@ impl Registry {
         };
         if metadata.name != name
             || metadata.version != version
+            || metadata.registry != registry
             || metadata.registry_checksum != registry_checksum
         {
             return Ok(None);
@@ -157,12 +247,15 @@ impl Registry {
         if manifest.package.name != name || manifest.package.version != version {
             return Ok(None);
         }
+        if crate::resolver::validate_registry_manifest(name, &manifest).is_err() {
+            return Ok(None);
+        }
 
-        let actual = crate::checksum::compute_dir_checksum(&package_dir)
+        let actual = crate::checksum::compute_dir_checksum(package_dir)
             .map_err(|error| format!("cannot verify cache for {name}@{version}: {error}"))?;
         if actual == metadata.tree_checksum {
             Ok(Some(VerifiedCacheEntry {
-                path: package_dir,
+                pin,
                 tree_checksum: actual,
             }))
         } else {
@@ -172,6 +265,7 @@ impl Registry {
 
     pub(crate) fn write_cache_metadata(
         package_dir: &Path,
+        registry: &str,
         name: &str,
         version: &str,
         registry_checksum: &str,
@@ -203,6 +297,7 @@ impl Registry {
         let metadata = CacheMetadata {
             name: name.to_string(),
             version: version.to_string(),
+            registry: registry.to_string(),
             registry_checksum: registry_checksum.to_string(),
             tree_checksum,
         };
@@ -235,8 +330,55 @@ impl Registry {
     #[must_use]
     pub fn list_packages(&self) -> Vec<InstalledPackage> {
         let mut packages = Vec::new();
-        collect_packages(&self.root, &self.root, &mut packages);
+        let _ = collect_packages(&self.root, &self.root, &mut packages);
         packages
+            .into_iter()
+            .map(PinnedInstalledPackage::into_installed)
+            .collect()
+    }
+
+    /// List packages cached for one canonical registry identity.
+    ///
+    /// `include_legacy` is reserved for explicit offline compatibility with the
+    /// default registry. Online, named, and locked callers must pass `false`.
+    #[must_use]
+    pub fn list_packages_for(&self, registry: &str, include_legacy: bool) -> Vec<InstalledPackage> {
+        let source_root = self.source_root(registry);
+        let mut packages = Vec::new();
+        let _ = collect_packages(&source_root, &source_root, &mut packages);
+        if include_legacy {
+            let _ = collect_packages(&self.root, &self.root, &mut packages);
+            packages.retain(|package| {
+                package
+                    .path
+                    .strip_prefix(self.root.join(".registries"))
+                    .is_err()
+            });
+        }
+        packages
+            .into_iter()
+            .map(PinnedInstalledPackage::into_installed)
+            .collect()
+    }
+
+    pub(crate) fn try_list_packages_for(
+        &self,
+        registry: &str,
+        include_legacy: bool,
+    ) -> std::io::Result<Vec<PinnedInstalledPackage>> {
+        let source_root = self.source_root(registry);
+        let mut packages = Vec::new();
+        collect_packages(&source_root, &source_root, &mut packages)?;
+        if include_legacy {
+            collect_packages(&self.root, &self.root, &mut packages)?;
+            packages.retain(|package| {
+                package
+                    .path
+                    .strip_prefix(self.root.join(".registries"))
+                    .is_err()
+            });
+        }
+        Ok(packages)
     }
 }
 
@@ -252,13 +394,15 @@ impl Default for Registry {
 fn collect_packages(
     root: &std::path::Path,
     dir: &std::path::Path,
-    packages: &mut Vec<InstalledPackage>,
-) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    packages: &mut Vec<PinnedInstalledPackage>,
+) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
     };
 
-    let entries = entries.flatten().collect::<Vec<_>>();
+    let entries = entries.collect::<Result<Vec<_>, _>>()?;
     let mut published_versions = std::collections::BTreeSet::new();
     let mut subdirs = Vec::new();
 
@@ -277,9 +421,8 @@ fn collect_packages(
         // missing generation must not revive a stale legacy directory.
         published_versions.insert(version.to_string());
         let logical_slot = dir.join(version);
-        let Ok(active) = crate::atomic_fs::resolve_published_dir(&logical_slot) else {
-            continue;
-        };
+        let pin = crate::atomic_fs::pin_published_dir(&logical_slot)?;
+        let active = pin.path().to_path_buf();
         if !is_package_dir(&active) {
             continue;
         }
@@ -293,10 +436,11 @@ fn collect_packages(
         if name_parts.is_empty() {
             continue;
         }
-        packages.push(InstalledPackage {
+        packages.push(PinnedInstalledPackage {
             name: name_parts.join("."),
             version: version.to_string(),
             path: active,
+            pin,
         });
     }
 
@@ -317,10 +461,11 @@ fn collect_packages(
                 .collect();
             if let Some((version, name_parts)) = parts.split_last() {
                 if !name_parts.is_empty() {
-                    packages.push(InstalledPackage {
+                    packages.push(PinnedInstalledPackage {
                         name: name_parts.join("."),
                         version: (*version).to_string(),
                         path: dir.to_path_buf(),
+                        pin: crate::atomic_fs::PinnedDir::legacy(dir.to_path_buf()),
                     });
                 }
             }
@@ -328,8 +473,9 @@ fn collect_packages(
     }
 
     for subdir in subdirs {
-        collect_packages(root, &subdir, packages);
+        collect_packages(root, &subdir, packages)?;
     }
+    Ok(())
 }
 
 fn is_package_dir(path: &Path) -> bool {
@@ -354,6 +500,28 @@ mod tests {
         let reg = Registry::with_root(dir.path().to_path_buf());
         let p = reg.package_dir("ecosystem.db.postgres", "1.0.0");
         assert_eq!(p, dir.path().join("ecosystem.db.postgres").join("1.0.0"));
+    }
+
+    #[test]
+    fn registry_identities_have_disjoint_cache_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_root(dir.path().to_path_buf());
+        let first = "https://registry-a.example/api/v1";
+        let second = "https://registry-b.example/api/v1";
+        assert_ne!(
+            reg.package_slot_for(first, "foo", "1.0.0"),
+            reg.package_slot_for(second, "foo", "1.0.0")
+        );
+
+        let package = reg.package_dir_for(first, "foo", "1.0.0");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(reg.list_packages_for(first, false).len(), 1);
+        assert!(reg.list_packages_for(second, false).is_empty());
     }
 
     #[test]
@@ -493,7 +661,8 @@ mod tests {
     fn online_cache_verification_detects_tampering() {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::with_root(dir.path().to_path_buf());
-        let pkg_dir = reg.package_dir("foo", "1.0.0");
+        let registry_id = crate::config::default_registry_identity();
+        let pkg_dir = reg.package_dir_for(&registry_id, "foo", "1.0.0");
         std::fs::create_dir_all(&pkg_dir).unwrap();
         std::fs::write(
             pkg_dir.join("hew.toml"),
@@ -502,16 +671,102 @@ mod tests {
         .unwrap();
         std::fs::write(pkg_dir.join("foo.hew"), "pub fn value() -> i64 { 1 }\n").unwrap();
         let archive = crate::tarball::pack(&pkg_dir, &[], &[]).unwrap();
-        Registry::write_cache_metadata(&pkg_dir, "foo", "1.0.0", &archive.checksum, &archive.data)
-            .unwrap();
+        Registry::write_cache_metadata(
+            &pkg_dir,
+            &registry_id,
+            "foo",
+            "1.0.0",
+            &archive.checksum,
+            &archive.data,
+        )
+        .unwrap();
         assert!(reg
-            .verified_online_cache_entry("foo", "1.0.0", &archive.checksum)
+            .verified_online_cache_entry(&registry_id, "foo", "1.0.0", &archive.checksum)
             .unwrap()
             .is_some());
 
         std::fs::write(pkg_dir.join("foo.hew"), "pub fn value() -> i64 { 2 }\n").unwrap();
         assert!(reg
-            .verified_online_cache_entry("foo", "1.0.0", &archive.checksum)
+            .verified_online_cache_entry(&registry_id, "foo", "1.0.0", &archive.checksum)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn online_cache_treats_missing_or_invalid_generation_lease_as_untrusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_root(dir.path().to_path_buf());
+        let registry_id = crate::config::default_registry_identity();
+        let slot = reg.package_slot_for(&registry_id, "foo", "1.0.0");
+        let staged = crate::atomic_fs::StagedDir::new(&slot).unwrap();
+        std::fs::write(
+            staged.path().join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let generation = staged.publish(&slot).unwrap();
+        let generation_name = generation.file_name().unwrap().to_string_lossy();
+        let lease = generation.with_file_name(format!("{generation_name}.lease"));
+        std::fs::remove_file(&lease).unwrap();
+
+        assert!(reg
+            .verified_online_cache_entry(&registry_id, "foo", "1.0.0", "sha256:unused")
+            .unwrap()
+            .is_none());
+        assert!(
+            generation.is_dir(),
+            "uncertain published generation must be retained for repair"
+        );
+        assert!(!lease.exists());
+
+        std::fs::create_dir(&lease).unwrap();
+        assert!(reg
+            .verified_online_cache_entry(&registry_id, "foo", "1.0.0", "sha256:unused")
+            .unwrap()
+            .is_none());
+        assert!(
+            generation.is_dir(),
+            "invalid lease metadata must not consume the published generation"
+        );
+    }
+
+    #[test]
+    fn cache_metadata_cannot_confirm_a_different_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_root(dir.path().to_path_buf());
+        let first = "https://registry-a.example/api/v1";
+        let second = "https://registry-b.example/api/v1";
+        let first_dir = reg.package_dir_for(first, "foo", "1.0.0");
+        std::fs::create_dir_all(&first_dir).unwrap();
+        std::fs::write(
+            first_dir.join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(first_dir.join("foo.hew"), "pub fn value() -> i64 { 1 }\n").unwrap();
+        let archive = crate::tarball::pack(&first_dir, &[], &[]).unwrap();
+        Registry::write_cache_metadata(
+            &first_dir,
+            first,
+            "foo",
+            "1.0.0",
+            &archive.checksum,
+            &archive.data,
+        )
+        .unwrap();
+
+        let second_dir = reg.package_dir_for(second, "foo", "1.0.0");
+        std::fs::create_dir_all(&second_dir).unwrap();
+        for file in [
+            "hew.toml",
+            "foo.hew",
+            CACHE_ARCHIVE_FILE,
+            CACHE_METADATA_FILE,
+        ] {
+            std::fs::copy(first_dir.join(file), second_dir.join(file)).unwrap();
+        }
+        assert!(reg
+            .verified_online_cache_entry(second, "foo", "1.0.0", &archive.checksum)
             .unwrap()
             .is_none());
     }

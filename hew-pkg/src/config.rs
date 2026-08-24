@@ -62,6 +62,58 @@ pub const DEFAULT_FALLBACK_API: Option<&str> = Some("https://mirror.hewpkg.com/a
 /// The default public registry index URL.
 pub const DEFAULT_REGISTRY_INDEX: &str = "https://github.com/hew-lang/registry-index";
 
+/// Canonical identity for a registry source.
+///
+/// The primary API URL is authoritative. Selector names and fallback URLs are
+/// deliberately excluded so aliases for the same source share an identity,
+/// while different default and named sources cannot collapse.
+#[must_use]
+pub fn registry_identity(api_url: &str) -> String {
+    let trimmed = api_url.trim().trim_end_matches('/');
+    let Some((scheme, remainder)) = trimmed.split_once("://") else {
+        return trimmed.to_string();
+    };
+    let (authority, path) = remainder
+        .split_once('/')
+        .map_or((remainder, ""), |(authority, path)| (authority, path));
+    let normalized_path = path.trim_end_matches('/');
+    if normalized_path.is_empty() {
+        format!(
+            "{}://{}",
+            scheme.to_ascii_lowercase(),
+            authority.to_ascii_lowercase()
+        )
+    } else {
+        format!(
+            "{}://{}/{}",
+            scheme.to_ascii_lowercase(),
+            authority.to_ascii_lowercase(),
+            normalized_path
+        )
+    }
+}
+
+/// Canonical identity of the compiled-in default registry.
+#[must_use]
+pub fn default_registry_identity() -> String {
+    registry_identity(DEFAULT_REGISTRY_API)
+}
+
+/// Return canonical identities for all configured named registries.
+#[must_use]
+pub fn named_registry_identities(config: &PkgConfig) -> std::collections::BTreeMap<String, String> {
+    config
+        .registries
+        .as_ref()
+        .map(|registries| {
+            registries
+                .iter()
+                .map(|(name, remote)| (name.clone(), registry_identity(&remote.api)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Errors that can occur when reading or parsing `~/.hew/config.toml`.
 #[derive(Debug)]
 pub enum ConfigError {
@@ -347,6 +399,14 @@ fallback-api = "https://mirror.example.com/api/v1"
         assert_eq!(
             reg.fallback_api.as_deref(),
             Some("https://mirror.example.com/api/v1")
+        );
+    }
+
+    #[test]
+    fn registry_identity_normalizes_primary_api_url() {
+        assert_eq!(
+            registry_identity(" HTTPS://Registry.Example.COM/api/v1/// "),
+            "https://registry.example.com/api/v1"
         );
     }
 }

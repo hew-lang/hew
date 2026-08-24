@@ -29,6 +29,9 @@ pub struct LockedPackage {
     /// Package source: `"registry"`, `"path"`, or `"local"`.
     #[serde(default = "default_source", skip_serializing_if = "is_default_source")]
     pub source: String,
+    /// Canonical registry identity when `source = "registry"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
     /// Local dependency path when `source = "path"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -182,6 +185,23 @@ pub fn validate_lockfile(lockfile: &LockFile) -> Result<(), LockError> {
             });
         }
         if package.source == "registry" {
+            let registry = package
+                .registry
+                .as_deref()
+                .ok_or_else(|| LockError::InvalidEntry {
+                    package: package.name.clone(),
+                    reason: "registry package is missing its canonical registry identity"
+                        .to_string(),
+                })?;
+            if registry.is_empty()
+                || crate::config::registry_identity(registry) != registry
+                || !(registry.starts_with("https://") || registry.starts_with("http://"))
+            {
+                return Err(LockError::InvalidEntry {
+                    package: package.name.clone(),
+                    reason: format!("invalid canonical registry identity `{registry}`"),
+                });
+            }
             let checksum = package
                 .checksum
                 .as_deref()
@@ -195,11 +215,25 @@ pub fn validate_lockfile(lockfile: &LockFile) -> Result<(), LockError> {
                     reason: format!("invalid checksum `{checksum}`"),
                 });
             }
-        } else if package.path.as_deref().is_none_or(str::is_empty) {
-            return Err(LockError::InvalidEntry {
-                package: package.name.clone(),
-                reason: "path package is missing its locked path".to_string(),
-            });
+            if package.path.is_some() {
+                return Err(LockError::InvalidEntry {
+                    package: package.name.clone(),
+                    reason: "registry package cannot contain a locked path".to_string(),
+                });
+            }
+        } else {
+            if package.registry.is_some() {
+                return Err(LockError::InvalidEntry {
+                    package: package.name.clone(),
+                    reason: "path package cannot contain a registry identity".to_string(),
+                });
+            }
+            if package.path.as_deref().is_none_or(str::is_empty) {
+                return Err(LockError::InvalidEntry {
+                    package: package.name.clone(),
+                    reason: "path package is missing its locked path".to_string(),
+                });
+            }
         }
     }
     Ok(())
@@ -216,32 +250,71 @@ fn is_sha256_checksum(checksum: &str) -> bool {
 /// A lockfile is stale when its recorded direct dependency requirements differ
 /// from the current manifest requirements.
 #[must_use]
+#[allow(
+    dead_code,
+    reason = "kept as the default-registry convenience API for library callers"
+)]
 pub fn is_lock_stale(lockfile: &LockFile, manifest: &HewManifest) -> bool {
-    let locked_requirements: std::collections::BTreeMap<&str, (&str, Option<&str>)> = lockfile
+    is_lock_stale_for_registries(
+        lockfile,
+        manifest,
+        &crate::config::default_registry_identity(),
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+/// Compare direct requirements together with their canonical source identities.
+#[must_use]
+pub fn is_lock_stale_for_registries(
+    lockfile: &LockFile,
+    manifest: &HewManifest,
+    default_registry: &str,
+    named_registries: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    type RequirementIdentity<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
+    type RequirementMap<'a> = std::collections::BTreeMap<&'a str, RequirementIdentity<'a>>;
+
+    let locked_requirements: RequirementMap<'_> = lockfile
         .packages
         .iter()
         .filter_map(|package| {
             package.requirement.as_deref().map(|requirement| {
                 (
                     package.name.as_str(),
-                    (requirement, package.path.as_deref()),
+                    (
+                        requirement,
+                        package.path.as_deref(),
+                        package.registry.as_deref(),
+                    ),
                 )
             })
         })
         .collect();
-    let manifest_requirements: std::collections::BTreeMap<&str, (&str, Option<&str>)> = manifest
+    let manifest_requirements: Option<RequirementMap<'_>> = manifest
         .dependencies
         .iter()
         .map(|(name, dep_spec)| {
-            let path = match dep_spec {
-                crate::manifest::DepSpec::Version(_) => None,
-                crate::manifest::DepSpec::Table(table) => table.path.as_deref(),
+            let (path, selector) = match dep_spec {
+                crate::manifest::DepSpec::Version(_) => (None, None),
+                crate::manifest::DepSpec::Table(table) => {
+                    (table.path.as_deref(), table.registry.as_deref())
+                }
             };
-            (name.as_str(), (dep_spec.version_req(), path))
+            if path.is_some() && selector.is_some() {
+                return None;
+            }
+            let registry = if path.is_some() {
+                None
+            } else if let Some(selector) = selector {
+                Some(named_registries.get(selector)?.as_str())
+            } else {
+                Some(default_registry)
+            };
+            Some((name.as_str(), (dep_spec.version_req(), path, registry)))
         })
         .collect();
 
-    locked_requirements != manifest_requirements
+    manifest_requirements.is_none_or(|requirements| locked_requirements != requirements)
 }
 
 #[cfg(test)]
@@ -300,6 +373,7 @@ mod tests {
                     checksum: Some("sha256:def456".to_string()),
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
                 LockedPackage {
@@ -309,6 +383,7 @@ mod tests {
                     checksum: Some("sha256:abc123".to_string()),
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
             ],
@@ -340,6 +415,7 @@ mod tests {
                 checksum: None,
                 signature: None,
                 source: "registry".to_string(),
+                registry: Some(crate::config::default_registry_identity()),
                 path: None,
             }],
         };
@@ -386,6 +462,7 @@ mod tests {
                 checksum: None,
                 signature: None,
                 source: "registry".to_string(),
+                registry: Some(crate::config::default_registry_identity()),
                 path: None,
             }],
         };
@@ -408,6 +485,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
                 LockedPackage {
@@ -417,6 +495,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
             ],
@@ -437,6 +516,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
                 LockedPackage {
@@ -446,6 +526,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
             ],
@@ -465,6 +546,7 @@ mod tests {
                 checksum: None,
                 signature: None,
                 source: "registry".to_string(),
+                registry: Some(crate::config::default_registry_identity()),
                 path: None,
             }],
         };
@@ -484,6 +566,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
                 LockedPackage {
@@ -493,6 +576,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
             ],
@@ -529,6 +613,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
                 LockedPackage {
@@ -538,6 +623,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    registry: Some(crate::config::default_registry_identity()),
                     path: None,
                 },
             ],
@@ -577,6 +663,7 @@ mod tests {
                 checksum: None,
                 signature: None,
                 source: "path".to_string(),
+                registry: None,
                 path: Some("../local".to_string()),
             }],
         };
@@ -630,6 +717,7 @@ mod tests {
                 checksum: Some(format!("sha256:{}", "0".repeat(64))),
                 signature: None,
                 source: "registry".to_string(),
+                registry: Some(crate::config::default_registry_identity()),
                 path: None,
             }],
         };
@@ -648,11 +736,65 @@ mod tests {
                 checksum: None,
                 signature: None,
                 source: "registry".to_string(),
+                registry: Some(crate::config::default_registry_identity()),
                 path: None,
             }],
         };
 
         let error = validate_lockfile(&lockfile).unwrap_err();
         assert!(error.to_string().contains("missing its locked checksum"));
+    }
+
+    #[test]
+    fn validation_rejects_legacy_registry_entry_without_identity() {
+        let lockfile = LockFile {
+            packages: vec![LockedPackage {
+                name: "foo".to_string(),
+                requirement: Some("1.0.0".to_string()),
+                version: "1.0.0".to_string(),
+                checksum: Some(format!("sha256:{}", "0".repeat(64))),
+                signature: None,
+                source: "registry".to_string(),
+                registry: None,
+                path: None,
+            }],
+        };
+
+        let error = validate_lockfile(&lockfile).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("missing its canonical registry identity"));
+    }
+
+    #[test]
+    fn changing_default_registry_identity_stales_lock() {
+        let first = "https://registry-a.example/api/v1";
+        let second = "https://registry-b.example/api/v1";
+        let lockfile = LockFile {
+            packages: vec![LockedPackage {
+                name: "foo".to_string(),
+                requirement: Some("1.0.0".to_string()),
+                version: "1.0.0".to_string(),
+                checksum: Some(format!("sha256:{}", "0".repeat(64))),
+                signature: None,
+                source: "registry".to_string(),
+                registry: Some(first.to_string()),
+                path: None,
+            }],
+        };
+        let manifest = make_manifest(&[("foo", "1.0.0")]);
+
+        assert!(!is_lock_stale_for_registries(
+            &lockfile,
+            &manifest,
+            first,
+            &std::collections::BTreeMap::new(),
+        ));
+        assert!(is_lock_stale_for_registries(
+            &lockfile,
+            &manifest,
+            second,
+            &std::collections::BTreeMap::new(),
+        ));
     }
 }

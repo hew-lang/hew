@@ -1,5 +1,6 @@
 mod support;
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -71,6 +72,42 @@ fn run_pkg_bounded(home: &Path, project: &Path, args: &[&str], label: &str) -> O
         .env_remove("USERPROFILE");
     support::try_run_bounded_command(command, label, Duration::from_secs(30))
         .expect("package command must terminate")
+}
+
+fn snapshot_tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, path: &Path, snapshot: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        let mut entries = std::fs::read_dir(path)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let entry_path = entry.path();
+            let relative = entry_path.strip_prefix(root).unwrap().to_path_buf();
+            let metadata = std::fs::symlink_metadata(&entry_path).unwrap();
+            if metadata.file_type().is_symlink() {
+                snapshot.insert(
+                    relative,
+                    format!(
+                        "symlink:{}",
+                        std::fs::read_link(&entry_path).unwrap().display()
+                    )
+                    .into_bytes(),
+                );
+            } else if metadata.is_dir() {
+                snapshot.insert(relative.clone(), b"directory".to_vec());
+                visit(root, &entry_path, snapshot);
+            } else {
+                snapshot.insert(relative, std::fs::read(entry_path).unwrap());
+            }
+        }
+    }
+
+    let mut snapshot = BTreeMap::new();
+    if root.is_dir() {
+        visit(root, root, &mut snapshot);
+    }
+    snapshot
 }
 
 fn start_404_registry() -> String {
@@ -202,20 +239,8 @@ fn package_tarball_variant(
 ) -> hew_pkg::tarball::PackResult {
     let package_source = root.join(format!("foo-source-{label}"));
     std::fs::create_dir_all(&package_source).unwrap();
-    let dependency = path_dependency.map_or_else(String::new, |name| {
-        let dependency_root = package_source.join(name);
-        std::fs::create_dir_all(&dependency_root).unwrap();
-        std::fs::write(
-            dependency_root.join("hew.toml"),
-            format!("[package]\nname = \"{name}\"\nversion = \"1.0.0\"\n"),
-        )
-        .unwrap();
-        std::fs::write(
-            dependency_root.join(format!("{name}.hew")),
-            format!("pub fn identity() -> str {{ \"{label}-{name}\" }}\n"),
-        )
-        .unwrap();
-        format!("\n[dependencies]\n{name} = {{ path = \"{name}\" }}\n")
+    let dependency = path_dependency.map_or_else(String::new, |path| {
+        format!("\n[dependencies]\nevil = {{ path = {path:?} }}\n")
     });
     std::fs::write(
         package_source.join("hew.toml"),
@@ -226,15 +251,68 @@ fn package_tarball_variant(
     hew_pkg::tarball::pack(&package_source, &[], &[]).unwrap()
 }
 
+fn assert_registry_path_dependency_rejected(path: &str, label: &str) {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let project = root.path().join("app");
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+    let packed = package_tarball_variant(
+        root.path(),
+        label,
+        "pub fn answer() -> i64 { 42 }\n",
+        Some(path),
+    );
+    let registry = start_repair_registry(packed.data, packed.checksum);
+    write_config(&home, &cache, Some(&registry.api_url));
+
+    let output = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--registry", "mock"],
+        "reject registry path dependency",
+    );
+    assert!(
+        !output.status.success(),
+        "registry path dependency must fail\n{}",
+        describe_output(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("forbidden path dependency"), "{stderr}");
+    assert!(stderr.contains(path), "{stderr}");
+    assert!(!project.join("hew.lock").exists());
+    assert!(!project.join(".hew").exists());
+    assert!(!cache.join(".registries").exists());
+    assert_eq!(registry.download_requests.load(Ordering::Relaxed), 1);
+}
+
 fn write_lockfile(project: &Path, version: &str, checksum: Option<&str>) {
     let checksum = checksum.map_or_else(String::new, |value| format!("checksum = {value:?}\n"));
+    let registry = hew_pkg::config::default_registry_identity();
     std::fs::write(
         project.join("hew.lock"),
         format!(
-            "[[package]]\nname = \"foo\"\nrequirement = \"0.2.1\"\nversion = {version:?}\n{checksum}"
+            "[[package]]\nname = \"foo\"\nrequirement = \"0.2.1\"\nversion = {version:?}\nregistry = {registry:?}\n{checksum}"
         ),
     )
     .unwrap();
+}
+
+#[test]
+fn pkg_rejects_relative_path_dependency_in_registry_archive_without_mutation() {
+    assert_registry_path_dependency_rejected("nested", "relative-path");
+}
+
+#[test]
+fn pkg_rejects_traversal_path_dependency_in_registry_archive_without_mutation() {
+    assert_registry_path_dependency_rejected("../../escape", "traversal-path");
+}
+
+#[test]
+fn pkg_rejects_absolute_path_dependency_in_registry_archive_without_mutation() {
+    assert_registry_path_dependency_rejected("/etc/hew-poison", "absolute-path");
 }
 
 #[test]
@@ -263,10 +341,7 @@ fn pkg_registry_404_refuses_stale_cache() {
         stderr.contains(&format!("{registry_api}/packages/foo")),
         "{stderr}"
     );
-    assert!(
-        stderr.contains(cached_path.to_string_lossy().as_ref()),
-        "{stderr}"
-    );
+    assert!(!stderr.contains(cached_path.to_string_lossy().as_ref()));
     assert!(stderr.contains("was not used"), "{stderr}");
     assert!(stderr.contains("--offline"), "{stderr}");
     assert!(!project.join(".hew/packages/foo").exists());
@@ -336,7 +411,11 @@ fn pkg_online_repairs_incomplete_cache_without_loop() {
     );
     assert_eq!(registry.package_requests.load(Ordering::Relaxed), 1);
     assert_eq!(registry.download_requests.load(Ordering::Relaxed), 1);
-    let active = hew_pkg::registry::Registry::with_root(cache.clone()).package_dir("foo", "0.2.1");
+    let active = hew_pkg::registry::Registry::with_root(cache.clone()).package_dir_for(
+        &hew_pkg::config::registry_identity(&registry.api_url),
+        "foo",
+        "0.2.1",
+    );
     assert!(active.join("hew.toml").is_file());
     assert!(active.join("foo.hew").is_file());
     assert!(incomplete.join("partial.marker").exists());
@@ -368,7 +447,8 @@ fn pkg_online_repairs_tampered_manifest_present_cache() {
         describe_output(&first)
     );
     let cache_registry = hew_pkg::registry::Registry::with_root(cache.clone());
-    let cached = cache_registry.package_dir("foo", "0.2.1");
+    let registry_id = hew_pkg::config::registry_identity(&registry.api_url);
+    let cached = cache_registry.package_dir_for(&registry_id, "foo", "0.2.1");
     std::fs::write(cached.join("foo.hew"), "pub fn answer() -> i64 { 7 }\n").unwrap();
 
     let output = run_pkg_bounded(
@@ -384,8 +464,12 @@ fn pkg_online_repairs_tampered_manifest_present_cache() {
     );
     assert_eq!(registry.download_requests.load(Ordering::Relaxed), 2);
     assert_eq!(
-        std::fs::read_to_string(cache_registry.package_dir("foo", "0.2.1").join("foo.hew"))
-            .unwrap(),
+        std::fs::read_to_string(
+            cache_registry
+                .package_dir_for(&registry_id, "foo", "0.2.1")
+                .join("foo.hew"),
+        )
+        .unwrap(),
         "pub fn answer() -> i64 { 42 }\n"
     );
     assert_eq!(
@@ -394,7 +478,7 @@ fn pkg_online_repairs_tampered_manifest_present_cache() {
         "published generations are immutable"
     );
     assert!(cache_registry
-        .package_dir("foo", "0.2.1")
+        .package_dir_for(&registry_id, "foo", "0.2.1")
         .join(".hew-registry-cache.toml")
         .is_file());
 }
@@ -485,11 +569,15 @@ fn pkg_concurrent_repair_downloads_and_publishes_once() {
         describe_output(&second_output)
     );
     assert_eq!(registry.package_requests.load(Ordering::Relaxed), 2);
-    assert_eq!(registry.download_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(registry.download_requests.load(Ordering::Relaxed), 2);
     assert_eq!(
         std::fs::read_to_string(
             hew_pkg::registry::Registry::with_root(cache)
-                .package_dir("foo", "0.2.1")
+                .package_dir_for(
+                    &hew_pkg::config::registry_identity(&registry.api_url),
+                    "foo",
+                    "0.2.1",
+                )
                 .join("foo.hew")
         )
         .unwrap(),
@@ -510,12 +598,8 @@ fn pkg_online_install_keeps_registry_confirmed_generation_after_pointer_swap() {
     write_manifest(&seed_project, "foo = \"0.2.1\"\n");
     write_manifest(&project, "foo = \"0.2.1\"\n");
 
-    let packed_b = package_tarball_variant(
-        root.path(),
-        "b",
-        "pub fn answer() -> i64 { 222 }\n",
-        Some("poison"),
-    );
+    let packed_b =
+        package_tarball_variant(root.path(), "b", "pub fn answer() -> i64 { 222 }\n", None);
     let checksum_b = packed_b.checksum.clone();
     let registry_b = start_repair_registry(packed_b.data, packed_b.checksum);
     write_config(&home, &cache, Some(&registry_b.api_url));
@@ -530,30 +614,39 @@ fn pkg_online_install_keeps_registry_confirmed_generation_after_pointer_swap() {
         "could not seed generation B\n{}",
         describe_output(&seeded)
     );
+    let adversarial_registry_id = hew_pkg::config::registry_identity(&registry_b.api_url);
     drop(registry_b);
 
     let cache_registry = hew_pkg::registry::Registry::with_root(cache.clone());
-    let generation_b = cache_registry.package_dir("foo", "0.2.1");
+    let generation_b = cache_registry.package_dir_for(&adversarial_registry_id, "foo", "0.2.1");
     assert_eq!(
         std::fs::read_to_string(generation_b.join("foo.hew")).unwrap(),
         "pub fn answer() -> i64 { 222 }\n"
     );
-    let generation_b_name = generation_b
+    let packed_a =
+        package_tarball_variant(root.path(), "a", "pub fn answer() -> i64 { 111 }\n", None);
+    assert_ne!(packed_a.checksum, checksum_b);
+    let registry_a = start_repair_registry(packed_a.data, packed_a.checksum);
+    write_config(&home, &cache, Some(&registry_a.api_url));
+    let verified_registry_id = hew_pkg::config::registry_identity(&registry_a.api_url);
+    let a_slot = cache_registry.package_dir_for(&verified_registry_id, "foo", "0.2.1");
+    let a_package_root = a_slot.parent().unwrap();
+    std::fs::create_dir_all(a_package_root).unwrap();
+    let adversarial_b = a_package_root.join(".0.2.1.generation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    std::fs::create_dir_all(&adversarial_b).unwrap();
+    std::fs::copy(
+        generation_b.join("hew.toml"),
+        adversarial_b.join("hew.toml"),
+    )
+    .unwrap();
+    std::fs::copy(generation_b.join("foo.hew"), adversarial_b.join("foo.hew")).unwrap();
+    let generation_b_name = adversarial_b
         .file_name()
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    let pointer = cache.join("foo/.0.2.1.current");
-
-    let packed_a = package_tarball_variant(
-        root.path(),
-        "a",
-        "pub fn answer() -> i64 { 111 }\n",
-        Some("slow"),
-    );
-    assert_ne!(packed_a.checksum, checksum_b);
-    let registry_a = start_repair_registry(packed_a.data, packed_a.checksum);
-    write_config(&home, &cache, Some(&registry_a.api_url));
+    let pointer = a_package_root.join(".0.2.1.current");
+    std::fs::write(&pointer, format!("{generation_b_name}\n")).unwrap();
 
     let stop = Arc::new(AtomicBool::new(false));
     let writer_stop = Arc::clone(&stop);
@@ -596,11 +689,6 @@ fn pkg_online_install_keeps_registry_confirmed_generation_after_pointer_swap() {
         "pub fn answer() -> i64 { 111 }\n",
         "materialization must use the registry-confirmed A generation"
     );
-    assert!(project.join(".hew/packages/slow/slow.hew").is_file());
-    assert!(!project.join(".hew/packages/poison").exists());
-    let lock = std::fs::read_to_string(project.join("hew.lock")).unwrap();
-    assert!(lock.contains("name = \"slow\""), "{lock}");
-    assert!(!lock.contains("name = \"poison\""), "{lock}");
 }
 
 #[test]
@@ -797,14 +885,21 @@ fn pkg_locked_uses_exact_version_and_never_rewrites_lockfile() {
 }
 
 #[test]
-fn pkg_locked_online_incomplete_graph_never_contacts_registry_or_mutates_cache() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one matrix shares setup and exact mutation snapshots across all invalid lock classes"
+)]
+fn pkg_locked_invalid_graphs_never_contact_registry_or_mutate_project_or_cache() {
     let root = support::tempdir();
     let home = root.path().join("home");
     let project = root.path().join("app");
+    let seed_project = root.path().join("seed");
     let cache = root.path().join("cache");
     std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&seed_project).unwrap();
     std::fs::create_dir_all(&home).unwrap();
     write_manifest(&project, "foo = \"0.2.1\"\n");
+    write_manifest(&seed_project, "baz = \"1.0.0\"\n");
     write_config(&home, &cache, None);
 
     let foo = write_cached_package(&cache, "foo", "0.2.1");
@@ -814,6 +909,7 @@ fn pkg_locked_online_incomplete_graph_never_contacts_registry_or_mutates_cache()
     )
     .unwrap();
     write_cached_package(&cache, "bar", "1.0.0");
+    write_cached_package(&cache, "baz", "1.0.0");
     let initial = run_pkg_bounded(
         &home,
         &project,
@@ -821,48 +917,105 @@ fn pkg_locked_online_incomplete_graph_never_contacts_registry_or_mutates_cache()
         "create complete lock",
     );
     assert!(initial.status.success(), "{}", describe_output(&initial));
+    let seed = run_pkg_bounded(
+        &home,
+        &seed_project,
+        &["install", "--offline"],
+        "create extra package lock entry",
+    );
+    assert!(seed.status.success(), "{}", describe_output(&seed));
 
     let complete_lock = std::fs::read_to_string(project.join("hew.lock")).unwrap();
-    let foo_entry = complete_lock
+    let entries = complete_lock
         .split("[[package]]")
         .skip(1)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let foo_entry = entries
+        .iter()
         .find(|entry| entry.contains("name = \"foo\""))
         .unwrap();
-    let incomplete_lock =
-        format!("# intentionally incomplete locked graph\n\n[[package]]{foo_entry}");
-    std::fs::write(project.join("hew.lock"), &incomplete_lock).unwrap();
-    std::fs::remove_dir_all(cache.join("bar")).unwrap();
+    let transitive_entry = entries
+        .iter()
+        .find(|entry| entry.contains("name = \"bar\""))
+        .unwrap();
+    let seed_lock = std::fs::read_to_string(seed_project.join("hew.lock")).unwrap();
+    let extra_entry = seed_lock
+        .split("[[package]]")
+        .skip(1)
+        .find(|entry| entry.contains("name = \"baz\""))
+        .unwrap();
+    let default_registry = hew_pkg::config::default_registry_identity();
+    let unsupported_entry = foo_entry.replacen(
+        "version = \"0.2.1\"",
+        "version = \"0.2.1\"\nsource = \"git\"",
+        1,
+    );
+    let wrong_registry_entry = foo_entry.replacen(
+        &format!("registry = {default_registry:?}"),
+        "registry = \"https://wrong.example/api/v1\"",
+        1,
+    );
+    let invalid_locks = [
+        (
+            "incomplete",
+            format!(
+                "# invalid locked graph\n\n[[package]]{foo_entry}[[package]]{transitive_entry}"
+            )
+            .replace(&format!("[[package]]{transitive_entry}"), ""),
+        ),
+        ("extra", format!("{complete_lock}\n[[package]]{extra_entry}")),
+        (
+            "duplicate",
+            format!("{complete_lock}\n[[package]]{foo_entry}"),
+        ),
+        (
+            "unsupported",
+            format!(
+                "# invalid locked graph\n\n[[package]]{unsupported_entry}[[package]]{transitive_entry}"
+            ),
+        ),
+        (
+            "wrong-registry",
+            format!(
+                "# invalid locked graph\n\n[[package]]{wrong_registry_entry}[[package]]{transitive_entry}"
+            ),
+        ),
+    ];
+
     std::fs::remove_dir_all(project.join(".hew")).unwrap();
+    std::fs::remove_dir_all(seed_project.join(".hew")).unwrap();
 
     let packed = package_tarball(root.path());
     let registry = start_repair_registry(packed.data, packed.checksum);
     write_config(&home, &cache, Some(&registry.api_url));
-    let foo_before = std::fs::read(foo.join("hew.toml")).unwrap();
+    for (case, invalid_lock) in invalid_locks {
+        std::fs::write(project.join("hew.lock"), invalid_lock).unwrap();
+        let project_before = snapshot_tree(&project);
+        let cache_before = snapshot_tree(&cache);
+        let output = run_pkg_bounded(
+            &home,
+            &project,
+            &["install", "--locked"],
+            &format!("invalid locked graph: {case}"),
+        );
+        assert!(
+            !output.status.success(),
+            "{case} locked graph must fail\n{}",
+            describe_output(&output)
+        );
+        assert_eq!(
+            snapshot_tree(&project),
+            project_before,
+            "{case} locked failure mutated the project"
+        );
+        assert_eq!(
+            snapshot_tree(&cache),
+            cache_before,
+            "{case} locked failure mutated the cache"
+        );
+    }
 
-    let output = run_pkg_bounded(
-        &home,
-        &project,
-        &["install", "--locked", "--registry", "mock"],
-        "online incomplete locked graph",
-    );
-    assert!(
-        !output.status.success(),
-        "incomplete locked graph must fail\n{}",
-        describe_output(&output)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("locked graph could not resolve"),
-        "{}",
-        describe_output(&output)
-    );
     assert_eq!(registry.package_requests.load(Ordering::Relaxed), 0);
     assert_eq!(registry.download_requests.load(Ordering::Relaxed), 0);
-    assert!(!cache.join(".locks").exists());
-    assert!(!cache.join("bar").exists());
-    assert_eq!(std::fs::read(foo.join("hew.toml")).unwrap(), foo_before);
-    assert_eq!(
-        std::fs::read_to_string(project.join("hew.lock")).unwrap(),
-        incomplete_lock
-    );
-    assert!(!project.join(".hew/packages/foo").exists());
 }

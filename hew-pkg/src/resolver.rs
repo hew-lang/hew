@@ -27,8 +27,10 @@ pub struct UnresolvedDep {
     pub package: String,
     /// Every version requirement currently imposed on the package.
     pub requirements: Vec<String>,
-    /// The named registry required for this package, if any.
-    pub registry: Option<String>,
+    /// Canonical identity of the registry required for this package.
+    pub registry: String,
+    /// Config selector used to construct the client, if this is a named source.
+    pub registry_selector: Option<String>,
 }
 
 /// A resolved package in the dependency graph.
@@ -47,10 +49,13 @@ pub struct ResolvedPackage {
 }
 
 /// Source selected for a resolved package.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PackageSource {
     /// A package version in the global registry cache.
-    Registry,
+    Registry {
+        /// Canonical source identity.
+        registry: String,
+    },
     /// A package rooted at the given local directory.
     Path(PathBuf),
 }
@@ -126,6 +131,29 @@ pub enum ResolveError {
     ConflictingSources {
         /// Conflicting package name.
         package: String,
+        /// First source identity.
+        first: PackageSource,
+        /// Conflicting source identity.
+        second: PackageSource,
+    },
+    /// A registry-origin manifest contains a forbidden path dependency.
+    RegistryPathDependency {
+        /// Registry package declaring the dependency.
+        package: String,
+        /// Dependency key.
+        dependency: String,
+        /// Untrusted path spelling from the manifest.
+        path: String,
+    },
+    /// A dependency table combines mutually exclusive path and registry fields.
+    PathAndRegistry {
+        /// Dependency key.
+        package: String,
+    },
+    /// A manifest refers to an unconfigured named registry.
+    UnknownRegistry {
+        /// Unknown selector.
+        registry: String,
     },
     /// The selected dependency graph contains a cycle.
     CircularDependency {
@@ -146,6 +174,10 @@ pub enum ResolveError {
     },
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive diagnostic mapping keeps every resolver error precise"
+)]
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -208,8 +240,30 @@ impl fmt::Display for ResolveError {
                 path.display(),
                 requirements.join(", ")
             ),
-            Self::ConflictingSources { package } => {
-                write!(f, "dependency `{package}` is requested from conflicting sources")
+            Self::ConflictingSources {
+                package,
+                first,
+                second,
+            } => {
+                write!(
+                    f,
+                    "dependency `{package}` is requested from conflicting sources ({first:?} and {second:?})"
+                )
+            }
+            Self::RegistryPathDependency {
+                package,
+                dependency,
+                path,
+            } => write!(
+                f,
+                "registry package `{package}` contains forbidden path dependency `{dependency}` with path `{path}`"
+            ),
+            Self::PathAndRegistry { package } => write!(
+                f,
+                "dependency `{package}` cannot specify both `path` and `registry`"
+            ),
+            Self::UnknownRegistry { registry } => {
+                write!(f, "dependency refers to unknown registry `{registry}`")
             }
             Self::CircularDependency { cycle } => {
                 write!(f, "circular dependency detected: {}", cycle.join(" -> "))
@@ -250,6 +304,9 @@ impl std::error::Error for ResolveError {
             | Self::PathPackageNameMismatch { .. }
             | Self::PathVersionMismatch { .. }
             | Self::ConflictingSources { .. }
+            | Self::RegistryPathDependency { .. }
+            | Self::PathAndRegistry { .. }
+            | Self::UnknownRegistry { .. }
             | Self::CircularDependency { .. }
             | Self::UnresolvableDeps { .. }
             | Self::NoProgress
@@ -323,7 +380,7 @@ struct PackageState {
     direct_requirement: Option<String>,
     requested_features: BTreeSet<String>,
     use_default_features: bool,
-    registry: Option<String>,
+    registry_selector: Option<String>,
     source: Option<PackageSource>,
     direct_path: Option<String>,
 }
@@ -342,7 +399,7 @@ struct DepRequest {
     direct_requirement: Option<String>,
     features: BTreeSet<String>,
     use_default_features: bool,
-    registry: Option<String>,
+    registry_selector: Option<String>,
     source: PackageSource,
     direct_path: Option<String>,
 }
@@ -350,7 +407,8 @@ struct DepRequest {
 #[derive(Debug, Clone, Default)]
 struct FailureState {
     requirements: BTreeSet<String>,
-    registry: Option<String>,
+    registry: String,
+    registry_selector: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -361,6 +419,82 @@ struct ActiveFeatures {
 struct CachedManifest {
     manifest: HewManifest,
     root: PathBuf,
+}
+
+/// Registry identities available while resolving one dependency graph.
+#[derive(Debug, Clone)]
+pub struct RegistrySources {
+    default_registry: String,
+    default_selector: Option<String>,
+    named: BTreeMap<String, String>,
+}
+
+impl RegistrySources {
+    /// Construct source identities for the CLI-selected default and all named
+    /// registries configured for explicit dependency selectors.
+    #[must_use]
+    pub fn new(
+        default_registry: String,
+        default_selector: Option<String>,
+        named: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            default_registry,
+            default_selector,
+            named,
+        }
+    }
+
+    /// Construct the compiled-in default source without named registries.
+    #[must_use]
+    pub fn default_source() -> Self {
+        Self::new(
+            crate::config::default_registry_identity(),
+            None,
+            BTreeMap::new(),
+        )
+    }
+
+    /// Canonical identity used for root and local dependencies without a selector.
+    #[must_use]
+    pub fn default_registry(&self) -> &str {
+        &self.default_registry
+    }
+
+    /// Configured selector used for the default source, if named.
+    #[must_use]
+    pub fn default_selector(&self) -> Option<&str> {
+        self.default_selector.as_deref()
+    }
+
+    /// Configured named source identities.
+    #[must_use]
+    pub fn named(&self) -> &BTreeMap<String, String> {
+        &self.named
+    }
+
+    fn resolve(
+        &self,
+        selector: Option<&str>,
+        inherited: Option<(&str, Option<&str>)>,
+    ) -> Result<(String, Option<String>), ResolveError> {
+        if let Some(selector) = selector {
+            let identity =
+                self.named
+                    .get(selector)
+                    .ok_or_else(|| ResolveError::UnknownRegistry {
+                        registry: selector.to_string(),
+                    })?;
+            return Ok((identity.clone(), Some(selector.to_string())));
+        }
+        if let Some((identity, selector)) = inherited {
+            return Ok((
+                identity.to_string(),
+                selector.map(std::string::ToString::to_string),
+            ));
+        }
+        Ok((self.default_registry.clone(), self.default_selector.clone()))
+    }
 }
 
 enum VisitControl {
@@ -376,31 +510,45 @@ enum PassOutcome {
 
 struct ResolverPass<'a> {
     registry: &'a Registry,
+    registry_sources: &'a RegistrySources,
     root: &'a Path,
-    pinned_registry_paths: Option<&'a BTreeMap<(String, String), PathBuf>>,
-    available_versions: BTreeMap<String, Vec<semver::Version>>,
+    allow_legacy_default: bool,
+    pinned_registry_paths: Option<&'a BTreeMap<(String, String, String), PathBuf>>,
+    available_versions: BTreeMap<(String, String), Vec<semver::Version>>,
     package_states: BTreeMap<String, PackageState>,
     selected_versions: BTreeMap<String, String>,
     expanded_states: BTreeMap<String, ExpandedState>,
     failures: BTreeMap<String, FailureState>,
-    manifest_cache: BTreeMap<(String, String), CachedManifest>,
+    manifest_cache: BTreeMap<(PackageSource, String, String), CachedManifest>,
 }
 
 impl<'a> ResolverPass<'a> {
     fn with_seed(
         registry: &'a Registry,
+        registry_sources: &'a RegistrySources,
         root: &'a Path,
-        confirmed_versions: Option<&'a BTreeMap<String, BTreeSet<String>>>,
-        pinned_registry_paths: Option<&'a BTreeMap<(String, String), PathBuf>>,
+        allow_legacy_default: bool,
+        confirmed_versions: Option<&'a BTreeMap<(String, String), BTreeSet<String>>>,
+        pinned_registry_paths: Option<&'a BTreeMap<(String, String, String), PathBuf>>,
         package_states: BTreeMap<String, PackageState>,
     ) -> Self {
         let available_versions = pinned_registry_paths.map_or_else(
-            || available_versions(registry, confirmed_versions),
+            || {
+                available_versions(
+                    registry,
+                    registry_sources,
+                    allow_legacy_default,
+                    confirmed_versions,
+                )
+            },
             |paths| {
-                let mut versions = BTreeMap::<String, Vec<semver::Version>>::new();
-                for (name, version) in paths.keys() {
+                let mut versions = BTreeMap::<(String, String), Vec<semver::Version>>::new();
+                for (registry, name, version) in paths.keys() {
                     if let Ok(version) = semver::Version::parse(version) {
-                        versions.entry(name.clone()).or_default().push(version);
+                        versions
+                            .entry((registry.clone(), name.clone()))
+                            .or_default()
+                            .push(version);
                     }
                 }
                 versions
@@ -408,7 +556,9 @@ impl<'a> ResolverPass<'a> {
         );
         Self {
             registry,
+            registry_sources,
             root,
+            allow_legacy_default,
             pinned_registry_paths,
             available_versions,
             package_states,
@@ -420,7 +570,7 @@ impl<'a> ResolverPass<'a> {
     }
 
     fn resolve_manifest(mut self, manifest: &HewManifest) -> Result<PassOutcome, ResolveError> {
-        for request in root_requests(manifest, self.root)? {
+        for request in root_requests(manifest, self.root, self.registry_sources)? {
             match self.visit_request(request, &[])? {
                 VisitControl::Continue => {}
                 VisitControl::Restart => return Ok(PassOutcome::Restart(self.package_states)),
@@ -460,6 +610,7 @@ impl<'a> ResolverPass<'a> {
                     package,
                     requirements: failure.requirements.into_iter().collect(),
                     registry: failure.registry,
+                    registry_selector: failure.registry_selector,
                 })
                 .collect();
             Ok(PassOutcome::Unresolved(failures))
@@ -489,6 +640,8 @@ impl<'a> ResolverPass<'a> {
             {
                 return Err(ResolveError::ConflictingSources {
                     package: request.name,
+                    first: state.source.clone().expect("checked existing source"),
+                    second: request_source,
                 });
             }
             state.source.get_or_insert_with(|| request_source.clone());
@@ -498,8 +651,10 @@ impl<'a> ResolverPass<'a> {
                     .direct_requirement
                     .clone_from(&request.direct_requirement);
             }
-            if state.registry.is_none() {
-                state.registry.clone_from(&request.registry);
+            if state.registry_selector.is_none() {
+                state
+                    .registry_selector
+                    .clone_from(&request.registry_selector);
             }
             if state.direct_path.is_none() {
                 state.direct_path.clone_from(&request.direct_path);
@@ -544,8 +699,15 @@ impl<'a> ResolverPass<'a> {
             .expect("package state must exist after merging request")
             .clone();
         let dependency_requests = {
+            let registry_sources = self.registry_sources.clone();
             let cached = self.load_manifest(&request.name, &version, &request_source)?;
-            dependency_requests_from_manifest(&cached.manifest, &state_snapshot, &cached.root)?
+            dependency_requests_from_manifest(
+                &cached.manifest,
+                &state_snapshot,
+                &cached.root,
+                &request_source,
+                &registry_sources,
+            )?
         };
 
         self.expanded_states.insert(request.name.clone(), expanded);
@@ -570,8 +732,9 @@ impl<'a> ResolverPass<'a> {
         requirements: &[String],
     ) -> Result<Option<String>, ResolveError> {
         match source {
-            PackageSource::Registry => {
+            PackageSource::Registry { registry } => {
                 let version = select_highest_matching_version(
+                    registry,
                     &request.name,
                     requirements,
                     &self.available_versions,
@@ -581,13 +744,16 @@ impl<'a> ResolverPass<'a> {
                         .entry(request.name.clone())
                         .and_modify(|failure| {
                             failure.requirements.extend(requirements.iter().cloned());
-                            if failure.registry.is_none() {
-                                failure.registry.clone_from(&request.registry);
+                            if failure.registry_selector.is_none() {
+                                failure
+                                    .registry_selector
+                                    .clone_from(&request.registry_selector);
                             }
                         })
                         .or_insert_with(|| FailureState {
                             requirements: requirements.iter().cloned().collect(),
-                            registry: request.registry.clone(),
+                            registry: registry.clone(),
+                            registry_selector: request.registry_selector.clone(),
                         });
                 }
                 Ok(version)
@@ -604,15 +770,27 @@ impl<'a> ResolverPass<'a> {
         version: &str,
         source: &PackageSource,
     ) -> Result<&CachedManifest, ResolveError> {
-        let key = (package.to_string(), version.to_string());
+        let key = (source.clone(), package.to_string(), version.to_string());
         if !self.manifest_cache.contains_key(&key) {
             match source {
-                PackageSource::Registry => {
+                PackageSource::Registry { registry } => {
                     let root = self.pinned_registry_paths.map_or_else(
-                        || self.registry.package_dir(package, version),
+                        || {
+                            let namespaced =
+                                self.registry.package_dir_for(registry, package, version);
+                            if namespaced.is_dir() {
+                                namespaced
+                            } else if self.allow_legacy_default
+                                && registry == self.registry_sources.default_registry()
+                            {
+                                self.registry.package_dir(package, version)
+                            } else {
+                                namespaced
+                            }
+                        },
                         |paths| {
                             paths
-                                .get(&(package.to_string(), version.to_string()))
+                                .get(&(registry.clone(), package.to_string(), version.to_string()))
                                 .expect("locked available versions must have a pinned path")
                                 .clone()
                         },
@@ -625,6 +803,7 @@ impl<'a> ResolverPass<'a> {
                                 source,
                             }
                         })?;
+                    validate_registry_manifest(package, &manifest)?;
                     self.manifest_cache
                         .insert(key.clone(), CachedManifest { manifest, root });
                 }
@@ -685,7 +864,11 @@ impl<'a> ResolverPass<'a> {
         }
         let version = version.to_string();
         self.manifest_cache.insert(
-            (package.to_string(), version.clone()),
+            (
+                PackageSource::Path(path.to_path_buf()),
+                package.to_string(),
+                version.clone(),
+            ),
             CachedManifest {
                 manifest,
                 root: path.to_path_buf(),
@@ -719,19 +902,27 @@ fn normalize_version(v: &str) -> String {
 
 fn available_versions(
     registry: &Registry,
-    confirmed_versions: Option<&BTreeMap<String, BTreeSet<String>>>,
-) -> BTreeMap<String, Vec<semver::Version>> {
-    let mut versions = BTreeMap::<String, Vec<semver::Version>>::new();
-    for package in registry.list_packages() {
-        if confirmed_versions.is_some_and(|confirmed| {
-            !confirmed
-                .get(&package.name)
-                .is_some_and(|versions| versions.contains(&package.version))
-        }) {
-            continue;
-        }
-        if let Ok(version) = semver::Version::parse(&package.version) {
-            versions.entry(package.name).or_default().push(version);
+    sources: &RegistrySources,
+    allow_legacy_default: bool,
+    confirmed_versions: Option<&BTreeMap<(String, String), BTreeSet<String>>>,
+) -> BTreeMap<(String, String), Vec<semver::Version>> {
+    let mut versions = BTreeMap::<(String, String), Vec<semver::Version>>::new();
+    let mut identities = sources.named.values().cloned().collect::<BTreeSet<_>>();
+    identities.insert(sources.default_registry.clone());
+    for identity in identities {
+        let include_legacy = allow_legacy_default && identity == sources.default_registry;
+        for package in registry.list_packages_for(&identity, include_legacy) {
+            let package_key = (identity.clone(), package.name.clone());
+            if confirmed_versions.is_some_and(|confirmed| {
+                !confirmed
+                    .get(&package_key)
+                    .is_some_and(|versions| versions.contains(&package.version))
+            }) {
+                continue;
+            }
+            if let Ok(version) = semver::Version::parse(&package.version) {
+                versions.entry(package_key).or_default().push(version);
+            }
         }
     }
     for package_versions in versions.values_mut() {
@@ -749,13 +940,14 @@ fn parse_requirements(requirements: &[String]) -> Result<Vec<VersionReq>, Resolv
 }
 
 fn select_highest_matching_version(
+    registry: &str,
     package_name: &str,
     requirements: &[String],
-    versions_by_package: &BTreeMap<String, Vec<semver::Version>>,
+    versions_by_package: &BTreeMap<(String, String), Vec<semver::Version>>,
 ) -> Result<Option<String>, ResolveError> {
     let reqs = parse_requirements(requirements)?;
     Ok(versions_by_package
-        .get(package_name)
+        .get(&(registry.to_string(), package_name.to_string()))
         .and_then(|versions| {
             versions
                 .iter()
@@ -765,19 +957,25 @@ fn select_highest_matching_version(
         .map(ToString::to_string))
 }
 
-fn root_requests(manifest: &HewManifest, root: &Path) -> Result<Vec<DepRequest>, ResolveError> {
+fn root_requests(
+    manifest: &HewManifest,
+    root: &Path,
+    sources: &RegistrySources,
+) -> Result<Vec<DepRequest>, ResolveError> {
     manifest
         .dependencies
         .iter()
         .map(|(name, dep_spec)| {
+            let (source, registry_selector) =
+                dependency_source(name, dep_spec, root, None, sources, None)?;
             Ok(DepRequest {
                 name: name.clone(),
                 requirement: dep_spec.version_req().to_string(),
                 direct_requirement: Some(dep_spec.version_req().to_string()),
                 features: requested_features(dep_spec),
                 use_default_features: uses_default_features(dep_spec),
-                registry: dependency_registry(dep_spec),
-                source: dependency_source(name, dep_spec, root)?,
+                registry_selector,
+                source,
                 direct_path: dependency_path(dep_spec).map(ToString::to_string),
             })
         })
@@ -795,9 +993,29 @@ fn dependency_source(
     package: &str,
     dep_spec: &DepSpec,
     root: &Path,
-) -> Result<PackageSource, ResolveError> {
-    let Some(path) = dependency_path(dep_spec) else {
-        return Ok(PackageSource::Registry);
+    inherited: Option<(&str, Option<&str>)>,
+    sources: &RegistrySources,
+    registry_origin: Option<&str>,
+) -> Result<(PackageSource, Option<String>), ResolveError> {
+    let path = dependency_path(dep_spec);
+    let selector = dependency_registry(dep_spec);
+    if let Some(parent) = registry_origin {
+        if let Some(path) = path {
+            return Err(ResolveError::RegistryPathDependency {
+                package: parent.to_string(),
+                dependency: package.to_string(),
+                path: path.to_string(),
+            });
+        }
+    }
+    if path.is_some() && selector.is_some() {
+        return Err(ResolveError::PathAndRegistry {
+            package: package.to_string(),
+        });
+    }
+    let Some(path) = path else {
+        let (registry, registry_selector) = sources.resolve(selector.as_deref(), inherited)?;
+        return Ok((PackageSource::Registry { registry }, registry_selector));
     };
     let resolved = root.join(path);
     let canonical = resolved
@@ -812,7 +1030,7 @@ fn dependency_source(
             path: canonical,
         });
     }
-    Ok(PackageSource::Path(canonical))
+    Ok((PackageSource::Path(canonical), None))
 }
 
 fn requested_features(dep_spec: &DepSpec) -> BTreeSet<String> {
@@ -845,7 +1063,12 @@ fn dependency_requests_from_manifest(
     manifest: &HewManifest,
     state: &PackageState,
     root: &Path,
+    parent_source: &PackageSource,
+    sources: &RegistrySources,
 ) -> Result<Vec<DepRequest>, ResolveError> {
+    if let PackageSource::Registry { .. } = parent_source {
+        validate_registry_manifest(&manifest.package.name, manifest)?;
+    }
     let active_features = resolve_active_features(manifest, state);
     let mut requests = Vec::new();
     for (name, dep_spec) in &manifest.dependencies {
@@ -855,18 +1078,58 @@ fn dependency_requests_from_manifest(
             continue;
         }
 
+        let inherited = match parent_source {
+            PackageSource::Registry { registry } => {
+                Some((registry.as_str(), state.registry_selector.as_deref()))
+            }
+            PackageSource::Path(_) => None,
+        };
+        let (source, registry_selector) = dependency_source(
+            name,
+            dep_spec,
+            root,
+            inherited,
+            sources,
+            matches!(parent_source, PackageSource::Registry { .. })
+                .then_some(manifest.package.name.as_str()),
+        )?;
         requests.push(DepRequest {
             name: name.clone(),
             requirement: dep_spec.version_req().to_string(),
             direct_requirement: None,
             features: requested_features(dep_spec),
             use_default_features: uses_default_features(dep_spec),
-            registry: dependency_registry(dep_spec),
-            source: dependency_source(name, dep_spec, root)?,
+            registry_selector,
+            source,
             direct_path: None,
         });
     }
+
     Ok(requests)
+}
+
+/// Reject path dependencies in a manifest obtained from a registry.
+///
+/// This checks normal and development dependencies so cached or downloaded
+/// registry content cannot smuggle any local filesystem dependency.
+pub(crate) fn validate_registry_manifest(
+    package: &str,
+    manifest: &HewManifest,
+) -> Result<(), ResolveError> {
+    for (dependency, spec) in manifest
+        .dependencies
+        .iter()
+        .chain(manifest.dev_dependencies.iter())
+    {
+        if let Some(path) = dependency_path(spec) {
+            return Err(ResolveError::RegistryPathDependency {
+                package: package.to_string(),
+                dependency: dependency.clone(),
+                path: path.to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn dependency_is_optional(dep_spec: &DepSpec) -> bool {
@@ -929,10 +1192,12 @@ pub fn resolve_version(
     validate_package_name(package_name)?;
 
     let requirements = vec![requirement.to_string()];
+    let sources = RegistrySources::default_source();
     select_highest_matching_version(
+        sources.default_registry(),
         package_name,
         &requirements,
-        &available_versions(registry, None),
+        &available_versions(registry, &sources, true, None),
     )?
     .ok_or_else(|| ResolveError::NoMatchingVersion {
         package: package_name.to_string(),
@@ -957,11 +1222,22 @@ pub fn resolve_dependency_from_root(
     registry: &Registry,
 ) -> Result<String, ResolveError> {
     validate_package_name(package_name)?;
-    let source = dependency_source(package_name, spec, root)?;
+    let sources = RegistrySources::default_source();
+    let (source, _) = dependency_source(package_name, spec, root, None, &sources, None)?;
     match source {
-        PackageSource::Registry => resolve_version(package_name, spec.version_req(), registry),
+        PackageSource::Registry { .. } => {
+            resolve_version(package_name, spec.version_req(), registry)
+        }
         PackageSource::Path(path) => {
-            let mut resolver = ResolverPass::with_seed(registry, root, None, None, BTreeMap::new());
+            let mut resolver = ResolverPass::with_seed(
+                registry,
+                &sources,
+                root,
+                true,
+                None,
+                None,
+                BTreeMap::new(),
+            );
             resolver.load_path_manifest(package_name, &path, &[spec.version_req().to_string()])
         }
     }
@@ -978,10 +1254,12 @@ pub fn resolve_cached_version(
     registry: &Registry,
 ) -> Result<Option<String>, ResolveError> {
     validate_package_name(package_name)?;
+    let sources = RegistrySources::default_source();
     select_highest_matching_version(
+        sources.default_registry(),
         package_name,
         requirements,
-        &available_versions(registry, None),
+        &available_versions(registry, &sources, true, None),
     )
 }
 
@@ -1104,7 +1382,32 @@ pub fn resolve_all_from_root(
     root: &Path,
     registry: &Registry,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
-    resolve_all_inner(manifest, root, registry, None, None)
+    let sources = RegistrySources::default_source();
+    resolve_all_inner(manifest, root, registry, &sources, true, None, None)
+}
+
+/// Resolve from source-namespaced cache slots, optionally admitting the legacy
+/// default-registry layout for explicit offline compatibility.
+///
+/// # Errors
+///
+/// Returns [`ResolveError`] when the source-bound graph cannot be resolved.
+pub fn resolve_all_from_root_with_sources(
+    manifest: &HewManifest,
+    root: &Path,
+    registry: &Registry,
+    sources: &RegistrySources,
+    allow_legacy_default: bool,
+) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
+    resolve_all_inner(
+        manifest,
+        root,
+        registry,
+        sources,
+        allow_legacy_default,
+        None,
+        None,
+    )
 }
 
 /// Resolve dependencies using only registry versions confirmed by the current
@@ -1117,9 +1420,18 @@ pub fn resolve_all_confirmed(
     manifest: &HewManifest,
     root: &Path,
     registry: &Registry,
-    confirmed_versions: &BTreeMap<String, BTreeSet<String>>,
+    confirmed_versions: &BTreeMap<(String, String), BTreeSet<String>>,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
-    resolve_all_inner(manifest, root, registry, Some(confirmed_versions), None)
+    let sources = RegistrySources::default_source();
+    resolve_all_inner(
+        manifest,
+        root,
+        registry,
+        &sources,
+        false,
+        Some(confirmed_versions),
+        None,
+    )
 }
 
 /// Resolve a dependency graph using the exact registry versions recorded in a
@@ -1134,7 +1446,7 @@ pub fn resolve_all_locked(
     manifest: &HewManifest,
     root: &Path,
     registry: &Registry,
-    pinned_registry_paths: &BTreeMap<(String, String), PathBuf>,
+    pinned_registry_paths: &BTreeMap<(String, String, String), PathBuf>,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
     resolve_all_pinned(manifest, root, registry, pinned_registry_paths)
 }
@@ -1151,17 +1463,52 @@ pub fn resolve_all_pinned(
     manifest: &HewManifest,
     root: &Path,
     registry: &Registry,
-    pinned_registry_paths: &BTreeMap<(String, String), PathBuf>,
+    pinned_registry_paths: &BTreeMap<(String, String, String), PathBuf>,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
-    resolve_all_inner(manifest, root, registry, None, Some(pinned_registry_paths))
+    let sources = RegistrySources::default_source();
+    resolve_all_inner(
+        manifest,
+        root,
+        registry,
+        &sources,
+        false,
+        None,
+        Some(pinned_registry_paths),
+    )
+}
+
+/// Resolve using exact source-bound immutable registry generations.
+///
+/// # Errors
+///
+/// Returns [`ResolveError`] when the pinned source-bound graph cannot be
+/// resolved.
+pub fn resolve_all_pinned_with_sources(
+    manifest: &HewManifest,
+    root: &Path,
+    registry: &Registry,
+    sources: &RegistrySources,
+    pinned_registry_paths: &BTreeMap<(String, String, String), PathBuf>,
+) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
+    resolve_all_inner(
+        manifest,
+        root,
+        registry,
+        sources,
+        false,
+        None,
+        Some(pinned_registry_paths),
+    )
 }
 
 fn resolve_all_inner(
     manifest: &HewManifest,
     root: &Path,
     registry: &Registry,
-    confirmed_versions: Option<&BTreeMap<String, BTreeSet<String>>>,
-    pinned_registry_paths: Option<&BTreeMap<(String, String), PathBuf>>,
+    registry_sources: &RegistrySources,
+    allow_legacy_default: bool,
+    confirmed_versions: Option<&BTreeMap<(String, String), BTreeSet<String>>>,
+    pinned_registry_paths: Option<&BTreeMap<(String, String, String), PathBuf>>,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
     const MAX_RESOLUTION_PASSES: usize = 1024;
 
@@ -1170,7 +1517,9 @@ fn resolve_all_inner(
         let previous_seed_states = seed_states.clone();
         let pass = ResolverPass::with_seed(
             registry,
+            registry_sources,
             root,
+            allow_legacy_default,
             confirmed_versions,
             pinned_registry_paths,
             seed_states,
@@ -1944,6 +2293,14 @@ mod tests {
     fn confirmed_resolution_refuses_unconfirmed_cached_version() {
         let (_dir, registry) = test_registry();
         install_fake(&registry, "cached.pkg", "1.0.0");
+        let registry_id = crate::config::default_registry_identity();
+        let namespaced = registry.package_dir_for(&registry_id, "cached.pkg", "1.0.0");
+        std::fs::create_dir_all(&namespaced).unwrap();
+        std::fs::copy(
+            registry.package_dir("cached.pkg", "1.0.0").join("hew.toml"),
+            namespaced.join("hew.toml"),
+        )
+        .unwrap();
         let manifest = test_manifest(BTreeMap::from([(
             "cached.pkg".to_string(),
             DepSpec::Version("1.0.0".to_string()),
@@ -1955,7 +2312,7 @@ mod tests {
         assert!(matches!(error, ResolveError::UnresolvableDeps { .. }));
 
         let confirmed = BTreeMap::from([(
-            "cached.pkg".to_string(),
+            (registry_id, "cached.pkg".to_string()),
             BTreeSet::from(["1.0.0".to_string()]),
         )]);
         let resolved = resolve_all_confirmed(&manifest, Path::new("."), &registry, &confirmed)
@@ -2004,6 +2361,96 @@ mod tests {
     }
 
     #[test]
+    fn registry_manifest_rejects_every_path_dependency_spelling() {
+        for (index, path) in ["relative", "../../escape", "/absolute/escape"]
+            .into_iter()
+            .enumerate()
+        {
+            let (_dir, registry) = test_registry();
+            let package = registry.package_dir("registry.parent", "1.0.0");
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(
+                package.join("hew.toml"),
+                format!(
+                    "[package]\nname = \"registry.parent\"\nversion = \"1.0.0\"\n\n[dependencies]\nevil = {{ path = {path:?} }}\n"
+                ),
+            )
+            .unwrap();
+            let manifest = test_manifest(BTreeMap::from([(
+                "registry.parent".to_string(),
+                DepSpec::Version("1.0.0".to_string()),
+            )]));
+
+            let error = resolve_all(&manifest, &registry)
+                .expect_err(&format!("path spelling {index} must be rejected"));
+            assert!(matches!(
+                error,
+                ResolveError::RegistryPathDependency { ref path, .. } if path
+                    == ["relative", "../../escape", "/absolute/escape"][index]
+            ));
+        }
+    }
+
+    #[test]
+    fn same_package_from_different_registry_identities_conflicts() {
+        let (_dir, registry) = test_registry();
+        let registry_a = "https://a.example/api/v1".to_string();
+        let registry_b = "https://b.example/api/v1".to_string();
+        for (identity, parent) in [(&registry_a, "left"), (&registry_b, "right")] {
+            let package = registry.package_dir_for(identity, parent, "1.0.0");
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(
+                package.join("hew.toml"),
+                format!(
+                    "[package]\nname = \"{parent}\"\nversion = \"1.0.0\"\n\n[dependencies]\nshared = \"1.0.0\"\n"
+                ),
+            )
+            .unwrap();
+        }
+        let table = |registry: &str| {
+            DepSpec::Table(DepTable {
+                version: "1.0.0".to_string(),
+                optional: None,
+                features: None,
+                default_features: None,
+                registry: Some(registry.to_string()),
+                path: None,
+            })
+        };
+        let manifest = test_manifest(BTreeMap::from([
+            ("left".to_string(), table("a")),
+            ("right".to_string(), table("b")),
+        ]));
+        let sources = RegistrySources::new(
+            crate::config::default_registry_identity(),
+            None,
+            BTreeMap::from([
+                ("a".to_string(), registry_a.clone()),
+                ("b".to_string(), registry_b.clone()),
+            ]),
+        );
+
+        let error = resolve_all_from_root_with_sources(
+            &manifest,
+            Path::new("."),
+            &registry,
+            &sources,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ResolveError::ConflictingSources {
+                package,
+                first: PackageSource::Registry { registry: first },
+                second: PackageSource::Registry { registry: second },
+            } if package == "shared"
+                && BTreeSet::from([first.clone(), second.clone()])
+                    == BTreeSet::from([registry_a, registry_b])
+        ));
+    }
+
+    #[test]
     fn missing_path_dependency_is_named() {
         let (_registry_dir, registry) = test_registry();
         let project = tempfile::tempdir().unwrap();
@@ -2023,6 +2470,31 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("missing"));
         assert!(message.contains("does-not-exist"));
+    }
+
+    #[test]
+    fn dependency_cannot_combine_path_and_registry() {
+        let (_dir, registry) = test_registry();
+        let project = tempfile::tempdir().unwrap();
+        let local = project.path().join("local");
+        std::fs::create_dir(&local).unwrap();
+        let manifest = test_manifest(BTreeMap::from([(
+            "local".to_string(),
+            DepSpec::Table(DepTable {
+                version: "*".to_string(),
+                optional: None,
+                features: None,
+                default_features: None,
+                registry: Some("internal".to_string()),
+                path: Some("local".to_string()),
+            }),
+        )]));
+
+        let error = resolve_all_from_root(&manifest, project.path(), &registry).unwrap_err();
+        assert!(matches!(
+            error,
+            ResolveError::PathAndRegistry { package } if package == "local"
+        ));
     }
 
     // ── Display / Error impls ───────────────────────────────────────────
@@ -2052,7 +2524,8 @@ mod tests {
             failures: vec![UnresolvedDep {
                 package: "a".to_string(),
                 requirements: vec!["1.0".to_string(), "^1.2".to_string()],
-                registry: None,
+                registry: crate::config::default_registry_identity(),
+                registry_selector: None,
             }],
         };
         let msg = err.to_string();
@@ -2102,13 +2575,22 @@ mod tests {
             native: None,
         };
 
-        let err = resolve_all(&manifest, &reg).unwrap_err();
+        let internal = "https://registry.internal.example/api/v1".to_string();
+        let sources = RegistrySources::new(
+            crate::config::default_registry_identity(),
+            None,
+            BTreeMap::from([("internal".to_string(), internal.clone())]),
+        );
+        let err =
+            resolve_all_from_root_with_sources(&manifest, Path::new("."), &reg, &sources, true)
+                .unwrap_err();
         let ResolveError::UnresolvableDeps { failures } = err else {
             panic!("expected unresolved dependency");
         };
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].package, "corp.auth");
-        assert_eq!(failures[0].registry.as_deref(), Some("internal"));
+        assert_eq!(failures[0].registry, internal);
+        assert_eq!(failures[0].registry_selector.as_deref(), Some("internal"));
     }
 
     // ── resolve_version_from_entries ─────────────────────────────────

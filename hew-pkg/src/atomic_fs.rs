@@ -2,10 +2,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use rand::RngExt as _;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+const RETAINED_SUPERSEDED_GENERATIONS: usize = 2;
 
 pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> io::Result<()> {
     write_atomic_with_hook(path, content, mode, |_| Ok(()))
@@ -46,10 +48,17 @@ impl StagedDir {
         &self.path
     }
 
+    #[cfg(test)]
     pub fn publish(mut self, target: &Path) -> io::Result<PathBuf> {
-        self.publish_with_hook(target, || Ok(()))
+        let pinned = self.publish_pinned_with_hooks(target, || Ok(()), || Ok(()))?;
+        Ok(pinned.path().to_path_buf())
     }
 
+    pub(crate) fn publish_pinned(mut self, target: &Path) -> io::Result<PinnedDir> {
+        self.publish_pinned_with_hooks(target, || Ok(()), || Ok(()))
+    }
+
+    #[cfg(test)]
     fn publish_with_hook<F>(
         &mut self,
         target: &Path,
@@ -58,25 +67,96 @@ impl StagedDir {
     where
         F: FnOnce() -> io::Result<()>,
     {
+        let pinned = self.publish_pinned_with_hooks(target, before_pointer_replace, || Ok(()))?;
+        Ok(pinned.path().to_path_buf())
+    }
+
+    #[cfg(test)]
+    fn publish_with_hooks<B, A>(
+        &mut self,
+        target: &Path,
+        before_pointer_replace: B,
+        after_pointer_replace: A,
+    ) -> io::Result<PathBuf>
+    where
+        B: FnOnce() -> io::Result<()>,
+        A: FnOnce() -> io::Result<()>,
+    {
+        let pinned =
+            self.publish_pinned_with_hooks(target, before_pointer_replace, after_pointer_replace)?;
+        Ok(pinned.path().to_path_buf())
+    }
+
+    fn publish_pinned_with_hooks<B, A>(
+        &mut self,
+        target: &Path,
+        before_pointer_replace: B,
+        after_pointer_replace: A,
+    ) -> io::Result<PinnedDir>
+    where
+        B: FnOnce() -> io::Result<()>,
+        A: FnOnce() -> io::Result<()>,
+    {
+        let _slot_lock = lock_slot(target, LockMode::Exclusive, false)?
+            .expect("a blocking lock acquisition always returns a guard");
         let generation = generation_path_for(target)?;
         fs::rename(&self.path, &generation)?;
         self.active = false;
-        sync_parent_dir(&generation)?;
+        let mut ownership = RenamedGeneration::new(generation.clone());
+        if let Err(error) = sync_parent_dir(&generation) {
+            return Err(ownership.reclaim_after(error));
+        }
 
-        before_pointer_replace()?;
+        if let Err(error) = before_pointer_replace() {
+            return Err(ownership.reclaim_after(error));
+        }
+        let lease_path = match generation_lease_path_for(&generation) {
+            Ok(path) => path,
+            Err(error) => return Err(ownership.reclaim_after(error)),
+        };
+        let generation_lock = match lock_file(&lease_path, LockMode::Shared, false) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => unreachable!("a blocking lock acquisition always returns a guard"),
+            Err(error) => return Err(ownership.reclaim_after(error)),
+        };
 
-        let generation_name = generation
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "invalid generation name")
-            })?;
-        write_atomic(
-            &pointer_path_for(target)?,
+        let Some(generation_name) = generation.file_name().and_then(|name| name.to_str()) else {
+            return Err(ownership.reclaim_after(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid generation name",
+            )));
+        };
+        let pointer = pointer_path_for(target)?;
+        let publish_result = write_atomic_with_commit_hook(
+            &pointer,
             format!("{generation_name}\n").as_bytes(),
             0o644,
-        )?;
-        Ok(generation)
+            || {
+                ownership.release();
+                after_pointer_replace()
+            },
+        );
+        if let Err(error) = publish_result {
+            if ownership.owned {
+                match resolve_published_dir_with(target, read_pointer) {
+                    Ok(active) if active == generation => ownership.release(),
+                    Ok(_) => {}
+                    Err(_) => ownership.release(),
+                }
+            }
+            if ownership.owned {
+                return Err(ownership.reclaim_after(error));
+            }
+            return Err(error);
+        }
+        ownership.release();
+        cleanup_generations_locked(target);
+        Ok(PinnedDir {
+            path: generation,
+            lease: Some(GenerationLease {
+                lock: Some(generation_lock),
+            }),
+        })
     }
 }
 
@@ -97,6 +177,32 @@ fn write_atomic_with_hook<F>(
 where
     F: FnOnce(&Path) -> io::Result<()>,
 {
+    write_atomic_with_hooks(path, content, mode, before_rename, || Ok(()))
+}
+
+fn write_atomic_with_commit_hook<F>(
+    path: &Path,
+    content: &[u8],
+    mode: u32,
+    after_replace: F,
+) -> io::Result<()>
+where
+    F: FnOnce() -> io::Result<()>,
+{
+    write_atomic_with_hooks(path, content, mode, |_| Ok(()), after_replace)
+}
+
+fn write_atomic_with_hooks<B, A>(
+    path: &Path,
+    content: &[u8],
+    mode: u32,
+    before_rename: B,
+    after_replace: A,
+) -> io::Result<()>
+where
+    B: FnOnce(&Path) -> io::Result<()>,
+    A: FnOnce() -> io::Result<()>,
+{
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -115,8 +221,51 @@ where
     before_rename(&temp_path)?;
 
     replace_file(&temp_path, path)?;
+    after_replace()?;
     sync_parent_dir(path)?;
     Ok(())
+}
+
+#[derive(Debug)]
+struct RenamedGeneration {
+    path: PathBuf,
+    owned: bool,
+}
+
+impl RenamedGeneration {
+    fn new(path: PathBuf) -> Self {
+        Self { path, owned: true }
+    }
+
+    fn release(&mut self) {
+        self.owned = false;
+    }
+
+    fn reclaim_after(&mut self, publication_error: io::Error) -> io::Error {
+        match remove_path(&self.path) {
+            Ok(()) => {
+                self.owned = false;
+                if let Err(sync_error) = sync_parent_dir(&self.path) {
+                    return io::Error::other(format!(
+                        "{publication_error}; never-active generation was removed but its parent could not be synchronized: {sync_error}"
+                    ));
+                }
+                publication_error
+            }
+            Err(reclaim_error) => io::Error::other(format!(
+                "{publication_error}; could not reclaim never-active generation {}: {reclaim_error}",
+                self.path.display()
+            )),
+        }
+    }
+}
+
+impl Drop for RenamedGeneration {
+    fn drop(&mut self) {
+        if self.owned {
+            let _ = remove_path(&self.path);
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -180,6 +329,22 @@ fn pointer_path_for(target: &Path) -> io::Result<PathBuf> {
     Ok(target.with_file_name(format!(".{file_name}.current")))
 }
 
+fn slot_lock_path_for(target: &Path) -> io::Result<PathBuf> {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    Ok(target.with_file_name(format!(".{file_name}.slot.lock")))
+}
+
+fn generation_lease_path_for(generation: &Path) -> io::Result<PathBuf> {
+    let file_name = generation
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    Ok(generation.with_file_name(format!("{file_name}.lease")))
+}
+
 fn generation_path_for(target: &Path) -> io::Result<PathBuf> {
     let mut rng = rand::rng();
     generation_path_for_with(target, || rng.random::<u128>())
@@ -211,6 +376,113 @@ where
 /// A missing pointer denotes the legacy direct-directory representation.
 pub(crate) fn resolve_published_dir(target: &Path) -> io::Result<PathBuf> {
     resolve_published_dir_with(target, read_pointer)
+}
+
+/// An immutable published directory held under a cross-process generation
+/// lease. Legacy direct directories are never generation-collected and carry
+/// no generation lease.
+#[derive(Debug)]
+pub(crate) struct PinnedDir {
+    path: PathBuf,
+    lease: Option<GenerationLease>,
+}
+
+impl PinnedDir {
+    pub(crate) fn legacy(path: PathBuf) -> Self {
+        Self { path, lease: None }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn canonicalize(mut self) -> io::Result<Self> {
+        self.path = self.path.canonicalize()?;
+        Ok(self)
+    }
+
+    pub(crate) fn is_generation(&self) -> bool {
+        self.lease.is_some()
+    }
+}
+
+#[derive(Debug)]
+struct GenerationLease {
+    lock: Option<FileLock>,
+}
+
+impl Drop for GenerationLease {
+    fn drop(&mut self) {
+        if let Some(mut lock) = self.lock.take() {
+            lock.unlock();
+        }
+    }
+}
+
+/// Pin the active immutable generation while holding the slot lock across the
+/// pointer read and lease acquisition.
+pub(crate) fn pin_published_dir(target: &Path) -> io::Result<PinnedDir> {
+    let pointer = pointer_path_for(target)?;
+    match fs::symlink_metadata(&pointer) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            validate_generation_directory(target)?;
+            return Ok(PinnedDir::legacy(target.to_path_buf()));
+        }
+        Err(error) => return Err(error),
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "published package pointer is not a regular file: {}",
+                    pointer.display()
+                ),
+            ));
+        }
+        Ok(_) => {}
+    }
+
+    let _slot_lock = lock_slot_existing(target, LockMode::Shared, false)?
+        .expect("a blocking lock acquisition always returns a guard");
+    let path = resolve_published_dir(target)?;
+    validate_generation_directory(&path)?;
+    let lease_path = generation_lease_path_for(&path)?;
+    let lock = lock_file_existing(&lease_path, LockMode::Shared, false)?
+        .expect("a blocking lock acquisition always returns a guard");
+    validate_generation_directory(&path)?;
+    Ok(PinnedDir {
+        path,
+        lease: Some(GenerationLease { lock: Some(lock) }),
+    })
+}
+
+pub(crate) fn pin_published_dir_if_present(target: &Path) -> io::Result<Option<PinnedDir>> {
+    let pointer = pointer_path_for(target)?;
+    let target_state = fs::symlink_metadata(target);
+    let pointer_state = fs::symlink_metadata(&pointer);
+    match (target_state, pointer_state) {
+        (Err(target_error), Err(pointer_error))
+            if target_error.kind() == io::ErrorKind::NotFound
+                && pointer_error.kind() == io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        (Err(error), _) | (_, Err(error)) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => pin_published_dir(target).map(Some),
+    }
+}
+
+fn validate_generation_directory(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "published package generation is not a directory: {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -264,16 +536,290 @@ where
     };
     let generation = pointer.trim();
     let expected_prefix = format!(".{target_name}.generation-");
-    if generation.starts_with(&expected_prefix)
-        && !generation.contains('/')
-        && !generation.contains('\\')
-    {
+    if is_generation_name(generation, &expected_prefix) {
         Ok(target.with_file_name(generation))
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid package generation pointer",
         ))
+    }
+}
+
+fn is_generation_name(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).is_some_and(|nonce| {
+        nonce.len() == 32 && nonce.as_bytes().iter().all(u8::is_ascii_hexdigit)
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LockMode {
+    Shared,
+    Exclusive,
+}
+
+#[derive(Debug)]
+struct FileLock {
+    file: Option<File>,
+}
+
+impl FileLock {
+    fn unlock(&mut self) {
+        if let Some(file) = self.file.take() {
+            os_unlock(&file);
+        }
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        self.unlock();
+    }
+}
+
+fn lock_slot(target: &Path, mode: LockMode, nonblocking: bool) -> io::Result<Option<FileLock>> {
+    lock_file(&slot_lock_path_for(target)?, mode, nonblocking)
+}
+
+fn lock_slot_existing(
+    target: &Path,
+    mode: LockMode,
+    nonblocking: bool,
+) -> io::Result<Option<FileLock>> {
+    lock_file_existing(&slot_lock_path_for(target)?, mode, nonblocking)
+}
+
+fn lock_file(path: &Path, mode: LockMode, nonblocking: bool) -> io::Result<Option<FileLock>> {
+    lock_file_with_create(path, mode, nonblocking, true)
+}
+
+fn lock_file_existing(
+    path: &Path,
+    mode: LockMode,
+    nonblocking: bool,
+) -> io::Result<Option<FileLock>> {
+    lock_file_with_create(path, mode, nonblocking, false)
+}
+
+fn lock_file_with_create(
+    path: &Path,
+    mode: LockMode,
+    nonblocking: bool,
+    create: bool,
+) -> io::Result<Option<FileLock>> {
+    if let Some(parent) = path.parent() {
+        if create {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("lock path is not a regular file: {}", path.display()),
+            ));
+        }
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(create)
+        .truncate(false)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("lock path is not a regular file: {}", path.display()),
+        ));
+    }
+    if os_lock(&file, mode, nonblocking)? {
+        Ok(Some(FileLock { file: Some(file) }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(unix)]
+fn os_lock(file: &File, mode: LockMode, nonblocking: bool) -> io::Result<bool> {
+    use std::os::fd::AsRawFd as _;
+
+    let operation = match mode {
+        LockMode::Shared => libc::LOCK_SH,
+        LockMode::Exclusive => libc::LOCK_EX,
+    } | if nonblocking { libc::LOCK_NB } else { 0 };
+    loop {
+        // SAFETY: the descriptor belongs to `file` and remains open throughout
+        // the call.
+        if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if nonblocking && error.kind() == io::ErrorKind::WouldBlock {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+}
+
+#[cfg(unix)]
+fn os_unlock(file: &File) {
+    use std::os::fd::AsRawFd as _;
+
+    // SAFETY: the descriptor belongs to `file` and remains open for this call.
+    let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+}
+
+#[cfg(windows)]
+fn os_lock(file: &File, mode: LockMode, nonblocking: bool) -> io::Result<bool> {
+    use std::mem::zeroed;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let mut flags = match mode {
+        LockMode::Shared => 0,
+        LockMode::Exclusive => LOCKFILE_EXCLUSIVE_LOCK,
+    };
+    if nonblocking {
+        flags |= LOCKFILE_FAIL_IMMEDIATELY;
+    }
+    // SAFETY: zero is a valid OVERLAPPED value for a synchronous whole-file
+    // lock, and the file handle remains open while the lock is held.
+    let mut overlapped: OVERLAPPED = unsafe { zeroed() };
+    let result = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            flags,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &raw mut overlapped,
+        )
+    };
+    if result != 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if nonblocking && error.raw_os_error() == Some(ERROR_LOCK_VIOLATION.cast_signed()) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(windows)]
+fn os_unlock(file: &File) {
+    use std::mem::zeroed;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    // SAFETY: this unlocks the same whole-file byte range used by `os_lock`;
+    // the file handle remains open throughout the call.
+    let mut overlapped: OVERLAPPED = unsafe { zeroed() };
+    let _ = unsafe {
+        UnlockFileEx(
+            file.as_raw_handle(),
+            0,
+            u32::MAX,
+            u32::MAX,
+            &raw mut overlapped,
+        )
+    };
+}
+
+#[derive(Debug)]
+struct GenerationCandidate {
+    path: PathBuf,
+    modified: SystemTime,
+    name: String,
+}
+
+/// Collect only generations beyond the bounded recent-history allowance.
+/// Every uncertainty is handled by retaining the affected generation.
+fn cleanup_generations_locked(target: &Path) {
+    let Ok(active) = resolve_published_dir(target) else {
+        return;
+    };
+    if active == target {
+        return;
+    }
+    let Some(parent) = target.parent() else {
+        return;
+    };
+    let Some(target_name) = target.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let prefix = format!(".{target_name}.generation-");
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let mut candidates = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return;
+        };
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_generation_name(&name, &prefix) {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path == active {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+            continue;
+        };
+        candidates.push(GenerationCandidate {
+            path,
+            modified,
+            name,
+        });
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .modified
+            .cmp(&left.modified)
+            .then_with(|| right.name.cmp(&left.name))
+    });
+
+    for candidate in candidates.into_iter().skip(RETAINED_SUPERSEDED_GENERATIONS) {
+        let Ok(lease_path) = generation_lease_path_for(&candidate.path) else {
+            continue;
+        };
+        let Ok(Some(collector_lease)) = lock_file_existing(&lease_path, LockMode::Exclusive, true)
+        else {
+            continue;
+        };
+        let Ok(current) = resolve_published_dir(target) else {
+            continue;
+        };
+        if current == candidate.path {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&candidate.path) else {
+            continue;
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        if fs::remove_dir_all(&candidate.path).is_ok() {
+            drop(collector_lease);
+            let _ = fs::remove_file(lease_path);
+        }
     }
 }
 
@@ -456,6 +1002,29 @@ where
 mod tests {
     use super::*;
 
+    fn generation_dirs(target: &Path) -> Vec<PathBuf> {
+        let parent = target.parent().unwrap();
+        let prefix = format!(
+            ".{}.generation-",
+            target.file_name().unwrap().to_string_lossy()
+        );
+        fs::read_dir(parent)
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| {
+                entry.file_name().to_string_lossy().starts_with(&prefix)
+                    && entry.file_type().unwrap().is_dir()
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    fn publish_state(target: &Path, state: &str) -> PathBuf {
+        let staged = StagedDir::new(target).unwrap();
+        fs::write(staged.path().join("state"), state).unwrap();
+        staged.publish(target).unwrap()
+    }
+
     #[test]
     fn interrupted_atomic_write_keeps_original_target() {
         let dir = tempfile::tempdir().unwrap();
@@ -545,6 +1114,138 @@ mod tests {
             fs::read_to_string(resolve_published_dir(&target).unwrap().join("state")).unwrap(),
             "old"
         );
+        assert!(
+            generation_dirs(&target).is_empty(),
+            "the renamed never-active generation must be reclaimed immediately"
+        );
+    }
+
+    #[test]
+    fn post_commit_failure_retains_potentially_active_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+        let mut staged = StagedDir::new(&target).unwrap();
+        fs::write(staged.path().join("state"), "committed").unwrap();
+
+        let error = staged
+            .publish_with_hooks(
+                &target,
+                || Ok(()),
+                || Err(io::Error::other("simulated parent durability failure")),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        let active = resolve_published_dir(&target).unwrap();
+        assert_eq!(
+            fs::read_to_string(active.join("state")).unwrap(),
+            "committed"
+        );
+        assert_eq!(generation_dirs(&target), [active]);
+    }
+
+    #[test]
+    fn successful_swaps_have_bounded_generation_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+
+        for index in 0..12 {
+            publish_state(&target, &index.to_string());
+        }
+
+        assert!(generation_dirs(&target).len() <= 3);
+        assert_eq!(
+            fs::read_to_string(resolve_published_dir(&target).unwrap().join("state")).unwrap(),
+            "11"
+        );
+    }
+
+    #[test]
+    fn pinned_old_generation_is_collected_by_later_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+        let first = publish_state(&target, "first");
+        let pinned = pin_published_dir(&target).unwrap();
+        assert_eq!(pinned.path(), first);
+
+        for index in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            publish_state(&target, &format!("new-{index}"));
+        }
+
+        assert_eq!(
+            fs::read_to_string(pinned.path().join("state")).unwrap(),
+            "first"
+        );
+        assert!(first.is_dir());
+        assert!(generation_dirs(&target).len() > 3);
+
+        drop(pinned);
+
+        assert!(
+            first.exists(),
+            "releasing a read lease must not trigger collection"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        publish_state(&target, "cleanup-trigger");
+
+        assert!(!first.exists());
+        assert!(generation_dirs(&target).len() <= 3);
+    }
+
+    #[test]
+    fn a_recent_non_current_generation_is_not_deleted_merely_for_being_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+        let first = publish_state(&target, "first");
+        publish_state(&target, "second");
+
+        assert!(first.is_dir());
+        assert_eq!(generation_dirs(&target).len(), 2);
+    }
+
+    #[test]
+    fn os_reader_lock_blocks_nonblocking_collector_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("generation.lease");
+        let reader = lock_file(&lock_path, LockMode::Shared, false)
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            lock_file(&lock_path, LockMode::Exclusive, true)
+                .unwrap()
+                .is_none(),
+            "an active OS reader lease must exclude collection"
+        );
+        drop(reader);
+        assert!(
+            lock_file(&lock_path, LockMode::Exclusive, true)
+                .unwrap()
+                .is_some(),
+            "releasing the reader lease must permit collection"
+        );
+    }
+
+    #[test]
+    fn uncertain_lease_metadata_retains_collection_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+        let retained = publish_state(&target, "retained");
+        let lease_path = generation_lease_path_for(&retained).unwrap();
+        fs::remove_file(&lease_path).unwrap();
+        fs::create_dir(&lease_path).unwrap();
+
+        for index in 0..5 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            publish_state(&target, &format!("new-{index}"));
+        }
+
+        assert!(
+            retained.is_dir(),
+            "invalid lock metadata must fail closed by retaining the generation"
+        );
+        assert!(generation_dirs(&target).len() > 3);
     }
 
     #[test]

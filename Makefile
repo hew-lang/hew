@@ -333,7 +333,8 @@ RUNTIME_MIRI_TARGET_DIR := target/miri-runtime
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew hew-native hew-lsp observe runtime stdlib wasm-runtime assemble ## Build: build the release-lib compiler and debug support artifacts
+all: assemble ## Build: build the release-lib compiler and debug support artifacts
+	$(ASSERT_RELEASE_LIB_HEW_PROFILE)
 
 # Convenience alias — builds the release-lib compiler and debug support tools.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
@@ -357,8 +358,10 @@ hew-debug: hew-native
 	@echo "compiler path: $(DEBUG_HEW)"
 	@test -f "$(DEBUG_HEW)"
 
-# inputs: Makefile Cargo.toml Cargo.lock
-hew-profile-check: hew
+# Shared assertion recipe. `hew-profile-check` builds the supported launcher
+# before checking it; `all` runs the same assertion only after `assemble`, so a
+# later assembly step cannot silently replace the launcher with another profile.
+define ASSERT_RELEASE_LIB_HEW_PROFILE
 	@actual="$$(readlink "$(BUILD_DIR)/bin/hew")"; \
 	expected="$(LINK_UP2)$(RELEASE_LIB_HEW)"; \
 	echo "compiler profile: release-lib"; \
@@ -368,6 +371,11 @@ hew-profile-check: hew
 		echo "Error: build/bin/hew resolves through $$actual, expected $$expected" >&2; \
 		exit 1; \
 	}
+endef
+
+# inputs: Makefile Cargo.toml Cargo.lock
+hew-profile-check: hew
+	$(ASSERT_RELEASE_LIB_HEW_PROFILE)
 
 # Warm-up form for the preflight dispatcher: build and stage the launcher, but
 # leave the profile assertion itself to the gate command.
@@ -900,8 +908,10 @@ assemble: | hew hew-native hew-lsp observe runtime stdlib wasm-runtime
 	@# flat std stub loop below cannot rewrite tracked std/*.hew files in root.
 	@rm -rf $(BUILD_DIR)/std
 	@mkdir -p $(BUILD_DIR)/std
-	@# Compiler driver
-	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)"                    "$(BUILD_DIR)/bin/hew"
+	@# Compiler drivers: keep the supported release-lib launcher stable while
+	@# exposing the debug compiler under its explicit debug name.
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)"              "$(BUILD_DIR)/bin/hew"
+	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)"                    "$(BUILD_DIR)/bin/hew-debug"
 	@# Language server
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-lsp"            "$(BUILD_DIR)/bin/hew-lsp"
 	@# TUI actor observer (sibling binary — `hew observe` delegates here)
@@ -936,7 +946,7 @@ assemble: | hew hew-native hew-lsp observe runtime stdlib wasm-runtime
 	@for f in std/*.hew; do \
 		ln -sfn "../../$$f" "$(BUILD_DIR)/std/$$(basename $$f)"; \
 	done
-	@echo "build/ assembled (debug). Add to PATH:"
+	@echo "build/ assembled (release-lib compiler, debug support tools). Add to PATH:"
 	@echo "  export PATH=\"$(CURDIR)/$(BUILD_DIR)/bin:\$$PATH\""
 
 # ── Release build ───────────────────────────────────────────────────────────

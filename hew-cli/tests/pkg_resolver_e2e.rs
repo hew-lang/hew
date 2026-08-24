@@ -518,6 +518,10 @@ fn pkg_malformed_archive_preserves_untrusted_old_cache() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the concurrency assertion covers both schedules and their shared convergence state"
+)]
 fn pkg_concurrent_repair_downloads_and_publishes_once() {
     let root = support::tempdir();
     let home = root.path().join("home");
@@ -529,8 +533,11 @@ fn pkg_concurrent_repair_downloads_and_publishes_once() {
     std::fs::create_dir_all(&second_project).unwrap();
     write_manifest(&first_project, "foo = \"0.2.1\"\n");
     write_manifest(&second_project, "foo = \"0.2.1\"\n");
-    write_cached_package(&cache, "foo", "0.2.1");
+    let legacy = write_cached_package(&cache, "foo", "0.2.1");
+    std::fs::write(legacy.join("foo.hew"), "pub fn answer() -> i64 { 7 }\n").unwrap();
+    std::fs::write(legacy.join("partial.marker"), "untrusted legacy cache").unwrap();
     let packed = package_tarball(root.path());
+    let registry_checksum = packed.checksum.clone();
     let registry = start_repair_registry(packed.data, packed.checksum);
     write_config(&home, &cache, Some(&registry.api_url));
 
@@ -569,19 +576,104 @@ fn pkg_concurrent_repair_downloads_and_publishes_once() {
         describe_output(&second_output)
     );
     assert_eq!(registry.package_requests.load(Ordering::Relaxed), 2);
-    assert_eq!(registry.download_requests.load(Ordering::Relaxed), 2);
+    let download_requests = registry.download_requests.load(Ordering::Relaxed);
+    assert!(
+        (1..=2).contains(&download_requests),
+        "both installs must converge after one process publishes, with at most one speculative download per process; observed {download_requests} downloads"
+    );
+
+    let registry_id = hew_pkg::config::registry_identity(&registry.api_url);
+    let mut lock_checksums = Vec::new();
+    for project in [&first_project, &second_project] {
+        assert_eq!(
+            std::fs::read_to_string(project.join(".hew/packages/foo/foo.hew")).unwrap(),
+            "pub fn answer() -> i64 { 42 }\n",
+            "each project must materialize the registry-confirmed generation"
+        );
+        let lock_text = std::fs::read_to_string(project.join("hew.lock")).unwrap();
+        let lock: toml::Value = toml::from_str(&lock_text).unwrap();
+        let packages = lock["package"].as_array().unwrap();
+        assert_eq!(packages.len(), 1, "each project must lock only foo");
+        let package = packages.first().unwrap();
+        assert_eq!(package["name"].as_str(), Some("foo"));
+        assert_eq!(package["version"].as_str(), Some("0.2.1"));
+        assert_eq!(package["registry"].as_str(), Some(registry_id.as_str()));
+        lock_checksums.push(package["checksum"].as_str().unwrap().to_string());
+    }
+
+    let active = hew_pkg::registry::Registry::with_root(cache.clone()).package_dir_for(
+        &registry_id,
+        "foo",
+        "0.2.1",
+    );
     assert_eq!(
-        std::fs::read_to_string(
-            hew_pkg::registry::Registry::with_root(cache)
-                .package_dir_for(
-                    &hew_pkg::config::registry_identity(&registry.api_url),
-                    "foo",
-                    "0.2.1",
-                )
-                .join("foo.hew")
-        )
-        .unwrap(),
+        std::fs::read_to_string(active.join("foo.hew")).unwrap(),
         "pub fn answer() -> i64 { 42 }\n"
+    );
+    assert_ne!(
+        active, legacy,
+        "online resolution must not revive legacy cache"
+    );
+    let active_name = active.file_name().unwrap().to_string_lossy();
+    assert!(
+        active_name.starts_with(".0.2.1.generation-"),
+        "the active cache must be an immutable generation, got {active_name}"
+    );
+    let metadata_text = std::fs::read_to_string(active.join(".hew-registry-cache.toml")).unwrap();
+    let metadata: toml::Value = toml::from_str(&metadata_text).unwrap();
+    assert_eq!(metadata["name"].as_str(), Some("foo"));
+    assert_eq!(metadata["version"].as_str(), Some("0.2.1"));
+    assert_eq!(metadata["registry"].as_str(), Some(registry_id.as_str()));
+    assert_eq!(
+        metadata["registry_checksum"].as_str(),
+        Some(registry_checksum.as_str())
+    );
+    assert!(
+        lock_checksums
+            .iter()
+            .all(|checksum| Some(checksum.as_str()) == metadata["tree_checksum"].as_str()),
+        "both projects must lock the checksum of the one active verified generation"
+    );
+    assert_eq!(
+        std::fs::read_to_string(legacy.join("foo.hew")).unwrap(),
+        "pub fn answer() -> i64 { 7 }\n",
+        "publishing a namespaced generation must not mutate the untrusted legacy entry"
+    );
+    assert!(
+        legacy.join("partial.marker").is_file(),
+        "the untrusted legacy entry must neither be resurrected nor replaced"
+    );
+
+    let generation_prefix = ".0.2.1.generation-";
+    let generations = std::fs::read_dir(active.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(generation_prefix)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        generations.len(),
+        1,
+        "concurrent repair must publish exactly one immutable generation"
+    );
+    let temporary_entries = std::fs::read_dir(active.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".0.2.1.tmp-")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        temporary_entries.is_empty(),
+        "concurrent repair must not leave partial staging or pointer artifacts"
     );
 }
 

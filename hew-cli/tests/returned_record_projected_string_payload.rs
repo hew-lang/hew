@@ -131,6 +131,51 @@ fn main() {{
     )
 }
 
+fn overwritten_alias_source(frames: usize) -> String {
+    format!(
+        r#"
+enum CleanupError {{
+    Dirty(string);
+}}
+
+type Pair {{
+    first: string;
+    second: string;
+}}
+
+fn cleanup() -> Result<(), CleanupError> {{
+    Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
+}}
+
+fn build(i: i64) -> Result<Pair, string> {{
+    match cleanup() {{
+        .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
+        .Err(CleanupError.Dirty(message)) => {{
+            var current = message;
+            let alias = current;
+            current = "replacement " + f"{{i}}";
+            Ok(Pair {{ first: current, second: alias }})
+        }},
+    }}
+}}
+
+fn main() {{
+    for i in 0..{frames} {{
+        match build(i) {{
+            .Err(message) => panic(message),
+            .Ok(pair) => {{
+                if pair.first == pair.second {{
+                    panic("wrong generations");
+                }}
+            }},
+        }}
+        println("frame");
+    }}
+}}
+"#
+    )
+}
+
 fn dump_raw_mir(source: &str, name: &str) -> String {
     let dir = tempfile::Builder::new()
         .prefix("returned-record-projected-string-mir-")
@@ -223,6 +268,15 @@ fn nested_payload_return_mints_only_the_missing_owner() {
         "distinct locals in one projected-owner family still need exactly two returned owners:\n\
          {aliased_build}"
     );
+
+    let overwritten_raw = dump_raw_mir(&overwritten_alias_source(1), "overwritten_alias");
+    let overwritten_build = function_section(&overwritten_raw, "build");
+    assert_eq!(
+        overwritten_build.match_indices("string.retain").count(),
+        2,
+        "an overwritten binding must not join its replacement generation to a historical alias:\n\
+         {overwritten_build}"
+    );
 }
 
 #[test]
@@ -256,6 +310,20 @@ fn aliased_repeated_nested_payload_return_has_no_per_iteration_leak() {
     assert_frame_slope_below_tolerance_exact_lines(
         "aliased_repeated_returned_nested_string_payload",
         aliased_repeated_source,
+        |frames| frames,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the low/high leak-slope oracle requires macOS leaks(1)"
+)]
+#[test]
+fn overwritten_alias_generations_have_no_per_iteration_leak() {
+    require_codegen();
+    assert_frame_slope_below_tolerance_exact_lines(
+        "overwritten_returned_string_alias_generations",
+        overwritten_alias_source,
         |frames| frames,
     );
 }

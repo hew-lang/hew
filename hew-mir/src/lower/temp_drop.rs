@@ -164,6 +164,29 @@ fn typed_handoff_owner_reaches_site(
     }
 }
 
+/// Prove that one exact local-to-local move's destination generation reaches a
+/// later site without any intervening read or write of that destination.
+///
+/// The caller supplies the already-classified ownership meaning of the move;
+/// this helper contributes only the generation-sensitive CFG proof.
+pub(super) fn unique_move_generation_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    source: Place,
+    destination: Place,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    typed_handoff_owner_reaches_site(
+        blocks,
+        suspend_kinds,
+        &HashSet::from([(source, destination)]),
+        destination,
+        target_block,
+        target_instr_index,
+    )
+}
+
 /// Prove that a direct typed publication still carries the same generation at
 /// an aggregate ingress. Direct publications include ordinary call results and
 /// values initialized only on a suspend carrier's resume edge.

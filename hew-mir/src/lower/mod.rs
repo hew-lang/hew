@@ -6262,47 +6262,95 @@ fn nested_projected_returned_string_sources(
         .collect()
 }
 
-fn retain_nested_projected_returned_strings(
-    block: &mut BasicBlock,
-    sources: &[Place],
-    nested_projected_strings: &HashSet<Place>,
-    share_reuse_exclusions: &HashSet<Place>,
-    already_neutralized: &HashSet<Place>,
-    index: &mut usize,
-    builder: &mut Builder,
-) {
-    let share_alias_edges: HashMap<Place, Vec<Place>> = builder
+fn retained_string_share_owners_at_aggregate_sites(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+) -> HashSet<(u32, Place, Place)> {
+    let retained_edges: Vec<(Place, Place)> = builder
         .string_local_share_sites
-        .values()
-        .filter_map(|(source, destination)| {
+        .iter()
+        .filter(|(site, (source, _destination))| {
+            blocks
+                .iter()
+                .flat_map(|block| &block.statements)
+                .any(|statement| {
+                    matches!(
+                        statement,
+                        MirStatement::Use {
+                            binding,
+                            site: use_site,
+                            intent: IntentKind::Read,
+                            ..
+                        } if binding == source && use_site == *site
+                    )
+                })
+        })
+        .filter_map(|(_site, (source, destination))| {
             Some((
                 *builder.binding_locals.get(source)?,
                 *builder.binding_locals.get(destination)?,
             ))
         })
-        .fold(HashMap::new(), |mut edges, (source, destination)| {
-            edges.entry(source).or_default().push(destination);
-            edges
-        });
-    let returned_sources: HashSet<Place> = sources.iter().copied().collect();
-    let mut retained = HashSet::new();
-    for source in sources.iter().copied() {
-        let mut family = vec![source];
-        let mut seen = HashSet::from([source]);
-        let mut returned_share_descendant = false;
-        while let Some(member) = family.pop() {
-            for destination in share_alias_edges.get(&member).into_iter().flatten() {
-                if seen.insert(*destination) {
-                    returned_share_descendant |= returned_sources.contains(destination);
-                    family.push(*destination);
+        .collect();
+
+    let mut owners = HashSet::new();
+    for block in blocks {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let (destination, sources): (Place, Vec<Place>) = match instruction {
+                Instr::TupleConstruct { elements, dest } => (*dest, elements.clone()),
+                Instr::RecordInit { fields, dest, .. } => (
+                    *dest,
+                    fields.iter().map(|(_offset, source)| *source).collect(),
+                ),
+                _ => continue,
+            };
+            for source in sources {
+                if retained_edges
+                    .iter()
+                    .any(|(fork_source, fork_destination)| {
+                        *fork_destination == source
+                            && temp_drop::unique_move_generation_reaches_site(
+                                blocks,
+                                &builder.suspend_kinds,
+                                *fork_source,
+                                *fork_destination,
+                                block.id,
+                                index,
+                            )
+                    })
+                {
+                    owners.insert((block.id, destination, source));
                 }
             }
         }
+    }
+    owners
+}
+
+struct ReturnedStringRetainProof<'a> {
+    nested_projected_strings: &'a HashSet<Place>,
+    share_reuse_exclusions: &'a HashSet<Place>,
+    already_neutralized: &'a HashSet<Place>,
+    retained_share_owners: &'a HashSet<(u32, Place, Place)>,
+}
+
+fn retain_nested_projected_returned_strings(
+    block: &mut BasicBlock,
+    destination: Place,
+    sources: &[Place],
+    proof: &ReturnedStringRetainProof<'_>,
+    index: &mut usize,
+    builder: &mut Builder,
+) {
+    let mut retained = HashSet::new();
+    for source in sources.iter().copied() {
         if !retained.insert(source)
-            || !nested_projected_strings.contains(&source)
-            || share_reuse_exclusions.contains(&source)
-            || already_neutralized.contains(&source)
-            || returned_share_descendant
+            || !proof.nested_projected_strings.contains(&source)
+            || proof.share_reuse_exclusions.contains(&source)
+            || proof.already_neutralized.contains(&source)
+            || proof
+                .retained_share_owners
+                .contains(&(block.id, destination, source))
         {
             continue;
         }
@@ -6474,6 +6522,13 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
     // release (see `returned_member_share_reuse_exclusions`).
     let share_reuse_exclusions =
         returned_member_share_reuse_exclusions(blocks, builder, &returned_value_locals);
+    let retained_share_owners = retained_string_share_owners_at_aggregate_sites(blocks, builder);
+    let retain_proof = ReturnedStringRetainProof {
+        nested_projected_strings: &nested_projected_returned_strings,
+        share_reuse_exclusions: &share_reuse_exclusions,
+        already_neutralized: &already_neutralized,
+        retained_share_owners: &retained_share_owners,
+    };
 
     for block in blocks {
         let mut index = 0;
@@ -6504,17 +6559,16 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
             // this a SHARE handled by `finalize_string_ownership`. Retains are
             // once per distinct nested alias. `finalize_string_ownership`
             // supplies the ordinary N-1 shares when one source appears in N
-            // fields. A returned descendant in the same local-share family
-            // already has that family's retained fork owner, so it also
-            // suppresses the bridge. Otherwise this bridge retain supplies the
-            // missing first returned owner because the carrier keeps the
-            // original.
+            // fields. A proven retained-share destination whose exact
+            // generation reaches this constructor already owns its fork, so
+            // it also suppresses the bridge. Otherwise this bridge retain
+            // supplies the missing first returned owner because the carrier
+            // keeps the original.
             retain_nested_projected_returned_strings(
                 block,
+                dest,
                 &sources,
-                &nested_projected_returned_strings,
-                &share_reuse_exclusions,
-                &already_neutralized,
+                &retain_proof,
                 &mut index,
                 builder,
             );

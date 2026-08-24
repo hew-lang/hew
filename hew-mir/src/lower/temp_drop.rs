@@ -1795,6 +1795,23 @@ fn returned_aggregate_consumes_source(
         })
 }
 
+fn remove_counted_string_retain_sites(
+    retain_sites: &mut Vec<StringRetainSite>,
+    mut remove: HashMap<(u32, usize, Place), usize>,
+) {
+    retain_sites.retain(|site| {
+        let key = (site.block, site.instr_index, site.value);
+        let Some(count) = remove.get_mut(&key) else {
+            return true;
+        };
+        if *count == 0 {
+            return true;
+        }
+        *count -= 1;
+        false
+    });
+}
+
 fn suppress_aggregate_retains_covered_by_stable_forks(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
@@ -1858,7 +1875,16 @@ fn suppress_aggregate_retains_covered_by_stable_forks(
                     .count();
                 let preminted = owner_destinations
                     .iter()
-                    .filter(|owner| family.contains(owner))
+                    .filter(|owner| {
+                        family.contains(owner)
+                            && sources.contains(owner)
+                            && returned_aggregate_consumes_source(
+                                block,
+                                index,
+                                **owner,
+                                destination,
+                            )
+                    })
                     .count();
                 let transferable_base = family.iter().any(|member| {
                     sources.contains(member)
@@ -1889,17 +1915,7 @@ fn suppress_aggregate_retains_covered_by_stable_forks(
             }
         }
     }
-    retain_sites.retain(|site| {
-        let key = (site.block, site.instr_index, site.value);
-        let Some(count) = remove.get_mut(&key) else {
-            return true;
-        };
-        if *count == 0 {
-            return true;
-        }
-        *count -= 1;
-        false
-    });
+    remove_counted_string_retain_sites(retain_sites, remove);
 }
 /// Retain-aware drop derivation for heap-owning `string` bindings.
 ///

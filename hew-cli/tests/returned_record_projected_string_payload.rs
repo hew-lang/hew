@@ -12,7 +12,9 @@ mod support;
 
 use std::process::Command;
 
-use support::leak_slope::{assert_frame_slope_below_tolerance_exact_lines, compile_to_native};
+use support::leak_slope::{
+    assert_frame_slope_below_tolerance_exact_lines, compile_to_native, run_under_malloc_scribble,
+};
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
@@ -273,6 +275,32 @@ fn main() {{
     )
 }
 
+fn reused_non_returned_alias_source(frames: usize) -> String {
+    format!(
+        r#"
+type Pair {{
+    first: string;
+    second: string;
+}}
+
+fn main() {{
+    let source = "reused fork " + f"{{42}}";
+    let alias = source;
+    for _ in 0..{frames} {{
+        let pair = Pair {{ first: source, second: alias }};
+        if pair.first != pair.second {{
+            panic("mismatch");
+        }}
+        println("frame");
+    }}
+    if source != alias {{
+        panic("source damaged");
+    }}
+}}
+"#
+    )
+}
+
 fn dump_raw_mir(source: &str, name: &str) -> String {
     let dir = tempfile::Builder::new()
         .prefix("returned-record-projected-string-mir-")
@@ -395,6 +423,18 @@ fn nested_payload_return_mints_only_the_missing_owner() {
         "the fresh replacement base owner and its retained fork are sufficient:\n\
          {before_fork_build}"
     );
+
+    let reused_raw = dump_raw_mir(
+        &reused_non_returned_alias_source(1),
+        "reused_non_returned_alias",
+    );
+    let reused_main = function_section(&reused_raw, "main");
+    assert_eq!(
+        reused_main.match_indices("string.retain").count(),
+        3,
+        "a non-returned Pair needs two aggregate retains in addition to the fork owner:\n\
+         {reused_main}"
+    );
 }
 
 #[test]
@@ -470,6 +510,45 @@ fn fresh_overwrite_before_fork_has_no_per_iteration_leak() {
     assert_frame_slope_below_tolerance_exact_lines(
         "fresh_overwrite_before_fork",
         overwritten_before_fork_source,
+        |frames| frames,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator is a macOS ownership oracle"
+)]
+#[test]
+fn reused_non_returned_alias_is_clean_under_poisoned_allocator() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("reused-non-returned-alias-poison-")
+        .tempdir()
+        .expect("tempdir");
+    let binary = compile_to_native(
+        &reused_non_returned_alias_source(64),
+        dir.path(),
+        "reused_non_returned_alias_poison",
+    );
+    let output = run_under_malloc_scribble(&binary);
+    assert!(
+        output.status.success(),
+        "reused source and alias must survive each temporary Pair:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 64);
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the low/high leak-slope oracle requires macOS leaks(1)"
+)]
+#[test]
+fn reused_non_returned_alias_has_no_per_iteration_leak() {
+    require_codegen();
+    assert_frame_slope_below_tolerance_exact_lines(
+        "reused_non_returned_alias",
+        reused_non_returned_alias_source,
         |frames| frames,
     );
 }

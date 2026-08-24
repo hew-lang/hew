@@ -2074,9 +2074,11 @@ test-sandbox-parity-coverage-check-build:
 # inputs: scripts/tests/test_target_dir_gate_wiring.py scripts/pre-release-validate.sh
 # inputs: scripts/windows-release-build.ps1 scripts/ci-preflight-dispatcher.sh
 # inputs: scripts/lib/cargo-output-dir.sh
+# inputs: scripts/workspace-version.py
 # inputs: scripts/build-npm-packages.mjs scripts/cargo-output-dir.py
 # inputs: scripts/tests/test_rust_dependency_cache_contract.py
-# inputs: CHANGELOG.md docs/releases/v0.6.0-rc1.md docs/release-runbook.md
+# inputs: hew-parser/fuzz/Cargo.lock
+# inputs: CHANGELOG.md docs/releases/*.md docs/release-runbook.md
 # inputs: docs/cross-platform-build-guide.md
 test-release-workflow-contract:
 	python3 scripts/tests/test_release_workflow_contract.py

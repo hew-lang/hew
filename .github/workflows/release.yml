@@ -241,6 +241,12 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
+      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+
       - name: Download cross-built release library (Windows)
         if: startsWith(matrix.target, 'windows')
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -436,7 +442,7 @@ jobs:
       - name: Prove release library consumer linking (Unix)
         if: "!startsWith(matrix.target, 'windows')"
         run: |
-          scripts/test-release-lib-link.sh \
+          release-machinery/scripts/test-release-lib-link.sh \
             --hew "target/${{ matrix.rust_target }}/release/hew" \
             --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
@@ -444,7 +450,7 @@ jobs:
         if: startsWith(matrix.target, 'windows')
         shell: pwsh
         run: |
-          ./scripts/test-release-lib-link.ps1 `
+          ./release-machinery/scripts/test-release-lib-link.ps1 `
             -Hew "target/${{ matrix.rust_target }}/release/hew.exe" `
             -Archive "cross-release-libs/${{ matrix.rust_target }}/hew.lib"
 
@@ -519,7 +525,7 @@ jobs:
         if: startsWith(matrix.target, 'darwin')
         run: |
           for bin in "${ARCHIVE_NAME}"/bin/*; do
-            scripts/verify-macos-binary.sh "${bin}"
+            release-machinery/scripts/verify-macos-binary.sh "${bin}"
           done
 
       - name: Smoke test packaged hew before macOS signing
@@ -827,6 +833,12 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
+      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+
       - name: Trust the workspace checkout
         # The container user differs from the checkout owner; without this
         # the hew-cli build script cannot read git metadata and the shipped
@@ -871,7 +883,7 @@ jobs:
 
       - name: Prove release library consumer linking
         run: |
-          scripts/test-release-lib-link.sh \
+          release-machinery/scripts/test-release-lib-link.sh \
             --hew "target/${{ matrix.rust_target }}/release/hew" \
             --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
@@ -983,6 +995,12 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
+      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+
       - name: Compute archive name
         id: archive
         run: |
@@ -1035,7 +1053,7 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            bash scripts/test-release-lib-link.sh \
+            bash release-machinery/scripts/test-release-lib-link.sh \
               --hew target/release/hew \
               --archive cross-release-libs/x86_64-unknown-freebsd/libhew.a
 

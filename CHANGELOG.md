@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.6.0-rc2] - 2026-08-23
+## [0.6.0-rc2] - 2026-08-24
 
 Hew v0.6.0-rc2 is the second release candidate for v0.6. It completes the
 dotted-path language cutover, hardens ownership and actor shutdown behavior,
@@ -51,7 +51,10 @@ remaining ownership advisories and exercise the final promotion path.
   through checking, HIR, MIR, and code generation.
 - **Diagnostics and lints are fail-closed.** Checker state resets between
   compilations, direct-iteration suggestions require proven clone support,
-  and deprecated path spellings are rejected by the stdlib ratchet.
+  and deprecated path spellings are rejected by the stdlib ratchet. MIR
+  ownership findings are consolidated by function and root with source spans
+  and concrete local types; a real multi-module project that previously
+  produced 279 `E_MIR_CHECK` warnings now produces none.
 
 ### Fixed — runtime and concurrency
 
@@ -68,6 +71,9 @@ remaining ownership advisories and exercise the final promotion path.
 
 ### Changed — build, CI, and release trust
 
+- **Dogfood compiler build time fell from 113 seconds to 12 seconds.** LLVM IR
+  is emitted only when requested, the requested LLVM optimization level is
+  honored, and an IR-shape gate catches accidental compiler growth.
 - **Preflight is derived from declared gate inputs.** Gate routing follows the
   artifact graph, shared test artifacts build once before execution, Linux CI
   is split into balanced shards, and generated baselines have one registry and

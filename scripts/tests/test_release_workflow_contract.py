@@ -1839,21 +1839,21 @@ def test_release_record_is_durable_and_tag_ready() -> None:
     )
 
 
-def test_rc2_notes_record_key_registration_and_raw_image_identity() -> None:
+def test_rc2_notes_record_key_registration_and_versioned_image() -> None:
     notes = RELEASE_NOTES.read_text()
 
     def assert_rc2_authority(text: str) -> None:
         assert "`hew key register`" in text
-        assert "`v<tag>@sha256:<raw-manifest-or-index-digest>`" in text
-        assert "hashes the raw registry response" in text
-        assert "exactly one\nrunnable `linux/amd64` image" in text
-        assert "exact\nHew candidate commit" in text
+        assert "playground image is published and consumed as\n`v0.6.0-rc2`" in text
+        assert "registry digest as release\nevidence" in text
+        assert "Hosted Actions billing" not in text
+        assert "`v<tag>@sha256:<raw-manifest-or-index-digest>`" not in text
 
     assert_rc2_authority(notes)
     for old, new in (
         ("`hew key register`", "key registration"),
-        ("raw registry response", "registry metadata"),
-        ("exactly one\nrunnable `linux/amd64` image", "a runnable image"),
+        ("published and consumed", "available"),
+        ("registry digest as release\nevidence", "registry metadata"),
     ):
         try:
             assert_rc2_authority(notes.replace(old, new, 1))

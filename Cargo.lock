@@ -1796,6 +1796,7 @@ dependencies = [
  "hew-parser",
  "hew-pkg",
  "hew-runtime",
+ "hew-sir",
  "hew-testutil",
  "hew-types",
  "libc",
@@ -2014,6 +2015,15 @@ dependencies = [
  "tempfile",
  "walkdir",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "hew-sir"
+version = "0.6.0-rc2"
+dependencies = [
+ "hew-hir",
+ "hew-parser",
+ "hew-types",
 ]
 
 [[package]]

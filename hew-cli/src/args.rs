@@ -116,6 +116,14 @@ pub struct CompileArgs {
     /// spot-checking the front-half lowering during development.
     #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["raw", "checked", "elab"])]
     pub dump_mir: Option<String>,
+    /// Run the experimental HIR → Semantic IR shadow lane before the established
+    /// HIR → MIR path. It verifies SIR but never changes emitted code.
+    #[arg(long = "sir-shadow")]
+    pub sir_shadow: bool,
+    /// Emit the verified Semantic IR subset and exit. Unsupported functions are
+    /// reported explicitly; no MIR or LLVM artifacts are emitted.
+    #[arg(long = "dump-sir")]
+    pub dump_sir: bool,
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,

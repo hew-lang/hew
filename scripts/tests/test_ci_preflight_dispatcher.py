@@ -561,7 +561,7 @@ def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
     assert result.returncode == 0, result.stderr
     packages = (
         "-p hew-analysis -p hew-cli -p hew-codegen-rs -p hew-compile -p hew-hir "
-        "-p hew-lsp -p hew-mir -p hew-parser -p hew-sandbox-wasm -p hew-types "
+        "-p hew-lsp -p hew-mir -p hew-parser -p hew-sandbox-wasm -p hew-sir -p hew-types "
         "-p hew-wasm -p xtask"
     )
     warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]

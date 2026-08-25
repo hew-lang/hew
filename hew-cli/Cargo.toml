@@ -18,6 +18,7 @@ path = "src/main.rs"
 hew-analysis = { path = "../hew-analysis" }
 hew-compile = { path = "../hew-compile" }
 hew-hir = { path = "../hew-hir" }
+hew-sir = { path = "../hew-sir" }
 hew-lexer = { path = "../hew-lexer" }
 hew-mir = { path = "../hew-mir" }
 hew-codegen-rs = { path = "../hew-codegen-rs" }

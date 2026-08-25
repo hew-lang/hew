@@ -299,6 +299,8 @@ mod tests {
             emit_dir: None,
             emit_llvm: false,
             dump_mir: None,
+            sir_shadow: false,
+            dump_sir: false,
             target: None,
             opt_level: "0".to_string(),
             format: crate::args::DiagnosticFormat::Text,

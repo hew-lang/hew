@@ -347,6 +347,67 @@ fn lower_file_to_mir(
     Ok(pipeline)
 }
 
+/// Run the experimental Semantic IR lane without changing the established
+/// backend path.  This intentionally repeats the frontend work while SIR is
+/// shadow-only: it keeps the existing MIR driver completely authoritative and
+/// makes a mismatch incapable of changing a user's artifact.
+fn lower_file_to_sir(
+    input_path: &Path,
+    requested_target: Option<&str>,
+) -> Result<hew_sir::LoweredModule, ()> {
+    let input = input_path.display().to_string();
+    let target = target::TargetSpec::from_requested(requested_target).map_err(|e| {
+        eprintln!("Error: {e}");
+    })?;
+    let fopts = compile::frontend_options(&target, &compile::CompileOptions::default());
+    let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
+        compile::render_frontend_diagnostics(&failure.diagnostics);
+        if failure.diagnostics.is_empty() {
+            eprintln!("Error: {}", failure.message);
+        }
+    })?;
+    let tco = state.typecheck_result.tco.ok_or_else(|| {
+        eprintln!("Error: Semantic IR requires type checking");
+    })?;
+    let lowered = hew_hir::lower_program(
+        &state.program,
+        &tco,
+        &hew_hir::ResolutionCtx,
+        hir_target_arch(&target),
+    );
+    let mut hir_diagnostics = lowered.diagnostics;
+    for diagnostic in hew_hir::verify_hir(&lowered.module) {
+        if !hir_diagnostics
+            .iter()
+            .any(|existing| existing.kind == diagnostic.kind && existing.span == diagnostic.span)
+        {
+            hir_diagnostics.push(diagnostic);
+        }
+    }
+    if !hir_diagnostics.is_empty() {
+        let diagnostics = hew_compile::hir_diagnostics_to_frontend(
+            &state.program,
+            &state.source,
+            &input,
+            hir_diagnostics,
+        );
+        compile::render_frontend_diagnostics(&diagnostics);
+        return Err(());
+    }
+    let sir = hew_sir::lower_module(&lowered.module);
+    let diagnostics = hew_sir::verify_module(&sir.module);
+    if !diagnostics.is_empty() {
+        for diagnostic in diagnostics {
+            eprintln!(
+                "SIR verifier error in `{}`: {:?}",
+                diagnostic.function, diagnostic.kind
+            );
+        }
+        return Err(());
+    }
+    Ok(sir)
+}
+
 /// Lower a source file to MIR for an explicit, already-resolved target.
 ///
 /// Unlike `lower_file_to_mir` (which hardcodes `TargetArch::host()`), this
@@ -1289,6 +1350,32 @@ fn cmd_compile(a: &args::CompileArgs) {
 /// `return <code>`, so the caller's single flush chokepoint runs regardless.
 fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
+
+    if a.sir_shadow || a.dump_sir {
+        let Ok(sir) = lower_file_to_sir(&a.input, a.target.as_deref()) else {
+            return 1;
+        };
+        if a.dump_sir {
+            let dump = hew_sir::dump_sir(&sir.module);
+            if json {
+                eprint!("{dump}");
+            } else {
+                print!("{dump}");
+            }
+            for (name, status) in &sir.statuses {
+                if !matches!(status, hew_sir::SirLoweringStatus::Lowered) {
+                    eprintln!("SIR shadow fallback for `{name}`: {status:?}");
+                }
+            }
+            return 0;
+        }
+        let lowered = sir
+            .statuses
+            .iter()
+            .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::Lowered))
+            .count();
+        eprintln!("SIR shadow: verified {lowered}/{} function bodies; established MIR remains authoritative", sir.statuses.len());
+    }
 
     let Ok(pipeline) = lower_file_to_mir(&a.input, a.target.as_deref()) else {
         return 1;

@@ -1,0 +1,19 @@
+[package]
+name = "hew-sir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Value-oriented semantic SSA IR for the Hew compiler"
+repository = "https://github.com/hew-lang/hew"
+readme = "README.md"
+keywords = ["hew", "compiler", "ssa", "ir"]
+categories = ["compilers"]
+
+[dependencies]
+hew-hir = { path = "../hew-hir" }
+hew-parser = { path = "../hew-parser" }
+hew-types = { path = "../hew-types" }
+
+[lints]
+workspace = true

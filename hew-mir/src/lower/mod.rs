@@ -6223,6 +6223,203 @@ fn returned_aggregate_member_source_targets(
         .collect()
 }
 
+/// String binders from an unneutralizable projected payload that flow into a
+/// returned aggregate.
+///
+/// A nested destructure first byte-copies its parent payload into a transient
+/// carrier, then byte-copies the leaf into the binder local. Neither local is
+/// the matched call result's owning slot, so clearing the binder after record
+/// construction cannot transfer the carrier's owner. The returned record must
+/// instead gain an independent `+1` before the carrier's recursive drop.
+///
+/// Keep this authority string-only: `CoW` strings have an explicit retain
+/// primitive. Other heap-owning projected payloads remain under the existing
+/// fail-closed transfer rules rather than acquiring an invented ownership
+/// protocol here.
+fn nested_projected_returned_string_sources(
+    candidates: &[(BindingId, String, ResolvedTy)],
+    returned_members: &HashSet<BindingId>,
+    builder: &Builder,
+) -> HashSet<Place> {
+    candidates
+        .iter()
+        .filter(|(binding, _name, ty)| {
+            returned_members.contains(binding) && matches!(ty, ResolvedTy::String)
+        })
+        .filter_map(|(binding, _name, _ty)| {
+            matches!(
+                builder
+                    .projected_payload_provenance
+                    .get(binding)
+                    .map(|provenance| &provenance.origin),
+                Some(ProjectedPayloadOrigin::Reject(
+                    ProjectedPayloadRejectReason::NestedDestructure
+                ))
+            )
+            .then(|| builder.binding_locals.get(binding).copied())
+            .flatten()
+        })
+        .collect()
+}
+
+fn retained_string_share_edges(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+) -> Vec<(Place, Place, u32, usize)> {
+    builder
+        .string_local_share_sites
+        .iter()
+        .filter_map(|(_site, (source_binding, destination_binding))| {
+            let source = *builder.binding_locals.get(source_binding)?;
+            let destination = *builder.binding_locals.get(destination_binding)?;
+            let move_sites: Vec<(u32, usize)> =
+                blocks
+                    .iter()
+                    .flat_map(|block| {
+                        block.instructions.iter().enumerate().filter_map(
+                            move |(index, instruction)| {
+                                matches!(
+                                    instruction,
+                                    Instr::Move { dest, src }
+                                        if *dest == destination && *src == source
+                                )
+                                .then_some((block.id, index))
+                            },
+                        )
+                    })
+                    .collect();
+            let retained = match move_sites.as_slice() {
+                [(block, index)] => {
+                    blocks.first().map(|entry| entry.id) != Some(*block)
+                        || base_local(source).is_some_and(|local| {
+                            local_is_used_after(
+                                blocks,
+                                &builder.suspend_kinds,
+                                local,
+                                *block,
+                                *index,
+                            )
+                        })
+                }
+                _ => true,
+            };
+            let [(move_block, move_index)] = move_sites.as_slice() else {
+                return None;
+            };
+            retained.then_some((source, destination, *move_block, *move_index))
+        })
+        .collect()
+}
+
+fn retained_string_share_owners_at_aggregate_sites(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+) -> HashSet<(u32, Place, Place)> {
+    let retained_edges = retained_string_share_edges(blocks, builder);
+    let mut owners = HashSet::new();
+    for block in blocks {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let (destination, sources): (Place, Vec<Place>) = match instruction {
+                Instr::TupleConstruct { elements, dest } => (*dest, elements.clone()),
+                Instr::RecordInit { fields, dest, .. } => (
+                    *dest,
+                    fields.iter().map(|(_offset, source)| *source).collect(),
+                ),
+                _ => continue,
+            };
+            let mut owner_sources = HashSet::new();
+            let mut stable_links = HashMap::<Place, Vec<Place>>::new();
+            for (fork_source, fork_destination, move_block, move_index) in &retained_edges {
+                if !temp_drop::unique_move_generation_reaches_site(
+                    blocks,
+                    &builder.suspend_kinds,
+                    *fork_source,
+                    *fork_destination,
+                    block.id,
+                    index,
+                ) {
+                    continue;
+                }
+                owner_sources.insert(*fork_destination);
+                if temp_drop::local_generation_survives_to_site(
+                    blocks,
+                    &builder.suspend_kinds,
+                    *fork_source,
+                    *move_block,
+                    *move_index,
+                    block.id,
+                    index,
+                ) {
+                    stable_links
+                        .entry(*fork_source)
+                        .or_default()
+                        .push(*fork_destination);
+                }
+            }
+            for source in sources {
+                let mut family = vec![source];
+                let mut seen = HashSet::from([source]);
+                let mut has_owner = false;
+                while let Some(member) = family.pop() {
+                    has_owner |= owner_sources.contains(&member);
+                    for next in stable_links.get(&member).into_iter().flatten() {
+                        if seen.insert(*next) {
+                            family.push(*next);
+                        }
+                    }
+                }
+                if has_owner {
+                    owners.insert((block.id, destination, source));
+                }
+            }
+        }
+    }
+    owners
+}
+
+struct ReturnedStringRetainProof<'a> {
+    nested_projected_strings: &'a HashSet<Place>,
+    share_reuse_exclusions: &'a HashSet<Place>,
+    already_neutralized: &'a HashSet<Place>,
+    retained_share_owners: &'a HashSet<(u32, Place, Place)>,
+}
+
+fn retain_nested_projected_returned_strings(
+    block: &mut BasicBlock,
+    destination: Place,
+    sources: &[Place],
+    proof: &ReturnedStringRetainProof<'_>,
+    index: &mut usize,
+    builder: &mut Builder,
+) {
+    let mut retained = HashSet::new();
+    for source in sources.iter().copied() {
+        if !retained.insert(source)
+            || !proof.nested_projected_strings.contains(&source)
+            || proof.share_reuse_exclusions.contains(&source)
+            || proof.already_neutralized.contains(&source)
+            || proof
+                .retained_share_owners
+                .contains(&(block.id, destination, source))
+        {
+            continue;
+        }
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block.id,
+            u32::try_from(*index).unwrap_or(u32::MAX),
+        );
+        block.instructions.insert(
+            *index,
+            Instr::StringRetain {
+                value: source,
+                condition: StringRetainCondition::Always,
+            },
+        );
+        *index += 1;
+    }
+}
+
 fn aggregate_member_consumed_sources(blocks: &[BasicBlock]) -> HashSet<Place> {
     blocks
         .iter()
@@ -6320,23 +6517,8 @@ fn returned_member_share_reuse_exclusions(
     excluded
 }
 
-fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let candidates = builder.owned_locals_exit_candidates();
-    let returned_members =
-        derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
-    if returned_members.is_empty() {
-        return;
-    }
-
-    let candidate_places =
-        returned_aggregate_member_source_targets(&candidates, &returned_members, builder);
-    let already_neutralized = aggregate_member_consumed_sources(blocks);
-
-    // Reverse the exact whole-value move graph from the return slot. A
-    // constructor qualifies only when its own destination is in this closure;
-    // another aggregate built from the same source in the same block cannot
-    // trigger an early neutralize.
-    let mut returned_value_locals: HashSet<u32> = blocks
+fn returned_aggregate_value_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let mut returned: HashSet<u32> = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instr| match instr {
@@ -6353,22 +6535,50 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
             let Instr::Move { dest, src } = instr else {
                 continue;
             };
-            if base_local(*dest).is_some_and(|dest| returned_value_locals.contains(&dest)) {
+            if base_local(*dest).is_some_and(|dest| returned.contains(&dest)) {
                 if let Some(source) = base_local(*src) {
-                    changed |= returned_value_locals.insert(source);
+                    changed |= returned.insert(source);
                 }
             }
         }
         if !changed {
-            break;
+            return returned;
         }
     }
+}
+
+fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidates = builder.owned_locals_exit_candidates();
+    let returned_members =
+        derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
+    if returned_members.is_empty() {
+        return;
+    }
+
+    let candidate_places =
+        returned_aggregate_member_source_targets(&candidates, &returned_members, builder);
+    let nested_projected_returned_strings =
+        nested_projected_returned_string_sources(&candidates, &returned_members, builder);
+    let already_neutralized = aggregate_member_consumed_sources(blocks);
+
+    // Reverse the exact whole-value move graph from the return slot. A
+    // constructor qualifies only when its own destination is in this closure;
+    // another aggregate built from the same source in the same block cannot
+    // trigger an early neutralize.
+    let returned_value_locals = returned_aggregate_value_locals(blocks);
 
     // A member source that is read after its aggregate construction is a
     // retained co-owner (a SHARE), not a transfer, and must keep its scope-exit
     // release (see `returned_member_share_reuse_exclusions`).
     let share_reuse_exclusions =
         returned_member_share_reuse_exclusions(blocks, builder, &returned_value_locals);
+    let retained_share_owners = retained_string_share_owners_at_aggregate_sites(blocks, builder);
+    let retain_proof = ReturnedStringRetainProof {
+        nested_projected_strings: &nested_projected_returned_strings,
+        share_reuse_exclusions: &share_reuse_exclusions,
+        already_neutralized: &already_neutralized,
+        retained_share_owners: &retained_share_owners,
+    };
 
     for block in blocks {
         let mut index = 0;
@@ -6392,6 +6602,26 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
                 index += 1;
                 continue;
             }
+
+            // A rejected projected string source aliases an owner that this
+            // local cannot neutralize. Mint the returned field's owner before
+            // the byte-copying constructor, unless a later use already makes
+            // this a SHARE handled by `finalize_string_ownership`. Retains are
+            // once per distinct nested alias. `finalize_string_ownership`
+            // supplies the ordinary N-1 shares when one source appears in N
+            // fields. A proven retained-share destination whose exact
+            // generation reaches this constructor already owns its fork, so
+            // it also suppresses the bridge. Otherwise this bridge retain
+            // supplies the missing first returned owner because the carrier
+            // keeps the original.
+            retain_nested_projected_returned_strings(
+                block,
+                dest,
+                &sources,
+                &retain_proof,
+                &mut index,
+                builder,
+            );
 
             let mut neutralized = HashSet::new();
             let sources: Vec<Place> = sources

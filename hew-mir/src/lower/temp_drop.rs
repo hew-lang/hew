@@ -1,19 +1,20 @@
+use super::ownership::returned_aggregate_consumes_source;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
 use super::{
     base_local, binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
-    block_by_id, blocks_reachable_from, call_terminator_next, cow_value_leaf_drop_symbol, dataflow,
-    derive_local_bytes_drop_allowed, generator_yield_instr_escapes,
-    generator_yield_terminator_escapes, instr_source_places, local_is_used_after,
-    place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
-    propagate_whole_value_alias_roots_excluding_moves, shift_instr_spans_on_insert,
-    terminator_source_places, vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock,
-    BindingId, Builder, BytesDropDerivation, BytesRetainPlacement, BytesRetainSite,
-    ClosureEnvFieldOwnership, DischargeSite, Disposition, DropKind, ElabDrop, FieldOffset, HashMap,
-    HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
-    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
-    StringRetainSite, SuspendKind, Terminator,
+    block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
+    cow_value_leaf_drop_symbol, dataflow, derive_local_bytes_drop_allowed,
+    generator_yield_instr_escapes, generator_yield_terminator_escapes, instr_source_places,
+    local_is_used_after, place_is_interior_projection, place_refs_local,
+    propagate_whole_value_alias_roots, propagate_whole_value_alias_roots_excluding_moves,
+    shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_layout_key,
+    ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
+    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, DischargeSite, Disposition,
+    DropKind, ElabDrop, FieldOffset, HashMap, HashSet, Instr, IntentKind, MirStatement,
+    NestedDefSite, NestedUseSite, Place, RawMirFunction, ResolvedTy, SelectArmKind, SiteId,
+    StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
 };
 
 const STRING_RETURN_SOURCE_BORROWED: u8 = 0b001;
@@ -162,6 +163,118 @@ fn typed_handoff_owner_reaches_site(
         block_id = *next;
         start = 0;
     }
+}
+
+/// Prove that one exact local-to-local move's destination generation reaches a
+/// later site without any intervening read or write of that destination.
+///
+/// The caller supplies the already-classified ownership meaning of the move;
+/// this helper contributes only the generation-sensitive CFG proof.
+pub(super) fn unique_move_generation_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    source: Place,
+    destination: Place,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    let mut definitions = blocks.iter().flat_map(|block| {
+        block
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, instruction)| {
+                matches!(instruction, Instr::Move { dest, src }
+                    if *dest == destination && *src == source)
+                .then_some((block.id, index))
+            })
+    });
+    let Some((definition_block, definition_index)) = definitions.next() else {
+        return false;
+    };
+    if definitions.next().is_some() {
+        return false;
+    }
+    local_generation_survives_to_site(
+        blocks,
+        suspend_kinds,
+        destination,
+        definition_block,
+        definition_index,
+        target_block,
+        target_instr_index,
+    )
+}
+
+/// Whether a local's generation after `definition_index` reaches `target`
+/// without an intervening write on any path that can reach the target.
+pub(super) fn local_generation_survives_to_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    value: Place,
+    definition_block: u32,
+    definition_index: usize,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    let Some(local) = base_local(value) else {
+        return false;
+    };
+    let dominators = block_dominators(blocks);
+    if !dominators
+        .get(&target_block)
+        .is_some_and(|set| set.contains(&definition_block))
+    {
+        return false;
+    }
+    let reachable_from_definition = blocks_reachable_from(blocks, definition_block);
+    if definition_block != target_block && !reachable_from_definition.contains(&target_block) {
+        return false;
+    }
+
+    for block in blocks {
+        let reaches_target = block.id == target_block
+            || blocks_reachable_from(blocks, block.id).contains(&target_block);
+        let reached_from_definition =
+            block.id == definition_block || reachable_from_definition.contains(&block.id);
+        if !reaches_target || !reached_from_definition {
+            continue;
+        }
+        let start = if block.id == definition_block {
+            definition_index.saturating_add(1)
+        } else {
+            0
+        };
+        let end = if block.id == target_block {
+            target_instr_index
+        } else {
+            block.instructions.len()
+        };
+        if start > end
+            || block.instructions[start..end].iter().any(|instruction| {
+                crate::dataflow::instr_reads_writes(instruction)
+                    .1
+                    .into_iter()
+                    .any(|place| base_local(place) == Some(local))
+            })
+        {
+            return false;
+        }
+        if block.id != target_block
+            && crate::dataflow::terminator_write_places(&block.terminator)
+                .into_iter()
+                .chain(
+                    suspend_kinds
+                        .get(&block.id)
+                        .into_iter()
+                        .flat_map(crate::dataflow::suspend_kind_write_places),
+                )
+                .any(|place| base_local(place) == Some(local))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Prove that a direct typed publication still carries the same generation at
@@ -1527,6 +1640,260 @@ fn apply_string_retain_sites(
         block.instructions = rewritten;
     }
     *instr_spans = new_spans;
+}
+
+fn stable_string_fork_families_at_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    forks: &[(Place, Place, u32, usize)],
+    target_block: u32,
+    target_index: usize,
+) -> (HashSet<Place>, HashMap<Place, Vec<Place>>) {
+    let mut owner_destinations = HashSet::new();
+    let mut stable_family = HashMap::<Place, Vec<Place>>::new();
+    for (source, destination, move_block, move_index) in forks {
+        if !unique_move_generation_reaches_site(
+            blocks,
+            suspend_kinds,
+            *source,
+            *destination,
+            target_block,
+            target_index,
+        ) {
+            continue;
+        }
+        owner_destinations.insert(*destination);
+        if local_generation_survives_to_site(
+            blocks,
+            suspend_kinds,
+            *source,
+            *move_block,
+            *move_index,
+            target_block,
+            target_index,
+        ) {
+            stable_family.entry(*source).or_default().push(*destination);
+            stable_family.entry(*destination).or_default().push(*source);
+        }
+    }
+    (owner_destinations, stable_family)
+}
+
+struct FreshTransferableStringOwnerProof<'a> {
+    blocks: &'a [BasicBlock],
+    suspend_kinds: &'a HashMap<u32, SuspendKind>,
+    locals: &'a [ResolvedTy],
+    owned_string_return_carrier_symbols: &'a HashSet<String>,
+}
+
+fn fresh_transferable_string_owner_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    owned_string_return_carrier_symbols: &HashSet<String>,
+    value: Place,
+    target_block: u32,
+    target_index: usize,
+) -> bool {
+    fn reaches(
+        proof: &FreshTransferableStringOwnerProof<'_>,
+        value: Place,
+        target_block: u32,
+        target_index: usize,
+        visiting: &mut HashSet<(Place, u32, usize)>,
+    ) -> bool {
+        let Place::Local(local) = value else {
+            return false;
+        };
+        if !visiting.insert((value, target_block, target_index)) {
+            return false;
+        }
+        let definitions: Vec<(u32, usize, &Instr)> = proof
+            .blocks
+            .iter()
+            .flat_map(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(index, instruction)| {
+                        crate::dataflow::instr_reads_writes(instruction)
+                            .1
+                            .contains(&value)
+                            .then_some((block.id, index, instruction))
+                    })
+            })
+            .filter(|(block, index, _instruction)| {
+                local_generation_survives_to_site(
+                    proof.blocks,
+                    proof.suspend_kinds,
+                    value,
+                    *block,
+                    *index,
+                    target_block,
+                    target_index,
+                )
+            })
+            .collect();
+        let [(_block, _index, definition)] = definitions.as_slice() else {
+            return false;
+        };
+        let producer =
+            fresh_string_producer_dest(definition, proof.owned_string_return_carrier_symbols)
+                .or_else(|| string_field_load_producer_dest(definition, proof.locals))
+                .or_else(|| wire_codec_string_producer_dest(definition, proof.locals));
+        if producer == Some(value) {
+            return true;
+        }
+        let Instr::Move { dest, src } = definition else {
+            return false;
+        };
+        if *dest != Place::Local(local) {
+            return false;
+        }
+        let (definition_block, definition_index, _) = definitions[0];
+        reaches(proof, *src, definition_block, definition_index, visiting)
+    }
+
+    if base_local(value).is_none() {
+        return false;
+    }
+    let proof = FreshTransferableStringOwnerProof {
+        blocks,
+        suspend_kinds,
+        locals,
+        owned_string_return_carrier_symbols,
+    };
+    reaches(
+        &proof,
+        value,
+        target_block,
+        target_index,
+        &mut HashSet::new(),
+    )
+}
+
+fn remove_counted_string_retain_sites(
+    retain_sites: &mut Vec<StringRetainSite>,
+    mut remove: HashMap<(u32, usize, Place), usize>,
+) {
+    retain_sites.retain(|site| {
+        let key = (site.block, site.instr_index, site.value);
+        let Some(count) = remove.get_mut(&key) else {
+            return true;
+        };
+        if *count == 0 {
+            return true;
+        }
+        *count -= 1;
+        false
+    });
+}
+
+fn suppress_aggregate_retains_covered_by_stable_forks(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    owned_string_return_carrier_symbols: &HashSet<String>,
+    retain_sites: &mut Vec<StringRetainSite>,
+) {
+    let forks: Vec<(Place, Place, u32, usize)> = retain_sites
+        .iter()
+        .filter(|site| matches!(site.condition, StringRetainCondition::Always))
+        .filter_map(|site| {
+            let instruction = block_by_id(blocks, site.block)?
+                .instructions
+                .get(site.instr_index)?;
+            let Instr::Move { dest, src } = instruction else {
+                return None;
+            };
+            (*src == site.value).then_some((*src, *dest, site.block, site.instr_index))
+        })
+        .collect();
+    let mut remove = HashMap::<(u32, usize, Place), usize>::new();
+    for block in blocks {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let (destination, sources): (Place, Vec<Place>) = match instruction {
+                Instr::TupleConstruct { elements, dest } => (*dest, elements.clone()),
+                Instr::RecordInit { fields, dest, .. } => (
+                    *dest,
+                    fields.iter().map(|(_offset, source)| *source).collect(),
+                ),
+                _ => continue,
+            };
+            let aggregate_sites: Vec<&StringRetainSite> = retain_sites
+                .iter()
+                .filter(|site| {
+                    site.block == block.id
+                        && site.instr_index == index
+                        && matches!(site.condition, StringRetainCondition::Always)
+                        && sources.contains(&site.value)
+                })
+                .collect();
+            let (owner_destinations, stable_family) =
+                stable_string_fork_families_at_site(blocks, suspend_kinds, &forks, block.id, index);
+            let mut processed = HashSet::new();
+            for site in &aggregate_sites {
+                if processed.contains(&site.value) {
+                    continue;
+                }
+                let mut family = HashSet::from([site.value]);
+                let mut work = vec![site.value];
+                while let Some(member) = work.pop() {
+                    for next in stable_family.get(&member).into_iter().flatten() {
+                        if family.insert(*next) {
+                            work.push(*next);
+                        }
+                    }
+                }
+                processed.extend(family.iter().copied());
+                let occurrences = sources
+                    .iter()
+                    .filter(|source| family.contains(source))
+                    .count();
+                let preminted = owner_destinations
+                    .iter()
+                    .filter(|owner| {
+                        family.contains(owner)
+                            && sources.contains(owner)
+                            && returned_aggregate_consumes_source(
+                                block,
+                                index,
+                                **owner,
+                                destination,
+                            )
+                    })
+                    .count();
+                let transferable_base = family.iter().any(|member| {
+                    sources.contains(member)
+                        && returned_aggregate_consumes_source(block, index, *member, destination)
+                        && fresh_transferable_string_owner_reaches_site(
+                            blocks,
+                            suspend_kinds,
+                            locals,
+                            owned_string_return_carrier_symbols,
+                            *member,
+                            block.id,
+                            index,
+                        )
+                });
+                let required = occurrences
+                    .saturating_sub(preminted)
+                    .saturating_sub(usize::from(transferable_base));
+                let family_sites: Vec<&StringRetainSite> = aggregate_sites
+                    .iter()
+                    .copied()
+                    .filter(|candidate| family.contains(&candidate.value))
+                    .collect();
+                for excess in family_sites.into_iter().skip(required) {
+                    *remove
+                        .entry((excess.block, excess.instr_index, excess.value))
+                        .or_default() += 1;
+                }
+            }
+        }
+    }
+    remove_counted_string_retain_sites(retain_sites, remove);
 }
 /// Retain-aware drop derivation for heap-owning `string` bindings.
 ///
@@ -4857,6 +5224,15 @@ pub(super) fn finalize_string_ownership(
             DischargeSite::BindingMoved,
         );
     }
+    suppress_aggregate_retains_covered_by_stable_forks(
+        &raw.blocks,
+        &builder.suspend_kinds,
+        &builder.locals,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
+        &mut derivation.retain_sites,
+    );
     apply_string_retain_sites(
         &mut raw.blocks,
         &mut raw.instr_spans,

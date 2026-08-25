@@ -39,9 +39,11 @@ use crate::llvm::*;
 // here. A module-init constructor registers each pair by its `msg_type`
 // discriminant so the receive path can find the decoder.
 //
-// Accepted subset == the `Serializable` floor the checker already enforces:
-// scalars, `string`, `bytes`, records (positional fields), enums (a tag + the
-// active variant's positional fields). Any other shape fails closed at codegen.
+// Accepted subset == the `Serializable` floor the checker enforces: scalars,
+// `string`, `bytes`, records, enums, supported Vec/Option shapes, HashMap with
+// primitive Hash+Eq keys, and HashSet with primitive Hash+Eq elements. Maps and
+// sets are reconstructed with their normal layout witnesses; unsupported
+// ownership/layout shapes fail closed instead of producing write-only data.
 
 /// Stable, symbol-safe key for a serializable message type, used as the
 /// `__hew_cbor_serialize_<key>` / `__hew_cbor_deserialize_<key>` suffix. Reuses
@@ -177,7 +179,33 @@ fn emit_de_drop_owned<'ctx>(
         // Named record: delegate to the codegen-emitted per-type in-place drop
         // helper (`__hew_record_drop_inplace_<name>`).  That helper walks the
         // struct's owned fields and drops them; null fields are safe.
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            if let Some(symbol) = match builtin {
+                Some(BuiltinType::Vec) => Some("hew_vec_free"),
+                Some(BuiltinType::HashMap) => Some("hew_hashmap_free_layout"),
+                Some(BuiltinType::HashSet) => Some("hew_hashset_free_layout"),
+                _ => None,
+            } {
+                let handle = builder
+                    .build_load(ptr_ty, dst, "de_drop_collection_load")
+                    .llvm_ctx("de drop collection load")?
+                    .into_pointer_value();
+                let drop_fn = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    symbol,
+                    ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                );
+                builder
+                    .build_call(drop_fn, &[handle.into()], "de_drop_collection")
+                    .llvm_ctx("de drop collection call")?;
+                return Ok(());
+            }
             let key = xnode_registry_key(name, args);
             if let Some(el) = enum_layouts.iter().find(|e| e.name == key) {
                 let drop_fn = get_or_declare_enum_drop_inplace(ctx, llvm_mod, &key);
@@ -534,6 +562,53 @@ fn emit_ser_value_cbor<'ctx>(
                     CodegenError::FailClosed("wire CBOR serialize: Vec<T> missing element".into())
                 })?;
                 emit_ser_vec_cbor(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    elem,
+                    value_ptr,
+                    buf,
+                    wire_layouts,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                    lifecycle_registry,
+                    target_data,
+                )
+            }
+            Some(BuiltinType::HashMap) => {
+                let [key, value] = args.as_slice() else {
+                    return Err(CodegenError::FailClosed(
+                        "wire CBOR serialize: HashMap<K, V> requires two type arguments".into(),
+                    ));
+                };
+                emit_ser_hashmap_cbor(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    key,
+                    value,
+                    value_ptr,
+                    buf,
+                    wire_layouts,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                    lifecycle_registry,
+                    target_data,
+                )
+            }
+            Some(BuiltinType::HashSet) => {
+                let elem = args.first().ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "wire CBOR serialize: HashSet<T> missing element".into(),
+                    )
+                })?;
+                emit_ser_hashset_cbor(
                     ctx,
                     llvm_mod,
                     builder,
@@ -973,6 +1048,53 @@ fn emit_de_value_cbor<'ctx>(
                     target_data,
                 )
             }
+            Some(BuiltinType::HashMap) => {
+                let [key, value] = args.as_slice() else {
+                    return Err(CodegenError::FailClosed(
+                        "wire CBOR deserialize: HashMap<K, V> requires two type arguments".into(),
+                    ));
+                };
+                emit_de_hashmap_cbor(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    key,
+                    value,
+                    dst,
+                    reader,
+                    wire_layouts,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                    lifecycle_registry,
+                    target_data,
+                )
+            }
+            Some(BuiltinType::HashSet) => {
+                let elem = args.first().ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "wire CBOR deserialize: HashSet<T> missing element".into(),
+                    )
+                })?;
+                emit_de_hashset_cbor(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    elem,
+                    dst,
+                    reader,
+                    wire_layouts,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                    lifecycle_registry,
+                    target_data,
+                )
+            }
             Some(BuiltinType::Option) => emit_de_option_cbor(
                 ctx,
                 llvm_mod,
@@ -1326,6 +1448,47 @@ fn build_text_descriptor_node(
                     },
                 );
                 format!(r#"{{"k":"vec","e":{elem}}}"#)
+            }
+            Some(BuiltinType::HashSet) => {
+                let elem = args.first().map_or_else(
+                    || r#"{"k":"opaque"}"#.to_string(),
+                    |e| {
+                        build_text_descriptor_node(
+                            e,
+                            format,
+                            wire_layouts,
+                            pipeline_records,
+                            enum_layouts,
+                            visiting,
+                        )
+                    },
+                );
+                format!(r#"{{"k":"set","e":{elem}}}"#)
+            }
+            Some(BuiltinType::HashMap) => {
+                let Some(key_ty) = args.first() else {
+                    return r#"{"k":"opaque"}"#.to_string();
+                };
+                let Some(value_ty) = args.get(1) else {
+                    return r#"{"k":"opaque"}"#.to_string();
+                };
+                let key = build_text_descriptor_node(
+                    key_ty,
+                    format,
+                    wire_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                    visiting,
+                );
+                let value = build_text_descriptor_node(
+                    value_ty,
+                    format,
+                    wire_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                    visiting,
+                );
+                format!(r#"{{"k":"map","key":{key},"value":{value}}}"#)
             }
             Some(BuiltinType::Option) => {
                 let elem = args.first().map_or_else(
@@ -1758,6 +1921,292 @@ fn codec_bitcopy_layout_descriptor_ptr<'ctx>(
     global.set_linkage(Linkage::Private);
     global.set_initializer(&init);
     Ok(global.as_pointer_value())
+}
+
+/// Encode a `HashMap<K, V>` as a deterministic CBOR map. The runtime iterator
+/// borrows slots, while the CBOR builder sorts fully encoded keys, so output is
+/// independent of hash-table capacity, insertion order, and slot placement.
+#[allow(clippy::too_many_arguments)]
+fn emit_ser_hashmap_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    key_ty: &ResolvedTy,
+    value_ty: &ResolvedTy,
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
+    target_data: &TargetData,
+) -> CodegenResult<()> {
+    // Decode must be able to reconstruct the same key identity. Resolve this
+    // at encode emission too so unsupported keys fail at compile time in both
+    // directions, rather than producing write-only wire data.
+    crate::layout::wire_map_key_layout_descriptor_ptr(ctx, llvm_mod, key_ty)?;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let map = builder
+        .build_load(ptr_ty, value_ptr, "cbor_ser_map_load")
+        .llvm_ctx("cbor ser hashmap load")?
+        .into_pointer_value();
+    let begin = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_begin_map",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(begin, &[buf.into()], "cbor_ser_hashmap_begin")
+        .llvm_ctx("cbor ser hashmap begin")?;
+    let iter_new = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashmap_iter_new_layout",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let iter = builder
+        .build_call(iter_new, &[map.into()], "cbor_ser_hashmap_iter")
+        .llvm_ctx("cbor ser hashmap iter new")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hashmap iterator constructor void".into()))?
+        .into_pointer_value();
+    let key_slot = builder
+        .build_alloca(ptr_ty, "cbor_ser_hashmap_key_slot")
+        .llvm_ctx("cbor ser hashmap key slot")?;
+    let value_slot = builder
+        .build_alloca(ptr_ty, "cbor_ser_hashmap_value_slot")
+        .llvm_ctx("cbor ser hashmap value slot")?;
+    let head = ctx.append_basic_block(func, "cbor_ser_hashmap_head");
+    let body = ctx.append_basic_block(func, "cbor_ser_hashmap_body");
+    let done = ctx.append_basic_block(func, "cbor_ser_hashmap_done");
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor ser hashmap entry br")?;
+    builder.position_at_end(head);
+    let iter_next = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashmap_iter_next_layout",
+        ctx.bool_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+    );
+    let has = builder
+        .build_call(
+            iter_next,
+            &[iter.into(), key_slot.into(), value_slot.into()],
+            "cbor_ser_hashmap_next",
+        )
+        .llvm_ctx("cbor ser hashmap iter next")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hashmap iterator next void".into()))?
+        .into_int_value();
+    builder
+        .build_conditional_branch(has, body, done)
+        .llvm_ctx("cbor ser hashmap loop br")?;
+    builder.position_at_end(body);
+    let key = builder
+        .build_load(ptr_ty, key_slot, "cbor_ser_hashmap_key")
+        .llvm_ctx("cbor ser hashmap key load")?
+        .into_pointer_value();
+    let value = builder
+        .build_load(ptr_ty, value_slot, "cbor_ser_hashmap_value")
+        .llvm_ctx("cbor ser hashmap value load")?
+        .into_pointer_value();
+    let begin_key = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_begin_key",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(begin_key, &[buf.into()], "cbor_ser_hashmap_begin_key")
+        .llvm_ctx("cbor ser hashmap begin key")?;
+    emit_ser_value_cbor(
+        ctx,
+        llvm_mod,
+        builder,
+        func,
+        key_ty,
+        key,
+        buf,
+        wire_layouts,
+        record_layouts,
+        machine_layouts,
+        pipeline_records,
+        enum_layouts,
+        lifecycle_registry,
+        target_data,
+    )?;
+    emit_ser_value_cbor(
+        ctx,
+        llvm_mod,
+        builder,
+        func,
+        value_ty,
+        value,
+        buf,
+        wire_layouts,
+        record_layouts,
+        machine_layouts,
+        pipeline_records,
+        enum_layouts,
+        lifecycle_registry,
+        target_data,
+    )?;
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor ser hashmap body br")?;
+    builder.position_at_end(done);
+    let iter_free = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashmap_iter_free_layout",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(iter_free, &[iter.into()], "cbor_ser_hashmap_iter_free")
+        .llvm_ctx("cbor ser hashmap iter free")?;
+    let end = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_end_map",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(end, &[buf.into()], "cbor_ser_hashmap_end")
+        .llvm_ctx("cbor ser hashmap end")?;
+    Ok(())
+}
+
+/// Encode a `HashSet<T>` as a canonically sorted CBOR array.
+#[allow(clippy::too_many_arguments)]
+fn emit_ser_hashset_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    elem_ty: &ResolvedTy,
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
+    target_data: &TargetData,
+) -> CodegenResult<()> {
+    crate::layout::wire_map_key_layout_descriptor_ptr(ctx, llvm_mod, elem_ty)?;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let set = builder
+        .build_load(ptr_ty, value_ptr, "cbor_ser_set_load")
+        .llvm_ctx("cbor ser hashset load")?
+        .into_pointer_value();
+    let begin = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_begin_set",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(begin, &[buf.into()], "cbor_ser_hashset_begin")
+        .llvm_ctx("cbor ser hashset begin")?;
+    let iter_new = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashset_iter_new_layout",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let iter = builder
+        .build_call(iter_new, &[set.into()], "cbor_ser_hashset_iter")
+        .llvm_ctx("cbor ser hashset iter new")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hashset iterator constructor void".into()))?
+        .into_pointer_value();
+    let elem_slot = builder
+        .build_alloca(ptr_ty, "cbor_ser_hashset_elem_slot")
+        .llvm_ctx("cbor ser hashset elem slot")?;
+    let head = ctx.append_basic_block(func, "cbor_ser_hashset_head");
+    let body = ctx.append_basic_block(func, "cbor_ser_hashset_body");
+    let done = ctx.append_basic_block(func, "cbor_ser_hashset_done");
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor ser hashset entry br")?;
+    builder.position_at_end(head);
+    let iter_next = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashset_iter_next_layout",
+        ctx.bool_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+    );
+    let has = builder
+        .build_call(
+            iter_next,
+            &[iter.into(), elem_slot.into()],
+            "cbor_ser_hashset_next",
+        )
+        .llvm_ctx("cbor ser hashset iter next")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hashset iterator next void".into()))?
+        .into_int_value();
+    builder
+        .build_conditional_branch(has, body, done)
+        .llvm_ctx("cbor ser hashset loop br")?;
+    builder.position_at_end(body);
+    let elem = builder
+        .build_load(ptr_ty, elem_slot, "cbor_ser_hashset_elem")
+        .llvm_ctx("cbor ser hashset elem load")?
+        .into_pointer_value();
+    emit_ser_value_cbor(
+        ctx,
+        llvm_mod,
+        builder,
+        func,
+        elem_ty,
+        elem,
+        buf,
+        wire_layouts,
+        record_layouts,
+        machine_layouts,
+        pipeline_records,
+        enum_layouts,
+        lifecycle_registry,
+        target_data,
+    )?;
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor ser hashset body br")?;
+    builder.position_at_end(done);
+    let iter_free = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashset_iter_free_layout",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(iter_free, &[iter.into()], "cbor_ser_hashset_iter_free")
+        .llvm_ctx("cbor ser hashset iter free")?;
+    let end = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_end_array",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(end, &[buf.into()], "cbor_ser_hashset_end")
+        .llvm_ctx("cbor ser hashset end")?;
+    Ok(())
 }
 
 /// Encode a `Vec<T>` field as a CBOR array. Encode is uniform across element
@@ -2392,6 +2841,403 @@ fn emit_de_vec_cbor<'ctx>(
     builder
         .build_call(exit, &[reader.into()], "cbor_de_vec_exit")
         .llvm_ctx("cbor de vec exit")?;
+    Ok(())
+}
+
+/// Decode a CBOR map into a layout-backed `HashMap<K, V>`, moving each decoded
+/// key/value into the collection. Duplicate semantic keys fail closed.
+#[allow(clippy::too_many_arguments)]
+fn emit_de_hashmap_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    key_ty: &ResolvedTy,
+    value_ty: &ResolvedTy,
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
+    target_data: &TargetData,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i32_ty = ctx.i32_type();
+    let key_layout = crate::layout::wire_map_key_layout_descriptor_ptr(ctx, llvm_mod, key_ty)?;
+    let key_llvm = resolve_ty(ctx, target_data, key_ty, record_layouts)?;
+    let value_llvm = resolve_ty(ctx, target_data, value_ty, record_layouts)?;
+    let value_obligation = hew_mir::ty_drop_obligation(
+        value_ty,
+        &CborHeapLayouts {
+            pipeline_records,
+            enum_layouts,
+        },
+        lifecycle_registry,
+    );
+    let regs = cbor_owned_elem_registries(
+        pipeline_records,
+        enum_layouts,
+        machine_layouts,
+        lifecycle_registry,
+    );
+    let value_layout = crate::layout::wire_map_value_layout_descriptor_ptr(
+        ctx,
+        llvm_mod,
+        target_data,
+        regs.registries(),
+        value_ty,
+        value_llvm,
+        value_obligation.carries_obligation(),
+    )?;
+    let new_map = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashmap_new_with_layout",
+        ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+    );
+    let map = builder
+        .build_call(
+            new_map,
+            &[key_layout.into(), value_layout.into()],
+            "cbor_de_hashmap_new",
+        )
+        .llvm_ctx("cbor de hashmap new")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hashmap constructor void".into()))?
+        .into_pointer_value();
+    builder
+        .build_store(dst, map)
+        .llvm_ctx("cbor de hashmap store")?;
+    let key_temp = builder
+        .build_alloca(key_llvm, "cbor_de_hashmap_key")
+        .llvm_ctx("cbor de hashmap key alloca")?;
+    let value_temp = builder
+        .build_alloca(value_llvm, "cbor_de_hashmap_value")
+        .llvm_ctx("cbor de hashmap value alloca")?;
+    let enter = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_enter_map_iter",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(enter, &[reader.into()], "cbor_de_hashmap_enter")
+        .llvm_ctx("cbor de hashmap enter")?;
+    let head = ctx.append_basic_block(func, "cbor_de_hashmap_head");
+    let body = ctx.append_basic_block(func, "cbor_de_hashmap_body");
+    let inserted = ctx.append_basic_block(func, "cbor_de_hashmap_inserted");
+    let duplicate = ctx.append_basic_block(func, "cbor_de_hashmap_duplicate");
+    let done = ctx.append_basic_block(func, "cbor_de_hashmap_done");
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor de hashmap entry br")?;
+    builder.position_at_end(head);
+    let next = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_map_next",
+        i32_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let has = builder
+        .build_call(next, &[reader.into()], "cbor_de_hashmap_next")
+        .llvm_ctx("cbor de hashmap next")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("map iterator decode next void".into()))?
+        .into_int_value();
+    let has_entry = builder
+        .build_int_compare(
+            IntPredicate::NE,
+            has,
+            i32_ty.const_zero(),
+            "cbor_de_hashmap_has",
+        )
+        .llvm_ctx("cbor de hashmap has")?;
+    builder
+        .build_conditional_branch(has_entry, body, done)
+        .llvm_ctx("cbor de hashmap loop br")?;
+    builder.position_at_end(body);
+    builder
+        .build_store(key_temp, key_llvm.const_zero())
+        .llvm_ctx("cbor de hashmap key zero")?;
+    builder
+        .build_store(value_temp, value_llvm.const_zero())
+        .llvm_ctx("cbor de hashmap value zero")?;
+    emit_de_value_cbor(
+        ctx,
+        llvm_mod,
+        builder,
+        func,
+        key_ty,
+        key_temp,
+        reader,
+        wire_layouts,
+        record_layouts,
+        machine_layouts,
+        pipeline_records,
+        enum_layouts,
+        lifecycle_registry,
+        target_data,
+    )?;
+    let stage_value = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_map_value",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(stage_value, &[reader.into()], "cbor_de_hashmap_stage_value")
+        .llvm_ctx("cbor de hashmap stage value")?;
+    emit_de_value_cbor(
+        ctx,
+        llvm_mod,
+        builder,
+        func,
+        value_ty,
+        value_temp,
+        reader,
+        wire_layouts,
+        record_layouts,
+        machine_layouts,
+        pipeline_records,
+        enum_layouts,
+        lifecycle_registry,
+        target_data,
+    )?;
+    let insert = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashmap_insert_layout",
+        ctx.bool_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+    );
+    let was_inserted = builder
+        .build_call(
+            insert,
+            &[map.into(), key_temp.into(), value_temp.into()],
+            "cbor_de_hashmap_insert",
+        )
+        .llvm_ctx("cbor de hashmap insert")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hashmap insert void".into()))?
+        .into_int_value();
+    builder
+        .build_conditional_branch(was_inserted, inserted, duplicate)
+        .llvm_ctx("cbor de hashmap insert br")?;
+    builder.position_at_end(inserted);
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor de hashmap inserted br")?;
+    builder.position_at_end(duplicate);
+    emit_de_drop_owned(
+        ctx,
+        llvm_mod,
+        builder,
+        key_ty,
+        key_temp,
+        record_layouts,
+        machine_layouts,
+        enum_layouts,
+    )?;
+    // `hew_hashmap_insert_layout` always MOVES the incoming value into the map:
+    // on a duplicate key it drops the old stored value and replaces it with the
+    // new one. Only the duplicate incoming key remains caller-owned. The
+    // enclosing failure cleanup frees the map and therefore drops `value_temp`
+    // exactly once from its new slot; dropping it here would double-free/UAF.
+    let fail = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_fail",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(fail, &[reader.into()], "cbor_de_hashmap_duplicate_fail")
+        .llvm_ctx("cbor de hashmap duplicate fail")?;
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor de hashmap duplicate br")?;
+    builder.position_at_end(done);
+    let exit = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_exit_map_iter",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(exit, &[reader.into()], "cbor_de_hashmap_exit")
+        .llvm_ctx("cbor de hashmap exit")?;
+    Ok(())
+}
+
+/// Decode a CBOR array into a layout-backed `HashSet<T>`. Duplicate semantic
+/// elements are malformed input rather than silently discarded.
+#[allow(clippy::too_many_arguments)]
+fn emit_de_hashset_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    elem_ty: &ResolvedTy,
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
+    target_data: &TargetData,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i32_ty = ctx.i32_type();
+    let elem_layout = crate::layout::wire_map_key_layout_descriptor_ptr(ctx, llvm_mod, elem_ty)?;
+    let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
+    let new_set = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashset_new_with_layout",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let set = builder
+        .build_call(new_set, &[elem_layout.into()], "cbor_de_hashset_new")
+        .llvm_ctx("cbor de hashset new")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hashset constructor void".into()))?
+        .into_pointer_value();
+    builder
+        .build_store(dst, set)
+        .llvm_ctx("cbor de hashset store")?;
+    let elem_temp = builder
+        .build_alloca(elem_llvm, "cbor_de_hashset_elem")
+        .llvm_ctx("cbor de hashset elem alloca")?;
+    let enter = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_enter_array",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(enter, &[reader.into()], "cbor_de_hashset_enter")
+        .llvm_ctx("cbor de hashset enter")?;
+    let head = ctx.append_basic_block(func, "cbor_de_hashset_head");
+    let body = ctx.append_basic_block(func, "cbor_de_hashset_body");
+    let inserted = ctx.append_basic_block(func, "cbor_de_hashset_inserted");
+    let duplicate = ctx.append_basic_block(func, "cbor_de_hashset_duplicate");
+    let done = ctx.append_basic_block(func, "cbor_de_hashset_done");
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor de hashset entry br")?;
+    builder.position_at_end(head);
+    let next = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_array_next",
+        i32_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let has = builder
+        .build_call(next, &[reader.into()], "cbor_de_hashset_next")
+        .llvm_ctx("cbor de hashset next")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("array decode next void".into()))?
+        .into_int_value();
+    let has_elem = builder
+        .build_int_compare(
+            IntPredicate::NE,
+            has,
+            i32_ty.const_zero(),
+            "cbor_de_hashset_has",
+        )
+        .llvm_ctx("cbor de hashset has")?;
+    builder
+        .build_conditional_branch(has_elem, body, done)
+        .llvm_ctx("cbor de hashset loop br")?;
+    builder.position_at_end(body);
+    builder
+        .build_store(elem_temp, elem_llvm.const_zero())
+        .llvm_ctx("cbor de hashset elem zero")?;
+    emit_de_value_cbor(
+        ctx,
+        llvm_mod,
+        builder,
+        func,
+        elem_ty,
+        elem_temp,
+        reader,
+        wire_layouts,
+        record_layouts,
+        machine_layouts,
+        pipeline_records,
+        enum_layouts,
+        lifecycle_registry,
+        target_data,
+    )?;
+    let insert = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_hashset_insert_layout",
+        ctx.bool_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+    );
+    let was_inserted = builder
+        .build_call(
+            insert,
+            &[set.into(), elem_temp.into()],
+            "cbor_de_hashset_insert",
+        )
+        .llvm_ctx("cbor de hashset insert")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hashset insert void".into()))?
+        .into_int_value();
+    builder
+        .build_conditional_branch(was_inserted, inserted, duplicate)
+        .llvm_ctx("cbor de hashset insert br")?;
+    builder.position_at_end(inserted);
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor de hashset inserted br")?;
+    builder.position_at_end(duplicate);
+    emit_de_drop_owned(
+        ctx,
+        llvm_mod,
+        builder,
+        elem_ty,
+        elem_temp,
+        record_layouts,
+        machine_layouts,
+        enum_layouts,
+    )?;
+    let fail = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_fail",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(fail, &[reader.into()], "cbor_de_hashset_duplicate_fail")
+        .llvm_ctx("cbor de hashset duplicate fail")?;
+    builder
+        .build_unconditional_branch(head)
+        .llvm_ctx("cbor de hashset duplicate br")?;
+    builder.position_at_end(done);
+    let exit = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_exit_array",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(exit, &[reader.into()], "cbor_de_hashset_exit")
+        .llvm_ctx("cbor de hashset exit")?;
     Ok(())
 }
 

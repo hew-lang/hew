@@ -5614,6 +5614,9 @@ run_accept_expect_status "wire_json_nested_roundtrip" 42
 run_accept_expect_status "wire_json_enum_unit_roundtrip" 42
 run_accept_expect_status "wire_json_enum_payload_roundtrip" 42
 run_accept_expect_status "wire_json_vec_option_roundtrip" 42
+run_accept_expect_status "wire_json_hash_collections_roundtrip" 42
+run_accept_expect_status "wire_json_hashmap_duplicate_key_is_err" 42
+run_accept_expect_status "wire_json_hashset_duplicate_is_err" 42
 # An unnamed fresh string concat result into from_json: the transient-string
 # drop pass must not free the operand before the WireCodec parse reads it.
 run_accept_expect_status "wire_json_fresh_concat_operand" 42

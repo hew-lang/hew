@@ -63,7 +63,7 @@ const FORMAT_YAML: c_int = 1;
 //
 // The compiler emits a compact JSON descriptor string per wire type that maps
 // each field's wire tag (`@N`) to its JSON/YAML key name, recursively for nested
-// wire structs/enums, vectors, and options. The runtime parses it once per bridge
+// wire structs/enums, collections, and options. The runtime parses it once per bridge
 // call. The format is intentionally small and explicit so the codegen emitter is
 // trivial to keep in sync with this parser.
 //
@@ -72,6 +72,8 @@ const FORMAT_YAML: c_int = 1;
 //   struct : {"k":"struct","f":[{"t":<tag>,"n":"<name>","d":<node>}, ...]}
 //   enum   : {"k":"enum","v":[{"t":<tag>,"n":"<name>","p":[<node>, ...]}, ...]}
 //   vec    : {"k":"vec","e":<node>}
+//   set    : {"k":"set","e":<node>}
+//   map    : {"k":"map","key":<node>,"value":<node>}
 //   option : {"k":"opt","e":<node>}
 //   opaque : {"k":"opaque"}   // a shape outside the text floor — fail closed
 
@@ -97,6 +99,11 @@ enum Desc {
     Enum(Vec<EnumVariant>),
     /// A `Vec<T>`: CBOR array ↔ JSON array, element-wise transcoded.
     Vec(Box<Desc>),
+    /// A `HashSet<T>`: a deterministically ordered CBOR/JSON array.
+    Set(Box<Desc>),
+    /// A `HashMap<K, V>`: CBOR map ↔ a JSON object for string keys, otherwise
+    /// an array of `[key, value]` pairs so key types are never stringified.
+    Map(Box<Desc>, Box<Desc>),
     /// An `Option<T>`: CBOR null/value ↔ JSON null/value.
     Opt(Box<Desc>),
     /// A shape the text codec does not support (outside the wire-body floor).
@@ -138,6 +145,11 @@ impl Desc {
             "bytes" => Some(Self::Bytes),
             "opaque" => Some(Self::Opaque),
             "vec" => Some(Self::Vec(Box::new(Self::parse(obj.get("e")?, depth + 1)?))),
+            "set" => Some(Self::Set(Box::new(Self::parse(obj.get("e")?, depth + 1)?))),
+            "map" => Some(Self::Map(
+                Box::new(Self::parse(obj.get("key")?, depth + 1)?),
+                Box::new(Self::parse(obj.get("value")?, depth + 1)?),
+            )),
             "opt" => Some(Self::Opt(Box::new(Self::parse(obj.get("e")?, depth + 1)?))),
             "struct" => {
                 let mut fields = Vec::new();
@@ -191,6 +203,10 @@ unsafe fn parse_descriptor(ptr: *const c_char) -> Option<Desc> {
 /// integer field tags) into a `serde_json::Value` (keyed by JSON/YAML key names)
 /// guided by `desc`. Fails closed on any shape that does not match the
 /// descriptor.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeping the exhaustive descriptor conversion in one match makes the accepted wire shapes auditable"
+)]
 fn cbor_to_json(value: &CborValue, desc: &Desc, depth: usize) -> Result<serde_json::Value, String> {
     if depth >= MAX_TRANSCODE_DEPTH {
         return Err("value nesting exceeds the supported depth".to_string());
@@ -254,7 +270,7 @@ fn cbor_to_json(value: &CborValue, desc: &Desc, depth: usize) -> Result<serde_js
             CborValue::Null => Ok(serde_json::Value::Null),
             other => cbor_to_json(other, inner, depth + 1),
         },
-        Desc::Vec(elem) => match value {
+        Desc::Vec(elem) | Desc::Set(elem) => match value {
             CborValue::Array(items) => {
                 let mut out = Vec::with_capacity(items.len());
                 for it in items {
@@ -264,6 +280,33 @@ fn cbor_to_json(value: &CborValue, desc: &Desc, depth: usize) -> Result<serde_js
             }
             _ => Err("expected an array".to_string()),
         },
+        Desc::Map(key_desc, value_desc) => {
+            let CborValue::Map(entries) = value else {
+                return Err("expected a map".to_string());
+            };
+            if matches!(key_desc.as_ref(), Desc::Str) {
+                let mut out = serde_json::Map::new();
+                for (key, item) in entries {
+                    let CborValue::Text(name) = key else {
+                        return Err("expected a string map key".to_string());
+                    };
+                    if out.contains_key(name) {
+                        return Err("duplicate map key".to_string());
+                    }
+                    out.insert(name.clone(), cbor_to_json(item, value_desc, depth + 1)?);
+                }
+                Ok(serde_json::Value::Object(out))
+            } else {
+                let mut out = Vec::with_capacity(entries.len());
+                for (key, item) in entries {
+                    out.push(serde_json::Value::Array(vec![
+                        cbor_to_json(key, key_desc, depth + 1)?,
+                        cbor_to_json(item, value_desc, depth + 1)?,
+                    ]));
+                }
+                Ok(serde_json::Value::Array(out))
+            }
+        }
         Desc::Struct(fields) => {
             let CborValue::Map(pairs) = value else {
                 return Err("expected a map".to_string());
@@ -365,6 +408,10 @@ fn enum_cbor_to_json(
 /// Transcode a `serde_json::Value` (parsed from JSON or YAML, keyed by names)
 /// into a `ciborium::Value` (keyed by integer tags) matching exactly the shape
 /// the binary CBOR decode walk expects. Fails closed on any shape mismatch.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeping the exhaustive descriptor conversion in one match makes the accepted wire shapes auditable"
+)]
 fn json_to_cbor(value: &serde_json::Value, desc: &Desc, depth: usize) -> Result<CborValue, String> {
     if depth >= MAX_TRANSCODE_DEPTH {
         return Err("value nesting exceeds the supported depth".to_string());
@@ -423,7 +470,7 @@ fn json_to_cbor(value: &serde_json::Value, desc: &Desc, depth: usize) -> Result<
                 json_to_cbor(value, inner, depth + 1)
             }
         }
-        Desc::Vec(elem) => {
+        Desc::Vec(elem) | Desc::Set(elem) => {
             let arr = value
                 .as_array()
                 .ok_or_else(|| "expected an array".to_string())?;
@@ -432,6 +479,39 @@ fn json_to_cbor(value: &serde_json::Value, desc: &Desc, depth: usize) -> Result<
                 out.push(json_to_cbor(it, elem, depth + 1)?);
             }
             Ok(CborValue::Array(out))
+        }
+        Desc::Map(key_desc, value_desc) => {
+            let mut out = Vec::new();
+            if matches!(key_desc.as_ref(), Desc::Str) {
+                let obj = value
+                    .as_object()
+                    .ok_or_else(|| "expected an object for a string-keyed map".to_string())?;
+                out.reserve(obj.len());
+                for (key, item) in obj {
+                    out.push((
+                        CborValue::Text(key.clone()),
+                        json_to_cbor(item, value_desc, depth + 1)?,
+                    ));
+                }
+            } else {
+                let entries = value.as_array().ok_or_else(|| {
+                    "expected an array of [key, value] pairs for a non-string-keyed map".to_string()
+                })?;
+                out.reserve(entries.len());
+                for entry in entries {
+                    let pair = entry
+                        .as_array()
+                        .ok_or_else(|| "map entry is not a [key, value] pair".to_string())?;
+                    if pair.len() != 2 {
+                        return Err("map entry must contain exactly two values".to_string());
+                    }
+                    out.push((
+                        json_to_cbor(&pair[0], key_desc, depth + 1)?,
+                        json_to_cbor(&pair[1], value_desc, depth + 1)?,
+                    ));
+                }
+            }
+            Ok(CborValue::Map(out))
         }
         Desc::Struct(fields) => {
             let obj = value
@@ -1000,5 +1080,54 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str("[256]").unwrap();
         let err = json_to_cbor(&json, &Desc::Bytes, 0).unwrap_err();
         assert!(err.contains("exceeds 255"), "got: {err}");
+    }
+
+    #[test]
+    fn maps_and_sets_preserve_key_types_in_json() {
+        let string_map = Desc::Map(Box::new(Desc::Str), Box::new(Desc::Int));
+        let cbor = CborValue::Map(vec![
+            (
+                CborValue::Text("a".to_string()),
+                CborValue::Integer(1.into()),
+            ),
+            (
+                CborValue::Text("b".to_string()),
+                CborValue::Integer(2.into()),
+            ),
+        ]);
+        let json = cbor_to_json(&cbor, &string_map, 0).unwrap();
+        assert_eq!(serde_json::to_string(&json).unwrap(), r#"{"a":1,"b":2}"#);
+        assert_eq!(json_to_cbor(&json, &string_map, 0).unwrap(), cbor);
+
+        let int_map = Desc::Map(Box::new(Desc::Int), Box::new(Desc::Str));
+        let pairs: serde_json::Value = serde_json::from_str(r#"[[1,"one"],[2,"two"]]"#).unwrap();
+        let encoded = json_to_cbor(&pairs, &int_map, 0).unwrap();
+        assert!(matches!(encoded, CborValue::Map(_)));
+        assert_eq!(cbor_to_json(&encoded, &int_map, 0).unwrap(), pairs);
+
+        let set = Desc::Set(Box::new(Desc::Int));
+        let values: serde_json::Value = serde_json::from_str("[1,2,3]").unwrap();
+        let encoded = json_to_cbor(&values, &set, 0).unwrap();
+        assert_eq!(cbor_to_json(&encoded, &set, 0).unwrap(), values);
+    }
+
+    #[test]
+    fn map_text_shapes_fail_closed_without_key_coercion() {
+        let string_map = Desc::Map(Box::new(Desc::Str), Box::new(Desc::Int));
+        let err = json_to_cbor(
+            &serde_json::from_str::<serde_json::Value>(r#"[["a",1]]"#).unwrap(),
+            &string_map,
+            0,
+        )
+        .unwrap_err();
+        assert!(err.contains("string-keyed map"), "got: {err}");
+
+        let int_map = Desc::Map(Box::new(Desc::Int), Box::new(Desc::Str));
+        let object = serde_json::from_str::<serde_json::Value>(r#"{"1":"one"}"#).unwrap();
+        let err = json_to_cbor(&object, &int_map, 0).unwrap_err();
+        assert!(err.contains("[key, value]"), "got: {err}");
+        let malformed = serde_json::from_str::<serde_json::Value>(r#"[[1,"one",3]]"#).unwrap();
+        let err = json_to_cbor(&malformed, &int_map, 0).unwrap_err();
+        assert!(err.contains("exactly two"), "got: {err}");
     }
 }

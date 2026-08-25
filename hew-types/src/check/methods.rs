@@ -3094,8 +3094,8 @@ impl Checker {
             missing.push("Decode");
         }
         if missing.is_empty() {
-            "it is outside the current Serializable subset (scalars, string, bytes, \
-             tuples/arrays, records/enums, or wire-marked types whose members are Serializable)"
+            "it is outside the current Serializable codec subset (including only \
+             collection key/element layouts with a complete encode, decode, clone, and drop path)"
                 .to_string()
         } else {
             format!("missing required marker trait(s): {}", missing.join(" + "))

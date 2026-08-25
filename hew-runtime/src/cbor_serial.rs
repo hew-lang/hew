@@ -45,7 +45,7 @@
 //! delivers a partial or fabricated value.
 
 use core::ffi::{c_char, c_void};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 
 use ciborium::value::{Integer, Value};
@@ -56,15 +56,18 @@ use hew_cabi::cabi::malloc_cstring;
 /// One open container on the encoder stack.
 #[derive(Debug)]
 enum SerFrame {
-    /// A CBOR map under construction. `pending_key` is the integer key set by
-    /// the most recent `hew_cbor_ser_key_u64`, awaiting its value; it persists
-    /// while a child container is built on top of this frame.
+    /// A CBOR map under construction. `pending_key` awaits its value;
+    /// `accepting_key` allows an arbitrary recursively-encoded collection key.
     Map {
-        pending_key: Option<i128>,
+        pending_key: Option<Value>,
+        accepting_key: bool,
         entries: Vec<(Value, Value)>,
     },
-    /// A CBOR array under construction (a `List` / `Vec<T>` field).
-    Array { items: Vec<Value> },
+    /// A CBOR array under construction (`Vec<T>` or `HashSet<T>`).
+    Array {
+        items: Vec<Value>,
+        canonicalize: bool,
+    },
 }
 
 /// The CBOR encode builder behind a `hew_cbor_ser_new` handle.
@@ -97,12 +100,19 @@ impl CborSerBuf {
         match self.stack.last_mut() {
             Some(SerFrame::Map {
                 pending_key,
+                accepting_key,
                 entries,
-            }) => match pending_key.take() {
-                Some(key) => entries.push((Value::Integer(int_from_i128(key)), value)),
-                None => self.poisoned = true,
-            },
-            Some(SerFrame::Array { items }) => items.push(value),
+            }) => {
+                if *accepting_key {
+                    *accepting_key = false;
+                    *pending_key = Some(value);
+                } else if let Some(key) = pending_key.take() {
+                    entries.push((key, value));
+                } else {
+                    self.poisoned = true;
+                }
+            }
+            Some(SerFrame::Array { items, .. }) => items.push(value),
             None => {
                 if self.root.is_some() {
                     self.poisoned = true;
@@ -114,17 +124,12 @@ impl CborSerBuf {
     }
 }
 
-/// Build a ciborium `Integer` from an `i128`, clamping out-of-range values to a
-/// saturating bound (CBOR integers span `[-2^64, 2^64-1]`, i.e. they fit i128).
-/// A wire tag or scalar always fits, so this never actually clamps in practice.
-fn int_from_i128(v: i128) -> Integer {
-    Integer::try_from(v).unwrap_or_else(|_| {
-        if v < 0 {
-            Integer::from(i64::MIN)
-        } else {
-            Integer::from(u64::MAX)
-        }
-    })
+/// RFC 8949 deterministic ordering compares the length of each encoded key,
+/// then its bytewise lexical representation.
+fn canonical_bytes(value: &Value) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(value, &mut bytes).ok()?;
+    Some(bytes)
 }
 
 /// SAFETY: `buf` must be null or a live handle from `hew_cbor_ser_new` that no
@@ -155,6 +160,7 @@ pub unsafe extern "C" fn hew_cbor_ser_begin_map(buf: *mut c_void) {
     if let Some(b) = unsafe { as_ser_buf(buf) } {
         b.stack.push(SerFrame::Map {
             pending_key: None,
+            accepting_key: false,
             entries: Vec::new(),
         });
     }
@@ -178,15 +184,31 @@ pub unsafe extern "C" fn hew_cbor_ser_end_map(buf: *mut c_void) {
         return;
     };
     match b.stack.pop() {
-        Some(SerFrame::Map { mut entries, .. }) => {
-            // Sort by integer key ascending = canonical order for the
-            // non-negative field-number keys this encoder emits. A stable sort
-            // keeps emission order for any (never-constructed) duplicate keys.
-            entries.sort_by_key(|(key, _)| match key {
-                Value::Integer(i) => i128::from(*i),
-                _ => i128::MIN,
-            });
-            b.emit(Value::Map(entries));
+        Some(SerFrame::Map {
+            pending_key,
+            accepting_key,
+            entries,
+        }) => {
+            if accepting_key || pending_key.is_some() {
+                b.poisoned = true;
+                return;
+            }
+            let mut keyed = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                let Some(encoded) = canonical_bytes(&key) else {
+                    b.poisoned = true;
+                    return;
+                };
+                keyed.push((encoded, (key, value)));
+            }
+            keyed.sort_by(|(a, _), (b, _)| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+            if keyed.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                b.poisoned = true;
+                return;
+            }
+            b.emit(Value::Map(
+                keyed.into_iter().map(|(_, pair)| pair).collect(),
+            ));
         }
         _ => b.poisoned = true,
     }
@@ -200,7 +222,26 @@ pub unsafe extern "C" fn hew_cbor_ser_end_map(buf: *mut c_void) {
 pub unsafe extern "C" fn hew_cbor_ser_begin_array(buf: *mut c_void) {
     // SAFETY: buf is a live handle per this fn's contract.
     if let Some(b) = unsafe { as_ser_buf(buf) } {
-        b.stack.push(SerFrame::Array { items: Vec::new() });
+        b.stack.push(SerFrame::Array {
+            items: Vec::new(),
+            canonicalize: false,
+        });
+    }
+}
+
+/// Open a CBOR array whose elements are sorted by deterministic encoded form.
+/// This is the wire representation of a `HashSet<T>`.
+///
+/// # Safety
+/// `buf` must be a live handle from `hew_cbor_ser_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_ser_begin_set(buf: *mut c_void) {
+    // SAFETY: buf is a live handle per this fn's contract.
+    if let Some(b) = unsafe { as_ser_buf(buf) } {
+        b.stack.push(SerFrame::Array {
+            items: Vec::new(),
+            canonicalize: true,
+        });
     }
 }
 
@@ -215,7 +256,28 @@ pub unsafe extern "C" fn hew_cbor_ser_end_array(buf: *mut c_void) {
         return;
     };
     match b.stack.pop() {
-        Some(SerFrame::Array { items }) => b.emit(Value::Array(items)),
+        Some(SerFrame::Array {
+            mut items,
+            canonicalize,
+        }) => {
+            if canonicalize {
+                let mut keyed = Vec::with_capacity(items.len());
+                for item in items.drain(..) {
+                    let Some(encoded) = canonical_bytes(&item) else {
+                        b.poisoned = true;
+                        return;
+                    };
+                    keyed.push((encoded, item));
+                }
+                keyed.sort_by(|(a, _), (b, _)| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+                if keyed.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                    b.poisoned = true;
+                    return;
+                }
+                items = keyed.into_iter().map(|(_, item)| item).collect();
+            }
+            b.emit(Value::Array(items));
+        }
         _ => b.poisoned = true,
     }
 }
@@ -232,7 +294,33 @@ pub unsafe extern "C" fn hew_cbor_ser_key_u64(buf: *mut c_void, key: u64) {
         return;
     };
     match b.stack.last_mut() {
-        Some(SerFrame::Map { pending_key, .. }) => *pending_key = Some(i128::from(key)),
+        Some(SerFrame::Map {
+            pending_key,
+            accepting_key,
+            ..
+        }) if pending_key.is_none() && !*accepting_key => {
+            *pending_key = Some(Value::Integer(Integer::from(key)));
+        }
+        _ => b.poisoned = true,
+    }
+}
+
+/// Make the next recursively emitted value the key of the current map.
+///
+/// # Safety
+/// `buf` must be a live handle from `hew_cbor_ser_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_ser_begin_key(buf: *mut c_void) {
+    // SAFETY: buf is a live handle per this fn's contract.
+    let Some(b) = (unsafe { as_ser_buf(buf) }) else {
+        return;
+    };
+    match b.stack.last_mut() {
+        Some(SerFrame::Map {
+            pending_key,
+            accepting_key,
+            ..
+        }) if pending_key.is_none() && !*accepting_key => *accepting_key = true,
         _ => b.poisoned = true,
     }
 }
@@ -415,6 +503,11 @@ enum DeFrame {
     /// selects them; whatever remains at `exit_map` is unknown-forward-compatible
     /// and dropped.
     Map(BTreeMap<i128, Value>),
+    /// A collection map walked as arbitrary key/value pairs.
+    MapIter {
+        entries: std::vec::IntoIter<(Value, Value)>,
+        pending_value: Option<Value>,
+    },
     /// An entered CBOR array, walked by sequential `array_next`.
     Array(std::vec::IntoIter<Value>),
 }
@@ -597,6 +690,120 @@ pub unsafe extern "C" fn hew_cbor_de_select_key(reader: *mut c_void, key: u64) {
     match map.remove(&i128::from(key)) {
         Some(value) => r.staged = Some(value),
         None => r.failed = true,
+    }
+}
+
+/// Enter a staged collection map for sequential key/value decoding.
+/// Duplicate keys are rejected by deterministic encoded identity.
+///
+/// # Safety
+/// `reader` must be a live handle from `hew_cbor_de_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_de_enter_map_iter(reader: *mut c_void) {
+    // SAFETY: reader is a live handle per this fn's contract.
+    let Some(r) = (unsafe { as_de_reader(reader) }) else {
+        return;
+    };
+    let Some(Value::Map(entries)) = r.take_staged() else {
+        r.failed = true;
+        return;
+    };
+    let mut seen = BTreeSet::new();
+    for (key, _) in &entries {
+        let Some(encoded) = canonical_bytes(key) else {
+            r.failed = true;
+            return;
+        };
+        if !seen.insert((encoded.len(), encoded)) {
+            r.failed = true;
+            return;
+        }
+    }
+    r.stack.push(DeFrame::MapIter {
+        entries: entries.into_iter(),
+        pending_value: None,
+    });
+}
+
+/// Stage the next collection-map key. Returns 1 if present, 0 at end.
+///
+/// # Safety
+/// `reader` must be a live handle from `hew_cbor_de_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_de_map_next(reader: *mut c_void) -> i32 {
+    // SAFETY: reader is a live handle per this fn's contract.
+    let Some(r) = (unsafe { as_de_reader(reader) }) else {
+        return 0;
+    };
+    if r.staged.is_some() {
+        r.failed = true;
+        return 0;
+    }
+    let Some(DeFrame::MapIter {
+        entries,
+        pending_value,
+    }) = r.stack.last_mut()
+    else {
+        r.failed = true;
+        return 0;
+    };
+    if pending_value.is_some() {
+        r.failed = true;
+        return 0;
+    }
+    match entries.next() {
+        Some((key, value)) => {
+            r.staged = Some(key);
+            *pending_value = Some(value);
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Stage the value paired with the most recently decoded collection-map key.
+///
+/// # Safety
+/// `reader` must be a live handle from `hew_cbor_de_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_de_map_value(reader: *mut c_void) {
+    // SAFETY: reader is a live handle per this fn's contract.
+    let Some(r) = (unsafe { as_de_reader(reader) }) else {
+        return;
+    };
+    if r.staged.is_some() {
+        r.failed = true;
+        return;
+    }
+    let Some(DeFrame::MapIter { pending_value, .. }) = r.stack.last_mut() else {
+        r.failed = true;
+        return;
+    };
+    match pending_value.take() {
+        Some(value) => r.staged = Some(value),
+        None => r.failed = true,
+    }
+}
+
+/// Exit a collection-map iterator after all entries have been consumed.
+///
+/// # Safety
+/// `reader` must be a live handle from `hew_cbor_de_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_de_exit_map_iter(reader: *mut c_void) {
+    // SAFETY: reader is a live handle per this fn's contract.
+    let Some(r) = (unsafe { as_de_reader(reader) }) else {
+        return;
+    };
+    if r.staged.is_some() {
+        r.failed = true;
+    }
+    match r.stack.pop() {
+        Some(DeFrame::MapIter {
+            entries,
+            pending_value,
+        }) if entries.as_slice().is_empty() && pending_value.is_none() => {}
+        _ => r.failed = true,
     }
 }
 
@@ -1051,7 +1258,79 @@ pub unsafe extern "C" fn hew_cbor_de_bytes(reader: *mut c_void, out_len: *mut u3
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "these tests exclusively exercise the local C ABI with handles and buffers they construct and retain for each call"
+    )]
+
     use super::*;
+
+    unsafe fn finish_test_builder(buf: *mut c_void) -> Vec<u8> {
+        let mut len = 0usize;
+        let ptr = unsafe { hew_cbor_ser_finish(buf, &raw mut len) };
+        assert!(!ptr.is_null());
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        unsafe { libc::free(ptr.cast()) };
+        bytes
+    }
+
+    #[test]
+    fn collection_map_and_set_encoding_is_insertion_order_independent() {
+        unsafe fn encode_map(reverse: bool) -> Vec<u8> {
+            let buf = hew_cbor_ser_new();
+            unsafe { hew_cbor_ser_begin_map(buf) };
+            for key in if reverse { [10, 1] } else { [1, 10] } {
+                unsafe {
+                    hew_cbor_ser_begin_key(buf);
+                    hew_cbor_ser_i64(buf, key);
+                    hew_cbor_ser_i64(buf, key * 2);
+                }
+            }
+            unsafe { hew_cbor_ser_end_map(buf) };
+            unsafe { finish_test_builder(buf) }
+        }
+        unsafe fn encode_set(reverse: bool) -> Vec<u8> {
+            let buf = hew_cbor_ser_new();
+            unsafe { hew_cbor_ser_begin_set(buf) };
+            for value in if reverse { [10, 1] } else { [1, 10] } {
+                unsafe { hew_cbor_ser_i64(buf, value) };
+            }
+            unsafe { hew_cbor_ser_end_array(buf) };
+            unsafe { finish_test_builder(buf) }
+        }
+        assert_eq!(unsafe { encode_map(false) }, unsafe { encode_map(true) });
+        assert_eq!(unsafe { encode_set(false) }, unsafe { encode_set(true) });
+    }
+
+    #[test]
+    fn generic_map_decoder_stages_each_key_then_value() {
+        let value = Value::Map(vec![
+            (Value::Text("a".to_string()), Value::Integer(1.into())),
+            (Value::Text("b".to_string()), Value::Integer(2.into())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&value, &mut bytes).unwrap();
+        unsafe {
+            let reader = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            hew_cbor_de_enter_map_iter(reader);
+            assert_eq!(hew_cbor_de_map_next(reader), 1);
+            let first_key = hew_cbor_de_string(reader);
+            assert_eq!(core::ffi::CStr::from_ptr(first_key).to_str().unwrap(), "a");
+            hew_string_drop_for_test(first_key);
+            hew_cbor_de_map_value(reader);
+            assert_eq!(hew_cbor_de_i64(reader), 1);
+            assert_eq!(hew_cbor_de_map_next(reader), 1);
+            let second_key = hew_cbor_de_string(reader);
+            assert_eq!(core::ffi::CStr::from_ptr(second_key).to_str().unwrap(), "b");
+            hew_string_drop_for_test(second_key);
+            hew_cbor_de_map_value(reader);
+            assert_eq!(hew_cbor_de_i64(reader), 2);
+            assert_eq!(hew_cbor_de_map_next(reader), 0);
+            hew_cbor_de_exit_map_iter(reader);
+            assert_eq!(hew_cbor_de_failed(reader), 0);
+            hew_cbor_de_free(reader);
+        }
+    }
 
     /// A struct body `{1: "hi", 2: -7}` round-trips through encode → bytes →
     /// decode with the field values intact.

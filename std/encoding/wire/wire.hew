@@ -25,6 +25,12 @@
 //! for a different field is a schema-compatibility break, not just a style
 //! issue. `e.to_json()` and `TypeName.from_json(text)` (a call on the type
 //! name itself, not `::`) round-trip a `#[wire]` type through JSON today.
+//! `HashMap` and `HashSet` may be fields of that wire type: string-keyed maps
+//! become JSON objects, other supported primitive-key maps become arrays of
+//! `[key, value]` pairs (so key types are not stringified), and sets become
+//! deterministically ordered arrays. The same layouts round-trip through CBOR
+//! and YAML. Bare collections do not acquire collection-specific codec methods;
+//! put them in a named `#[wire]` envelope to define a stable schema boundary.
 //! Check schema compatibility between two versions of a wire type with:
 //!
 //! ```text

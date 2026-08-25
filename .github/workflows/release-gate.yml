@@ -787,6 +787,24 @@ jobs:
             test -x "$PYTHON"
             /usr/local/llvm22/bin/llvm-config --version
 
+            # Upstream does not publish a rustup host toolchain for aarch64
+            # FreeBSD, so keep the pkg compiler and install its matching,
+            # host-independent WASI standard-library component directly.
+            RUST_VERSION=$(rustc --version | awk '{print $2}')
+            RUST_STD_COMPONENT="rust-std-${RUST_VERSION}-wasm32-wasip1"
+            RUST_STD_DIR=$(mktemp -d)
+            trap 'rm -rf "$RUST_STD_DIR"' EXIT
+            /usr/bin/fetch -o "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz" \
+              "https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz"
+            /usr/bin/fetch -o "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz.sha256" \
+              "https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"
+            test "$(sha256 -q "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz")" = \
+              "$(awk '{print $1}' "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz.sha256")"
+            tar -xJf "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz" -C "$RUST_STD_DIR"
+            sh "$RUST_STD_DIR/${RUST_STD_COMPONENT}/install.sh" \
+              --prefix="$(rustc --print sysroot)" --disable-ldconfig
+            test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib"
+
             # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its
             # own bin dir, which is not on PATH. Expose it like the macOS gate's
             # lld@22 so the linker probe finds it instead of failing to spawn

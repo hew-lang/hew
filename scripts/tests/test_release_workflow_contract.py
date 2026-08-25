@@ -3233,6 +3233,38 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
         raise AssertionError("foundational release-gate mutation escaped")
 
 
+def test_freebsd_aarch64_installs_wasi_std_before_building_stdlib() -> None:
+    job = workflow_job(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+    version = "RUST_VERSION=$(rustc --version | awk '{print $2}')"
+    component = 'RUST_STD_COMPONENT="rust-std-${RUST_VERSION}-wasm32-wasip1"'
+    archive = '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz"'
+    checksum = (
+        '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"'
+    )
+    verify = (
+        'test "$(sha256 -q "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz")" = \\\n'
+        '              "$(awk \'{print $1}\' '
+        '"$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz.sha256")"'
+    )
+    install = (
+        'sh "$RUST_STD_DIR/${RUST_STD_COMPONENT}/install.sh" \\\n'
+        '              --prefix="$(rustc --print sysroot)" --disable-ldconfig'
+    )
+    probe = 'test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib"'
+
+    for required in (version, component, archive, checksum, verify, install, probe):
+        assert job.count(required) == 1
+    assert (
+        job.index(version)
+        < job.index(archive)
+        < job.index(checksum)
+        < job.index(verify)
+        < job.index(install)
+        < job.index(probe)
+        < job.index("gmake stdlib")
+    )
+
+
 def _discover_tests() -> list:
     """Return every test function after the module has finished loading."""
     return [

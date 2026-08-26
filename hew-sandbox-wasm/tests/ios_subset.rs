@@ -82,8 +82,9 @@ struct IosCase {
     expectation: Expectation,
 }
 
-// Windows parity enforcement is tracked in #1823; Windows runners do not yet
-// provision the hew-sandbox-vm npm toolchain for this harness. Excluded from
+// This corpus protects the iOS sandbox profile and runs in the provisioned
+// Linux `sandbox-parity` job. It is not a Windows-native build contract.
+#[cfg_attr(windows, ignore = "iOS sandbox corpus runs in Linux sandbox-parity CI")]
 #[test]
 fn ios_runnable_corpus_is_sandbox_safe() {
     set_test_hewpath();

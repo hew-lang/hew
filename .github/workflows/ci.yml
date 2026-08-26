@@ -1040,7 +1040,7 @@ jobs:
         # runners do not provide GNU make, while each test builds the VM from
         # the lockfile-installed dependencies above and builds its native
         # artefacts through hew-testutil's cross-process authority.
-        run: cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
+        run: cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground
 
       - name: Verify Windows CodeView PDB emission
         if: env.RUN_CODE_PATH == 'true'

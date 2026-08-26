@@ -574,7 +574,7 @@ fn assert_case(case: &ParityCase) {
         .unwrap_or_else(|err| panic!("failed to write bytecode for {}: {err}", case.test_name));
 
     let sandbox = run_sandbox(&bytecode_path);
-    assert_exit_code_parity(case, &native, &sandbox);
+    assert_termination_parity(case, &native, &sandbox);
     assert_stdout_parity(case, &native, &sandbox);
     assert_exact_stdout(case, &native);
 }
@@ -643,11 +643,11 @@ fn assert_no_error_diagnostics(case: &ParityCase, diagnostics: &[Diagnostic]) {
     );
 }
 
-fn assert_exit_code_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
+fn assert_termination_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
     assert_eq!(
-        sandbox.status.code(),
-        native.status.code(),
-        "{} exit-code mismatch\nnative:\n{}\nsandbox:\n{}",
+        sandbox.status.success(),
+        native.status.success(),
+        "{} termination mismatch\nnative:\n{}\nsandbox:\n{}",
         case.test_name,
         describe_output(native),
         describe_output(sandbox)

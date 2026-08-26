@@ -1929,10 +1929,11 @@ runtime-unsafe-clippy-build:
 runtime-unsafe-geiger:
 	python3 scripts/check-runtime-unsafe-count.py
 
-# The CI tool-install step owns cargo-geiger provisioning; this gate has no
-# Rust build artefact to warm locally.
+# The selector invokes each selected gate's build form before its timed check.
+# Provision the external checker there so any CI lane that selects this gate
+# can execute it; Cargo preserves an already-installed binary.
 runtime-unsafe-geiger-build:
-	@:
+	@cargo geiger --version >/dev/null 2>&1 || cargo install cargo-geiger --locked
 
 # inputs: scripts/audit-unsafe-patterns.sh hew-runtime/src/*.rs
 unsafe-pattern-audit:

@@ -1036,6 +1036,8 @@ jobs:
 
       - name: Run native-to-sandbox parity
         if: env.RUN_CODE_PATH == 'true'
+        env:
+          HEW_TEST_NO_BUILD: "1"
         # Equivalent to the test portion of `make sandbox-parity`.  Windows
         # runners do not provide GNU make, while each test builds the VM from
         # the lockfile-installed dependencies above and builds its native

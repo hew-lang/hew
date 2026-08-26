@@ -15,5 +15,8 @@ hew-hir = { path = "../hew-hir" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 
+[dev-dependencies]
+hew-types = { path = "../hew-types", features = ["test"] }
+
 [lints]
 workspace = true

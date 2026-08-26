@@ -262,50 +262,131 @@ fn render_pipeline_mir_lints(
     had_error
 }
 
+#[derive(Debug)]
+struct SirLaneReport {
+    sir: hew_sir::LoweredModule,
+    bridge: hew_mir::SirMirLoweringReport,
+}
+
+/// Run the semantic/value lane against the *same verified HIR module* that
+/// supplies the established ownership/layout MIR pipeline.
+///
+/// Shadow mode always returns the established pipeline; lower mode replaces
+/// only functions for which the SIR adapter can preserve every required raw
+/// MIR invariant. This is the shared driver seam used by file, package, and
+/// in-memory test compilation paths.
+fn lower_verified_hir_to_pipeline(
+    module: &hew_hir::HirModule,
+    tco: &hew_types::TypeCheckOutput,
+    target: &target::TargetSpec,
+    sir_mode: compile::SirMode,
+) -> Result<(hew_mir::IrPipeline, Option<SirLaneReport>), ()> {
+    let mut pipeline = hew_mir::lower_hir_module_with_facts(module, mir_pointer_width(target));
+    pipeline.attach_lowering_facts(tco);
+    if sir_mode == compile::SirMode::Disabled {
+        return Ok((pipeline, None));
+    }
+
+    let sir = hew_sir::lower_module(module);
+    let diagnostics = hew_sir::verify_module(&sir.module);
+    if !diagnostics.is_empty() {
+        for diagnostic in diagnostics {
+            eprintln!(
+                "SIR verifier error in `{}`: {:?}",
+                diagnostic.function, diagnostic.kind
+            );
+        }
+        return Err(());
+    }
+
+    let mut candidate = pipeline.clone();
+    let bridge = hew_mir::apply_sir_to_pipeline(&sir.module, &mut candidate);
+    if bridge.lowered_count() > 0 {
+        if let Err(error) = hew_codegen_rs::validate_codegen_front_for_triple(
+            &candidate,
+            target.normalized_triple(),
+        ) {
+            eprintln!("SIR candidate backend-front validation failed: {error}");
+            return Err(());
+        }
+    }
+    if sir_mode == compile::SirMode::Lower {
+        pipeline = candidate;
+    }
+    Ok((pipeline, Some(SirLaneReport { sir, bridge })))
+}
+
 fn lower_file_to_mir(
     input_path: &Path,
     requested_target: Option<&str>,
 ) -> Result<hew_mir::IrPipeline, ()> {
-    let input = input_path.display().to_string();
-    let target = target::TargetSpec::from_requested(requested_target).map_err(|e| {
-        eprintln!("Error: {e}");
-    })?;
-    let fopts = compile::frontend_options(&target, &compile::CompileOptions::default());
+    lower_file_to_mir_with_options(
+        input_path,
+        requested_target,
+        &compile::CompileOptions::default(),
+    )
+    .map(|(pipeline, _sir)| pipeline)
+}
 
+/// File frontend plus verified HIR, shared by SIR inspection and every
+/// file-to-MIR driver. Keeping this boundary separate means `--dump-sir`
+/// stops at the semantic layer instead of inheriting a backend limitation from
+/// an unrelated later stage.
+struct VerifiedFileHir {
+    input: String,
+    state: hew_compile::FileFrontendState,
+    lower_output: hew_hir::LowerOutput,
+}
+
+impl VerifiedFileHir {
+    fn typecheck_output(&self) -> &hew_types::TypeCheckOutput {
+        self.state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("verified HIR requires a type-check output")
+    }
+}
+
+fn lower_file_to_verified_hir(
+    input_path: &Path,
+    target: &target::TargetSpec,
+    options: &compile::CompileOptions,
+) -> Result<VerifiedFileHir, ()> {
+    let input = input_path.display().to_string();
+    let fopts = compile::frontend_options(target, options);
     let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
         compile::render_frontend_diagnostics(&failure.diagnostics);
         if failure.diagnostics.is_empty() {
             eprintln!("Error: {}", failure.message);
         }
     })?;
-
     compile::render_frontend_diagnostics(&state.diagnostics);
 
-    let tco = state.typecheck_result.tco.ok_or_else(|| {
-        eprintln!(
-            "Error: hew compile requires a type-checked program; \
-             this path should be unreachable (no_typecheck = false)"
-        );
-    })?;
-
-    let lower_output = hew_hir::lower_program(
-        &state.program,
-        &tco,
-        &hew_hir::ResolutionCtx,
-        hir_target_arch(&target),
-    );
-    let mut hir_diagnostics = lower_output.diagnostics;
+    let lower_output = {
+        let tco = state.typecheck_result.tco.as_ref().ok_or_else(|| {
+            eprintln!(
+                "Error: Hew lowering requires a type-checked program; \\
+                 this path should be unreachable (no_typecheck = false)"
+            );
+        })?;
+        hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hir_target_arch(target),
+        )
+    };
+    let mut hir_diagnostics = lower_output.diagnostics.clone();
     // Defense-in-depth: the verifier may emit a second `NotYetImplemented`
-    // for any `Unsupported` placeholder that lacked a prior lowerer
-    // diagnostic. Dedup by (kind, span) so the user sees each problem
-    // once, not twice.
-    let verifier_diags = hew_hir::verify_hir(&lower_output.module);
-    for diag in verifier_diags {
-        let already_present = hir_diagnostics
+    // for an `Unsupported` placeholder that lacked a prior lowerer
+    // diagnostic. Dedup by (kind, span) so the user sees each problem once.
+    for diagnostic in hew_hir::verify_hir(&lower_output.module) {
+        if !hir_diagnostics
             .iter()
-            .any(|d| d.kind == diag.kind && d.span == diag.span);
-        if !already_present {
-            hir_diagnostics.push(diag);
+            .any(|existing| existing.kind == diagnostic.kind && existing.span == diagnostic.span)
+        {
+            hir_diagnostics.push(diagnostic);
         }
     }
     if !hir_diagnostics.is_empty() {
@@ -319,82 +400,25 @@ fn lower_file_to_mir(
         return Err(());
     }
 
-    let mut pipeline =
-        hew_mir::lower_hir_module_with_facts(&lower_output.module, mir_pointer_width(&target));
-    // Route checker-authored layout facts onto the pipeline.
-    pipeline.attach_lowering_facts(&tco);
-    if render_pipeline_mir_diagnostics(
-        &state.program,
-        &state.source,
-        &input,
-        &lower_output.module,
-        &pipeline.diagnostics,
-    ) {
-        return Err(());
-    }
-
-    // `hew compile` exposes no `-A/-W/-D` flags, so MIR lints surface at their
-    // default levels (`// hew:allow(...)` still suppresses).
-    if render_pipeline_mir_lints(
-        &state.source,
-        &input,
-        &pipeline,
-        &hew_types::LintLevels::default(),
-    ) {
-        return Err(());
-    }
-
-    Ok(pipeline)
+    Ok(VerifiedFileHir {
+        input,
+        state,
+        lower_output,
+    })
 }
 
-/// Run the experimental Semantic IR lane without changing the established
-/// backend path.  This intentionally repeats the frontend work while SIR is
-/// shadow-only: it keeps the existing MIR driver completely authoritative and
-/// makes a mismatch incapable of changing a user's artifact.
+/// Lower a source file into verified semantic SSA without constructing MIR or
+/// consulting the backend. This is the inspection boundary for `--dump-sir`.
 fn lower_file_to_sir(
     input_path: &Path,
     requested_target: Option<&str>,
+    options: &compile::CompileOptions,
 ) -> Result<hew_sir::LoweredModule, ()> {
-    let input = input_path.display().to_string();
-    let target = target::TargetSpec::from_requested(requested_target).map_err(|e| {
-        eprintln!("Error: {e}");
+    let target = target::TargetSpec::from_requested(requested_target).map_err(|error| {
+        eprintln!("Error: {error}");
     })?;
-    let fopts = compile::frontend_options(&target, &compile::CompileOptions::default());
-    let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
-        compile::render_frontend_diagnostics(&failure.diagnostics);
-        if failure.diagnostics.is_empty() {
-            eprintln!("Error: {}", failure.message);
-        }
-    })?;
-    let tco = state.typecheck_result.tco.ok_or_else(|| {
-        eprintln!("Error: Semantic IR requires type checking");
-    })?;
-    let lowered = hew_hir::lower_program(
-        &state.program,
-        &tco,
-        &hew_hir::ResolutionCtx,
-        hir_target_arch(&target),
-    );
-    let mut hir_diagnostics = lowered.diagnostics;
-    for diagnostic in hew_hir::verify_hir(&lowered.module) {
-        if !hir_diagnostics
-            .iter()
-            .any(|existing| existing.kind == diagnostic.kind && existing.span == diagnostic.span)
-        {
-            hir_diagnostics.push(diagnostic);
-        }
-    }
-    if !hir_diagnostics.is_empty() {
-        let diagnostics = hew_compile::hir_diagnostics_to_frontend(
-            &state.program,
-            &state.source,
-            &input,
-            hir_diagnostics,
-        );
-        compile::render_frontend_diagnostics(&diagnostics);
-        return Err(());
-    }
-    let sir = hew_sir::lower_module(&lowered.module);
+    let verified = lower_file_to_verified_hir(input_path, &target, options)?;
+    let sir = hew_sir::lower_module(&verified.lower_output.module);
     let diagnostics = hew_sir::verify_module(&sir.module);
     if !diagnostics.is_empty() {
         for diagnostic in diagnostics {
@@ -408,6 +432,45 @@ fn lower_file_to_sir(
     Ok(sir)
 }
 
+fn lower_file_to_mir_with_options(
+    input_path: &Path,
+    requested_target: Option<&str>,
+    options: &compile::CompileOptions,
+) -> Result<(hew_mir::IrPipeline, Option<SirLaneReport>), ()> {
+    let target = target::TargetSpec::from_requested(requested_target).map_err(|e| {
+        eprintln!("Error: {e}");
+    })?;
+    let verified = lower_file_to_verified_hir(input_path, &target, options)?;
+    let (pipeline, sir_report) = lower_verified_hir_to_pipeline(
+        &verified.lower_output.module,
+        verified.typecheck_output(),
+        &target,
+        options.sir_mode,
+    )?;
+    if render_pipeline_mir_diagnostics(
+        &verified.state.program,
+        &verified.state.source,
+        &verified.input,
+        &verified.lower_output.module,
+        &pipeline.diagnostics,
+    ) {
+        return Err(());
+    }
+
+    // `hew compile` exposes no `-A/-W/-D` flags, so MIR lints surface at their
+    // default levels (`// hew:allow(...)` still suppresses).
+    if render_pipeline_mir_lints(
+        &verified.state.source,
+        &verified.input,
+        &pipeline,
+        &hew_types::LintLevels::default(),
+    ) {
+        return Err(());
+    }
+
+    Ok((pipeline, sir_report))
+}
+
 /// Lower a source file to MIR for an explicit, already-resolved target.
 ///
 /// Unlike `lower_file_to_mir` (which hardcodes `TargetArch::host()`), this
@@ -418,70 +481,33 @@ fn lower_file_to_mir_for_target(
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
 ) -> Result<(hew_mir::IrPipeline, Vec<std::path::PathBuf>), ()> {
-    let input = input_path.display().to_string();
-    let fopts = compile::frontend_options(target, options);
-
-    let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
-        compile::render_frontend_diagnostics(&failure.diagnostics);
-        if failure.diagnostics.is_empty() {
-            eprintln!("Error: {}", failure.message);
-        }
-    })?;
-
-    compile::render_frontend_diagnostics(&state.diagnostics);
-
-    let tco = state.typecheck_result.tco.ok_or_else(|| {
-        eprintln!(
-            "Error: hew build requires a type-checked program; \
-             this path should be unreachable (no_typecheck = false)"
-        );
-    })?;
-
-    let lower_output = hew_hir::lower_program(
-        &state.program,
-        &tco,
-        &hew_hir::ResolutionCtx,
-        hir_target_arch(target),
-    );
-    let mut hir_diagnostics = lower_output.diagnostics;
-    let verifier_diags = hew_hir::verify_hir(&lower_output.module);
-    for diag in verifier_diags {
-        let already_present = hir_diagnostics
-            .iter()
-            .any(|d| d.kind == diag.kind && d.span == diag.span);
-        if !already_present {
-            hir_diagnostics.push(diag);
-        }
-    }
-    if !hir_diagnostics.is_empty() {
-        let frontend_diagnostics = hew_compile::hir_diagnostics_to_frontend(
-            &state.program,
-            &state.source,
-            &input,
-            hir_diagnostics,
-        );
-        compile::render_frontend_diagnostics(&frontend_diagnostics);
-        return Err(());
-    }
-
-    let mut pipeline =
-        hew_mir::lower_hir_module_with_facts(&lower_output.module, mir_pointer_width(target));
-    pipeline.attach_lowering_facts(&tco);
+    let verified = lower_file_to_verified_hir(input_path, target, options)?;
+    let (pipeline, _sir_report) = lower_verified_hir_to_pipeline(
+        &verified.lower_output.module,
+        verified.typecheck_output(),
+        target,
+        options.sir_mode,
+    )?;
     if render_pipeline_mir_diagnostics(
-        &state.program,
-        &state.source,
-        &input,
-        &lower_output.module,
+        &verified.state.program,
+        &verified.state.source,
+        &verified.input,
+        &verified.lower_output.module,
         &pipeline.diagnostics,
     ) {
         return Err(());
     }
 
-    if render_pipeline_mir_lints(&state.source, &input, &pipeline, &options.lint_levels) {
+    if render_pipeline_mir_lints(
+        &verified.state.source,
+        &verified.input,
+        &pipeline,
+        &options.lint_levels,
+    ) {
         return Err(());
     }
 
-    let native_pkg_dirs = native_link::collect_import_pkg_dirs(&state.program);
+    let native_pkg_dirs = native_link::collect_import_pkg_dirs(&verified.state.program);
     Ok((pipeline, native_pkg_dirs))
 }
 
@@ -889,10 +915,8 @@ pub(crate) fn compile_native_from_program_with_paths(
         return Err(());
     }
 
-    let mut pipeline =
-        hew_mir::lower_hir_module_with_facts(&lower_output.module, mir_pointer_width(&target));
-    // Route checker-authored layout facts onto the pipeline.
-    pipeline.attach_lowering_facts(&tco);
+    let (pipeline, _sir_report) =
+        lower_verified_hir_to_pipeline(&lower_output.module, &tco, &target, options.sir_mode)?;
     if render_pipeline_mir_diagnostics(
         &state.program,
         &state.source,
@@ -1348,38 +1372,49 @@ fn cmd_compile(a: &args::CompileArgs) {
 /// `std::process::exit` (that bypasses the [`JsonDiagnosticFlush`] guard its
 /// caller holds and would drop accumulated advisories). Every failure path is a
 /// `return <code>`, so the caller's single flush chokepoint runs regardless.
-fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
-    let json = a.format == args::DiagnosticFormat::Json;
-
-    if a.sir_shadow || a.dump_sir {
-        let Ok(sir) = lower_file_to_sir(&a.input, a.target.as_deref()) else {
-            return 1;
-        };
-        if a.dump_sir {
-            let dump = hew_sir::dump_sir(&sir.module);
-            if json {
-                eprint!("{dump}");
-            } else {
-                print!("{dump}");
-            }
-            for (name, status) in &sir.statuses {
-                if !matches!(status, hew_sir::SirLoweringStatus::Lowered) {
-                    eprintln!("SIR shadow fallback for `{name}`: {status:?}");
-                }
-            }
-            return 0;
-        }
-        let lowered = sir
-            .statuses
-            .iter()
-            .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::Lowered))
-            .count();
-        eprintln!("SIR shadow: verified {lowered}/{} function bodies; established MIR remains authoritative", sir.statuses.len());
-    }
-
-    let Ok(pipeline) = lower_file_to_mir(&a.input, a.target.as_deref()) else {
+fn cmd_dump_sir(a: &args::CompileArgs, json: bool) -> i32 {
+    let Ok(sir) = lower_file_to_sir(
+        &a.input,
+        a.target.as_deref(),
+        &compile::CompileOptions::default(),
+    ) else {
         return 1;
     };
+    let dump = hew_sir::dump_sir(&sir.module);
+    if json {
+        eprint!("{dump}");
+    } else {
+        print!("{dump}");
+    }
+    report_sir_inspection(&sir);
+    0
+}
+
+fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
+    let json = a.format == args::DiagnosticFormat::Json;
+    if a.dump_sir {
+        return cmd_dump_sir(a, json);
+    }
+    let sir_mode = if a.sir_lower {
+        compile::SirMode::Lower
+    } else if a.sir_shadow {
+        compile::SirMode::Shadow
+    } else {
+        compile::SirMode::Disabled
+    };
+    let options = compile::CompileOptions {
+        sir_mode,
+        ..compile::CompileOptions::default()
+    };
+    let Ok((pipeline, sir_report)) =
+        lower_file_to_mir_with_options(&a.input, a.target.as_deref(), &options)
+    else {
+        return 1;
+    };
+
+    if let Some(report) = sir_report.as_ref() {
+        report_sir_lane(report, sir_mode);
+    }
 
     // Dump path: print the requested MIR stage and exit. Useful for
     // spot-checking the lowering during development.
@@ -1478,6 +1513,80 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     }
     // Clean compile: exit 0. The guard flushes the (possibly empty) JSON array.
     0
+}
+
+fn report_sir_lane(report: &SirLaneReport, mode: compile::SirMode) {
+    let sir_lowered = report
+        .sir
+        .statuses
+        .iter()
+        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::Lowered))
+        .count();
+    let mode_label = match mode {
+        compile::SirMode::Disabled => return,
+        compile::SirMode::Shadow => "shadow",
+        compile::SirMode::Lower => "lower",
+    };
+    eprintln!(
+        "SIR {mode_label}: verified {sir_lowered}/{} HIR function bodies; realized {}/{} through raw MIR",
+        report.sir.statuses.len(),
+        report.bridge.lowered_count(),
+        report.sir.module.functions.len(),
+    );
+    let hir_fallbacks: Vec<_> = report
+        .sir
+        .statuses
+        .iter()
+        .filter_map(|(name, status)| match status {
+            hew_sir::SirLoweringStatus::Unsupported { reason } => Some((name, reason)),
+            hew_sir::SirLoweringStatus::Lowered => None,
+        })
+        .collect();
+    let raw_fallbacks: Vec<_> = report
+        .bridge
+        .statuses
+        .iter()
+        .filter_map(|(name, status)| match status {
+            hew_mir::SirMirLoweringStatus::Unsupported { reason } => Some((name, reason)),
+            hew_mir::SirMirLoweringStatus::Lowered => None,
+        })
+        .collect();
+    report_sir_fallbacks("HIR", &hir_fallbacks);
+    report_sir_fallbacks("raw-MIR", &raw_fallbacks);
+}
+
+fn report_sir_inspection(sir: &hew_sir::LoweredModule) {
+    let lowered = sir
+        .statuses
+        .iter()
+        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::Lowered))
+        .count();
+    eprintln!(
+        "SIR inspect: verified {lowered}/{} HIR function bodies",
+        sir.statuses.len()
+    );
+    let fallbacks: Vec<_> = sir
+        .statuses
+        .iter()
+        .filter_map(|(name, status)| match status {
+            hew_sir::SirLoweringStatus::Unsupported { reason } => Some((name, reason)),
+            hew_sir::SirLoweringStatus::Lowered => None,
+        })
+        .collect();
+    report_sir_fallbacks("HIR", &fallbacks);
+}
+
+fn report_sir_fallbacks(kind: &str, fallbacks: &[(&String, &String)]) {
+    const DETAIL_LIMIT: usize = 6;
+    for (name, reason) in fallbacks.iter().take(DETAIL_LIMIT) {
+        eprintln!("SIR {kind} fallback for `{name}`: {reason}");
+    }
+    if fallbacks.len() > DETAIL_LIMIT {
+        eprintln!(
+            "SIR {kind}: {} additional explicit fallbacks (use --dump-sir for the semantic subset)",
+            fallbacks.len() - DETAIL_LIMIT
+        );
+    }
 }
 
 struct CompiledTempExecutable {

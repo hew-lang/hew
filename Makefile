@@ -158,7 +158,7 @@ MAKEFILE_PARSE_INPUTS := \
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure dogfood-compile-measure-build
+.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure dogfood-compile-measure-build sir-shadow-verify sir-shadow-verify-build
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 
@@ -1146,7 +1146,8 @@ test-cabi-build: $(LIBHEW_READY)
 # before the fast typecheck path reports its diagnostic).
 # inputs: hew-lexer/src/*.rs editors/sublime/Hew.tmLanguage.json
 # inputs: hew-parser/src/*.rs hew-types/src/*.rs hew-hir/src/*.rs
-# inputs: hew-mir/src/*.rs hew-codegen-rs/src/*.rs hew-cli/src/*.rs hew-pkg/src/*.rs
+# inputs: hew-mir/src/*.rs hew-sir/src/*.rs hew-codegen-rs/src/*.rs hew-cli/src/*.rs hew-pkg/src/*.rs
+# inputs: tests/ll-oracle/corpus/*.hew scripts/sir-shadow-corpus.sh
 # preflight: comprehensive-only — Rust changes run the reverse-dependency closure instead
 test-compiler-pipeline: runtime wasm-runtime hew-native $(LIBHEW_READY)
 	$(TEST_RUN_ENV) cargo nextest run --profile ci \
@@ -1154,6 +1155,7 @@ test-compiler-pipeline: runtime wasm-runtime hew-native $(LIBHEW_READY)
 		-p hew-parser \
 		-p hew-types \
 		-p hew-hir \
+		-p hew-sir \
 		-p hew-mir \
 		-p hew-codegen-rs \
 		-p hew-cli \
@@ -1167,6 +1169,7 @@ test-compiler-pipeline-build: runtime wasm-runtime hew-native $(LIBHEW_READY)
 		-p hew-parser \
 		-p hew-types \
 		-p hew-hir \
+		-p hew-sir \
 		-p hew-mir \
 		-p hew-codegen-rs \
 		-p hew-cli \
@@ -1287,6 +1290,22 @@ checked-mir-run-build: hew-native runtime stdlib
 
 checked-mir-expect: hew-native runtime stdlib check-libhew-fresh
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh expect
+
+# Temporary cutover proof for the SIR insertion lane; not a permanent dual
+# pipeline.  It compiles each standalone LL-oracle fixture twice: once through
+# the established HIR → MIR ladder and once through HIR → SIR → candidate raw
+# MIR, while retaining the established output as the observable result.  The
+# driver compares stdout, diagnostics (after removing only SIR's explicit
+# coverage report), exit status, and requires nonzero SIR realization coverage.
+# Retire it when SIR lowering becomes the default and the established path goes.
+# inputs: tests/ll-oracle/corpus/*.hew scripts/sir-shadow-corpus.sh hew-sir/src/*.rs
+# inputs: hew-mir/src/*.rs hew-cli/src/*.rs
+sir-shadow-verify: hew-native
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/sir-shadow-corpus.sh
+
+# Warm-up form for the preflight dispatcher, which derives it by name.
+sir-shadow-verify-build: hew-native
+	@:
 
 # Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
 # pure codegen refactor (dedup, extract-helper, file-split) emits zero changed

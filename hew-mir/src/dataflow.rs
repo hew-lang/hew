@@ -1528,25 +1528,106 @@ pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
 /// constant the caller passes in so integration tests can override it.
 const LEAF_STATEMENT_THRESHOLD: usize = 10;
 
-/// Determine whether a block has a back-edge terminator — i.e., a
-/// `Goto` whose target block id is less than the current block's id.
+/// Return the source block ids of natural-loop `Goto` back-edges.
 ///
-/// WHY `target < block.id`: The MIR lowering emits blocks in
-/// monotonically increasing id order, with entry block id = 0. A
-/// forward edge always targets a block with a higher id than the
-/// source; a back-edge (loop) targets an earlier block. The invariant
-/// holds for all CFGs the v0.5 lowering constructs — forward Gotos
-/// target the join block (always allocated after the arm blocks).
-/// Synthetic test CFGs must respect this convention.
+/// A numeric block-id ordering is not a CFG invariant. In particular, an SSA
+/// lowering may append edge-forwarding blocks after the source blocks they
+/// serve, so a perfectly acyclic forwarding edge can legitimately have the
+/// shape `bb7 -> bb3`. Scheduling such an edge as a loop back-edge injects an
+/// unnecessary cooperate call and, worse, makes a value/CFG lowering appear to
+/// have changed the program's scheduler contract.
 ///
-/// WHEN-OBSOLETE: if a future lowering phase emits blocks in non-
-/// topological order, replace this predicate with a full DFS-ancestry
-/// check using a discovered DFS tree over the CFG.
-fn is_back_edge_goto(block: &BasicBlock) -> bool {
-    match block.terminator {
-        Terminator::Goto { target } => target < block.id,
-        _ => false,
+/// A `Goto { target }` is a natural-loop back-edge exactly when `target`
+/// dominates its source: every path from the entry to the source has already
+/// passed through the target. This is the structural property the scheduler
+/// needs, independent of allocation order. The current scheduler only places
+/// loop checks on `Goto` edges (structured Hew loop lowerings use `Goto` for
+/// their latch); other terminator forms deliberately retain the existing
+/// policy rather than broadening scheduling behaviour as a side effect of this
+/// correctness fix.
+fn goto_loop_back_edge_blocks(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|block| (block.id, block)).collect();
+    if !by_id.contains_key(&0) {
+        return HashSet::new();
     }
+
+    // Ignore malformed successor ids and unreachable blocks. The ordinary MIR
+    // producers guarantee valid CFG ids, but this keeps the scheduler analysis
+    // conservative for hand-built test fixtures: an unknown target cannot be
+    // proven to dominate anything, and an unreachable cycle never executes.
+    let reachable: HashSet<u32> = reachable_from_entry(blocks)
+        .into_iter()
+        .filter(|id| by_id.contains_key(id))
+        .collect();
+    if reachable.is_empty() {
+        return HashSet::new();
+    }
+
+    let predecessors = build_preds(blocks);
+    let mut dominators: HashMap<u32, HashSet<u32>> = reachable
+        .iter()
+        .copied()
+        .map(|id| {
+            let initial = if id == 0 {
+                HashSet::from([0])
+            } else {
+                reachable.clone()
+            };
+            (id, initial)
+        })
+        .collect();
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &block_id in &reachable {
+            if block_id == 0 {
+                continue;
+            }
+            let reachable_predecessors: Vec<u32> = predecessors
+                .get(&block_id)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|predecessor| reachable.contains(predecessor))
+                .collect();
+            // A reachable non-entry block always has a reachable predecessor,
+            // but retain a conservative singleton if a malformed CFG violates
+            // that property.
+            let mut next = if let Some((first, rest)) = reachable_predecessors.split_first() {
+                let mut intersection = dominators.get(first).cloned().unwrap_or_default();
+                for predecessor in rest {
+                    if let Some(predecessor_dominators) = dominators.get(predecessor) {
+                        intersection.retain(|id| predecessor_dominators.contains(id));
+                    } else {
+                        intersection.clear();
+                    }
+                }
+                intersection
+            } else {
+                HashSet::new()
+            };
+            next.insert(block_id);
+            if dominators.get(&block_id) != Some(&next) {
+                dominators.insert(block_id, next);
+                changed = true;
+            }
+        }
+    }
+
+    blocks
+        .iter()
+        .filter_map(|block| {
+            let Terminator::Goto { target } = block.terminator else {
+                return None;
+            };
+            (reachable.contains(&block.id)
+                && dominators
+                    .get(&block.id)
+                    .is_some_and(|source_dominators| source_dominators.contains(&target)))
+            .then_some(block.id)
+        })
+        .collect()
 }
 
 /// Return true if a block contains a call — `Instr::CallRuntimeAbi` or
@@ -1578,7 +1659,7 @@ fn block_has_call(block: &BasicBlock) -> bool {
 ///
 /// WHEN-OBSOLETE: once a caller-supplied eligibility override (attribute
 /// flag) is wired, that gates this check entirely.
-fn is_leaf_function(blocks: &[BasicBlock]) -> bool {
+fn is_leaf_function(blocks: &[BasicBlock], loop_back_edge_blocks: &HashSet<u32>) -> bool {
     let total_statements: usize = blocks.iter().map(|b| b.statements.len()).sum();
     if total_statements >= LEAF_STATEMENT_THRESHOLD {
         return false;
@@ -1587,8 +1668,7 @@ fn is_leaf_function(blocks: &[BasicBlock]) -> bool {
     if has_call {
         return false;
     }
-    let has_back_edge = blocks.iter().any(is_back_edge_goto);
-    if has_back_edge {
+    if !loop_back_edge_blocks.is_empty() {
         return false;
     }
     true
@@ -1632,8 +1712,8 @@ fn is_yield_equivalent(block: &BasicBlock) -> bool {
 /// 2. **Function-entry site**: add a `FunctionEntry` site for block 0
 ///    unless that block's terminator is yield-equivalent (the actor
 ///    will cooperate via the yield anyway).
-/// 3. **Back-edge sweep**: for every block whose `Goto` target id is
-///    less than the block's own id, add a `LoopBackEdge` site — unless
+/// 3. **Back-edge sweep**: for every `Goto` whose target dominates its
+///    source, add a `LoopBackEdge` site — unless
 ///    the back-edge target block itself has a yield-equivalent
 ///    terminator (the loop header yields on every iteration).
 ///
@@ -1649,11 +1729,13 @@ fn is_yield_equivalent(block: &BasicBlock) -> bool {
 ///
 /// Loop lowering has constructed production back-edges since `8d878b8e`.
 /// `LoopBackEdge` sites are live for `for`, `while`, and `loop` bodies:
-/// a back-edge `Goto` is detected by `is_back_edge_goto` and receives a
-/// cooperate check before control returns to the loop header.
+/// a dominance-proven latch `Goto` receives a cooperate check before control
+/// returns to the loop header. This remains correct when a lowering pass adds
+/// forwarding blocks or otherwise does not number blocks topologically.
 #[must_use]
 pub fn compute_cooperate_sites(blocks: &[BasicBlock]) -> Vec<CooperateSite> {
-    if blocks.is_empty() || is_leaf_function(blocks) {
+    let loop_back_edge_blocks = goto_loop_back_edge_blocks(blocks);
+    if blocks.is_empty() || is_leaf_function(blocks, &loop_back_edge_blocks) {
         return Vec::new();
     }
 
@@ -1668,23 +1750,27 @@ pub fn compute_cooperate_sites(blocks: &[BasicBlock]) -> Vec<CooperateSite> {
         });
     }
 
-    // Back-edge sites: every block whose Goto targets an earlier block.
+    // Back-edge sites: every Goto whose target dominates its source.
     // Suppress if the loop-header block itself has a yield-equivalent
     // terminator (the actor already cooperates at the loop header).
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
     for block in blocks {
-        if let Terminator::Goto { target } = block.terminator {
-            if target < block.id {
-                // Back-edge found. Check whether the loop-header block
-                // itself is yield-equivalent — if so, no cooperate needed.
-                let header_yields = by_id.get(&target).is_some_and(|h| is_yield_equivalent(h));
-                if !header_yields {
-                    sites.push(CooperateSite {
-                        bb_id: block.id,
-                        kind: CooperateKind::LoopBackEdge,
-                    });
-                }
-            }
+        let Terminator::Goto { target } = block.terminator else {
+            continue;
+        };
+        if !loop_back_edge_blocks.contains(&block.id) {
+            continue;
+        }
+        // Back-edge found. Check whether the loop-header block itself is
+        // yield-equivalent — if so, no cooperate needed.
+        let header_yields = by_id
+            .get(&target)
+            .is_some_and(|header| is_yield_equivalent(header));
+        if !header_yields {
+            sites.push(CooperateSite {
+                bb_id: block.id,
+                kind: CooperateKind::LoopBackEdge,
+            });
         }
     }
 
@@ -2398,6 +2484,56 @@ mod tests {
         assert!(
             sites.is_empty(),
             "leaf function should produce no cooperate sites, got {sites:?}"
+        );
+    }
+
+    /// SIR block arguments lower through edge-forwarding blocks. Those blocks
+    /// are allocated after the source CFG, so their numeric ids can be greater
+    /// than the original arm/join targets even though the overall graph is
+    /// acyclic. Scheduler loop detection must use graph structure rather than
+    /// that incidental allocation order.
+    ///
+    ///   bb0: Branch { then: bb4, else: bb5 }
+    ///   bb4: Goto bb1     // high-id edge forwarder, not a loop
+    ///   bb5: Goto bb2     // high-id edge forwarder, not a loop
+    ///   bb1: Goto bb6
+    ///   bb2: Goto bb7
+    ///   bb6: Goto bb3     // high-id edge forwarder into the join
+    ///   bb7: Goto bb3     // high-id edge forwarder into the join
+    ///   bb3: Return
+    ///
+    /// The statement threshold makes this non-leaf so the assertion proves
+    /// that only the entry site remains, rather than passing through the leaf
+    /// fast path.
+    #[test]
+    fn acyclic_high_id_edge_forwarders_do_not_create_loop_sites() {
+        let blocks = vec![
+            bb_with_stmts(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 4,
+                    else_target: 5,
+                },
+                LEAF_STATEMENT_THRESHOLD,
+            ),
+            bb(1, Terminator::Goto { target: 6 }),
+            bb(2, Terminator::Goto { target: 7 }),
+            bb(3, Terminator::Return),
+            bb(4, Terminator::Goto { target: 1 }),
+            bb(5, Terminator::Goto { target: 2 }),
+            bb(6, Terminator::Goto { target: 3 }),
+            bb(7, Terminator::Goto { target: 3 }),
+        ];
+
+        let sites = compute_cooperate_sites(&blocks);
+        assert_eq!(
+            sites,
+            vec![CooperateSite {
+                bb_id: 0,
+                kind: CooperateKind::FunctionEntry,
+            }],
+            "acyclic forwarding edges must not be treated as scheduler loop latches: {sites:?}"
         );
     }
 

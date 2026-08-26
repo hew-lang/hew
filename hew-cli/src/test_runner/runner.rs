@@ -177,50 +177,35 @@ impl TestCompilePaths {
     }
 }
 
+/// Execution policy and compiler inputs shared by every test in a run.
+///
+/// Keeping this as one value prevents test-runner entry points from gaining a
+/// new positional argument every time the compiler pipeline gains a mode.
+#[derive(Debug, Clone, Copy)]
+pub struct TestRunOptions<'a> {
+    pub filter: Option<&'a str>,
+    pub include_ignored: bool,
+    pub ffi_lib: Option<&'a str>,
+    pub compile_paths: &'a TestCompilePaths,
+    pub timeout: Duration,
+    pub jobs: usize,
+    pub sir_mode: crate::compile::SirMode,
+}
+
 /// Run a set of test cases.
 ///
 /// Each test is compiled to a native binary via the `hew compile` pipeline and
 /// executed as a child process for isolation.
 #[must_use]
-pub fn run_tests(
-    tests: &[TestCase],
-    filter: Option<&str>,
-    include_ignored: bool,
-    ffi_lib: Option<&str>,
-    compile_paths: &TestCompilePaths,
-    timeout: Duration,
-    jobs: usize,
-) -> TestSummary {
-    if jobs <= 1 {
-        return run_tests_serial(
-            tests,
-            filter,
-            include_ignored,
-            ffi_lib,
-            compile_paths,
-            timeout,
-        );
+pub fn run_tests(tests: &[TestCase], options: TestRunOptions<'_>) -> TestSummary {
+    if options.jobs <= 1 {
+        return run_tests_serial(tests, &options);
     }
 
-    run_tests_parallel(
-        tests,
-        filter,
-        include_ignored,
-        ffi_lib,
-        compile_paths,
-        timeout,
-        jobs,
-    )
+    run_tests_parallel(tests, &options)
 }
 
-fn run_tests_serial(
-    tests: &[TestCase],
-    filter: Option<&str>,
-    include_ignored: bool,
-    ffi_lib: Option<&str>,
-    compile_paths: &TestCompilePaths,
-    timeout: Duration,
-) -> TestSummary {
+fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSummary {
     let mut results = Vec::new();
     let mut passed = 0;
     let mut failed = 0;
@@ -229,7 +214,7 @@ fn run_tests_serial(
     // Group tests by file for efficiency while preserving discovery order.
     let mut by_file: Vec<(&str, Vec<&TestCase>)> = Vec::new();
     for test in tests {
-        if let Some(pat) = filter {
+        if let Some(pat) = options.filter {
             if !test.name.contains(pat) {
                 continue;
             }
@@ -262,7 +247,7 @@ fn run_tests_serial(
         };
 
         for test in file_tests {
-            if test.ignored && !include_ignored {
+            if test.ignored && !options.include_ignored {
                 ignored += 1;
                 results.push(TestResult {
                     test: test.clone(),
@@ -273,7 +258,14 @@ fn run_tests_serial(
                 continue;
             }
 
-            let result = run_single_test(&source, test, ffi_lib, compile_paths, timeout);
+            let result = run_single_test(
+                &source,
+                test,
+                options.ffi_lib,
+                options.compile_paths,
+                options.timeout,
+                options.sir_mode,
+            );
             match &result.outcome {
                 TestOutcome::Passed => passed += 1,
                 TestOutcome::Failed(_) => failed += 1,
@@ -297,18 +289,17 @@ struct TestTask {
     test: TestCase,
 }
 
-fn run_tests_parallel(
-    tests: &[TestCase],
-    filter: Option<&str>,
-    include_ignored: bool,
-    ffi_lib: Option<&str>,
-    compile_paths: &TestCompilePaths,
-    timeout: Duration,
-    jobs: usize,
-) -> TestSummary {
+#[allow(
+    clippy::too_many_lines,
+    reason = "parallel scheduling, stable result placement, and serial-test exclusion form one cohesive execution policy"
+)]
+fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSummary {
     let mut by_file: Vec<(&str, Vec<&TestCase>)> = Vec::new();
     for test in tests {
-        if filter.is_some_and(|pattern| !test.name.contains(pattern)) {
+        if options
+            .filter
+            .is_some_and(|pattern| !test.name.contains(pattern))
+        {
             continue;
         }
         if let Some((_, grouped_tests)) = by_file
@@ -345,7 +336,7 @@ fn run_tests_parallel(
         };
 
         for test in file_tests {
-            if test.ignored && !include_ignored {
+            if test.ignored && !options.include_ignored {
                 result_slots[result_index] = Some(TestResult {
                     test: test.clone(),
                     outcome: TestOutcome::Ignored,
@@ -366,7 +357,7 @@ fn run_tests_parallel(
     let next_task = AtomicUsize::new(0);
     let result_slots = Mutex::new(result_slots);
     let serial_gate = Mutex::new(());
-    let worker_count = jobs.min(tasks.len().max(1));
+    let worker_count = options.jobs.min(tasks.len().max(1));
 
     std::thread::scope(|scope| {
         for _ in 0..worker_count {
@@ -379,9 +370,23 @@ fn run_tests_parallel(
                     let _serial_guard = serial_gate
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    run_single_test(&task.source, &task.test, ffi_lib, compile_paths, timeout)
+                    run_single_test(
+                        &task.source,
+                        &task.test,
+                        options.ffi_lib,
+                        options.compile_paths,
+                        options.timeout,
+                        options.sir_mode,
+                    )
                 } else {
-                    run_single_test(&task.source, &task.test, ffi_lib, compile_paths, timeout)
+                    run_single_test(
+                        &task.source,
+                        &task.test,
+                        options.ffi_lib,
+                        options.compile_paths,
+                        options.timeout,
+                        options.sir_mode,
+                    )
                 };
                 result_slots
                     .lock()
@@ -431,6 +436,7 @@ fn compile_test(
     test: &TestCase,
     ffi_lib: Option<&str>,
     compile_paths: &TestCompilePaths,
+    sir_mode: crate::compile::SirMode,
 ) -> Result<CompiledTestArtifact, String> {
     let synthetic = format!(
         "{source}\n\nfn main() {{\n    {name}();\n}}\n",
@@ -464,6 +470,7 @@ fn compile_test(
         &binary_path,
         &crate::compile::CompileOptions {
             project_dir: Some(compile_paths.paths.project_dir.clone()),
+            sir_mode,
             ..crate::compile::CompileOptions::default()
         },
         Some(&compile_paths.paths),
@@ -492,10 +499,11 @@ fn run_single_test(
     ffi_lib: Option<&str>,
     compile_paths: &TestCompilePaths,
     timeout: Duration,
+    sir_mode: crate::compile::SirMode,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
-    let artifact = match compile_test(source, test, ffi_lib, compile_paths) {
+    let artifact = match compile_test(source, test, ffi_lib, compile_paths, sir_mode) {
         Ok(artifact) => artifact,
         Err(msg) => {
             let outcome = if test.should_panic {
@@ -724,12 +732,15 @@ mod tests {
             .collect();
         run_tests(
             &tests,
-            None,
-            false,
-            None,
-            cargo_test_compile_paths(),
-            timeout,
-            1,
+            TestRunOptions {
+                filter: None,
+                include_ignored: false,
+                ffi_lib: None,
+                compile_paths: cargo_test_compile_paths(),
+                timeout,
+                jobs: 1,
+                sir_mode: crate::compile::SirMode::Disabled,
+            },
         )
     }
 
@@ -917,12 +928,15 @@ fn test_timeout() {
         };
         let summary = run_tests(
             &tests,
-            None,
-            false,
-            None,
-            &unused_paths,
-            DEFAULT_TEST_TIMEOUT,
-            2,
+            TestRunOptions {
+                filter: None,
+                include_ignored: false,
+                ffi_lib: None,
+                compile_paths: &unused_paths,
+                timeout: DEFAULT_TEST_TIMEOUT,
+                jobs: 2,
+                sir_mode: crate::compile::SirMode::Disabled,
+            },
         );
         let names: Vec<_> = summary
             .results

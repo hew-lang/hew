@@ -130,10 +130,11 @@ no longer schedules is an error.
   the job's conclusion: the one assertion step carries `continue-on-error:
   true` so this check cannot itself turn a PR's check suite red for a nightly
   no author can fix — that would be a repository-wide deadlock, not a gate.
-  The step still posts its own red annotation and the job still shows
-  "failed (continued)" in the checks tab, so the signal stays visible; it is
-  not aggregated into `Build & test (Linux)` yet, and the tolerance is scoped
-  to that one step, never the whole job. No flag, no bypass, no grace window,
+  The step still posts its own red annotation and keeps its failure outcome
+  and logs, while the job and check conclusion are success, so the signal
+  stays visible; it is not aggregated into `Build & test (Linux)` yet, and
+  the tolerance is scoped to that one step, never the whole job. No flag, no
+  bypass, no grace window,
   no permissive fallback was added to the *script* to make it land early —
   only the job's conclusion is tolerated, and only until activation.
 

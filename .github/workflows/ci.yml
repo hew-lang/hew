@@ -1191,9 +1191,11 @@ jobs:
     # tolerated is the JOB'S conclusion: the one assertion step below carries
     # `continue-on-error: true` so this advisory check cannot itself turn a
     # PR's check suite red for a nightly no author can fix. The step still
-    # posts its own red annotation (`::error::`) and the job still shows
-    # "failed (continued)" in the checks tab — visible, not silent, and not a
-    # bypass of the script. `continue-on-error` is scoped to this one step,
+    # posts its own red annotation (`::error::`) and the assertion step keeps
+    # its failure outcome and logs, while the job and check conclusion are
+    # success and the pull request's check suite stays green. Visible, not
+    # silent, and not a bypass of the script. `continue-on-error` is scoped to
+    # this one step,
     # not the job, so a future step added to this job is never tolerated by
     # accident.
     #

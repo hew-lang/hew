@@ -1072,6 +1072,15 @@ mod tests {
         let mut completed = PendingBlock::new(BlockId(1), Vec::new());
         completed.terminator = Some(SemTerminator::Unreachable);
         assert!(!completed.is_open());
+        let error = completed
+            .append_op(SemOp {
+                id: OpId(0),
+                results: Vec::new(),
+                kind: SemOpKind::ConstI64(0),
+                provenance: Provenance::Synthesized,
+            })
+            .expect_err("semantic unreachable must close the builder block");
+        assert!(error.contains("after completed block bb1"));
         assert!(matches!(
             completed
                 .into_sem_block()

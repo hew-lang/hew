@@ -27,11 +27,9 @@ Four properties, each of which a naive version gets wrong:
     `contents: read` does not cover.
 
   * **Fail closed on an unanswerable question.** Transport and 5xx failures get
-    a bounded retry, then red. This deliberately differs from `main-health`,
-    which fails OPEN because it gates thirteen jobs on a claim about another
-    branch; this gates one cheap assertion about this repository's own run
-    history, and "I could not find out whether the nightly is healthy" is not
-    evidence that it is.
+    a bounded retry, then red. This gates one cheap assertion about this
+    repository's own run history; "I could not find out whether the nightly
+    is healthy" is not evidence that it is.
 
 There is no bypass label and no skip environment variable
 (LESSONS.md preflight-gate-no-bypass). A stale nightly is fixed, or the

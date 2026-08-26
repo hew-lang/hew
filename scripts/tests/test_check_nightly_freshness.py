@@ -154,10 +154,9 @@ def test_a_server_error_is_retried_then_fails_closed() -> None:
 
 
 def test_a_transport_failure_is_retried_then_fails_closed() -> None:
-    """Unlike main-health, which fails OPEN: it gates thirteen jobs on a claim
-    about another branch. This gates one cheap assertion about this
-    repository's own history, and an unanswerable question about nightly
-    freshness is not evidence of freshness."""
+    """This gates one cheap assertion about this repository's own run
+    history, and an unanswerable question about nightly freshness is not
+    evidence of freshness — it fails CLOSED rather than assuming health."""
     transport = FakeTransport([OSError("dns"), OSError("dns"), OSError("dns")])
     expect_error(
         lambda: transport.client().latest_scheduled_success("w.yml"), "unreachable"

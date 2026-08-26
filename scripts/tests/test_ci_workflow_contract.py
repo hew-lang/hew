@@ -851,8 +851,8 @@ def test_the_owner_table_matches_the_scheduled_workflows_exactly() -> None:
 def test_the_freshness_job_is_standalone_scoped_and_advisory_for_now() -> None:
     """Every clause here is load-bearing, and each was wrong in a draft.
 
-    `needs:` must be absent, or a stranded `main-health` would skip the very
-    check that says the scheduled tier stopped producing verdicts.
+    `needs:` must be absent, or a failed or stranded upstream job would skip
+    the very check that says the scheduled tier stopped producing verdicts.
     `actions: read` must be present, or the run-history read 404s and the
     script reports an auth defect as rot. Both token spellings must be
     exported, because the script accepts either and neither is set by default.
@@ -941,6 +941,28 @@ def test_the_freshness_job_is_standalone_scoped_and_advisory_for_now() -> None:
     # A job-level `if:` would report the required context as skipped rather
     # than satisfied (LESSONS.md ci-required-gate-sequencing clause 2).
     assert required.get("if") == "always()", required.get("if")
+
+
+# ── contract: entry jobs run without any upstream gate ───────────────────────
+
+
+def test_changes_and_license_check_have_no_prerequisite_job() -> None:
+    """`changes` and `license-check` are entry points into the graph.
+
+    Both start a pull request or push run directly, from `on:` triggers
+    alone. Neither may declare a `needs:` naming another job in this
+    workflow: a prerequisite here would make every job downstream of
+    `changes` — which is effectively the whole workflow — wait on that
+    prerequisite's own runner and verdict before a single line of the
+    branch's own diff is examined.
+    """
+    ci = load(WORKFLOWS / "ci.yml")
+    all_jobs = jobs(ci)
+    for name in ("changes", "license-check"):
+        assert name in all_jobs, sorted(all_jobs)
+        assert not all_jobs[name].get("needs"), (
+            f"{name} must have no needs: it is an entry point, not a follower of one"
+        )
 
 
 def _nightly_freshness_sparse_checkout_paths() -> list[str]:

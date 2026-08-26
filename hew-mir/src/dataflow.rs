@@ -657,6 +657,11 @@ impl ContextFlowState {
 )]
 pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>, Vec<Place>) {
     match instr {
+        // Raw value operations use a disjoint virtual-value namespace. They
+        // neither read nor write addressable MIR places; the explicit ABI
+        // materialization below is the sole storage boundary in this slice.
+        Instr::Value(_) => (vec![], vec![], vec![]),
+        Instr::MaterializeValue { dest, .. } => (vec![], vec![*dest], vec![]),
         Instr::OwnershipEvent(_)
         | Instr::EnterContext
         | Instr::ExitContext

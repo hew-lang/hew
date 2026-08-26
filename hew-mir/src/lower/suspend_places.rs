@@ -38,6 +38,11 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::EnterContext
         | Instr::ExitContext
         | Instr::CheckCancellation
+        // Raw value operations are deliberately disjoint from `Place`; the
+        // ReturnAbi materialization has a virtual source rather than a
+        // place-source, so neither can alias a storage owner out of scope.
+        | Instr::Value(_)
+        | Instr::MaterializeValue { .. }
         | Instr::ContextField { .. }
         | Instr::ConstI64 { .. }
         | Instr::StringLit { .. }
@@ -573,6 +578,8 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::EnterContext
         | Instr::ExitContext
         | Instr::CheckCancellation
+        | Instr::Value(_)
+        | Instr::MaterializeValue { .. }
         | Instr::ContextField { .. }
         | Instr::ConstI64 { .. }
         | Instr::IntAdd { .. }

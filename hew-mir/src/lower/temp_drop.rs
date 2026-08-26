@@ -705,7 +705,12 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         // place that does not alias a live aggregate's interior. Listed
         // exhaustively (no wildcard) so a new projection-shaped load forces
         // a classification decision here.
-        Instr::OwnershipEvent(_)
+        // Raw virtual values are not places and do not participate in
+        // projection-alias tracking. Materialization writes the return slot,
+        // but it cannot create an interior aggregate alias either.
+        Instr::Value(_)
+        | Instr::MaterializeValue { .. }
+        | Instr::OwnershipEvent(_)
         | Instr::InteriorMutationCommit { .. }
         | Instr::EnterContext
         | Instr::ExitContext

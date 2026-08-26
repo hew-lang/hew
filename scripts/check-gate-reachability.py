@@ -2695,18 +2695,35 @@ def main() -> int:
     step_commands = ci_step_commands(workflows)
     ci_text = "\n".join(command for _, command in step_commands)
     if any(entry in ci_text for entry in DISPATCHER_ENTRYPOINTS):
-        for selection_name, probe_path in (
-            ("fallback", "some-unclassified-root-file.txt"),
-            ("scripts-config", "scripts/example.sh"),
-            ("counterfactual", "scripts/lib/counterfactual.sh"),
+        # Two probes, not three. The comprehensive profile is the whole
+        # participating gate set, and `scripts/lib/counterfactual.sh` selects
+        # everything `scripts/example.sh` selects plus
+        # `check-counterfactual-output` (which the dispatcher deliberately
+        # drops from the comprehensive list). A `scripts/example.sh` probe
+        # therefore contributed no make target the other two did not already
+        # contribute, while costing a full `make --always-make --dry-run` over
+        # a 190-target Makefile plus a `cargo metadata`, on every pull request,
+        # in both the `lint` job and a Linux shard.
+        #
+        # The comprehensive probe is spelled as the POLICY it means rather than
+        # as a synthetic undeclared path: the old spelling only reached the
+        # comprehensive profile because nothing declared
+        # `some-unclassified-root-file.txt` as an input, so the day something
+        # did, this checker would have silently started asserting against a
+        # narrow selection. Fail-closed routing for a genuinely unknown path is
+        # asserted where it belongs, in the dispatcher's own tests
+        # (test_unclassified_path_fails_closed_to_comprehensive,
+        # test_undeclared_path_fails_closed_and_annotates_the_path).
+        for selection_name, probe_args in (
+            ("comprehensive", ["--comprehensive"]),
+            ("counterfactual", ["--", "scripts/lib/counterfactual.sh"]),
         ):
             selection = subprocess.run(
                 [
                     "bash",
                     str(DISPATCHER),
                     "--dry-run",
-                    "--",
-                    probe_path,
+                    *probe_args,
                 ],
                 cwd=REPO_ROOT,
                 check=False,

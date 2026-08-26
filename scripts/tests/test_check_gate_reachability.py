@@ -537,20 +537,18 @@ def test_real_ci_reaches_the_complete_test_prerequisite_graph() -> None:
     workflows = gate.load_workflows()
     commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
     if any(entry in commands for entry in gate.DISPATCHER_ENTRYPOINTS):
-        fallback = subprocess.run(
-            [
-                "bash",
-                str(gate.DISPATCHER),
-                "--dry-run",
-                "--",
-                "some-unclassified-root-file.txt",
-            ],
+        # The widest profile, asked for by policy. Spelling it as a synthetic
+        # undeclared path made this assertion depend on nothing ever declaring
+        # that path as an input, which is a property of the Makefile rather
+        # than of the routing being proved here.
+        widest = subprocess.run(
+            ["bash", str(gate.DISPATCHER), "--dry-run", "--comprehensive"],
             cwd=ROOT,
             check=True,
             capture_output=True,
             text=True,
         )
-        commands += "\n" + fallback.stdout
+        commands += "\n" + widest.stdout
     roots = gate.make_targets_in(commands, known)
     reached = gate.close_over_makefile(roots, prereqs, recipes, known)
     required = {
@@ -703,13 +701,7 @@ def test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_autho
         )
         if any(entry in oracle[1] for entry in gate.DISPATCHER_ENTRYPOINTS):
             selected = subprocess.run(
-                [
-                    "bash",
-                    str(gate.DISPATCHER),
-                    "--dry-run",
-                    "--",
-                    "some-unclassified-root-file.txt",
-                ],
+                ["bash", str(gate.DISPATCHER), "--dry-run", "--comprehensive"],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,

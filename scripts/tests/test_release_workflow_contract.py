@@ -94,6 +94,77 @@ def npm_publish_workflow() -> str:
     return NPM_PUBLISH_WORKFLOW.read_text()
 
 
+def npm_declared_packages(text: str) -> list[str]:
+    """Return the npm packages declared for packaging, in workflow file order."""
+    match = re.search(r"for pkg in ([^;]+); do", text)
+    assert match is not None, "npm publish workflow has no declared package loop"
+    return match.group(1).split()
+
+
+def assert_npm_publish_steps_match_declared_packages(text: str) -> None:
+    """Every packaged package must publish exactly once, at the pinned dist-tag.
+
+    The expected package set comes from the dry-run pack loop, not a hardcoded
+    count: adding or removing a package without adding or removing its matching
+    publish step is exactly the regression this must catch.
+    """
+    packages = npm_declared_packages(text)
+    assert packages, "npm publish workflow declares no packages to pack"
+    for pkg in packages:
+        step_header = f"      - name: Publish @hew-lang/{pkg}\n"
+        assert text.count(step_header) == 1, (
+            f"@hew-lang/{pkg} must have exactly one publish step"
+        )
+        assert f'PKG_DIR="target/npm/@hew-lang/{pkg}"' in text, (
+            f"@hew-lang/{pkg}'s publish step must target its own package directory"
+        )
+    publish_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith('npm publish "${PKG_DIR}"')
+    ]
+    assert len(publish_lines) == len(packages), (
+        f"{len(publish_lines)} publish invocations do not match the "
+        f"{len(packages)} declared packages {packages}"
+    )
+    assert all('--tag "${NPM_DIST_TAG}"' in line for line in publish_lines)
+
+
+def test_npm_publish_step_mutations_are_rejected() -> None:
+    text = npm_publish_workflow()
+    missing_step = text.replace(
+        "      - name: Publish @hew-lang/sandbox-vm\n",
+        "      - name: Package @hew-lang/sandbox-vm\n",
+        1,
+    )
+    undeclared_extra_package = text.replace(
+        "for pkg in wasm sandbox-wasm sandbox-vm; do",
+        "for pkg in wasm sandbox-wasm sandbox-vm docs; do",
+        1,
+    )
+    duplicated_step = text.replace(
+        "      - name: Publish @hew-lang/wasm\n",
+        "      - name: Publish @hew-lang/wasm\n      - name: Publish @hew-lang/wasm\n",
+        1,
+    )
+    wrong_package_directory = text.replace(
+        'PKG_DIR="target/npm/@hew-lang/sandbox-vm"',
+        'PKG_DIR="target/npm/@hew-lang/wasm"',
+        1,
+    )
+    for mutation in (
+        missing_step,
+        undeclared_extra_package,
+        duplicated_step,
+        wrong_package_directory,
+    ):
+        try:
+            assert_npm_publish_steps_match_declared_packages(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("an npm publish step mutation escaped the contract")
+
+
 def playground_job(text: str | None = None) -> str:
     text = workflow() if text is None else text
     start = text.index("  playground:\n")
@@ -390,13 +461,7 @@ def test_npm_publication_is_pinned_to_a_version_matching_release_tag() -> None:
     assert "NPM_DIST_TAG=next" in text
     assert "NPM_DIST_TAG=latest" in text
     assert 'echo "NPM_DIST_TAG=${NPM_DIST_TAG}" >> "${GITHUB_ENV}"' in text
-    publish_lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip().startswith('npm publish "${PKG_DIR}"')
-    ]
-    assert len(publish_lines) == 3
-    assert all('--tag "${NPM_DIST_TAG}"' in line for line in publish_lines)
+    assert_npm_publish_steps_match_declared_packages(text)
 
 
 def test_current_sandbox_vm_version_matches_workspace_version() -> None:
@@ -435,8 +500,49 @@ def test_workspace_version_command_is_python310_compatible() -> None:
     assert result.stdout.strip() == WORKSPACE_VERSION
 
     runbook = RUNBOOK.read_text()
+    assert_release_runbook_derives_version_canonically(runbook)
+
+
+def assert_release_runbook_derives_version_canonically(runbook: str) -> None:
+    """Every runbook phase that derives release_version must use the helper script.
+
+    The runbook is prose a maintainer copy-pastes, not an executed workflow, so
+    there is no CI step to catch drift. The real failure mode is a phase
+    silently reverting to a manual `sed`/literal derivation that skips the
+    Python-3.10-compatible workspace-version.py path — this checks every
+    occurrence, not a fixed count, so adding or removing a phase never breaks it.
+    """
     assert "import tomllib" not in runbook
-    assert runbook.count('release_version="$(scripts/workspace-version.py)"') == 3
+    canonical = 'release_version="$(scripts/workspace-version.py)"'
+    derivations = [
+        line.strip()
+        for line in runbook.splitlines()
+        if line.strip().startswith("release_version=")
+    ]
+    assert derivations, "runbook never derives release_version"
+    assert all(line == canonical for line in derivations), (
+        "every runbook phase must derive release_version via "
+        "scripts/workspace-version.py, found: "
+        f"{sorted(set(derivations) - {canonical})}"
+    )
+
+
+def test_release_runbook_version_derivation_mutations_are_rejected() -> None:
+    runbook = RUNBOOK.read_text()
+    manual_derivation = runbook.replace(
+        'release_version="$(scripts/workspace-version.py)"',
+        'release_version="$(sed -n \'s/^version = "\\(.*\\)"$/\\1/p\' Cargo.toml)"',
+        1,
+    )
+    hardcoded_everywhere = runbook.replace(
+        'release_version="$(scripts/workspace-version.py)"', 'release_version="0.0.0"'
+    )
+    for mutation in (manual_derivation, hardcoded_everywhere):
+        try:
+            assert_release_runbook_derives_version_canonically(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("a runbook version-derivation mutation escaped")
 
 
 def test_playground_release_uses_only_an_immutable_pretag_handoff() -> None:
@@ -3226,19 +3332,33 @@ def assert_foundational_release_gate_contract(gate: str, validator: str) -> None
     assert "macos-14" in gate and "macos-15-intel" in gate
     # FreeBSD x86_64 only — the aarch64 gate leg is intentionally scoped to
     # build+smoke (suite coverage retained on freebsd-x86_64 and linux-aarch64).
-    assert gate.count("gmake test-vertical-slice") == 1
-    assert gate.count("gmake test-hew-ratchet") == 1
+    freebsd_x86_64 = workflow_job(gate, "gate-freebsd-x86_64")
+    freebsd_aarch64 = workflow_job(gate, "gate-freebsd-aarch64")
+    for command in ("gmake test-vertical-slice", "gmake test-hew-ratchet"):
+        assert command in freebsd_x86_64, f"{command} must run on freebsd-x86_64"
+        assert command not in freebsd_aarch64, (
+            f"{command} must stay off freebsd-aarch64 (build+smoke only)"
+        )
 
 
 def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
     gate = RELEASE_GATE.read_text()
     validator = PRE_RELEASE_VALIDATOR.read_text()
     assert_foundational_release_gate_contract(gate, validator)
+    aarch64_job = workflow_job(gate, "gate-freebsd-aarch64")
+    duplicated_into_aarch64 = gate.replace(
+        aarch64_job,
+        aarch64_job.replace(
+            "gmake stdlib", "gmake stdlib\n            gmake test-vertical-slice", 1
+        ),
+        1,
+    )
     mutations = (
         (gate.replace("make test-stdlib-execution-proofs", "true", 1), validator),
         (gate, validator.replace("make macos-leak-oracle", "true", 1)),
         (gate.replace("macos-15-intel", "macos-14", 1), validator),
         (gate.replace("gmake test-vertical-slice", "true", 1), validator),
+        (duplicated_into_aarch64, validator),
     )
     for mutated_gate, mutated_validator in mutations:
         try:
@@ -3248,8 +3368,9 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
         raise AssertionError("foundational release-gate mutation escaped")
 
 
-def test_freebsd_aarch64_installs_wasi_std_before_building_stdlib() -> None:
-    job = workflow_job(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+def assert_freebsd_aarch64_installs_wasi_std_before_building_stdlib(job: str) -> None:
+    """Require the wasm32-wasip1 std component to download, verify, and install,
+    each exactly once and in that order, before stdlib ever builds against it."""
     version = "RUST_VERSION=$(rustc --version | awk '{print $2}')"
     component = 'RUST_STD_COMPONENT="rust-std-${RUST_VERSION}-wasm32-wasip1"'
     archive = '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz"'
@@ -3276,6 +3397,36 @@ def test_freebsd_aarch64_installs_wasi_std_before_building_stdlib() -> None:
         < job.index(probe)
         < job.index("gmake stdlib")
     )
+
+
+def test_freebsd_aarch64_installs_wasi_std_before_building_stdlib() -> None:
+    job = workflow_job(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+    assert_freebsd_aarch64_installs_wasi_std_before_building_stdlib(job)
+
+
+def test_freebsd_aarch64_wasi_std_install_order_mutations_are_rejected() -> None:
+    job = workflow_job(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+    checksum = '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"'
+    install = (
+        'sh "$RUST_STD_DIR/${RUST_STD_COMPONENT}/install.sh" \\\n'
+        '              --prefix="$(rustc --print sysroot)" --disable-ldconfig'
+    )
+    probe = 'test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib"'
+    missing_install = job.replace(install, "", 1)
+    duplicated_checksum = job.replace(
+        checksum, checksum + "\n            " + checksum, 1
+    )
+    swapped_install_and_probe = (
+        job.replace(install, "__INSTALL__", 1)
+        .replace(probe, install, 1)
+        .replace("__INSTALL__", probe, 1)
+    )
+    for mutation in (missing_install, duplicated_checksum, swapped_install_and_probe):
+        try:
+            assert_freebsd_aarch64_installs_wasi_std_before_building_stdlib(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("a freebsd wasi-std install-order mutation escaped")
 
 
 def _discover_tests() -> list:

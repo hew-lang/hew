@@ -1,10 +1,11 @@
 use hew_hir::ItemId;
 use hew_parser::ast::BinaryOp;
 use hew_sir::{
-    dump_sir, verify_module, BlockArg, BlockId, Edge, OpId, Operand, Provenance, SemBlock,
-    SemFunction, SemModule, SemOp, SemOpKind, SemTerminator, UseMode, ValueDef, ValueId,
+    dump_sir, verify_module, BlockArg, BlockId, Edge, EffectSet, FunctionSourceOrigin, OpId,
+    Operand, Provenance, SemBlock, SemFunction, SemModule, SemOp, SemOpKind, SemTerminator,
+    SirDiagnosticKind, UseMode, ValueDef, ValueId,
 };
-use hew_types::ResolvedTy;
+use hew_types::{CallTarget, DefId, ResolvedTy};
 
 fn definition(id: u32) -> ValueDef {
     ValueDef {
@@ -21,7 +22,10 @@ fn definition(id: u32) -> ValueDef {
 fn block_arguments_are_ssa_join_values() {
     let function = SemFunction {
         id: ItemId(0),
+        declaration: DefId::for_test("f"),
         name: "f".to_string(),
+        span: 0..0,
+        source_origin: FunctionSourceOrigin::Unknown,
         params: vec![
             BlockArg {
                 value: ValueId(0),
@@ -194,4 +198,166 @@ fn block_arguments_are_ssa_join_values() {
     let dump = dump_sir(&module);
     assert!(dump.contains("bb3(%10: i64):"));
     assert!(dump.contains("goto bb3(%6)"));
+}
+
+#[test]
+fn verifier_rejects_entry_block_arguments() {
+    let module = SemModule {
+        functions: vec![SemFunction {
+            id: ItemId(0),
+            declaration: DefId::for_test("bad_entry_args"),
+            name: "bad_entry_args".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: Vec::new(),
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: vec![BlockArg {
+                    value: ValueId(0),
+                    ty: ResolvedTy::I64,
+                }],
+                ops: Vec::new(),
+                terminator: SemTerminator::Return {
+                    value: Some(ValueId(0)),
+                },
+            }],
+        }],
+    };
+
+    assert!(verify_module(&module).iter().any(|diagnostic| matches!(
+        diagnostic.kind,
+        SirDiagnosticKind::EntryBlockArgs {
+            entry: BlockId(0),
+            actual: 1,
+        }
+    )));
+}
+
+#[test]
+fn operation_effects_are_derived_and_conservative() {
+    let checked_add = SemOpKind::Binary {
+        op: BinaryOp::Add,
+        lhs: Operand {
+            value: ValueId(0),
+            mode: UseMode::Read,
+        },
+        rhs: Operand {
+            value: ValueId(1),
+            mode: UseMode::Read,
+        },
+    };
+    assert_eq!(checked_add.effects(), EffectSet::MAY_TRAP);
+    assert!(checked_add.effects().may_trap());
+
+    let wrapping_add = SemOpKind::Binary {
+        op: BinaryOp::WrappingAdd,
+        lhs: Operand {
+            value: ValueId(0),
+            mode: UseMode::Read,
+        },
+        rhs: Operand {
+            value: ValueId(1),
+            mode: UseMode::Read,
+        },
+    };
+    assert!(wrapping_add.effects().is_pure());
+
+    let unresolved_call = SemOpKind::Call {
+        target: CallTarget::Builtin {
+            endpoint: "test".to_string(),
+        },
+        args: Vec::new(),
+    };
+    assert_eq!(unresolved_call.effects(), EffectSet::UNKNOWN_CALL);
+    assert!(unresolved_call.effects().contains(EffectSet::MAY_TRAP));
+    assert!(unresolved_call.effects().may_trap());
+}
+
+#[test]
+fn verifier_rejects_eager_logical_ops_and_ownership_modes_without_an_owner() {
+    let module = SemModule {
+        functions: vec![SemFunction {
+            id: ItemId(0),
+            declaration: DefId::for_test("bad_logical"),
+            name: "bad_logical".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: vec![BlockArg {
+                value: ValueId(0),
+                ty: ResolvedTy::Bool,
+            }],
+            return_ty: ResolvedTy::Bool,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![SemOp {
+                    id: OpId(0),
+                    results: vec![ValueDef {
+                        id: ValueId(1),
+                        ty: ResolvedTy::Bool,
+                    }],
+                    kind: SemOpKind::Binary {
+                        op: BinaryOp::And,
+                        lhs: Operand {
+                            value: ValueId(0),
+                            mode: UseMode::BorrowShared,
+                        },
+                        rhs: Operand {
+                            value: ValueId(0),
+                            mode: UseMode::Read,
+                        },
+                    },
+                    provenance: Provenance::Synthesized,
+                }],
+                terminator: SemTerminator::Return {
+                    value: Some(ValueId(1)),
+                },
+            }],
+        }],
+    };
+
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("only Read is legal")
+    )));
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("must be represented as SIR branch CFG")
+    )));
+}
+
+#[test]
+fn verifier_rejects_duplicate_semantic_and_emitted_function_identities() {
+    let function = SemFunction {
+        id: ItemId(0),
+        declaration: DefId::for_test("duplicate"),
+        name: "duplicate".to_string(),
+        span: 0..0,
+        source_origin: FunctionSourceOrigin::Unknown,
+        params: Vec::new(),
+        return_ty: ResolvedTy::Unit,
+        entry: BlockId(0),
+        blocks: vec![SemBlock {
+            id: BlockId(0),
+            args: Vec::new(),
+            ops: Vec::new(),
+            terminator: SemTerminator::Return { value: None },
+        }],
+    };
+    let diagnostics = verify_module(&SemModule {
+        functions: vec![function.clone(), function],
+    });
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.kind, SirDiagnosticKind::DuplicateFunctionName(_))));
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        diagnostic.kind,
+        SirDiagnosticKind::DuplicateFunctionDeclaration(_)
+    )));
 }

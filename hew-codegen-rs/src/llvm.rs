@@ -840,7 +840,9 @@ fn emit_module_with_options(
 /// - Acquires the same `llvm_codegen_lock` used by object emission so
 ///   concurrent calls are safe.
 /// - Selects the same host-native triple as native object emission and runs
-///   target-specific pre-link substrate scans before lowering.
+///   target-specific pre-link substrate scans before lowering. Use
+///   [`validate_codegen_front_for_triple`] when the caller selected an
+///   explicit target.
 /// - Target initialisation and host-triple machine construction failures
 ///   surface as [`CodegenError::TargetSetup`], never as panics or silent
 ///   fallbacks.
@@ -855,12 +857,29 @@ fn emit_module_with_options(
 /// target-specific pre-link scan rejects the MIR, or `Module::verify()` rejects
 /// the emitted IR.
 pub fn validate_codegen_front(pipeline: &IrPipeline) -> CodegenResult<()> {
+    validate_codegen_front_for_triple(pipeline, &native_emission_triple())
+}
+
+/// Build and LLVM-verify `pipeline` for an explicit target triple without
+/// writing an artefact.
+///
+/// This is the target-aware sibling of [`validate_codegen_front`].  Compiler
+/// migration lanes must use it when a CLI build selected a non-host target so
+/// their proof covers the same target substrate and data layout that actual
+/// emission will use.
+///
+/// # Errors
+///
+/// Returns the same fail-closed [`CodegenError`] surface as
+/// [`validate_codegen_front`], including target setup and target-specific
+/// substrate failures.
+pub fn validate_codegen_front_for_triple(pipeline: &IrPipeline, triple: &str) -> CodegenResult<()> {
     // Enforce the layout-fact consistency invariant on every
     // codegen-front entry, mirroring `emit_module`.  `hew check` reaches
     // this path; surfacing a stuck-`Pending` fact here fails closed
     // before any LLVM module is built.
     verify_hashmap_lowering_facts_consistent(pipeline)?;
-    validate_codegen_front_with_name(pipeline, "__hew_codegen_front_verify__")
+    validate_codegen_front_with_name_and_triple(pipeline, "__hew_codegen_front_verify__", triple)
 }
 
 /// Compatibility name kept for early callers of the Stage 4 verifier API.
@@ -868,13 +887,21 @@ pub fn verify_pipeline(pipeline: &IrPipeline) -> CodegenResult<()> {
     validate_codegen_front(pipeline)
 }
 
+#[cfg(test)]
 fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) -> CodegenResult<()> {
+    validate_codegen_front_with_name_and_triple(pipeline, module_name, &native_emission_triple())
+}
+
+fn validate_codegen_front_with_name_and_triple(
+    pipeline: &IrPipeline,
+    module_name: &str,
+    triple: &str,
+) -> CodegenResult<()> {
     let _guard = llvm_codegen_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let triple = native_emission_triple();
-    validate_target_substrate(pipeline, &triple)?;
-    let machine = target_machine_for_triple(&triple)?;
+    validate_target_substrate(pipeline, triple)?;
+    let machine = target_machine_for_triple(triple)?;
     let ctx = Context::create();
     build_module_for_target(&ctx, pipeline, module_name, Some(&machine), None)?;
     Ok(())

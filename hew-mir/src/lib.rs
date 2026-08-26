@@ -19,6 +19,7 @@ pub mod ownership;
 pub mod return_provenance;
 pub mod runtime_call;
 pub mod runtime_symbols;
+pub mod sir;
 pub mod state_clone;
 pub mod thunk_requirements;
 
@@ -87,6 +88,10 @@ pub use ownership::{
     ProvenanceOrigin, ValueOwnership, ValueProvenance,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
+pub use sir::{
+    apply_sir_to_pipeline, lower_sir_function, SirMirLowered, SirMirLoweringError,
+    SirMirLoweringReport, SirMirLoweringStatus,
+};
 pub use state_clone::{
     classify_actor_state_fields_with_lifecycle_registry, classify_owned_string_record_fields,
     classify_state_field_with_lifecycle_registry, mangle_actor_state_clone_fn,

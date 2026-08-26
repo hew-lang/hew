@@ -103,6 +103,10 @@ fn requested_test_paths(args: &crate::args::TestArgs) -> Vec<String> {
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "test discovery, parse-failure handling, partitioning, and stable output form one fail-closed CLI transaction"
+)]
 pub fn cmd_test(args: &crate::args::TestArgs) {
     let filter = args.filter.as_deref();
     let partition = parse_partition_argument(args.partition.as_deref());
@@ -199,12 +203,19 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
 
     let summary = runner::run_tests(
         &all_tests,
-        filter,
-        include_ignored,
-        ffi_lib.as_deref(),
-        &compile_paths,
-        timeout,
-        requested_jobs(args.jobs),
+        runner::TestRunOptions {
+            filter,
+            include_ignored,
+            ffi_lib: ffi_lib.as_deref(),
+            compile_paths: &compile_paths,
+            timeout,
+            jobs: requested_jobs(args.jobs),
+            sir_mode: if args.sir_shadow {
+                crate::compile::SirMode::Shadow
+            } else {
+                crate::compile::SirMode::Disabled
+            },
+        },
     );
     output::output_results(&summary, use_color, format);
 

@@ -1894,6 +1894,7 @@ dependencies = [
  "hew-hir",
  "hew-parser",
  "hew-runtime",
+ "hew-sir",
  "hew-types",
  "proptest",
  "serde",

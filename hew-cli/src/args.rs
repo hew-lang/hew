@@ -98,6 +98,10 @@ pub enum Command {
     Pkg(hew_pkg::cli::PkgCommand),
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "clap maps independent compile switches directly to booleans; collapsing them would obscure the CLI contract"
+)]
 #[derive(Debug, Args)]
 pub struct CompileArgs {
     /// Input .hew file.
@@ -116,13 +120,21 @@ pub struct CompileArgs {
     /// spot-checking the front-half lowering during development.
     #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["raw", "checked", "elab"])]
     pub dump_mir: Option<String>,
-    /// Run the experimental HIR → Semantic IR shadow lane before the established
-    /// HIR → MIR path. It verifies SIR but never changes emitted code.
-    #[arg(long = "sir-shadow")]
+    /// Run the experimental HIR → SIR → raw-MIR candidate lane and verify it
+    /// at the backend front gate, while keeping established MIR as the emitted
+    /// artifact.
+    #[arg(long = "sir-shadow", conflicts_with = "sir_lower")]
     pub sir_shadow: bool,
+    /// Use the experimental SIR → raw-MIR realization for the verified scalar
+    /// CFG subset. Unsupported functions explicitly retain established MIR.
+    #[arg(long = "sir-lower", conflicts_with = "sir_shadow")]
+    pub sir_lower: bool,
     /// Emit the verified Semantic IR subset and exit. Unsupported functions are
     /// reported explicitly; no MIR or LLVM artifacts are emitted.
-    #[arg(long = "dump-sir")]
+    #[arg(
+        long = "dump-sir",
+        conflicts_with_all = ["sir_lower", "sir_shadow"]
+    )]
     pub dump_sir: bool,
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
     #[arg(long, value_name = "TRIPLE")]
@@ -654,6 +666,10 @@ pub struct TestArgs {
     /// memory pressure from concurrent compilation tasks.
     #[arg(long, short = 'j', value_name = "N")]
     pub jobs: Option<std::num::NonZeroUsize>,
+    /// Exercise the SIR → raw-MIR candidate lane for each test compilation
+    /// while continuing to emit the established MIR artifact.
+    #[arg(long = "sir-shadow")]
+    pub sir_shadow: bool,
 }
 
 // ---------------------------------------------------------------------------

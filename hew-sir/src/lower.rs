@@ -6,8 +6,8 @@ use hew_hir::{
 };
 
 use crate::{
-    BlockArg, BlockId, Edge, OpId, Operand, Provenance, SemBlock, SemFunction, SemModule, SemOp,
-    SemOpKind, SemTerminator, UseMode, ValueDef, ValueId,
+    BlockArg, BlockId, Edge, FunctionSourceOrigin, OpId, Operand, Provenance, SemBlock,
+    SemFunction, SemModule, SemOp, SemOpKind, SemTerminator, UseMode, ValueDef, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +32,14 @@ pub fn lower_module(module: &HirModule) -> LoweredModule {
         let HirItem::Function(function) = item else {
             continue;
         };
-        match Builder::new(function).lower() {
+        let source_origin = if module.root_item_ids.contains(&function.id) {
+            FunctionSourceOrigin::RootUnit
+        } else if let Some(module_name) = module.diagnostic_source_modules.get(&function.id) {
+            FunctionSourceOrigin::Foreign(module_name.clone())
+        } else {
+            FunctionSourceOrigin::Unknown
+        };
+        match Builder::new(function, source_origin).lower() {
             Ok(function) => {
                 statuses.push((function.name.clone(), SirLoweringStatus::Lowered));
                 output.functions.push(function);
@@ -57,10 +64,11 @@ struct Builder<'a> {
     ops: u32,
     bindings: HashMap<BindingId, ValueId>,
     params: Vec<BlockArg>,
+    source_origin: FunctionSourceOrigin,
 }
 
 impl<'a> Builder<'a> {
-    fn new(function: &'a HirFn) -> Self {
+    fn new(function: &'a HirFn, source_origin: FunctionSourceOrigin) -> Self {
         let entry = BlockId(0);
         let mut values = 0;
         let mut bindings = HashMap::new();
@@ -90,6 +98,7 @@ impl<'a> Builder<'a> {
             ops: 0,
             bindings,
             params,
+            source_origin,
         }
     }
 
@@ -99,13 +108,22 @@ impl<'a> Builder<'a> {
                 "generators and floor intrinsics remain on the established MIR path".to_string(),
             );
         }
+        if !self.function.type_params.is_empty() {
+            return Err(
+                "generic origin functions remain on the established MIR path until SIR is monomorphization-aware"
+                    .to_string(),
+            );
+        }
         let result = self.lower_block(&self.function.body)?;
         if self.is_open() {
             self.set_terminator(SemTerminator::Return { value: result });
         }
         Ok(SemFunction {
             id: self.function.id,
+            declaration: self.function.declaration.clone(),
             name: self.function.name.clone(),
+            span: self.function.span.clone(),
+            source_origin: self.source_origin,
             params: self.params,
             return_ty: self.function.return_ty.clone(),
             entry: BlockId(0),
@@ -174,9 +192,21 @@ impl<'a> Builder<'a> {
     fn lower_expr(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
         match &expr.kind {
             HirExprKind::Literal(HirLiteral::Integer(value)) => {
+                if !expr.ty.is_integer() {
+                    return Err(format!(
+                        "integer literal resolved as `{}` needs a dedicated SIR literal representation",
+                        expr.ty.user_facing()
+                    ));
+                }
                 Ok(self.emit(expr, SemOpKind::ConstI64(*value)))
             }
             HirExprKind::Literal(HirLiteral::Bool(value)) => {
+                if expr.ty != hew_types::ResolvedTy::Bool {
+                    return Err(format!(
+                        "boolean literal resolved as `{}` violates the SIR bool literal invariant",
+                        expr.ty.user_facing()
+                    ));
+                }
                 Ok(self.emit(expr, SemOpKind::ConstBool(*value)))
             }
             HirExprKind::BindingRef {
@@ -198,6 +228,16 @@ impl<'a> Builder<'a> {
                     },
                 ))
             }
+            HirExprKind::Binary {
+                op: hew_parser::ast::BinaryOp::And,
+                left,
+                right,
+            } => self.lower_logical_and(expr, left, right),
+            HirExprKind::Binary {
+                op: hew_parser::ast::BinaryOp::Or,
+                left,
+                right,
+            } => self.lower_logical_or(expr, left, right),
             HirExprKind::Binary { op, left, right } => {
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
@@ -327,6 +367,88 @@ impl<'a> Builder<'a> {
         }
         self.current = join_block;
         Ok(join_value)
+    }
+
+    /// Lower short-circuit `&&` as CFG rather than an eager binary operation.
+    ///
+    /// The false edge materialises the result while the true edge alone
+    /// evaluates the right-hand side. This keeps effectful future SIR
+    /// operations on the RHS structurally guarded from the outset.
+    fn lower_logical_and(
+        &mut self,
+        whole: &HirExpr,
+        left: &HirExpr,
+        right: &HirExpr,
+    ) -> Result<ValueId, String> {
+        self.lower_short_circuit(whole, left, right, false)
+    }
+
+    /// Lower short-circuit `||` as CFG rather than an eager binary operation.
+    fn lower_logical_or(
+        &mut self,
+        whole: &HirExpr,
+        left: &HirExpr,
+        right: &HirExpr,
+    ) -> Result<ValueId, String> {
+        self.lower_short_circuit(whole, left, right, true)
+    }
+
+    fn lower_short_circuit(
+        &mut self,
+        whole: &HirExpr,
+        left: &HirExpr,
+        right: &HirExpr,
+        short_circuit_value: bool,
+    ) -> Result<ValueId, String> {
+        if whole.ty != hew_types::ResolvedTy::Bool {
+            return Err("short-circuit logical expressions must have bool type in SIR".to_string());
+        }
+        let condition = self.lower_expr(left)?;
+        let evaluate_right = self.new_block(Vec::new());
+        let short_circuit = self.new_block(Vec::new());
+        let result = self.fresh_value();
+        let join = self.new_block(vec![BlockArg {
+            value: result,
+            ty: whole.ty.clone(),
+        }]);
+        let (then_target, else_target) = if short_circuit_value {
+            (short_circuit, evaluate_right)
+        } else {
+            (evaluate_right, short_circuit)
+        };
+        self.set_terminator(SemTerminator::Branch {
+            condition,
+            then_target: Edge {
+                target: then_target,
+                args: Vec::new(),
+            },
+            else_target: Edge {
+                target: else_target,
+                args: Vec::new(),
+            },
+        });
+
+        let before = self.bindings.clone();
+        self.current = evaluate_right;
+        self.bindings = before.clone();
+        let right_value = self.lower_expr(right)?;
+        if self.is_open() {
+            self.set_terminator(SemTerminator::Goto(Edge {
+                target: join,
+                args: vec![right_value],
+            }));
+        }
+
+        self.current = short_circuit;
+        self.bindings = before;
+        let constant = self.emit(whole, SemOpKind::ConstBool(short_circuit_value));
+        self.set_terminator(SemTerminator::Goto(Edge {
+            target: join,
+            args: vec![constant],
+        }));
+
+        self.current = join;
+        Ok(result)
     }
 
     fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> ValueId {

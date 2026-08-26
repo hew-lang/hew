@@ -213,6 +213,66 @@ def test_the_owner_table_parser_rejects_an_incomplete_entry() -> None:
     expect_error(lambda: reporter.parse_owners("workflows:\n"), "declares no workflows")
 
 
+def test_the_owner_table_refuses_to_pick_between_two_answers() -> None:
+    """An ownership table that disagrees with itself names no owner.
+
+    Both spellings used to be accepted with the later value silently winning:
+    a workflow listed twice, and a key set twice inside one entry. Either is
+    somebody's edit landing on top of somebody else's, in the one file whose
+    job is to say who gets woken up when a nightly goes red.
+    """
+    expect_error(
+        lambda: reporter.parse_owners(
+            "workflows:\n"
+            "  - file: a.yml\n    owner: first\n    freshness_hours: 48\n"
+            "  - file: a.yml\n    owner: second\n    freshness_hours: 72\n"
+        ),
+        "has more than one entry",
+    )
+    expect_error(
+        lambda: reporter.parse_owners(
+            "workflows:\n"
+            "  - file: a.yml\n    owner: first\n    owner: second\n"
+            "    freshness_hours: 48\n"
+        ),
+        "is set twice",
+    )
+    expect_error(
+        lambda: reporter.parse_owners(
+            "workflows:\n"
+            "  - file: a.yml\n    owner: first\n"
+            "    freshness_hours: 48\n    freshness_hours: 72\n"
+        ),
+        "is set twice",
+    )
+    expect_error(
+        lambda: reporter.parse_owners(
+            "workflows:\n  - file: a.yml\n    owner: o\n    freshness_hours: soon\n"
+        ),
+        "must be an integer",
+    )
+
+    # Falsifiability: the shape the table actually uses still parses, and two
+    # DIFFERENT workflows are not a conflict.
+    parsed = reporter.parse_owners(
+        "workflows:\n"
+        "  - file: a.yml\n    owner: one\n    freshness_hours: 48\n"
+        "  - file: b.yml\n    owner: two\n    freshness_hours: 72\n"
+    )
+    assert sorted(parsed) == ["a.yml", "b.yml"], parsed
+    assert parsed["b.yml"]["freshness_hours"] == 72, parsed
+
+
+def test_the_real_owner_table_states_one_answer_per_workflow() -> None:
+    parsed = reporter.parse_owners(
+        (ROOT / ".github" / "nightly-owners.yml").read_text(encoding="utf-8")
+    )
+    assert parsed, "the committed owner table is empty"
+    for name, entry in parsed.items():
+        assert entry["owner"], name
+        assert isinstance(entry["freshness_hours"], int), name
+
+
 def _discover_tests() -> list:
     return [
         value

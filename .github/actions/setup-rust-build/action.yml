@@ -203,7 +203,14 @@ runs:
       env:
         SCCACHE_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       run: |
-        set -uo pipefail
+        # `set +e` on purpose, and it is the whole point of this step's
+        # contract. GitHub runs `shell: bash` as `bash -e -o pipefail`, so
+        # WITHOUT this an sccache that changed its JSON schema, or a stats call
+        # that failed, would exit non-zero and turn a correctness job red for a
+        # number nothing asserts. Telemetry may report that it has nothing to
+        # say; it may not decide a verdict.
+        set +e
+        set -u
         {
           echo "### sccache — ${{ inputs.cache-shared-key }}"
           echo ""
@@ -213,17 +220,21 @@ runs:
           echo "- sccache is not on PATH; this job compiled cold." >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
-        if ! stats_json="$(sccache --show-stats --stats-format=json 2>/dev/null)"; then
-          echo "- sccache could not report; this job compiled cold." >> "$GITHUB_STEP_SUMMARY"
+        stats_json="$(sccache --show-stats --stats-format=json 2>/dev/null)"
+        if [ -z "$stats_json" ]; then
+          echo "- statistics unavailable: sccache reported nothing." >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
         # Held in a variable, never a file: a scratch file written into the
         # checkout is an untracked path no gate declares, which makes the
         # change router fail closed to comprehensive on every run.
+        #
+        # The reader catches everything and prints a row either way, so a
+        # renamed counter or a restructured document degrades to "unavailable"
+        # with the reason attached, never to a traceback and a failed step.
         printf '%s' "$stats_json" | python3 -c '
         import json, sys
 
-        stats = json.load(sys.stdin)["stats"]
         counters = (
             "compile_requests",
             "cache_hits",
@@ -233,20 +244,32 @@ runs:
         )
 
 
-        def total(key):
-            value = stats.get(key)
-            if isinstance(value, dict):
-                return sum(value.get("counts", {}).values())
-            return value or 0
+        def row(stats):
+            def total(key):
+                value = stats[key]
+                if isinstance(value, dict):
+                    return sum(value.get("counts", {}).values())
+                return int(value)
 
-
-        print(
-            "- requests: `{}`  hits: `{}`  misses: `{}`"
-            "  writes: `{}`  write errors: `{}`".format(
-                *[total(key) for key in counters]
+            return (
+                "- requests: `{}`  hits: `{}`  misses: `{}`"
+                "  writes: `{}`  write errors: `{}`".format(
+                    *[total(key) for key in counters]
+                )
             )
-        )
+
+
+        try:
+            print(row(json.load(sys.stdin)["stats"]))
+        except Exception as error:
+            print(
+                "- statistics unavailable: sccache reported a document this "
+                "reader does not understand ({}: {}).".format(
+                    type(error).__name__, error
+                )
+            )
         ' >> "$GITHUB_STEP_SUMMARY"
+        exit 0
 
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
       with:

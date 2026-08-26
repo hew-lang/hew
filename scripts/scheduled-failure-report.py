@@ -76,11 +76,35 @@ def parse_owners(text: str) -> dict[str, dict[str, object]]:
         key, _, value = stripped.partition(":")
         value = value.strip().strip('"').strip("'")
         key = key.strip()
+        # Last-one-wins is the wrong answer for an ownership table. Two entries
+        # for one workflow, or two `owner:` lines in one entry, is somebody
+        # disagreeing with themselves in a file whose whole job is to say who
+        # gets woken up -- and silently keeping the later one picks a winner
+        # nobody chose. Both spellings are refused, by name.
+        if key in current:
+            raise ReporterError(
+                f"nightly-owners.yml: {key!r} is set twice in the entry for "
+                f"{current.get('file', '<unnamed>')!r} "
+                f"({current[key]!r} then {value!r}); the table must state one "
+                "answer per workflow"
+            )
         if key == "file":
+            if value in owners:
+                raise ReporterError(
+                    f"nightly-owners.yml: {value!r} has more than one entry; "
+                    "an owner table with two answers for one workflow names no "
+                    "owner at all"
+                )
             current["file"] = value
             owners[value] = current
         elif key == "freshness_hours":
-            current[key] = int(value)
+            try:
+                current[key] = int(value)
+            except ValueError:
+                raise ReporterError(
+                    f"nightly-owners.yml: freshness_hours must be an integer "
+                    f"number of hours, got {value!r}"
+                ) from None
         else:
             current[key] = value
     for name, entry in owners.items():

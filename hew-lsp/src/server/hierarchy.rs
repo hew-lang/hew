@@ -5,9 +5,9 @@ use hew_analysis::calls::{
 };
 use hew_parser::ast::{Item, TypeDeclKind};
 use hew_parser::ParseResult;
-use tower_lsp::lsp_types::{
+use tower_lsp_server::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Range, SymbolKind,
-    TypeHierarchyItem, Url,
+    TypeHierarchyItem, Uri as Url,
 };
 
 use super::span_to_range;

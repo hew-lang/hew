@@ -1,6 +1,6 @@
 use serde_json::Value;
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::{
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::lsp_types::{
     CodeLens, CodeLensParams, ExecuteCommandParams, MessageType, SymbolInformation,
     WorkspaceSymbolParams,
 };

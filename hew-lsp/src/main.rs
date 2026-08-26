@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use hew_lsp::server::HewLanguageServer;
-use tower_lsp::{LspService, Server};
+use tower_lsp_server::{LspService, Server};
 
 #[tokio::main]
 async fn main() {

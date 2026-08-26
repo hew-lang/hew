@@ -958,7 +958,6 @@ fn runnable_coverage_does_not_shrink() {
 ///   "admitted + runs-clean + unparited".
 /// - `RejectedByProfile` probe: must produce NO bytecode and carry the declared
 ///   diagnostic kind. A profile change that begins admitting it trips this.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn live_gate_matches_declared_coverage() {
     ensure_parity_runner_built();

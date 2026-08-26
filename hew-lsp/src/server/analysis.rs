@@ -10,11 +10,14 @@ use hew_parser::{ParseDiagnosticKind, ParseResult};
 use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::module_registry::{build_module_search_paths, build_module_search_paths_for};
 use hew_types::{Checker, LintId, LintSources, TypeCheckOutput};
-use tower_lsp::lsp_types::{
+use tower_lsp_server::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location,
-    NumberOrString, Url,
+    NumberOrString, Uri as Url,
 };
+use tower_lsp_server::UriExt;
 
+#[cfg(test)]
+use super::UriParse;
 use super::{DiagnosticMap, DiagnosticSource, DocumentState};
 
 // ── In-memory module resolution ──────────────────────────────────────
@@ -29,7 +32,7 @@ pub(super) fn source_for_path(
     documents: &DashMap<Url, DocumentState>,
 ) -> Option<String> {
     // Prefer in-memory content if the file is currently open in the editor.
-    if let Ok(url) = Url::from_file_path(path) {
+    if let Some(url) = Url::from_file_path(path) {
         if let Some(doc) = documents.get(&url) {
             return Some(doc.source.clone());
         }
@@ -56,7 +59,7 @@ pub(super) fn populate_user_module_imports(
     documents: &DashMap<Url, DocumentState>,
     extra_pkg_paths: &[std::path::PathBuf],
 ) -> Vec<AmbiguousImport> {
-    let Ok(source_path) = source_uri.to_file_path() else {
+    let Some(source_path) = source_uri.to_file_path() else {
         return Vec::new(); // Non-file URI — nothing to resolve.
     };
     let Some(source_dir) = source_path.parent() else {
@@ -328,7 +331,7 @@ pub(super) fn import_candidate_paths_from_pkg_path(
 }
 
 pub(super) fn import_candidate_paths(uri: &Url, import: &ImportDecl) -> Vec<std::path::PathBuf> {
-    let Ok(source_path) = uri.to_file_path() else {
+    let Some(source_path) = uri.to_file_path() else {
         return vec![];
     };
     let Some(source_dir) = source_path.parent() else {
@@ -412,8 +415,8 @@ pub(super) fn build_document_module_graph(
 ) -> Option<ModuleGraphBuildResult> {
     use hew_parser::module::{Module, ModuleGraph};
 
-    let input_path = source_uri.to_file_path().ok()?;
-    let input_path = std::fs::canonicalize(&input_path).unwrap_or(input_path);
+    let input_path = source_uri.to_file_path()?;
+    let input_path = std::fs::canonicalize(&input_path).unwrap_or_else(|_| input_path.into_owned());
     let source_dir = input_path.parent().unwrap_or(std::path::Path::new("."));
     let root_id = module_id_from_file(source_dir, &input_path);
     let mut graph = ModuleGraph::new(root_id.clone());
@@ -553,7 +556,7 @@ pub(super) fn build_module_source_map(
         let Some(source_path) = module.source_paths.first() else {
             continue;
         };
-        let Ok(uri) = Url::from_file_path(source_path) else {
+        let Some(uri) = Url::from_file_path(source_path) else {
             continue;
         };
         let Some(source) = source_for_path(source_path, documents) else {
@@ -582,7 +585,7 @@ pub(super) fn build_dangling_import_diagnostics(
     let mut diagnostics_by_uri = DiagnosticMap::new();
 
     for dangling_import in dangling_imports {
-        let Ok(uri) = Url::from_file_path(&dangling_import.source_path) else {
+        let Some(uri) = Url::from_file_path(&dangling_import.source_path) else {
             continue;
         };
         let message = format!(
@@ -643,7 +646,7 @@ pub(super) fn build_ambiguous_import_diagnostics(
     let mut diagnostics_by_uri = DiagnosticMap::new();
 
     for ambiguity in ambiguities {
-        let Ok(uri) = Url::from_file_path(&ambiguity.source_path) else {
+        let Some(uri) = Url::from_file_path(&ambiguity.source_path) else {
             continue;
         };
         // Message mirrors the compiler's fail-closed resolver so the LSP and
@@ -724,7 +727,7 @@ pub(super) fn build_module_cycle_diagnostics(
         let Some(source_path) = module.source_paths.first() else {
             continue;
         };
-        let Ok(uri) = Url::from_file_path(source_path) else {
+        let Some(uri) = Url::from_file_path(source_path) else {
             continue;
         };
 
@@ -990,7 +993,7 @@ fn build_reverse_importer_index(documents: &DashMap<Url, DocumentState>) -> Hash
             };
             for candidate_uri in import_candidate_paths(&importer_uri, import)
                 .into_iter()
-                .filter_map(|path| Url::from_file_path(path).ok())
+                .filter_map(Url::from_file_path)
             {
                 index
                     .entry(candidate_uri)
@@ -1453,10 +1456,10 @@ fn hir_diagnostic_kind_string(kind: &HirDiagnosticKind) -> String {
     debug[..end].to_string()
 }
 
-fn zero_range() -> tower_lsp::lsp_types::Range {
-    tower_lsp::lsp_types::Range::new(
-        tower_lsp::lsp_types::Position::new(0, 0),
-        tower_lsp::lsp_types::Position::new(0, 0),
+fn zero_range() -> tower_lsp_server::lsp_types::Range {
+    tower_lsp_server::lsp_types::Range::new(
+        tower_lsp_server::lsp_types::Position::new(0, 0),
+        tower_lsp_server::lsp_types::Position::new(0, 0),
     )
 }
 
@@ -1505,7 +1508,7 @@ fn unnecessary_diagnostic_tags(kind: &TypeErrorKind) -> Option<Vec<DiagnosticTag
 mod tests {
     use hew_hir::{HirItem, HirModule, HirNodeId};
     use hew_parser::ast::Span;
-    use tower_lsp::lsp_types::Position;
+    use tower_lsp_server::lsp_types::Position;
 
     use super::*;
 

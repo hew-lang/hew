@@ -518,9 +518,6 @@ fn sandbox_graduation_corpus_is_fully_covered() {
     );
 }
 
-// Windows parity enforcement is tracked in #1823; Windows runners do not yet
-// provision the hew-sandbox-vm npm toolchain for this harness.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn playground_sources_match_native_or_catalogued_divergence() {
     set_test_hewpath();

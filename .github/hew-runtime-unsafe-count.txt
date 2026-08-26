@@ -1,0 +1,3 @@
+# Total of cargo-geiger's used and unused unsafe counters for hew-runtime.
+# Raising this value is an explicit review waiver for new unsafe code.
+total=43784

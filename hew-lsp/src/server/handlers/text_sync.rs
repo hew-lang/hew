@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
 use serde_json::Value;
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::{
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     InitializeParams, InitializeResult, MessageType, ServerCapabilities,
 };
+use tower_lsp_server::UriExt;
 
 use super::super::{
     build_server_capabilities, close_document_and_dependents, normalize_workspace_root,
@@ -16,15 +17,21 @@ fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
     let mut roots = Vec::with_capacity(params.workspace_folders.as_ref().map_or(1, Vec::len));
     if let Some(folders) = &params.workspace_folders {
         for folder in folders {
-            if let Ok(path) = folder.uri.to_file_path() {
-                roots.push(normalize_workspace_root(path));
+            if let Some(path) = folder.uri.to_file_path() {
+                roots.push(normalize_workspace_root(path.into_owned()));
             }
         }
     }
     if roots.is_empty() {
-        if let Some(root_uri) = &params.root_uri {
-            if let Ok(path) = root_uri.to_file_path() {
-                roots.push(normalize_workspace_root(path));
+        #[allow(
+            deprecated,
+            reason = "root_uri remains the LSP fallback for older clients"
+        )]
+        {
+            if let Some(root_uri) = &params.root_uri {
+                if let Some(path) = root_uri.to_file_path() {
+                    roots.push(normalize_workspace_root(path.into_owned()));
+                }
             }
         }
     }
@@ -44,7 +51,7 @@ fn decode_server_capabilities(caps_json: Value) -> std::result::Result<ServerCap
 }
 
 fn build_initialize_result(capabilities: &ServerCapabilities) -> Result<InitializeResult> {
-    use tower_lsp::jsonrpc::{Error, ErrorCode};
+    use tower_lsp_server::jsonrpc::{Error, ErrorCode};
 
     // Serialise to Value so that the test helper `build_initialize_result_from_caps_json`
     // can share the decode path.  The `experimental.typeHierarchyProvider` field set in
@@ -59,7 +66,7 @@ fn build_initialize_result(capabilities: &ServerCapabilities) -> Result<Initiali
 }
 
 pub(crate) fn build_initialize_result_from_caps_json(caps_json: Value) -> Result<InitializeResult> {
-    use tower_lsp::jsonrpc::{Error, ErrorCode};
+    use tower_lsp_server::jsonrpc::{Error, ErrorCode};
 
     let capabilities = decode_server_capabilities(caps_json).map_err(|error| Error {
         code: ErrorCode::InternalError,

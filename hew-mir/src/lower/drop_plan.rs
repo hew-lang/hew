@@ -7225,8 +7225,10 @@ pub(super) fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bo
 /// Build the elaborated block list + per-`ExitPath` drop plans for a
 /// function's CFG. Every basic block becomes one `ElabBlock` of
 /// `BlockKind::Normal`; `Terminator::Panic` synthesises a sibling
-/// `BlockKind::Cleanup` block. Each block's terminator maps to one
-/// `(ExitPath, DropPlan)` entry. `Return`-terminated blocks narrow
+/// `BlockKind::Cleanup` block. Every runtime-reachable terminator maps to one
+/// `(ExitPath, DropPlan)` entry. `Terminator::Unreachable` is instead a
+/// compiler-proven semantic endpoint: it deliberately has no `ExitPath`,
+/// cleanup block, or drop plan. `Return`-terminated blocks narrow
 /// the function-wide LIFO `lifo` sequence to bindings whose state at
 /// that block's exit is `Live` — bindings already `Consumed` on
 /// every reaching path do not need their drop fired again
@@ -7565,6 +7567,14 @@ pub(super) fn enumerate_exits(
     for block in blocks {
         let block_id = block.id;
         let plan = match &block.terminator {
+            Terminator::Unreachable => {
+                // A semantic unreachable is not a language-visible exit. In
+                // particular, do not reinterpret it as `Panic`/`Trap`, and do
+                // not run ownership cleanup for a path the compiler has proved
+                // impossible. The normal ElabBlock was still constructed above
+                // so this stage preserves the Raw-MIR CFG identity explicitly.
+                continue;
+            }
             Terminator::Return => (
                 ExitPath::Return { block: block_id },
                 DropPlan {
@@ -7871,6 +7881,44 @@ pub(super) fn enumerate_exits(
     }
     (elab_blocks, plans)
 }
+
+#[cfg(test)]
+mod semantic_unreachable_tests {
+    use super::*;
+
+    #[test]
+    fn semantic_unreachable_has_a_normal_block_but_no_exit_or_cleanup_plan() {
+        let raw = [BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Unreachable,
+        }];
+        let (elaborated, plans) = enumerate_exits(
+            &raw,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(elaborated.len(), 1);
+        let block = &elaborated[0];
+        assert_eq!(block.id, 0);
+        assert_eq!(block.kind, BlockKind::Normal);
+        assert!(block.drops.is_empty());
+        assert_eq!(block.successor, None);
+        assert!(
+            plans.is_empty(),
+            "unreachable must not manufacture an ExitPath"
+        );
+    }
+}
+
 // ============================================================================
 // #2418 fan-out exclusivity boundary — direct-CFG tests against
 // `dedup_whole_value_handoff`'s guarded-component collapse. Hand-constructed

@@ -1055,7 +1055,11 @@ impl Builder {
                             memo,
                         )
                     }
-                    Terminator::Trap { .. } => true,
+                    // Neither endpoint has a successor or transfers the
+                    // generator's value. `Unreachable` is semantically
+                    // impossible; `Trap` terminates the process. Both are
+                    // therefore safe for the body-end drop analysis.
+                    Terminator::Unreachable | Terminator::Trap { .. } => true,
                     // A `Return`-terminated path exits the function WITHOUT
                     // carrying the binding: `return v` moves the value through
                     // an `Instr::Move` into `Place::ReturnSlot`, and that Move

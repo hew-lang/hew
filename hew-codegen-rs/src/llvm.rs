@@ -30668,6 +30668,15 @@ fn lower_terminator<'ctx>(
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }
+        Terminator::Unreachable => {
+            // This is SIR's compiler-proven semantic endpoint, legalized
+            // through Raw/Checked/Elaborated MIR. It is not a language-visible
+            // trap and deliberately has no runtime call or cleanup edge.
+            fn_ctx
+                .builder
+                .build_unreachable()
+                .llvm_ctx("semantic unreachable")?;
+        }
         Terminator::Yield { value, next } => {
             // Generator suspension on the `llvm.coro.*` continuation substrate.
             //

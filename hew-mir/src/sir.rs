@@ -21,19 +21,24 @@ use hew_types::DefId;
 use hew_types::ResolvedTy;
 
 use crate::{
-    dataflow, BasicBlock, CheckedMirFunction, FunctionCallConv, Instr, IntArithOp, IntSignedness,
-    IrPipeline, ModuleCapabilities, ParamBoundaryFact, ParamBoundaryMode, Place, RawMirFunction,
-    Strategy, Terminator, TrapKind,
+    dataflow, BasicBlock, BlockKind, CheckedMirFunction, ElabBlock, ElaboratedMirFunction,
+    FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, ModuleCapabilities,
+    ParamBoundaryFact, ParamBoundaryMode, Place, RawMirFunction, Strategy, Terminator, TrapKind,
 };
 
-/// The result of lowering one SIR function into the existing raw/checked MIR
-/// boundary.  No elaborated MIR is produced for this slice: it accepts only
-/// scalar, non-owning values, and the code generator deliberately accepts a
-/// missing elaborated entry as an empty drop-plan set.
+/// The result of lowering one SIR function through the complete existing MIR
+/// ladder.
+///
+/// The first executable SIR slice admits only scalar, non-owning values, so
+/// its elaborated body has zero drop plans. It is nevertheless explicit: SIR
+/// must never rely on codegen's legacy "missing elaboration means no drops"
+/// compatibility behavior. In particular, a semantic `Unreachable` block is
+/// represented by a normal zero-drop elaborated block with no `ExitPath`.
 #[derive(Debug, Clone, PartialEq)]
 struct SirMirLowered {
     raw: RawMirFunction,
     checked: CheckedMirFunction,
+    elaborated: ElaboratedMirFunction,
 }
 
 /// A closed, self-contained scalar SIR call-graph realization.
@@ -50,6 +55,7 @@ pub struct SirMirComponent {
     callables: Vec<CallableId>,
     raw_mir: Vec<RawMirFunction>,
     checked_mir: Vec<CheckedMirFunction>,
+    elaborated_mir: Vec<ElaboratedMirFunction>,
 }
 
 impl SirMirComponent {
@@ -70,6 +76,7 @@ impl SirMirComponent {
         let mut pipeline = IrPipeline {
             raw_mir: self.raw_mir,
             checked_mir: self.checked_mir,
+            elaborated_mir: self.elaborated_mir,
             ..IrPipeline::default()
         };
         pipeline.capabilities =
@@ -207,6 +214,7 @@ pub fn lower_closed_scalar_component(
 
     let mut raw_mir = Vec::with_capacity(selected.len());
     let mut checked_mir = Vec::with_capacity(selected.len());
+    let mut elaborated_mir = Vec::with_capacity(selected.len());
     for callable_id in &selected {
         let function = unique_function_for_callable(module, *callable_id).ok_or_else(|| {
             SirMirLoweringError::unsupported(format!(
@@ -217,12 +225,14 @@ pub fn lower_closed_scalar_component(
         let lowered = lower_verified_sir_function(module, function)?;
         raw_mir.push(lowered.raw);
         checked_mir.push(lowered.checked);
+        elaborated_mir.push(lowered.elaborated);
     }
 
     Ok(SirMirComponent {
         callables: selected.into_iter().collect(),
         raw_mir,
         checked_mir,
+        elaborated_mir,
     })
 }
 
@@ -312,7 +322,12 @@ fn lower_verified_sir_function(
         cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
     };
     verify_strict_sir_raw_checked(module, callable, &raw, &checked)?;
-    Ok(SirMirLowered { raw, checked })
+    let elaborated = zero_drop_elaboration(&raw, &checked);
+    Ok(SirMirLowered {
+        raw,
+        checked,
+        elaborated,
+    })
 }
 
 /// Verify the small, deliberately storage-free SIR → raw/checked-MIR contract.
@@ -684,6 +699,7 @@ fn verify_strict_sir_terminator(
             }
         }
         Terminator::Goto { .. }
+        | Terminator::Unreachable
         | Terminator::Trap {
             kind: TrapKind::IntegerOverflow,
         } => {}
@@ -1017,9 +1033,9 @@ fn format_callable_path(module: &SemModule, path: &[CallableId]) -> String {
 /// adapter replaces only independently lowerable scalar/CFG functions,
 /// preserves every module-level layout/runtime fact, and keeps the established
 /// raw/checked MIR for all other functions while the cutover is in progress.
-/// Replaced functions deliberately lose their prior elaborated entry:
-/// retaining a drop plan authored for a different CFG would be unsound, while
-/// this value-only slice requires no drops.
+/// A replacement receives a fresh, explicit zero-drop elaborated body. Retaining
+/// a plan authored for a different CFG would be unsound, but omitting
+/// elaborated MIR would perpetuate a legacy codegen compatibility shortcut.
 #[allow(
     clippy::too_many_lines,
     reason = "the temporary bridge keeps module verification, per-function eligibility, and atomic pipeline replacement together so a partial candidate cannot obscure the transition boundary"
@@ -1124,13 +1140,19 @@ pub fn apply_sir_to_pipeline(
                     ));
                     continue;
                 }
-                pipeline.raw_mir[*raw_index] = lowered.raw;
+                let SirMirLowered {
+                    raw,
+                    checked,
+                    elaborated,
+                } = lowered;
+                pipeline.raw_mir[*raw_index] = raw;
                 if let Some(&checked_index) = matching_checked.first() {
-                    pipeline.checked_mir[checked_index] = lowered.checked;
+                    pipeline.checked_mir[checked_index] = checked;
                 }
                 pipeline
                     .elaborated_mir
                     .retain(|elaborated| elaborated.name != function.name);
+                pipeline.elaborated_mir.push(elaborated);
                 report
                     .statuses
                     .push((function.name.clone(), SirMirLoweringStatus::Lowered));
@@ -1243,7 +1265,49 @@ fn lower_sir_function_with_template(
         // scheduling itself must remain structural.
         cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
     };
-    Ok(SirMirLowered { raw, checked })
+    let elaborated = zero_drop_elaboration(&raw, &checked);
+    Ok(SirMirLowered {
+        raw,
+        checked,
+        elaborated,
+    })
+}
+
+/// Build the explicit elaborated artifact for the initial SIR value-only
+/// subset.
+///
+/// This is intentionally not a second drop-elaboration algorithm. The subset
+/// rejects ownership-bearing values before Raw MIR, so it has no possible drop
+/// obligations. It nevertheless retains every Raw block as a normal `ElabBlock`
+/// and carries no `ExitPath` plans for a semantic `Unreachable`; that makes the
+/// Raw → Checked → Elaborated ladder total for SIR bodies without treating an
+/// impossible path as a trap or cleanup edge.
+fn zero_drop_elaboration(
+    raw: &RawMirFunction,
+    checked: &CheckedMirFunction,
+) -> ElaboratedMirFunction {
+    debug_assert_eq!(raw.name, checked.name);
+    debug_assert_eq!(raw.return_ty, checked.return_ty);
+    debug_assert_eq!(raw.blocks, checked.blocks);
+    ElaboratedMirFunction {
+        name: raw.name.clone(),
+        return_ty: raw.return_ty.clone(),
+        statements: Vec::new(),
+        decisions: checked.decisions.clone(),
+        blocks: raw
+            .blocks
+            .iter()
+            .map(|block| ElabBlock {
+                id: block.id,
+                kind: BlockKind::Normal,
+                drops: Vec::new(),
+                successor: None,
+            })
+            .collect(),
+        drop_plans: Vec::new(),
+        coroutine: None,
+        lambda_captures: Vec::new(),
+    }
 }
 
 fn raw_source_origin(origin: &FunctionSourceOrigin) -> crate::SourceOrigin {
@@ -1919,9 +1983,7 @@ impl<'a> RawLowerer<'a> {
                     else_target,
                 })
             }
-            SemTerminator::Unreachable => Err(SirMirLoweringError::unsupported(
-                "SIR unreachable terminators remain deferred until raw MIR has a semantic unreachable terminator",
-            )),
+            SemTerminator::Unreachable => self.terminate(Terminator::Unreachable),
         }
     }
 
@@ -2258,6 +2320,26 @@ mod tests {
         }
     }
 
+    fn strict_unreachable_function() -> SemFunction {
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("semantic_unreachable"),
+            name: "semantic_unreachable".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Unreachable,
+            }],
+        }
+    }
+
     fn strict_boolean_equality_function() -> SemFunction {
         SemFunction {
             id: ItemId(0),
@@ -2345,6 +2427,43 @@ mod tests {
             verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
                 .expect_err("a raw target outside the canonical CFG must fail at the SIR boundary");
         assert!(error.reason.contains("targets missing bb1"));
+    }
+
+    #[test]
+    fn realizes_semantic_unreachable_through_the_explicit_zero_drop_ladder() {
+        let function = strict_unreachable_function();
+        let pipeline =
+            lower_closed_scalar_component(&test_module(vec![function]), &[CallableId(0)])
+                .expect("a semantic unreachable is a legal strict SIR endpoint")
+                .into_pipeline();
+
+        let raw = pipeline
+            .raw_mir
+            .first()
+            .expect("the component must contain one raw-MIR body");
+        assert!(matches!(raw.blocks[0].terminator, Terminator::Unreachable));
+        assert!(raw.blocks[0].successors().is_empty());
+
+        let checked = pipeline
+            .checked_mir
+            .first()
+            .expect("the component must contain one checked-MIR body");
+        assert_eq!(checked.blocks, raw.blocks);
+        assert!(checked.checks.is_empty());
+        assert!(checked.cooperate_sites.is_empty());
+
+        let elaborated = pipeline
+            .elaborated_mir
+            .first()
+            .expect("SIR bodies must carry an explicit elaborated artifact");
+        assert_eq!(elaborated.name, raw.name);
+        assert!(elaborated.drop_plans.is_empty());
+        assert_eq!(elaborated.blocks.len(), 1);
+        let block = &elaborated.blocks[0];
+        assert_eq!(block.id, 0);
+        assert_eq!(block.kind, BlockKind::Normal);
+        assert!(block.drops.is_empty());
+        assert_eq!(block.successor, None);
     }
 
     #[test]
@@ -2881,7 +3000,11 @@ mod tests {
         let pipeline = component.into_pipeline();
         assert_eq!(pipeline.raw_mir.len(), 2);
         assert_eq!(pipeline.checked_mir.len(), 2);
-        assert!(pipeline.elaborated_mir.is_empty());
+        assert_eq!(pipeline.elaborated_mir.len(), 2);
+        assert!(pipeline
+            .elaborated_mir
+            .iter()
+            .all(|elaborated| elaborated.drop_plans.is_empty()));
     }
 
     #[test]
@@ -3080,7 +3203,10 @@ mod tests {
 
         let report = apply_sir_to_pipeline(&test_module(vec![function]), &mut pipeline);
         assert_eq!(report.lowered_count(), 1, "{report:#?}");
-        assert!(pipeline.elaborated_mir.is_empty());
+        assert_eq!(pipeline.elaborated_mir.len(), 1);
+        assert_eq!(pipeline.elaborated_mir[0].name, "constant");
+        assert!(pipeline.elaborated_mir[0].drop_plans.is_empty());
+        assert_eq!(pipeline.elaborated_mir[0].blocks.len(), 1);
         assert!(matches!(
             pipeline.raw_mir[0].blocks[0].instructions.as_slice(),
             [

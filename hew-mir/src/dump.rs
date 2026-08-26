@@ -371,11 +371,12 @@ fn render_terminator_with_kind(term: &Terminator, kind: Option<&SuspendKind>) ->
 
 #[allow(
     clippy::too_many_lines,
-    reason = "exhaustive match over all 27 Terminator variants; splitting would obscure locality"
+    reason = "exhaustive match over all 28 Terminator variants; splitting would obscure locality"
 )]
 fn render_terminator(term: &Terminator) -> String {
     match term {
         Terminator::Return => "return".to_string(),
+        Terminator::Unreachable => "unreachable".to_string(),
         Terminator::Goto { target } => format!("goto bb{target}"),
         Terminator::Branch {
             cond,
@@ -2557,6 +2558,22 @@ mod tests {
         assert!(
             dump.contains("trap(IntegerOverflow)"),
             "expected trap(IntegerOverflow) in dump:\n{dump}"
+        );
+    }
+
+    #[test]
+    fn semantic_unreachable_renders_as_its_own_endpoint() {
+        let mut func = minimal_raw_func("semantic_unreachable");
+        func.blocks[0].instructions.clear();
+        func.blocks[0].terminator = Terminator::Unreachable;
+        let dump = dump_mir(&minimal_pipeline_with_raw(func), DumpStage::Raw);
+        assert!(
+            dump.contains("unreachable"),
+            "expected semantic unreachable in dump:\n{dump}"
+        );
+        assert!(
+            !dump.contains("trap("),
+            "semantic unreachable must not render as a trap:\n{dump}"
         );
     }
 }

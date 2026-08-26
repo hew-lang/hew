@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 import re
 import subprocess
@@ -17,6 +18,135 @@ SCRIPT = ROOT / "scripts" / "compiled-hew-shards.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 COUNT = 1169
 SHARDS = 4
+
+# The fail-closed YAML subset already used by `scripts/check-gate-reachability.py`
+# (and by `test_ci_workflow_contract.py`'s semantic contracts) — no third-party
+# dependency, and one parser means one reading of the same file.
+_reachability_spec = importlib.util.spec_from_file_location(
+    "check_gate_reachability", ROOT / "scripts" / "check-gate-reachability.py"
+)
+_reachability = importlib.util.module_from_spec(_reachability_spec)
+assert _reachability_spec.loader is not None
+sys.modules.setdefault("check_gate_reachability", _reachability)
+_reachability_spec.loader.exec_module(_reachability)
+parse_yaml = _reachability.parse_yaml
+
+# The certified producer: packages the bundle the archive `linux-nextest-
+# archive` already built. It compiles nothing itself.
+PRODUCER_JOB = "compiled-hew-linux"
+BUILD_AUTHORITY_JOB = "linux-nextest-archive"
+CONSUMER_JOBS = ("compiled-hew-shards", "compiled-hew-aggregate")
+ARTIFACT_NAME = "compiled-hew-linux-${{ github.sha }}"
+
+# A consumer running any of these would mean the one-producer contract is
+# decorative: the job could still build its own bundle instead of consuming
+# the certified one.
+_REBUILD_FRAGMENTS = (
+    "compiled-hew-artifact.py pack",
+    "cargo nextest archive",
+    "make hew-native",
+    "make hew-profile-check",
+)
+
+
+def _workflow_jobs(text: str) -> dict[str, dict]:
+    document = parse_yaml(text, "ci.yml")
+    assert isinstance(document, dict), "workflow is not a mapping"
+    found = document.get("jobs") or {}
+    assert isinstance(found, dict), "jobs: is not a mapping"
+    return {name: body for name, body in found.items() if isinstance(body, dict)}
+
+
+def _job_steps(job: dict) -> list[dict]:
+    found = job.get("steps") or []
+    return [step for step in found if isinstance(step, dict)]
+
+
+def _job_needs(job: dict) -> list[str]:
+    found = job.get("needs")
+    if found is None:
+        return []
+    if isinstance(found, str):
+        return [found]
+    assert isinstance(found, list), f"needs: is neither a scalar nor a list: {found!r}"
+    return [item for item in found if isinstance(item, str)]
+
+
+def _run_bodies(job: dict) -> list[str]:
+    return [step["run"] for step in _job_steps(job) if isinstance(step.get("run"), str)]
+
+
+def _artifact_names(job: dict, action_prefix: str) -> list[str]:
+    names = []
+    for step in _job_steps(job):
+        uses = step.get("uses")
+        if isinstance(uses, str) and uses.startswith(action_prefix):
+            with_ = step.get("with") or {}
+            name = with_.get("name") if isinstance(with_, dict) else None
+            if isinstance(name, str):
+                names.append(name)
+    return names
+
+
+def assert_one_certified_producer_feeds_every_consumer(text: str) -> None:
+    """Exactly one certified compiled-Hew artifact producer/build authority.
+
+    `compiled-hew-linux` packages the bundle from the archive
+    `linux-nextest-archive` already built; it compiles nothing itself. The
+    four-way shard matrix and the aggregate are the consumers: both depend
+    on and download that one certified bundle rather than building or
+    repackaging their own.
+    """
+    jobs = _workflow_jobs(text)
+
+    producer = jobs.get(PRODUCER_JOB)
+    assert producer is not None, f"no {PRODUCER_JOB!r} job"
+    assert BUILD_AUTHORITY_JOB in _job_needs(producer), (
+        f"{PRODUCER_JOB} does not depend on {BUILD_AUTHORITY_JOB!r}; it would "
+        "have no certified build to package and would have to compile its own"
+    )
+
+    # Exactly one step, in exactly one job, packages the certified bundle.
+    packers = [
+        name
+        for name, job in jobs.items()
+        for body in _run_bodies(job)
+        if "compiled-hew-artifact.py pack" in body
+    ]
+    assert packers == [PRODUCER_JOB], (
+        "expected exactly one packaging step, owned by "
+        f"{PRODUCER_JOB!r}, found: {packers}"
+    )
+
+    # Exactly one job uploads the certified bundle under its one name.
+    uploaders = [
+        name
+        for name, job in jobs.items()
+        if ARTIFACT_NAME in _artifact_names(job, "actions/upload-artifact@")
+    ]
+    assert uploaders == [PRODUCER_JOB], (
+        f"expected exactly one uploader of {ARTIFACT_NAME!r}, found: {uploaders}"
+    )
+
+    for name in CONSUMER_JOBS:
+        job = jobs.get(name)
+        assert job is not None, f"no {name!r} consumer job"
+        assert PRODUCER_JOB in _job_needs(job), (
+            f"{name} does not depend on {PRODUCER_JOB!r}; a missing bundle "
+            "would look like an ordinary cold start rather than a failed gate"
+        )
+        assert ARTIFACT_NAME in _artifact_names(job, "actions/download-artifact@"), (
+            f"{name} never downloads {ARTIFACT_NAME!r}"
+        )
+        assert any(
+            "compiled-hew-artifact.py unpack" in body for body in _run_bodies(job)
+        ), f"{name} downloads the bundle but never unpacks/verifies it"
+        for body in _run_bodies(job):
+            for fragment in _REBUILD_FRAGMENTS:
+                assert fragment not in body, (
+                    f"{name} runs {fragment!r}; a consumer that can still "
+                    "build defeats the one-producer contract silently"
+                )
 
 
 def identity(index: int) -> str:
@@ -178,11 +308,14 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    def test_one_certified_build_feeds_all_four_shards(self) -> None:
-        self.assertEqual(self.workflow.count("make hew-native libhew-debug"), 1)
+    def test_one_certified_producer_feeds_every_consumer(self) -> None:
+        assert_one_certified_producer_feeds_every_consumer(self.workflow)
+
+        # The four-way shard matrix is exhaustive and disjoint: one hash
+        # partition per shard index, covering the whole `/4` space.
         self.assertIn("shard: [1, 2, 3, 4]", self.workflow)
         self.assertIn('--partition "hash:${{ matrix.shard }}/4"', self.workflow)
-        self.assertIn("name: compiled-hew-linux-${{ github.sha }}", self.workflow)
+
         for job in (
             "compiled-hew-linux",
             "compiled-hew-shards",
@@ -202,8 +335,94 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
                 "RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}",
                 section,
             )
-        self.assertGreaterEqual(
-            self.workflow.count("scripts/compiled-hew-artifact.py unpack"), 2
+
+    def test_the_producer_consumer_contract_rejects_removal_or_miswiring(
+        self,
+    ) -> None:
+        text = self.workflow
+
+        def rejects(mutated: str) -> None:
+            self.assertNotEqual(
+                mutated, text, "the mutation matched nothing; the test is vacuous"
+            )
+            try:
+                assert_one_certified_producer_feeds_every_consumer(mutated)
+            except AssertionError:
+                return
+            raise AssertionError("a broken producer/consumer contract was accepted")
+
+        # Deleting the pack step leaves no producer at all.
+        rejects(
+            text.replace(
+                "          python3 scripts/compiled-hew-artifact.py pack \\\n"
+                '            --source-debug-dir "$root/target/debug" \\\n'
+                '            --source-revision "$GITHUB_SHA" \\\n'
+                "            --output compiled-hew-linux.tar.gz\n",
+                "",
+            )
+        )
+
+        # Renaming the producer job strands both consumers' `needs:` and the
+        # bundle they expect to download.
+        rejects(
+            text.replace(
+                "  compiled-hew-linux:\n", "  compiled-hew-linux-renamed:\n", 1
+            )
+        )
+
+        # Dropping the producer's own dependency on the build authority would
+        # let it compile a second build that happened to agree.
+        rejects(
+            text.replace(
+                "    needs: [changes, linux-nextest-archive]\n",
+                "    needs: changes\n",
+                1,
+            )
+        )
+
+        # Un-gating a shard consumer from the producer's `needs:` turns a
+        # missing bundle into an ordinary cold start instead of a failed gate.
+        rejects(
+            text.replace(
+                "    needs: [changes, compiled-hew-linux]\n"
+                "    runs-on: ubuntu-24.04\n"
+                "    timeout-minutes: 60\n",
+                "    needs: [changes]\n"
+                "    runs-on: ubuntu-24.04\n"
+                "    timeout-minutes: 60\n",
+                1,
+            )
+        )
+
+        # Miswiring the shard matrix's download to a different artifact name
+        # hides a bundle that no longer matches what the producer certified.
+        rejects(
+            text.replace(
+                "      - name: Download compiled Hew bundle\n"
+                "        if: env.RUN_CODE_PATH == 'true'\n"
+                "        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1\n"
+                "        with:\n"
+                "          name: compiled-hew-linux-${{ github.sha }}\n",
+                "      - name: Download compiled Hew bundle\n"
+                "        if: env.RUN_CODE_PATH == 'true'\n"
+                "        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1\n"
+                "        with:\n"
+                "          name: compiled-hew-linux-old-${{ github.sha }}\n",
+                1,
+            )
+        )
+
+        # A consumer that still packages its own bundle defeats the contract
+        # even while every wire and download stays intact.
+        rejects(
+            text.replace(
+                "          python3 scripts/compiled-hew-shards.py run\n",
+                "          python3 scripts/compiled-hew-artifact.py pack "
+                '--source-debug-dir target/debug --source-revision "$GITHUB_SHA" '
+                "--output compiled-hew-linux.tar.gz\n"
+                "          python3 scripts/compiled-hew-shards.py run\n",
+                1,
+            )
         )
 
     def test_aggregate_uses_an_independent_full_inventory_and_both_gates(self) -> None:

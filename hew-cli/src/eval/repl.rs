@@ -43,6 +43,10 @@ pub struct ReplSession {
     /// JIT execution mode.  When `None` (or `Worker`), uses the existing
     /// AOT+spawn path.  When `Inprocess`, routes through LLJIT.
     jit_mode: Option<crate::args::JitMode>,
+    /// SIR lane selected by `hew eval`. This stays on the session so every
+    /// synthetic fragment, loaded file, native AOT compile, and WASM AOT
+    /// compile makes the same explicit lowering choice.
+    sir_mode: crate::compile::SirMode,
 }
 
 #[derive(Debug)]
@@ -157,6 +161,17 @@ enum TypeQueryFailure {
 enum ExpressionEvalPlan {
     Compile { auto_print: bool },
     Display(String),
+}
+
+/// One explicit lowering/execution selection for an eval compilation.
+///
+/// Native and WASM AOT both consume this shared configuration, preventing a
+/// new compiler-lane flag from being threaded into only one execution backend.
+#[derive(Clone, Copy)]
+struct EvalBackendOptions<'a> {
+    target: Option<&'a str>,
+    jit_mode: Option<crate::args::JitMode>,
+    sir_mode: crate::compile::SirMode,
 }
 
 #[derive(Debug)]
@@ -604,6 +619,7 @@ impl ReplSession {
             project_dir: None,
             eval_target: None,
             jit_mode: None,
+            sir_mode: crate::compile::SirMode::Disabled,
         }
     }
 
@@ -623,6 +639,7 @@ impl ReplSession {
             project_dir,
             eval_target: None,
             jit_mode: None,
+            sir_mode: crate::compile::SirMode::Disabled,
         }
     }
 
@@ -655,6 +672,12 @@ impl ReplSession {
         self.jit_mode = mode;
     }
 
+    /// Select the SIR lowering lane for every compilation performed by this
+    /// session. `Disabled` remains the default for non-CLI embedding callers.
+    pub fn set_sir_mode(&mut self, mode: crate::compile::SirMode) {
+        self.sir_mode = mode;
+    }
+
     #[cfg(test)]
     pub(crate) fn add_item_for_test(&mut self, source: &str) {
         self.session.add_item(source);
@@ -664,6 +687,14 @@ impl ReplSession {
         self.eval_target.as_deref().is_some_and(|t| {
             crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
         })
+    }
+
+    fn backend_options(&self) -> EvalBackendOptions<'_> {
+        EvalBackendOptions {
+            target: self.eval_target.as_deref(),
+            jit_mode: self.jit_mode,
+            sir_mode: self.sir_mode,
+        }
     }
 
     /// Evaluate a line of input and return the result.
@@ -743,8 +774,7 @@ impl ReplSession {
             "<repl>",
             self.execution_timeout,
             self.project_dir.clone(),
-            self.eval_target.as_deref(),
-            self.jit_mode,
+            self.backend_options(),
         ) {
             Ok(output) => {
                 // On success, persist the input into session state.
@@ -850,8 +880,7 @@ impl ReplSession {
             "<repl>",
             self.execution_timeout,
             self.project_dir.clone(),
-            self.eval_target.as_deref(),
-            self.jit_mode,
+            self.backend_options(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &checked_program.kind);
@@ -932,8 +961,7 @@ impl ReplSession {
             source_label,
             self.execution_timeout,
             self.project_dir.clone(),
-            self.eval_target.as_deref(),
-            self.jit_mode,
+            self.backend_options(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &kind);
@@ -1286,8 +1314,7 @@ impl ReplSession {
             source_label,
             self.execution_timeout,
             self.project_dir.clone(),
-            self.eval_target.as_deref(),
-            self.jit_mode,
+            self.backend_options(),
         ) {
             Ok(output) => Ok(output),
             Err(error) => Err(CliEvalError::from(error)),
@@ -1436,13 +1463,26 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
 /// as the frontend-to-codegen path.  The REPL's fast in-process typecheck is
 /// kept for user-facing error reporting only; this function runs the full
 /// correctly-ordered pipeline for codegen.
+fn eval_compile_options(
+    project_dir: Option<PathBuf>,
+    backend: EvalBackendOptions<'_>,
+) -> crate::compile::CompileOptions {
+    crate::compile::CompileOptions {
+        project_dir,
+        target: backend.target.map(str::to_owned),
+        repl_fragment: true,
+        sir_mode: backend.sir_mode,
+        ..crate::compile::CompileOptions::default()
+    }
+}
+
 fn run_inprocess_compiled(
     program: hew_parser::ast::Program,
     source: &str,
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
-    target: Option<&str>,
+    backend: EvalBackendOptions<'_>,
 ) -> Result<String, CompiledEvalError> {
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
@@ -1454,12 +1494,7 @@ fn run_inprocess_compiled(
         source,
         source_label,
         &bin_path,
-        &crate::compile::CompileOptions {
-            project_dir,
-            target: target.map(str::to_owned),
-            repl_fragment: true,
-            ..crate::compile::CompileOptions::default()
-        },
+        &eval_compile_options(project_dir, backend),
     )
     .map_err(|()| CompiledEvalError::DiagnosticsRendered)?;
 
@@ -1503,23 +1538,22 @@ fn run_eval_compiled(
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
-    target: Option<&str>,
-    jit_mode: Option<crate::args::JitMode>,
+    backend: EvalBackendOptions<'_>,
 ) -> Result<String, CompiledEvalError> {
     // Only an explicit `--jit=inprocess` reaches the fail-closed guard. `Auto`
     // selects the best available backend (today: AOT) and must not fail closed.
-    if matches!(jit_mode, Some(crate::args::JitMode::Inprocess)) {
+    if matches!(backend.jit_mode, Some(crate::args::JitMode::Inprocess)) {
         return run_inprocess_jit(program, source, source_label, project_dir);
     }
 
-    let is_wasm = target.is_some_and(|t| {
+    let is_wasm = backend.target.is_some_and(|t| {
         crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
     });
 
     if is_wasm {
-        run_wasm_eval_compiled(program, source, source_label, timeout, project_dir, target)
+        run_wasm_eval_compiled(program, source, source_label, timeout, project_dir, backend)
     } else {
-        run_inprocess_compiled(program, source, source_label, timeout, project_dir, target)
+        run_inprocess_compiled(program, source, source_label, timeout, project_dir, backend)
     }
 }
 
@@ -1558,7 +1592,7 @@ fn run_wasm_eval_compiled(
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
-    target: Option<&str>,
+    backend: EvalBackendOptions<'_>,
 ) -> Result<String, CompiledEvalError> {
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
@@ -1569,12 +1603,7 @@ fn run_wasm_eval_compiled(
         source,
         source_label,
         &module_path,
-        &crate::compile::CompileOptions {
-            project_dir,
-            target: target.map(str::to_owned),
-            repl_fragment: true,
-            ..crate::compile::CompileOptions::default()
-        },
+        &eval_compile_options(project_dir, backend),
     )
     .map_err(|()| CompiledEvalError::DiagnosticsRendered)?;
 
@@ -1630,6 +1659,7 @@ pub fn run_interactive(
     timeout: Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
+    sir_mode: crate::compile::SirMode,
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::IsTerminal;
@@ -1637,6 +1667,7 @@ pub fn run_interactive(
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
     session.set_jit_mode(jit);
+    session.set_sir_mode(sir_mode);
     let (primary_prompt, continuation_prompt) = prompts_for_terminal_state(
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
@@ -1709,9 +1740,11 @@ pub fn eval_one(
     timeout: Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
+    sir_mode: crate::compile::SirMode,
 ) -> Result<String, CliEvalError> {
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
     session.set_jit_mode(jit);
+    session.set_sir_mode(sir_mode);
     session.eval_cli(expr, "<eval>")
 }
 
@@ -1725,6 +1758,7 @@ pub fn eval_file(
     timeout: Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
+    sir_mode: crate::compile::SirMode,
 ) -> Result<String, CliEvalError> {
     let (source, input_name) = if path == "-" {
         let mut source = String::new();
@@ -1744,6 +1778,7 @@ pub fn eval_file(
         ReplSession::for_path_with_target(path, timeout, target)
     };
     session.set_jit_mode(jit);
+    session.set_sir_mode(sir_mode);
     session.eval_source_file_cli(&source, &input_name, &input_name)
 }
 
@@ -2158,7 +2193,13 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT, None, None);
+        let result = eval_one(
+            "2 * 3",
+            DEFAULT_EVAL_TIMEOUT,
+            None,
+            None,
+            crate::compile::SirMode::Disabled,
+        );
         assert_eq!(result.unwrap(), "6\n");
     }
 
@@ -2304,7 +2345,13 @@ mod tests {
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
         )
         .unwrap();
-        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None, None);
+        let result = eval_file(
+            path.to_str().unwrap(),
+            DEFAULT_EVAL_TIMEOUT,
+            None,
+            None,
+            crate::compile::SirMode::Disabled,
+        );
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -2317,7 +2364,13 @@ mod tests {
         let path = dir.path().join("hew_eval_balanced_incomplete_expr.hew");
         std::fs::write(&path, "1 +\n2\n").unwrap();
 
-        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None, None);
+        let result = eval_file(
+            path.to_str().unwrap(),
+            DEFAULT_EVAL_TIMEOUT,
+            None,
+            None,
+            crate::compile::SirMode::Disabled,
+        );
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -2415,6 +2468,7 @@ mod tests {
             DEFAULT_EVAL_TIMEOUT,
             None,
             None,
+            crate::compile::SirMode::Disabled,
         );
         assert!(
             result.is_ok(),
@@ -2573,7 +2627,13 @@ mod tests {
         if !require_wasi_toolchain() {
             return;
         }
-        let result = eval_one("1 + 2", DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"), None);
+        let result = eval_one(
+            "1 + 2",
+            DEFAULT_EVAL_TIMEOUT,
+            Some("wasm32-wasi"),
+            None,
+            crate::compile::SirMode::Disabled,
+        );
         assert_eq!(result.unwrap(), "3\n");
     }
 
@@ -2587,6 +2647,7 @@ mod tests {
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
             None,
+            crate::compile::SirMode::Disabled,
         );
         assert_eq!(result.unwrap(), "hello from wasi\n");
     }
@@ -2634,6 +2695,7 @@ mod tests {
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
             None,
+            crate::compile::SirMode::Disabled,
         );
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
     }
@@ -2660,8 +2722,11 @@ mod tests {
             "<test>",
             DEFAULT_EVAL_TIMEOUT,
             None,
-            None,
-            Some(crate::args::JitMode::Inprocess),
+            EvalBackendOptions {
+                target: None,
+                jit_mode: Some(crate::args::JitMode::Inprocess),
+                sir_mode: crate::compile::SirMode::Disabled,
+            },
         );
         assert!(
             inprocess_result.is_err(),
@@ -2679,8 +2744,11 @@ mod tests {
             "<test>",
             DEFAULT_EVAL_TIMEOUT,
             None,
-            None,
-            Some(crate::args::JitMode::Auto),
+            EvalBackendOptions {
+                target: None,
+                jit_mode: Some(crate::args::JitMode::Auto),
+                sir_mode: crate::compile::SirMode::Disabled,
+            },
         );
         assert_eq!(
             auto_result.expect("Auto mode must succeed via AOT fallback"),
@@ -2697,13 +2765,20 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let result_no_flag = eval_one("1 + 1", DEFAULT_EVAL_TIMEOUT, None, None)
-            .expect("eval without --jit should succeed");
+        let result_no_flag = eval_one(
+            "1 + 1",
+            DEFAULT_EVAL_TIMEOUT,
+            None,
+            None,
+            crate::compile::SirMode::Disabled,
+        )
+        .expect("eval without --jit should succeed");
         let result_worker = eval_one(
             "1 + 1",
             DEFAULT_EVAL_TIMEOUT,
             None,
             Some(crate::args::JitMode::Worker),
+            crate::compile::SirMode::Disabled,
         )
         .expect("eval with --jit=worker should succeed");
         assert_eq!(
@@ -2730,5 +2805,40 @@ mod tests {
             session.jit_mode, None,
             "set_jit_mode(None) should clear the mode"
         );
+    }
+
+    #[test]
+    fn sir_mode_is_preserved_for_native_and_wasm_eval_compiles() {
+        let native = eval_compile_options(
+            None,
+            EvalBackendOptions {
+                target: None,
+                jit_mode: None,
+                sir_mode: crate::compile::SirMode::Lower,
+            },
+        );
+        assert_eq!(native.sir_mode, crate::compile::SirMode::Lower);
+        assert!(native.repl_fragment);
+        assert!(native.target.is_none());
+
+        let wasm = eval_compile_options(
+            None,
+            EvalBackendOptions {
+                target: Some("wasm32-wasi"),
+                jit_mode: None,
+                sir_mode: crate::compile::SirMode::Shadow,
+            },
+        );
+        assert_eq!(wasm.sir_mode, crate::compile::SirMode::Shadow);
+        assert!(wasm.repl_fragment);
+        assert_eq!(wasm.target.as_deref(), Some("wasm32-wasi"));
+    }
+
+    #[test]
+    fn set_sir_mode_stores_mode_on_session() {
+        let mut session = ReplSession::new();
+        assert_eq!(session.sir_mode, crate::compile::SirMode::Disabled);
+        session.set_sir_mode(crate::compile::SirMode::Lower);
+        assert_eq!(session.sir_mode, crate::compile::SirMode::Lower);
     }
 }

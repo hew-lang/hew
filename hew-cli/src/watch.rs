@@ -355,7 +355,7 @@ fn emit_check_start(check_target: &str, palette: &WatchPalette) {
 
 fn run_check_and_program(
     check_target: &str,
-    _options: &compile::CompileOptions,
+    options: &compile::CompileOptions,
     palette: &WatchPalette,
     start: Instant,
 ) {
@@ -363,7 +363,8 @@ fn run_check_and_program(
         return;
     };
 
-    let result = crate::compile_native_binary(Path::new(check_target), Path::new(&tmp_bin));
+    let result =
+        crate::compile_native_binary(Path::new(check_target), Path::new(&tmp_bin), options);
     let elapsed = start.elapsed();
 
     match result {

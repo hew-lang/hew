@@ -184,7 +184,8 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::args::{
-        CompileArgs, CompletionsArgs, ShellChoice, WireCheckArgs, WireCommand, WireSubcommand,
+        CompileArgs, CompletionsArgs, ShellChoice, SirModeArgs, WireCheckArgs, WireCommand,
+        WireSubcommand,
     };
 
     use super::{
@@ -299,8 +300,7 @@ mod tests {
             emit_dir: None,
             emit_llvm: false,
             dump_mir: None,
-            sir_shadow: false,
-            sir_lower: false,
+            sir: SirModeArgs::default(),
             dump_sir: false,
             target: None,
             opt_level: "0".to_string(),
@@ -326,6 +326,7 @@ mod tests {
             opt_level: "0".to_string(),
             link_libs: Vec::new(),
             common: crate::args::CommonBuildArgs::default(),
+            sir: SirModeArgs::default(),
             format: crate::args::DiagnosticFormat::Text,
         });
         let mut dispatcher = RecordingDispatcher::default();

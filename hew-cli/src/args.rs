@@ -38,6 +38,40 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+/// Selects how a compile-capable command uses Hew Semantic IR (SIR).
+///
+/// This is deliberately shared by every command that can reach native or
+/// WASM code generation. Keeping the selection at the CLI boundary prevents
+/// commands such as `run` and `test` from accidentally taking a different
+/// compiler lane than `compile` and `build`.
+#[derive(Debug, Args, Clone, Copy, Default)]
+pub struct SirModeArgs {
+    /// Run the experimental HIR → SIR → raw-MIR candidate lane and verify it
+    /// at the backend front gate, while keeping established MIR as the emitted
+    /// artifact.
+    #[arg(long = "sir-shadow", conflicts_with = "sir_lower")]
+    pub sir_shadow: bool,
+    /// Compile a closed scalar direct-call graph through SIR → raw/checked MIR
+    /// with no legacy function-body lowering. A reachable unsupported feature
+    /// is an explicit error; it never falls back to established MIR.
+    #[arg(long = "sir-lower", conflicts_with = "sir_shadow")]
+    pub sir_lower: bool,
+}
+
+impl SirModeArgs {
+    /// Convert parsed flags into the one compiler-driver mode threaded through
+    /// every compile-capable command.
+    pub fn mode(self) -> crate::compile::SirMode {
+        if self.sir_lower {
+            crate::compile::SirMode::Lower
+        } else if self.sir_shadow {
+            crate::compile::SirMode::Shadow
+        } else {
+            crate::compile::SirMode::Disabled
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Compile a .hew file through the v0.5 IR ladder.
@@ -120,20 +154,13 @@ pub struct CompileArgs {
     /// spot-checking the front-half lowering during development.
     #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["raw", "checked", "elab"])]
     pub dump_mir: Option<String>,
-    /// Run the experimental HIR → SIR → raw-MIR candidate lane and verify it
-    /// at the backend front gate, while keeping established MIR as the emitted
-    /// artifact.
-    #[arg(long = "sir-shadow", conflicts_with = "sir_lower")]
-    pub sir_shadow: bool,
-    /// Use the experimental SIR → raw-MIR realization for the verified scalar
-    /// CFG subset. Unsupported functions explicitly retain established MIR.
-    #[arg(long = "sir-lower", conflicts_with = "sir_shadow")]
-    pub sir_lower: bool,
+    #[command(flatten)]
+    pub sir: SirModeArgs,
     /// Emit the verified Semantic IR subset and exit. Unsupported functions are
     /// reported explicitly; no MIR or LLVM artifacts are emitted.
     #[arg(
         long = "dump-sir",
-        conflicts_with_all = ["sir_lower", "sir_shadow"]
+        conflicts_with_all = ["dump_mir", "sir_lower", "sir_shadow"]
     )]
     pub dump_sir: bool,
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
@@ -337,6 +364,8 @@ pub struct RunArgs {
     pub timeout: Option<String>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
+    #[command(flatten)]
+    pub sir: SirModeArgs,
     /// Surface diagnostic-only stack-allocation hints from the type checker.
     ///
     /// When set, the checker's escape-analysis pass prints
@@ -358,6 +387,7 @@ impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
+            sir_mode: self.sir.mode(),
             ..self.common.base_compile_options()
         }
     }
@@ -383,6 +413,8 @@ pub struct DebugArgs {
     pub target: Option<String>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
+    #[command(flatten)]
+    pub sir: SirModeArgs,
     /// Arguments to pass to the debugger/program (after --).
     #[arg(last = true)]
     pub program_args: Vec<String>,
@@ -392,6 +424,7 @@ impl DebugArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
+            sir_mode: self.sir.mode(),
             ..self.common.base_compile_options()
         }
     }
@@ -501,6 +534,8 @@ pub struct BuildArgs {
     pub link_libs: Vec<String>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
+    #[command(flatten)]
+    pub sir: SirModeArgs,
     /// Diagnostic output format: `text` (default) or `json`.
     #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
     pub format: DiagnosticFormat,
@@ -510,6 +545,7 @@ impl BuildArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
+            sir_mode: self.sir.mode(),
             ..self.common.base_compile_options()
         }
     }
@@ -614,6 +650,10 @@ pub struct EvalArgs {
     /// including in an interactive terminal.
     #[arg(long, short = 'q')]
     pub quiet: bool,
+    /// Select the SIR lowering lane for every evaluation compiled by this
+    /// command, including native AOT, WASM AOT, and interactive REPL input.
+    #[command(flatten)]
+    pub sir: SirModeArgs,
     /// Expression to evaluate (if no -f given).
     pub expr: Vec<String>,
 }
@@ -666,10 +706,8 @@ pub struct TestArgs {
     /// memory pressure from concurrent compilation tasks.
     #[arg(long, short = 'j', value_name = "N")]
     pub jobs: Option<std::num::NonZeroUsize>,
-    /// Exercise the SIR → raw-MIR candidate lane for each test compilation
-    /// while continuing to emit the established MIR artifact.
-    #[arg(long = "sir-shadow")]
-    pub sir_shadow: bool,
+    #[command(flatten)]
+    pub sir: SirModeArgs,
 }
 
 // ---------------------------------------------------------------------------
@@ -691,11 +729,48 @@ pub struct WatchArgs {
     pub debounce: u64,
     #[command(flatten)]
     pub common: CommonBuildArgs,
+    /// SIR flags are accepted only with `--run`, whose build goes through the
+    /// ordinary native compilation path. Check-only watches stop at the
+    /// frontend and therefore cannot truthfully select an IR lane.
+    #[command(flatten)]
+    pub sir: WatchSirModeArgs,
 }
 
 impl WatchArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
-        self.common.base_compile_options()
+        crate::compile::CompileOptions {
+            sir_mode: self.sir.mode(),
+            ..self.common.base_compile_options()
+        }
+    }
+}
+
+/// SIR mode selection for `hew watch`.
+///
+/// A check-only watch deliberately stops before MIR/SIR realization. Requiring
+/// `--run` at parse time prevents `--sir-lower` or `--sir-shadow` from being
+/// accepted and then silently doing nothing.
+#[derive(Debug, Args, Clone, Copy, Default)]
+pub struct WatchSirModeArgs {
+    /// Run the experimental HIR → SIR → raw-MIR candidate lane while keeping
+    /// established MIR as the emitted artifact.
+    #[arg(long = "sir-shadow", conflicts_with = "sir_lower", requires = "run")]
+    pub sir_shadow: bool,
+    /// Compile the watched program through the strict closed SIR direct-call
+    /// lane. Reachable unsupported features are errors, never fallbacks.
+    #[arg(long = "sir-lower", conflicts_with = "sir_shadow", requires = "run")]
+    pub sir_lower: bool,
+}
+
+impl WatchSirModeArgs {
+    pub fn mode(self) -> crate::compile::SirMode {
+        if self.sir_lower {
+            crate::compile::SirMode::Lower
+        } else if self.sir_shadow {
+            crate::compile::SirMode::Shadow
+        } else {
+            crate::compile::SirMode::Disabled
+        }
     }
 }
 
@@ -889,4 +964,90 @@ pub struct LspArgs {
     /// Arguments passed through to `hew-lsp`.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, Command};
+    use crate::compile::SirMode;
+
+    #[test]
+    fn sir_lower_is_selectable_for_every_compile_capable_command() {
+        let compile = Cli::try_parse_from(["hew", "compile", "sample.hew", "--sir-lower"])
+            .expect("compile should accept --sir-lower");
+        let run = Cli::try_parse_from(["hew", "run", "sample.hew", "--sir-lower"])
+            .expect("run should accept --sir-lower");
+        let build = Cli::try_parse_from(["hew", "build", "sample.hew", "--sir-lower"])
+            .expect("build should accept --sir-lower");
+        let debug = Cli::try_parse_from(["hew", "debug", "sample.hew", "--sir-lower"])
+            .expect("debug should accept --sir-lower");
+        let watch = Cli::try_parse_from(["hew", "watch", "sample.hew", "--run", "--sir-lower"])
+            .expect("watch should accept --sir-lower");
+        let test = Cli::try_parse_from(["hew", "test", "--sir-lower"])
+            .expect("test should accept --sir-lower");
+        let eval = Cli::try_parse_from(["hew", "eval", "--sir-lower", "let x = 1;"])
+            .expect("eval should accept --sir-lower");
+
+        for command in [compile, run, build, debug, watch, test, eval] {
+            assert_eq!(
+                command_sir_mode(command.command.expect("command should be present")),
+                SirMode::Lower
+            );
+        }
+    }
+
+    #[test]
+    fn sir_mode_defaults_to_disabled_and_rejects_competing_flags() {
+        let defaulted = Cli::try_parse_from(["hew", "build", "sample.hew"])
+            .expect("build should parse without an SIR mode");
+        assert_eq!(
+            command_sir_mode(defaulted.command.expect("build command should be present")),
+            SirMode::Disabled
+        );
+
+        let shadow = Cli::try_parse_from(["hew", "test", "--sir-shadow"])
+            .expect("test should preserve --sir-shadow");
+        assert_eq!(
+            command_sir_mode(shadow.command.expect("test command should be present")),
+            SirMode::Shadow
+        );
+
+        assert!(
+            Cli::try_parse_from(["hew", "run", "sample.hew", "--sir-shadow", "--sir-lower",])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(
+            ["hew", "compile", "sample.hew", "--dump-sir", "--sir-lower",]
+        )
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "hew",
+            "compile",
+            "sample.hew",
+            "--dump-sir",
+            "--dump-mir",
+            "raw",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["hew", "watch", "sample.hew", "--sir-lower"]).is_err());
+        assert!(Cli::try_parse_from(["hew", "watch", "sample.hew", "--sir-shadow"]).is_err());
+        assert!(
+            Cli::try_parse_from(["hew", "eval", "--sir-shadow", "--sir-lower", "1 + 2"]).is_err()
+        );
+    }
+
+    fn command_sir_mode(command: Command) -> SirMode {
+        match command {
+            Command::Compile(args) => args.sir.mode(),
+            Command::Run(args) => args.to_compile_options().sir_mode,
+            Command::Debug(args) => args.to_compile_options().sir_mode,
+            Command::Build(args) => args.to_compile_options().sir_mode,
+            Command::Test(args) => args.sir.mode(),
+            Command::Watch(args) => args.to_compile_options().sir_mode,
+            Command::Eval(args) => args.sir.mode(),
+            other => panic!("expected a compile-capable command, got {other:?}"),
+        }
+    }
 }

@@ -89,7 +89,7 @@ pub use ownership::{
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use sir::{
-    apply_sir_to_pipeline, lower_sir_function, SirMirLowered, SirMirLoweringError,
+    apply_sir_to_pipeline, lower_closed_scalar_component, SirMirComponent, SirMirLoweringError,
     SirMirLoweringReport, SirMirLoweringStatus,
 };
 pub use state_clone::{

@@ -210,11 +210,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             compile_paths: &compile_paths,
             timeout,
             jobs: requested_jobs(args.jobs),
-            sir_mode: if args.sir_shadow {
-                crate::compile::SirMode::Shadow
-            } else {
-                crate::compile::SirMode::Disabled
-            },
+            sir_mode: args.sir.mode(),
         },
     );
     output::output_results(&summary, use_color, format);

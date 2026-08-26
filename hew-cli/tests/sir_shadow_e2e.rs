@@ -1,9 +1,9 @@
 //! End-to-end contracts for the experimental Semantic IR lane.
 //!
-//! `--sir-shadow` must exercise and verify the SIR → raw-MIR candidate while
-//! leaving the established raw-MIR dump byte-for-byte authoritative.  Once a
-//! function is eligible, `--sir-lower` must select that same candidate rather
-//! than merely reporting that it was constructed.
+//! `--sir-shadow` must exercise and verify the temporary SIR → raw-MIR
+//! candidate while leaving the established raw-MIR dump byte-for-byte
+//! authoritative. `--sir-lower` is intentionally stronger: it must compile a
+//! closed SIR call graph without constructing legacy function bodies.
 
 mod support;
 
@@ -27,14 +27,21 @@ fn sir_scalar_diamond(x: i64) -> i64 {
 }
 ";
 
-const EXECUTABLE_SCALAR: &str = r"
-fn sir_selected_add(x: i64, y: i64) -> i64 {
-    x + y
+const CLOSED_DIRECT_CALLS: &str = r"
+fn main() -> i64 {
+    if twice(40) == 42 {
+        0
+    } else {
+        1
+    }
 }
 
-fn main() -> i64 {
-    println(sir_selected_add(19, 23));
-    0
+fn twice(value: i64) -> i64 {
+    increment(increment(value))
+}
+
+fn increment(value: i64) -> i64 {
+    value + 1
 }
 ";
 
@@ -70,7 +77,47 @@ fn sir_or_value(flag: bool) -> i64 {
 }
 
 fn main() -> i64 {
-    println(sir_and_value(false) + sir_and_value(true) + sir_or_value(false) + sir_or_value(true));
+    let total = sir_and_value(false) + sir_and_value(true) + sir_or_value(false) + sir_or_value(true);
+    if total == 1 { 0 } else { 1 }
+}
+";
+
+const REACHABLE_UNSUPPORTED_CALL: &str = r"
+fn main() -> i64 {
+    effectful()
+}
+
+fn effectful() -> i64 {
+    println(42);
+    0
+}
+";
+
+const RECURSIVE_DIRECT_CALLS: &str = r"
+fn main() -> i64 {
+    countdown(5)
+}
+
+fn countdown(value: i64) -> i64 {
+    if value == 0 {
+        0
+    } else {
+        countdown(value - 1)
+    }
+}
+";
+
+const UNREACHABLE_UNSUPPORTED_BODY: &str = r"
+fn main() -> i64 {
+    selected()
+}
+
+fn selected() -> i64 {
+    0
+}
+
+fn unrelated_effectful() -> i64 {
+    println(42);
     0
 }
 ";
@@ -161,13 +208,14 @@ fn sir_shadow_keeps_established_raw_mir_authoritative() {
     );
 }
 
-/// Lower mode selects the verified candidate for the supported scalar
-/// value/CFG subset.  Both straight-line arithmetic and a branch/join must be
-/// value-oriented (no legacy `stmt: use` markers); checked arithmetic retains
-/// its required raw-MIR trap CFG.
+/// Lower mode owns a closed direct-call graph. It must construct fresh bodies
+/// for `main`, `twice`, and `increment` from SIR, preserve call continuations
+/// and checked arithmetic, and omit every legacy HIR-use statement.
 #[test]
-fn sir_lower_selects_value_and_cfg_lowering() {
-    let (_dir, source) = scalar_fixture();
+fn sir_lower_owns_a_closed_direct_call_graph() {
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_closed_direct_calls.hew");
+    fs::write(&source, CLOSED_DIRECT_CALLS).expect("write strict SIR fixture");
     let baseline = raw_mir_dump(&source, None);
     let lowered = raw_mir_dump(&source, Some("--sir-lower"));
 
@@ -176,11 +224,11 @@ fn sir_lower_selects_value_and_cfg_lowering() {
 
     let baseline_dump = String::from_utf8_lossy(&baseline.stdout);
     let lowered_dump = String::from_utf8_lossy(&lowered.stdout);
-    let baseline_fn = function_section(&baseline_dump, "sir_scalar_add");
-    let lowered_fn = function_section(&lowered_dump, "sir_scalar_add");
+    let baseline_fn = function_section(&baseline_dump, "increment");
+    let lowered_fn = function_section(&lowered_dump, "increment");
     assert_ne!(
         baseline_fn, lowered_fn,
-        "--sir-lower must select the SIR candidate instead of only constructing it",
+        "--sir-lower must replace legacy body lowering instead of only constructing SIR",
     );
     assert!(
         !lowered_fn.contains("stmt: use"),
@@ -198,8 +246,8 @@ fn sir_lower_selects_value_and_cfg_lowering() {
         lowered_fn.contains("trap(IntegerOverflow)"),
         "SIR arithmetic overflow must preserve raw-MIR trap semantics:\n{lowered_fn}",
     );
-    let baseline_diamond = function_section(&baseline_dump, "sir_scalar_diamond");
-    let lowered_diamond = function_section(&lowered_dump, "sir_scalar_diamond");
+    let baseline_diamond = function_section(&baseline_dump, "main");
+    let lowered_diamond = function_section(&lowered_dump, "main");
     assert_ne!(
         baseline_diamond, lowered_diamond,
         "--sir-lower must select SIR block arguments for an ordinary scalar if/join",
@@ -212,32 +260,34 @@ fn sir_lower_selects_value_and_cfg_lowering() {
         lowered_diamond.contains("branch "),
         "the source if must remain explicit CFG in SIR realization:\n{lowered_diamond}",
     );
+    assert!(
+        lowered_diamond.contains("call twice"),
+        "the SIR caller must legalize its direct call as raw-MIR Call:\n{lowered_diamond}",
+    );
+    let lowered_twice = function_section(&lowered_dump, "twice");
+    assert!(
+        lowered_twice.matches("call increment").count() == 2,
+        "nested direct SIR calls must stay explicit through raw MIR:\n{lowered_twice}",
+    );
 
     let stderr = String::from_utf8_lossy(&lowered.stderr);
     assert!(
-        stderr.contains("SIR lower: verified"),
-        "lower run must report its verified SIR lane:\n{}",
-        describe_output(&lowered),
-    );
-    assert!(
-        !stderr.contains("realized 0/"),
-        "the eligible scalar arithmetic function must be selected from SIR:\n{}",
+        stderr.contains("SIR lower: selected 3 verified callable(s)")
+            && stderr.contains("no legacy MIR bodies were lowered"),
+        "lower run must report a closed strict SIR lane:\n{}",
         describe_output(&lowered),
     );
 }
 
-/// A selected SIR callee must survive all remaining established pipeline
-/// stages and execute with the same observable result. The caller stays on
-/// the legacy path because call realization is intentionally not part of this
-/// first adapter slice; that mixed module is the intended incremental-cutover
-/// topology.
+/// A strict SIR-only call component must survive raw/checked MIR, LLVM, link,
+/// and execution without a legacy caller or callee body.
 #[test]
-fn sir_lower_selected_scalar_callee_compiles_and_runs() {
+fn sir_lower_closed_direct_call_graph_compiles_and_runs() {
     require_codegen();
 
     let dir = support::tempdir();
     let source = dir.path().join("sir_lower_execution.hew");
-    fs::write(&source, EXECUTABLE_SCALAR).expect("write executable SIR fixture");
+    fs::write(&source, CLOSED_DIRECT_CALLS).expect("write executable SIR fixture");
 
     let mut compile = Command::new(hew_binary());
     compile
@@ -247,15 +297,16 @@ fn sir_lower_selected_scalar_callee_compiles_and_runs() {
         .arg(dir.path())
         .arg(&source)
         .current_dir(repo_root());
-    let compiled = support::run_bounded_command(compile, "compile selected SIR scalar callee");
+    let compiled = support::run_bounded_command(compile, "compile strict SIR direct-call graph");
     assert_success(
         &compiled,
-        "SIR-lowered scalar callee must compile through the established backend",
+        "strict SIR direct-call graph must compile through the established backend",
     );
     let compile_stderr = String::from_utf8_lossy(&compiled.stderr);
     assert!(
-        compile_stderr.contains("SIR lower: verified") && !compile_stderr.contains("realized 0/"),
-        "compile must select at least one SIR body:\n{}",
+        compile_stderr.contains("SIR lower: selected 3 verified callable(s)")
+            && compile_stderr.contains("no legacy MIR bodies were lowered"),
+        "compile must select the complete direct SIR graph:\n{}",
         describe_output(&compiled),
     );
 
@@ -268,17 +319,231 @@ fn sir_lower_selected_scalar_callee_compiles_and_runs() {
     );
     let executed = support::run_bounded_command(
         Command::new(&binary),
-        format!("run selected SIR scalar callee {}", binary.display()),
+        format!("run strict SIR direct-call graph {}", binary.display()),
     );
     assert_success(
         &executed,
-        "native binary containing SIR-lowered callee must run successfully",
+        "native binary containing only SIR-lowered bodies must run successfully",
+    );
+}
+
+/// Shadow intentionally cannot realize direct calls through its legacy raw-MIR
+/// template, so strict direct-call behavior is compared directly with the
+/// established compiler rather than inferred from a shadow success. This is
+/// temporary migration evidence: once SIR becomes the normal path, the legacy
+/// half of this comparison is deleted with its body lowerer.
+#[test]
+fn sir_lower_matches_established_execution_for_closed_direct_call_graph() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_direct_call_parity.hew");
+    let established_dir = dir.path().join("established");
+    let strict_dir = dir.path().join("strict");
+    fs::create_dir(&established_dir).expect("create established emit directory");
+    fs::create_dir(&strict_dir).expect("create strict emit directory");
+    fs::write(&source, CLOSED_DIRECT_CALLS).expect("write direct-call parity fixture");
+
+    let mut established_compile = Command::new(hew_binary());
+    established_compile
+        .arg("compile")
+        .arg("--emit-dir")
+        .arg(&established_dir)
+        .arg(&source)
+        .current_dir(repo_root());
+    let established_compiled = support::run_bounded_command(
+        established_compile,
+        "compile established direct-call parity graph",
+    );
+    assert_success(
+        &established_compiled,
+        "established direct-call graph must compile for parity",
+    );
+
+    let mut strict_compile = Command::new(hew_binary());
+    strict_compile
+        .arg("compile")
+        .arg("--sir-lower")
+        .arg("--emit-dir")
+        .arg(&strict_dir)
+        .arg(&source)
+        .current_dir(repo_root());
+    let strict_compiled = support::run_bounded_command(
+        strict_compile,
+        "compile strict SIR direct-call parity graph",
+    );
+    assert_success(
+        &strict_compiled,
+        "strict SIR direct-call graph must compile for parity",
+    );
+
+    let established_binary =
+        hew_testutil::compiled_binary_path(&established_dir, "sir_direct_call_parity");
+    let strict_binary = hew_testutil::compiled_binary_path(&strict_dir, "sir_direct_call_parity");
+    let established = support::run_bounded_command(
+        Command::new(&established_binary),
+        format!(
+            "run established direct-call parity graph {}",
+            established_binary.display()
+        ),
+    );
+    let strict = support::run_bounded_command(
+        Command::new(&strict_binary),
+        format!(
+            "run strict direct-call parity graph {}",
+            strict_binary.display()
+        ),
+    );
+
+    assert_eq!(
+        strict.status.code(),
+        established.status.code(),
+        "strict and established direct-call graphs must have the same exit status\nstrict:\n{}\nestablished:\n{}",
+        describe_output(&strict),
+        describe_output(&established),
     );
     assert_eq!(
-        String::from_utf8_lossy(&executed.stdout),
-        "42\n",
-        "SIR-lowered scalar callee returned an unexpected result:\n{}",
-        describe_output(&executed),
+        strict.stdout,
+        established.stdout,
+        "strict and established direct-call graphs must have the same stdout\nstrict:\n{}\nestablished:\n{}",
+        describe_output(&strict),
+        describe_output(&established),
+    );
+}
+
+/// A closed SIR component may contain cycles.  The strict driver must select
+/// the recursive callable once, preserve its direct raw-MIR edge, and let the
+/// existing backend predeclare the cycle without falling back to HIR bodies.
+#[test]
+fn sir_lower_recursive_direct_call_graph_compiles_and_runs() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_recursive_execution.hew");
+    fs::write(&source, RECURSIVE_DIRECT_CALLS).expect("write recursive SIR fixture");
+
+    let lowered = raw_mir_dump(&source, Some("--sir-lower"));
+    assert_success(&lowered, "strict SIR recursive raw MIR dump must succeed");
+    let lowered_dump = String::from_utf8_lossy(&lowered.stdout);
+    let countdown = function_section(&lowered_dump, "countdown");
+    assert!(
+        countdown.contains("call countdown"),
+        "the recursive SIR edge must remain an explicit raw-MIR call:\n{countdown}",
+    );
+    assert!(
+        !countdown.contains("stmt: use"),
+        "the recursive caller must not be a legacy HIR-derived body:\n{countdown}",
+    );
+
+    let mut compile = Command::new(hew_binary());
+    compile
+        .arg("compile")
+        .arg("--sir-lower")
+        .arg("--emit-dir")
+        .arg(dir.path())
+        .arg(&source)
+        .current_dir(repo_root());
+    let compiled = support::run_bounded_command(compile, "compile strict recursive SIR graph");
+    assert_success(
+        &compiled,
+        "strict SIR recursive graph must compile through the existing backend",
+    );
+    assert!(
+        String::from_utf8_lossy(&compiled.stderr)
+            .contains("SIR lower: selected 2 verified callable(s)"),
+        "strict recursion must select one closed two-callable component:\n{}",
+        describe_output(&compiled),
+    );
+
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "sir_recursive_execution");
+    let executed = support::run_bounded_command(
+        Command::new(&binary),
+        format!("run strict recursive SIR graph {}", binary.display()),
+    );
+    assert_success(
+        &executed,
+        "native binary containing recursive SIR-only bodies must run successfully",
+    );
+}
+
+/// Strict selection is closed over calls from `main`, not over every HIR body
+/// in a source file.  An unsupported body outside that graph must neither
+/// force a fallback nor leak into the emitted component.
+#[test]
+fn sir_lower_excludes_unreachable_unsupported_hir_bodies() {
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_unreachable_unsupported.hew");
+    fs::write(&source, UNREACHABLE_UNSUPPORTED_BODY)
+        .expect("write unreachable unsupported SIR fixture");
+
+    let output = raw_mir_dump(&source, Some("--sir-lower"));
+    assert_success(
+        &output,
+        "an unrelated unsupported HIR body must not block strict SIR lowering",
+    );
+    let dump = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        dump.contains("fn main(") && dump.contains("fn selected("),
+        "the closed entry component must contain its selected bodies:\n{dump}",
+    );
+    assert!(
+        !dump.contains("fn unrelated_effectful("),
+        "strict SIR must not emit an unrelated legacy or unsupported body:\n{dump}",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unrelated HIR bodies remain outside the current semantic surface")
+            && stderr.contains("were not compiled or used as fallbacks"),
+        "strict SIR must describe the excluded HIR body rather than silently using it:\n{}",
+        describe_output(&output),
+    );
+}
+
+/// Target selection must happen after strict SIR owns the body graph.  LLVM
+/// emission for WASM is a lightweight target-front proof that no native-only
+/// facts leaked into the SIR component or its MIR realization.
+#[test]
+fn sir_lower_closed_graph_emits_wasm_llvm() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_wasm_frontend.hew");
+    let emit_dir = dir.path().join("emit");
+    fs::create_dir(&emit_dir).expect("create strict SIR WASM emit directory");
+    fs::write(&source, CLOSED_DIRECT_CALLS).expect("write strict SIR WASM fixture");
+
+    let mut compile = Command::new(hew_binary());
+    compile
+        .arg("compile")
+        .arg("--sir-lower")
+        .arg("--target")
+        .arg("wasm32-unknown-unknown")
+        .arg("--emit-llvm")
+        .arg("--emit-dir")
+        .arg(&emit_dir)
+        .arg(&source)
+        .current_dir(repo_root());
+    let compiled = support::run_bounded_command(compile, "emit strict SIR WASM LLVM");
+    assert_success(
+        &compiled,
+        "strict SIR closed graph must reach the WASM LLVM frontend",
+    );
+    assert!(
+        String::from_utf8_lossy(&compiled.stderr)
+            .contains("SIR lower: selected 3 verified callable(s)"),
+        "WASM frontend must receive the strict SIR component:\n{}",
+        describe_output(&compiled),
+    );
+
+    let llvm = fs::read_to_string(emit_dir.join("sir_wasm_frontend.ll"))
+        .expect("strict SIR WASM LLVM emission must produce an .ll artifact");
+    assert!(
+        llvm.contains("target triple = \"wasm32-unknown-unknown\""),
+        "strict SIR LLVM must retain the requested WASM target:\n{llvm}",
+    );
+    assert!(
+        llvm.contains("@main(") && llvm.contains("@twice(") && llvm.contains("@increment("),
+        "the WASM frontend must receive definitions for the complete strict SIR component:\n{llvm}",
     );
 }
 
@@ -334,9 +599,9 @@ fn sir_dump_preserves_short_circuit_control_flow() {
     );
 }
 
-/// Selected SIR CFG lowering must preserve both truth-table sides of `&&` and
-/// `||` through raw MIR, LLVM, and a native executable. The calling `main`
-/// remains temporary legacy scaffolding until the direct-call SIR cutover.
+/// Strict SIR lowering must preserve both truth-table sides of `&&` and `||`
+/// through raw MIR, LLVM, and a native executable, including the direct calls
+/// from the SIR-owned `main` body.
 #[test]
 fn sir_lower_short_circuit_truth_table_compiles_and_runs() {
     require_codegen();
@@ -353,15 +618,15 @@ fn sir_lower_short_circuit_truth_table_compiles_and_runs() {
         .arg(dir.path())
         .arg(&source)
         .current_dir(repo_root());
-    let compiled = support::run_bounded_command(compile, "compile selected SIR short-circuit CFG");
+    let compiled = support::run_bounded_command(compile, "compile strict SIR short-circuit CFG");
     assert_success(
         &compiled,
-        "SIR-lowered short-circuit functions must compile through the backend",
+        "strict SIR short-circuit call graph must compile through the backend",
     );
     let compile_stderr = String::from_utf8_lossy(&compiled.stderr);
     assert!(
-        compile_stderr.contains("SIR lower: verified") && !compile_stderr.contains("realized 0/"),
-        "compile must select the short-circuit SIR functions:\n{}",
+        compile_stderr.contains("no legacy MIR bodies were lowered"),
+        "compile must select the strict short-circuit SIR graph:\n{}",
         describe_output(&compiled),
     );
 
@@ -372,12 +637,44 @@ fn sir_lower_short_circuit_truth_table_compiles_and_runs() {
     );
     assert_success(
         &executed,
-        "native binary containing SIR-lowered short-circuit functions must run",
+        "native binary containing strict SIR short-circuit functions must run",
     );
-    assert_eq!(
-        String::from_utf8_lossy(&executed.stdout),
-        "1\n",
-        "SIR short-circuit truth table produced an unexpected result:\n{}",
-        describe_output(&executed),
+}
+
+/// Strict selection is a hard boundary: a reachable callable that has no
+/// supported SIR body must fail rather than re-entering HIR→MIR lowering.
+#[test]
+fn sir_lower_rejects_reachable_unsupported_call_without_fallback() {
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_reachable_unsupported.hew");
+    fs::write(&source, REACHABLE_UNSUPPORTED_CALL).expect("write unsupported strict SIR fixture");
+
+    let mut command = Command::new(hew_binary());
+    command
+        .arg("compile")
+        .arg("--sir-lower")
+        .arg("--dump-mir")
+        .arg("raw")
+        .arg(&source)
+        .current_dir(repo_root());
+    let output = support::run_bounded_command(command, "reject unsupported strict SIR call");
+
+    assert!(
+        !output.status.success(),
+        "strict SIR lowering must fail instead of falling back:\n{}",
+        describe_output(&output),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("SIR strict lowering failed")
+            && stderr.contains("requires one lowered body for `effectful`")
+            && stderr.contains("main → effectful"),
+        "failure must identify the closed SIR call-graph boundary:\n{}",
+        describe_output(&output),
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "strict failure must not emit a legacy raw-MIR dump:\n{}",
+        describe_output(&output),
     );
 }

@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::OpId;
 use crate::{
-    BlockId, OpId, SemFunction, SemModule, SemOp, SemOpKind, SemTerminator, UseMode, ValueId,
+    BlockId, CallableId, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp,
+    SemOpKind, SemParamPassing, SemTerminator, UseMode, ValueId,
 };
 use hew_types::ResolvedTy;
 
@@ -9,10 +11,47 @@ use hew_types::ResolvedTy;
 pub enum SirDiagnosticKind {
     DuplicateFunctionName(String),
     DuplicateFunctionDeclaration(String),
+    DuplicateCallableId(CallableId),
+    DuplicateCallableDeclaration(String),
+    DuplicateCallableSymbol(String),
+    InvalidCallable {
+        callable: CallableId,
+        reason: String,
+    },
+    InvalidRootCallable {
+        callable: CallableId,
+        reason: String,
+    },
+    /// `entry_callable` is an executable-program boundary, not merely one of
+    /// the source roots.  Keep its source identity and ABI rule separate from
+    /// the general root-unit table invariant so a malformed entry cannot
+    /// silently become an arbitrary callable during SIR → MIR lowering.
+    InvalidEntryCallable {
+        callable: CallableId,
+        reason: String,
+    },
+    MissingFunctionCallable {
+        declaration: String,
+    },
+    FunctionCallableMismatch {
+        callable: CallableId,
+        reason: String,
+    },
+    UnknownCallable {
+        op: OpId,
+        callee: CallableId,
+    },
     MissingEntry(BlockId),
     EntryBlockArgs {
         entry: BlockId,
         actual: usize,
+    },
+    /// SIR block IDs are vector positions as well as CFG identities at the
+    /// raw-MIR realization boundary.  Keep that representation invariant
+    /// explicit so consumers may safely index a verified function by ID.
+    NonCanonicalBlockOrder {
+        expected: BlockId,
+        actual: BlockId,
     },
     DuplicateBlock(BlockId),
     UnknownBlock(BlockId),
@@ -33,6 +72,12 @@ pub enum SirDiagnosticKind {
     DuplicateOp(OpId),
     InvalidResultArity {
         op: OpId,
+        actual: usize,
+    },
+    InvalidCallResultArity {
+        op: OpId,
+        callee: CallableId,
+        expected: usize,
         actual: usize,
     },
     InvalidConstType {
@@ -56,6 +101,11 @@ pub enum SirDiagnosticKind {
         expected: String,
         actual: Option<String>,
     },
+    /// Unit-returning SIR functions use a zero-value `Return`; the initial
+    /// value domain intentionally has no unit SSA carrier.
+    UnitReturnValue {
+        value: ValueId,
+    },
     UndefinedValue(ValueId),
     NonDominatingUse {
         value: ValueId,
@@ -74,9 +124,21 @@ pub struct SirDiagnostic {
     pub kind: SirDiagnosticKind,
 }
 
+#[derive(Debug)]
+struct CallableContext<'a> {
+    by_id: BTreeMap<CallableId, &'a SemCallable>,
+}
+
+impl<'a> CallableContext<'a> {
+    fn callable(&self, id: CallableId) -> Option<&'a SemCallable> {
+        self.by_id.get(&id).copied()
+    }
+}
+
 #[must_use]
 pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
+    let callables = verify_callable_table(module, &mut diagnostics);
     let mut names = HashSet::new();
     let mut declarations = HashSet::new();
     for function in &module.functions {
@@ -95,8 +157,21 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
                 )),
             ));
         }
-        diagnostics.extend(verify_function(function));
+        diagnostics.extend(verify_function_with_context(function, Some(&callables)));
     }
+    diagnostics
+}
+
+/// Verify one function against the resolved callable table in `module`.
+///
+/// Use this at an inter-IR boundary that can receive direct calls.  The
+/// context-free [`verify_function`] remains useful for local CFG construction,
+/// but cannot prove a `CallableId`'s signature or ABI facts in isolation.
+#[must_use]
+pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> Vec<SirDiagnostic> {
+    let mut diagnostics = Vec::new();
+    let callables = verify_callable_table(module, &mut diagnostics);
+    diagnostics.extend(verify_function_with_context(function, Some(&callables)));
     diagnostics
 }
 
@@ -111,9 +186,33 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
 )]
 #[must_use]
 pub fn verify_function(function: &SemFunction) -> Vec<SirDiagnostic> {
+    verify_function_with_context(function, None)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
+)]
+fn verify_function_with_context(
+    function: &SemFunction,
+    callable_context: Option<&CallableContext<'_>>,
+) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
+    verify_function_callable_identity(function, callable_context, &mut diagnostics);
     let mut blocks = BTreeMap::new();
-    for block in &function.blocks {
+    for (index, block) in function.blocks.iter().enumerate() {
+        let expected = BlockId(
+            u32::try_from(index).expect("SIR block count exceeds the module-local ID range"),
+        );
+        if block.id != expected {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::NonCanonicalBlockOrder {
+                    expected,
+                    actual: block.id,
+                },
+            ));
+        }
         if blocks.insert(block.id, block).is_some() {
             diagnostics.push(diag(function, SirDiagnosticKind::DuplicateBlock(block.id)));
         }
@@ -165,7 +264,7 @@ pub fn verify_function(function: &SemFunction) -> Vec<SirDiagnostic> {
     // defined in a later block rather than silently skipping its type check.
     for block in &function.blocks {
         for op in &block.ops {
-            verify_operation_shape(function, op, &types, &mut diagnostics);
+            verify_operation_shape(function, op, &types, callable_context, &mut diagnostics);
         }
         for edge in block.terminator.successors() {
             let Some(target) = blocks.get(&edge.target) else {
@@ -233,14 +332,248 @@ pub fn verify_function(function: &SemFunction) -> Vec<SirDiagnostic> {
 
 #[allow(
     clippy::too_many_lines,
+    reason = "callable identity, signature, and root-entry invariants share one auditable module boundary"
+)]
+fn verify_callable_table<'a>(
+    module: &'a SemModule,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) -> CallableContext<'a> {
+    let mut by_id = BTreeMap::new();
+    let mut ids = HashSet::new();
+    let mut declarations = HashSet::new();
+    let mut symbols = HashSet::new();
+    for (index, callable) in module.callables.iter().enumerate() {
+        let expected = CallableId(
+            u32::try_from(index).expect("SIR callable count exceeds the module-local ID range"),
+        );
+        if callable.id != expected {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                callable: callable.id,
+                reason: format!(
+                    "table position {index} requires id {:?}, found {:?}",
+                    expected, callable.id
+                ),
+            }));
+        }
+        if !ids.insert(callable.id) {
+            diagnostics.push(module_diag(SirDiagnosticKind::DuplicateCallableId(
+                callable.id,
+            )));
+        }
+        if !declarations.insert(callable.declaration.clone()) {
+            diagnostics.push(module_diag(
+                SirDiagnosticKind::DuplicateCallableDeclaration(
+                    callable.declaration.full_path().to_string(),
+                ),
+            ));
+        }
+        if !symbols.insert(callable.symbol.clone()) {
+            diagnostics.push(module_diag(SirDiagnosticKind::DuplicateCallableSymbol(
+                callable.symbol.clone(),
+            )));
+        }
+        if callable.call_conv != SemCallConv::Default {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                callable: callable.id,
+                reason: "initial SIR direct-call domain requires Default call convention"
+                    .to_string(),
+            }));
+        }
+        if callable.kind != SemCallableKind::HewDirect {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                callable: callable.id,
+                reason: "initial SIR callable table admits only ordinary HewDirect bodies"
+                    .to_string(),
+            }));
+        }
+        for (parameter, abi) in callable.signature.params.iter().enumerate() {
+            if !is_initial_scalar(&abi.ty) {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                    callable: callable.id,
+                    reason: format!(
+                        "parameter {parameter} has non-scalar type `{}`",
+                        abi.ty.user_facing()
+                    ),
+                }));
+            }
+            if abi.passing != SemParamPassing::ReadOnly {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                    callable: callable.id,
+                    reason: format!("parameter {parameter} has non-ReadOnly ABI passing"),
+                }));
+            }
+            if abi.caller_visible_projection {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                    callable: callable.id,
+                    reason: format!(
+                        "parameter {parameter} has a caller-visible projection before SIR owns that ABI feature"
+                    ),
+                }));
+            }
+        }
+        if !is_initial_scalar_return(&callable.signature.return_ty) {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                callable: callable.id,
+                reason: format!(
+                    "return type `{}` is outside the initial scalar SIR callable domain",
+                    callable.signature.return_ty.user_facing()
+                ),
+            }));
+        }
+        by_id.entry(callable.id).or_insert(callable);
+    }
+
+    let mut previous_root = None;
+    for root in &module.root_unit_callables {
+        if previous_root.is_some_and(|previous| previous >= *root) {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidRootCallable {
+                callable: *root,
+                reason: "root-unit callable IDs must be unique and table-ordered".to_string(),
+            }));
+        }
+        previous_root = Some(*root);
+        match by_id.get(root) {
+            None => diagnostics.push(module_diag(SirDiagnosticKind::InvalidRootCallable {
+                callable: *root,
+                reason: "root-unit callable does not exist in the table".to_string(),
+            })),
+            Some(callable) if callable.source_origin != crate::FunctionSourceOrigin::RootUnit => {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidRootCallable {
+                    callable: *root,
+                    reason: "root-unit callable has non-root source provenance".to_string(),
+                }));
+            }
+            Some(_) => {}
+        }
+    }
+    if let Some(entry) = module.entry_callable {
+        match by_id.get(&entry) {
+            None => diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
+                callable: entry,
+                reason: "entry callable does not exist in the table".to_string(),
+            })),
+            Some(callable)
+                if callable.source_origin != crate::FunctionSourceOrigin::RootUnit
+                    || !module.root_unit_callables.contains(&entry) =>
+            {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
+                    callable: entry,
+                    reason: "entry callable must be a listed root-unit callable".to_string(),
+                }));
+            }
+            Some(callable) if callable.declaration.full_path() != "main" => {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
+                    callable: entry,
+                    reason: "entry callable must resolve to the canonical root-unit source `main` declaration"
+                        .to_string(),
+                }));
+            }
+            Some(callable) if callable.symbol != "main" => {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
+                    callable: entry,
+                    reason: "entry callable must retain the canonical emitted `main` symbol"
+                        .to_string(),
+                }));
+            }
+            Some(callable) if !callable.signature.params.is_empty() => {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
+                    callable: entry,
+                    reason: "entry callable must be parameterless for the native and WASI entry adapters"
+                        .to_string(),
+                }));
+            }
+            Some(callable)
+                if callable.signature.return_ty != ResolvedTy::Unit
+                    && !callable.signature.return_ty.is_integer() =>
+            {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
+                    callable: entry,
+                    reason: "entry callable must return unit or an integer exit status".to_string(),
+                }));
+            }
+            Some(_) => {}
+        }
+    }
+    CallableContext { by_id }
+}
+
+fn verify_function_callable_identity(
+    function: &SemFunction,
+    callable_context: Option<&CallableContext<'_>>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    let Some(callable_context) = callable_context else {
+        return;
+    };
+    let Some(callable) = callable_context.callable(function.callable) else {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::MissingFunctionCallable {
+                declaration: function.declaration.full_path().to_string(),
+            },
+        ));
+        return;
+    };
+    let function_params = function
+        .params
+        .iter()
+        .map(|parameter| parameter.ty.clone())
+        .collect::<Vec<_>>();
+    let callable_params = callable
+        .signature
+        .params
+        .iter()
+        .map(|parameter| parameter.ty.clone())
+        .collect::<Vec<_>>();
+    let identity_matches = callable.function == function.id
+        && callable.declaration == function.declaration
+        && callable.symbol == function.name
+        && callable.source_origin == function.source_origin
+        && callable_params == function_params
+        && callable.signature.return_ty == function.return_ty;
+    if !identity_matches {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::FunctionCallableMismatch {
+                callable: function.callable,
+                reason: "function identity, provenance, or SSA signature differs from its resolved callable"
+                    .to_string(),
+            },
+        ));
+    }
+}
+
+fn is_initial_scalar(ty: &ResolvedTy) -> bool {
+    ty.is_integer() || matches!(ty, ResolvedTy::Bool)
+}
+
+fn is_initial_scalar_return(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Unit) || is_initial_scalar(ty)
+}
+
+#[allow(
+    clippy::too_many_lines,
     reason = "the closed first-slice operation relation table is deliberately central so additions must make their verifier rule explicit"
 )]
 fn verify_operation_shape(
     function: &SemFunction,
     operation: &SemOp,
     types: &HashMap<ValueId, ResolvedTy>,
+    callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
+    if let SemOpKind::Call { callee, args } = &operation.kind {
+        verify_direct_call_operation(
+            function,
+            operation,
+            *callee,
+            args,
+            types,
+            callable_context,
+            diagnostics,
+        );
+        return;
+    }
     if operation.results.len() != 1 {
         diagnostics.push(diag(
             function,
@@ -398,7 +731,134 @@ fn verify_operation_shape(
                 invalid_operation(function, operation.id, reason, diagnostics);
             }
         }
-        SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) | SemOpKind::Call { .. } => {}
+        SemOpKind::Call { .. } => unreachable!("calls return before value-result validation"),
+        SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => {}
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "direct-call verification keeps callable ABI, result arity, and operand rules together at the SIR boundary"
+)]
+fn verify_direct_call_operation(
+    function: &SemFunction,
+    operation: &SemOp,
+    callee: CallableId,
+    args: &[crate::Operand],
+    types: &HashMap<ValueId, ResolvedTy>,
+    callable_context: Option<&CallableContext<'_>>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    for argument in args {
+        require_read_operand(
+            function,
+            operation.id,
+            argument.mode,
+            "direct call argument",
+            diagnostics,
+        );
+    }
+    if operation.results.len() > 1 {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidResultArity {
+                op: operation.id,
+                actual: operation.results.len(),
+            },
+        ));
+        return;
+    }
+    let Some(callable_context) = callable_context else {
+        // A context-free verifier cannot know whether a legal direct call is
+        // unit-returning, but it can still enforce the initial 0-or-1 result
+        // representation and the operand-use discipline above.
+        return;
+    };
+    let Some(target) = callable_context.callable(callee) else {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::UnknownCallable {
+                op: operation.id,
+                callee,
+            },
+        ));
+        return;
+    };
+    if target.call_conv != SemCallConv::Default || target.kind != SemCallableKind::HewDirect {
+        invalid_operation(
+            function,
+            operation.id,
+            "direct call targets a callable outside SIR's default HewDirect ABI domain".to_string(),
+            diagnostics,
+        );
+    }
+    let expected_results = usize::from(target.signature.return_ty != ResolvedTy::Unit);
+    if operation.results.len() != expected_results {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidCallResultArity {
+                op: operation.id,
+                callee,
+                expected: expected_results,
+                actual: operation.results.len(),
+            },
+        ));
+    } else if let [result] = operation.results.as_slice() {
+        if result.ty != target.signature.return_ty {
+            invalid_operation(
+                function,
+                operation.id,
+                format!(
+                    "direct call result has `{}`, callee `{}` returns `{}`",
+                    result.ty.user_facing(),
+                    target.declaration.full_path(),
+                    target.signature.return_ty.user_facing()
+                ),
+                diagnostics,
+            );
+        }
+    }
+    if args.len() != target.signature.params.len() {
+        invalid_operation(
+            function,
+            operation.id,
+            format!(
+                "direct call to `{}` has {} argument(s), expected {}",
+                target.declaration.full_path(),
+                args.len(),
+                target.signature.params.len()
+            ),
+            diagnostics,
+        );
+    }
+    for (index, (argument, parameter)) in args.iter().zip(&target.signature.params).enumerate() {
+        if parameter.passing != SemParamPassing::ReadOnly {
+            invalid_operation(
+                function,
+                operation.id,
+                format!(
+                    "direct call target `{}` parameter {index} has non-ReadOnly ABI passing",
+                    target.declaration.full_path()
+                ),
+                diagnostics,
+            );
+        }
+        if let Some(actual) = types.get(&argument.value) {
+            if actual != &parameter.ty {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "direct call argument {index} to `{}` has `{}`, expected `{}`",
+                        target.declaration.full_path(),
+                        actual.user_facing(),
+                        parameter.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+        }
     }
 }
 
@@ -440,6 +900,12 @@ fn verify_terminator_shape(
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     match terminator {
+        SemTerminator::Return { value: Some(value) } if function.return_ty == ResolvedTy::Unit => {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::UnitReturnValue { value: *value },
+            ));
+        }
         SemTerminator::Return { value: Some(value) } => {
             if let Some(actual) = types.get(value) {
                 if actual != &function.return_ty {
@@ -539,6 +1005,13 @@ fn record_value(
 fn diag(function: &SemFunction, kind: SirDiagnosticKind) -> SirDiagnostic {
     SirDiagnostic {
         function: function.name.clone(),
+        kind,
+    }
+}
+
+fn module_diag(kind: SirDiagnosticKind) -> SirDiagnostic {
+    SirDiagnostic {
+        function: "<module>".to_string(),
         kind,
     }
 }

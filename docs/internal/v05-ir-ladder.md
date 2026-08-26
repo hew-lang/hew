@@ -23,8 +23,15 @@ compiler configuration nor a compatibility contract. The cutover contract in
 ## 1. The IR ladder
 
 Hew v0.5 compiles through an explicit sequence of representations. Each layer
-has a distinct owner, a verifier or diagnostic class, and a deterministic text
-dump (`hew dump-<layer>`).
+has a distinct owner, verifier or diagnostic class, and an eventual
+deterministic text dump. Today the CLI exposes `hew compile --dump-sir` and
+`hew compile --dump-mir raw|checked|elab`; AST/HIR dumps are planned cutover
+tooling, not current commands.
+
+**Status convention:** this document defines the required final architecture.
+`[current]` names behavior implemented today, `[transitional]` names bounded
+migration scaffolding that must be deleted, and `[planned]` names a required
+target-state facility that must not be mistaken for present implementation.
 
 ```
 source / package graph
@@ -94,8 +101,9 @@ compile / run / build / debug / test / watch --run / eval
 Target choice begins no earlier than the MIR/LLVM boundary. Native, Wasm, and
 embedded builds are target outputs; ORC JIT is an execution mode over the same
 verified LLVM IR, not a second middle end. Inspection modes may intentionally
-stop after a layer (`dump-ast`, `dump-hir`, `dump-sir`, or a selected MIR dump),
-but no execution mode may skip, duplicate, or substitute semantic lowering.
+stop after a layer. [current] `hew compile --dump-sir` and `--dump-mir
+raw|checked|elab` do so today; AST/HIR inspection exits are planned. No
+execution mode may skip, duplicate, or substitute semantic lowering.
 
 ### 1.2 SIR hard-cutover contract
 
@@ -230,7 +238,7 @@ built to preserve.
 
 **Verifier / diagnostics:** parser diagnostics only (syntax).
 
-**Dump:** `hew dump-ast` (S-expression / pretty-print).
+**Dump:** [planned] deterministic AST S-expression / pretty-print.
 
 ---
 
@@ -256,7 +264,7 @@ target offsets, runtime carriers, LLVM concepts, or ownership proof.
 shadowing, type errors, trait/coherence and generic-constraint failures, and
 callee-contract violations. `Ty::Var` must be eliminated before SIR lowering.
 
-**Dump:** `hew dump-hir` with resolved type and ValueClass annotations.
+**Dump:** [planned] resolved HIR with type and ValueClass annotations.
 
 ---
 
@@ -275,7 +283,7 @@ junk to erase.
 **Done means:** HIR → SIR lowering is mechanical and does not need a separate
 case for every spelling of the same semantic operation.
 
-#### Generic-instance service at the Normalized-HIR → SIR boundary
+#### [planned] Generic-instance service at the Normalized-HIR → SIR boundary
 
 Genericity is semantic; concrete layout is representational. A normalized HIR
 generic body remains a canonical template, for example `identity<T>(T) -> T`.
@@ -297,6 +305,13 @@ Hew permits two semantically distinct selected implementations for the same
 type arguments. The service owns canonicalization, deterministic discovery
 order/naming, caching, recursion/SCC handling, and the diagnostic chain that
 led to an instance.
+
+The same service owns one semantic instance graph: concrete function instances,
+semantic type instances, and selected implementation evidence. A
+`TypeInstanceKey { template, type_args }` deduplicates substituted nominal
+shapes such as `Cache<String, i64>` and `HashMap<String, i64>` without naming a
+layout. Raw MIR later consumes a semantic type instance together with target
+layout to select representation.
 
 It lowers a `GenericBodyTemplate + SubstitutionEnvironment` to a concrete SIR
 function without permanently cloning a second HIR tree. Its instance graph has
@@ -397,7 +412,7 @@ coroutine-frame decisions once their semantic concepts have been lowered.
 places. That bridge is useful compatibility evidence, but it is not the final
 SIR → MIR contract.
 
-#### Virtual-value / `Place` seam (required before general SIR → MIR)
+#### [planned] Virtual-value / `Place` seam (required before general SIR → MIR)
 
 Raw MIR gains an explicit virtual-value versus addressable-`Place` distinction
 before this bridge becomes the general lowering path:
@@ -411,8 +426,11 @@ RawEdge     = target block plus typed RawValueId arguments
 
 `Place::Value(RawValueId)` is forbidden. A virtual value becomes storage only
 through an explicit `Materialize { value, local, reason }`, where `reason` is
-one of `AddressTaken`, `MutablePlace`, `AbiBoundary`, `LayoutOrProjection`,
-`CaptureOrEscape`, `Transport`, or `CoroutineFrame`. This makes every loss of
+one of `AddressTaken`, `MutablePlace`, `ByRefAbi`, `CaptureOrEscape`,
+`Transport`, `CoroutineFrame`, `OwnershipDrop`, or `ExplicitStorage`.
+Aggregate layout alone is never a materialization reason: representation-level
+`Pack`/`Extract` keep an inline aggregate virtual until an addressable or
+by-reference observation actually requires storage. This makes every loss of
 value form auditable and revisable rather than an accidental property of a
 lowerer.
 
@@ -424,10 +442,11 @@ scalar SSA must not be needlessly destroyed into memory for LLVM to reconstruct.
 There is no generic `Cell<T>` escape hatch: add a cell/place only when an
 address-taken or otherwise genuinely location-semantic feature requires it.
 
-The first virtual domain is deliberately no-drop: scalar `BitCopy` values and
-their CFG/call flow only. Values with destruction, borrow, aggregate-layout,
-capture, transport, or suspension obligations remain outside that domain until
-their materialization and elaboration rules are implemented.
+The first virtual domain is deliberately no-drop: scalar `BitCopy` values,
+structural inline aggregates, and their CFG/call flow only. Values with
+destruction, borrow, mutation/addressability, capture, transport, or suspension
+obligations remain outside that domain until their materialization and
+elaboration rules are implemented.
 
 `RawMirModuleHeader` owns the target-parameterized `TargetLayout` and logical
 linkage declarations used by Raw bodies. It is MIR metadata, not another IR and
@@ -456,7 +475,7 @@ an LLVM-specific backend.
 is dominated by its definition, every site has a chosen value-model operation
 (no "unclassified").
 
-**Dump:** `hew dump-mir=raw`.
+**Dump:** [current] `hew compile --dump-mir raw`.
 
 #### Current raw coroutine substrate
 
@@ -488,7 +507,7 @@ value-cost language (see §4.3).
 at <span> but read at <span>", "two mutations alias the same value", "affine
 resource `c` would be shared across an actor send — consume or materialize".
 
-**Dump:** `hew dump-mir=checked` (annotation overlay: `// read-share`,
+**Dump:** [current] `hew compile --dump-mir checked` (annotation overlay: `// read-share`,
 `// move (last use)`, `// ensure-unique → mutate`, `// materialize`, etc.).
 
 ---
@@ -496,9 +515,11 @@ resource `c` would be shared across an actor send — consume or materialize".
 ### 2.7 Elaborated MIR (`hew-mir::elab`)
 
 **Owns:** explicit `Drop(place)` statements on every exit path, explicit
-cleanup basic blocks, panic-edge CFG, coroutine state struct layout (proven
-from `CoroutineSchema`), actor-shutdown cleanup blocks, `DropPlan` per scope,
-storage classes materialised on every place, and the **DecisionMap**.
+cleanup basic blocks, panic-edge CFG, cancellation and actor-shutdown cleanup,
+`DropPlan` per scope, and the **DecisionMap**. Raw MIR chooses a coroutine
+frame, layout, and materialized place where representation requires one;
+Elaborated MIR adds lifetime and cleanup obligations over those already chosen
+places. It does not select storage classes or coroutine representation.
 
 The `DecisionMap` is a deterministic table of
 `DecisionFact { site_id, kind, chosen_strategy, why, cost_class }` keyed by
@@ -514,7 +535,7 @@ tables.
 no `Drop` of a moved-out place; cleanup-block dominance; coroutine frame-slot
 type matches yield value-class; DecisionMap is total and SiteIds are stable.
 
-**Dump:** `hew dump-mir=elab` (includes explicit drop / cleanup-block section
+**Dump:** [current] `hew compile --dump-mir elab` (includes explicit drop / cleanup-block section
 and DecisionMap).
 
 ---

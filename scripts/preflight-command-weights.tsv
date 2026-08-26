@@ -18,16 +18,84 @@
 # bot that opens pull requests is a new moving part with its own failure modes,
 # and this is a number a human reads occasionally, not a control loop.
 #
-# The seed rows below are the point measurements the previous hand-maintained
-# `command_weight()` case statement carried, taken from the hosted Linux gates
-# job, so this file starts exactly where that table left off.
+# The rows below are the per-command elapsed seconds measured on hosted
+# comprehensive Linux-gates run 32966803389, one row per command that a
+# profile can still select. Two exceptions carry LOCAL isolated timings and
+# say so: the compiled-Hew aggregate owns test-hew-ratchet and
+# test-o2-differential on CI, so no hosted run measures them.
+#
+# A command the routing can no longer select has no row. Keeping one would
+# be a weight for work that never happens, and the corpus is a measurement
+# of what runs.
 1988	make test-o2-differential
-1243	make test-compiler-pipeline
+1122	make test
 1105	make test-hew-ratchet
-1104	make test
-633	make hew-check-all
-580	make fuzz-oracle
-567	make hew-fmt-property
-435	make lint
-429	make test-vertical-slice
-292	make sandbox-parity
+694	make hew-check-all
+558	make test-build-harness
+531	make fuzz-oracle
+343	make test-vertical-slice
+312	make structural-lint
+186	make playground-check
+163	make test-opaque-resource-lifecycle-matrix-external
+160	make stdlib-user-build-clean
+146	make check-counterfactual-output-artifacts
+143	make hew-fmt-property
+126	make forced-cancel-composite-check
+120	make test-codegen-exec-fixtures
+119	make test-opaque-resource-lifecycle-matrix
+115	make test-cabi-surface
+113	make sandbox-parity
+99	make check-gate-reachability
+92	cargo clippy --workspace --tests -- -D warnings
+92	make test-check-gate-reachability
+83	make test-leak-oracle-selftest
+82	make test-runtime-unit
+63	make test-structural-authority-audit
+55	make test-stdlib-ratchet
+54	make test-doc-examples
+53	make test-core-matrix
+48	make checked-mir-run
+47	make test-pkg-import
+35	make checked-mir-verify
+33	make test-surface-examples
+30	make test-release-workflow-contract
+26	make test-ux-examples
+25	make verify-ffi
+24	make cabi-surface-check
+24	make mqtt-broker-e2e
+21	make hew-fmt-check
+20	make doc-ratchet-selftest
+18	make test-migrate-corpus
+17	make hew-profile-check
+15	make fuzz-oracle-selftest
+15	make ll-diff
+13	make libhew-link-race-test
+12	make test-mir-baselines
+12	make test-package-install
+11	cargo fmt --all -- --check
+11	make observe-functional-test
+11	make test-cabi
+8	make test-verify-ffi
+7	make shell-script-lint
+5	make sandbox-fixtures-check
+5	make test-python310-toml-compat
+4	make test-ast-grep-contract
+4	make test-example-expectations-selftest
+3	make sandbox-parity-coverage-check
+3	make verify-sys-lane-closure
+2	make check-libhew-fresh
+2	make lint-wasm-todo
+2	make test-sandbox-parity-coverage-check
+2	make test-structural-lint-bootstrap
+1	make capability-authority-ratchet
+1	make check-sanitizer-gate
+1	make codegen-trap-inventory-check
+1	make freebsd-workflow-contract-check
+1	make leak-scan
+1	make lint-wasm-todo-self-test
+1	make ll-identity-selftest
+1	make runtime-poison-safe-lint
+1	make runtime-poison-safe-lint-self-test
+1	make test-asan-fixture-selftest
+1	make test-stdlib-execution-proofs
+1	make wasm-capability-check

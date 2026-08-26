@@ -254,24 +254,47 @@ load_command_weights() {
     PREFLIGHT_COMMAND_WEIGHTS_LOADED=1
     # A missing or unreadable corpus is not fatal: see the degrade contract
     # above. Every command then takes its floor-or-default weight.
-    [[ -r "$PREFLIGHT_COMMAND_WEIGHTS_FILE" ]] || return 0
-    local seconds cmd
+    if [[ ! -r "$PREFLIGHT_COMMAND_WEIGHTS_FILE" ]]; then
+        echo "warning: no readable shard-balance corpus at $PREFLIGHT_COMMAND_WEIGHTS_FILE;" \
+             "every command takes its timeout floor or the ${PREFLIGHT_DEFAULT_COMMAND_WEIGHT}s default." >&2
+        return 0
+    fi
+    local seconds cmd line=0
     while IFS=$'\t' read -r seconds cmd; do
-        # Comments, blank lines, and anything that is not a positive integer
-        # count for nothing; a corrupt row must not become a weight of zero.
+        line=$(( line + 1 ))
+        # Comments and blank lines are not rows and say nothing.
         [[ "$seconds" == \#* ]] && continue
-        [[ -n "$cmd" ]] || continue
-        [[ "$seconds" =~ ^[0-9]+$ ]] || continue
-        (( seconds > 0 )) || continue
+        [[ -z "${seconds//[[:space:]]/}" && -z "${cmd//[[:space:]]/}" ]] && continue
+        # A row that is not <positive integer><TAB><command> is REPORTED, not
+        # silently skipped: a corrupt row is a measurement somebody meant to
+        # supply, and reading it as an absent one hides the typo behind a
+        # plausible default. The command still falls back safely -- the
+        # partition stays exhaustive and disjoint whatever the weights say.
+        if [[ -z "$cmd" || ! "$seconds" =~ ^[0-9]+$ ]] || (( seconds <= 0 )); then
+            echo "warning: $PREFLIGHT_COMMAND_WEIGHTS_FILE:$line is not" \
+                 "<seconds><TAB><command>: '$seconds${cmd:+	$cmd}'." \
+                 "That command falls back to its timeout floor or the" \
+                 "${PREFLIGHT_DEFAULT_COMMAND_WEIGHT}s default." >&2
+            continue
+        fi
         PREFLIGHT_COMMAND_WEIGHT_MAP="$PREFLIGHT_COMMAND_WEIGHT_MAP"$'\n'"$cmd"$'\t'"$seconds"
     done < "$PREFLIGHT_COMMAND_WEIGHTS_FILE"
+    if [[ -z "$PREFLIGHT_COMMAND_WEIGHT_MAP" ]]; then
+        echo "warning: $PREFLIGHT_COMMAND_WEIGHTS_FILE carries no usable rows;" \
+             "every command takes its timeout floor or the ${PREFLIGHT_DEFAULT_COMMAND_WEIGHT}s default." >&2
+    fi
     return 0
 }
+
+# Loaded once, HERE, in the parent shell. `command_weight` runs inside a
+# command substitution for every command in the profile, and a subshell cannot
+# publish its cache back -- so a lazy load re-read the file 80-odd times and
+# repeated every warning that many times over.
+load_command_weights
 
 command_weight() {
     local cmd="$1"
     local floor rest
-    load_command_weights
     rest="${PREFLIGHT_COMMAND_WEIGHT_MAP#*$'\n'"$cmd"$'\t'}"
     if [[ "$rest" != "$PREFLIGHT_COMMAND_WEIGHT_MAP" ]]; then
         echo "${rest%%$'\n'*}"

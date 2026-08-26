@@ -124,13 +124,18 @@ no longer schedules is an error.
   closed.
 
   **Advisory today, required after one green nightly.** The check runs on every
-  pull request and reports its own red, but is not aggregated into
-  `Build & test (Linux)` yet. The last successful *scheduled* coverage-nightly
-  run predates the gdb provisioning fix, so requiring it now would turn the
-  required Linux context red on every pull request for a reason no author can
-  fix — a repository-wide deadlock, not a gate. Nothing about the check is
-  softened to make it land: no flag, no bypass, no grace window, no permissive
-  fallback. One `needs:` edge is deferred.
+  pull request, and the script itself still exits nonzero for a stale
+  nightly, an auth/scope defect, or a malformed response — none of its
+  fail-closed semantics are softened. What is tolerated, while advisory, is
+  the job's conclusion: the one assertion step carries `continue-on-error:
+  true` so this check cannot itself turn a PR's check suite red for a nightly
+  no author can fix — that would be a repository-wide deadlock, not a gate.
+  The step still posts its own red annotation and the job still shows
+  "failed (continued)" in the checks tab, so the signal stays visible; it is
+  not aggregated into `Build & test (Linux)` yet, and the tolerance is scoped
+  to that one step, never the whole job. No flag, no bypass, no grace window,
+  no permissive fallback was added to the *script* to make it land early —
+  only the job's conclusion is tolerated, and only until activation.
 
   To activate, once a scheduled coverage-nightly run has succeeded:
 
@@ -142,14 +147,17 @@ no longer schedules is an error.
 
   then, in one commit:
 
-  1. add `nightly-freshness` to `linux-required`'s `needs:`;
-  2. add `NIGHTLY_FRESHNESS_RESULT: ${{ needs.nightly-freshness.result }}` to
+  1. remove `continue-on-error: true` from the assertion step — required
+     checks are never tolerated;
+  2. add `nightly-freshness` to `linux-required`'s `needs:`;
+  3. add `NIGHTLY_FRESHNESS_RESULT: ${{ needs.nightly-freshness.result }}` to
      that job's `env:`;
-  3. add `test "$NIGHTLY_FRESHNESS_RESULT" = success` to its assertion.
+  4. add `test "$NIGHTLY_FRESHNESS_RESULT" = success` to its assertion.
 
   `scripts/tests/test_ci_workflow_contract.py` holds the job to the advisory
-  shape until then and to the required shape afterwards, and rejects a `needs:`
-  entry that arrives without its assertion.
+  (tolerated) shape until then and to the required (untolerated) shape
+  afterwards, and rejects a `needs:` entry that arrives without its assertion
+  or a `continue-on-error` that survives activation.
 
 There is no bypass label and no skip environment variable. A stale nightly is
 fixed, or the nightly and its owner entry are deleted in one commit.

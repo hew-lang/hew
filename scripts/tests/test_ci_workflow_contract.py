@@ -20,9 +20,11 @@ Contracts, and the wrong program each rejects:
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -855,14 +857,18 @@ def test_the_freshness_job_is_standalone_scoped_and_advisory_for_now() -> None:
     script reports an auth defect as rot. Both token spellings must be
     exported, because the script accepts either and neither is set by default.
 
-    The check is ADVISORY today and this asserts that too. The last successful
-    scheduled coverage-nightly run predates the provisioning fix in this same
-    branch, so requiring it now would turn the required Linux context red on
-    every pull request for a reason no author can influence -- a
-    repository-wide deadlock rather than a gate. Nothing about the check is
-    softened: no flag, no bypass, no grace window, no permissive fallback. One
-    `needs:` edge is deferred, and the ACTIVATION note in the workflow spells
-    out exactly what adds it back.
+    The check is ADVISORY today, and while advisory the assertion STEP (never
+    the job, never the script) carries `continue-on-error: true`: an advisory
+    check that turns a PR's check suite red for a nightly no author can fix is
+    the theatre this repository does not want, but the tolerance is scoped to
+    that one step so a future step added to this job is never tolerated by
+    accident, and the script's own exit code is untouched — it still fails
+    closed for a stale nightly, an auth/scope defect, or a malformed response.
+    Nothing about the SCRIPT is softened: no flag, no bypass, no grace window,
+    no permissive fallback. Once activated (wired into `linux-required`), the
+    tolerance must be gone: a required check that is allowed to fail silently
+    is worse than no check. The ACTIVATION note in the workflow spells out
+    exactly what removes it.
     """
     ci = load(WORKFLOWS / "ci.yml")
     all_jobs = jobs(ci)
@@ -887,9 +893,9 @@ def test_the_freshness_job_is_standalone_scoped_and_advisory_for_now() -> None:
     )
     env = runner.get("env") or {}
     assert env.get("GH_TOKEN") and env.get("GITHUB_TOKEN"), env
-    # Advisory means "not aggregated into a required context", never "cannot
-    # fail". The job still reports its own red.
-    assert not runner.get("continue-on-error"), runner
+    # The tolerance, if any, must never widen to the whole job: a job-level
+    # `continue-on-error` would tolerate a checkout failure or a future step
+    # too, not just the one assertion this comment is about.
     assert not job.get("continue-on-error"), job
 
     required = all_jobs["linux-required"]
@@ -903,6 +909,14 @@ def test_the_freshness_job_is_standalone_scoped_and_advisory_for_now() -> None:
         # its verdict, which is worse than not requiring it at all.
         assert "NIGHTLY_FRESHNESS_RESULT" in assertion, assertion
         assert 'test "$NIGHTLY_FRESHNESS_RESULT" = success' in assertion, assertion
+        # A required check that is still allowed to fail silently is worse
+        # than an advisory one: activation must remove the tolerance in the
+        # same commit that wires the `needs:` edge.
+        assert not runner.get("continue-on-error"), (
+            "nightly-freshness is wired into linux-required but its "
+            "assertion step still tolerates failure; activation must remove "
+            "continue-on-error in the same commit"
+        )
     else:
         assert "NIGHTLY_FRESHNESS_RESULT" not in assertion, (
             "linux-required asserts a freshness result it does not depend on; "
@@ -914,10 +928,103 @@ def test_the_freshness_job_is_standalone_scoped_and_advisory_for_now() -> None:
             "a deferred required-check edge must carry the exact steps that "
             "undo it, or it becomes permanent by being forgotten"
         )
+        # Advisory means "cannot turn the PR's check suite red", never
+        # "cannot fail": the step still posts its own `::error::` annotation,
+        # and only the JOB'S conclusion is tolerated, at the narrowest scope
+        # GitHub Actions offers — the one step, not the job.
+        assert runner.get("continue-on-error") is True, (
+            "the advisory nightly-freshness assertion step must carry "
+            "continue-on-error: true, or a nightly no author can fix turns "
+            "every PR's check suite red"
+        )
 
     # A job-level `if:` would report the required context as skipped rather
     # than satisfied (LESSONS.md ci-required-gate-sequencing clause 2).
     assert required.get("if") == "always()", required.get("if")
+
+
+def _nightly_freshness_sparse_checkout_paths() -> list[str]:
+    ci = load(WORKFLOWS / "ci.yml")
+    job = jobs(ci)["nightly-freshness"]
+    checkout = next(
+        step for step in steps(job) if "checkout" in str(step.get("uses", ""))
+    )
+    raw = (checkout.get("with") or {}).get("sparse-checkout") or ""
+    paths = [line.strip() for line in raw.splitlines() if line.strip()]
+    assert paths, "nightly-freshness checkout step declares no sparse-checkout paths"
+    return paths
+
+
+def test_the_freshness_jobs_sparse_checkout_resolves_its_own_import_closure() -> None:
+    """The declared checkout closure must actually satisfy the entrypoint's imports.
+
+    `check-nightly-freshness.py` dynamically loads `check-gate-reachability.py`
+    (`importlib.util`, not a static `import`), whose own module body inserts
+    `scripts/lib` onto `sys.path` and does a bare `import gate_inputs` — a
+    dependency invisible to any tool that only greps for `^import`/`^from`.
+    Hosted run 33018584707 proved the failure mode directly: the sparse
+    checkout omitted `scripts/lib/gate_inputs.py`, so the job died on
+    `ModuleNotFoundError` before it ever reached the freshness verdict it
+    exists to report — the worst kind of red, one that teaches nothing about
+    nightly health.
+
+    This reproduces the checkout exactly (only the declared paths, nothing
+    more) in an isolated directory and actually RUNS the entrypoint, rather
+    than statically walking its import graph — a walk needs its own special
+    case for every dynamic-load pattern this codebase uses and silently stops
+    catching the next one. Running it is the check that cannot go stale, and
+    it fails again the moment any required file is dropped from the list
+    above, whether that file is `gate_inputs.py` or something added later.
+    """
+    paths = _nightly_freshness_sparse_checkout_paths()
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        tmp = Path(raw_tmp)
+        for rel in paths:
+            source = ROOT / rel
+            if source.is_dir():
+                shutil.copytree(source, tmp / rel, dirs_exist_ok=True)
+                continue
+            assert source.is_file(), (
+                f"declared sparse-checkout path missing on disk: {rel}"
+            )
+            destination = tmp / rel
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+        entrypoint = tmp / "scripts" / "check-nightly-freshness.py"
+        assert entrypoint.is_file(), (
+            "sparse-checkout does not include its own entrypoint"
+        )
+
+        # No GITHUB_* in the environment: the entrypoint must reach its own
+        # auth precondition deterministically, regardless of what is set in
+        # whatever environment happens to run this test.
+        result = subprocess.run(
+            [sys.executable, str(entrypoint)],
+            cwd=tmp,
+            env={"PATH": os.environ.get("PATH", "")},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    stderr = result.stderr
+    assert "ModuleNotFoundError" not in stderr and "ImportError" not in stderr, (
+        "the declared sparse-checkout paths do not satisfy the entrypoint's "
+        "own import closure (missing a scripts/lib dependency it dynamically "
+        f"loads):\n{stderr}"
+    )
+    assert "Traceback" not in stderr, (
+        f"the entrypoint crashed inside the checked-out closure:\n{stderr}"
+    )
+    # Past every import, the first thing main() can fail on with no GITHUB_*
+    # environment is its own auth precondition — proof this ran the real
+    # script to the real business logic, not a stub that never imports it.
+    assert "GITHUB_REPOSITORY is unset" in stderr, (
+        f"expected the entrypoint to reach its own auth precondition; got:\n{stderr}"
+    )
+    assert result.returncode == 1, result.returncode
 
 
 # ── contract: the platform aggregator cannot be satisfied by a skip ──────────

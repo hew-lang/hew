@@ -1185,23 +1185,32 @@ jobs:
     # author can fix or influence, which is a repository-wide deadlock rather
     # than a gate.
     #
-    # The check still RUNS on every pull request and reports its own red, so
-    # the signal is visible from the day this merges. It simply does not block.
-    # No flag, no bypass, no grace window, and no permissive fallback were
-    # added to make it land early: the only thing deferred is one `needs:`
-    # entry.
+    # The check still RUNS on every pull request and its script still exits
+    # nonzero for a stale nightly, an auth/scope defect, or a malformed
+    # response — the script's fail-closed semantics are untouched. What is
+    # tolerated is the JOB'S conclusion: the one assertion step below carries
+    # `continue-on-error: true` so this advisory check cannot itself turn a
+    # PR's check suite red for a nightly no author can fix. The step still
+    # posts its own red annotation (`::error::`) and the job still shows
+    # "failed (continued)" in the checks tab — visible, not silent, and not a
+    # bypass of the script. `continue-on-error` is scoped to this one step,
+    # not the job, so a future step added to this job is never tolerated by
+    # accident.
     #
-    # ACTIVATION, exactly — three edits, one commit, no other change:
+    # ACTIVATION, exactly — four edits, one commit, no other change:
     #   1. Confirm a green scheduled run exists:
     #        gh api "repos/:owner/:repo/actions/workflows/coverage-nightly.yml/runs?event=schedule&status=success&per_page=1" \
     #          --jq '.workflow_runs[0].run_started_at'
     #      and that `python3 scripts/check-nightly-freshness.py` exits 0.
-    #   2. Add `nightly-freshness` to `linux-required`'s `needs:` list.
-    #   3. Add `NIGHTLY_FRESHNESS_RESULT: ${{ needs.nightly-freshness.result }}`
+    #   2. Remove `continue-on-error: true` from the assertion step below —
+    #      required checks are never tolerated.
+    #   3. Add `nightly-freshness` to `linux-required`'s `needs:` list.
+    #   4. Add `NIGHTLY_FRESHNESS_RESULT: ${{ needs.nightly-freshness.result }}`
     #      to that job's env and `test "$NIGHTLY_FRESHNESS_RESULT" = success`
     #      to its assertion.
     # scripts/tests/test_ci_workflow_contract.py holds the job to the advisory
-    # shape until then, and to the required shape afterwards.
+    # (tolerated) shape until then, and to the required (untolerated) shape
+    # afterwards — the tolerance and the required wiring must land together.
     #
     # Deliberately NO `needs:`. Every other job in this workflow hangs off
     # `changes`, which hangs off `main-health`; a stranded `main-health` would
@@ -1226,9 +1235,14 @@ jobs:
             scripts/check-nightly-freshness.py
             scripts/scheduled-failure-report.py
             scripts/check-gate-reachability.py
+            scripts/lib/gate_inputs.py
           sparse-checkout-cone-mode: false
 
       - name: Assert the scheduled tier is fresh
+        # ADVISORY TOLERANCE — see the job-level comment above. Remove this
+        # line, and only this line, at activation; the script itself keeps
+        # failing closed regardless (no flag, no bypass, no grace window).
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}

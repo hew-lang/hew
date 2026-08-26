@@ -94,7 +94,12 @@ impl DefUseIndex {
 /// Build the deterministic concrete def-use index for one semantic SSA
 /// function. The verifier remains authoritative for duplicate definitions and
 /// malformed CFGs; this index deliberately stays total to support diagnostics
-/// and repair tooling on malformed intermediate states.
+/// on malformed intermediate states.
+///
+/// Transformations using [`replace_use`] or [`replace_all_uses`] require a
+/// verifier-clean function with unique operation and block identities. A
+/// def-use index over malformed SIR is useful for diagnostics, but is not a
+/// repair authority for ambiguous identities.
 #[must_use]
 pub fn build_def_use(function: &SemFunction) -> DefUseIndex {
     let mut index = DefUseIndex::default();
@@ -214,6 +219,10 @@ pub fn replace_use(
 /// Definitions are intentionally untouched. The fresh index gives this a
 /// deterministic snapshot of all use sites; rewriting values cannot change
 /// operand slots, so every site stays valid for the duration of this operation.
+///
+/// The caller must verify that `function` has unique operation and block IDs
+/// before rewriting. See [`build_def_use`] for the malformed-SIR diagnostic
+/// contract.
 #[must_use]
 pub fn replace_all_uses(function: &mut SemFunction, from: ValueId, replacement: ValueId) -> usize {
     let sites = build_def_use(function).uses_of(from).to_vec();

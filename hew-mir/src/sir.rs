@@ -305,7 +305,10 @@ pub fn lower_sir_function(
         blocks: raw.blocks.clone(),
         decisions: parameter_decisions,
         checks: crate::validate_context_markers(&raw),
-        cooperate_sites: dataflow::compute_cooperate_sites(&raw.blocks),
+        // SIR may introduce edge-forwarding blocks after the CFG nodes they
+        // target. Its scheduler therefore uses structural latches rather than
+        // the legacy raw-MIR numeric block-order convention.
+        cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
     };
     Ok(SirMirLowered { raw, checked })
 }
@@ -1346,6 +1349,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the parallel-copy edge materialization contract is clearest as one complete CFG fixture"
+    )]
     fn edge_argument_materialization_uses_parallel_copies() {
         let function = SemFunction {
             id: ItemId(0),
@@ -1425,6 +1432,15 @@ mod tests {
             })
             .collect();
         assert_eq!(forwarders.len(), 2, "one forwarding block per branch edge");
+        assert!(
+            forwarders.iter().all(|block| block.id > 1),
+            "SIR allocates edge-forwarding blocks after their bb1 target"
+        );
+        assert!(
+            lowered.checked.cooperate_sites.is_empty(),
+            "an acyclic SIR CFG with high-id forwarders must not acquire legacy numeric scheduler sites: {:?}",
+            lowered.checked.cooperate_sites
+        );
         for block in forwarders {
             let first_phase = &block.instructions[..2];
             let second_phase = &block.instructions[2..];

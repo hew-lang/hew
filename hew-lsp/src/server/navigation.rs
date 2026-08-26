@@ -4,11 +4,14 @@ use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
 use hew_parser::ast::{ImportDecl, ImportSpec, Item, Span};
 use hew_parser::ParseResult;
-use tower_lsp::lsp_types::{
-    DocumentLink, Location, PrepareRenameResponse, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::lsp_types::{
+    DocumentLink, Location, PrepareRenameResponse, Range, TextEdit, Uri as Url, WorkspaceEdit,
 };
+use tower_lsp_server::UriExt;
 
 use super::workspace::find_workspace_root_for_uri;
+#[cfg(test)]
+use super::UriParse;
 use super::{offset_range_to_lsp, span_to_range, DocumentState};
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -19,8 +22,8 @@ use super::{offset_range_to_lsp, span_to_range, DocumentState};
 fn read_source_or_io_error(uri: &Url) -> Result<String, hew_analysis::RenameError> {
     let path = uri
         .to_file_path()
-        .map_err(|_e| hew_analysis::RenameError::Io {
-            path: uri.to_string(),
+        .ok_or_else(|| hew_analysis::RenameError::Io {
+            path: uri.as_str().to_string(),
             message: "could not convert URI to file path".to_string(),
         })?;
     std::fs::read_to_string(&path).map_err(|e| hew_analysis::RenameError::Io {
@@ -54,7 +57,6 @@ pub(super) fn compute_import_path(uri: &Url, import: &ImportDecl) -> Option<std:
     if let Some(fp) = &import.file_path {
         let file_dir = uri
             .to_file_path()
-            .ok()
             .and_then(|p| p.parent().map(std::path::Path::to_path_buf))?;
         return Some(file_dir.join(fp));
     }
@@ -76,7 +78,6 @@ pub(super) fn compute_import_path(uri: &Url, import: &ImportDecl) -> Option<std:
     // Fall back to the directory of the importing file.
     let file_dir = uri
         .to_file_path()
-        .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))?;
     Some(file_dir.join(&relative))
 }
@@ -181,7 +182,7 @@ fn build_named_importer_index(documents: &DashMap<Url, DocumentState>) -> NamedI
             let Some(path) = compute_import_path(&importer_uri, &import) else {
                 continue;
             };
-            let Ok(resolved_uri) = Url::from_file_path(&path) else {
+            let Some(resolved_uri) = Url::from_file_path(&path) else {
                 continue;
             };
 
@@ -258,7 +259,7 @@ pub(super) fn find_named_import_match(
         let Some(path) = compute_import_path(current_uri, &import) else {
             continue;
         };
-        let Ok(imported_uri) = Url::from_file_path(&path) else {
+        let Some(imported_uri) = Url::from_file_path(&path) else {
             continue;
         };
 
@@ -282,7 +283,7 @@ pub(super) fn find_named_import_match(
                 .is_some()
             } else {
                 // File not open; check on disk (degrades gracefully on I/O error).
-                if let Ok(file_path) = imported_uri.to_file_path() {
+                if let Some(file_path) = imported_uri.to_file_path() {
                     if let Ok(file_source) = std::fs::read_to_string(&file_path) {
                         let file_parse = hew_parser::parse(&file_source);
                         hew_analysis::definition::find_definition(
@@ -1230,7 +1231,7 @@ fn scan_disk_importers_for_conflicts(
     conflicts: &mut Vec<hew_analysis::RenameConflict>,
 ) -> Result<(), hew_analysis::RenameError> {
     super::workspace::for_each_hew_file(root, |path| -> Result<(), hew_analysis::RenameError> {
-        let Ok(file_uri) = Url::from_file_path(path) else {
+        let Some(file_uri) = Url::from_file_path(path) else {
             return Ok(());
         };
         // Already checked by the open-documents pass.
@@ -1261,7 +1262,7 @@ fn scan_disk_importers_for_conflicts(
                     let Some(resolved) = compute_import_path(&file_uri, &import) else {
                         return false;
                     };
-                    Url::from_file_path(&resolved).ok().as_ref() == Some(definition_uri)
+                    Url::from_file_path(&resolved).as_ref() == Some(definition_uri)
                 });
         if !imports_target_nonaliased {
             return Ok(());
@@ -1284,7 +1285,7 @@ fn collect_unopened_sibling_importers_for_edits(
 ) -> Result<Vec<NamedImportMatch>, hew_analysis::RenameError> {
     let mut matches = Vec::new();
     super::workspace::for_each_hew_file(root, |path| -> Result<(), hew_analysis::RenameError> {
-        let Ok(file_uri) = Url::from_file_path(path) else {
+        let Some(file_uri) = Url::from_file_path(path) else {
             return Ok(());
         };
         if open_uris.contains(&file_uri) || file_uri == *definition_uri {
@@ -1305,7 +1306,7 @@ fn collect_unopened_sibling_importers_for_edits(
             let Some(resolved) = compute_import_path(&file_uri, &import) else {
                 continue;
             };
-            let Ok(resolved_uri) = Url::from_file_path(&resolved) else {
+            let Some(resolved_uri) = Url::from_file_path(&resolved) else {
                 continue;
             };
             if resolved_uri != *definition_uri {
@@ -1381,7 +1382,7 @@ fn find_cross_file_definition_impl(
         let Some(path) = compute_import_path(current_uri, import) else {
             continue;
         };
-        let Ok(target_uri) = Url::from_file_path(&path) else {
+        let Some(target_uri) = Url::from_file_path(&path) else {
             continue;
         };
 
@@ -1514,7 +1515,7 @@ pub(super) fn find_stdlib_definition(
     let mut already_searched: HashSet<Url> = HashSet::from([current_uri.clone()]);
     for import in imports {
         if let Some(path) = compute_import_path(current_uri, import) {
-            if let Ok(u) = Url::from_file_path(&path) {
+            if let Some(u) = Url::from_file_path(&path) {
                 already_searched.insert(u);
             }
         }
@@ -1526,7 +1527,7 @@ pub(super) fn find_stdlib_definition(
     // for the whole workspace.
     let workspace_files = super::workspace::collect_hew_files(&root);
     for path in workspace_files {
-        let Ok(file_uri) = Url::from_file_path(&path) else {
+        let Some(file_uri) = Url::from_file_path(&path) else {
             continue;
         };
         if already_searched.contains(&file_uri) {
@@ -1574,7 +1575,7 @@ fn collect_workspace_references(
     let mut locations = Vec::new();
 
     for path in workspace_files {
-        let Ok(file_uri) = Url::from_file_path(&path) else {
+        let Some(file_uri) = Url::from_file_path(&path) else {
             continue;
         };
 
@@ -1651,7 +1652,7 @@ pub(super) fn build_document_links(
             if !path.exists() {
                 continue;
             }
-            if let Ok(target_uri) = Url::from_file_path(&path) {
+            if let Some(target_uri) = Url::from_file_path(&path) {
                 let relative = format!("{}.hew", import.path.join("/"));
                 links.push(DocumentLink {
                     range: span_to_range(source, lo, span),
@@ -1832,8 +1833,8 @@ mod tests {
 
         let (target_uri, _range) = result.expect("should find println in stdlib");
         assert!(
-            target_uri.path().contains("builtins"),
-            "expected builtins.hew, got: {target_uri}"
+            target_uri.as_str().contains("builtins"),
+            "expected builtins.hew, got: {target_uri:?}"
         );
         let _ = offset; // used to verify the test setup
     }
@@ -1918,7 +1919,7 @@ mod tests {
         for loc in &locations {
             assert!(
                 loc.uri == *a_uri,
-                "expected only a.hew locations, got: {}",
+                "expected only a.hew locations, got: {:?}",
                 loc.uri
             );
         }
@@ -1961,7 +1962,7 @@ mod tests {
         for loc in &locations {
             assert!(
                 loc.uri == *a_uri,
-                "expected only a.hew locations, got: {}",
+                "expected only a.hew locations, got: {:?}",
                 loc.uri
             );
         }
@@ -2061,8 +2062,8 @@ mod tests {
         let (contamination_uri, _) = stdlib_result
             .expect("find_stdlib_definition should find pub fn x() in other.hew without the guard");
         assert!(
-            contamination_uri.path().contains("other"),
-            "expected contamination target to be other.hew, got: {contamination_uri}"
+            contamination_uri.as_str().contains("other"),
+            "expected contamination target to be other.hew, got: {contamination_uri:?}"
         );
         // The goto_definition handler's guard (is_local_or_param == true) would
         // skip calling find_stdlib_definition, so no location in other.hew

@@ -367,6 +367,18 @@ jobs:
             | tee clippy-results.sarif \
             | sarif-fmt
 
+      - name: Require documented runtime unsafe blocks
+        run: make runtime-unsafe-clippy
+
+      - name: Install cargo-geiger
+        run: cargo install cargo-geiger --locked
+
+      - name: Reject unreviewed runtime unsafe growth
+        run: make runtime-unsafe-geiger
+
+      - name: Audit new high-risk unsafe operations
+        run: make unsafe-pattern-audit
+
       - name: Verify C ABI surface and JIT host ABI classification
         run: make cabi-surface-check test-cabi-surface verify-ffi test-verify-ffi test-python310-toml-compat
 

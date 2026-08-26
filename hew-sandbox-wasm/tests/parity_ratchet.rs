@@ -958,6 +958,8 @@ fn runnable_coverage_does_not_shrink() {
 ///   "admitted + runs-clean + unparited".
 /// - `RejectedByProfile` probe: must produce NO bytecode and carry the declared
 ///   diagnostic kind. A profile change that begins admitting it trips this.
+// This ratchet runs the Node sandbox VM; it is owned by the Linux sandbox
+// parity lane rather than the Windows-native build lane.
 #[cfg_attr(windows, ignore)]
 #[test]
 fn live_gate_matches_declared_coverage() {

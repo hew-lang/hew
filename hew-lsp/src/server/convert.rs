@@ -1,5 +1,5 @@
 use hew_analysis::util::offset_to_line_col;
-use tower_lsp::lsp_types::{
+use tower_lsp_server::lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Documentation, InsertTextFormat,
     MarkupContent, MarkupKind, SemanticToken, SemanticTokenModifier, SymbolKind,
 };

@@ -49,6 +49,8 @@ use self::workspace::has_test_attribute;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+#[cfg(test)]
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
@@ -68,20 +70,20 @@ use hew_types::Checker;
 use hew_types::TypeCheckOutput;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::{
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
     CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CallHierarchyServerCapability, CodeLens, CodeLensOptions, CodeLensParams, SymbolInformation,
     WorkspaceSymbolParams,
 };
 #[cfg(test)]
-use tower_lsp::lsp_types::{
+use tower_lsp_server::lsp_types::{
     CodeActionContext, CodeActionOrCommand, CompletionItemKind, DiagnosticSeverity, DocumentSymbol,
     InlayHintTooltip, InsertTextFormat, PartialResultParams, SemanticToken, SymbolKind,
     TextDocumentIdentifier, WorkDoneProgressParams,
 };
-use tower_lsp::lsp_types::{
+use tower_lsp_server::lsp_types::{
     CodeActionKind, CodeActionParams, CodeActionResponse, CompletionOptions, CompletionParams,
     CompletionResponse, Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
@@ -92,18 +94,19 @@ use tower_lsp::lsp_types::{
     SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
+    TextDocumentSyncKind, TextEdit, Uri as Url, WorkDoneProgressOptions, WorkspaceEdit,
 };
-use tower_lsp::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
-use tower_lsp::lsp_types::{
+use tower_lsp_server::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
+use tower_lsp_server::lsp_types::{
     InlayHint, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, SignatureHelp,
     SignatureHelpOptions, SignatureHelpParams,
 };
-use tower_lsp::lsp_types::{
+use tower_lsp_server::lsp_types::{
     TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
     TypeHierarchySupertypesParams,
 };
-use tower_lsp::{Client, LanguageServer};
+use tower_lsp_server::UriExt;
+use tower_lsp_server::{Client, LanguageServer};
 
 // ── Semantic token types ─────────────────────────────────────────────
 
@@ -146,6 +149,18 @@ struct DocumentState {
 }
 
 type DiagnosticMap = HashMap<Url, Vec<Diagnostic>>;
+
+/// Restores the explicit parsing entry point that `lsp-types` replaced with
+/// `FromStr` when it moved from `Url` to `Uri`.
+#[cfg(test)]
+pub(crate) trait UriParse: Sized + FromStr {
+    fn parse(input: &str) -> std::result::Result<Self, <Self as FromStr>::Err> {
+        Self::from_str(input)
+    }
+}
+
+#[cfg(test)]
+impl UriParse for Url {}
 
 #[derive(Debug)]
 struct DiagnosticSource {
@@ -211,7 +226,7 @@ fn build_server_capabilities() -> ServerCapabilities {
             work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
         references_provider: Some(OneOf::Left(true)),
-        rename_provider: Some(OneOf::Right(tower_lsp::lsp_types::RenameOptions {
+        rename_provider: Some(OneOf::Right(tower_lsp_server::lsp_types::RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
         })),
@@ -226,18 +241,20 @@ fn build_server_capabilities() -> ServerCapabilities {
             retrigger_characters: None,
             work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
-        code_action_provider: Some(tower_lsp::lsp_types::CodeActionProviderCapability::Options(
-            tower_lsp::lsp_types::CodeActionOptions {
-                code_action_kinds: Some(vec![
-                    CodeActionKind::QUICKFIX,
-                    CodeActionKind::SOURCE,
-                    CodeActionKind::from(REMOVE_UNUSED_IMPORTS_KIND),
-                ]),
-                ..Default::default()
-            },
-        )),
+        code_action_provider: Some(
+            tower_lsp_server::lsp_types::CodeActionProviderCapability::Options(
+                tower_lsp_server::lsp_types::CodeActionOptions {
+                    code_action_kinds: Some(vec![
+                        CodeActionKind::QUICKFIX,
+                        CodeActionKind::SOURCE,
+                        CodeActionKind::from(REMOVE_UNUSED_IMPORTS_KIND),
+                    ]),
+                    ..Default::default()
+                },
+            ),
+        ),
         folding_range_provider: Some(
-            tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true),
+            tower_lsp_server::lsp_types::FoldingRangeProviderCapability::Simple(true),
         ),
         document_formatting_provider: Some(OneOf::Left(true)),
         // lsp-types 0.94.1 (pinned by tower-lsp 0.20's ^0.94.1 constraint) does not have a
@@ -256,8 +273,8 @@ fn normalize_workspace_root(path: PathBuf) -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
 }
 
-fn internal_error(message: impl Into<String>) -> tower_lsp::jsonrpc::Error {
-    use tower_lsp::jsonrpc::{Error, ErrorCode};
+fn internal_error(message: impl Into<String>) -> tower_lsp_server::jsonrpc::Error {
+    use tower_lsp_server::jsonrpc::{Error, ErrorCode};
 
     Error {
         code: ErrorCode::InternalError,
@@ -392,7 +409,6 @@ impl HewLanguageServer {
             entry
                 .key()
                 .to_file_path()
-                .ok()
                 .and_then(|path| path.parent().map(Path::to_path_buf))
         })
     }
@@ -513,7 +529,6 @@ impl HewLanguageServer {
     }
 }
 
-#[tower_lsp::async_trait]
 impl LanguageServer for HewLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         handlers::text_sync::initialize(self, &params)
@@ -600,7 +615,7 @@ impl LanguageServer for HewLanguageServer {
 
     async fn prepare_rename(
         &self,
-        params: tower_lsp::lsp_types::TextDocumentPositionParams,
+        params: tower_lsp_server::lsp_types::TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         Ok(handlers::navigation::prepare_rename(self, &params))
     }
@@ -2280,9 +2295,11 @@ impl Worker {
     fn code_action_capabilities_advertise_remove_unused_imports_kind() {
         let capabilities = build_server_capabilities();
         let kinds = match capabilities.code_action_provider {
-            Some(tower_lsp::lsp_types::CodeActionProviderCapability::Options(options)) => options
-                .code_action_kinds
-                .expect("code action kinds should be advertised"),
+            Some(tower_lsp_server::lsp_types::CodeActionProviderCapability::Options(options)) => {
+                options
+                    .code_action_kinds
+                    .expect("code action kinds should be advertised")
+            }
             _ => panic!("expected code action options"),
         };
         assert!(kinds.contains(&CodeActionKind::QUICKFIX));
@@ -2571,7 +2588,9 @@ machine Traffic {
 
         assert_eq!(
             diag.tags,
-            Some(vec![tower_lsp::lsp_types::DiagnosticTag::UNNECESSARY])
+            Some(vec![
+                tower_lsp_server::lsp_types::DiagnosticTag::UNNECESSARY
+            ])
         );
     }
 
@@ -4313,7 +4332,7 @@ machine Traffic {
         // `LspService::new(init)` hands a real one to `init` and `.inner()`
         // gives back the constructed server for direct, non-async calls into
         // the handler.
-        let (service, _socket) = tower_lsp::LspService::new(|client| {
+        let (service, _socket) = tower_lsp_server::LspService::new(|client| {
             HewLanguageServer::new_with_options(client, Vec::new())
         });
         let server = service.inner();
@@ -4332,12 +4351,13 @@ machine Traffic {
         drop(doc);
 
         let params = GotoDefinitionParams {
-            text_document_position_params: tower_lsp::lsp_types::TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: main_uri.clone(),
+            text_document_position_params:
+                tower_lsp_server::lsp_types::TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: main_uri.clone(),
+                    },
+                    position,
                 },
-                position,
-            },
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
         };
@@ -4352,7 +4372,7 @@ machine Traffic {
             location.uri, counter_uri,
             "goto-definition on a named-import usage must jump to the imported \
              file's real definition, not stay on the import statement in the \
-             importing file (got uri={}, range={:?})",
+             importing file (got uri={:?}, range={:?})",
             location.uri, location.range
         );
     }
@@ -4931,13 +4951,13 @@ machine Traffic {
                             .message
                             .contains("falling back to per-file analysis")
                 }),
-                "expected cycle diagnostic for {expected_uri}, got: {diagnostics:?}"
+                "expected cycle diagnostic for {expected_uri:?}, got: {diagnostics:?}"
             );
             assert!(
                 diagnostics
                     .iter()
                     .any(|diagnostic| diagnostic.source.as_deref() == Some("hew-types")),
-                "expected per-file type-check diagnostics for {expected_uri}, got: {diagnostics:?}"
+                "expected per-file type-check diagnostics for {expected_uri:?}, got: {diagnostics:?}"
             );
         }
     }
@@ -5065,7 +5085,7 @@ machine Traffic {
         for url in [&b_url, &c_url, &a_url] {
             assert!(
                 refreshed.iter().any(|(uri, _)| uri == url),
-                "opening D should refresh {url}"
+                "opening D should refresh {url:?}"
             );
         }
 
@@ -5739,11 +5759,11 @@ machine Traffic {
         // Verify edits exist for both URIs.
         assert!(
             changes.contains_key(&importer_uri),
-            "workspace edit must include changes for importer URI: {importer_uri}"
+            "workspace edit must include changes for importer URI: {importer_uri:?}"
         );
         assert!(
             changes.contains_key(&util_uri),
-            "workspace edit must include changes for unopened definition URI: {util_uri}"
+            "workspace edit must include changes for unopened definition URI: {util_uri:?}"
         );
 
         // Verify the definition file's edit covers the `foo` definition.
@@ -5845,15 +5865,15 @@ machine Traffic {
         // Verify edits exist for all three URIs.
         assert!(
             changes.contains_key(&importer1_uri),
-            "workspace edit must include changes for current importer URI: {importer1_uri}"
+            "workspace edit must include changes for current importer URI: {importer1_uri:?}"
         );
         assert!(
             changes.contains_key(&util_uri),
-            "workspace edit must include changes for definition URI: {util_uri}"
+            "workspace edit must include changes for definition URI: {util_uri:?}"
         );
         assert!(
             changes.contains_key(&importer2_uri),
-            "workspace edit must include changes for unopened sibling importer URI: {importer2_uri}"
+            "workspace edit must include changes for unopened sibling importer URI: {importer2_uri:?}"
         );
 
         // Verify importer1's edits (binding + usage).
@@ -5949,11 +5969,11 @@ machine Traffic {
         // Verify edits exist for both the util and the unopened importer.
         assert!(
             changes.contains_key(&util_uri),
-            "workspace edit must include changes for definition URI: {util_uri}"
+            "workspace edit must include changes for definition URI: {util_uri:?}"
         );
         assert!(
             changes.contains_key(&importer_uri),
-            "workspace edit must include changes for unopened aliased importer URI: {importer_uri}"
+            "workspace edit must include changes for unopened aliased importer URI: {importer_uri:?}"
         );
 
         // Verify importer's edit: should rewrite `foo` to `bar` in the import,
@@ -5987,7 +6007,7 @@ machine Traffic {
     fn rename_error_to_jsonrpc_uses_request_failed_code() {
         // LSP 3.17 §3.16.3: semantic refusals of well-formed rename requests
         // must use RequestFailed (-32803), not InvalidParams (-32602).
-        use tower_lsp::jsonrpc::ErrorCode;
+        use tower_lsp_server::jsonrpc::ErrorCode;
 
         let invalid_id_err = hew_analysis::RenameError::InvalidIdentifier {
             name: "123bad".to_string(),
@@ -7663,15 +7683,15 @@ machine Traffic {
             .documentation
             .expect("documentation field must be populated");
         match doc {
-            tower_lsp::lsp_types::Documentation::MarkupContent(markup) => {
+            tower_lsp_server::lsp_types::Documentation::MarkupContent(markup) => {
                 assert_eq!(
                     markup.kind,
-                    tower_lsp::lsp_types::MarkupKind::Markdown,
+                    tower_lsp_server::lsp_types::MarkupKind::Markdown,
                     "documentation kind must be Markdown"
                 );
                 assert_eq!(markup.value, "Greets the named entity.");
             }
-            tower_lsp::lsp_types::Documentation::String(s) => {
+            tower_lsp_server::lsp_types::Documentation::String(s) => {
                 panic!("expected MarkupContent, got plain String({s:?})")
             }
         }
@@ -7717,11 +7737,14 @@ machine Traffic {
             .as_ref()
             .expect("documentation must be propagated");
         match doc {
-            tower_lsp::lsp_types::Documentation::MarkupContent(markup) => {
-                assert_eq!(markup.kind, tower_lsp::lsp_types::MarkupKind::Markdown);
+            tower_lsp_server::lsp_types::Documentation::MarkupContent(markup) => {
+                assert_eq!(
+                    markup.kind,
+                    tower_lsp_server::lsp_types::MarkupKind::Markdown
+                );
                 assert_eq!(markup.value, "Returns the sum of a and b.");
             }
-            tower_lsp::lsp_types::Documentation::String(s) => {
+            tower_lsp_server::lsp_types::Documentation::String(s) => {
                 panic!("expected MarkupContent, got plain String({s:?})")
             }
         }

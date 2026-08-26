@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use dashmap::DashMap;
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::{
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, Diagnostic,
     DocumentFormattingParams, DocumentLink, DocumentLinkParams, DocumentSymbol,
@@ -10,8 +10,8 @@ use tower_lsp::lsp_types::{
     FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
     InlayHintLabel, InlayHintParams, InlayHintTooltip, InsertTextFormat, MarkupContent, MarkupKind,
     ParameterInformation, ParameterLabel, Position, SemanticTokens, SemanticTokensParams,
-    SemanticTokensResult, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit, Url,
-    WorkspaceEdit,
+    SemanticTokensResult, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit,
+    Uri as Url, WorkspaceEdit,
 };
 use tracing::warn;
 
@@ -103,7 +103,7 @@ pub(crate) fn lsp_signature_help_from_analysis(
 }
 
 pub(crate) fn lsp_code_actions_for_diagnostic(
-    uri: &tower_lsp::lsp_types::Url,
+    uri: &Url,
     doc: &DocumentState,
     diag: &Diagnostic,
     requested_kinds: Option<&[CodeActionKind]>,
@@ -426,7 +426,7 @@ pub(crate) fn code_action_response(
     let Some(doc) = documents.get(uri) else {
         warn!(
             target: "hew-lsp",
-            uri = %uri,
+            uri = uri.as_str(),
             "code action requested for unknown document; returning empty response"
         );
         return vec![];

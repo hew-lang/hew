@@ -6,8 +6,8 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (400 packages)
-  MIT License (116 packages)
+  Apache License 2.0 (397 packages)
+  MIT License (115 packages)
   Unicode License v3 (19 packages)
   ISC License (8 packages)
   BSD 3-Clause "New" or "Revised" License (5 packages)
@@ -6044,7 +6044,7 @@ Apache License 2.0
   * thread_local 1.1.9 — https://github.com/Amanieu/thread_local-rs
   * tiny_http 0.12.0 — https://github.com/tiny-http/tiny-http
   * tinytemplate 1.2.1 — https://github.com/bheisler/TinyTemplate
-  * tower-lsp 0.20.0 — https://github.com/ebkalderon/tower-lsp
+  * tower-lsp-server 0.21.1 — https://github.com/tower-lsp-community/tower-lsp-server
   * tungstenite 0.29.0 — https://github.com/snapview/tungstenite-rs
   * ucd-trie 0.1.7 — https://github.com/BurntSushi/ucd-generate
   * unicase 2.9.0 — https://github.com/seanmonstar/unicase
@@ -6277,7 +6277,6 @@ limitations under the License.
 
 ================================================================================
 Apache License 2.0
-  * auto_impl 1.3.0 — https://github.com/auto-impl-rs/auto_impl/
   * bit-set 0.8.0 — https://github.com/contain-rs/bit-set
   * bit-vec 0.8.0 — https://github.com/contain-rs/bit-vec
   * minimal-lexical 0.2.1 — https://github.com/Alexhuszagh/minimal-lexical
@@ -8633,9 +8632,7 @@ Apache License 2.0
   * miniz_oxide 0.8.9 — https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
   * num-conv 0.2.1 — https://github.com/jhpratt/num-conv
   * pest_vm 2.8.6 — https://github.com/pest-parser/pest
-  * pin-project-internal 1.1.12 — https://github.com/taiki-e/pin-project
   * pin-project-lite 0.2.17 — https://github.com/taiki-e/pin-project-lite
-  * pin-project 1.1.12 — https://github.com/taiki-e/pin-project
   * proc-macro2 1.0.106 — https://github.com/dtolnay/proc-macro2
   * quote 1.0.45 — https://github.com/dtolnay/quote
   * r-efi 5.3.0 — https://github.com/r-efi/r-efi
@@ -8655,13 +8652,14 @@ Apache License 2.0
   * serde_core 1.0.228 — https://github.com/serde-rs/serde
   * serde_derive 1.0.228 — https://github.com/serde-rs/serde
   * serde_json 1.0.149 — https://github.com/serde-rs/json
-  * serde_repr 0.1.20 — https://github.com/dtolnay/serde-repr
+  * serde_repr 0.1.21 — https://github.com/dtolnay/serde-repr
   * serde_yaml 0.9.34+deprecated — https://github.com/dtolnay/serde-yaml
   * shlex 1.3.0 — https://github.com/comex/rust-shlex
   * simdutf8 0.1.5 — https://github.com/rusticstuff/simdutf8
   * siphasher 1.0.3 — https://github.com/jedisct1/rust-siphash
   * snow 0.10.0 — https://github.com/mcginty/snow
   * syn 2.0.117 — https://github.com/dtolnay/syn
+  * syn 3.0.4 — https://github.com/dtolnay/syn
   * sync_wrapper 1.0.2 — https://github.com/Actyx/sync_wrapper
   * thiserror-impl 1.0.69 — https://github.com/dtolnay/thiserror
   * thiserror-impl 2.0.18 — https://github.com/dtolnay/thiserror
@@ -8670,7 +8668,6 @@ Apache License 2.0
   * time-core 0.1.8 — https://github.com/time-rs/time
   * time-macros 0.2.27 — https://github.com/time-rs/time
   * time 0.3.47 — https://github.com/time-rs/time
-  * tower-lsp-macros 0.9.0 — https://github.com/ebkalderon/tower-lsp
   * unicode-ident 1.0.24 — https://github.com/dtolnay/unicode-ident
   * ureq-proto 0.6.0 — https://github.com/algesten/ureq-proto
   * utf8-zero 0.8.1 — https://github.com/algesten/utf8-zero
@@ -9961,7 +9958,6 @@ DEALINGS IN THE SOFTWARE.
 MIT License
   * tower-layer 0.3.3 — https://github.com/tower-rs/tower
   * tower-service 0.3.3 — https://github.com/tower-rs/tower
-  * tower 0.4.13 — https://github.com/tower-rs/tower
   * tower 0.5.3 — https://github.com/tower-rs/tower
 
 Copyright (c) 2019 Tower Contributors
@@ -10339,7 +10335,6 @@ SOFTWARE.
 
 ================================================================================
 MIT License
-  * dashmap 5.5.3 — https://github.com/xacrimon/dashmap
   * dashmap 6.2.1 — https://github.com/xacrimon/dashmap
 
 MIT License
@@ -10815,6 +10810,32 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+
+================================================================================
+MIT License
+  * fluent-uri 0.1.4 — https://github.com/yescallop/fluent-uri-rs
+
+MIT License
+
+Copyright (c) 2021 Scallop Ye
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ================================================================================
 MIT License
@@ -11350,6 +11371,34 @@ SOFTWARE.
 
 ================================================================================
 MIT License
+  * lsp-types 0.97.0 — https://github.com/gluon-lang/lsp-types
+
+The MIT License (MIT)
+
+Copyright (c) 2016 Markus Westerlind
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+
+
+================================================================================
+MIT License
   * ratatui-core 0.1.1 — https://github.com/ratatui/ratatui
   * ratatui-crossterm 0.1.1 — https://github.com/ratatui/ratatui
   * ratatui-widgets 0.3.1 — https://github.com/ratatui/ratatui
@@ -11609,34 +11658,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-
-
-================================================================================
-MIT License
-  * lsp-types 0.94.1 — https://github.com/gluon-lang/lsp-types
-
-The MIT License (MIT)
-
-Copyright (c) 2016 Markus Westerlind
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
 
 
 ================================================================================

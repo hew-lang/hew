@@ -1,7 +1,7 @@
-use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
-use tower_lsp::lsp_types::{
+use tower_lsp_server::jsonrpc::{Error, ErrorCode, Result};
+use tower_lsp_server::lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Location, PrepareRenameResponse, ReferenceParams,
-    RenameParams, Url, WorkspaceEdit,
+    RenameParams, Uri as Url, WorkspaceEdit,
 };
 
 use super::super::{
@@ -12,7 +12,7 @@ use super::super::{
 
 pub(crate) fn rename_error_to_jsonrpc(
     err: &hew_analysis::RenameError,
-) -> tower_lsp::jsonrpc::Error {
+) -> tower_lsp_server::jsonrpc::Error {
     let message: String = match err {
         hew_analysis::RenameError::InvalidIdentifier { message, .. }
         | hew_analysis::RenameError::Builtin { message, .. } => message.clone(),
@@ -60,7 +60,7 @@ pub(crate) fn goto_definition(
         if let Some((res_uri, span)) = resolution.def_location() {
             // Use the resolver's URI, not the caller's URI: the definition may
             // live in a stdlib or imported file, not the document being queried.
-            let def_uri = Url::parse(res_uri).unwrap_or_else(|_| uri.clone());
+            let def_uri = res_uri.parse::<Url>().unwrap_or_else(|_| uri.clone());
             let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
             return Some(GotoDefinitionResponse::Scalar(Location {
                 uri: def_uri,
@@ -163,7 +163,7 @@ pub(crate) fn references(
 
 pub(crate) fn prepare_rename(
     server: &HewLanguageServer,
-    params: &tower_lsp::lsp_types::TextDocumentPositionParams,
+    params: &tower_lsp_server::lsp_types::TextDocumentPositionParams,
 ) -> Option<PrepareRenameResponse> {
     let uri = &params.text_document.uri;
 

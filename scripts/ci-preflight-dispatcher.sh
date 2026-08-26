@@ -158,45 +158,67 @@ command_timeout_floor() {
 # The weight is a MEASURED duration, not a hang ceiling: command_timeout_floor
 # carries deliberate 35%-and-more headroom (test-compiler-pipeline's 1800 s
 # ceiling bounds a ~1243 s gate), so packing against floors would mis-rank the
-# long tail.  The values below are the per-command elapsed times from a hosted
-# ubuntu-24.04 Linux-gates run of the comprehensive profile: 7823 s total, of
-# which 754 s was warm-up and the nine commands named here were 5283 s.  The
-# remaining 29 commands each measured at or under 200 s and average about 60 s,
-# which is the default; anything with no entry and no floor takes that default.
+# long tail.
 #
-# SHIM SEAM: these are point measurements, refreshed by hand from a
-# --profile-json run.  They become obsolete when the dispatcher reads a
-# committed timing corpus; until then a drifted weight costs balance, never
-# coverage — the partition is exhaustive and disjoint regardless of the weights.
+# The measurements live in scripts/preflight-command-weights.tsv, regenerated
+# from a real `--profile-json` run by scripts/preflight-weights-regen.py. That
+# corpus is the ONLY weight authority. It was previously accompanied by a case
+# statement here that carried the same numbers, which is two authorities for
+# one measurement: `make preflight-weights-regen` rewrote a file no run read,
+# and baselines.py could report a stale corpus over a number nothing consumed.
+#
+# Weights degrade safely and must: a corpus that is missing, unreadable, or
+# empty leaves every command at its floor-or-default weight and the run
+# proceeds, because a wrong weight costs makespan while the partition stays
+# exhaustive and disjoint. Timeout FLOORS deliberately do NOT move here — an
+# unreadable corpus that zeroed the floors would drop `make test` to the
+# comprehensive tier against a measured 1104 s runtime and kill it while
+# healthy. Floors and weights cannot share one degrade contract.
 PREFLIGHT_DEFAULT_COMMAND_WEIGHT=60
+PREFLIGHT_COMMAND_WEIGHTS_FILE="${PREFLIGHT_COMMAND_WEIGHTS_FILE:-$REPO_ROOT/scripts/preflight-command-weights.tsv}"
+
+# The corpus is held as one "\n<command>\t<seconds>" string rather than an
+# associative array: macOS ships bash 3.2, which has none (same reason
+# corpus-ratchet.sh avoids `mapfile`). Both delimiters are load-bearing — a
+# lookup searches for "\n<command>\t", so `make test` cannot match the row for
+# `make test-cabi`.
+PREFLIGHT_COMMAND_WEIGHT_MAP=""
+PREFLIGHT_COMMAND_WEIGHTS_LOADED=0
+
+load_command_weights() {
+    (( PREFLIGHT_COMMAND_WEIGHTS_LOADED == 1 )) && return 0
+    PREFLIGHT_COMMAND_WEIGHTS_LOADED=1
+    # A missing or unreadable corpus is not fatal: see the degrade contract
+    # above. Every command then takes its floor-or-default weight.
+    [[ -r "$PREFLIGHT_COMMAND_WEIGHTS_FILE" ]] || return 0
+    local seconds cmd
+    while IFS=$'\t' read -r seconds cmd; do
+        # Comments, blank lines, and anything that is not a positive integer
+        # count for nothing; a corrupt row must not become a weight of zero.
+        [[ "$seconds" == \#* ]] && continue
+        [[ -n "$cmd" ]] || continue
+        [[ "$seconds" =~ ^[0-9]+$ ]] || continue
+        (( seconds > 0 )) || continue
+        PREFLIGHT_COMMAND_WEIGHT_MAP="$PREFLIGHT_COMMAND_WEIGHT_MAP"$'\n'"$cmd"$'\t'"$seconds"
+    done < "$PREFLIGHT_COMMAND_WEIGHTS_FILE"
+    return 0
+}
 
 command_weight() {
     local cmd="$1"
-    local floor
-    case "$cmd" in
-        # Measured on the hosted Linux gates job.
-        "make test-compiler-pipeline") echo 1243 ;;
-        "make test") echo 1104 ;;
-        "make hew-check-all") echo 633 ;;
-        "make fuzz-oracle") echo 580 ;;
-        "make hew-fmt-property") echo 567 ;;
-        "make lint") echo 435 ;;
-        "make test-vertical-slice") echo 429 ;;
-        "make sandbox-parity") echo 292 ;;
-        # Not present in the hosted profile (the compiled-Hew aggregate owns
-        # both), so no hosted measurement exists.  Local isolated warm timings
-        # were 1105 s for the ratchet and 1988 s for the two-pass differential.
-        "make test-hew-ratchet") echo 1105 ;;
-        "make test-o2-differential") echo 1988 ;;
-        *)
-            floor="$(command_timeout_floor "$cmd")"
-            if (( floor > 0 && floor < PREFLIGHT_DEFAULT_COMMAND_WEIGHT )); then
-                echo "$floor"
-            else
-                echo "$PREFLIGHT_DEFAULT_COMMAND_WEIGHT"
-            fi
-            ;;
-    esac
+    local floor rest
+    load_command_weights
+    rest="${PREFLIGHT_COMMAND_WEIGHT_MAP#*$'\n'"$cmd"$'\t'}"
+    if [[ "$rest" != "$PREFLIGHT_COMMAND_WEIGHT_MAP" ]]; then
+        echo "${rest%%$'\n'*}"
+        return 0
+    fi
+    floor="$(command_timeout_floor "$cmd")"
+    if (( floor > 0 && floor < PREFLIGHT_DEFAULT_COMMAND_WEIGHT )); then
+        echo "$floor"
+    else
+        echo "$PREFLIGHT_DEFAULT_COMMAND_WEIGHT"
+    fi
 }
 
 # Ordering-dependency groups.  Commands that share a group key are ATOMIC for

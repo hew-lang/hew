@@ -3947,6 +3947,12 @@ def test_the_shard_weights_come_from_the_committed_timing_corpus() -> None:
     partition. An absent, stale, or unreadable corpus costs makespan and never
     coverage, because the partition stays exhaustive and disjoint whatever the
     weights say -- so an unmeasured command must fall back rather than vanish.
+
+    This asserted the same shape while the dispatcher carried its own case
+    statement, and passed for a reason unrelated to the code: the two tables
+    were seeded identically, and the degrade probe could not fail because
+    PREFLIGHT_COMMAND_WEIGHTS_FILE was read nowhere. The mutation below is what
+    stops that: a corpus row the dispatcher does not read cannot move a weight.
     """
     corpus = ROOT / "scripts" / "preflight-command-weights.tsv"
     assert corpus.is_file(), corpus
@@ -3958,28 +3964,70 @@ def test_the_shard_weights_come_from_the_committed_timing_corpus() -> None:
     }
     assert measured, "the timing corpus is empty; every command would default"
 
-    plan = _run_dispatcher_process(
-        ["bash", str(SCRIPT), "--dry-run", "--comprehensive", "--shard-plan", "4"]
-    )
-    assert plan.returncode == 0, plan.stderr
-    weights = dict(
-        (match.group(1), int(match.group(2)))
-        for match in re.finditer(
-            r"- (make [a-z0-9-]+)\s+\(weight: (\d+)s\)", plan.stdout
+    def plan_weights(env: dict[str, str] | None = None) -> dict[str, int]:
+        plan = _run_dispatcher_process(
+            ["bash", str(SCRIPT), "--dry-run", "--comprehensive", "--shard-plan", "4"],
+            env=env,
         )
-    )
-    assert weights, plan.stdout
-    for command, seconds in measured.items():
-        if command in weights:
-            assert weights[command] == seconds, (command, weights[command], seconds)
+        assert plan.returncode == 0, plan.stderr
+        assert "Shard plan:" in plan.stdout, plan.stdout
+        return {
+            match.group(1): int(match.group(2))
+            for match in re.finditer(
+                r"- (make [a-z0-9-]+)\s+\(weight: (\d+)s\)", plan.stdout
+            )
+        }
 
-    # An unreadable corpus must degrade to the fallback, not to an error.
+    weights = plan_weights()
+    assert weights, "the shard plan printed no weights"
+    planned = {command: weights[command] for command in measured if command in weights}
+    assert planned, (
+        "no measured command reached the shard plan; the corpus would be "
+        "unobservable and this assertion vacuous"
+    )
+    for command, seconds in planned.items():
+        assert weights[command] == seconds, (command, weights[command], seconds)
+
+    # MUTATION: a corpus the dispatcher does not read cannot move a weight.
+    # Every measured command is doubled, so the check does not depend on which
+    # gates the comprehensive profile happens to select today.
+    with tempfile.TemporaryDirectory() as work:
+        mutated = Path(work) / "weights.tsv"
+        mutated.write_text(
+            "# mutated copy\n"
+            + "".join(
+                f"{seconds * 2}\t{command}\n" for command, seconds in measured.items()
+            ),
+            encoding="utf-8",
+        )
+        moved = plan_weights({"PREFLIGHT_COMMAND_WEIGHTS_FILE": str(mutated)})
+        for command, seconds in planned.items():
+            assert moved.get(command) == seconds * 2, (
+                f"{command} kept weight {moved.get(command)} when the corpus "
+                f"said {seconds * 2}: the corpus is not the weight authority"
+            )
+
+    # An unreadable corpus must degrade to the fallback, not to an error, and
+    # the fallback must actually be the fallback rather than a stale table.
     without = _run_dispatcher_process(
         ["bash", str(SCRIPT), "--dry-run", "--comprehensive", "--shard-plan", "4"],
         env={"PREFLIGHT_COMMAND_WEIGHTS_FILE": str(ROOT / "does-not-exist.tsv")},
     )
     assert without.returncode == 0, without.stderr
     assert "Shard plan:" in without.stdout, without.stdout
+    degraded = {
+        match.group(1): int(match.group(2))
+        for match in re.finditer(
+            r"- (make [a-z0-9-]+)\s+\(weight: (\d+)s\)", without.stdout
+        )
+    }
+    for command in planned:
+        assert degraded.get(command, 0) <= 60, (
+            f"{command} kept a measured weight with no corpus to measure it: "
+            "a second weight authority survives in the dispatcher"
+        )
+    for command, seconds in degraded.items():
+        assert seconds > 0, f"{command} degraded to a zero weight"
 
 
 def _discover_tests() -> list:

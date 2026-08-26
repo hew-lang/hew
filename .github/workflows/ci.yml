@@ -1477,3 +1477,88 @@ jobs:
             esac
           done
           exit "$status"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Budget — the numbers, on the run you are already looking at
+  # ─────────────────────────────────────────────────────────────────────────
+  #
+  # No stored trailing window, no metrics service, no dashboard, and NO
+  # ADVISORY FAILING JOB. It reads this run's own job timings and writes them
+  # into this run's summary. The p95 budgets this program set are checked on
+  # demand with `gh run list` / `gh api .../jobs`; a dashboard nobody reads is
+  # theatre, while a summary line on the page you already opened is not.
+  #
+  # `if: always()` because the interesting runs are the slow ones and the red
+  # ones. It asserts nothing, so it cannot make a run red for being slow --
+  # a budget is a signal, not a gate.
+  ci-budget:
+    name: CI budget
+    needs: [changes, lint, build-and-test, linux-required, platform-required]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Report this run's wall time, shard makespan, and route
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_PROFILE: ${{ needs.changes.outputs.selected_compile }}
+          PLATFORM_TIER: ${{ needs.changes.outputs.platform_tier }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+            --paginate --jq '.jobs[]|[.name,.started_at,.completed_at]|@tsv' \
+            > jobs.tsv || {
+              echo "::notice::could not read this run's job timings; the budget line is informational and does not gate."
+              exit 0
+            }
+          python3 - jobs.tsv >> "$GITHUB_STEP_SUMMARY" <<'REPORT'
+          import datetime as dt, sys
+
+          def parse(value):
+              return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+          rows = []
+          for line in open(sys.argv[1], encoding="utf-8"):
+              parts = line.rstrip("\n").split("\t")
+              if len(parts) != 3 or not parts[1] or not parts[2]:
+                  continue
+              rows.append((parts[0], parse(parts[1]), parse(parts[2])))
+
+          print("### CI budget")
+          if not rows:
+              print("No completed job timings were available for this run.")
+              raise SystemExit(0)
+
+          wall = (max(end for _, _, end in rows) - min(s for _, s, _ in rows))
+          minutes = lambda d: d.total_seconds() / 60.0
+          job_minutes = sum(minutes(end - start) for _, start, end in rows)
+          shards = [
+              (name, minutes(end - start))
+              for name, start, end in rows
+              if name.startswith("Linux gates")
+          ]
+          print(f"- Wall time: **{minutes(wall):.1f} min** over {len(rows)} job(s)")
+          print(f"- Job-minutes: **{job_minutes:.0f}**")
+          if shards:
+              longest = max(cost for _, cost in shards)
+              shortest = min(cost for _, cost in shards)
+              spread = 0.0 if longest == 0 else (longest - shortest) / longest * 100.0
+              print(
+                  f"- Linux shard makespan: **{longest:.1f} min**, "
+                  f"spread **{spread:.0f}%** ({shortest:.1f}-{longest:.1f})"
+              )
+          print("")
+          print("| Job | Minutes |")
+          print("| --- | ---: |")
+          for name, start, end in sorted(
+              rows, key=lambda row: row[2] - row[1], reverse=True
+          )[:12]:
+              print(f"| {name} | {minutes(end - start):.1f} |")
+          REPORT
+          {
+            echo ""
+            echo "Route: compile=\`${SELECTED_PROFILE:-unknown}\`, platform tier=\`${PLATFORM_TIER:-unknown}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

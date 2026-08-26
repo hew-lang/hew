@@ -1,0 +1,33 @@
+# Preflight command timings — the shard partitioner's balance input.
+#
+# Format: <seconds><TAB><command>
+#
+# These are MEASUREMENTS, not policy. The partitioner uses them only to balance
+# the four Linux shards; a stale weight costs makespan, never coverage, because
+# the partition is exhaustive and disjoint whatever the weights say. A command
+# absent from this file falls back to its timeout floor or the default weight,
+# so a new gate is never unrunnable for want of a row here.
+#
+# Regenerate from a real run rather than editing by hand:
+#
+#     scripts/ci-preflight-dispatcher.sh --comprehensive --profile-json run.json
+#     make preflight-weights-regen PROFILE_JSON=run.json
+#
+# The regen reads the `elapsed_s` of each successful command phase and rewrites
+# this file sorted by descending cost. Nothing regenerates it automatically: a
+# bot that opens pull requests is a new moving part with its own failure modes,
+# and this is a number a human reads occasionally, not a control loop.
+#
+# The seed rows below are the point measurements the previous hand-maintained
+# `command_weight()` case statement carried, taken from the hosted Linux gates
+# job, so this file starts exactly where that table left off.
+1988	make test-o2-differential
+1243	make test-compiler-pipeline
+1105	make test-hew-ratchet
+1104	make test
+633	make hew-check-all
+580	make fuzz-oracle
+567	make hew-fmt-property
+435	make lint
+429	make test-vertical-slice
+292	make sandbox-parity

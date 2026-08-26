@@ -508,6 +508,22 @@ EXEMPT_GATES: dict[str, str] = {
     "baselines-check": (
         "the aggregate check over this registry; it owns no artefact of its own"
     ),
+    "preflight-weights-regen": (
+        "scripts/preflight-command-weights.tsv is derived from a PROFILED RUN, "
+        "not from the tree: it holds the elapsed seconds a real hosted "
+        "comprehensive preflight measured. `make baselines` cannot regenerate "
+        "it without executing that preflight, and `baselines-check` cannot "
+        "prove it current against a tree that carries no timing. It is also "
+        "not a contract -- a stale weight costs shard makespan and never "
+        "coverage, because the partition is exhaustive and disjoint whatever "
+        "the weights say, and an unmeasured command falls back to its timeout "
+        "floor"
+    ),
+    "preflight-weights-drift": (
+        "reports drift between that timing corpus and a supplied profile "
+        "without writing anything and without gating; same artefact, same "
+        "reason"
+    ),
     "check-libhew-fresh": (
         "compares build-input hashes against a stamp under target/; nothing committed"
     ),

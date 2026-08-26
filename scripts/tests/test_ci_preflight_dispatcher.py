@@ -3941,6 +3941,48 @@ def test_the_platform_tier_emits_only_the_three_declared_values() -> None:
     assert len(seen) == 3, f"the tier is vacuous: only {seen} reachable"
 
 
+def test_the_shard_weights_come_from_the_committed_timing_corpus() -> None:
+    """A measured corpus, not a case statement somebody refreshes by hand.
+
+    The property that makes this safe to get wrong: a weight only balances the
+    partition. An absent, stale, or unreadable corpus costs makespan and never
+    coverage, because the partition stays exhaustive and disjoint whatever the
+    weights say -- so an unmeasured command must fall back rather than vanish.
+    """
+    corpus = ROOT / "scripts" / "preflight-command-weights.tsv"
+    assert corpus.is_file(), corpus
+
+    measured = {
+        line.split("\t", 1)[1].strip(): int(line.split("\t", 1)[0])
+        for line in corpus.read_text(encoding="utf-8").splitlines()
+        if "\t" in line and not line.lstrip().startswith("#")
+    }
+    assert measured, "the timing corpus is empty; every command would default"
+
+    plan = _run_dispatcher_process(
+        ["bash", str(SCRIPT), "--dry-run", "--comprehensive", "--shard-plan", "4"]
+    )
+    assert plan.returncode == 0, plan.stderr
+    weights = dict(
+        (match.group(1), int(match.group(2)))
+        for match in re.finditer(
+            r"- (make [a-z0-9-]+)\s+\(weight: (\d+)s\)", plan.stdout
+        )
+    )
+    assert weights, plan.stdout
+    for command, seconds in measured.items():
+        if command in weights:
+            assert weights[command] == seconds, (command, weights[command], seconds)
+
+    # An unreadable corpus must degrade to the fallback, not to an error.
+    without = _run_dispatcher_process(
+        ["bash", str(SCRIPT), "--dry-run", "--comprehensive", "--shard-plan", "4"],
+        env={"PREFLIGHT_COMMAND_WEIGHTS_FILE": str(ROOT / "does-not-exist.tsv")},
+    )
+    assert without.returncode == 0, without.stderr
+    assert "Shard plan:" in without.stdout, without.stdout
+
+
 def _discover_tests() -> list:
     """Every test function defined in this module, resolved at RUN time.
     Resolving at definition time is the same bug one layer down: tests added

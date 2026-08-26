@@ -2162,6 +2162,25 @@ test-release-workflow-contract:
 test-release-workflow-contract-build:
 	@:
 
+# Regenerate the shard-balance timing corpus from a real profiled run.
+# Deliberately manual and deliberately not a gate: a stale weight costs
+# makespan, never coverage, so this is a number a human refreshes occasionally
+# rather than a control loop with its own failure modes.
+#
+#   scripts/ci-preflight-dispatcher.sh --comprehensive --profile-json run.json
+#   make preflight-weights-regen PROFILE_JSON=run.json
+#
+.PHONY: preflight-weights-regen preflight-weights-drift
+preflight-weights-regen:
+	@test -n "$(PROFILE_JSON)" || { echo "usage: make preflight-weights-regen PROFILE_JSON=<path>" >&2; exit 1; }
+	python3 scripts/preflight-weights-regen.py "$(PROFILE_JSON)"
+
+# Report drift without writing and without failing. Consumed by the nightly
+# summary; it informs, it does not gate.
+preflight-weights-drift:
+	@test -n "$(PROFILE_JSON)" || { echo "usage: make preflight-weights-drift PROFILE_JSON=<path>" >&2; exit 1; }
+	python3 scripts/preflight-weights-regen.py "$(PROFILE_JSON)" --check
+
 # Deliberately NOT in LINT_GATES. `make lint` is the local mirror of the
 # required CI lint job, and A12 holds the two in exact correspondence; a
 # harness self-test on that path is the "don't test the test harness on the
@@ -2183,6 +2202,9 @@ test-release-workflow-contract-build:
 # inputs: scripts/tests/test_libhew_freshness.py scripts/tests/test_hew_suite_cache.py
 # inputs: scripts/tests/test_makefile_interfaces.py scripts/make-help.py
 # inputs: scripts/tests/test_corpus_ratchet_pass_policy.sh
+# The shard-balance corpus and its regenerator are router inputs: a weight
+# change re-partitions the shards, so it must re-run the partition properties.
+# inputs: scripts/preflight-command-weights.tsv scripts/preflight-weights-regen.py
 # inputs: scripts/shell-script-lint.py
 # Counterfactuals for the build harness itself: the preflight dispatcher's
 # routing and timeout behaviour, the CI playground path filter, the libhew

@@ -2234,6 +2234,50 @@ def test_build_authority_findings(ast_grep: Path, root: Path) -> tuple[list[str]
     return findings, len(scanned)
 
 
+def cow_envelope_definition_findings(root: Path) -> list[str]:
+    """Keep the COW envelope representation and lifecycle single-sourced."""
+    core_path = root / "hew-runtime/src/cow_envelope.rs"
+    wrapper_paths = (
+        root / "hew-runtime/src/mailbox.rs",
+        root / "hew-runtime/src/mailbox_wasm.rs",
+    )
+    if not core_path.exists() and not any(path.exists() for path in wrapper_paths):
+        # The audit self-tests construct focused fixture roots that do not carry
+        # the runtime. A partial real surface is still rejected below.
+        return []
+    try:
+        core = core_path.read_text(encoding="utf-8")
+        wrappers = {
+            path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+            for path in wrapper_paths
+        }
+    except OSError as error:
+        return [f"COW envelope authority inputs are unreadable: {error}"]
+
+    failures: list[str] = []
+    representation = r"(?m)^#\[repr\(C\)\]\s*$\n^pub struct HewMsgEnvelope\b"
+    if len(re.findall(representation, core)) != 1:
+        failures.append(
+            "COW envelope core must define exactly one #[repr(C)] HewMsgEnvelope"
+        )
+    for path, source in wrappers.items():
+        if re.search(representation, source):
+            failures.append(f"{path} must re-export, not define, HewMsgEnvelope")
+
+    operations = ("new", "clone_alias", "release", "payload_ptr", "fork_for_write")
+    for operation in operations:
+        definition = rf"(?m)^pub unsafe fn {operation}\s*\("
+        if len(re.findall(definition, core)) != 1:
+            failures.append(f"COW envelope core must define `{operation}` exactly once")
+        delegation = f"crate::cow_envelope::{operation}"
+        for path, source in wrappers.items():
+            if source.count(delegation) != 1:
+                failures.append(
+                    f"{path} must delegate `{operation}` to the shared COW envelope core exactly once"
+                )
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -2326,6 +2370,7 @@ def main() -> int:
     failures.extend(poisoned_findings)
     build_findings, build_trees = test_build_authority_findings(ast_grep, root)
     failures.extend(build_findings)
+    failures.extend(cow_envelope_definition_findings(root))
     if failures:
         print(
             "structural authority inventory changed; review every explicit form/path target:",

@@ -371,6 +371,17 @@ impl PendingBlock {
         self.terminator.is_none()
     }
 
+    fn append_op(&mut self, op: SemOp) -> Result<(), String> {
+        if self.terminator.is_some() {
+            return Err(format!(
+                "SIR builder attempted to append an operation after completed block bb{}",
+                self.id.0
+            ));
+        }
+        self.ops.push(op);
+        Ok(())
+    }
+
     fn into_sem_block(self) -> Result<SemBlock, String> {
         let terminator = self.terminator.ok_or_else(|| {
             format!(
@@ -595,7 +606,7 @@ impl<'a> Builder<'a> {
                         expr.ty.user_facing()
                     ));
                 }
-                Ok(self.emit(expr, SemOpKind::ConstI64(*value)))
+                self.emit(expr, SemOpKind::ConstI64(*value))
             }
             HirExprKind::Literal(HirLiteral::Bool(value)) => {
                 if expr.ty != hew_types::ResolvedTy::Bool {
@@ -604,7 +615,7 @@ impl<'a> Builder<'a> {
                         expr.ty.user_facing()
                     ));
                 }
-                Ok(self.emit(expr, SemOpKind::ConstBool(*value)))
+                self.emit(expr, SemOpKind::ConstBool(*value))
             }
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(binding),
@@ -614,7 +625,7 @@ impl<'a> Builder<'a> {
             }),
             HirExprKind::Unary { op, operand, .. } => {
                 let value = self.lower_read_operand(operand, "unary operand")?;
-                Ok(self.emit(expr, SemOpKind::Unary { op: *op, value }))
+                self.emit(expr, SemOpKind::Unary { op: *op, value })
             }
             HirExprKind::Binary {
                 op: hew_parser::ast::BinaryOp::And,
@@ -629,17 +640,17 @@ impl<'a> Builder<'a> {
             HirExprKind::Binary { op, left, right } => {
                 let lhs = self.lower_read_operand(left, "binary left operand")?;
                 let rhs = self.lower_read_operand(right, "binary right operand")?;
-                Ok(self.emit(expr, SemOpKind::Binary { op: *op, lhs, rhs }))
+                self.emit(expr, SemOpKind::Binary { op: *op, lhs, rhs })
             }
             HirExprKind::NumericCast { value, to_ty, .. } => {
                 let value = self.lower_read_operand(value, "cast operand")?;
-                Ok(self.emit(
+                self.emit(
                     expr,
                     SemOpKind::Cast {
                         value,
                         to: to_ty.clone(),
                     },
-                ))
+                )
             }
             HirExprKind::Call { .. } => self.lower_direct_call(expr, true)?.ok_or_else(|| {
                 "unit-valued direct calls are valid only in a discarded or unit-return context"
@@ -784,10 +795,10 @@ impl<'a> Builder<'a> {
                     callee_declaration.full_path()
                 ));
             }
-            self.emit_without_result(expr, kind);
+            self.emit_without_result(expr, kind)?;
             Ok(None)
         } else {
-            Ok(Some(self.emit(expr, kind)))
+            Ok(Some(self.emit(expr, kind)?))
         }
     }
 
@@ -912,7 +923,7 @@ impl<'a> Builder<'a> {
 
         self.current = short_circuit;
         self.bindings = before;
-        let constant = self.emit(whole, SemOpKind::ConstBool(short_circuit_value));
+        let constant = self.emit(whole, SemOpKind::ConstBool(short_circuit_value))?;
         self.set_terminator(SemTerminator::Goto(Edge {
             target: join,
             args: vec![Operand {
@@ -925,7 +936,7 @@ impl<'a> Builder<'a> {
         Ok(result)
     }
 
-    fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> ValueId {
+    fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<ValueId, String> {
         let value = self.fresh_value();
         let op = SemOp {
             id: OpId(self.ops),
@@ -936,20 +947,21 @@ impl<'a> Builder<'a> {
             kind,
             provenance: Provenance::Site(expr.site),
         };
+        self.current_block_mut().append_op(op)?;
         self.ops += 1;
-        self.current_block_mut().ops.push(op);
-        value
+        Ok(value)
     }
 
-    fn emit_without_result(&mut self, expr: &HirExpr, kind: SemOpKind) {
+    fn emit_without_result(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<(), String> {
         let op = SemOp {
             id: OpId(self.ops),
             results: Vec::new(),
             kind,
             provenance: Provenance::Site(expr.site),
         };
+        self.current_block_mut().append_op(op)?;
         self.ops += 1;
-        self.current_block_mut().ops.push(op);
+        Ok(())
     }
 
     fn fresh_value(&mut self) -> ValueId {
@@ -990,7 +1002,7 @@ mod tests {
         initial_scalar_transfer_mode, initial_scalar_use_mode, use_mode_from_hir_intent,
         PendingBlock,
     };
-    use crate::{BlockId, SemTerminator, UseMode};
+    use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemTerminator, UseMode};
     use hew_hir::IntentKind;
     use hew_types::ResolvedTy;
 
@@ -1067,5 +1079,21 @@ mod tests {
                 .terminator,
             SemTerminator::Unreachable
         ));
+    }
+
+    #[test]
+    fn pending_blocks_reject_operations_after_a_semantic_terminator() {
+        let mut completed = PendingBlock::new(BlockId(0), Vec::new());
+        completed.terminator = Some(SemTerminator::Return { value: None });
+        let error = completed
+            .append_op(SemOp {
+                id: OpId(0),
+                results: Vec::new(),
+                kind: SemOpKind::ConstI64(0),
+                provenance: Provenance::Synthesized,
+            })
+            .expect_err("completed blocks must reject late operations");
+        assert!(error.contains("after completed block bb0"));
+        assert!(completed.ops.is_empty());
     }
 }

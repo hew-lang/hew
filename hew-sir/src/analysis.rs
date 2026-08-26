@@ -223,14 +223,29 @@ pub fn replace_use(
 /// The caller must verify that `function` has unique operation and block IDs
 /// before rewriting. See [`build_def_use`] for the malformed-SIR diagnostic
 /// contract.
-#[must_use]
-pub fn replace_all_uses(function: &mut SemFunction, from: ValueId, replacement: ValueId) -> usize {
+///
+/// # Errors
+///
+/// Returns the first [`RewriteError`] instead of silently applying a partial
+/// rewrite. The snapshot remains valid while this function changes only its
+/// operand values; a failure therefore signals malformed or concurrently
+/// mutated SIR that a pass must not treat as a completed rewrite.
+pub fn replace_all_uses(
+    function: &mut SemFunction,
+    from: ValueId,
+    replacement: ValueId,
+) -> Result<usize, RewriteError> {
     let sites = build_def_use(function).uses_of(from).to_vec();
+    // Rewrite a clone first so malformed identities cannot leave a caller with
+    // a partially rewritten semantic graph. Normal pass execution verifies
+    // unique identities before this point; this guard makes the public helper
+    // fail closed even when it is used during diagnostics or development.
+    let mut rewritten = function.clone();
     let mut replaced = 0;
     for site in sites {
-        if replace_use(function, site, replacement).is_ok() {
-            replaced += 1;
-        }
+        replace_use(&mut rewritten, site, replacement)?;
+        replaced += 1;
     }
-    replaced
+    *function = rewritten;
+    Ok(replaced)
 }

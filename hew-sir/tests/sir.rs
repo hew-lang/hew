@@ -1094,11 +1094,16 @@ fn def_use_sites_are_deterministic_and_support_precise_rewrites() {
         "a precise rewrite must leave every other concrete use intact"
     );
 
-    assert_eq!(replace_all_uses(&mut function, ValueId(0), ValueId(1)), 3);
+    assert_eq!(
+        replace_all_uses(&mut function, ValueId(0), ValueId(1))
+            .expect("a stable function must rewrite every indexed use"),
+        3
+    );
     assert!(build_def_use(&function).uses_of(ValueId(0)).is_empty());
 
     assert_eq!(
-        replace_all_uses(&mut function, ValueId(2), ValueId(7)),
+        replace_all_uses(&mut function, ValueId(2), ValueId(7))
+            .expect("a stable function must rewrite the branch-condition use"),
         1,
         "replace_all_uses must reach a branch-condition operand"
     );
@@ -1108,7 +1113,8 @@ fn def_use_sites_are_deterministic_and_support_precise_rewrites() {
     );
 
     assert_eq!(
-        replace_all_uses(&mut function, ValueId(4), ValueId(1)),
+        replace_all_uses(&mut function, ValueId(4), ValueId(1))
+            .expect("a stable function must rewrite the goto-edge use"),
         1,
         "replace_all_uses must reach a goto-edge operand"
     );
@@ -1132,7 +1138,8 @@ fn def_use_sites_are_deterministic_and_support_precise_rewrites() {
         }
     );
     assert_eq!(
-        replace_all_uses(&mut function, ValueId(6), ValueId(1)),
+        replace_all_uses(&mut function, ValueId(6), ValueId(1))
+            .expect("a stable function must rewrite the return use"),
         1,
         "replace_all_uses must reach a return operand"
     );
@@ -1165,6 +1172,33 @@ fn indexed_rewrites_refuse_a_stale_ownership_mode() {
         replace_use(&mut function, site, ValueId(1)),
         Err(RewriteError::StaleUseSite(site)),
         "a replacement indexed before an ownership-mode rewrite must fail closed"
+    );
+}
+
+#[test]
+fn replace_all_uses_is_atomic_when_malformed_identities_make_a_site_stale() {
+    let mut function = rewrite_fixture();
+    function.blocks[0].ops.push(SemOp {
+        // Deliberately duplicate OpId(0): `build_def_use` can still produce
+        // useful diagnostics for malformed SIR, but it must not make a
+        // partially applied public rewrite look successful.
+        id: OpId(0),
+        results: vec![definition(8)],
+        kind: SemOpKind::Unary {
+            op: hew_parser::ast::UnaryOp::Negate,
+            value: read(ValueId(0)),
+        },
+        provenance: Provenance::Synthesized,
+    });
+    let before = function.clone();
+
+    assert!(matches!(
+        replace_all_uses(&mut function, ValueId(0), ValueId(1)),
+        Err(RewriteError::StaleUseSite(_))
+    ));
+    assert_eq!(
+        function, before,
+        "a failed all-uses rewrite must leave the original SIR graph intact"
     );
 }
 

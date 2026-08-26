@@ -12,14 +12,17 @@ mod lower;
 mod model;
 mod verify;
 
-pub use analysis::{build_def_use, compute_dominators, DefUseIndex, Dominators};
+pub use analysis::{
+    build_def_use, compute_dominators, replace_all_uses, replace_use, DefUseIndex, Dominators,
+    RewriteError,
+};
 pub use dump::dump_sir;
 pub use lower::{lower_module, LoweredModule, SirLoweringStatus};
 pub use model::{
     BlockArg, BlockId, CallableId, Edge, EffectSet, EffectSummary, FunctionSourceOrigin, OpId,
-    Operand, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind,
-    SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
-    UseMode, ValueDef, ValueId,
+    Operand, OperandSlot, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable,
+    SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature,
+    SemTerminator, UseMode, UseSite, ValueDef, ValueId,
 };
 pub use verify::{
     verify_function, verify_function_in_module, verify_module, SirDiagnostic, SirDiagnosticKind,

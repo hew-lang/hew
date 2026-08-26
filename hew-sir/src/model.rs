@@ -36,18 +36,62 @@ pub enum FunctionSourceOrigin {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UseMode {
     Read,
     BorrowShared,
     BorrowMut,
+    /// Transfer this use's ownership into another semantic value or operation.
+    ///
+    /// This is deliberately distinct from [`Self::Consume`]: a move has a
+    /// receiving owner, while consumption discharges the source value without
+    /// creating a new semantic owner.
     Move,
+    /// Discharge a value's source-semantic ownership obligation.
+    ///
+    /// Ownership/layout MIR will later decide whether that becomes a drop,
+    /// release, move-out, or another concrete lifetime action.
+    Consume,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operand {
     pub value: ValueId,
     pub mode: UseMode,
+}
+
+/// Stable position of an operand within one operation or terminator.
+///
+/// Operation slots follow the source order of their operands. Terminator
+/// slots are deliberately flattened in a deterministic order: return value;
+/// goto edge arguments; or branch condition, then-edge arguments, and
+/// else-edge arguments. Rewrites use this together with [`UseSite`] rather
+/// than relying on an incidental pointer into a mutable IR vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OperandSlot(pub u32);
+
+/// Concrete, deterministic identity of one semantic SSA use.
+///
+/// A value's use site is either an operation operand, identified by its stable
+/// [`OpId`], or a terminator operand, identified by its containing [`BlockId`].
+/// The use mode is part of the identity so a rewrite cannot silently apply an
+/// analysis result after the operand's semantic ownership use changed. The
+/// expected value closes the final stale-index hole: a rewrite must not replace
+/// a different value that later occupies the same slot with the same mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum UseSite {
+    Operation {
+        op: OpId,
+        operand: OperandSlot,
+        value: ValueId,
+        mode: UseMode,
+    },
+    Terminator {
+        block: BlockId,
+        operand: OperandSlot,
+        value: ValueId,
+        mode: UseMode,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,7 +109,41 @@ pub struct BlockArg {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edge {
     pub target: BlockId,
-    pub args: Vec<ValueId>,
+    /// Semantic uses forwarded to the target block arguments. These retain
+    /// their source ownership mode until ownership/layout MIR realizes it.
+    pub args: Vec<Operand>,
+}
+
+impl Edge {
+    /// Visit edge arguments in their deterministic target-argument order.
+    ///
+    /// # Panics
+    ///
+    /// Panics only when an edge carries more operands than the module-local
+    /// `u32` operand-slot range can represent.
+    pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
+        for (index, operand) in self.args.iter().enumerate() {
+            visit(
+                OperandSlot(u32::try_from(index).expect("SIR edge operand count exceeds u32")),
+                operand,
+            );
+        }
+    }
+
+    /// Mutable counterpart to [`Self::visit_operands`].
+    ///
+    /// # Panics
+    ///
+    /// Panics only when an edge carries more operands than the module-local
+    /// `u32` operand-slot range can represent.
+    pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
+        for (index, operand) in self.args.iter_mut().enumerate() {
+            visit(
+                OperandSlot(u32::try_from(index).expect("SIR edge operand count exceeds u32")),
+                operand,
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -260,6 +338,42 @@ pub struct SemOp {
     pub provenance: Provenance,
 }
 
+impl SemOp {
+    /// Visit this operation's semantic operands in deterministic operand-slot
+    /// order. Analyses and rewrites must use this rather than matching every
+    /// [`SemOpKind`] variant themselves.
+    pub fn visit_operands(&self, visit: impl FnMut(OperandSlot, &Operand)) {
+        self.kind.visit_operands(visit);
+    }
+
+    /// Mutable counterpart to [`Self::visit_operands`].
+    pub fn visit_operands_mut(&mut self, visit: impl FnMut(OperandSlot, &mut Operand)) {
+        self.kind.visit_operands_mut(visit);
+    }
+
+    /// Replace the value at one concrete operand slot when its use mode still
+    /// agrees with an analysis result. Returning `false` makes stale rewrite
+    /// sites explicit instead of mutating an unrelated operand after an IR
+    /// change.
+    #[must_use]
+    pub fn replace_operand_at(
+        &mut self,
+        slot: OperandSlot,
+        expected: ValueId,
+        mode: UseMode,
+        replacement: ValueId,
+    ) -> bool {
+        let mut replaced = false;
+        self.visit_operands_mut(|candidate, operand| {
+            if candidate == slot && operand.value == expected && operand.mode == mode {
+                operand.value = replacement;
+                replaced = true;
+            }
+        });
+        replaced
+    }
+}
+
 /// Derived semantic effects for a value-producing SIR operation.
 ///
 /// Effects deliberately live on operation *kinds*, not on [`SemOp`]: rewrites
@@ -334,6 +448,69 @@ pub enum SemOpKind {
 }
 
 impl SemOpKind {
+    /// Visit operands in their deterministic source order.
+    ///
+    /// This is intentionally the single structural operand traversal for the
+    /// initial operation vocabulary. Extending `SemOpKind` therefore requires
+    /// choosing its operand order once, instead of teaching every analysis and
+    /// rewrite the new shape independently.
+    ///
+    /// # Panics
+    ///
+    /// Panics only when an operation carries more operands than the
+    /// module-local `u32` operand-slot range can represent.
+    pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
+        match self {
+            Self::ConstI64(_) | Self::ConstBool(_) => {}
+            Self::Unary { value, .. } | Self::Cast { value, .. } => {
+                visit(OperandSlot(0), value);
+            }
+            Self::Binary { lhs, rhs, .. } => {
+                visit(OperandSlot(0), lhs);
+                visit(OperandSlot(1), rhs);
+            }
+            Self::Call { args, .. } => {
+                for (index, argument) in args.iter().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
+                        ),
+                        argument,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Mutable counterpart to [`Self::visit_operands`].
+    ///
+    /// # Panics
+    ///
+    /// Panics only when an operation carries more operands than the
+    /// module-local `u32` operand-slot range can represent.
+    pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
+        match self {
+            Self::ConstI64(_) | Self::ConstBool(_) => {}
+            Self::Unary { value, .. } | Self::Cast { value, .. } => {
+                visit(OperandSlot(0), value);
+            }
+            Self::Binary { lhs, rhs, .. } => {
+                visit(OperandSlot(0), lhs);
+                visit(OperandSlot(1), rhs);
+            }
+            Self::Call { args, .. } => {
+                for (index, argument) in args.iter_mut().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
+                        ),
+                        argument,
+                    );
+                }
+            }
+        }
+    }
+
     /// Return the operation's conservative semantic effect classification.
     #[must_use]
     pub const fn effects(&self) -> EffectSet {
@@ -378,21 +555,186 @@ impl SemOpKind {
     }
 }
 
+/// Semantic control-flow terminator.
+///
+/// Value-producing operations retain their own [`Provenance`] today. A
+/// terminator can be caused by several source sites (for example, a synthesized
+/// short-circuit edge plus a branch expression), so this first rewrite
+/// foundation deliberately does not invent one misleading `SiteId` field for
+/// it. A future control-provenance design must use the existing multi-origin
+/// [`Provenance`] model rather than collapsing that attribution during a pass.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemTerminator {
     Return {
-        value: Option<ValueId>,
+        value: Option<Operand>,
     },
     Goto(Edge),
     Branch {
-        condition: ValueId,
+        condition: Operand,
         then_target: Edge,
         else_target: Edge,
     },
+    /// A semantically unreachable CFG endpoint.
+    ///
+    /// SIR can represent this before Raw MIR has a matching terminator. The
+    /// SIR → Raw MIR bridge deliberately rejects it today; an explicit Raw-MIR
+    /// legalization is a prerequisite for CFG simplification/DCE to create or
+    /// preserve semantic unreachable blocks.
     Unreachable,
 }
 
 impl SemTerminator {
+    /// Visit every semantic use carried by this terminator.
+    ///
+    /// Slots are stable within the terminator shape: a return has slot `0`; a
+    /// goto uses its edge-argument indexes; and a branch uses condition `0`,
+    /// then-edge arguments beginning at `1`, followed by else-edge arguments.
+    ///
+    /// # Panics
+    ///
+    /// Panics only when a branch carries more operands than the module-local
+    /// `u32` operand-slot range can represent.
+    pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
+        match self {
+            Self::Return { value } => {
+                if let Some(value) = value {
+                    visit(OperandSlot(0), value);
+                }
+            }
+            Self::Goto(edge) => edge.visit_operands(visit),
+            Self::Branch {
+                condition,
+                then_target,
+                else_target,
+            } => {
+                visit(OperandSlot(0), condition);
+                let mut next = 1_u32;
+                for operand in &then_target.args {
+                    visit(OperandSlot(next), operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR branch operand count exceeds u32");
+                }
+                for operand in &else_target.args {
+                    visit(OperandSlot(next), operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR branch operand count exceeds u32");
+                }
+            }
+            Self::Unreachable => {}
+        }
+    }
+
+    /// Mutable counterpart to [`Self::visit_operands`].
+    ///
+    /// # Panics
+    ///
+    /// Panics only when a branch carries more operands than the module-local
+    /// `u32` operand-slot range can represent.
+    pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
+        match self {
+            Self::Return { value } => {
+                if let Some(value) = value {
+                    visit(OperandSlot(0), value);
+                }
+            }
+            Self::Goto(edge) => edge.visit_operands_mut(visit),
+            Self::Branch {
+                condition,
+                then_target,
+                else_target,
+            } => {
+                visit(OperandSlot(0), condition);
+                let mut next = 1_u32;
+                for operand in &mut then_target.args {
+                    visit(OperandSlot(next), operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR branch operand count exceeds u32");
+                }
+                for operand in &mut else_target.args {
+                    visit(OperandSlot(next), operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR branch operand count exceeds u32");
+                }
+            }
+            Self::Unreachable => {}
+        }
+    }
+
+    /// Visit CFG successors without exposing terminator shape to each caller.
+    pub fn visit_successors(&self, mut visit: impl FnMut(&Edge)) {
+        match self {
+            Self::Return { .. } | Self::Unreachable => {}
+            Self::Goto(edge) => visit(edge),
+            Self::Branch {
+                then_target,
+                else_target,
+                ..
+            } => {
+                visit(then_target);
+                visit(else_target);
+            }
+        }
+    }
+
+    /// Mutable counterpart to [`Self::visit_successors`].
+    pub fn visit_successors_mut(&mut self, mut visit: impl FnMut(&mut Edge)) {
+        match self {
+            Self::Return { .. } | Self::Unreachable => {}
+            Self::Goto(edge) => visit(edge),
+            Self::Branch {
+                then_target,
+                else_target,
+                ..
+            } => {
+                visit(then_target);
+                visit(else_target);
+            }
+        }
+    }
+
+    /// Human-readable role of one operand slot, for exact verifier
+    /// diagnostics. Callers only pass slots previously produced by
+    /// [`Self::visit_operands`].
+    #[must_use]
+    pub fn operand_context(&self, slot: OperandSlot) -> &'static str {
+        match self {
+            Self::Return { .. } => "return value",
+            Self::Goto(_) => "goto edge argument",
+            Self::Branch { then_target, .. } if slot.0 == 0 => "branch condition",
+            Self::Branch { then_target, .. }
+                if usize::try_from(slot.0).is_ok_and(|slot| slot <= then_target.args.len()) =>
+            {
+                "branch then-edge argument"
+            }
+            Self::Branch { .. } => "branch else-edge argument",
+            Self::Unreachable => "unreachable terminator operand",
+        }
+    }
+
+    /// Replace the value at one concrete terminator operand slot when its use
+    /// mode still agrees with the indexed use site.
+    #[must_use]
+    pub fn replace_operand_at(
+        &mut self,
+        slot: OperandSlot,
+        expected: ValueId,
+        mode: UseMode,
+        replacement: ValueId,
+    ) -> bool {
+        let mut replaced = false;
+        self.visit_operands_mut(|candidate, operand| {
+            if candidate == slot && operand.value == expected && operand.mode == mode {
+                operand.value = replacement;
+                replaced = true;
+            }
+        });
+        replaced
+    }
+
     #[must_use]
     pub fn successors(&self) -> Vec<&Edge> {
         match self {

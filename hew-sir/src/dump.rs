@@ -60,13 +60,13 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
         SemOpKind::ConstI64(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstBool(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::Unary { op, value } => {
-            writeln!(out, "{op:?} %{}", value.value.0).expect("write to String");
+            writeln!(out, "{op:?} {}", operand(value)).expect("write to String");
         }
         SemOpKind::Binary { op, lhs, rhs } => {
-            writeln!(out, "{op:?} %{}, %{}", lhs.value.0, rhs.value.0).expect("write to String");
+            writeln!(out, "{op:?} {}, {}", operand(lhs), operand(rhs)).expect("write to String");
         }
         SemOpKind::Cast { value, to } => {
-            writeln!(out, "cast %{} to {}", value.value.0, to.user_facing())
+            writeln!(out, "cast {} to {}", operand(value), to.user_facing())
                 .expect("write to String");
         }
         SemOpKind::Call { callee, args } => {
@@ -79,7 +79,7 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
                 if index != 0 {
                     write!(out, ", ").expect("write to String");
                 }
-                write!(out, "%{}", arg.value.0).expect("write to String");
+                write!(out, "{}", operand(arg)).expect("write to String");
             }
             writeln!(out, ")").expect("write to String");
         }
@@ -89,7 +89,7 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
 fn dump_term(out: &mut String, term: &SemTerminator) {
     match term {
         SemTerminator::Return { value: Some(value) } => {
-            writeln!(out, "    return %{}", value.0).expect("write to String");
+            writeln!(out, "    return {}", operand(value)).expect("write to String");
         }
         SemTerminator::Return { value: None } => {
             writeln!(out, "    return").expect("write to String");
@@ -104,8 +104,8 @@ fn dump_term(out: &mut String, term: &SemTerminator) {
             else_target,
         } => writeln!(
             out,
-            "    branch %{}, bb{}{}, bb{}{}",
-            condition.0,
+            "    branch {}, bb{}{}, bb{}{}",
+            operand(condition),
             then_target.target.0,
             edge_args(then_target),
             else_target.target.0,
@@ -122,10 +122,16 @@ fn edge_args(edge: &crate::Edge) -> String {
     }
     format!(
         "({})",
-        edge.args
-            .iter()
-            .map(|value| format!("%{}", value.0))
-            .collect::<Vec<_>>()
-            .join(", ")
+        edge.args.iter().map(operand).collect::<Vec<_>>().join(", ")
     )
+}
+
+fn operand(operand: &crate::Operand) -> String {
+    match operand.mode {
+        crate::UseMode::Read => format!("%{}", operand.value.0),
+        crate::UseMode::BorrowShared => format!("borrow %{}", operand.value.0),
+        crate::UseMode::BorrowMut => format!("borrow_mut %{}", operand.value.0),
+        crate::UseMode::Move => format!("move %{}", operand.value.0),
+        crate::UseMode::Consume => format!("consume %{}", operand.value.0),
+    }
 }

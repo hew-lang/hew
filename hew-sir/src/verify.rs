@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::OpId;
 use crate::{
     BlockId, CallableId, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp,
-    SemOpKind, SemParamPassing, SemTerminator, UseMode, ValueId,
+    SemOpKind, SemParamPassing, SemTerminator, UseMode, UseSite, ValueId,
 };
 use hew_types::ResolvedTy;
 
@@ -92,6 +92,16 @@ pub enum SirDiagnosticKind {
     InvalidOperation {
         op: OpId,
         reason: String,
+    },
+    /// The initial scalar SIR surface is intentionally read-only even though
+    /// operands retain the broader ownership vocabulary for later slices.
+    /// Keeping the exact use site makes malformed edge/return/condition uses
+    /// fail at the SIR stage rather than reaching ownership MIR silently.
+    InvalidUseMode {
+        site: UseSite,
+        expected: UseMode,
+        actual: UseMode,
+        context: &'static str,
     },
     BranchConditionType {
         value: ValueId,
@@ -266,10 +276,11 @@ fn verify_function_with_context(
         for op in &block.ops {
             verify_operation_shape(function, op, &types, callable_context, &mut diagnostics);
         }
-        for edge in block.terminator.successors() {
+        verify_terminator_operand_modes(function, block.id, &block.terminator, &mut diagnostics);
+        block.terminator.visit_successors(|edge| {
             let Some(target) = blocks.get(&edge.target) else {
                 diagnostics.push(diag(function, SirDiagnosticKind::UnknownBlock(edge.target)));
-                continue;
+                return;
             };
             if target.args.len() != edge.args.len() {
                 diagnostics.push(diag(
@@ -283,7 +294,7 @@ fn verify_function_with_context(
                 ));
             }
             for (argument, (value, target_arg)) in edge.args.iter().zip(&target.args).enumerate() {
-                let Some(actual) = types.get(value) else {
+                let Some(actual) = types.get(&value.value) else {
                     continue;
                 };
                 if actual != &target_arg.ty {
@@ -299,7 +310,7 @@ fn verify_function_with_context(
                     ));
                 }
             }
-        }
+        });
         verify_terminator_shape(function, &block.terminator, &types, &mut diagnostics);
     }
     if blocks.contains_key(&function.entry) {
@@ -562,6 +573,19 @@ fn verify_operation_shape(
     callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
+    operation.visit_operands(|operand, use_| {
+        require_read_use(
+            function,
+            UseSite::Operation {
+                op: operation.id,
+                operand,
+                value: use_.value,
+                mode: use_.mode,
+            },
+            operation_operand_context(&operation.kind, operand),
+            diagnostics,
+        );
+    });
     if let SemOpKind::Call { callee, args } = &operation.kind {
         verify_direct_call_operation(
             function,
@@ -603,7 +627,6 @@ fn verify_operation_shape(
             },
         )),
         SemOpKind::Cast { value, to } => {
-            require_read_operand(function, operation.id, value.mode, "cast", diagnostics);
             if &result.ty != to {
                 diagnostics.push(diag(
                     function,
@@ -630,13 +653,6 @@ fn verify_operation_shape(
             }
         }
         SemOpKind::Unary { op, value } => {
-            require_read_operand(
-                function,
-                operation.id,
-                value.mode,
-                "unary operation",
-                diagnostics,
-            );
             let Some(operand_ty) = types.get(&value.value) else {
                 return;
             };
@@ -668,20 +684,6 @@ fn verify_operation_shape(
             }
         }
         SemOpKind::Binary { op, lhs, rhs } => {
-            require_read_operand(
-                function,
-                operation.id,
-                lhs.mode,
-                "binary left operand",
-                diagnostics,
-            );
-            require_read_operand(
-                function,
-                operation.id,
-                rhs.mode,
-                "binary right operand",
-                diagnostics,
-            );
             let (Some(lhs_ty), Some(rhs_ty)) = (types.get(&lhs.value), types.get(&rhs.value))
             else {
                 return;
@@ -750,15 +752,6 @@ fn verify_direct_call_operation(
     callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    for argument in args {
-        require_read_operand(
-            function,
-            operation.id,
-            argument.mode,
-            "direct call argument",
-            diagnostics,
-        );
-    }
     if operation.results.len() > 1 {
         diagnostics.push(diag(
             function,
@@ -862,23 +855,58 @@ fn verify_direct_call_operation(
     }
 }
 
-fn require_read_operand(
+fn require_read_use(
     function: &SemFunction,
-    op: OpId,
-    mode: UseMode,
-    context: &str,
+    site: UseSite,
+    context: &'static str,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
+    let mode = match site {
+        UseSite::Operation { mode, .. } | UseSite::Terminator { mode, .. } => mode,
+    };
     if mode != UseMode::Read {
-        invalid_operation(
+        diagnostics.push(diag(
             function,
-            op,
-            format!(
-                "{context} uses {mode:?}; only Read is legal until ownership-aware SIR operations exist"
-            ),
+            SirDiagnosticKind::InvalidUseMode {
+                site,
+                expected: UseMode::Read,
+                actual: mode,
+                context,
+            },
+        ));
+    }
+}
+
+fn operation_operand_context(kind: &SemOpKind, operand: crate::OperandSlot) -> &'static str {
+    match kind {
+        SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => "operation operand",
+        SemOpKind::Unary { .. } => "unary operand",
+        SemOpKind::Binary { .. } if operand.0 == 0 => "binary left operand",
+        SemOpKind::Binary { .. } => "binary right operand",
+        SemOpKind::Cast { .. } => "cast operand",
+        SemOpKind::Call { .. } => "direct call argument",
+    }
+}
+
+fn verify_terminator_operand_modes(
+    function: &SemFunction,
+    block: BlockId,
+    terminator: &SemTerminator,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    terminator.visit_operands(|operand, use_| {
+        require_read_use(
+            function,
+            UseSite::Terminator {
+                block,
+                operand,
+                value: use_.value,
+                mode: use_.mode,
+            },
+            terminator.operand_context(operand),
             diagnostics,
         );
-    }
+    });
 }
 
 fn invalid_operation(
@@ -903,11 +931,11 @@ fn verify_terminator_shape(
         SemTerminator::Return { value: Some(value) } if function.return_ty == ResolvedTy::Unit => {
             diagnostics.push(diag(
                 function,
-                SirDiagnosticKind::UnitReturnValue { value: *value },
+                SirDiagnosticKind::UnitReturnValue { value: value.value },
             ));
         }
         SemTerminator::Return { value: Some(value) } => {
-            if let Some(actual) = types.get(value) {
+            if let Some(actual) = types.get(&value.value) {
                 if actual != &function.return_ty {
                     diagnostics.push(diag(
                         function,
@@ -929,12 +957,12 @@ fn verify_terminator_shape(
             ));
         }
         SemTerminator::Branch { condition, .. } => {
-            if let Some(actual) = types.get(condition) {
+            if let Some(actual) = types.get(&condition.value) {
                 if actual != &ResolvedTy::Bool {
                     diagnostics.push(diag(
                         function,
                         SirDiagnosticKind::BranchConditionType {
-                            value: *condition,
+                            value: condition.value,
                             actual: actual.user_facing().to_string(),
                         },
                     ));
@@ -1017,28 +1045,13 @@ fn module_diag(kind: SirDiagnosticKind) -> SirDiagnostic {
 }
 
 fn uses_in_op(op: &crate::SemOp) -> Vec<ValueId> {
-    match &op.kind {
-        SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => Vec::new(),
-        SemOpKind::Unary { value, .. } | SemOpKind::Cast { value, .. } => vec![value.value],
-        SemOpKind::Binary { lhs, rhs, .. } => vec![lhs.value, rhs.value],
-        SemOpKind::Call { args, .. } => args.iter().map(|arg| arg.value).collect(),
-    }
+    let mut uses = Vec::new();
+    op.visit_operands(|_, operand| uses.push(operand.value));
+    uses
 }
 
 fn uses_in_terminator(term: &SemTerminator) -> Vec<ValueId> {
-    match term {
-        SemTerminator::Return { value } => value.iter().copied().collect(),
-        SemTerminator::Goto(edge) => edge.args.clone(),
-        SemTerminator::Branch {
-            condition,
-            then_target,
-            else_target,
-        } => {
-            let mut values = vec![*condition];
-            values.extend(then_target.args.iter().copied());
-            values.extend(else_target.args.iter().copied());
-            values
-        }
-        SemTerminator::Unreachable => Vec::new(),
-    }
+    let mut uses = Vec::new();
+    term.visit_operands(|_, operand| uses.push(operand.value));
+    uses
 }

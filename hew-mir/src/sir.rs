@@ -1379,10 +1379,14 @@ fn has_cycle_from(
         states.insert(block_id, VisitState::Visited);
         return false;
     };
-    for edge in block.terminator.successors() {
-        if has_cycle_from(edge.target, by_id, states) {
-            return true;
+    let mut has_cycle = false;
+    block.terminator.visit_successors(|edge| {
+        if !has_cycle && has_cycle_from(edge.target, by_id, states) {
+            has_cycle = true;
         }
+    });
+    if has_cycle {
+        return true;
     }
     states.insert(block_id, VisitState::Visited);
     false

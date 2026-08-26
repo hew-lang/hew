@@ -734,17 +734,4 @@ impl SemTerminator {
         });
         replaced
     }
-
-    #[must_use]
-    pub fn successors(&self) -> Vec<&Edge> {
-        match self {
-            Self::Return { .. } | Self::Unreachable => Vec::new(),
-            Self::Goto(edge) => vec![edge],
-            Self::Branch {
-                then_target,
-                else_target,
-                ..
-            } => vec![then_target, else_target],
-        }
-    }
 }

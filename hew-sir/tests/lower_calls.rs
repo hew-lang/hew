@@ -166,6 +166,102 @@ fn unit_direct_call_is_a_zero_result_sir_operation() {
     );
 }
 
+#[test]
+fn scalar_binding_and_explicit_return_transfers_lower_without_erasing_resource_rules() {
+    let lowered = lower_source(
+        r"
+        fn f(x: i64, y: i64) -> i64 {
+            let z = if x > 0 {
+                y + 1
+            } else {
+                y + 2
+            };
+            return z * 3;
+        }
+
+        fn main() -> i64 {
+            f(1, 2)
+        }
+        ",
+    );
+
+    assert!(
+        lowered
+            .statuses
+            .iter()
+            .filter(|(name, _)| name == "f" || name == "main")
+            .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
+        "BitCopy binding/return transfers must be admitted without a legacy fallback: {:#?}",
+        lowered.statuses
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "the scalar transfer fixture must produce verified SIR: {:#?}",
+        verify_module(&lowered.module)
+    );
+    let f = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "f")
+        .expect("the scalar helper must have a SIR body");
+    assert!(
+        f.blocks.iter().any(|block| matches!(
+            block.terminator,
+            hew_sir::SemTerminator::Return { value: Some(_) }
+        )),
+        "the explicit HIR return must remain a value-carrying SIR return"
+    );
+}
+
+#[test]
+fn unit_direct_call_in_an_explicit_return_is_a_control_transfer_not_a_discarded_read() {
+    let lowered = lower_source(
+        r"
+        fn unit_helper() {
+        }
+
+        fn main() {
+            return unit_helper();
+        }
+        ",
+    );
+    assert!(
+        lowered
+            .statuses
+            .iter()
+            .filter(|(name, _)| name == "unit_helper" || name == "main")
+            .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
+        "a Unit direct call returned to the caller must not be rejected as a discarded Read: {:#?}",
+        lowered.statuses
+    );
+    let entry = lowered
+        .module
+        .entry_callable
+        .expect("the unit main must retain a root callable");
+    let main = lowered
+        .module
+        .function_for_callable(entry)
+        .expect("the unit main must lower to SIR");
+    assert!(
+        main.blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .any(|operation| {
+                matches!(
+                    operation.kind,
+                    SemOpKind::Call { .. } if operation.results.is_empty()
+                )
+            }),
+        "the returned Unit call must remain a zero-result semantic call"
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "the Unit-return transfer fixture must produce verified SIR: {:#?}",
+        verify_module(&lowered.module)
+    );
+}
+
 /// Recursive call resolution must use the callable table built before body
 /// lowering, not a body-order-dependent symbol lookup.  This is the smallest
 /// SIR-only proof that a strict component can contain a cycle.

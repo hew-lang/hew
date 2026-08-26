@@ -283,11 +283,115 @@ fn initial_scalar_use_mode(intent: IntentKind) -> Result<UseMode, String> {
     Ok(mode)
 }
 
+/// Lower a value flowing into a binding or function return in the initial
+/// no-drop scalar domain.
+///
+/// HIR intentionally marks these positions `Consume`: their result transfers
+/// to a new binding or the caller. For `i*`/`u*`/`bool`, that semantic transfer
+/// has no exclusive ownership obligation, so SIR keeps the same virtual value
+/// and represents the receiving flow as `Read`. This is a narrow value-class
+/// rule, not a general weakening of `Move`: actual operand positions remain
+/// read-only in this slice, and every non-scalar transfer fails closed until
+/// ownership/layout MIR can realize it.
+fn initial_scalar_transfer_mode(
+    intent: IntentKind,
+    ty: &hew_types::ResolvedTy,
+    context: &str,
+) -> Result<(), String> {
+    let mode = use_mode_from_hir_intent(intent).map_err(|reason| format!("{context}: {reason}"))?;
+    match mode {
+        UseMode::Read | UseMode::Move if is_initial_scalar(ty) => Ok(()),
+        UseMode::Read | UseMode::Move => Err(format!(
+            "{context}: HIR intent maps to SIR {mode:?} for non-scalar `{}`; initial SIR only aliases BitCopy scalar binding/return flow",
+            ty.user_facing()
+        )),
+        other => Err(format!(
+            "{context}: HIR intent maps to SIR {other:?}; initial scalar binding/return flow admits only Read or BitCopy Move"
+        )),
+    }
+}
+
+fn lower_initial_scalar_transfer_value(
+    builder: &mut Builder<'_>,
+    expr: &HirExpr,
+    context: &str,
+) -> Result<ValueId, String> {
+    initial_scalar_transfer_mode(expr.intent, &expr.ty, context)?;
+    builder.lower_expr(expr)
+}
+
+/// Lower a unit expression transferred by an explicit `return`.
+///
+/// This is intentionally narrower than [`Builder::lower_discarded_expr`]. A
+/// standalone discarded expression is an ordinary effect position and stays
+/// read-only in the initial slice. A unit expression in `return` instead
+/// transfers control to the caller; HIR marks that transfer `Consume`, which
+/// is harmless for `Unit` but must not be rechecked as an ordinary operand use.
+fn lower_initial_unit_return(builder: &mut Builder<'_>, expr: &HirExpr) -> Result<(), String> {
+    let mode = use_mode_from_hir_intent(expr.intent)
+        .map_err(|reason| format!("unit return value: {reason}"))?;
+    if !matches!(mode, UseMode::Read | UseMode::Move) || expr.ty != hew_types::ResolvedTy::Unit {
+        return Err(format!(
+            "unit return value: HIR intent maps to SIR {mode:?} for `{}`; initial SIR admits only Read or Unit Move return transfer",
+            expr.ty.user_facing()
+        ));
+    }
+    if !matches!(expr.kind, HirExprKind::Call { .. }) {
+        return Err(
+            "unit return values are initially supported only for a resolved direct call"
+                .to_string(),
+        );
+    }
+    builder.lower_direct_call(expr, false).map(|_| ())
+}
+
+/// Builder-only block state.
+///
+/// `None` means lowering has not filled the block yet. It is deliberately
+/// distinct from `Some(SemTerminator::Unreachable)`: the latter is a completed
+/// semantic CFG endpoint and must never be overwritten by later builder work.
+struct PendingBlock {
+    id: BlockId,
+    args: Vec<BlockArg>,
+    ops: Vec<SemOp>,
+    terminator: Option<SemTerminator>,
+}
+
+impl PendingBlock {
+    fn new(id: BlockId, args: Vec<BlockArg>) -> Self {
+        Self {
+            id,
+            args,
+            ops: Vec::new(),
+            terminator: None,
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        self.terminator.is_none()
+    }
+
+    fn into_sem_block(self) -> Result<SemBlock, String> {
+        let terminator = self.terminator.ok_or_else(|| {
+            format!(
+                "SIR builder left block bb{} without a semantic terminator",
+                self.id.0
+            )
+        })?;
+        Ok(SemBlock {
+            id: self.id,
+            args: self.args,
+            ops: self.ops,
+            terminator,
+        })
+    }
+}
+
 struct Builder<'a> {
     function: &'a HirFn,
     callables: &'a CallableTable,
     callable: CallableId,
-    blocks: Vec<SemBlock>,
+    blocks: Vec<PendingBlock>,
     current: BlockId,
     values: u32,
     ops: u32,
@@ -323,12 +427,7 @@ impl<'a> Builder<'a> {
             function,
             callables,
             callable,
-            blocks: vec![SemBlock {
-                id: entry,
-                args: Vec::new(),
-                ops: Vec::new(),
-                terminator: SemTerminator::Unreachable,
-            }],
+            blocks: vec![PendingBlock::new(entry, Vec::new())],
             current: entry,
             values,
             ops: 0,
@@ -366,8 +465,12 @@ impl<'a> Builder<'a> {
         }
         let result = self.lower_block(&self.function.body)?;
         if self.is_open() {
-            self.set_terminator(SemTerminator::Return { value: result });
+            self.set_terminator(SemTerminator::Return { value: result })?;
         }
+        let blocks = std::mem::take(&mut self.blocks)
+            .into_iter()
+            .map(PendingBlock::into_sem_block)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(SemFunction {
             id: self.function.id,
             callable: self.callable,
@@ -378,7 +481,7 @@ impl<'a> Builder<'a> {
             params: self.params,
             return_ty: self.function.return_ty.clone(),
             entry: BlockId(0),
-            blocks: self.blocks,
+            blocks,
         })
     }
 
@@ -397,10 +500,6 @@ impl<'a> Builder<'a> {
         })
     }
 
-    fn lower_read_value(&mut self, expr: &HirExpr, context: &str) -> Result<ValueId, String> {
-        Ok(self.lower_read_operand(expr, context)?.value)
-    }
-
     fn lower_block(&mut self, block: &HirBlock) -> Result<Option<Operand>, String> {
         for statement in &block.statements {
             if !self.is_open() {
@@ -413,7 +512,9 @@ impl<'a> Builder<'a> {
                     }
                     let value = value
                         .as_ref()
-                        .map(|expr| self.lower_read_value(expr, "binding initializer"))
+                        .map(|expr| {
+                            lower_initial_scalar_transfer_value(self, expr, "binding initializer")
+                        })
                         .transpose()?
                         .ok_or_else(|| {
                             "uninitialised bindings are not in the initial SIR subset".to_string()
@@ -426,13 +527,16 @@ impl<'a> Builder<'a> {
                 HirStmtKind::Return(value) => {
                     let value = match value {
                         Some(expr) if expr.ty == hew_types::ResolvedTy::Unit => {
-                            self.lower_discarded_expr(expr)?;
+                            lower_initial_unit_return(self, expr)?;
                             None
                         }
-                        Some(expr) => Some(self.lower_read_operand(expr, "return value")?),
+                        Some(expr) => Some(Operand {
+                            value: lower_initial_scalar_transfer_value(self, expr, "return value")?,
+                            mode: UseMode::Read,
+                        }),
                         None => None,
                     };
-                    self.set_terminator(SemTerminator::Return { value });
+                    self.set_terminator(SemTerminator::Return { value })?;
                 }
                 HirStmtKind::Assign { .. } => {
                     return Err(
@@ -712,7 +816,7 @@ impl<'a> Builder<'a> {
                 target: else_block,
                 args: Vec::new(),
             },
-        });
+        })?;
         let before = self.bindings.clone();
         self.current = then_block;
         self.bindings = before.clone();
@@ -721,7 +825,7 @@ impl<'a> Builder<'a> {
             self.set_terminator(SemTerminator::Goto(Edge {
                 target: join_block,
                 args: vec![then_value],
-            }));
+            }))?;
         }
         self.current = else_block;
         self.bindings = before;
@@ -730,7 +834,7 @@ impl<'a> Builder<'a> {
             self.set_terminator(SemTerminator::Goto(Edge {
                 target: join_block,
                 args: vec![else_value],
-            }));
+            }))?;
         }
         self.current = join_block;
         Ok(join_value)
@@ -793,7 +897,7 @@ impl<'a> Builder<'a> {
                 target: else_target,
                 args: Vec::new(),
             },
-        });
+        })?;
 
         let before = self.bindings.clone();
         self.current = evaluate_right;
@@ -803,7 +907,7 @@ impl<'a> Builder<'a> {
             self.set_terminator(SemTerminator::Goto(Edge {
                 target: join,
                 args: vec![right_value],
-            }));
+            }))?;
         }
 
         self.current = short_circuit;
@@ -815,7 +919,7 @@ impl<'a> Builder<'a> {
                 value: constant,
                 mode: UseMode::Read,
             }],
-        }));
+        }))?;
 
         self.current = join;
         Ok(result)
@@ -855,33 +959,40 @@ impl<'a> Builder<'a> {
     }
     fn new_block(&mut self, args: Vec<BlockArg>) -> BlockId {
         let id = BlockId(u32::try_from(self.blocks.len()).expect("SIR block count exceeds u32"));
-        self.blocks.push(SemBlock {
-            id,
-            args,
-            ops: Vec::new(),
-            terminator: SemTerminator::Unreachable,
-        });
+        self.blocks.push(PendingBlock::new(id, args));
         id
     }
-    fn current_block_mut(&mut self) -> &mut SemBlock {
+    fn current_block(&self) -> &PendingBlock {
+        &self.blocks[self.current.0 as usize]
+    }
+    fn current_block_mut(&mut self) -> &mut PendingBlock {
         &mut self.blocks[self.current.0 as usize]
     }
     fn is_open(&self) -> bool {
-        matches!(
-            self.blocks[self.current.0 as usize].terminator,
-            SemTerminator::Unreachable
-        )
+        self.current_block().is_open()
     }
-    fn set_terminator(&mut self, term: SemTerminator) {
-        self.current_block_mut().terminator = term;
+    fn set_terminator(&mut self, term: SemTerminator) -> Result<(), String> {
+        let block = self.current_block_mut();
+        if block.terminator.is_some() {
+            return Err(format!(
+                "SIR builder attempted to overwrite completed block bb{}",
+                block.id.0
+            ));
+        }
+        block.terminator = Some(term);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{initial_scalar_use_mode, use_mode_from_hir_intent};
-    use crate::UseMode;
+    use super::{
+        initial_scalar_transfer_mode, initial_scalar_use_mode, use_mode_from_hir_intent,
+        PendingBlock,
+    };
+    use crate::{BlockId, SemTerminator, UseMode};
     use hew_hir::IntentKind;
+    use hew_types::ResolvedTy;
 
     #[test]
     fn hir_intents_map_once_and_initial_scalar_sir_fails_closed() {
@@ -919,5 +1030,42 @@ mod tests {
                 "the failure must explain why {intent:?} is outside the current SIR ownership domain: {reason}"
             );
         }
+    }
+
+    #[test]
+    fn scalar_binding_and_return_transfers_admit_only_bitcopy_move() {
+        assert!(
+            initial_scalar_transfer_mode(IntentKind::Consume, &ResolvedTy::I64, "test").is_ok()
+        );
+        assert!(initial_scalar_transfer_mode(IntentKind::Read, &ResolvedTy::Bool, "test").is_ok());
+        for intent in [IntentKind::Read, IntentKind::Consume] {
+            let error = initial_scalar_transfer_mode(intent, &ResolvedTy::String, "test")
+                .expect_err("a non-BitCopy transfer must stay outside the scalar SIR subset");
+            assert!(
+                error.contains("non-scalar") && error.contains("only aliases BitCopy scalar"),
+                "the transfer diagnostic must explain that this would erase ownership: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_blocks_do_not_conflate_open_with_semantic_unreachable() {
+        let open = PendingBlock::new(BlockId(0), Vec::new());
+        assert!(open.is_open());
+        assert!(open
+            .into_sem_block()
+            .expect_err("an unfilled builder block must fail finalization")
+            .contains("without a semantic terminator"));
+
+        let mut completed = PendingBlock::new(BlockId(1), Vec::new());
+        completed.terminator = Some(SemTerminator::Unreachable);
+        assert!(!completed.is_open());
+        assert!(matches!(
+            completed
+                .into_sem_block()
+                .expect("semantic unreachable is a completed block")
+                .terminator,
+            SemTerminator::Unreachable
+        ));
     }
 }

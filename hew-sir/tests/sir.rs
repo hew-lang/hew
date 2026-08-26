@@ -2,7 +2,7 @@ use hew_hir::ItemId;
 use hew_parser::ast::BinaryOp;
 use hew_sir::{
     build_def_use, dump_sir, replace_all_uses, replace_use, verify_function_in_module,
-    verify_module, BlockArg, BlockId, CallableId, Edge, EffectSet, EffectSummary,
+    verify_module, BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, EffectSummary,
     FunctionSourceOrigin, OpId, Operand, OperandSlot, Provenance, RewriteError, SemAbiParam,
     SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind,
     SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind, UseMode, UseSite, ValueDef,
@@ -29,6 +29,7 @@ fn callable_for(function: &SemFunction) -> SemCallable {
         id: function.callable,
         function: function.id,
         declaration: function.declaration.clone(),
+        instance: CallableInstance::Monomorphic,
         symbol: function.name.clone(),
         source_origin: function.source_origin.clone(),
         signature: SemSignature {
@@ -61,6 +62,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
     }
     SemModule {
         callables,
+        generic_templates: Vec::new(),
         root_unit_callables: Vec::new(),
         entry_callable: None,
         functions,

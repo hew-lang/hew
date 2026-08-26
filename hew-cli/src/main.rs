@@ -373,23 +373,31 @@ fn report_strict_sir_missing_body(
     let Some(callable) = sir.module.callable(missing_body) else {
         return;
     };
-    let reason = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            hew_hir::HirItem::Function(function) => Some(function),
-            _ => None,
-        })
-        .zip(&sir.statuses)
-        .find_map(|(function, (_, status))| {
-            if function.id != callable.function {
-                return None;
-            }
-            match status {
-                hew_sir::SirLoweringStatus::Lowered => None,
-                hew_sir::SirLoweringStatus::Unsupported { reason } => Some(reason.as_str()),
-            }
-        });
+    let reason = match sir.status_for_callable(missing_body) {
+        Some(hew_sir::SirLoweringStatus::Unsupported { reason }) => Some(reason.as_str()),
+        Some(
+            hew_sir::SirLoweringStatus::Lowered
+            | hew_sir::SirLoweringStatus::GenericTemplate { .. },
+        )
+        | None => module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hew_hir::HirItem::Function(function) => Some(function),
+                _ => None,
+            })
+            .zip(&sir.statuses)
+            .find_map(|(function, (_, status))| {
+                if function.id != callable.function {
+                    return None;
+                }
+                match status {
+                    hew_sir::SirLoweringStatus::Unsupported { reason } => Some(reason.as_str()),
+                    hew_sir::SirLoweringStatus::Lowered
+                    | hew_sir::SirLoweringStatus::GenericTemplate { .. } => None,
+                }
+            }),
+    };
     match reason {
         Some(reason) => eprintln!(
             "SIR strict lowering: `{}` is outside the current semantic surface: {reason}; no legacy MIR fallback was used",
@@ -1618,6 +1626,12 @@ fn report_sir_lane(report: &SirLaneReport, mode: compile::SirMode) {
         .iter()
         .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::Lowered))
         .count();
+    let sir_templates = report
+        .sir
+        .statuses
+        .iter()
+        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::GenericTemplate { .. }))
+        .count();
     if mode == compile::SirMode::Disabled {
         return;
     }
@@ -1627,13 +1641,14 @@ fn report_sir_lane(report: &SirLaneReport, mode: compile::SirMode) {
         .iter()
         .filter_map(|(name, status)| match status {
             hew_sir::SirLoweringStatus::Unsupported { reason } => Some((name, reason)),
-            hew_sir::SirLoweringStatus::Lowered => None,
+            hew_sir::SirLoweringStatus::Lowered
+            | hew_sir::SirLoweringStatus::GenericTemplate { .. } => None,
         })
         .collect();
     match &report.realization {
         SirLaneRealization::Shadow(bridge) => {
             eprintln!(
-                "SIR shadow: verified {sir_lowered}/{} HIR function bodies; realized {}/{} through raw MIR",
+                "SIR shadow: verified {sir_lowered} monomorphic HIR body/bodies and registered {sir_templates} generic template(s) across {} HIR function declaration(s); realized {}/{} concrete SIR body/bodies through raw MIR",
                 report.sir.statuses.len(),
                 bridge.lowered_count(),
                 report.sir.module.functions.len(),
@@ -1651,7 +1666,7 @@ fn report_sir_lane(report: &SirLaneReport, mode: compile::SirMode) {
         }
         SirLaneRealization::Strict { callables } => {
             eprintln!(
-                "SIR lower: selected {} verified callable(s) from {sir_lowered}/{} HIR function bodies; no legacy MIR bodies were lowered",
+                "SIR lower: selected {} verified callable(s) from {sir_lowered} monomorphic HIR body/bodies and {sir_templates} generic template(s) across {} HIR function declaration(s); no legacy MIR bodies were lowered",
                 callables.len(),
                 report.sir.statuses.len(),
             );
@@ -1671,16 +1686,23 @@ fn report_sir_inspection(sir: &hew_sir::LoweredModule) {
         .iter()
         .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::Lowered))
         .count();
+    let templates = sir
+        .statuses
+        .iter()
+        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::GenericTemplate { .. }))
+        .count();
     eprintln!(
-        "SIR inspect: verified {lowered}/{} HIR function bodies",
-        sir.statuses.len()
+        "SIR inspect: verified {lowered} monomorphic HIR body/bodies and registered {templates} generic template(s) across {} HIR function declaration(s); emitted {} concrete SIR body/bodies",
+        sir.statuses.len(),
+        sir.module.functions.len()
     );
     let fallbacks: Vec<_> = sir
         .statuses
         .iter()
         .filter_map(|(name, status)| match status {
             hew_sir::SirLoweringStatus::Unsupported { reason } => Some((name, reason)),
-            hew_sir::SirLoweringStatus::Lowered => None,
+            hew_sir::SirLoweringStatus::Lowered
+            | hew_sir::SirLoweringStatus::GenericTemplate { .. } => None,
         })
         .collect();
     report_sir_fallbacks("HIR", &fallbacks);

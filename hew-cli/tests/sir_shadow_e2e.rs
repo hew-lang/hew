@@ -107,6 +107,24 @@ fn countdown(value: i64) -> i64 {
 }
 ";
 
+const GENERIC_DIRECT_CALLS: &str = r"
+pub fn id<T>(value: T) -> T {
+    value
+}
+
+pub fn relay<U>(value: U) -> U {
+    id(id(value))
+}
+
+fn main() -> i64 {
+    if relay(40) == 40 {
+        0
+    } else {
+        1
+    }
+}
+";
+
 const UNREACHABLE_UNSUPPORTED_BODY: &str = r"
 fn main() -> i64 {
     selected()
@@ -324,6 +342,61 @@ fn sir_lower_closed_direct_call_graph_compiles_and_runs() {
     assert_success(
         &executed,
         "native binary containing only SIR-lowered bodies must run successfully",
+    );
+}
+
+/// Generic direct calls use the same strict body path as monomorphic calls.
+/// The concrete SIR instances must be emitted under their derived symbols;
+/// neither the abstract generic template nor a legacy MIR body is permitted
+/// to reach the selected component.
+#[test]
+fn sir_lower_generic_direct_call_graph_compiles_and_runs() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_generic_direct_calls.hew");
+    fs::write(&source, GENERIC_DIRECT_CALLS).expect("write generic SIR fixture");
+
+    let lowered = raw_mir_dump(&source, Some("--sir-lower"));
+    assert_success(&lowered, "strict generic SIR raw MIR dump must succeed");
+    let dump = String::from_utf8_lossy(&lowered.stdout);
+    assert!(
+        dump.contains("fn relay$$i64(") && dump.contains("fn id$$i64("),
+        "strict generic component must contain concrete instance bodies:\n{dump}",
+    );
+    assert!(
+        !dump.contains("fn relay(") && !dump.contains("fn id("),
+        "abstract generic templates must not reach raw MIR:\n{dump}",
+    );
+
+    let mut compile = Command::new(hew_binary());
+    compile
+        .arg("compile")
+        .arg("--sir-lower")
+        .arg("--emit-dir")
+        .arg(dir.path())
+        .arg(&source)
+        .current_dir(repo_root());
+    let compiled = support::run_bounded_command(compile, "compile strict generic SIR graph");
+    assert_success(
+        &compiled,
+        "strict generic SIR graph must compile through the existing backend",
+    );
+    assert!(
+        String::from_utf8_lossy(&compiled.stderr)
+            .contains("SIR lower: selected 3 verified callable(s)"),
+        "generic strict component must report exactly main, relay<i64>, and cached id<i64>:\n{}",
+        describe_output(&compiled),
+    );
+
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "sir_generic_direct_calls");
+    let executed = support::run_bounded_command(
+        Command::new(&binary),
+        format!("run strict generic SIR graph {}", binary.display()),
+    );
+    assert_success(
+        &executed,
+        "native binary containing only generic SIR instance bodies must run",
     );
 }
 

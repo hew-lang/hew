@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hew_hir::{IntentKind, SiteId, ValueClass};
 use hew_parser::ast::{BinaryOp, UnaryOp};
+#[cfg(test)]
+use hew_sir::CallableInstance;
 use hew_sir::{
     BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemCallConv,
     SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
@@ -2284,6 +2286,7 @@ mod tests {
             id: function.callable,
             function: function.id,
             declaration: function.declaration.clone(),
+            instance: CallableInstance::Monomorphic,
             symbol: function.name.clone(),
             source_origin: function.source_origin.clone(),
             signature: SemSignature {
@@ -2321,6 +2324,7 @@ mod tests {
             .map(|callable| callable.id);
         SemModule {
             callables,
+            generic_templates: Vec::new(),
             root_unit_callables,
             entry_callable,
             functions,
@@ -3409,6 +3413,7 @@ mod tests {
             id: CallableId(1),
             function: ItemId(1),
             declaration: DefId::for_test("missing"),
+            instance: CallableInstance::Monomorphic,
             symbol: "missing".to_string(),
             source_origin: FunctionSourceOrigin::Unknown,
             signature: SemSignature {

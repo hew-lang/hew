@@ -134,11 +134,15 @@ corpus_nonempty_assert "sir-shadow-fixtures" "${#fixtures[@]}" || exit 1
 
 # The report is informational for humans, but it is also the proof that this
 # gate actually reached the experimental lane.  It intentionally stays on
-# stderr so `--dump-mir` retains its ordinary stdout contract.
+# stderr so `--dump-mir` retains its ordinary stdout contract.  Keep this
+# parser exact: the five counts distinguish monomorphic HIR bodies, generic
+# templates, HIR declarations, realized concrete SIR bodies, and the concrete
+# SIR-body total.  Loosening it would let a reporting drift turn this coverage
+# gate into a green no-op.
 extract_report() {
     local stderr_path="$1"
     sed -nE \
-        's/^SIR shadow: verified ([0-9]+)\/([0-9]+) HIR function bodies; realized ([0-9]+)\/([0-9]+) through raw MIR$/\1 \2 \3 \4/p' \
+        's/^SIR shadow: verified ([0-9]+) monomorphic HIR body\/bodies and registered ([0-9]+) generic template\(s\) across ([0-9]+) HIR function declaration\(s\); realized ([0-9]+)\/([0-9]+) concrete SIR body\/bodies through raw MIR$/\1 \2 \3 \4 \5/p' \
         "$stderr_path"
 }
 
@@ -162,8 +166,10 @@ run_compile() {
 failures=0
 successes=0
 verified=0
-function_bodies=0
+generic_templates=0
+hir_declarations=0
 realized=0
+concrete_bodies=0
 
 for index in "${!fixtures[@]}"; do
     fixture="${fixtures[$index]}"
@@ -208,12 +214,15 @@ for index in "${!fixtures[@]}"; do
             echo "FAIL $label: ambiguous SIR coverage report" >&2
             fixture_failed=1
         else
-            read -r fixture_verified fixture_bodies fixture_realized _ <<<"$report"
+            read -r fixture_verified fixture_templates fixture_bodies fixture_realized fixture_concrete_bodies _ <<<"$report"
             verified=$((verified + fixture_verified))
-            function_bodies=$((function_bodies + fixture_bodies))
+            generic_templates=$((generic_templates + fixture_templates))
+            hir_declarations=$((hir_declarations + fixture_bodies))
             realized=$((realized + fixture_realized))
-            printf 'ok   %s  (SIR %s/%s verified, %s realized)\n' \
-                "$label" "$fixture_verified" "$fixture_bodies" "$fixture_realized"
+            concrete_bodies=$((concrete_bodies + fixture_concrete_bodies))
+            printf 'ok   %s  (SIR %s monomorphic, %s template(s), %s HIR declarations, %s/%s concrete realized)\n' \
+                "$label" "$fixture_verified" "$fixture_templates" "$fixture_bodies" \
+                "$fixture_realized" "$fixture_concrete_bodies"
         fi
     fi
 
@@ -236,4 +245,4 @@ if [[ "$failures" -ne 0 ]]; then
     exit 1
 fi
 
-echo "sir-shadow-corpus: OK (${#fixtures[@]} fixtures, $successes successful baseline compiles, SIR $verified/$function_bodies verified, $realized realized)"
+echo "sir-shadow-corpus: OK (${#fixtures[@]} fixtures, $successes successful baseline compiles, SIR $verified monomorphic, $generic_templates template(s), $hir_declarations HIR declarations, $realized/$concrete_bodies concrete realized)"

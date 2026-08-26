@@ -1,85 +1,84 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmtKind,
     IntentKind, ResolvedRef,
 };
+use hew_types::{CallTarget, DefId, ResolvedTy};
 
 use crate::{
-    BlockArg, BlockId, CallableId, Edge, EffectSummary, FunctionSourceOrigin, OpId, Operand,
-    Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
-    SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, UseMode, ValueDef,
-    ValueId,
+    BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSummary, FunctionSourceOrigin,
+    GenericTemplateId, OpId, Operand, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable,
+    SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
+    SemSignature, SemTerminator, SirInstanceKey, UseMode, ValueDef, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SirLoweringStatus {
     Lowered,
-    Unsupported { reason: String },
+    /// A generic HIR definition is a canonical template, not a SIR body. Its
+    /// closed instances are materialized on demand by the SIR instance
+    /// service and reported separately through `callable_statuses`.
+    GenericTemplate {
+        instances: usize,
+        failed_instances: usize,
+    },
+    Unsupported {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoweredModule {
     pub module: SemModule,
-    /// One status per HIR function, in source order. Shadow-mode callers must
-    /// only regard the SIR result as comparable when every status is `Lowered`.
+    /// One status per HIR function, in source order. A generic HIR definition
+    /// is reported as [`SirLoweringStatus::GenericTemplate`] because it never
+    /// becomes an abstract SIR body.
     pub statuses: Vec<(String, SirLoweringStatus)>,
+    /// Status for every concrete callable header, in `CallableId` order.
+    /// This lets strict component selection diagnose a failed concrete generic
+    /// instance without pretending that its generic HIR template was a body.
+    pub callable_statuses: Vec<(CallableId, SirLoweringStatus)>,
+}
+
+impl LoweredModule {
+    /// Return the lowering result for one concrete callable header.
+    #[must_use]
+    pub fn status_for_callable(&self, callable: CallableId) -> Option<&SirLoweringStatus> {
+        self.callable_statuses
+            .get(usize::try_from(callable.0).ok()?)
+            .filter(|(candidate, _)| *candidate == callable)
+            .map(|(_, status)| status)
+    }
 }
 
 #[must_use]
 pub fn lower_module(module: &HirModule) -> LoweredModule {
-    // Build declaration/signature authority before lowering any body. This
-    // permits forward calls and recursion without symbol reconstruction, and
-    // deliberately keeps an eligible callable when its own body later proves
-    // unsupported: strict drivers can then reject only a reachable missing
-    // body instead of every unrelated unsupported function in a module.
-    let callables = CallableTable::from_hir(module);
-    let mut output = SemModule {
-        callables: callables.callables.clone(),
-        root_unit_callables: callables.root_unit_callables.clone(),
-        entry_callable: callables.entry_callable,
-        functions: Vec::new(),
-    };
-    let mut statuses = Vec::new();
-    for item in &module.items {
-        let HirItem::Function(function) = item else {
-            continue;
-        };
-        let Some(callable) = callables.by_declaration.get(&function.declaration).copied() else {
-            let reason = callables
-                .ineligible
-                .get(&function.id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    "function has no deterministic SIR direct-call entry".to_string()
-                });
-            statuses.push((
-                function.name.clone(),
-                SirLoweringStatus::Unsupported { reason },
-            ));
-            continue;
-        };
-        match Builder::new(
-            function,
-            function_source_origin(module, function),
-            &callables,
-            callable,
-        )
-        .lower()
-        {
-            Ok(function) => {
-                statuses.push((function.name.clone(), SirLoweringStatus::Lowered));
-                output.functions.push(function);
-            }
-            Err(reason) => statuses.push((
-                function.name.clone(),
-                SirLoweringStatus::Unsupported { reason },
-            )),
-        }
+    // The HIR monomorphisation registry remains deliberately unused here.
+    // SIR discovers concrete direct-user instances from each resolved call's
+    // `SiteId -> call_site_type_args` fact, applies the enclosing semantic
+    // substitution, and creates its own closed instance worklist.
+    let mut service = InstanceService::new(module);
+    for callable in service.monomorphic_callables() {
+        service.lower_monomorphic(callable);
     }
+    service.lower_pending_instances();
+
+    let statuses = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(function) => {
+                Some((function.name.clone(), service.source_status(function)))
+            }
+            _ => None,
+        })
+        .collect();
+    let callable_statuses = service.callable_statuses();
     LoweredModule {
-        module: output,
+        module: service.into_module(),
         statuses,
+        callable_statuses,
     }
 }
 
@@ -89,30 +88,76 @@ pub fn lower_module(module: &HirModule) -> LoweredModule {
 /// projects those checked facts into its semantic callable table; it never
 /// reconstructs a symbol from a declaration's presentation spelling.
 #[derive(Debug, Clone)]
-struct CallableTable {
+struct GenericTemplate<'a> {
+    function: &'a HirFn,
+    source_origin: FunctionSourceOrigin,
+    symbol: String,
+    id: GenericTemplateId,
+}
+
+/// A canonical type substitution applied while lowering one concrete SIR
+/// instance.  It is purely semantic: it rewrites `ResolvedTy` facts but never
+/// asks for a size, alignment, ABI class, or layout.
+#[derive(Debug, Clone, Default)]
+struct TypeSubstitution {
+    params: Vec<String>,
+    args: Vec<ResolvedTy>,
+}
+
+impl TypeSubstitution {
+    fn empty() -> Self {
+        Self::default()
+    }
+
+    fn for_instance(function: &HirFn, args: &[ResolvedTy]) -> Result<Self, String> {
+        if function.type_params.len() != args.len() {
+            return Err(format!(
+                "generic template `{}` expects {} type argument(s), SIR received {}",
+                function.declaration.full_path(),
+                function.type_params.len(),
+                args.len()
+            ));
+        }
+        Ok(Self {
+            params: function.type_params.clone(),
+            args: args.to_vec(),
+        })
+    }
+
+    fn apply(&self, ty: &ResolvedTy) -> ResolvedTy {
+        hew_hir::substitute_type_params(ty, &self.params, &self.args)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CallableTable<'a> {
     callables: Vec<SemCallable>,
+    generic_templates: Vec<SemGenericTemplate>,
     root_unit_callables: Vec<CallableId>,
     entry_callable: Option<CallableId>,
-    by_declaration: HashMap<hew_types::DefId, CallableId>,
+    monomorphic_by_declaration: HashMap<DefId, CallableId>,
+    templates: HashMap<DefId, GenericTemplate<'a>>,
+    functions_by_item: HashMap<hew_hir::ItemId, &'a HirFn>,
     ineligible: HashMap<hew_hir::ItemId, String>,
 }
 
-impl CallableTable {
-    fn from_hir(module: &HirModule) -> Self {
+impl<'a> CallableTable<'a> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one deterministic HIR collection pass keeps monomorphic and generic callable admission auditable together"
+    )]
+    fn from_hir(module: &'a HirModule) -> Self {
         let direct_symbols = hew_hir::dispatch::build_direct_call_symbol_index(&module.items);
         let mut pending = Vec::new();
         let mut ineligible = HashMap::new();
+        let mut templates = HashMap::new();
+        let mut generic_templates = Vec::new();
+        let mut functions_by_item = HashMap::new();
         for item in &module.items {
             let HirItem::Function(function) = item else {
                 continue;
             };
-            let signature = match scalar_callable_signature(function) {
-                Ok(signature) => signature,
-                Err(reason) => {
-                    ineligible.insert(function.id, reason);
-                    continue;
-                }
-            };
+            functions_by_item.insert(function.id, function);
             let Some(symbol) = direct_symbols.get(&function.declaration) else {
                 ineligible.insert(
                     function.id,
@@ -122,6 +167,54 @@ impl CallableTable {
                     ),
                 );
                 continue;
+            };
+            if !function.type_params.is_empty() {
+                let signature = match generic_template_signature(function) {
+                    Ok(signature) => signature,
+                    Err(reason) => {
+                        ineligible.insert(function.id, reason);
+                        continue;
+                    }
+                };
+                let id = GenericTemplateId {
+                    declaration: function.declaration.clone(),
+                };
+                let source_origin = function_source_origin(module, function);
+                if templates.contains_key(&function.declaration) {
+                    ineligible.insert(
+                        function.id,
+                        format!(
+                            "duplicate generic HIR template declaration `{}` has no unambiguous SIR template authority",
+                            function.declaration.full_path()
+                        ),
+                    );
+                    continue;
+                }
+                templates.insert(
+                    function.declaration.clone(),
+                    GenericTemplate {
+                        function,
+                        source_origin: source_origin.clone(),
+                        symbol: symbol.clone(),
+                        id: id.clone(),
+                    },
+                );
+                generic_templates.push(SemGenericTemplate {
+                    id,
+                    function: function.id,
+                    symbol: symbol.clone(),
+                    source_origin,
+                    type_params: function.type_params.clone(),
+                    signature,
+                });
+                continue;
+            }
+            let signature = match scalar_callable_signature(function) {
+                Ok(signature) => signature,
+                Err(reason) => {
+                    ineligible.insert(function.id, reason);
+                    continue;
+                }
             };
             pending.push((
                 function,
@@ -140,7 +233,7 @@ impl CallableTable {
         let mut callables = Vec::with_capacity(pending.len());
         let mut root_unit_callables = Vec::new();
         let mut entry_callable = None;
-        let mut by_declaration = HashMap::with_capacity(pending.len());
+        let mut monomorphic_by_declaration = HashMap::with_capacity(pending.len());
         for (index, (function, source_origin, symbol, signature)) in pending.into_iter().enumerate()
         {
             let id = CallableId(
@@ -152,11 +245,12 @@ impl CallableTable {
                     entry_callable = Some(id);
                 }
             }
-            by_declaration.insert(function.declaration.clone(), id);
+            monomorphic_by_declaration.insert(function.declaration.clone(), id);
             callables.push(SemCallable {
                 id,
                 function: function.id,
                 declaration: function.declaration.clone(),
+                instance: CallableInstance::Monomorphic,
                 symbol,
                 source_origin,
                 signature,
@@ -165,11 +259,15 @@ impl CallableTable {
                 effect_summary: EffectSummary::Unknown,
             });
         }
+        generic_templates.sort_by(|left, right| left.id.cmp(&right.id));
         Self {
             callables,
+            generic_templates,
             root_unit_callables,
             entry_callable,
-            by_declaration,
+            monomorphic_by_declaration,
+            templates,
+            functions_by_item,
             ineligible,
         }
     }
@@ -179,6 +277,397 @@ impl CallableTable {
             .get(usize::try_from(id.0).ok()?)
             .filter(|callable| callable.id == id)
     }
+}
+
+/// The first SIR generic slice deliberately has a finite, closed surface.
+/// It is large enough to prove template substitution and call-graph closure,
+/// but rejects any type that would force ownership, aggregate, reference,
+/// resource, or runtime representation policy into SIR.
+const SIR_GENERIC_INSTANCE_CAP: usize = 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallableState {
+    Monomorphic,
+    Queued,
+    Lowering,
+    Lowered,
+    Failed,
+}
+
+/// SIR-owned generic specialization service.
+///
+/// A header is appended to the callable table *before* its body is queued.
+/// Recursive and mutually-recursive calls can therefore refer to the stable
+/// `CallableId` immediately, while a FIFO worklist keeps the construction
+/// deterministic.  The service intentionally never reads
+/// `HirModule::monomorphisations` or invokes MIR lowering.
+struct InstanceService<'a> {
+    module: &'a HirModule,
+    table: CallableTable<'a>,
+    states: Vec<CallableState>,
+    statuses: Vec<Option<SirLoweringStatus>>,
+    by_instance: HashMap<SirInstanceKey, CallableId>,
+    /// Only template headers that back a requested concrete SIR instance are
+    /// emitted into the SIR module. HIR remains the authority for unselected
+    /// generic definitions, so SIR does not accumulate an unrelated second
+    /// template inventory.
+    used_templates: std::collections::HashSet<GenericTemplateId>,
+    pending: VecDeque<CallableId>,
+    functions: Vec<SemFunction>,
+}
+
+impl<'a> InstanceService<'a> {
+    fn new(module: &'a HirModule) -> Self {
+        let table = CallableTable::from_hir(module);
+        let count = table.callables.len();
+        Self {
+            module,
+            table,
+            states: vec![CallableState::Monomorphic; count],
+            statuses: vec![None; count],
+            by_instance: HashMap::new(),
+            used_templates: std::collections::HashSet::new(),
+            pending: VecDeque::new(),
+            functions: Vec::new(),
+        }
+    }
+
+    fn monomorphic_callables(&self) -> Vec<CallableId> {
+        self.table
+            .callables
+            .iter()
+            .map(|callable| callable.id)
+            .collect()
+    }
+
+    fn callable(&self, id: CallableId) -> Option<&SemCallable> {
+        self.table.callable(id)
+    }
+
+    fn lower_monomorphic(&mut self, callable: CallableId) {
+        let result = self.lower_callable(callable);
+        self.record_callable_result(callable, result);
+    }
+
+    fn lower_pending_instances(&mut self) {
+        while let Some(callable) = self.pending.pop_front() {
+            if self.state(callable) != Some(CallableState::Queued) {
+                continue;
+            }
+            self.set_state(callable, CallableState::Lowering);
+            let result = self.lower_callable(callable);
+            self.record_callable_result(callable, result);
+        }
+    }
+
+    fn lower_callable(&mut self, callable: CallableId) -> Result<SemFunction, String> {
+        let input = self.input_for_callable(callable)?;
+        Builder::new(input.function, input.callable, input.substitution, self)?.lower()
+    }
+
+    fn record_callable_result(
+        &mut self,
+        callable: CallableId,
+        result: Result<SemFunction, String>,
+    ) {
+        let index = usize::try_from(callable.0).expect("SIR callable id exceeds usize");
+        match result {
+            Ok(function) => {
+                self.states[index] = CallableState::Lowered;
+                self.statuses[index] = Some(SirLoweringStatus::Lowered);
+                self.functions.push(function);
+            }
+            Err(reason) => {
+                self.states[index] = CallableState::Failed;
+                self.statuses[index] = Some(SirLoweringStatus::Unsupported { reason });
+            }
+        }
+    }
+
+    fn input_for_callable(&self, callable: CallableId) -> Result<LoweringInput<'a>, String> {
+        let callable_meta = self.callable(callable).cloned().ok_or_else(|| {
+            format!(
+                "SIR callable {} is absent from its deterministic table",
+                callable.0
+            )
+        })?;
+        let function = *self
+            .table
+            .functions_by_item
+            .get(&callable_meta.function)
+            .ok_or_else(|| {
+                format!(
+                    "SIR callable `{}` has no HIR source template for its provenance item",
+                    callable_meta.symbol
+                )
+            })?;
+        let substitution = match &callable_meta.instance {
+            CallableInstance::Monomorphic => {
+                if !function.type_params.is_empty() {
+                    return Err(format!(
+                        "generic HIR template `{}` was incorrectly admitted as a monomorphic SIR body",
+                        function.declaration.full_path()
+                    ));
+                }
+                TypeSubstitution::empty()
+            }
+            CallableInstance::Generic(key) => {
+                if key.template.declaration != function.declaration
+                    || callable_meta.declaration != function.declaration
+                {
+                    return Err(format!(
+                        "SIR generic callable `{}` does not agree with its source template declaration",
+                        callable_meta.symbol
+                    ));
+                }
+                TypeSubstitution::for_instance(function, &key.type_args)?
+            }
+        };
+        Ok(LoweringInput {
+            function,
+            callable: callable_meta,
+            substitution,
+        })
+    }
+
+    fn resolve_direct_call(
+        &mut self,
+        declaration: &DefId,
+        call_target: &CallTarget,
+        site: hew_hir::SiteId,
+        substitution: &TypeSubstitution,
+    ) -> Result<SemCallable, String> {
+        if self.table.templates.contains_key(declaration) {
+            if !matches!(call_target, CallTarget::User(_)) {
+                return Err(format!(
+                    "generic direct callee `{}` is not an ordinary user-function call",
+                    declaration.full_path()
+                ));
+            }
+            let raw_args = self.module.call_site_type_args.get(&site).ok_or_else(|| {
+                format!(
+                    "generic direct call to `{}` is missing checker-resolved type arguments at SIR site {}",
+                    declaration.full_path(),
+                    site.0
+                )
+            })?;
+            let type_args = raw_args
+                .iter()
+                .map(|argument| substitution.apply(argument))
+                .collect::<Vec<_>>();
+            let id = self.request_instance(declaration, type_args)?;
+            return self.callable(id).cloned().ok_or_else(|| {
+                format!(
+                    "requested SIR generic callable {} disappeared from its table",
+                    id.0
+                )
+            });
+        }
+        let id = self
+            .table
+            .monomorphic_by_declaration
+            .get(declaration)
+            .copied()
+            .ok_or_else(|| {
+                format!(
+                    "direct callee `{}` has no scalar default-call SIR callable",
+                    declaration.full_path()
+                )
+            })?;
+        self.callable(id)
+            .cloned()
+            .ok_or_else(|| format!("SIR callable {id:?} is absent from its deterministic table"))
+    }
+
+    fn request_instance(
+        &mut self,
+        declaration: &DefId,
+        type_args: Vec<ResolvedTy>,
+    ) -> Result<CallableId, String> {
+        let template = self
+            .table
+            .templates
+            .get(declaration)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "generic direct callee `{}` has no SIR template admission record",
+                    declaration.full_path()
+                )
+            })?;
+        if type_args.len() != template.function.type_params.len() {
+            return Err(format!(
+                "generic direct callee `{}` expects {} type argument(s), HIR supplied {}",
+                declaration.full_path(),
+                template.function.type_params.len(),
+                type_args.len()
+            ));
+        }
+        for (index, argument) in type_args.iter().enumerate() {
+            if !is_initial_scalar(argument) {
+                return Err(format!(
+                    "generic direct callee `{}` type argument {index} is `{}`; initial SIR generic instances require closed scalar i*/u*/bool types",
+                    declaration.full_path(),
+                    argument.user_facing()
+                ));
+            }
+        }
+        let key = SirInstanceKey {
+            template: template.id,
+            type_args,
+        };
+        self.used_templates.insert(key.template.clone());
+        if let Some(existing) = self.by_instance.get(&key).copied() {
+            return Ok(existing);
+        }
+        if self.by_instance.len() >= SIR_GENERIC_INSTANCE_CAP {
+            return Err(format!(
+                "SIR generic instance cap ({SIR_GENERIC_INSTANCE_CAP}) exceeded while specializing `{}`; refuse unbounded semantic specialization",
+                declaration.full_path()
+            ));
+        }
+        let substitution = TypeSubstitution::for_instance(template.function, &key.type_args)?;
+        let signature =
+            scalar_callable_signature_with_substitution(template.function, &substitution)?;
+        let symbol =
+            hew_hir::monomorph::function_monomorph_symbol(&template.symbol, &key.type_args);
+        if let Some(existing) = self
+            .table
+            .callables
+            .iter()
+            .find(|callable| callable.symbol == symbol)
+        {
+            return Err(format!(
+                "SIR generic instance `{}` would collide with callable {} despite a distinct semantic key",
+                symbol, existing.id.0
+            ));
+        }
+        let id = CallableId(
+            u32::try_from(self.table.callables.len())
+                .map_err(|_| "SIR callable count exceeds the module-local ID range".to_string())?,
+        );
+        self.table.callables.push(SemCallable {
+            id,
+            function: template.function.id,
+            declaration: template.function.declaration.clone(),
+            instance: CallableInstance::Generic(key.clone()),
+            symbol,
+            source_origin: template.source_origin,
+            signature,
+            call_conv: SemCallConv::Default,
+            kind: SemCallableKind::HewDirect,
+            effect_summary: EffectSummary::Unknown,
+        });
+        self.by_instance.insert(key, id);
+        self.states.push(CallableState::Queued);
+        self.statuses.push(None);
+        self.pending.push_back(id);
+        Ok(id)
+    }
+
+    fn source_status(&self, function: &HirFn) -> SirLoweringStatus {
+        if self.table.templates.contains_key(&function.declaration) {
+            let (instances, failed_instances) =
+                self.template_instance_counts(&function.declaration);
+            return SirLoweringStatus::GenericTemplate {
+                instances,
+                failed_instances,
+            };
+        }
+        if let Some(callable) = self
+            .table
+            .monomorphic_by_declaration
+            .get(&function.declaration)
+            .copied()
+        {
+            return self
+                .statuses
+                .get(usize::try_from(callable.0).expect("SIR callable id exceeds usize"))
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| SirLoweringStatus::Unsupported {
+                    reason: "SIR callable header was never lowered".to_string(),
+                });
+        }
+        SirLoweringStatus::Unsupported {
+            reason: self
+                .table
+                .ineligible
+                .get(&function.id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    "function has no deterministic SIR direct-call entry".to_string()
+                }),
+        }
+    }
+
+    fn template_instance_counts(&self, declaration: &DefId) -> (usize, usize) {
+        let mut instances = 0;
+        let mut failed = 0;
+        for (key, callable) in &self.by_instance {
+            if &key.template.declaration == declaration {
+                instances += 1;
+                if self.state(*callable) == Some(CallableState::Failed) {
+                    failed += 1;
+                }
+            }
+        }
+        (instances, failed)
+    }
+
+    fn state(&self, callable: CallableId) -> Option<CallableState> {
+        self.states.get(usize::try_from(callable.0).ok()?).copied()
+    }
+
+    fn set_state(&mut self, callable: CallableId, state: CallableState) {
+        let index = usize::try_from(callable.0).expect("SIR callable id exceeds usize");
+        self.states[index] = state;
+    }
+
+    fn into_module(self) -> SemModule {
+        let Self {
+            table,
+            used_templates,
+            functions,
+            ..
+        } = self;
+        let generic_templates = table
+            .generic_templates
+            .into_iter()
+            .filter(|template| used_templates.contains(&template.id))
+            .collect();
+        SemModule {
+            callables: table.callables,
+            generic_templates,
+            root_unit_callables: table.root_unit_callables,
+            entry_callable: table.entry_callable,
+            functions,
+        }
+    }
+
+    fn callable_statuses(&self) -> Vec<(CallableId, SirLoweringStatus)> {
+        self.table
+            .callables
+            .iter()
+            .map(|callable| {
+                let index = usize::try_from(callable.id.0).expect("SIR callable id exceeds usize");
+                (
+                    callable.id,
+                    self.statuses[index].clone().unwrap_or_else(|| {
+                        SirLoweringStatus::Unsupported {
+                            reason: "SIR callable header was never lowered".to_string(),
+                        }
+                    }),
+                )
+            })
+            .collect()
+    }
+}
+
+struct LoweringInput<'a> {
+    function: &'a HirFn,
+    callable: SemCallable,
+    substitution: TypeSubstitution,
 }
 
 fn function_source_origin(module: &HirModule, function: &HirFn) -> FunctionSourceOrigin {
@@ -191,55 +680,84 @@ fn function_source_origin(module: &HirModule, function: &HirFn) -> FunctionSourc
     }
 }
 
-fn scalar_callable_signature(function: &HirFn) -> Result<SemSignature, String> {
+fn generic_template_admission(function: &HirFn) -> Result<(), String> {
     if function.is_generator || function.intrinsic_id.is_some() {
         return Err(
             "generators and floor intrinsics remain outside SIR's ordinary direct-call domain"
                 .to_string(),
         );
     }
-    if !function.type_params.is_empty() {
-        return Err(
-            "generic origin functions remain outside SIR's monomorphic direct-call domain"
-                .to_string(),
-        );
-    }
-    let mut params = Vec::with_capacity(function.params.len());
     for (index, parameter) in function.params.iter().enumerate() {
         if parameter.is_consume {
             return Err(format!(
                 "parameter {index} is consume-owned; SIR direct calls initially require Read operands"
             ));
         }
-        if !is_initial_scalar(&parameter.ty) {
-            return Err(format!(
-                "parameter {index} has non-scalar type `{}`; aggregate/reference ABI lowering is deferred",
-                parameter.ty.user_facing()
-            ));
-        }
-        params.push(SemAbiParam {
-            ty: parameter.ty.clone(),
-            passing: SemParamPassing::ReadOnly,
-            caller_visible_projection: false,
-        });
     }
-    if !is_initial_scalar_return(&function.return_ty) {
-        return Err(format!(
-            "return type `{}` is outside SIR's initial scalar call-result domain",
-            function.return_ty.user_facing()
-        ));
-    }
+    Ok(())
+}
+
+fn generic_template_signature(function: &HirFn) -> Result<SemSignature, String> {
+    generic_template_admission(function)?;
     Ok(SemSignature {
-        params,
+        params: function
+            .params
+            .iter()
+            .map(|parameter| SemAbiParam {
+                ty: parameter.ty.clone(),
+                passing: SemParamPassing::ReadOnly,
+                caller_visible_projection: false,
+            })
+            .collect(),
         return_ty: function.return_ty.clone(),
     })
 }
 
-fn is_initial_scalar(ty: &hew_types::ResolvedTy) -> bool {
+fn scalar_callable_signature(function: &HirFn) -> Result<SemSignature, String> {
+    if !function.type_params.is_empty() {
+        return Err(
+            "generic origin functions are instantiated by the SIR instance service, not admitted as abstract callable bodies"
+                .to_string(),
+        );
+    }
+    scalar_callable_signature_with_substitution(function, &TypeSubstitution::empty())
+}
+
+fn scalar_callable_signature_with_substitution(
+    function: &HirFn,
+    substitution: &TypeSubstitution,
+) -> Result<SemSignature, String> {
+    generic_template_admission(function)?;
+    let mut params = Vec::with_capacity(function.params.len());
+    for (index, parameter) in function.params.iter().enumerate() {
+        let ty = substitution.apply(&parameter.ty);
+        if !is_initial_scalar(&ty) {
+            return Err(format!(
+                "parameter {index} has non-scalar type `{}` after semantic substitution; aggregate/reference ABI lowering is deferred",
+                ty.user_facing()
+            ));
+        }
+        params.push(SemAbiParam {
+            ty,
+            passing: SemParamPassing::ReadOnly,
+            caller_visible_projection: false,
+        });
+    }
+    let return_ty = substitution.apply(&function.return_ty);
+    if !is_initial_scalar_return(&return_ty) {
+        return Err(format!(
+            "return type `{}` is outside SIR's initial scalar call-result domain after semantic substitution",
+            return_ty.user_facing()
+        ));
+    }
+    Ok(SemSignature { params, return_ty })
+}
+
+fn is_initial_scalar(ty: &ResolvedTy) -> bool {
     ty.is_integer() || matches!(ty, hew_types::ResolvedTy::Bool)
 }
 
-fn is_initial_scalar_return(ty: &hew_types::ResolvedTy) -> bool {
+fn is_initial_scalar_return(ty: &ResolvedTy) -> bool {
     matches!(ty, hew_types::ResolvedTy::Unit) || is_initial_scalar(ty)
 }
 
@@ -312,11 +830,11 @@ fn initial_scalar_transfer_mode(
 }
 
 fn lower_initial_scalar_transfer_value(
-    builder: &mut Builder<'_>,
+    builder: &mut Builder<'_, '_>,
     expr: &HirExpr,
     context: &str,
 ) -> Result<ValueId, String> {
-    initial_scalar_transfer_mode(expr.intent, &expr.ty, context)?;
+    initial_scalar_transfer_mode(expr.intent, &builder.ty(&expr.ty), context)?;
     builder.lower_expr(expr)
 }
 
@@ -327,13 +845,14 @@ fn lower_initial_scalar_transfer_value(
 /// read-only in the initial slice. A unit expression in `return` instead
 /// transfers control to the caller; HIR marks that transfer `Consume`, which
 /// is harmless for `Unit` but must not be rechecked as an ordinary operand use.
-fn lower_initial_unit_return(builder: &mut Builder<'_>, expr: &HirExpr) -> Result<(), String> {
+fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> Result<(), String> {
     let mode = use_mode_from_hir_intent(expr.intent)
         .map_err(|reason| format!("unit return value: {reason}"))?;
-    if !matches!(mode, UseMode::Read | UseMode::Move) || expr.ty != hew_types::ResolvedTy::Unit {
+    let ty = builder.ty(&expr.ty);
+    if !matches!(mode, UseMode::Read | UseMode::Move) || ty != ResolvedTy::Unit {
         return Err(format!(
             "unit return value: HIR intent maps to SIR {mode:?} for `{}`; initial SIR admits only Read or Unit Move return transfer",
-            expr.ty.user_facing()
+            ty.user_facing()
         ));
     }
     if !matches!(expr.kind, HirExprKind::Call { .. }) {
@@ -398,69 +917,82 @@ impl PendingBlock {
     }
 }
 
-struct Builder<'a> {
-    function: &'a HirFn,
-    callables: &'a CallableTable,
-    callable: CallableId,
+struct Builder<'hir, 'service> {
+    function: &'hir HirFn,
+    service: &'service mut InstanceService<'hir>,
+    callable: SemCallable,
+    substitution: TypeSubstitution,
     blocks: Vec<PendingBlock>,
     current: BlockId,
     values: u32,
     ops: u32,
     bindings: HashMap<BindingId, ValueId>,
     params: Vec<BlockArg>,
-    source_origin: FunctionSourceOrigin,
 }
 
-impl<'a> Builder<'a> {
+impl<'hir, 'service> Builder<'hir, 'service> {
     fn new(
-        function: &'a HirFn,
-        source_origin: FunctionSourceOrigin,
-        callables: &'a CallableTable,
-        callable: CallableId,
-    ) -> Self {
+        function: &'hir HirFn,
+        callable: SemCallable,
+        substitution: TypeSubstitution,
+        service: &'service mut InstanceService<'hir>,
+    ) -> Result<Self, String> {
+        if function.params.len() != callable.signature.params.len() {
+            return Err(format!(
+                "SIR callable `{}` has {} parameter ABI facts, but its HIR template has {} parameter(s)",
+                callable.symbol,
+                callable.signature.params.len(),
+                function.params.len()
+            ));
+        }
         let entry = BlockId(0);
         let mut values = 0;
         let mut bindings = HashMap::new();
         let params = function
             .params
             .iter()
-            .map(|param| {
+            .zip(&callable.signature.params)
+            .enumerate()
+            .map(|(index, (param, abi))| {
+                let ty = substitution.apply(&param.ty);
+                if ty != abi.ty {
+                    return Err(format!(
+                        "SIR callable `{}` parameter {index} has `{}`, but its substituted HIR template has `{}`",
+                        callable.symbol,
+                        abi.ty.user_facing(),
+                        ty.user_facing()
+                    ));
+                }
                 let value = ValueId(values);
                 values += 1;
                 bindings.insert(param.id, value);
-                BlockArg {
+                Ok(BlockArg {
                     value,
-                    ty: param.ty.clone(),
-                }
+                    ty,
+                })
             })
-            .collect();
-        Self {
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
             function,
-            callables,
+            service,
             callable,
+            substitution,
             blocks: vec![PendingBlock::new(entry, Vec::new())],
             current: entry,
             values,
             ops: 0,
             bindings,
             params,
-            source_origin,
-        }
+        })
     }
 
     fn lower(mut self) -> Result<SemFunction, String> {
-        let callable = self.callables.callable(self.callable).ok_or_else(|| {
-            format!(
-                "SIR callable {:?} is absent while lowering `{}`",
-                self.callable, self.function.name
-            )
-        })?;
-        if callable.function != self.function.id
-            || callable.declaration != self.function.declaration
-            || callable.symbol != self.function.name
+        if self.callable.function != self.function.id
+            || self.callable.declaration != self.function.declaration
         {
             return Err(
-                "SIR callable table does not match the HIR function's checked identity".to_string(),
+                "SIR callable provenance does not match the HIR function's checked identity"
+                    .to_string(),
             );
         }
         if self.function.is_generator || self.function.intrinsic_id.is_some() {
@@ -468,11 +1000,26 @@ impl<'a> Builder<'a> {
                 "generators and floor intrinsics remain on the established MIR path".to_string(),
             );
         }
-        if !self.function.type_params.is_empty() {
-            return Err(
-                "generic origin functions remain on the established MIR path until SIR is monomorphization-aware"
+        match (
+            &self.callable.instance,
+            self.function.type_params.is_empty(),
+        ) {
+            (CallableInstance::Monomorphic, true) => {}
+            (CallableInstance::Generic(key), false)
+                if key.template.declaration == self.function.declaration
+                    && key.type_args == self.substitution.args => {}
+            _ => return Err(
+                "SIR callable instance does not match its HIR template and semantic substitution"
                     .to_string(),
-            );
+            ),
+        }
+        if self.callable.signature.return_ty != self.ty(&self.function.return_ty) {
+            return Err(format!(
+                "SIR callable `{}` return type `{}` differs from substituted HIR template return `{}`",
+                self.callable.symbol,
+                self.callable.signature.return_ty.user_facing(),
+                self.ty(&self.function.return_ty).user_facing()
+            ));
         }
         let result = self.lower_block(&self.function.body)?;
         if self.is_open() {
@@ -484,13 +1031,13 @@ impl<'a> Builder<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(SemFunction {
             id: self.function.id,
-            callable: self.callable,
+            callable: self.callable.id,
             declaration: self.function.declaration.clone(),
-            name: self.function.name.clone(),
+            name: self.callable.symbol.clone(),
             span: self.function.span.clone(),
-            source_origin: self.source_origin,
+            source_origin: self.callable.source_origin.clone(),
             params: self.params,
-            return_ty: self.function.return_ty.clone(),
+            return_ty: self.callable.signature.return_ty.clone(),
             entry: BlockId(0),
             blocks,
         })
@@ -537,7 +1084,7 @@ impl<'a> Builder<'a> {
                 }
                 HirStmtKind::Return(value) => {
                     let value = match value {
-                        Some(expr) if expr.ty == hew_types::ResolvedTy::Unit => {
+                        Some(expr) if self.ty(&expr.ty) == ResolvedTy::Unit => {
                             lower_initial_unit_return(self, expr)?;
                             None
                         }
@@ -565,7 +1112,7 @@ impl<'a> Builder<'a> {
         }
         if self.is_open() {
             match block.tail.as_deref() {
-                Some(expr) if expr.ty == hew_types::ResolvedTy::Unit => {
+                Some(expr) if self.ty(&expr.ty) == ResolvedTy::Unit => {
                     self.lower_discarded_expr(expr)?;
                     Ok(None)
                 }
@@ -600,19 +1147,19 @@ impl<'a> Builder<'a> {
     fn lower_expr(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
         match &expr.kind {
             HirExprKind::Literal(HirLiteral::Integer(value)) => {
-                if !expr.ty.is_integer() {
+                if !self.ty(&expr.ty).is_integer() {
                     return Err(format!(
                         "integer literal resolved as `{}` needs a dedicated SIR literal representation",
-                        expr.ty.user_facing()
+                        self.ty(&expr.ty).user_facing()
                     ));
                 }
                 self.emit(expr, SemOpKind::ConstI64(*value))
             }
             HirExprKind::Literal(HirLiteral::Bool(value)) => {
-                if expr.ty != hew_types::ResolvedTy::Bool {
+                if self.ty(&expr.ty) != ResolvedTy::Bool {
                     return Err(format!(
                         "boolean literal resolved as `{}` violates the SIR bool literal invariant",
-                        expr.ty.user_facing()
+                        self.ty(&expr.ty).user_facing()
                     ));
                 }
                 self.emit(expr, SemOpKind::ConstBool(*value))
@@ -648,7 +1195,7 @@ impl<'a> Builder<'a> {
                     expr,
                     SemOpKind::Cast {
                         value,
-                        to: to_ty.clone(),
+                        to: self.ty(to_ty),
                     },
                 )
             }
@@ -701,9 +1248,8 @@ impl<'a> Builder<'a> {
         };
         let declaration =
             match target {
-                hew_types::CallTarget::User(declaration)
-                | hew_types::CallTarget::ImplMethod(declaration) => declaration,
-                hew_types::CallTarget::IndirectFunctionValue => {
+                CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => declaration,
+                CallTarget::IndirectFunctionValue => {
                     return Err(
                         "indirect calls are deferred until SIR models the callee value explicitly"
                             .to_string(),
@@ -720,30 +1266,13 @@ impl<'a> Builder<'a> {
                     .to_string(),
             );
         }
-        let callee = self
-            .callables
-            .by_declaration
-            .get(declaration)
-            .copied()
-            .ok_or_else(|| {
-                format!(
-                    "direct callee `{}` has no scalar default-call SIR callable",
-                    declaration.full_path()
-                )
-            })?;
-        let (callee_declaration, params, return_ty) = self
-            .callables
-            .callable(callee)
-            .map(|signature| {
-                (
-                    signature.declaration.clone(),
-                    signature.signature.params.clone(),
-                    signature.signature.return_ty.clone(),
-                )
-            })
-            .ok_or_else(|| {
-                format!("SIR callable {callee:?} is absent from its deterministic table")
-            })?;
+        let callee =
+            self.service
+                .resolve_direct_call(declaration, target, expr.site, &self.substitution)?;
+        let callee_id = callee.id;
+        let callee_declaration = callee.declaration.clone();
+        let params = callee.signature.params.clone();
+        let return_ty = callee.signature.return_ty.clone();
         if args.len() != params.len() {
             return Err(format!(
                 "direct callee `{}` expects {} argument(s), HIR carries {}",
@@ -752,12 +1281,13 @@ impl<'a> Builder<'a> {
                 args.len()
             ));
         }
-        if expr.ty != return_ty {
+        let expression_ty = self.ty(&expr.ty);
+        if expression_ty != return_ty {
             return Err(format!(
                 "direct callee `{}` returns `{}`, but call expression has `{}`",
                 callee_declaration.full_path(),
                 return_ty.user_facing(),
-                expr.ty.user_facing()
+                expression_ty.user_facing()
             ));
         }
         let mut lowered_args = Vec::with_capacity(args.len());
@@ -768,11 +1298,12 @@ impl<'a> Builder<'a> {
                     callee_declaration.full_path()
                 ));
             }
-            if arg.ty != expected.ty {
+            let argument_ty = self.ty(&arg.ty);
+            if argument_ty != expected.ty {
                 return Err(format!(
                     "direct call argument {index} to `{}` has `{}`, expected `{}`",
                     callee_declaration.full_path(),
-                    arg.ty.user_facing(),
+                    argument_ty.user_facing(),
                     expected.ty.user_facing()
                 ));
             }
@@ -785,10 +1316,10 @@ impl<'a> Builder<'a> {
             )?);
         }
         let kind = SemOpKind::Call {
-            callee,
+            callee: callee_id,
             args: lowered_args,
         };
-        if return_ty == hew_types::ResolvedTy::Unit {
+        if return_ty == ResolvedTy::Unit {
             if value_required {
                 return Err(format!(
                     "unit-valued direct call `{}` cannot produce an SSA value",
@@ -815,7 +1346,7 @@ impl<'a> Builder<'a> {
         let join_value = self.fresh_value();
         let join_block = self.new_block(vec![BlockArg {
             value: join_value,
-            ty: whole.ty.clone(),
+            ty: self.ty(&whole.ty),
         }]);
         self.set_terminator(SemTerminator::Branch {
             condition,
@@ -882,7 +1413,7 @@ impl<'a> Builder<'a> {
         right: &HirExpr,
         short_circuit_value: bool,
     ) -> Result<ValueId, String> {
-        if whole.ty != hew_types::ResolvedTy::Bool {
+        if self.ty(&whole.ty) != ResolvedTy::Bool {
             return Err("short-circuit logical expressions must have bool type in SIR".to_string());
         }
         let condition = self.lower_read_operand(left, "logical condition")?;
@@ -891,7 +1422,7 @@ impl<'a> Builder<'a> {
         let result = self.fresh_value();
         let join = self.new_block(vec![BlockArg {
             value: result,
-            ty: whole.ty.clone(),
+            ty: self.ty(&whole.ty),
         }]);
         let (then_target, else_target) = if short_circuit_value {
             (short_circuit, evaluate_right)
@@ -942,7 +1473,7 @@ impl<'a> Builder<'a> {
             id: OpId(self.ops),
             results: vec![ValueDef {
                 id: value,
-                ty: expr.ty.clone(),
+                ty: self.ty(&expr.ty),
             }],
             kind,
             provenance: Provenance::Site(expr.site),
@@ -969,6 +1500,11 @@ impl<'a> Builder<'a> {
         self.values += 1;
         value
     }
+
+    fn ty(&self, ty: &ResolvedTy) -> ResolvedTy {
+        self.substitution.apply(ty)
+    }
+
     fn new_block(&mut self, args: Vec<BlockArg>) -> BlockId {
         let id = BlockId(u32::try_from(self.blocks.len()).expect("SIR block count exceeds u32"));
         self.blocks.push(PendingBlock::new(id, args));

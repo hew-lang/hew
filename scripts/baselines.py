@@ -430,6 +430,17 @@ BASELINE_SHAPES = (
 # entry that stops matching anything so the list cannot rot.
 NO_BASELINE_FILES: tuple[tuple[str, str], ...] = (
     (
+        "scripts/preflight-command-weights.tsv",
+        "measured elapsed seconds per preflight command, derived from a PROFILED "
+        "RUN rather than from the tree: `make baselines` cannot regenerate it "
+        "without executing a full comprehensive preflight, and no check can "
+        "prove it current against a tree that carries no timing. It is also not "
+        "a contract -- it only balances the shard partition, which stays "
+        "exhaustive and disjoint whatever the weights say, and an unmeasured "
+        "command falls back to its timeout floor. Refresh it deliberately with "
+        "`make preflight-weights-regen PROFILE_JSON=<path>`",
+    ),
+    (
         "scripts/fixtures/*",
         "inputs to the checkers' own self-tests (sanitizer waivers, release-lib-link "
         "scaffolding); they are counterfactuals a gate is driven against, never "

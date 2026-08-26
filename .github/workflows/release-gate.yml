@@ -226,15 +226,20 @@ jobs:
         uses: ./.github/actions/setup-ast-grep
 
       - name: Run foundational compiled-Hew and lifecycle gates
+        env:
+          # The release boundary is where the expected-failure lists must be
+          # current: a newly-passing entry annotates on a pull request and
+          # BLOCKS here. An unexpected failure is red on every tier regardless.
+          RATCHET_STRICT: --strict-passes
         run: |
           make check-gate-reachability
           make test-release-workflow-contract
           make test-compiler-lifecycle
           make test-opaque-resource-lifecycle-matrix-external
           make test-vertical-slice
-          make test-hew-ratchet RATCHET_STRICT=--strict-passes
+          make test-hew-ratchet
           make test-migrate-corpus
-          make test-stdlib-ratchet RATCHET_STRICT=--strict-passes
+          make test-stdlib-ratchet
           make test-stdlib-execution-proofs
 
       - name: Run MQTT broker end-to-end oracle
@@ -692,7 +697,7 @@ jobs:
             cargo nextest run --profile ci-cabi -p hew-cabi
 
             gmake test-vertical-slice
-            gmake test-hew-ratchet RATCHET_STRICT=--strict-passes
+            gmake test-hew-ratchet
             HEW_FREEBSD_CI
 
       - name: Upload test reports

@@ -195,14 +195,26 @@ def assert_transport_is_fail_closed(text: str) -> None:
     )
     assert "retention-days: 1" in upload, "the archive is a transport, not a cache"
 
-    download = step_named(workflow[CONSUMER_JOB], "actions/download-artifact@")
-    assert "digest-mismatch: error" in download, (
-        "a corrupted archive would surface as a link failure inside a timed "
-        "gate rather than at the download that caused it"
+    # Every consumer of the archive, not just the shard matrix: the bundle
+    # packager reads the same bytes and must reject the same corruption.
+    consumers = [
+        (name, step)
+        for name, job in workflow.items()
+        for step in steps(job)
+        if "actions/download-artifact@" in step and "ci-linux-nextest-" in step
+    ]
+    assert len(consumers) >= 2, (
+        f"expected the shard matrix and the bundle packager to consume the "
+        f"archive, found {len(consumers)}"
     )
-    assert "run-id:" not in download and "repository:" not in download, (
-        "the transport must stay scoped to this run of this repository"
-    )
+    for name, step in consumers:
+        assert "digest-mismatch: error" in step, (
+            f"{name}: a corrupted archive would surface as an inexplicable "
+            "failure hours from the download that caused it"
+        )
+        assert "run-id:" not in step and "repository:" not in step, (
+            f"{name}: the transport must stay scoped to this run of this repository"
+        )
 
 
 def assert_materialization_precedes_every_gate(text: str) -> None:
@@ -297,7 +309,7 @@ def test_each_workflow_property_rejects_its_own_defect() -> None:
         assert_producer_gates_the_shards,
     )
     rejects(
-        text.replace("          digest-mismatch: error\n", "", 1),
+        text.replace("          digest-mismatch: error\n", ""),
         assert_transport_is_fail_closed,
     )
     rejects(

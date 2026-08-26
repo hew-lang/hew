@@ -239,10 +239,10 @@ nothing — a budget is a signal, not a gate.
 ## Build once, run four times
 
 The four Linux shards each derived their own warm-up — a measured
-376/406/338/188 s, **1302 s of duplicated build per run** — compiling the same
-test binaries and the same shared Cargo outputs four times over one tree.
-
-`linux-nextest-archive` builds that surface once and hands it to the shards.
+417/732/470/383 s on run `32966803389` — and each additionally ran
+`make stdlib`, so one tree's test binaries and shared Cargo outputs were
+compiled four times. `linux-nextest-archive` builds that surface once and
+hands it to them.
 
 **What crosses.** A `cargo nextest archive` tarball: the selected test
 binaries, `binaries-metadata.json` and `cargo-metadata.json`, build-script
@@ -338,7 +338,7 @@ On any pull request that selects the compile path:
 3. Confirm each shard's warm-up section in the `Run change-scoped tests` log
    contains no `cargo nextest run … --no-run` and no `make stdlib` build — the
    dispatcher prints its derived warm-up before executing it.
-4. Apply the acceptance inequality above against the 376/406/338/188 s warm-up
+4. Apply the acceptance inequality above against the 417/732/470/383 s warm-up
    this replaced, and read `CI budget`'s `Linux shard makespan` and
    `Job-minutes` lines for the aggregate.
 
@@ -435,3 +435,86 @@ Before editing the ruleset for any context change:
 
 Rollback order is the reverse: restore the ruleset's previous context list
 first, then revert the workflow commits.
+
+## Where the runner minutes went
+
+The measured baseline is a green comprehensive run on `main`
+(`32966803389`): **413 job-minutes, 69.1 minutes wall, critical path the
+longest Linux shard at 68.2 minutes.** Every number below is per-command
+elapsed time scraped from that run's four shard logs, not an estimate.
+
+Four duplicates carried most of the waste. Each is removed by naming an owner
+or a subsumption, never by dropping a check:
+
+| Duplicate | Measured | Where it went |
+|---|---:|---|
+| `make test-compiler-pipeline` | 1190 s | Deleted from every tier. Its eight packages are a strict subset of `make test`'s workspace run under the same profile, and it was `comprehensive-only` — a tier that always selects `make test`. The lifecycle matrix it chained is selected in its own right. |
+| Workspace Clippy in a shard | 92 s + a cold check-build | `lint` runs the identical invocation. Owned by `lint`, like its other gates. Clippy artefacts carry their own fingerprint, so no shared artefact could have supplied that build. |
+| `make playground-check`, `make sandbox-fixtures-check` | 191 s | `playground-wasm-build` runs both with the browser tooling already provisioned. Owned by that job whenever the playground filter fires, and by the shards when it does not. |
+| Debug compiler, `libhew.a`, release-lib compiler in `compiled-hew-linux` | 8.7 min | The archive producer builds them once. That job now downloads, certifies and packages; it compiles nothing and installs no LLVM. |
+
+The four Linux shards additionally each ran `make stdlib` (3.2 min apiece) and
+derived their own warm-up. The archive above removes both: what survives in
+warm-up is only what genuinely differs — `hew-cabi` (excluded from every
+workspace nextest run) and `hew-runtime --no-default-features` (a different
+feature set, so a different build).
+
+### Projected effect
+
+Gate work in the comprehensive profile, weighted by the same measured seconds
+and partitioned by the same LPT packer the dispatcher uses:
+
+| | gate work | shard makespan |
+|---|---:|---:|
+| before this pass | 114.8 job-min | 28.7 min |
+| − `test-compiler-pipeline` | 94.9 job-min | 23.8 min |
+| − playground gates (pull requests) | 91.7 job-min | 22.9 min |
+
+Whole-run, against the 413 job-minute baseline: **roughly 325–340
+job-minutes**, a 18–22% reduction, of which about 20 job-minutes is the
+subsumed compiler-pipeline gate, about 40 is warm-up and `make stdlib` no
+longer paid four times, and about 10 is the compiled-Hew packager no longer
+rebuilding a compiler.
+
+The critical path is the honest part. Removing gate work shortens the longest
+shard by about five minutes, but the archive producer is a serial prefix the
+shards wait on: it costs roughly six minutes of wall time to save roughly forty
+runner-minutes. That trade is taken deliberately, and it is reversible on its
+own — the producer is one job, one `needs:` entry, and one Makefile mode.
+
+### Retained expensive gates, and why
+
+* **`make test` (1122 s)** — the workspace suite. Nothing subsumes it; it is
+  what subsumes the others.
+* **`make hew-check-all` (694 s)** — compiles the whole `.hew` corpus through
+  the DEBUG compiler. The release-lib compiler in the archive would run it
+  several times faster, and that is not taken: debug assertions inside the
+  compiler are part of what this gate proves, so the faster binary would be a
+  silent coverage change.
+* **`make test-build-harness` (558 s)** — the router's own counterfactuals,
+  already halved by deleting its byte-identical twin. It is the price of a
+  router that decides what CI runs.
+* **`make fuzz-oracle` (531 s)** and **`make test-vertical-slice` (343 s)** —
+  both compile `tests/vertical-slice/accept`, so the corpus is built twice.
+  They are different oracles over it (expected output versus crash/abort under
+  a bounded deadline), and merging them is a redesign, not a deduplication.
+  Recorded here as the largest remaining overlap.
+* **Windows and macOS full runs (46.8 and 41.1 min)** — linking, path
+  separators, process spawning, calling convention, CodeView. Not reachable
+  from a Linux runner at any price.
+
+### Candidates left on the table, with the measurement each needs
+
+* **`Free runner disk` (11 job-min over four shards)** — the shards no longer
+  compile the workspace, so the purge may be unnecessary. It exists because
+  the runner died of ENOSPC twice. The step already prints `df -h /`; one
+  hosted run under the archive answers whether it can go.
+* **ast-grep provisioning (21 job-min over five jobs)** — the cache missed in
+  all five and four of the five then failed to save, racing for one key. With
+  the producer in front, the shards start after `lint` has saved it, and the
+  read-only sccache change stops pull requests evicting the entry. Expected to
+  resolve without further work; verify from the next run's cache lines before
+  spending anything on it.
+* **More shards** — after the compiler-pipeline gate goes, the makespan is
+  bounded by `make test` itself, so a fifth shard buys about a minute of wall
+  for roughly twelve runner-minutes of setup. Not worth it.

@@ -551,6 +551,19 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
 fn channel_handle_clone_terminals_match_runtime_semantics() {
     assert_exact_runtime("channel_sender_clone", CHANNEL_SENDER_CLONE_BODY, "1\n");
     let sender_mir = raw_mir("channel_sender_clone", CHANNEL_SENDER_CLONE_BODY);
+    let channel_ctor = function(
+        &sender_mir,
+        "fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string>",
+    );
+    let (_, after_pair_free) = channel_ctor
+        .split_once("call hew_channel_pair_free")
+        .expect("channel construction must discharge its transient pair through the extern ABI");
+    assert!(
+        after_pair_free.contains("neutralize_payload _13 [CallDischargeConsume]")
+            && !after_pair_free.contains("drop _13 ty=std.channel.ChannelPair"),
+        "a consuming extern must neutralize the pair on its normal successor; \
+         its source slot cannot remain armed for ChannelPair::close:\n{channel_ctor}"
+    );
     assert!(
         sender_mir.contains("call hew_vec_clone_owned(")
             && sender_mir.contains("call hew_vec_push_owned_move(")

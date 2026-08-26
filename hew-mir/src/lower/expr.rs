@@ -13,11 +13,12 @@ use super::{
     mangle_layout_key, mangle_machine_step, monomorphic_user_record_key, numeric_method_op,
     numeric_method_signedness, option_payload_ty, runtime_symbol_for_call_expr, signed_min_value,
     ty_is_closure_pair, ty_is_generator_handle, ty_is_indirect_enum, ty_is_stream_handle,
-    unary_op_label, unresolved_fn_sig_reason, user_record_layout_key, ActorStateLoadMode, BinaryOp,
-    BindingId, Builder, BuiltinType, ChildKind, ClosurePairRhs, CmpPred, Disposition,
-    FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind, HirLiteral,
-    HirStmtKind, HirVarSelfMethodTarget, Instr, IntArithOp, IntSignedness, IntentKind,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, NumericMethodFamily, Place,
+    unary_op_label, unresolved_fn_sig_reason, user_record_layout_key, ActorStateLoadMode,
+    AffineCallConsumeCandidate, BinaryOp, BindingId, Builder, BuiltinType, ChildKind,
+    ClosurePairRhs, CmpPred, Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap,
+    HashSet, HirExpr, HirExprKind, HirLiteral, HirStmtKind, HirVarSelfMethodTarget, Instr,
+    IntArithOp, IntSignedness, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    NumericMethodFamily, PendingAffineCallConsumeArg, PendingAffineCallConsumeSite, Place,
     ProjectedPayloadOrigin, ProjectedPayloadRejectReason, ReleaseSymbolVerdict, ResolvedRef,
     ResolvedTy, RuntimeCallContext, SiteId, SuspendKind, Terminator, TrapKind, UnaryOp, ValueClass,
     VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX, SENTINEL_RECV_GEN_COMPANION_BINDING,
@@ -2995,11 +2996,26 @@ impl Builder {
                             // Updated above even when a value-producing
                             // if/match arm retained HIR Read intent.
                         } else if self.affine_release_flags.contains_key(id) {
-                            self.set_owned_local_consumed(
-                                *id,
-                                None,
-                                super::DischargeSite::BindingMoved,
-                            );
+                            if self.deferred_affine_call_consume_sites.contains(&expr.site) {
+                                // The typed call contract adopts this affine
+                                // argument only if the invoke returns normally.
+                                // Keep its guard and OwnerId live in this block
+                                // so unwind cleanup retains the caller's value;
+                                // the finalized call-site fact commits both in
+                                // the normal successor. The checker-visible
+                                // `Use { Consume }` above remains unchanged.
+                                self.set_owned_local_consumed_post_lowering(
+                                    *id,
+                                    None,
+                                    super::DischargeSite::CallArgumentTransfer,
+                                );
+                            } else {
+                                self.set_owned_local_consumed(
+                                    *id,
+                                    None,
+                                    super::DischargeSite::BindingMoved,
+                                );
+                            }
                         } else if let Some(flag) = self.collection_drop_flags.get(id).copied() {
                             // #2418 — an owned collection local with a
                             // path-sensitive drop-flag is KEPT in
@@ -6001,8 +6017,29 @@ impl Builder {
                     if move_ingress && self.reject_opaque_foreign_collection_ingress(arg) {
                         return None;
                     }
-                    let arg_place =
-                        self.lower_method_arg_value(arg, is_vec_element_store || move_ingress)?;
+                    // Catalogued runtime collection sinks adopt a consuming
+                    // payload only after the invoke returns normally. Keep an
+                    // affine binding's guard and OwnerId live while lowering
+                    // this exact argument site; `splice_normal_call_ownership_commits`
+                    // remains the single normal-edge transfer authority. A
+                    // direct Hew consuming parameter does not enter this path
+                    // and continues to transfer before invoke.
+                    let runtime_defers_affine_consume =
+                        runtime_authority_for_collection(*target_family, &callee).is_some_and(
+                            |family| {
+                                family.arg_consume_verdict(arg_index + 1)
+                                    == hew_types::runtime_call::ConsumeVerdict::ProvenConsume
+                            },
+                        );
+                    if runtime_defers_affine_consume {
+                        self.deferred_affine_call_consume_sites.insert(arg.site);
+                    }
+                    let lowered_arg =
+                        self.lower_method_arg_value(arg, is_vec_element_store || move_ingress);
+                    if runtime_defers_affine_consume {
+                        self.deferred_affine_call_consume_sites.remove(&arg.site);
+                    }
+                    let arg_place = lowered_arg?;
                     arg_places.push(arg_place);
                     if move_ingress
                         && !self.retain_caller_borrowed_cow_collection_ingress(arg, arg_place)
@@ -9387,6 +9424,74 @@ impl Builder {
         )
     }
 
+    /// Resolve affine arguments whose declared extern contract adopts the value
+    /// only on normal return. Direct Hew consuming parameters own their values
+    /// from function entry and therefore use ordinary pre-invoke binding
+    /// transfer instead of this deferred protocol.
+    fn affine_call_consume_candidates(
+        &mut self,
+        callee_symbol: &str,
+        callee_item: Option<hew_hir::ItemId>,
+        hir_args: &[hew_hir::HirExpr],
+    ) -> Vec<AffineCallConsumeCandidate> {
+        let mut candidates = Vec::new();
+        for (index, arg) in hir_args.iter().enumerate() {
+            let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                ..
+            } = &arg.kind
+            else {
+                continue;
+            };
+            let use_intent = self.binding_ref_use_intent(arg);
+            if use_intent == IntentKind::Discharge {
+                continue;
+            }
+            let Some(guard) = self.affine_release_flags.get(binding).copied() else {
+                continue;
+            };
+            if callee_item.is_some()
+                || !self
+                    .call_scrutinee_provenance
+                    .extern_table
+                    .extern_param_is_consume(callee_symbol, index)
+            {
+                continue;
+            }
+            if use_intent != IntentKind::Consume {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "typed affine call consume without checker Consume intent"
+                            .to_string(),
+                        site: arg.site,
+                    },
+                    note: "the checker use and physical normal-edge handoff must share one consume authority"
+                        .to_string(),
+                });
+                continue;
+            }
+            candidates.push(AffineCallConsumeCandidate {
+                index,
+                binding: *binding,
+                guard,
+                site: arg.site,
+            });
+        }
+        candidates
+    }
+
+    fn activate_affine_call_consume_sites(&mut self, candidates: &[AffineCallConsumeCandidate]) {
+        self.deferred_affine_call_consume_sites
+            .extend(candidates.iter().map(|candidate| candidate.site));
+    }
+
+    fn deactivate_affine_call_consume_sites(&mut self, candidates: &[AffineCallConsumeCandidate]) {
+        for candidate in candidates {
+            self.deferred_affine_call_consume_sites
+                .remove(&candidate.site);
+        }
+    }
+
     /// Lower a direct call using the checker/HIR-projected authority. The
     /// `Extern` variant is the capability to read an audited FFI parameter
     /// contract; it does not select a specialised codegen ABI.
@@ -9433,10 +9538,21 @@ impl Builder {
         if self.reject_opaque_foreign_call_arg_transfers(callee_item, hir_args) {
             return None;
         }
-        // Lower each argument left-to-right.  If any fails to produce a
-        // Place, fail the whole call — argument diagnostics already capture
-        // the root cause.
-        let arg_places = self.lower_direct_call_args(callee_symbol, callee_item, hir_args)?;
+        // Keep declared-extern affine consumes caller-owned through the call.
+        // Their exact HIR sites preserve `Use { Consume }` while deferring the
+        // guard, physical neutralization, and `OwnerId` commit to the normal
+        // successor. Direct Hew consumes take the ordinary binding path: the
+        // caller transfers before invoke and the callee owns from entry.
+        let pending_affine_consumes =
+            self.affine_call_consume_candidates(callee_symbol, callee_item, hir_args);
+        self.activate_affine_call_consume_sites(&pending_affine_consumes);
+
+        // Lower each argument left-to-right. If any fails to produce a Place,
+        // fail the whole call after retiring the transient site context —
+        // argument diagnostics already capture the root cause.
+        let lowered_args = self.lower_direct_call_args(callee_symbol, callee_item, hir_args);
+        self.deactivate_affine_call_consume_sites(&pending_affine_consumes);
+        let arg_places = lowered_args?;
 
         // Allocate a destination local for the return value, unless the
         // callee is declared Unit-returning or divergent. Never-returning
@@ -9504,6 +9620,22 @@ impl Builder {
         if !proven_borrow_args.is_empty() {
             self.proven_borrow_call_args
                 .insert(self.current_block_id, proven_borrow_args);
+        }
+        if !pending_affine_consumes.is_empty() {
+            let args = pending_affine_consumes
+                .into_iter()
+                .map(|candidate| PendingAffineCallConsumeArg {
+                    index: candidate.index,
+                    binding: candidate.binding,
+                    source: arg_places[candidate.index],
+                    guard: candidate.guard,
+                    site: candidate.site,
+                })
+                .collect();
+            let replaced = self
+                .pending_affine_call_consumes
+                .insert(self.current_block_id, PendingAffineCallConsumeSite { args });
+            debug_assert!(replaced.is_none(), "one call terminator per basic block");
         }
         self.note_owned_call_site(callee_item, hir_args, &arg_places);
         let authority = if matches!(ret_ty, ResolvedTy::Never) {

@@ -259,20 +259,23 @@ load_command_weights() {
              "every command takes its timeout floor or the ${PREFLIGHT_DEFAULT_COMMAND_WEIGHT}s default." >&2
         return 0
     fi
-    local seconds cmd line=0
-    while IFS=$'\t' read -r seconds cmd; do
+    local seconds cmd extra line=0
+    while IFS=$'\t' read -r seconds cmd extra; do
         line=$(( line + 1 ))
         # Comments and blank lines are not rows and say nothing.
         [[ "$seconds" == \#* ]] && continue
-        [[ -z "${seconds//[[:space:]]/}" && -z "${cmd//[[:space:]]/}" ]] && continue
-        # A row that is not <positive integer><TAB><command> is REPORTED, not
-        # silently skipped: a corrupt row is a measurement somebody meant to
-        # supply, and reading it as an absent one hides the typo behind a
-        # plausible default. The command still falls back safely -- the
-        # partition stays exhaustive and disjoint whatever the weights say.
-        if [[ -z "$cmd" || ! "$seconds" =~ ^[0-9]+$ ]] || (( seconds <= 0 )); then
+        [[ -z "${seconds//[[:space:]]/}" && -z "${cmd//[[:space:]]/}" && -z "$extra" ]] && continue
+        # A row that is not <positive integer><TAB><command> -- exactly two
+        # fields -- is REPORTED, not silently skipped: a corrupt row is a
+        # measurement somebody meant to supply, and reading it as an absent
+        # one hides the typo behind a plausible default. A third field folded
+        # a stray tab's tail onto the command instead of naming a distinct
+        # row, which is its own kind of wrong answer. The command still falls
+        # back safely -- the partition stays exhaustive and disjoint whatever
+        # the weights say.
+        if [[ -z "$cmd" || -n "$extra" || ! "$seconds" =~ ^[0-9]+$ ]] || (( seconds <= 0 )); then
             echo "warning: $PREFLIGHT_COMMAND_WEIGHTS_FILE:$line is not" \
-                 "<seconds><TAB><command>: '$seconds${cmd:+	$cmd}'." \
+                 "<seconds><TAB><command>: '$seconds${cmd:+	$cmd}${extra:+	$extra}'." \
                  "That command falls back to its timeout floor or the" \
                  "${PREFLIGHT_DEFAULT_COMMAND_WEIGHT}s default." >&2
             continue

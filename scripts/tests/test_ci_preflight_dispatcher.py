@@ -4184,6 +4184,78 @@ def test_the_shard_weights_come_from_the_committed_timing_corpus() -> None:
         assert seconds > 0, f"{command} degraded to a zero weight"
 
 
+def test_a_third_tab_field_is_reported_not_folded_into_the_command() -> None:
+    """A stray third tab field must not silently become part of the command.
+
+    ``IFS=$'\\t' read -r seconds cmd`` puts everything past the first tab into
+    ``cmd``, including a SECOND embedded tab -- so a row with a third field
+    parsed as one command whose name nobody wrote and whose weight matched
+    nothing real. That row is now reported the same way any other malformed
+    row is: file, line, and the offending text, and the named command falls
+    back to its timeout floor or the default rather than carrying the
+    three-field row's number under a name it never had.
+    """
+    real_corpus = ROOT / "scripts" / "preflight-command-weights.tsv"
+    measured = {
+        line.split("\t", 1)[1].strip(): int(line.split("\t", 1)[0])
+        for line in real_corpus.read_text(encoding="utf-8").splitlines()
+        if "\t" in line and not line.lstrip().startswith("#")
+    }
+
+    baseline = _run_dispatcher_process(
+        ["bash", str(SCRIPT), "--dry-run", "--comprehensive", "--shard-plan", "4"],
+    )
+    assert baseline.returncode == 0, baseline.stderr
+    baseline_weights = {
+        match.group(1): int(match.group(2))
+        for match in re.finditer(
+            r"- (make [a-z0-9-]+)\s+\(weight: (\d+)s\)", baseline.stdout
+        )
+    }
+    target = next(
+        (command for command in measured if command in baseline_weights),
+        None,
+    )
+    assert target is not None, (
+        "no measured command reached the shard plan; this test would be vacuous"
+    )
+
+    with tempfile.TemporaryDirectory() as work:
+        corpus = Path(work) / "weights.tsv"
+        corpus.write_text(
+            "# a valid row keeps its internal spaces\n"
+            "77\tmake a command with spaces\n"
+            f"{measured[target] * 2}\t{target}\textra-field\n",
+            encoding="utf-8",
+        )
+        result = _run_dispatcher_process(
+            ["bash", str(SCRIPT), "--dry-run", "--comprehensive", "--shard-plan", "4"],
+            env={"PREFLIGHT_COMMAND_WEIGHTS_FILE": str(corpus)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert f"{corpus}:3 is not" in result.stderr, result.stderr
+        assert "extra-field" in result.stderr, result.stderr
+        assert target in result.stderr, result.stderr
+
+        weights = {
+            match.group(1): int(match.group(2))
+            for match in re.finditer(
+                r"- (make [a-z0-9-]+)\s+\(weight: (\d+)s\)", result.stdout
+            )
+        }
+        assert weights.get(target) != measured[target] * 2, (
+            f"{target} carried the three-field row's weight: the extra "
+            "field was folded into the command instead of rejecting the row"
+        )
+        assert weights.get(target, 0) <= 60, (
+            f"{target} did not fall back to its timeout floor or default "
+            "after its row was reported malformed"
+        )
+        assert "make a command with spaces" not in result.stderr, (
+            "a valid two-field row with an internal space was reported as malformed"
+        )
+
+
 def _discover_tests() -> list:
     """Every test function defined in this module, resolved at RUN time.
     Resolving at definition time is the same bug one layer down: tests added

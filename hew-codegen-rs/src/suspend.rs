@@ -188,6 +188,7 @@ pub(crate) struct SuspendingCallClosureEmit<'a> {
     pub(crate) args: Vec<Place>,
     pub(crate) ret_ty: &'a ResolvedTy,
     pub(crate) result_dest: Option<Place>,
+    pub(crate) unwind_block: u32,
     pub(crate) resume: u32,
     pub(crate) cleanup: u32,
 }
@@ -5954,20 +5955,25 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
 
     // ── invoke the ramp under the swapped-in channel ───────────────────────────
     swap_in("suspending_closure_swap_in")?;
-    let child = fn_ctx
-        .builder
-        .build_indirect_call(ramp_fn_ty, fn_ptr, &arg_vals, "suspending_closure_child")
-        .llvm_ctx("SuspendingCallClosure ramp call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed(
-                "suspending closure ramp returned void; a coroutine ramp must return its \
+    let child = build_owned_indirect_suspend_invoke(
+        fn_ctx,
+        ramp_fn_ty,
+        fn_ptr,
+        &arg_vals,
+        term.unwind_block,
+        None,
+        "suspending_closure_child",
+    )?
+    .try_as_basic_value()
+    .basic()
+    .ok_or_else(|| {
+        CodegenError::FailClosed(
+            "suspending closure ramp returned void; a coroutine ramp must return its \
                  coro.begin handle (ptr)"
-                    .into(),
-            )
-        })?
-        .into_pointer_value();
+                .into(),
+        )
+    })?
+    .into_pointer_value();
     swap_out("suspending_closure_swap_out")?;
 
     let parent = fn_ctx
@@ -6083,10 +6089,13 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
             // child (under the swapped-in channel) and re-poll. Multi-suspend
             // closure bodies re-park here on the next yield. ───────────────────
             swap_in("suspending_closure_resume_swap_in")?;
-            fn_ctx
-                .builder
-                .build_call(cont_resume_fn, &[child.into()], "suspending_closure_resume")
-                .llvm_ctx("hew_cont_resume call")?;
+            build_owned_suspend_invoke(
+                fn_ctx,
+                cont_resume_fn,
+                &[child.into()],
+                term.unwind_block,
+                "suspending_closure_resume",
+            )?;
             swap_out("suspending_closure_resume_swap_out")?;
             fn_ctx
                 .builder
@@ -6155,14 +6164,13 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
         .builder
         .build_call(ch_free, &[ch.into()], "suspending_closure_ok_ch_free")
         .llvm_ctx("hew_reply_channel_free (ok) call")?;
-    fn_ctx
-        .builder
-        .build_call(
-            cont_destroy_fn,
-            &[child.into()],
-            "suspending_closure_ok_destroy",
-        )
-        .llvm_ctx("hew_cont_destroy (ok) call")?;
+    build_owned_suspend_invoke(
+        fn_ctx,
+        cont_destroy_fn,
+        &[child.into()],
+        term.unwind_block,
+        "suspending_closure_ok_destroy",
+    )?;
     fn_ctx
         .builder
         .build_unconditional_branch(resume_bb)

@@ -23,7 +23,7 @@
 //     loop.
 
 fn keep_expensive(totals: HashMap<string, i64>) -> i64 {
-    var kept: HashMap<string, i64> = HashMap.new();
+    let kept: HashMap<string, i64> = HashMap.new();
     for category in totals.keys() {
         let cents = totals.get(category).unwrap_or(0);
         if cents > 500 {
@@ -84,7 +84,7 @@ fn find_over(totals: HashMap<string, i64>, floor: i64) -> string {
 }
 
 fn main() {
-    var totals: HashMap<string, i64> = HashMap.new();
+    let totals: HashMap<string, i64> = HashMap.new();
     totals.insert("groceries" + "-heap", 1200);
     totals.insert("transit" + "-heap", 400);
     totals.insert("rent" + "-heap", 90000);

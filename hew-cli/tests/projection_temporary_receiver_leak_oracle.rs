@@ -65,6 +65,29 @@ fn function_section<'a>(dump: &'a str, marker: &str) -> &'a str {
         .map_or(tail, |next| &tail[..next])
 }
 
+fn assert_one_drop_per_reachable_exit(section: &str, needle: &str, owner: &str) {
+    let mut counts = Vec::new();
+    for line in section.lines() {
+        if line.starts_with("    ") && !line.starts_with("      ") && line.ends_with(" ->") {
+            counts.push(0);
+        } else if line.starts_with("      ") && line.contains(needle) {
+            *counts
+                .last_mut()
+                .expect("a drop-plan entry follows its exit header") += 1;
+        }
+    }
+    assert!(
+        counts.iter().all(|count| *count <= 1),
+        "{owner} must have at most one release on each mutually exclusive exit; \
+         per-exit counts were {counts:?}:\n{section}"
+    );
+    assert_eq!(
+        counts.iter().sum::<usize>(),
+        2,
+        "{owner} must release on the post-construction unwind and normal return exits:\n{section}"
+    );
+}
+
 #[test]
 fn direct_record_projection_completes_parent_and_leaf_drop_authorities() {
     let dir = tempfile::Builder::new()
@@ -83,11 +106,10 @@ fn direct_record_projection_completes_parent_and_leaf_drop_authorities() {
         1,
         "the retained field read-copy must keep exactly one inline release:\n{direct_raw}"
     );
-    assert_eq!(
-        direct_elab.matches("kind=record_in_place").count(),
-        1,
-        "the anonymous call-result record must release its original field exactly once:\n\
-         {direct_elab}"
+    assert_one_drop_per_reachable_exit(
+        direct_elab,
+        "kind=record_in_place",
+        "the anonymous call-result record",
     );
     assert!(
         direct_elab.contains("__hew_temp_projection_parent"),
@@ -103,10 +125,10 @@ fn direct_record_projection_completes_parent_and_leaf_drop_authorities() {
         1,
         "the named control must retain the same one read-copy release:\n{named_raw}"
     );
-    assert_eq!(
-        named_elab.matches("kind=record_in_place").count(),
-        1,
-        "the named control must retain its established one parent drop:\n{named_elab}"
+    assert_one_drop_per_reachable_exit(
+        named_elab,
+        "kind=record_in_place",
+        "the named control record",
     );
     assert!(
         !named_elab.contains("__hew_temp_projection_parent"),

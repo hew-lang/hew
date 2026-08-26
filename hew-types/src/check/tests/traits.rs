@@ -2775,6 +2775,66 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
 // both halves hold.
 
 #[test]
+fn vec_iter_satisfies_iterator_bound_through_its_explicit_impl() {
+    let source = r"
+        fn takes_i64_iterator<I>(it: I) -> i64 where I: Iterator<Item = i64> {
+            0
+        }
+
+        fn main() {
+            let values: Vec<i64> = Vec.new();
+            takes_i64_iterator(values.into_iter());
+        }
+    ";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "VecIter<i64> must reach ordinary explicit-impl lookup for Iterator; got {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn identity_builtins_reach_explicit_display_impl_lookup() {
+    let source = r#"
+        impl Display for NodeId {
+            fn fmt(value: NodeId) -> string { "node" }
+        }
+
+        impl Display for Location {
+            fn fmt(value: Location) -> string { "location" }
+        }
+
+        fn accepts_display<T>(value: T) where T: Display {}
+
+        fn check(node: NodeId, location: Location) {
+            accepts_display(node);
+            accepts_display(location);
+        }
+    "#;
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "non-marker Display bounds on builtin identity carriers must reach explicit impl lookup; got {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yield_type() {
     let source = concat!(
         "gen fn counter(n: i64) -> i64 {\n",

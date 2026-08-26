@@ -1,9 +1,9 @@
 //! End-to-end LLVM-IR emission tests for `Terminator::Call`.
 //!
 //! A direct call to a user-defined function in the same module must produce
-//! an LLVM `call` instruction with the callee's decorated symbol name. For
+//! an unwind-capable LLVM `invoke` with the callee's decorated symbol name. For
 //! `fn add(a: i64, b: i64) -> i64 { a + b }` called as `add(2, 3)`, the
-//! emitted IR must contain `call i64 @add(i64 2, i64 3)`.
+//! emitted IR must contain `invoke i64 @add(...)`.
 //!
 //! LESSONS applied:
 //! - `boundary-fail-closed` (P0): the callee symbol must be present in
@@ -78,12 +78,23 @@ fn function_ir<'a>(ll: &'a str, name: &str) -> &'a str {
     &body[..end + 2]
 }
 
+fn block_ir<'a>(function_ir: &'a str, label: &str) -> &'a str {
+    let marker = format!("\n{label}:");
+    let start = function_ir
+        .find(&marker)
+        .unwrap_or_else(|| panic!("LLVM function must contain block `{label}`:\n{function_ir}"))
+        + 1;
+    let body = &function_ir[start..];
+    let end = body.find("\n\n").unwrap_or(body.len());
+    &body[..end]
+}
+
 /// `fn add(a: i64, b: i64) -> i64 { a + b }` called as `add(2, 3)` from
-/// `main` must produce LLVM IR containing `call i64 @add(i64 2, i64 3)`.
+/// `main` must produce LLVM IR containing `invoke i64 @add(...)`.
 ///
 /// This verifies that:
 /// 1. `declare_function` emits a correct `define ... @add(i64, i64)` header.
-/// 2. `Terminator::Call` lowers to `call <ret_ty> @callee(<args>)`.
+/// 2. `Terminator::Call` lowers to an unwind-capable LLVM `invoke`.
 /// 3. The result is stored into a local and returned from `main`.
 #[test]
 fn call_i64_user_fn_emits_call_instruction() {
@@ -106,8 +117,8 @@ fn call_i64_user_fn_emits_call_instruction() {
 
     // The call site must reference @add.
     assert!(
-        ll.contains("call i64 @add("),
-        "LLVM IR must contain `call i64 @add(`;\n--- IR ---\n{ll}"
+        ll.contains("invoke i64 @add("),
+        "LLVM IR must contain `invoke i64 @add(`;\n--- IR ---\n{ll}"
     );
 }
 
@@ -157,9 +168,40 @@ fn direct(node: i64) -> i64 {
         "unsafe_extern_string_temp",
     );
     let direct = function_ir(&ll, "direct");
+    let normal = block_ir(direct, "bb2");
+    let callee_unwind = block_ir(direct, "invoke.cleanup3");
+    let producer_unwind = block_ir(direct, "invoke.cleanup");
     assert_eq!(
         direct.matches("call void @hew_string_drop(").count(),
+        2,
+        "normal completion and callee unwind must have one mutually-exclusive \
+         release site each:\n{direct}"
+    );
+    assert_eq!(
+        normal.matches("call void @hew_string_drop(").count(),
         1,
-        "the transferred extern result must reach exactly one LLVM release:\n{direct}"
+        "normal completion must release the transferred extern result exactly once:\n{normal}"
+    );
+    assert!(
+        normal.contains("store ptr null"),
+        "normal cleanup must neutralize the released temporary slot:\n{normal}"
+    );
+    assert_eq!(
+        callee_unwind.matches("call void @hew_string_drop(").count(),
+        1,
+        "borrow_len unwind must release the transferred extern result exactly once:\n\
+         {callee_unwind}"
+    );
+    assert!(
+        callee_unwind.contains("store ptr null") && callee_unwind.contains("resume "),
+        "unwind cleanup must neutralize the slot before resuming:\n{callee_unwind}"
+    );
+    assert_eq!(
+        producer_unwind
+            .matches("call void @hew_string_drop(")
+            .count(),
+        0,
+        "the extern-call unwind precedes result production and must not release an \
+         uninitialised string slot:\n{producer_unwind}"
     );
 }

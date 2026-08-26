@@ -55,9 +55,10 @@ wasm-runtime`).
 
 ## Formatting
 
-`hew fmt` supports four common workflows:
+`hew fmt` supports five common workflows:
 
 ```sh
+hew fmt myapp                                 # Rewrite project sources recursively
 hew fmt myapp/main.hew                        # Rewrite a file in-place
 hew fmt --stdin < myapp/main.hew              # Read stdin, write formatted source to stdout
 hew fmt --check myapp/main.hew                # Exit non-zero if a file needs formatting
@@ -66,8 +67,15 @@ hew fmt --check --stdin < myapp/main.hew      # Verify piped input without writi
 ```
 
 Without flags, `hew fmt` rewrites each named file in-place and leaves
-already-formatted files untouched. When a file is rewritten, `hew fmt` prints
-`Formatted <file>` on stderr; already-formatted files produce no output.
+already-formatted files untouched. A directory input recursively discovers
+`.hew` files in deterministic path order, excluding package metadata and build
+directories (`.git`, `.hew`, and `target`). Explicit file inputs are always
+formatted, including files below those directories. When a file is rewritten,
+`hew fmt` prints `Formatted <file>` on stderr; already-formatted files produce
+no output.
+
+Directory migration remains a separate transactional mode; use
+`hew fmt --migrate --root <directory>` for that workflow.
 
 Use `--stdin` for editor integrations or shell pipelines. It reads from stdin,
 writes the formatted result to stdout, and cannot be combined with file

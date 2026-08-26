@@ -1,7 +1,7 @@
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
-    lower_hir_module, ClosureEnvAllocation, ClosureEnvFieldOwnership, DropFnSpec, DropKind, Instr,
-    IrPipeline, MirDiagnosticKind, Place,
+    lower_hir_module, ClosureEnvAllocation, ClosureEnvFieldOwnership, ClosureEnvMode, DropFnSpec,
+    DropKind, Instr, IrPipeline, MirDiagnosticKind, OwnershipEvent, Place,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -97,6 +97,117 @@ fn run_loop(frames: i64) -> i64 {
     assert!(
         has_holder_drop,
         "stack-env source Holder must keep a RecordInPlace drop"
+    );
+    assert!(
+        run_loop
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .all(|instr| !matches!(
+                instr,
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    ty: ResolvedTy::Function { .. } | ResolvedTy::Closure { .. },
+                    ..
+                })
+            )),
+        "a stack-env closure pair must not mint heap-release authority"
+    );
+    assert!(
+        pl.elaborated_mir
+            .iter()
+            .find(|f| f.name == "run_loop")
+            .expect("run_loop elaborated")
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| plan.drops.iter())
+            .all(|drop| !matches!(drop.kind, DropKind::ClosurePair)),
+        "a stack-env closure pair must never run the heap-env destructor"
+    );
+}
+
+#[test]
+fn captureless_local_closure_has_no_pair_release_authority() {
+    let pl = pipeline_with_tc(
+        r"
+fn main() -> i64 {
+    let f = || 42;
+    f()
+}
+",
+    );
+    assert!(
+        pl.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        pl.diagnostics
+    );
+    let main = raw_fn(&pl, "main");
+    assert!(main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .any(|instr| matches!(
+            instr,
+            Instr::MakeClosure {
+                env_mode: ClosureEnvMode::Stack | ClosureEnvMode::Null,
+                env_ownership,
+                ..
+            } if env_ownership.is_empty()
+        )));
+    assert!(
+        pl.elaborated_mir
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main elaborated")
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| plan.drops.iter())
+            .all(|drop| !matches!(drop.kind, DropKind::ClosurePair)),
+        "a captureless local pair has no environment allocation to free"
+    );
+}
+
+#[test]
+fn heap_closure_call_result_keeps_pair_release_authority() {
+    let pl = pipeline_with_tc(
+        r#"
+fn make() -> fn() -> i64 {
+    let label = "heap-owned".to_upper();
+    || label.len()
+}
+
+fn main() -> i64 {
+    let f = make();
+    f()
+}
+"#,
+    );
+    assert!(
+        pl.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        pl.diagnostics
+    );
+    let make = raw_fn(&pl, "make");
+    assert!(make
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .any(|instr| matches!(
+            instr,
+            Instr::MakeClosure {
+                env_mode: ClosureEnvMode::HeapBox,
+                ..
+            }
+        )));
+    assert!(
+        pl.elaborated_mir
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main elaborated")
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| plan.drops.iter())
+            .any(|drop| matches!(drop.kind, DropKind::ClosurePair)),
+        "a heap closure call result must retain one pair release authority"
     );
 }
 

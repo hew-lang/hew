@@ -465,17 +465,9 @@ fn semantic_unreachable_emits_bare_llvm_unreachable_without_trap_or_drop_plan() 
         raw.blocks[0].terminator = Terminator::Unreachable;
         (raw.name.clone(), raw.return_ty.clone(), raw.blocks.clone())
     };
-    pipeline.checked_mir = vec![CheckedMirFunction {
+    let elaborated = ElaboratedMirFunction {
         name: name.clone(),
         return_ty: return_ty.clone(),
-        blocks,
-        decisions: Vec::new(),
-        checks: Vec::new(),
-        cooperate_sites: Vec::new(),
-    }];
-    pipeline.elaborated_mir = vec![ElaboratedMirFunction {
-        name,
-        return_ty,
         statements: Vec::new(),
         decisions: Vec::new(),
         blocks: vec![ElabBlock {
@@ -487,7 +479,17 @@ fn semantic_unreachable_emits_bare_llvm_unreachable_without_trap_or_drop_plan() 
         drop_plans: Vec::new(),
         coroutine: None,
         lambda_captures: Vec::new(),
+    };
+    pipeline.checked_mir = vec![CheckedMirFunction {
+        name,
+        return_ty,
+        blocks,
+        decisions: Vec::new(),
+        checks: Vec::new(),
+        cooperate_sites: Vec::new(),
+        ownership_elaboration: Some(Box::new(elaborated.clone())),
     }];
+    pipeline.elaborated_mir = vec![elaborated];
 
     let ctx = Context::create();
     let module = build_module(&ctx, &pipeline, "semantic_unreachable")
@@ -1380,6 +1382,7 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
                     env_ownership: Vec::new(),
                 },
                 Instr::CallClosure {
+                    call_site: hew_hir::SiteId(0),
                     callee: Place::Local(1),
                     args: Vec::new(),
                     ret_ty: ResolvedTy::I64,
@@ -1405,7 +1408,43 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
         thir: Vec::new(),
         raw_mir: vec![invoke, main],
         checked_mir: Vec::new(),
-        elaborated_mir: Vec::new(),
+        elaborated_mir: vec![
+            hew_mir::ElaboratedMirFunction {
+                name: "__hew_closure_invoke_main_0".to_string(),
+                return_ty: ResolvedTy::I64,
+                statements: Vec::new(),
+                decisions: Vec::new(),
+                blocks: Vec::new(),
+                drop_plans: vec![(
+                    hew_mir::ExitPath::Return { block: 0 },
+                    hew_mir::DropPlan::default(),
+                )],
+                coroutine: None,
+                lambda_captures: Vec::new(),
+            },
+            hew_mir::ElaboratedMirFunction {
+                name: "main".to_string(),
+                return_ty: ResolvedTy::I64,
+                statements: Vec::new(),
+                decisions: Vec::new(),
+                blocks: Vec::new(),
+                drop_plans: vec![
+                    (
+                        hew_mir::ExitPath::Unwind {
+                            block: 0,
+                            callee: hew_mir::indirect_closure_callee(hew_hir::SiteId(0)),
+                        },
+                        hew_mir::DropPlan::default(),
+                    ),
+                    (
+                        hew_mir::ExitPath::Return { block: 0 },
+                        hew_mir::DropPlan::default(),
+                    ),
+                ],
+                coroutine: None,
+                lambda_captures: Vec::new(),
+            },
+        ],
         capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: Vec::new(),
         wire_layouts: std::sync::Arc::default(),
@@ -2954,18 +2993,13 @@ fn join_owned_replies_stage_until_atomic_result_publication() {
     let publish = main
         .find("%join_reply_value_0 = load ptr")
         .expect("final tuple publication");
-    let arm = main
-        .find("call i64 @hew_cont_crash_cleanup_arm")
-        .expect("fully initialized join result must arm typed cleanup");
     assert!(
-        first_stage < second_stage && second_stage < publish && publish < arm,
-        "no final result field may be published before every reply is staged, \
-         and cleanup may arm only after publication:\n{main}"
+        first_stage < second_stage && second_stage < publish,
+        "no final result field may be published before every reply is staged:\n{main}"
     );
-    assert_eq!(
-        main.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
-        1,
-        "the final tuple is the join's only published crash-cleanup owner"
+    assert!(
+        !main.contains("hew_cont_crash_cleanup"),
+        "native structured unwind must not use the legacy owner registry:\n{main}"
     );
 
     let second_failure = main
@@ -4994,6 +5028,146 @@ fn raw_mir_only_pipeline(body: RawMirFunction) -> IrPipeline {
 }
 
 #[test]
+fn native_direct_call_uses_llvm_cleanup_unwind_edge() {
+    use hew_mir::{
+        DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath, FunctionCallConv,
+    };
+
+    let callee = RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: "may_unwind".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let caller = RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: "invoke_owner".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ResolvedTy::String],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![Instr::StringLit {
+                    bytes: b"owned".to_vec(),
+                    dest: Place::Local(0),
+                }],
+                terminator: Terminator::Call {
+                    callee: "may_unwind".to_string(),
+                    authority: CallAuthority::Direct,
+                    args: vec![],
+                    dest: None,
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let string_drop = || ElabDrop {
+        place: Place::Local(0),
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: DropKind::CowHeap {
+            release: hew_mir::CowHeapRelease::String,
+        },
+        guard: None,
+    };
+    let elab = ElaboratedMirFunction {
+        name: caller.name.clone(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![
+            (
+                ExitPath::Call {
+                    block: 0,
+                    callee: "may_unwind".to_string(),
+                    next: 1,
+                },
+                DropPlan::default(),
+            ),
+            (
+                ExitPath::Unwind {
+                    block: 0,
+                    callee: "may_unwind".to_string(),
+                },
+                DropPlan {
+                    drops: vec![string_drop()],
+                },
+            ),
+            (
+                ExitPath::Return { block: 1 },
+                DropPlan {
+                    drops: vec![string_drop()],
+                },
+            ),
+        ],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+    let mut pipeline = raw_mir_only_pipeline(caller);
+    pipeline.raw_mir.insert(0, callee);
+    pipeline.elaborated_mir.push(elab);
+
+    let ctx = Context::create();
+    let module = build_module(&ctx, &pipeline, "native_unwind_cleanup")
+        .expect("ownership-aware invoke module must build");
+    module.verify().expect("invoke cleanup IR must verify");
+    let ir = module.print_to_string().to_string();
+    assert!(
+        ir.contains("invoke i8 @may_unwind"),
+        "missing invoke:\n{ir}"
+    );
+    assert!(
+        ir.contains("landingpad { ptr, i32 }"),
+        "missing landingpad:\n{ir}"
+    );
+    assert!(
+        ir.contains("call void @hew_string_drop"),
+        "missing drop:\n{ir}"
+    );
+    assert!(ir.contains("resume { ptr, i32 }"), "missing resume:\n{ir}");
+}
+
+#[test]
 fn wasm_runtime_family_exclusions_return_manifest_capability_identity() {
     use hew_types::runtime_call::RuntimeCallFamily as F;
 
@@ -5017,6 +5191,50 @@ fn wasm_runtime_family_exclusions_return_manifest_capability_identity() {
         wasm_excluded_call_family(F::ActorSpawn),
         None,
         "a wasm-available family must not acquire an authority-free exclusion"
+    );
+}
+
+#[test]
+fn wasm_terminal_call_exclusion_uses_typed_runtime_authority_only() {
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+
+    let typed_runtime = Terminator::Call {
+        // Deliberately incongruent display spelling: validation owns that
+        // defect, while WASM exclusion must follow the typed family and still
+        // fail closed on the native-only capability.
+        callee: "user_display_name".to_string(),
+        authority: CallAuthority::Runtime(F::DuplexPair),
+        args: vec![],
+        dest: None,
+        next: 1,
+    };
+    let excluded = wasm_excluded_terminal_call(&typed_runtime)
+        .expect("typed DuplexPair terminal must be WASM-excluded");
+    assert_eq!(excluded.symbol, "hew_duplex_pair");
+    assert_eq!(excluded.capability, wasm_capability_ids::DUPLEX);
+
+    let same_spelling_direct = Terminator::Call {
+        callee: "hew_duplex_pair".to_string(),
+        authority: CallAuthority::Direct,
+        args: vec![],
+        dest: None,
+        next: 1,
+    };
+    assert!(
+        wasm_excluded_terminal_call(&same_spelling_direct).is_none(),
+        "an open-set direct call must not acquire runtime capability by spelling"
+    );
+
+    let available_runtime = Terminator::Call {
+        callee: F::ActorSpawn.c_symbol().to_string(),
+        authority: CallAuthority::Runtime(F::ActorSpawn),
+        args: vec![],
+        dest: None,
+        next: 1,
+    };
+    assert!(
+        wasm_excluded_terminal_call(&available_runtime).is_none(),
+        "a wasm-available runtime family must remain admitted"
     );
 }
 
@@ -6002,6 +6220,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
     FnCtx {
         ctx,
         llvm_mod,
+        unwind_enabled: true,
         // Test harness contexts never exercise the drain epilogue; keep
         // the flag off so the test builder's block does not attempt to
         // intern shutdown symbols that are absent from the minimal fixture.
@@ -6033,6 +6252,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         local_tys: HashMap::new(),
         blocks: HashMap::new(),
         runtime_decls: RefCell::new(HashMap::new()),
+        runtime_unwind_block: std::cell::Cell::new(None),
         record_layouts: &harness.record_layouts,
         fn_symbols: &harness.fn_symbols,
         frame_cleanup_thunks: &harness.frame_cleanup_thunks,
@@ -6065,6 +6285,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         // drop plans and no suspend carrier to key an abandon plan off.
         drop_plans: &[],
         helper_crash_cleanup_owners: HashMap::new(),
+        helper_crash_cleanup_lineages: HashSet::new(),
         suspend_abandon_block: std::cell::Cell::new(0),
         elab_drop_slot_override: std::cell::Cell::new(None),
     }
@@ -6415,7 +6636,13 @@ fn flag_gated_drop_emits_eq_zero_conditional_region() {
         kind: DropKind::CowHeap {
             release: hew_mir::CowHeapRelease::String,
         },
-        guard: Some(Place::Local(1)),
+        guard: Some(hew_mir::ElabDropGuard {
+            owner: hew_mir::OwnerId {
+                binding: hew_hir::BindingId(0),
+                generation: 0,
+            },
+            flag: Place::Local(1),
+        }),
     };
     emit_one_elab_drop(&fn_ctx, &drop).expect("flag-gated drop must emit");
     finish_test_fn(&fn_ctx);
@@ -9709,14 +9936,23 @@ fn main() {
             )),
             "{triple}: direct call argument must heap-promote its concrete payload:\n{ir}"
         );
-        assert!(
-            ir.contains("call i64 @hew_cont_crash_cleanup_arm(i64")
-                && ir.contains(&format!(
-                    ", i64 {fat_size}, i64 {fat_align}, ptr @__hew_frame_cleanup_"
-                )),
-            "{triple}: the caller-owned fat-pointer temporary must arm typed crash cleanup \
-             with the target layout:\n{ir}"
-        );
+        if triple.starts_with("wasm32") {
+            assert!(
+                ir.contains("call i64 @hew_cont_crash_cleanup_arm(i64")
+                    && ir.contains(&format!(
+                        ", i64 {fat_size}, i64 {fat_align}, ptr @__hew_frame_cleanup_"
+                    )),
+                "{triple}: the fallback target must arm typed cleanup with its layout:\n{ir}"
+            );
+        } else {
+            assert!(
+                !ir.contains("hew_cont_crash_cleanup")
+                    && ir.contains(" invoke i8 @inspect")
+                    && ir.contains("landingpad { ptr, i32 }")
+                    && ir.contains("resume { ptr, i32 }"),
+                "{triple}: native calls must use LLVM structured unwind cleanup:\n{ir}"
+            );
+        }
         assert!(
             ir.contains("call void @hew_dyn_box_free(ptr %dyn_drop_data_ptr"),
             "{triple}: caller scope exit must release the borrowed coercion's dyn box:\n{ir}"
@@ -10115,11 +10351,13 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
         &raw,
         Some(&elab),
         false,
+        true,
         &HashMap::new(),
         &[],
         &HashMap::new(),
         &HashSet::new(),
         &HashMap::new(),
+        &HashSet::new(),
     )
     .expect("the exhaustive instruction write-set must admit StringLit");
     assert_eq!(
@@ -10129,6 +10367,56 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
             .collect::<Vec<_>>(),
         [frame_cleanup_string_descriptor(Place::Local(0))]
     );
+}
+
+#[test]
+fn helper_crash_cleanup_guard_equivalence_requires_explicit_join_rearm_lineage() {
+    let old = hew_mir::OwnerId {
+        binding: hew_hir::BindingId(91),
+        generation: 0,
+    };
+    let joined = hew_mir::OwnerId {
+        binding: old.binding,
+        generation: 1,
+    };
+    let replacement = hew_mir::OwnerId {
+        binding: old.binding,
+        generation: 2,
+    };
+    let unrelated = hew_mir::OwnerId {
+        binding: old.binding,
+        generation: 3,
+    };
+    let flag = Place::Local(4);
+    let old_guard = hew_mir::ElabDropGuard { owner: old, flag };
+    let replacement_guard = hew_mir::ElabDropGuard {
+        owner: replacement,
+        flag,
+    };
+    let unrelated_guard = hew_mir::ElabDropGuard {
+        owner: unrelated,
+        flag,
+    };
+    let lineages = HashSet::from([(old, joined), (joined, replacement)]);
+
+    assert!(helper_crash_cleanup_guards_share_lineage(
+        &lineages,
+        old_guard,
+        replacement_guard
+    ));
+    assert!(!helper_crash_cleanup_guards_share_lineage(
+        &lineages,
+        old_guard,
+        unrelated_guard
+    ));
+    assert!(!helper_crash_cleanup_guards_share_lineage(
+        &lineages,
+        old_guard,
+        hew_mir::ElabDropGuard {
+            owner: replacement,
+            flag: Place::Local(5),
+        }
+    ));
 }
 
 #[test]
@@ -10175,7 +10463,13 @@ fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
         kind: hew_mir::DropKind::CowHeap {
             release: hew_mir::CowHeapRelease::Bytes,
         },
-        guard: Some(Place::Local(1)),
+        guard: Some(hew_mir::ElabDropGuard {
+            owner: hew_mir::OwnerId {
+                binding: hew_hir::BindingId(0),
+                generation: 0,
+            },
+            flag: Place::Local(1),
+        }),
     };
     let mut entry_cancel = guarded.clone();
     entry_cancel.guard = None;
@@ -10226,11 +10520,13 @@ fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
             &raw,
             Some(&elab),
             false,
+            true,
             &HashMap::new(),
             &[],
             &HashMap::new(),
             &HashSet::new(),
             &HashMap::new(),
+            &HashSet::new(),
         )
         .expect("entry cancellation and guarded exits share one owner ritual");
         assert_eq!(descriptors.len(), 1);
@@ -10440,6 +10736,9 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
         // A direct extern may legitimately choose a spelling that an internal
         // runtime operation also uses.  It must stay on the generic Real tail.
         ("hew_bytes_get".to_string(), real_symbol),
+        // Typed MIR-emitter runtime calls return through the shared runtime-ABI
+        // producer tail, which publishes and rearms their destinations.
+        ("hew_string_concat".to_string(), real_symbol),
     ]);
     let cases = [
         (
@@ -10597,6 +10896,34 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             true,
         ),
         (
+            "typed runtime StringConcat uses the runtime-ABI lifecycle tail",
+            Terminator::Call {
+                callee: "hew_string_concat".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::StringConcat,
+                ),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "Vec constructor specialised tail",
+            Terminator::Call {
+                callee: "Vec::new".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::VecNew,
+                ),
+                args: vec![],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
             "typed runtime BytesGet needs a post-write hook",
             Terminator::Call {
                 callee: "hew_bytes_get".to_string(),
@@ -10671,11 +10998,13 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             &raw,
             Some(&elab),
             false,
+            true,
             &HashMap::new(),
             &[],
             &symbols,
             &HashSet::new(),
             &HashMap::new(),
+            &HashSet::new(),
         );
         if admitted {
             assert_eq!(
@@ -12667,7 +12996,7 @@ fn main() {
 }
 
 #[test]
-fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
+fn ordinary_helper_uses_native_unwind_plans_and_wasm_fallback_registry() {
     let pipeline = pipeline_from_helper_snapshot_raw_trap_source();
     let helper_raw = pipeline
         .raw_mir
@@ -12685,6 +13014,35 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
         .iter()
         .find(|function| function.name == "helper_trap")
         .expect("helper_trap elaborated MIR");
+    let transient_bytes_owner = helper_raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Mint {
+                owner,
+                place: Place::Local(9),
+                ty: ResolvedTy::Bytes,
+            }) => Some(*owner),
+            _ => None,
+        })
+        .expect("local 9 bytes generation must be explicitly minted");
+    assert!(
+        helper_raw.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                        owner,
+                        from: Place::Local(9),
+                        to: Some(Place::Local(10)),
+                        ..
+                    }) if *owner == transient_bytes_owner
+                )
+            })
+        }),
+        "the transient bytes owner must transfer explicitly into Bundle.data"
+    );
     let mut owner_locals = helper_elab
         .drop_plans
         .iter()
@@ -12698,7 +13056,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
     owner_locals.dedup();
     assert_eq!(
         owner_locals,
-        [2, 5, 11, 14, 17, 19, 21],
+        [2, 5, 7, 11, 14, 17, 19, 21],
         "grounded helper owner topology drifted"
     );
 
@@ -12722,45 +13080,268 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             .expect("helper_trap LLVM function")
             .print_to_string()
             .to_string();
-        assert_eq!(
-            helper
-                .lines()
-                .filter(|line| {
-                    line.contains("%helper_crash_cleanup_token_") && line.contains(" = alloca i64")
-                })
-                .count(),
-            7,
-            "{triple}: every exact owner needs one stable token alloca:\n{helper}"
-        );
+        let token_count = helper
+            .lines()
+            .filter(|line| {
+                line.contains("%helper_crash_cleanup_token_") && line.contains(" = alloca i64")
+            })
+            .count();
         let arms = helper
             .lines()
             .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
             .collect::<Vec<_>>();
-        assert_eq!(
-            arms.len(),
-            7,
-            "{triple}: every grounded Move/Call owner must arm once:\n{helper}"
-        );
-        assert!(
-            arms.iter().all(|line| line.contains(", i32 1, i32 0)")),
-            "{triple}: every helper owner must use SNAPSHOT+bitwise relocation:\n{arms:#?}"
-        );
-        assert_eq!(
-            helper
-                .matches("call i1 @hew_cont_crash_cleanup_deactivate")
-                .count(),
-            7,
-            "{triple}: every destination write must gate stale authority before replacement"
-        );
-        assert!(
-            helper.contains("helper_crash_cleanup_retire")
-                && helper.contains("helper_crash_cleanup_return_retire")
-                && !helper.contains("helper_crash_cleanup_return_drop")
-                && !helper.contains("helper_crash_cleanup_return_active_trap"),
-            "{triple}: ordinary drops own every destructor site while the return \
-             sweep only retires stale lexical tokens:\n{helper}"
-        );
+        if triple.starts_with("wasm32") {
+            assert_eq!(token_count, 6, "{triple}: fallback owner tokens:\n{helper}");
+            // The local-9 bytes generation is transferred into Bundle without
+            // an intervening reachable WASM cleanup edge, so the Bundle token
+            // is its next cleanup authority rather than a redundant side slot.
+            // Locals 7 and 17 occur only in native `ExitPath::Unwind` plans;
+            // WASM cannot enter those landing pads and therefore must not
+            // invent registry escrows for them either.
+            assert_eq!(arms.len(), 11, "{triple}: fallback owner arms:\n{helper}");
+            assert!(arms.iter().all(|line| line.contains(", i32 1, i32 0)")));
+        } else {
+            assert_eq!(token_count, 0, "native EH must not allocate owner tokens");
+            assert!(
+                arms.is_empty(),
+                "native EH must not arm the fallback registry"
+            );
+            assert!(
+                helper.contains(" invoke ")
+                    && helper.contains("landingpad { ptr, i32 }")
+                    && helper.contains("resume { ptr, i32 }"),
+                "native helper must use structured unwind cleanup:\n{helper}"
+            );
+        }
     }
+}
+
+#[test]
+fn wasm_string_concat_rearms_cleanup_at_runtime_abi_producer_boundary() {
+    use hew_mir::{DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv};
+
+    // This authored MIR shape makes the runtime-ABI call destination itself
+    // the owner on a later trap edge. Source lowering often introduces a
+    // transient concat destination and transfers it into a distinct let-local;
+    // that shape cannot prove lifecycle handling at this exact producer seam.
+    let raw = RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: "concat_then_trap".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![ResolvedTy::String, ResolvedTy::String],
+        locals: vec![ResolvedTy::String; 3],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Call {
+                    callee: "hew_string_concat".to_string(),
+                    authority: hew_mir::CallAuthority::Runtime(
+                        hew_types::runtime_call::RuntimeCallFamily::StringConcat,
+                    ),
+                    args: vec![Place::Local(0), Place::Local(1)],
+                    dest: Some(Place::Local(2)),
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Trap {
+                    kind: hew_mir::TrapKind::IntegerOverflow,
+                },
+            },
+        ],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let elab = ElaboratedMirFunction {
+        name: raw.name.clone(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(
+            ExitPath::Panic { block: 1 },
+            DropPlan {
+                drops: vec![frame_cleanup_string_descriptor(Place::Local(2))],
+            },
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+    let mut pipeline = empty_pipeline_with_const_42();
+    pipeline.raw_mir = vec![raw];
+    pipeline.elaborated_mir = vec![elab];
+
+    let ctx = Context::create();
+    let machine = target_machine_for_triple("wasm32-wasi")
+        .expect("wasm32-wasi target machine for string-concat lifecycle");
+    let module = build_module_for_target(
+        &ctx,
+        &pipeline,
+        "wasm_string_concat_cleanup_lifecycle",
+        Some(&machine),
+        None,
+    )
+    .expect("WASM string-concat lifecycle module");
+    module
+        .verify()
+        .expect("WASM string-concat lifecycle verify");
+    let ir = module.print_to_string().to_string();
+    let helper = llvm_defined_function_body(&ir, "concat_then_trap");
+    let concat = helper
+        .find("call ptr @hew_string_concat")
+        .unwrap_or_else(|| panic!("missing typed StringConcat runtime call:\n{helper}"));
+    let deactivate = helper[..concat]
+        .rfind("call i1 @hew_cont_crash_cleanup_deactivate")
+        .unwrap_or_else(|| panic!("StringConcat destination was not deactivated:\n{helper}"));
+    let store = helper[concat..]
+        .find("store ptr %hew_string_concat_call")
+        .map(|offset| concat + offset)
+        .unwrap_or_else(|| panic!("StringConcat result was not published:\n{helper}"));
+    let arm = helper[store..]
+        .find("call i64 @hew_cont_crash_cleanup_arm")
+        .map(|offset| store + offset)
+        .unwrap_or_else(|| panic!("StringConcat destination was not rearmed:\n{helper}"));
+    assert!(
+        deactivate < concat && concat < store && store < arm,
+        "StringConcat cleanup lifecycle must deactivate, publish, then rearm:\n{helper}"
+    );
+    assert!(
+        helper.contains("br label %bb1")
+            && helper.contains("bb1:")
+            && helper.contains("call void @hew_trap_with_code(i32 201)"),
+        "the rearmed producer must continue to the later logical trap:\n{helper}"
+    );
+}
+
+#[test]
+fn wasm_vec_new_rearms_cleanup_after_complete_handle_publication() {
+    use hew_mir::{DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv};
+
+    let vec_ty =
+        ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::String]);
+    let raw = RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: "vec_new_then_trap".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![vec_ty.clone()],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Call {
+                    callee: "Vec::new".to_string(),
+                    authority: hew_mir::CallAuthority::Runtime(
+                        hew_types::runtime_call::RuntimeCallFamily::VecNew,
+                    ),
+                    args: vec![],
+                    dest: Some(Place::Local(0)),
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Trap {
+                    kind: hew_mir::TrapKind::IntegerOverflow,
+                },
+            },
+        ],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let elab = ElaboratedMirFunction {
+        name: raw.name.clone(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(
+            ExitPath::Panic { block: 1 },
+            DropPlan {
+                drops: vec![ElabDrop {
+                    place: Place::Local(0),
+                    ty: vec_ty,
+                    drop_fn: None,
+                    kind: hew_mir::DropKind::CowHeap {
+                        release: hew_mir::CowHeapRelease::VecPlain,
+                    },
+                    guard: None,
+                }],
+            },
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+    let mut pipeline = empty_pipeline_with_const_42();
+    pipeline.raw_mir = vec![raw];
+    pipeline.elaborated_mir = vec![elab];
+
+    let ctx = Context::create();
+    let machine = target_machine_for_triple("wasm32-wasi")
+        .expect("wasm32-wasi target machine for Vec::new lifecycle");
+    let module = build_module_for_target(
+        &ctx,
+        &pipeline,
+        "wasm_vec_new_cleanup_lifecycle",
+        Some(&machine),
+        None,
+    )
+    .expect("WASM Vec::new lifecycle module");
+    module.verify().expect("WASM Vec::new lifecycle verify");
+    let ir = module.print_to_string().to_string();
+    let helper = llvm_defined_function_body(&ir, "vec_new_then_trap");
+    let constructor = helper
+        .find("call ptr @hew_vec_new_str")
+        .unwrap_or_else(|| panic!("missing typed Vec::new runtime call:\n{helper}"));
+    let deactivate = helper[..constructor]
+        .rfind("call i1 @hew_cont_crash_cleanup_deactivate")
+        .unwrap_or_else(|| panic!("Vec::new destination was not deactivated:\n{helper}"));
+    let store = helper[constructor..]
+        .find("store ptr %hew_vec_new_str_call")
+        .map(|offset| constructor + offset)
+        .unwrap_or_else(|| panic!("Vec::new result was not published:\n{helper}"));
+    let arm = helper[store..]
+        .find("call i64 @hew_cont_crash_cleanup_arm")
+        .map(|offset| store + offset)
+        .unwrap_or_else(|| panic!("Vec::new destination was not rearmed:\n{helper}"));
+    assert!(
+        deactivate < constructor && constructor < store && store < arm,
+        "Vec::new cleanup lifecycle must deactivate, publish, then rearm:\n{helper}"
+    );
+    assert!(
+        helper.contains("br label %bb1")
+            && helper.contains("bb1:")
+            && helper.contains("call void @hew_trap_with_code(i32 201)"),
+        "the rearmed Vec producer must continue to the later logical trap:\n{helper}"
+    );
 }
 
 fn pipeline_from_helper_owner_transfer_source() -> IrPipeline {
@@ -12799,7 +13380,7 @@ fn main() { println(helper_transfer()); }
 }
 
 #[test]
-fn helper_owner_move_deactivates_source_and_retires_stale_token() {
+fn helper_owner_move_uses_path_sensitive_native_cleanup() {
     let pipeline = pipeline_from_helper_owner_transfer_source();
     let raw = pipeline
         .raw_mir
@@ -12842,29 +13423,12 @@ fn helper_owner_move_deactivates_source_and_retires_stale_token() {
         .print_to_string()
         .to_string();
     assert!(
-        helper
-            .matches("call i1 @hew_cont_crash_cleanup_deactivate")
-            .count()
-            >= 3,
-        "initial destination gates plus the owner-to-owner Move must deactivate \
-         both destination and source:\n{helper}"
-    );
-    assert_eq!(
-        helper
-            .lines()
-            .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
-            .count(),
-        2,
-        "source and destination must each acquire their own lexical snapshot token"
-    );
-    let Place::Local(source_local) = transfer.0 else {
-        panic!("transfer source must be a local")
-    };
-    assert!(
-        helper.contains(&format!(
-            "helper_crash_cleanup_return_retire_{source_local}_call"
-        )),
-        "normal return must retire the inactive source token left by transfer:\n{helper}"
+        !helper.contains("hew_cont_crash_cleanup")
+            && helper.contains(" invoke ")
+            && helper.contains("landingpad { ptr, i32 }")
+            && helper.contains("resume { ptr, i32 }"),
+        "the native helper must derive cleanup from path-sensitive MIR ownership, \
+         with no dynamic owner-token bookkeeping:\n{helper}"
     );
 }
 
@@ -13012,8 +13576,12 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
         // ritual unconditionally at the discharge site itself, before the
         // crash-triggering branch is even reached — there is no later
         // window in which crash-cleanup replay could observe (and
-        // double-release) this resource, so no snapshot escrow is
-        // registered for it. `projected_resource_close_then_crash_releases_source_snapshot_once`
+        // double-release) this resource, so no snapshot escrow is registered
+        // for the projected Witness owner. The enclosing Pair may still carry
+        // its own target-specific escrow for the explicit Cancel/Return plans:
+        // after Witness is transferred out and discharged, that distinct root
+        // continues to own the residual string payload.
+        // `projected_resource_close_then_crash_releases_source_snapshot_once`
         // (hew-cli/tests/enum_resource_variant_leak_oracle.rs) proves the
         // equivalent enum-payload shape end to end under MallocScribble
         // (exit 0, exact stdout, both the normal and the handled-crash
@@ -13024,7 +13592,7 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
             .find("store %Witness zeroinitializer")
             .unwrap_or_else(|| panic!("{triple}: missing projected payload neutralize:\n{helper}"));
         let close = helper
-            .find("call i8 @\"Witness::close\"")
+            .find("@\"Witness::close\"")
             .unwrap_or_else(|| panic!("{triple}: missing transferred owner close:\n{helper}"));
 
         assert!(
@@ -13033,11 +13601,20 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
              transferred owner closes it:\n{helper}"
         );
         assert!(
-            !helper.contains("hew_cont_crash_cleanup"),
-            "{triple}: a Discharge-intent parameter closes its resource at the \
-             discharge site itself and must not register a separate \
-             crash-cleanup escrow for it:\n{helper}"
+            !helper.contains("helper_crash_cleanup_token_8"),
+            "{triple}: a Discharge-intent projected owner closes its resource at \
+             the discharge site itself and must not register a separate Witness \
+             crash-cleanup escrow; an enclosing Pair root may independently \
+             retain cancellation cleanup for its residual string:\n{helper}"
         );
+        if triple == "wasm32-wasi" {
+            assert!(
+                helper.contains("helper_crash_cleanup_token_0")
+                    && helper.contains("@__hew_enum_drop_inplace_Pair"),
+                "{triple}: the enclosing Pair must retain its independent \
+                 Cancel/Return cleanup escrow for the residual string:\n{helper}"
+            );
+        }
         assert!(
             helper.contains("@hew_panic_msg") && helper.contains("cancel_exit"),
             "{triple}: the same helper must retain the panic and \
@@ -13178,11 +13755,29 @@ fn returned_bytes_keeps_crash_owner_until_return_transfer_native_and_wasm32() {
         .find(|function| function.name == "build_packet")
         .expect("build_packet elaborated MIR");
     assert!(
-        elab.drop_plans
-            .iter()
-            .flat_map(|(_, plan)| &plan.drops)
-            .all(|drop| drop.place != returned),
-        "ReturnSlot transfer must remain the sole normal-path owner: {elab:#?}"
+        elab.drop_plans.iter().any(|(exit, plan)| {
+            matches!(
+                exit,
+                hew_mir::ExitPath::Unwind { callee, .. }
+                    if callee == "push_then_maybe_crash"
+            ) && plan.drops.iter().any(|drop| {
+                drop.place == returned
+                    && matches!(
+                        drop.kind,
+                        hew_mir::DropKind::CowHeap {
+                            release: hew_mir::CowHeapRelease::Bytes
+                        }
+                    )
+            })
+        }),
+        "the borrowed owner must be released if the helper unwinds: {elab:#?}"
+    );
+    assert!(
+        elab.drop_plans.iter().any(|(exit, plan)| {
+            matches!(exit, hew_mir::ExitPath::Return { .. })
+                && plan.drops.iter().all(|drop| drop.place != returned)
+        }),
+        "successful ReturnSlot transfer must suppress the caller-frame release: {elab:#?}"
     );
 
     for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
@@ -13208,33 +13803,44 @@ fn returned_bytes_keeps_crash_owner_until_return_transfer_native_and_wasm32() {
         let Place::Local(returned_local) = returned else {
             unreachable!("filtered to local return source")
         };
-        assert!(
-            builder.contains(&format!("%helper_crash_cleanup_token_{returned_local}"))
-                && builder.contains("call i1 @hew_cont_crash_cleanup_deactivate")
-                && builder.contains("call i64 @hew_cont_crash_cleanup_arm")
-                && builder.contains(&format!(
-                    "helper_crash_cleanup_return_retire_{returned_local}_call"
-                ))
-                && !builder.contains("call void @hew_bytes_drop"),
-            "{triple}: returned bytes must stay crash-owned through the loan and transfer \
-             without a success-path destructor:\n{builder}"
-        );
-        let cleanup_thunks = module
-            .get_functions()
-            .filter(|function| {
-                function
-                    .get_name()
-                    .to_string_lossy()
-                    .starts_with("__hew_frame_cleanup_")
-            })
-            .map(|function| function.print_to_string().to_string())
-            .collect::<Vec<_>>();
-        assert!(
-            cleanup_thunks
-                .iter()
-                .any(|thunk| thunk.contains("call void @hew_bytes_drop")),
-            "{triple}: crash cleanup must retain the typed bytes release ritual"
-        );
+        if triple.starts_with("wasm32") {
+            assert!(
+                builder.contains(&format!("%helper_crash_cleanup_token_{returned_local}"))
+                    && builder.contains("call i1 @hew_cont_crash_cleanup_deactivate")
+                    && builder.contains("call i64 @hew_cont_crash_cleanup_arm")
+                    && builder.contains(&format!(
+                        "helper_crash_cleanup_return_retire_{returned_local}_call"
+                    )),
+                "{triple}: the fallback registry must hold the owner through the loan \
+                 and retire it only at return transfer:\n{builder}"
+            );
+            let cleanup_thunks = module
+                .get_functions()
+                .filter(|function| {
+                    function
+                        .get_name()
+                        .to_string_lossy()
+                        .starts_with("__hew_frame_cleanup_")
+                })
+                .map(|function| function.print_to_string().to_string())
+                .collect::<Vec<_>>();
+            assert!(
+                cleanup_thunks
+                    .iter()
+                    .any(|thunk| thunk.contains("call void @hew_bytes_drop")),
+                "{triple}: fallback cleanup must retain the typed bytes release ritual"
+            );
+        } else {
+            assert!(
+                !builder.contains("hew_cont_crash_cleanup")
+                    && builder.contains(" invoke i8 @push_then_maybe_crash")
+                    && builder.contains("landingpad { ptr, i32 }")
+                    && builder.contains("call void @hew_bytes_drop")
+                    && builder.contains("resume { ptr, i32 }"),
+                "{triple}: native unwind must release the loaned owner while the \
+                 successful return transfers it without registry bookkeeping:\n{builder}"
+            );
+        }
     }
 }
 
@@ -13246,30 +13852,32 @@ fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
         .iter()
         .find(|function| function.name == "clear_then_maybe_crash")
         .expect("bytes helper raw MIR");
-    let clear = helper_raw
+    let (clear_block, receiver, clear_next) = helper_raw
         .blocks
         .iter()
-        .flat_map(|block| &block.instructions)
-        .find(|instr| {
-            matches!(
-                instr,
-                Instr::CallRuntimeAbi(call)
-                    if call.family()
-                        == hew_types::runtime_call::RuntimeCallFamily::BytesClear
-            )
+        .find_map(|block| {
+            let Terminator::Call {
+                authority:
+                    CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::BytesClear),
+                args,
+                next,
+                ..
+            } = &block.terminator
+            else {
+                return None;
+            };
+            Some((block.id, *args.first()?, *next))
         })
-        .expect("bytes helper must call the typed clear family");
-    let Instr::CallRuntimeAbi(clear_call) = clear else {
-        unreachable!("filtered to CallRuntimeAbi above")
-    };
-    let receiver = *clear_call
-        .args()
-        .first()
-        .expect("bytes clear has one receiver");
-    assert_eq!(
-        hew_mir::dataflow::instr_interior_write_places(clear),
-        vec![receiver],
-        "the owned bytes local is the in-place runtime mutation authority"
+        .expect("bytes helper must canonicalize the typed clear family to a call terminator");
+    assert!(
+        helper_raw.blocks.iter().any(|block| {
+            block.id == clear_next
+                && matches!(
+                    block.instructions.first(),
+                    Some(Instr::InteriorMutationCommit { place }) if *place == receiver
+                )
+        }),
+        "the normal successor must explicitly commit the in-place mutation"
     );
     let helper_elab = pipeline
         .elaborated_mir
@@ -13277,12 +13885,14 @@ fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
         .find(|function| function.name == "clear_then_maybe_crash")
         .expect("bytes helper elaborated MIR");
     assert!(
-        helper_elab
-            .drop_plans
-            .iter()
-            .flat_map(|(_, plan)| &plan.drops)
-            .any(|drop| drop.place == receiver),
-        "the owned bytes local must retain a typed cleanup descriptor: {helper_elab:#?}"
+        helper_elab.drop_plans.iter().any(|(exit, plan)| {
+            matches!(
+                exit,
+                ExitPath::Unwind { block, callee }
+                    if *block == clear_block && callee == "hew_bytes_clear"
+            ) && plan.drops.iter().any(|drop| drop.place == receiver)
+        }),
+        "the bytes.clear unwind edge must retain the pre-call owner: {helper_elab:#?}"
     );
 
     for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
@@ -13307,36 +13917,46 @@ fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
             .to_string();
 
         let clear = helper
-            .find("call void @hew_bytes_clear")
+            .find("@hew_bytes_clear")
             .unwrap_or_else(|| panic!("{triple}: missing bytes clear call:\n{helper}"));
-        let deactivate = helper[..clear]
-            .rfind("call i1 @hew_cont_crash_cleanup_deactivate")
-            .unwrap_or_else(|| {
-                panic!("{triple}: missing snapshot deactivate before bytes clear:\n{helper}")
-            });
-        let refresh = helper[clear..]
-            .find("call i64 @hew_cont_crash_cleanup_arm")
-            .map(|offset| clear + offset)
-            .unwrap_or_else(|| {
-                panic!("{triple}: missing snapshot refresh after bytes clear:\n{helper}")
-            });
+        if triple.starts_with("wasm32") {
+            let deactivate = helper[clear..]
+                .find("call i1 @hew_cont_crash_cleanup_deactivate")
+                .map(|offset| clear + offset)
+                .unwrap_or_else(|| {
+                    panic!("{triple}: missing normal-edge snapshot deactivate after bytes clear:\n{helper}")
+                });
+            let refresh = helper[deactivate..]
+                .find("call i64 @hew_cont_crash_cleanup_arm")
+                .map(|offset| deactivate + offset)
+                .unwrap_or_else(|| {
+                    panic!("{triple}: missing snapshot refresh after bytes clear:\n{helper}")
+                });
+            assert!(
+                clear < deactivate
+                    && deactivate < refresh
+                    && helper[refresh..].contains(", i32 1, i32 0)"),
+                "{triple}: fallback snapshot must commit only on the normal edge:\n{helper}"
+            );
+            assert!(
+                !helper.contains("helper_crash_cleanup_return_drop")
+                    && helper.contains("helper_crash_cleanup_retire")
+                    && helper.contains("helper_crash_cleanup_return_retire"),
+                "{triple}: fallback exits must retire without a duplicate destructor:\n{helper}"
+            );
+        } else {
+            assert!(
+                !helper.contains("hew_cont_crash_cleanup")
+                    && helper.contains("invoke void @hew_bytes_clear")
+                    && helper.contains("landingpad { ptr, i32 }")
+                    && helper.contains("call void @hew_bytes_drop")
+                    && helper.contains("resume { ptr, i32 }"),
+                "{triple}: native unwind must use the MIR bytes cleanup directly:\n{helper}"
+            );
+        }
         assert!(
-            deactivate < clear && clear < refresh,
-            "{triple}: bytes snapshot must deactivate before the runtime mutation \
-             and refresh afterward:\n{helper}"
-        );
-        assert!(
-            helper[refresh..].contains(", i32 1, i32 0)"),
-            "{triple}: refreshed bytes owner must remain a Snapshot escrow:\n{helper}"
-        );
-        assert!(
-            helper.contains("@hew_panic_msg")
-                && !helper.contains("helper_crash_cleanup_return_drop")
-                && helper.contains("helper_crash_cleanup_retire")
-                && helper.contains("helper_crash_cleanup_return_retire")
-                && helper.contains("cancel_exit"),
-            "{triple}: normal return, crash, and cancellation cleanup must remain \
-             present without a duplicate return destructor:\n{helper}"
+            helper.contains("@hew_panic_msg") && helper.contains("cancel_exit"),
+            "{triple}: panic and cancellation exits must remain present:\n{helper}"
         );
     }
 }
@@ -14185,9 +14805,6 @@ fn owned_state_source_transfer_rejection_is_process_fatal_before_live_store() {
     let old_release = body
         .find("call void @hew_string_drop")
         .expect("old state owner release");
-    let transfer = body
-        .find("@hew_dispatch_state_cleanup_prepare_transfer")
-        .expect("source-token replacement preparation");
     let live_store_line = body
         .lines()
         .find(|line| line.contains("store ptr") && line.contains("%actor_state_field_0_ptr"))
@@ -14196,20 +14813,13 @@ fn owned_state_source_transfer_rejection_is_process_fatal_before_live_store() {
         .find(live_store_line)
         .expect("live store line belongs to function body");
     assert!(
-        begin < materialize
-            && materialize < old_release
-            && old_release < transfer
-            && transfer < live_store,
-        "token path must order begin < materialize < old release < prepare-transfer < live store:\n{body}"
+        begin < materialize && materialize < old_release && old_release < live_store,
+        "state replacement must order begin < materialize < old release < live store:\n{body}"
     );
-    let rejected = body
-        .find("state_f0_crash_prepare_transfer_rejected:")
-        .expect("explicit rejected-transfer block");
-    let rejected_tail = &body[rejected..];
     assert!(
-        rejected_tail.contains("call void @hew_dispatch_state_cleanup_abort_invariant()")
-            && rejected_tail.contains("unreachable"),
-        "prepare-transfer false must terminate the process, never resume actor recovery:\n{body}"
+        !body.contains("hew_dispatch_state_cleanup_prepare_transfer")
+            && !body.contains("hew_cont_crash_cleanup"),
+        "native lexical owners must not use source-token transfer bookkeeping:\n{body}"
     );
     module
         .verify()

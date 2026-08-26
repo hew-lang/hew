@@ -333,7 +333,7 @@ declare void @hew_actor_gen_sink_register(ptr, ptr)
 
 declare void @hew_actor_gen_sink_complete(ptr, ptr)
 
-define internal ptr @make_rows(i64 %0) {
+define internal ptr @make_rows(i64 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i64, align 8
@@ -360,6 +360,7 @@ bb0:                                              ; preds = %after_cooperate
 bb1:                                              ; preds = %bb0
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %local_2, align 8
+  store ptr null, ptr %local_1, align 8
   %hew_vec_new_i64_call = call ptr @hew_vec_new_i64()
   store ptr %hew_vec_new_i64_call, ptr %local_3, align 8
   br label %bb2
@@ -367,12 +368,13 @@ bb1:                                              ; preds = %bb0
 bb2:                                              ; preds = %bb1
   %move_load1 = load ptr, ptr %local_3, align 8
   store ptr %move_load1, ptr %local_4, align 8
+  store ptr null, ptr %local_3, align 8
   %call_arg = load ptr, ptr %local_4, align 8
   %call_arg2 = load i64, ptr %local_0, align 8
-  call void @hew_vec_push_i64(ptr %call_arg, i64 %call_arg2)
-  br label %bb3
+  invoke void @hew_vec_push_i64(ptr %call_arg, i64 %call_arg2)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb3:                                              ; preds = %bb2
+bb3:                                              ; preds = %invoke.cont
   store i64 1, ptr %local_5, align 8
   %checked_lhs = load i64, ptr %local_0, align 8
   %checked_rhs = load i64, ptr %local_5, align 8
@@ -387,19 +389,26 @@ bb3:                                              ; preds = %bb2
   br i1 %cond_nz, label %bb4, label %bb5
 
 bb4:                                              ; preds = %bb3
+  %"hew_vec_free drop3" = load ptr, ptr %local_4, align 8
+  call void @hew_vec_free(ptr %"hew_vec_free drop3")
+  store ptr null, ptr %local_4, align 8
+  %"hew_vec_free_owned drop4" = load ptr, ptr %local_2, align 8
+  call void @hew_vec_free_owned(ptr %"hew_vec_free_owned drop4")
+  store ptr null, ptr %local_2, align 8
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
 bb5:                                              ; preds = %bb3
-  %call_arg3 = load ptr, ptr %local_4, align 8
-  %call_arg4 = load i64, ptr %local_6, align 8
-  call void @hew_vec_push_i64(ptr %call_arg3, i64 %call_arg4)
-  br label %bb6
+  %call_arg5 = load ptr, ptr %local_4, align 8
+  %call_arg6 = load i64, ptr %local_6, align 8
+  invoke void @hew_vec_push_i64(ptr %call_arg5, i64 %call_arg6)
+          to label %invoke.cont7 unwind label %invoke.cleanup8
 
-bb6:                                              ; preds = %bb5
-  %move_load5 = load ptr, ptr %local_4, align 8
-  store ptr %move_load5, ptr %local_8, align 8
+bb6:                                              ; preds = %invoke.cont7
+  %move_load12 = load ptr, ptr %local_4, align 8
+  store ptr %move_load12, ptr %local_8, align 8
+  store ptr null, ptr %local_4, align 8
   %field_0_init_ptr = getelementptr inbounds nuw %HeapRow, ptr %local_9, i32 0, i32 0
   %field_0_init_src = load ptr, ptr %local_8, align 8
   store ptr %field_0_init_src, ptr %field_0_init_ptr, align 8
@@ -411,10 +420,11 @@ bb6:                                              ; preds = %bb5
   br label %bb7
 
 bb7:                                              ; preds = %bb6
-  %move_load6 = load ptr, ptr %local_2, align 8
-  store ptr %move_load6, ptr %local_10, align 8
-  %move_load7 = load ptr, ptr %local_10, align 8
-  store ptr %move_load7, ptr %return_slot, align 8
+  %move_load13 = load ptr, ptr %local_2, align 8
+  store ptr %move_load13, ptr %local_10, align 8
+  store ptr null, ptr %local_2, align 8
+  %move_load14 = load ptr, ptr %local_10, align 8
+  store ptr %move_load14, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
   ret ptr %ret_val
 
@@ -423,6 +433,34 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb2
+  br label %bb3
+
+invoke.cleanup:                                   ; preds = %bb2
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  %"hew_vec_free drop" = load ptr, ptr %local_4, align 8
+  call void @hew_vec_free(ptr %"hew_vec_free drop")
+  store ptr null, ptr %local_4, align 8
+  %"hew_vec_free_owned drop" = load ptr, ptr %local_2, align 8
+  call void @hew_vec_free_owned(ptr %"hew_vec_free_owned drop")
+  store ptr null, ptr %local_2, align 8
+  resume { ptr, i32 } %hew.exception
+
+invoke.cont7:                                     ; preds = %bb5
+  br label %bb6
+
+invoke.cleanup8:                                  ; preds = %bb5
+  %hew.exception9 = landingpad { ptr, i32 }
+          cleanup
+  %"hew_vec_free drop10" = load ptr, ptr %local_4, align 8
+  call void @hew_vec_free(ptr %"hew_vec_free drop10")
+  store ptr null, ptr %local_4, align 8
+  %"hew_vec_free_owned drop11" = load ptr, ptr %local_2, align 8
+  call void @hew_vec_free_owned(ptr %"hew_vec_free_owned drop11")
+  store ptr null, ptr %local_2, align 8
+  resume { ptr, i32 } %hew.exception9
 }
 
 define internal ptr @batches(i64 %0) {
@@ -469,7 +507,7 @@ bb1:                                              ; preds = %bb0
 }
 
 ; Function Attrs: presplitcoroutine
-define internal ptr @__hew_gen_body_batches_0(ptr %0, ptr %1) #0 {
+define internal ptr @__hew_gen_body_batches_0(ptr %0, ptr %1) #0 personality ptr @rust_eh_personality {
 entry:
   %coro.id = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)
   %coro.need.alloc = call i1 @llvm.coro.alloc(token %coro.id)
@@ -550,9 +588,8 @@ bb1:                                              ; preds = %after_cooperate13, 
 
 bb2:                                              ; preds = %bb1
   %call_arg = load i64, ptr %local_2, align 8
-  %call_result = call ptr @make_rows(i64 %call_arg)
-  store ptr %call_result, ptr %local_10, align 8
-  br label %bb7
+  %call_result = invoke ptr @make_rows(i64 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
 bb3:                                              ; preds = %after_cooperate17
   %checked_lhs = load i64, ptr %local_2, align 8
@@ -589,7 +626,7 @@ bb6:                                              ; preds = %bb0
   %hew_cooperate_is_cancel11 = icmp eq i32 %hew_actor_cooperate10, 2
   br i1 %hew_cooperate_is_cancel11, label %cancel_exit12, label %after_cooperate13
 
-bb7:                                              ; preds = %bb2
+bb7:                                              ; preds = %invoke.cont
   %gen_out_ptr = load ptr, ptr %local_0, align 8
   %gen_yield_value = load ptr, ptr %local_10, align 8
   store ptr %gen_yield_value, ptr %gen_out_ptr, align 8
@@ -617,6 +654,15 @@ cancel_exit:                                      ; preds = %alloca.prologue
 after_cooperate:                                  ; preds = %alloca.prologue
   br label %bb0
 
+invoke.cont:                                      ; preds = %bb2
+  store ptr %call_result, ptr %local_10, align 8
+  br label %bb7
+
+invoke.cleanup:                                   ; preds = %bb2
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
+
 cancel_exit12:                                    ; preds = %bb6
   call void @hew_cont_frame_handoff(ptr %coro.handle)
   ret ptr %coro.handle
@@ -639,7 +685,7 @@ coro.dyn.free:                                    ; preds = %coro.cleanup
   br label %coro.suspend.return
 }
 
-define internal i64 @consume_generator(i64 %0) {
+define internal i64 @consume_generator(i64 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca i64, align 8
   %local_0 = alloca i64, align 8
@@ -668,16 +714,15 @@ bb0:                                              ; preds = %after_cooperate
   %move_load = load i64, ptr %local_1, align 8
   store i64 %move_load, ptr %local_2, align 8
   %call_arg = load i64, ptr %local_0, align 8
-  %call_result = call ptr @batches(i64 %call_arg)
-  store ptr %call_result, ptr %local_3, align 8
-  br label %bb1
+  %call_result = invoke ptr @batches(i64 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load1 = load ptr, ptr %local_3, align 8
   store ptr %move_load1, ptr %local_4, align 8
   br label %bb2
 
-bb2:                                              ; preds = %after_cooperate7, %bb1
+bb2:                                              ; preds = %after_cooperate15, %bb1
   %gen_next_companion = load ptr, ptr %local_4, align 8
   %gen_next_handle_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 0
   %gen_next_handle = load ptr, ptr %gen_next_handle_ptr, align 8
@@ -690,110 +735,18 @@ bb2:                                              ; preds = %after_cooperate7, %
   %machine_variant_field_ptr = getelementptr inbounds nuw { ptr }, ptr %machine_payload_ptr, i32 0, i32 0
   br i1 %gen_next_started_set, label %gen_next_resume, label %gen_next_check_done
 
-bb3:                                              ; preds = %after_cooperate16
-  %"hew_gen_coro_destroy drop" = load ptr, ptr %local_4, align 8
-  call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop")
+bb3:                                              ; preds = %after_cooperate25
+  %"hew_gen_coro_destroy drop9" = load ptr, ptr %local_4, align 8
+  call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop9")
   store ptr null, ptr %local_4, align 8
-  %move_load3 = load i64, ptr %local_2, align 8
-  store i64 %move_load3, ptr %return_slot, align 8
+  %move_load10 = load i64, ptr %local_2, align 8
+  store i64 %move_load10, ptr %return_slot, align 8
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
-bb4:                                              ; preds = %after_cooperate31, %after_cooperate27
-  %hew_actor_cooperate4 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel5 = icmp eq i32 %hew_actor_cooperate4, 2
-  br i1 %hew_cooperate_is_cancel5, label %cancel_exit6, label %after_cooperate7
-
-bb5:                                              ; preds = %gen_next_cont
-  %machine_payload_ptr8 = getelementptr inbounds nuw %"Option$$Vec$lHeapRow$g", ptr %local_6, i32 0, i32 1
-  %machine_variant_field_ptr9 = getelementptr inbounds nuw { ptr }, ptr %machine_payload_ptr8, i32 0, i32 0
-  %move_load10 = load ptr, ptr %machine_variant_field_ptr9, align 8
-  store ptr %move_load10, ptr %local_12, align 8
-  store i64 1, ptr %local_13, align 8
-  %checked_lhs = load i64, ptr %local_2, align 8
-  %checked_rhs = load i64, ptr %local_13, align 8
-  %with_overflow = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
-  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
-  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
-  %checked_overflow_widen = zext i1 %checked_overflow to i8
-  store i64 %checked_result, ptr %local_14, align 8
-  store i8 %checked_overflow_widen, ptr %local_15, align 1
-  %cond_load11 = load i8, ptr %local_15, align 1
-  %cond_nz12 = icmp ne i8 %cond_load11, 0
-  br i1 %cond_nz12, label %bb9, label %bb10
-
-bb6:                                              ; preds = %bb8
-  %hew_actor_cooperate13 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel14 = icmp eq i32 %hew_actor_cooperate13, 2
-  br i1 %hew_cooperate_is_cancel14, label %cancel_exit15, label %after_cooperate16
-
-bb7:                                              ; preds = %bb8
-  call void @hew_trap_with_code(i32 208)
-  call void @llvm.trap()
-  unreachable
-
-bb8:                                              ; preds = %gen_next_cont
-  store i64 1, ptr %local_10, align 8
-  %cmp_lhs17 = load i64, ptr %local_7, align 8
-  %cmp_rhs18 = load i64, ptr %local_10, align 8
-  %cmp_bit19 = icmp eq i64 %cmp_lhs17, %cmp_rhs18
-  %cmp_zext20 = zext i1 %cmp_bit19 to i8
-  store i8 %cmp_zext20, ptr %local_11, align 1
-  %cond_load21 = load i8, ptr %local_11, align 1
-  %cond_nz22 = icmp ne i8 %cond_load21, 0
-  br i1 %cond_nz22, label %bb6, label %bb7
-
-bb9:                                              ; preds = %bb5
-  call void @hew_trap_with_code(i32 201)
-  call void @llvm.trap()
-  unreachable
-
-bb10:                                             ; preds = %bb5
-  %move_load23 = load i64, ptr %local_14, align 8
-  store i64 %move_load23, ptr %local_2, align 8
-  %"hew_vec_free_owned drop" = load ptr, ptr %local_12, align 8
-  call void @hew_vec_free_owned(ptr %"hew_vec_free_owned drop")
-  store ptr null, ptr %local_12, align 8
-  %hew_actor_cooperate24 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel25 = icmp eq i32 %hew_actor_cooperate24, 2
-  br i1 %hew_cooperate_is_cancel25, label %cancel_exit26, label %after_cooperate27
-
-bb11:                                             ; No predecessors!
-  %hew_actor_cooperate28 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel29 = icmp eq i32 %hew_actor_cooperate28, 2
-  br i1 %hew_cooperate_is_cancel29, label %cancel_exit30, label %after_cooperate31
-
-cancel_exit:                                      ; preds = %entry
-  ret i64 0
-
-after_cooperate:                                  ; preds = %entry
-  br label %bb0
-
-gen_next_resume:                                  ; preds = %bb2
-  call void @hew_cont_resume(ptr %gen_next_handle)
-  br label %gen_next_check_done
-
-gen_next_check_done:                              ; preds = %gen_next_resume, %bb2
-  %hew_cont_done_call = call i1 @hew_cont_done(ptr %gen_next_handle)
-  br i1 %hew_cont_done_call, label %gen_next_none, label %gen_next_some
-
-gen_next_none:                                    ; preds = %gen_next_check_done
-  store i8 1, ptr %machine_tag_ptr, align 1
-  store i8 0, ptr %gen_next_pending_ptr, align 1
-  br label %gen_next_cont
-
-gen_next_some:                                    ; preds = %gen_next_check_done
-  %gen_next_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 6
-  %gen_next_value = load ptr, ptr %gen_next_out_ptr, align 8
-  store i8 0, ptr %machine_tag_ptr, align 1
-  store ptr %gen_next_value, ptr %machine_variant_field_ptr, align 8
-  store i8 0, ptr %gen_next_pending_ptr, align 1
-  store i8 1, ptr %gen_next_started_ptr, align 1
-  br label %gen_next_cont
-
-gen_next_cont:                                    ; preds = %gen_next_some, %gen_next_none
-  %machine_tag_ptr2 = getelementptr inbounds nuw %"Option$$Vec$lHeapRow$g", ptr %local_6, i32 0, i32 0
-  %move_iN_load = load i8, ptr %machine_tag_ptr2, align 1
+bb4:                                              ; preds = %gen_next_cont
+  %machine_tag_ptr11 = getelementptr inbounds nuw %"Option$$Vec$lHeapRow$g", ptr %local_6, i32 0, i32 0
+  %move_iN_load = load i8, ptr %machine_tag_ptr11, align 1
   %move_iN_zext = zext i8 %move_iN_load to i64
   store i64 %move_iN_zext, ptr %local_7, align 8
   store i64 0, ptr %local_8, align 8
@@ -804,31 +757,175 @@ gen_next_cont:                                    ; preds = %gen_next_some, %gen
   store i8 %cmp_zext, ptr %local_9, align 1
   %cond_load = load i8, ptr %local_9, align 1
   %cond_nz = icmp ne i8 %cond_load, 0
-  br i1 %cond_nz, label %bb5, label %bb8
+  br i1 %cond_nz, label %bb6, label %bb9
 
-cancel_exit6:                                     ; preds = %bb4
+bb5:                                              ; preds = %after_cooperate45, %after_cooperate40
+  %hew_actor_cooperate12 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel13 = icmp eq i32 %hew_actor_cooperate12, 2
+  br i1 %hew_cooperate_is_cancel13, label %cancel_exit14, label %after_cooperate15
+
+bb6:                                              ; preds = %bb4
+  %machine_payload_ptr17 = getelementptr inbounds nuw %"Option$$Vec$lHeapRow$g", ptr %local_6, i32 0, i32 1
+  %machine_variant_field_ptr18 = getelementptr inbounds nuw { ptr }, ptr %machine_payload_ptr17, i32 0, i32 0
+  %move_load19 = load ptr, ptr %machine_variant_field_ptr18, align 8
+  store ptr %move_load19, ptr %local_12, align 8
+  store i64 1, ptr %local_13, align 8
+  %checked_lhs = load i64, ptr %local_2, align 8
+  %checked_rhs = load i64, ptr %local_13, align 8
+  %with_overflow = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_14, align 8
+  store i8 %checked_overflow_widen, ptr %local_15, align 1
+  %cond_load20 = load i8, ptr %local_15, align 1
+  %cond_nz21 = icmp ne i8 %cond_load20, 0
+  br i1 %cond_nz21, label %bb10, label %bb11
+
+bb7:                                              ; preds = %bb9
+  %hew_actor_cooperate22 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel23 = icmp eq i32 %hew_actor_cooperate22, 2
+  br i1 %hew_cooperate_is_cancel23, label %cancel_exit24, label %after_cooperate25
+
+bb8:                                              ; preds = %bb9
+  %"hew_gen_coro_destroy drop27" = load ptr, ptr %local_4, align 8
+  call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop27")
+  store ptr null, ptr %local_4, align 8
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+bb9:                                              ; preds = %bb4
+  store i64 1, ptr %local_10, align 8
+  %cmp_lhs28 = load i64, ptr %local_7, align 8
+  %cmp_rhs29 = load i64, ptr %local_10, align 8
+  %cmp_bit30 = icmp eq i64 %cmp_lhs28, %cmp_rhs29
+  %cmp_zext31 = zext i1 %cmp_bit30 to i8
+  store i8 %cmp_zext31, ptr %local_11, align 1
+  %cond_load32 = load i8, ptr %local_11, align 1
+  %cond_nz33 = icmp ne i8 %cond_load32, 0
+  br i1 %cond_nz33, label %bb7, label %bb8
+
+bb10:                                             ; preds = %bb6
+  %"hew_vec_free_owned drop" = load ptr, ptr %local_12, align 8
+  call void @hew_vec_free_owned(ptr %"hew_vec_free_owned drop")
+  store ptr null, ptr %local_12, align 8
+  %"hew_gen_coro_destroy drop34" = load ptr, ptr %local_4, align 8
+  call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop34")
+  store ptr null, ptr %local_4, align 8
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+bb11:                                             ; preds = %bb6
+  %move_load35 = load i64, ptr %local_14, align 8
+  store i64 %move_load35, ptr %local_2, align 8
+  %"hew_vec_free_owned drop36" = load ptr, ptr %local_12, align 8
+  call void @hew_vec_free_owned(ptr %"hew_vec_free_owned drop36")
+  store ptr null, ptr %local_12, align 8
+  %hew_actor_cooperate37 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel38 = icmp eq i32 %hew_actor_cooperate37, 2
+  br i1 %hew_cooperate_is_cancel38, label %cancel_exit39, label %after_cooperate40
+
+bb12:                                             ; No predecessors!
+  %hew_actor_cooperate42 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel43 = icmp eq i32 %hew_actor_cooperate42, 2
+  br i1 %hew_cooperate_is_cancel43, label %cancel_exit44, label %after_cooperate45
+
+cancel_exit:                                      ; preds = %entry
   ret i64 0
 
-after_cooperate7:                                 ; preds = %bb4
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_3, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
+
+gen_next_resume:                                  ; preds = %bb2
+  invoke void @hew_cont_resume(ptr %gen_next_handle)
+          to label %invoke.cont2 unwind label %invoke.cleanup3
+
+gen_next_check_done:                              ; preds = %invoke.cont2, %bb2
+  %hew_cont_done_call = invoke i1 @hew_cont_done(ptr %gen_next_handle)
+          to label %invoke.cont5 unwind label %invoke.cleanup6
+
+gen_next_none:                                    ; preds = %invoke.cont5
+  store i8 1, ptr %machine_tag_ptr, align 1
+  store i8 0, ptr %gen_next_pending_ptr, align 1
+  br label %gen_next_cont
+
+gen_next_some:                                    ; preds = %invoke.cont5
+  %gen_next_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 6
+  %gen_next_value = load ptr, ptr %gen_next_out_ptr, align 8
+  store i8 0, ptr %machine_tag_ptr, align 1
+  store ptr %gen_next_value, ptr %machine_variant_field_ptr, align 8
+  store i8 0, ptr %gen_next_pending_ptr, align 1
+  store i8 1, ptr %gen_next_started_ptr, align 1
+  br label %gen_next_cont
+
+gen_next_cont:                                    ; preds = %gen_next_some, %gen_next_none
+  br label %bb4
+
+invoke.cont2:                                     ; preds = %gen_next_resume
+  br label %gen_next_check_done
+
+invoke.cleanup3:                                  ; preds = %gen_next_resume
+  %hew.exception4 = landingpad { ptr, i32 }
+          cleanup
+  %"hew_gen_coro_destroy drop" = load ptr, ptr %local_4, align 8
+  call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop")
+  store ptr null, ptr %local_4, align 8
+  resume { ptr, i32 } %hew.exception4
+
+invoke.cont5:                                     ; preds = %gen_next_check_done
+  br i1 %hew_cont_done_call, label %gen_next_none, label %gen_next_some
+
+invoke.cleanup6:                                  ; preds = %gen_next_check_done
+  %hew.exception7 = landingpad { ptr, i32 }
+          cleanup
+  %"hew_gen_coro_destroy drop8" = load ptr, ptr %local_4, align 8
+  call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop8")
+  store ptr null, ptr %local_4, align 8
+  resume { ptr, i32 } %hew.exception7
+
+cancel_exit14:                                    ; preds = %bb5
+  %"hew_gen_coro_destroy drop16" = load ptr, ptr %local_4, align 8
+  call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop16")
+  store ptr null, ptr %local_4, align 8
+  ret i64 0
+
+after_cooperate15:                                ; preds = %bb5
   br label %bb2
 
-cancel_exit15:                                    ; preds = %bb6
+cancel_exit24:                                    ; preds = %bb7
+  %"hew_gen_coro_destroy drop26" = load ptr, ptr %local_4, align 8
+  call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop26")
+  store ptr null, ptr %local_4, align 8
   ret i64 0
 
-after_cooperate16:                                ; preds = %bb6
+after_cooperate25:                                ; preds = %bb7
   br label %bb3
 
-cancel_exit26:                                    ; preds = %bb10
+cancel_exit39:                                    ; preds = %bb11
+  %"hew_gen_coro_destroy drop41" = load ptr, ptr %local_4, align 8
+  call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop41")
+  store ptr null, ptr %local_4, align 8
   ret i64 0
 
-after_cooperate27:                                ; preds = %bb10
-  br label %bb4
+after_cooperate40:                                ; preds = %bb11
+  br label %bb5
 
-cancel_exit30:                                    ; preds = %bb11
+cancel_exit44:                                    ; preds = %bb12
   ret i64 0
 
-after_cooperate31:                                ; preds = %bb11
-  br label %bb4
+after_cooperate45:                                ; preds = %bb12
+  br label %bb5
 }
 
 define internal %Holder @replace_holder(%Holder %0, %Holder %1) {
@@ -868,6 +965,7 @@ bb0:                                              ; preds = %entry
   store %Holder %move_load3, ptr %local_5, align 8
   %move_load4 = load %Holder, ptr %local_5, align 8
   store %Holder %move_load4, ptr %return_slot, align 8
+  store %Holder zeroinitializer, ptr %local_5, align 8
   %carrier_drop_flag = load i64, ptr %local_3, align 8
   %carrier_drop_live = icmp eq i64 %carrier_drop_flag, 0
   br i1 %carrier_drop_live, label %carrier_drop_live_only, label %carrier_drop_merge
@@ -890,7 +988,7 @@ carrier_drop_merge8:                              ; preds = %carrier_drop_live_o
   ret %Holder %ret_val
 }
 
-define internal i64 @reassign_field(i64 %0) {
+define internal i64 @reassign_field(i64 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca i64, align 8
   %local_0 = alloca i64, align 8
@@ -918,10 +1016,6 @@ entry:
   %local_22 = alloca %Holder, align 8
   %local_23 = alloca %Holder, align 8
   store i64 %0, ptr %local_0, align 8
-  %helper_crash_cleanup_token_5 = alloca i64, align 8
-  store i64 0, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_active_5 = alloca i1, align 1
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
@@ -929,11 +1023,10 @@ entry:
 bb0:                                              ; preds = %after_cooperate
   store i64 0, ptr %local_1, align 8
   %call_arg = load i64, ptr %local_1, align 8
-  %call_result = call ptr @make_rows(i64 %call_arg)
-  store ptr %call_result, ptr %local_2, align 8
-  br label %bb1
+  %call_result = invoke ptr @make_rows(i64 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   store i64 0, ptr %local_3, align 8
   %field_0_init_ptr = getelementptr inbounds nuw %Holder, ptr %local_4, i32 0, i32 0
   %field_0_init_src = load ptr, ptr %local_2, align 8
@@ -941,130 +1034,10 @@ bb1:                                              ; preds = %bb0
   %field_1_init_ptr = getelementptr inbounds nuw %Holder, ptr %local_4, i32 0, i32 1
   %field_1_init_src = load i64, ptr %local_3, align 8
   store i64 %field_1_init_src, ptr %field_1_init_ptr, align 8
-  %helper_crash_cleanup_was_active = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_was_active, label %helper_crash_cleanup_deactivate, label %helper_crash_cleanup_deactivate_merge
-
-bb2:                                              ; preds = %after_cooperate24, %bb4
-  %cmp_lhs1 = load i64, ptr %local_6, align 8
-  %cmp_rhs2 = load i64, ptr %local_7, align 8
-  %cmp_bit3 = icmp slt i64 %cmp_lhs1, %cmp_rhs2
-  %cmp_zext4 = zext i1 %cmp_bit3 to i8
-  store i8 %cmp_zext4, ptr %local_12, align 1
-  %cond_load5 = load i8, ptr %local_12, align 1
-  %cond_nz6 = icmp ne i8 %cond_load5, 0
-  br i1 %cond_nz6, label %bb3, label %bb5
-
-bb3:                                              ; preds = %bb2
-  %call_arg7 = load i64, ptr %local_6, align 8
-  %call_result8 = call ptr @make_rows(i64 %call_arg7)
-  store ptr %call_result8, ptr %local_13, align 8
-  br label %bb8
-
-bb4:                                              ; preds = %after_cooperate87
-  %checked_lhs = load i64, ptr %local_6, align 8
-  %checked_rhs = load i64, ptr %local_8, align 8
-  %with_overflow = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
-  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
-  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
-  %checked_overflow_widen = zext i1 %checked_overflow to i8
-  store i64 %checked_result, ptr %local_6, align 8
-  store i8 %checked_overflow_widen, ptr %local_20, align 1
-  %cond_load9 = load i8, ptr %local_20, align 1
-  %cond_nz10 = icmp ne i8 %cond_load9, 0
-  br i1 %cond_nz10, label %bb12, label %bb2
-
-bb5:                                              ; preds = %bb2
-  %field_1_load_ptr = getelementptr inbounds nuw %Holder, ptr %local_5, i32 0, i32 1
-  %field_1_load = load i64, ptr %field_1_load_ptr, align 8
-  store i64 %field_1_load, ptr %local_21, align 8
-  %move_load11 = load i64, ptr %local_21, align 8
-  store i64 %move_load11, ptr %return_slot, align 8
-  %helper_crash_cleanup_drop_active = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_drop_active, label %helper_crash_cleanup_retire, label %helper_crash_cleanup_retire_merge
-
-bb6:                                              ; preds = %frame_cleanup_registered
-  %helper_crash_cleanup_drop_active12 = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_drop_active12, label %helper_crash_cleanup_retire13, label %helper_crash_cleanup_retire_merge14
-
-bb7:                                              ; preds = %frame_cleanup_registered
-  store i64 0, ptr %local_11, align 8
-  %move_load19 = load i64, ptr %local_11, align 8
-  store i64 %move_load19, ptr %local_6, align 8
-  %move_load20 = load i64, ptr %local_0, align 8
-  store i64 %move_load20, ptr %local_7, align 8
-  %hew_actor_cooperate21 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel22 = icmp eq i32 %hew_actor_cooperate21, 2
-  br i1 %hew_cooperate_is_cancel22, label %cancel_exit23, label %after_cooperate24
-
-bb8:                                              ; preds = %bb3
-  store i64 1, ptr %local_14, align 8
-  %checked_lhs32 = load i64, ptr %local_6, align 8
-  %checked_rhs33 = load i64, ptr %local_14, align 8
-  %with_overflow34 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs32, i64 %checked_rhs33)
-  %checked_result35 = extractvalue { i64, i1 } %with_overflow34, 0
-  %checked_overflow36 = extractvalue { i64, i1 } %with_overflow34, 1
-  %checked_overflow_widen37 = zext i1 %checked_overflow36 to i8
-  store i64 %checked_result35, ptr %local_15, align 8
-  store i8 %checked_overflow_widen37, ptr %local_16, align 1
-  %cond_load38 = load i8, ptr %local_16, align 1
-  %cond_nz39 = icmp ne i8 %cond_load38, 0
-  br i1 %cond_nz39, label %bb9, label %bb10
-
-bb9:                                              ; preds = %bb8
-  %helper_crash_cleanup_drop_active40 = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_drop_active40, label %helper_crash_cleanup_retire41, label %helper_crash_cleanup_retire_merge42
-
-bb10:                                             ; preds = %bb8
-  %field_0_init_ptr47 = getelementptr inbounds nuw %Holder, ptr %local_17, i32 0, i32 0
-  %field_0_init_src48 = load ptr, ptr %local_13, align 8
-  store ptr %field_0_init_src48, ptr %field_0_init_ptr47, align 8
-  %field_1_init_ptr49 = getelementptr inbounds nuw %Holder, ptr %local_17, i32 0, i32 1
-  %field_1_init_src50 = load i64, ptr %local_15, align 8
-  store i64 %field_1_init_src50, ptr %field_1_init_ptr49, align 8
-  %move_load51 = load %Holder, ptr %local_17, align 8
-  store %Holder %move_load51, ptr %local_18, align 8
-  %helper_crash_cleanup_was_active52 = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_was_active52, label %helper_crash_cleanup_deactivate53, label %helper_crash_cleanup_deactivate_merge54
-
-bb11:                                             ; preds = %helper_crash_cleanup_deactivate_merge62
-  %helper_crash_cleanup_was_active71 = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_was_active71, label %helper_crash_cleanup_deactivate72, label %helper_crash_cleanup_deactivate_merge73
-
-bb12:                                             ; preds = %bb4
-  %helper_crash_cleanup_drop_active95 = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_drop_active95, label %helper_crash_cleanup_retire96, label %helper_crash_cleanup_retire_merge97
-
-cancel_exit:                                      ; preds = %entry
-  ret i64 0
-
-after_cooperate:                                  ; preds = %entry
-  br label %bb0
-
-helper_crash_cleanup_deactivate:                  ; preds = %bb1
-  %helper_crash_cleanup_token = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_deactivate_call = call i1 @hew_cont_crash_cleanup_deactivate(i64 %helper_crash_cleanup_token)
-  br i1 %helper_crash_cleanup_deactivate_call, label %helper_crash_cleanup_deactivate_accepted, label %helper_crash_cleanup_deactivate_rejected
-
-helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanup_deactivate_accepted, %bb1
+  store ptr null, ptr %local_2, align 8
   %move_load = load %Holder, ptr %local_4, align 8
   store %Holder %move_load, ptr %local_5, align 8
-  %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_5, i64 16, i64 8, ptr @__hew_frame_cleanup_022e4605beb6817e, i32 1, i32 0)
-  %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
-  br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
-
-helper_crash_cleanup_deactivate_accepted:         ; preds = %helper_crash_cleanup_deactivate
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_deactivate_merge
-
-helper_crash_cleanup_deactivate_rejected:         ; preds = %helper_crash_cleanup_deactivate
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-frame_cleanup_registered:                         ; preds = %helper_crash_cleanup_deactivate_merge
-  store i64 %arm_typed_crash_cleanup, ptr %helper_crash_cleanup_token_5, align 8
-  store i1 true, ptr %helper_crash_cleanup_active_5, align 1
+  store %Holder zeroinitializer, ptr %local_4, align 8
   store i64 1, ptr %local_8, align 8
   store i64 0, ptr %local_9, align 8
   %cmp_lhs = load i64, ptr %local_8, align 8
@@ -1076,246 +1049,170 @@ frame_cleanup_registered:                         ; preds = %helper_crash_cleanu
   %cond_nz = icmp ne i8 %cond_load, 0
   br i1 %cond_nz, label %bb6, label %bb7
 
-frame_cleanup_rejected:                           ; preds = %helper_crash_cleanup_deactivate_merge
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
+bb2:                                              ; preds = %after_cooperate20, %bb4
+  %cmp_lhs1 = load i64, ptr %local_6, align 8
+  %cmp_rhs2 = load i64, ptr %local_7, align 8
+  %cmp_bit3 = icmp slt i64 %cmp_lhs1, %cmp_rhs2
+  %cmp_zext4 = zext i1 %cmp_bit3 to i8
+  store i8 %cmp_zext4, ptr %local_12, align 1
+  %cond_load5 = load i8, ptr %local_12, align 1
+  %cond_nz6 = icmp ne i8 %cond_load5, 0
+  br i1 %cond_nz6, label %bb3, label %bb5
 
-helper_crash_cleanup_retire:                      ; preds = %bb5
-  %helper_crash_cleanup_retire_token = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_retire_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token)
-  br i1 %helper_crash_cleanup_retire_call, label %helper_crash_cleanup_retire_accepted, label %helper_crash_cleanup_retire_rejected
+bb3:                                              ; preds = %bb2
+  %call_arg7 = load i64, ptr %local_6, align 8
+  %call_result10 = invoke ptr @make_rows(i64 %call_arg7)
+          to label %invoke.cont8 unwind label %invoke.cleanup9
 
-helper_crash_cleanup_retire_merge:                ; preds = %helper_crash_cleanup_retire_accepted, %bb5
+bb4:                                              ; preds = %after_cooperate46
+  %checked_lhs = load i64, ptr %local_6, align 8
+  %checked_rhs = load i64, ptr %local_8, align 8
+  %with_overflow = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_6, align 8
+  store i8 %checked_overflow_widen, ptr %local_20, align 1
+  %cond_load12 = load i8, ptr %local_20, align 1
+  %cond_nz13 = icmp ne i8 %cond_load12, 0
+  br i1 %cond_nz13, label %bb12, label %bb2
+
+bb5:                                              ; preds = %bb2
+  %field_1_load_ptr = getelementptr inbounds nuw %Holder, ptr %local_5, i32 0, i32 1
+  %field_1_load = load i64, ptr %field_1_load_ptr, align 8
+  store i64 %field_1_load, ptr %local_21, align 8
+  %move_load14 = load i64, ptr %local_21, align 8
+  store i64 %move_load14, ptr %return_slot, align 8
   call void @__hew_record_drop_inplace_Holder(ptr %local_5)
-  %helper_crash_cleanup_return_token_5 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_return_has_token_5 = icmp ne i64 %helper_crash_cleanup_return_token_5, 0
-  br i1 %helper_crash_cleanup_return_has_token_5, label %helper_crash_cleanup_return_retire_5, label %helper_crash_cleanup_return_merge_5
-
-helper_crash_cleanup_retire_accepted:             ; preds = %helper_crash_cleanup_retire
-  store i64 0, ptr %helper_crash_cleanup_token_5, align 8
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_retire_merge
-
-helper_crash_cleanup_retire_rejected:             ; preds = %helper_crash_cleanup_retire
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-helper_crash_cleanup_return_merge_5:              ; preds = %helper_crash_cleanup_return_retire_5_accepted, %helper_crash_cleanup_retire_merge
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
-helper_crash_cleanup_return_retire_5:             ; preds = %helper_crash_cleanup_retire_merge
-  %helper_crash_cleanup_return_retire_5_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_5)
-  br i1 %helper_crash_cleanup_return_retire_5_call, label %helper_crash_cleanup_return_retire_5_accepted, label %helper_crash_cleanup_return_retire_5_rejected
-
-helper_crash_cleanup_return_retire_5_accepted:    ; preds = %helper_crash_cleanup_return_retire_5
-  store i64 0, ptr %helper_crash_cleanup_token_5, align 8
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_return_merge_5
-
-helper_crash_cleanup_return_retire_5_rejected:    ; preds = %helper_crash_cleanup_return_retire_5
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-helper_crash_cleanup_retire13:                    ; preds = %bb6
-  %helper_crash_cleanup_retire_token15 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_retire_call16 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token15)
-  br i1 %helper_crash_cleanup_retire_call16, label %helper_crash_cleanup_retire_accepted17, label %helper_crash_cleanup_retire_rejected18
-
-helper_crash_cleanup_retire_merge14:              ; preds = %helper_crash_cleanup_retire_accepted17, %bb6
+bb6:                                              ; preds = %bb1
   call void @__hew_record_drop_inplace_Holder(ptr %local_5)
   call void @hew_trap_with_code(i32 202)
   call void @llvm.trap()
   unreachable
 
-helper_crash_cleanup_retire_accepted17:           ; preds = %helper_crash_cleanup_retire13
-  store i64 0, ptr %helper_crash_cleanup_token_5, align 8
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_retire_merge14
+bb7:                                              ; preds = %bb1
+  store i64 0, ptr %local_11, align 8
+  %move_load15 = load i64, ptr %local_11, align 8
+  store i64 %move_load15, ptr %local_6, align 8
+  %move_load16 = load i64, ptr %local_0, align 8
+  store i64 %move_load16, ptr %local_7, align 8
+  %hew_actor_cooperate17 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel18 = icmp eq i32 %hew_actor_cooperate17, 2
+  br i1 %hew_cooperate_is_cancel18, label %cancel_exit19, label %after_cooperate20
 
-helper_crash_cleanup_retire_rejected18:           ; preds = %helper_crash_cleanup_retire13
-  call void @hew_trap_with_code(i32 206)
+bb8:                                              ; preds = %invoke.cont8
+  store i64 1, ptr %local_14, align 8
+  %checked_lhs21 = load i64, ptr %local_6, align 8
+  %checked_rhs22 = load i64, ptr %local_14, align 8
+  %with_overflow23 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs21, i64 %checked_rhs22)
+  %checked_result24 = extractvalue { i64, i1 } %with_overflow23, 0
+  %checked_overflow25 = extractvalue { i64, i1 } %with_overflow23, 1
+  %checked_overflow_widen26 = zext i1 %checked_overflow25 to i8
+  store i64 %checked_result24, ptr %local_15, align 8
+  store i8 %checked_overflow_widen26, ptr %local_16, align 1
+  %cond_load27 = load i8, ptr %local_16, align 1
+  %cond_nz28 = icmp ne i8 %cond_load27, 0
+  br i1 %cond_nz28, label %bb9, label %bb10
+
+bb9:                                              ; preds = %bb8
+  %"hew_vec_free_owned drop" = load ptr, ptr %local_13, align 8
+  call void @hew_vec_free_owned(ptr %"hew_vec_free_owned drop")
+  store ptr null, ptr %local_13, align 8
+  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
+  call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
-cancel_exit23:                                    ; preds = %bb7
-  %helper_crash_cleanup_drop_active25 = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_drop_active25, label %helper_crash_cleanup_retire26, label %helper_crash_cleanup_retire_merge27
+bb10:                                             ; preds = %bb8
+  %field_0_init_ptr29 = getelementptr inbounds nuw %Holder, ptr %local_17, i32 0, i32 0
+  %field_0_init_src30 = load ptr, ptr %local_13, align 8
+  store ptr %field_0_init_src30, ptr %field_0_init_ptr29, align 8
+  %field_1_init_ptr31 = getelementptr inbounds nuw %Holder, ptr %local_17, i32 0, i32 1
+  %field_1_init_src32 = load i64, ptr %local_15, align 8
+  store i64 %field_1_init_src32, ptr %field_1_init_ptr31, align 8
+  store ptr null, ptr %local_13, align 8
+  %move_load33 = load %Holder, ptr %local_17, align 8
+  store %Holder %move_load33, ptr %local_18, align 8
+  store %Holder zeroinitializer, ptr %local_17, align 8
+  %move_load34 = load %Holder, ptr %local_5, align 8
+  store %Holder %move_load34, ptr %local_22, align 8
+  store %Holder zeroinitializer, ptr %local_5, align 8
+  %move_load35 = load %Holder, ptr %local_18, align 8
+  store %Holder %move_load35, ptr %local_23, align 8
+  store %Holder zeroinitializer, ptr %local_18, align 8
+  %call_arg36 = load %Holder, ptr %local_22, align 8
+  %call_arg37 = load %Holder, ptr %local_23, align 8
+  %call_result40 = invoke %Holder @replace_holder(%Holder %call_arg36, %Holder %call_arg37)
+          to label %invoke.cont38 unwind label %invoke.cleanup39
 
-after_cooperate24:                                ; preds = %bb7
+bb11:                                             ; preds = %invoke.cont38
+  %move_load42 = load %Holder, ptr %local_19, align 8
+  store %Holder %move_load42, ptr %local_5, align 8
+  %hew_actor_cooperate43 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel44 = icmp eq i32 %hew_actor_cooperate43, 2
+  br i1 %hew_cooperate_is_cancel44, label %cancel_exit45, label %after_cooperate46
+
+bb12:                                             ; preds = %bb4
+  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+cancel_exit:                                      ; preds = %entry
+  ret i64 0
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
+
+invoke.cont8:                                     ; preds = %bb3
+  store ptr %call_result10, ptr %local_13, align 8
+  br label %bb8
+
+invoke.cleanup9:                                  ; preds = %bb3
+  %hew.exception11 = landingpad { ptr, i32 }
+          cleanup
+  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
+  resume { ptr, i32 } %hew.exception11
+
+cancel_exit19:                                    ; preds = %bb7
+  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
+  ret i64 0
+
+after_cooperate20:                                ; preds = %bb7
   br label %bb2
 
-helper_crash_cleanup_retire26:                    ; preds = %cancel_exit23
-  %helper_crash_cleanup_retire_token28 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_retire_call29 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token28)
-  br i1 %helper_crash_cleanup_retire_call29, label %helper_crash_cleanup_retire_accepted30, label %helper_crash_cleanup_retire_rejected31
-
-helper_crash_cleanup_retire_merge27:              ; preds = %helper_crash_cleanup_retire_accepted30, %cancel_exit23
-  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
-  ret i64 0
-
-helper_crash_cleanup_retire_accepted30:           ; preds = %helper_crash_cleanup_retire26
-  store i64 0, ptr %helper_crash_cleanup_token_5, align 8
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_retire_merge27
-
-helper_crash_cleanup_retire_rejected31:           ; preds = %helper_crash_cleanup_retire26
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-helper_crash_cleanup_retire41:                    ; preds = %bb9
-  %helper_crash_cleanup_retire_token43 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_retire_call44 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token43)
-  br i1 %helper_crash_cleanup_retire_call44, label %helper_crash_cleanup_retire_accepted45, label %helper_crash_cleanup_retire_rejected46
-
-helper_crash_cleanup_retire_merge42:              ; preds = %helper_crash_cleanup_retire_accepted45, %bb9
-  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
-  call void @hew_trap_with_code(i32 201)
-  call void @llvm.trap()
-  unreachable
-
-helper_crash_cleanup_retire_accepted45:           ; preds = %helper_crash_cleanup_retire41
-  store i64 0, ptr %helper_crash_cleanup_token_5, align 8
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_retire_merge42
-
-helper_crash_cleanup_retire_rejected46:           ; preds = %helper_crash_cleanup_retire41
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-helper_crash_cleanup_deactivate53:                ; preds = %bb10
-  %helper_crash_cleanup_token55 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_deactivate_call56 = call i1 @hew_cont_crash_cleanup_deactivate(i64 %helper_crash_cleanup_token55)
-  br i1 %helper_crash_cleanup_deactivate_call56, label %helper_crash_cleanup_deactivate_accepted57, label %helper_crash_cleanup_deactivate_rejected58
-
-helper_crash_cleanup_deactivate_merge54:          ; preds = %helper_crash_cleanup_deactivate_accepted57, %bb10
-  %move_load59 = load %Holder, ptr %local_5, align 8
-  store %Holder %move_load59, ptr %local_22, align 8
-  %helper_crash_cleanup_was_active60 = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_was_active60, label %helper_crash_cleanup_deactivate61, label %helper_crash_cleanup_deactivate_merge62
-
-helper_crash_cleanup_deactivate_accepted57:       ; preds = %helper_crash_cleanup_deactivate53
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_deactivate_merge54
-
-helper_crash_cleanup_deactivate_rejected58:       ; preds = %helper_crash_cleanup_deactivate53
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-helper_crash_cleanup_deactivate61:                ; preds = %helper_crash_cleanup_deactivate_merge54
-  %helper_crash_cleanup_token63 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_deactivate_call64 = call i1 @hew_cont_crash_cleanup_deactivate(i64 %helper_crash_cleanup_token63)
-  br i1 %helper_crash_cleanup_deactivate_call64, label %helper_crash_cleanup_deactivate_accepted65, label %helper_crash_cleanup_deactivate_rejected66
-
-helper_crash_cleanup_deactivate_merge62:          ; preds = %helper_crash_cleanup_deactivate_accepted65, %helper_crash_cleanup_deactivate_merge54
-  store %Holder zeroinitializer, ptr %local_5, align 8
-  %move_load67 = load %Holder, ptr %local_18, align 8
-  store %Holder %move_load67, ptr %local_23, align 8
-  store %Holder zeroinitializer, ptr %local_18, align 8
-  %call_arg68 = load %Holder, ptr %local_22, align 8
-  %call_arg69 = load %Holder, ptr %local_23, align 8
-  %call_result70 = call %Holder @replace_holder(%Holder %call_arg68, %Holder %call_arg69)
-  store %Holder %call_result70, ptr %local_19, align 8
+invoke.cont38:                                    ; preds = %bb10
+  store %Holder %call_result40, ptr %local_19, align 8
   br label %bb11
 
-helper_crash_cleanup_deactivate_accepted65:       ; preds = %helper_crash_cleanup_deactivate61
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_deactivate_merge62
+invoke.cleanup39:                                 ; preds = %bb10
+  %hew.exception41 = landingpad { ptr, i32 }
+          cleanup
+  call void @__hew_record_drop_inplace_Holder(ptr %local_23)
+  call void @__hew_record_drop_inplace_Holder(ptr %local_22)
+  resume { ptr, i32 } %hew.exception41
 
-helper_crash_cleanup_deactivate_rejected66:       ; preds = %helper_crash_cleanup_deactivate61
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-helper_crash_cleanup_deactivate72:                ; preds = %bb11
-  %helper_crash_cleanup_token74 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_deactivate_call75 = call i1 @hew_cont_crash_cleanup_deactivate(i64 %helper_crash_cleanup_token74)
-  br i1 %helper_crash_cleanup_deactivate_call75, label %helper_crash_cleanup_deactivate_accepted76, label %helper_crash_cleanup_deactivate_rejected77
-
-helper_crash_cleanup_deactivate_merge73:          ; preds = %helper_crash_cleanup_deactivate_accepted76, %bb11
-  %move_load78 = load %Holder, ptr %local_19, align 8
-  store %Holder %move_load78, ptr %local_5, align 8
-  %helper_crash_cleanup_prior_token79 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %arm_typed_crash_cleanup80 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token79, ptr %local_5, i64 16, i64 8, ptr @__hew_frame_cleanup_022e4605beb6817e, i32 1, i32 0)
-  %frame_cleanup_arm_failed81 = icmp eq i64 %arm_typed_crash_cleanup80, -1
-  br i1 %frame_cleanup_arm_failed81, label %frame_cleanup_rejected83, label %frame_cleanup_registered82
-
-helper_crash_cleanup_deactivate_accepted76:       ; preds = %helper_crash_cleanup_deactivate72
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_deactivate_merge73
-
-helper_crash_cleanup_deactivate_rejected77:       ; preds = %helper_crash_cleanup_deactivate72
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-frame_cleanup_registered82:                       ; preds = %helper_crash_cleanup_deactivate_merge73
-  store i64 %arm_typed_crash_cleanup80, ptr %helper_crash_cleanup_token_5, align 8
-  store i1 true, ptr %helper_crash_cleanup_active_5, align 1
-  %hew_actor_cooperate84 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel85 = icmp eq i32 %hew_actor_cooperate84, 2
-  br i1 %hew_cooperate_is_cancel85, label %cancel_exit86, label %after_cooperate87
-
-frame_cleanup_rejected83:                         ; preds = %helper_crash_cleanup_deactivate_merge73
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-cancel_exit86:                                    ; preds = %frame_cleanup_registered82
-  %helper_crash_cleanup_drop_active88 = load i1, ptr %helper_crash_cleanup_active_5, align 1
-  br i1 %helper_crash_cleanup_drop_active88, label %helper_crash_cleanup_retire89, label %helper_crash_cleanup_retire_merge90
-
-after_cooperate87:                                ; preds = %frame_cleanup_registered82
-  br label %bb4
-
-helper_crash_cleanup_retire89:                    ; preds = %cancel_exit86
-  %helper_crash_cleanup_retire_token91 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_retire_call92 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token91)
-  br i1 %helper_crash_cleanup_retire_call92, label %helper_crash_cleanup_retire_accepted93, label %helper_crash_cleanup_retire_rejected94
-
-helper_crash_cleanup_retire_merge90:              ; preds = %helper_crash_cleanup_retire_accepted93, %cancel_exit86
+cancel_exit45:                                    ; preds = %bb11
   call void @__hew_record_drop_inplace_Holder(ptr %local_5)
   ret i64 0
 
-helper_crash_cleanup_retire_accepted93:           ; preds = %helper_crash_cleanup_retire89
-  store i64 0, ptr %helper_crash_cleanup_token_5, align 8
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_retire_merge90
-
-helper_crash_cleanup_retire_rejected94:           ; preds = %helper_crash_cleanup_retire89
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
-
-helper_crash_cleanup_retire96:                    ; preds = %bb12
-  %helper_crash_cleanup_retire_token98 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %helper_crash_cleanup_retire_call99 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token98)
-  br i1 %helper_crash_cleanup_retire_call99, label %helper_crash_cleanup_retire_accepted100, label %helper_crash_cleanup_retire_rejected101
-
-helper_crash_cleanup_retire_merge97:              ; preds = %helper_crash_cleanup_retire_accepted100, %bb12
-  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
-  call void @hew_trap_with_code(i32 201)
-  call void @llvm.trap()
-  unreachable
-
-helper_crash_cleanup_retire_accepted100:          ; preds = %helper_crash_cleanup_retire96
-  store i64 0, ptr %helper_crash_cleanup_token_5, align 8
-  store i1 false, ptr %helper_crash_cleanup_active_5, align 1
-  br label %helper_crash_cleanup_retire_merge97
-
-helper_crash_cleanup_retire_rejected101:          ; preds = %helper_crash_cleanup_retire96
-  call void @hew_trap_with_code(i32 206)
-  call void @llvm.trap()
-  unreachable
+after_cooperate46:                                ; preds = %bb11
+  br label %bb4
 }
 
-define i64 @main() {
+define i64 @main() personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca i64, align 8
   %local_0 = alloca i64, align 8
@@ -1331,18 +1228,16 @@ entry:
 bb0:                                              ; preds = %after_cooperate
   store i64 2, ptr %local_0, align 8
   %call_arg = load i64, ptr %local_0, align 8
-  %call_result = call i64 @consume_generator(i64 %call_arg)
-  store i64 %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke i64 @consume_generator(i64 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   store i64 2, ptr %local_2, align 8
   %call_arg1 = load i64, ptr %local_2, align 8
-  %call_result2 = call i64 @reassign_field(i64 %call_arg1)
-  store i64 %call_result2, ptr %local_3, align 8
-  br label %bb2
+  %call_result4 = invoke i64 @reassign_field(i64 %call_arg1)
+          to label %invoke.cont2 unwind label %invoke.cleanup3
 
-bb2:                                              ; preds = %bb1
+bb2:                                              ; preds = %invoke.cont2
   %checked_lhs = load i64, ptr %local_1, align 8
   %checked_rhs = load i64, ptr %local_3, align 8
   %with_overflow = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
@@ -1365,9 +1260,9 @@ bb4:                                              ; preds = %bb2
   store i64 %move_load, ptr %return_slot, align 8
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
-  %hew_runtime_exit_status_call3 = call i32 @hew_runtime_exit_status()
-  %hew_runtime_faulted4 = icmp ne i32 %hew_runtime_exit_status_call3, 0
-  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted4
+  %hew_runtime_exit_status_call6 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted7 = icmp ne i32 %hew_runtime_exit_status_call6, 0
+  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted7
   br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 cancel_exit:                                      ; preds = %entry
@@ -1385,6 +1280,24 @@ hew_exit_status_failed:                           ; preds = %cancel_exit
 hew_exit_status_continue:                         ; preds = %hew_exit_status_failed, %cancel_exit
   ret i64 0
 
+invoke.cont:                                      ; preds = %bb0
+  store i64 %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
+
+invoke.cont2:                                     ; preds = %bb1
+  store i64 %call_result4, ptr %local_3, align 8
+  br label %bb2
+
+invoke.cleanup3:                                  ; preds = %bb1
+  %hew.exception5 = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception5
+
 hew_shutdown_exit_failed:                         ; preds = %bb4
   %hew_exit_user_code = load i64, ptr %return_slot, align 8
   %hew_exit_user_code_set = icmp ne i64 %hew_exit_user_code, 0
@@ -1397,7 +1310,7 @@ hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_f
   ret i64 %ret_val
 }
 
-define internal ptr @"i8::fmt"(i8 %0) {
+define internal ptr @"i8::fmt"(i8 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i8, align 1
@@ -1413,11 +1326,10 @@ bb0:                                              ; preds = %after_cooperate
   %cast_int_sext = sext i8 %cast_int_src to i32
   store i32 %cast_int_sext, ptr %local_1, align 4
   %call_arg = load i32, ptr %local_1, align 4
-  %call_result = call ptr @hew_int_to_string(i32 %call_arg)
-  store ptr %call_result, ptr %local_2, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_int_to_string(i32 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_2, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1428,9 +1340,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"i16::fmt"(i16 %0) {
+define internal ptr @"i16::fmt"(i16 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i16, align 2
@@ -1446,11 +1367,10 @@ bb0:                                              ; preds = %after_cooperate
   %cast_int_sext = sext i16 %cast_int_src to i32
   store i32 %cast_int_sext, ptr %local_1, align 4
   %call_arg = load i32, ptr %local_1, align 4
-  %call_result = call ptr @hew_int_to_string(i32 %call_arg)
-  store ptr %call_result, ptr %local_2, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_int_to_string(i32 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_2, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1461,9 +1381,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"i32::fmt"(i32 %0) {
+define internal ptr @"i32::fmt"(i32 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i32, align 4
@@ -1475,11 +1404,10 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i32, ptr %local_0, align 4
-  %call_result = call ptr @hew_int_to_string(i32 %call_arg)
-  store ptr %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_int_to_string(i32 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1490,9 +1418,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"i64::fmt"(i64 %0) {
+define internal ptr @"i64::fmt"(i64 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i64, align 8
@@ -1504,11 +1441,10 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i64, ptr %local_0, align 8
-  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
-  store ptr %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_i64_to_string(i64 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1519,9 +1455,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"u8::fmt"(i8 %0) {
+define internal ptr @"u8::fmt"(i8 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i8, align 1
@@ -1533,11 +1478,10 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i8, ptr %local_0, align 1
-  %call_result = call ptr @hew_u8_to_string(i8 %call_arg)
-  store ptr %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_u8_to_string(i8 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1548,9 +1492,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"u16::fmt"(i16 %0) {
+define internal ptr @"u16::fmt"(i16 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i16, align 2
@@ -1563,11 +1516,10 @@ entry:
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i16, ptr %local_0, align 2
   %ffi_zext = zext i16 %call_arg to i32
-  %call_result = call ptr @hew_uint_to_string(i32 %ffi_zext)
-  store ptr %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_uint_to_string(i32 %ffi_zext)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1578,9 +1530,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"u32::fmt"(i32 %0) {
+define internal ptr @"u32::fmt"(i32 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i32, align 4
@@ -1592,11 +1553,10 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i32, ptr %local_0, align 4
-  %call_result = call ptr @hew_uint_to_string(i32 %call_arg)
-  store ptr %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_uint_to_string(i32 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1607,9 +1567,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"u64::fmt"(i64 %0) {
+define internal ptr @"u64::fmt"(i64 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i64, align 8
@@ -1621,11 +1590,10 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i64, ptr %local_0, align 8
-  %call_result = call ptr @hew_u64_to_string(i64 %call_arg)
-  store ptr %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_u64_to_string(i64 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1636,9 +1604,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"isize::fmt"(i64 %0) {
+define internal ptr @"isize::fmt"(i64 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i64, align 8
@@ -1653,11 +1630,10 @@ bb0:                                              ; preds = %after_cooperate
   %cast_int_src = load i64, ptr %local_0, align 8
   store i64 %cast_int_src, ptr %local_1, align 8
   %call_arg = load i64, ptr %local_1, align 8
-  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
-  store ptr %call_result, ptr %local_2, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_i64_to_string(i64 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_2, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1668,9 +1644,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"usize::fmt"(i64 %0) {
+define internal ptr @"usize::fmt"(i64 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i64, align 8
@@ -1685,11 +1670,10 @@ bb0:                                              ; preds = %after_cooperate
   %cast_int_src = load i64, ptr %local_0, align 8
   store i64 %cast_int_src, ptr %local_1, align 8
   %call_arg = load i64, ptr %local_1, align 8
-  %call_result = call ptr @hew_u64_to_string(i64 %call_arg)
-  store ptr %call_result, ptr %local_2, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_u64_to_string(i64 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_2, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1700,9 +1684,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"bool::fmt"(i8 %0) {
+define internal ptr @"bool::fmt"(i8 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i8, align 1
@@ -1714,11 +1707,10 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i8, ptr %local_0, align 1
-  %call_result = call ptr @hew_bool_to_string(i8 %call_arg)
-  store ptr %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_bool_to_string(i8 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1729,9 +1721,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"char::fmt"(i32 %0) {
+define internal ptr @"char::fmt"(i32 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i32, align 4
@@ -1743,11 +1744,10 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i32, ptr %local_0, align 4
-  %call_result = call ptr @hew_char_to_string(i32 %call_arg)
-  store ptr %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_char_to_string(i32 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1758,9 +1758,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"f64::fmt"(double %0) {
+define internal ptr @"f64::fmt"(double %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca double, align 8
@@ -1772,11 +1781,10 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load double, ptr %local_0, align 8
-  %call_result = call ptr @hew_float_to_string(double %call_arg)
-  store ptr %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_float_to_string(double %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_1, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1787,9 +1795,18 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
-define internal ptr @"f32::fmt"(float %0) {
+define internal ptr @"f32::fmt"(float %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca float, align 4
@@ -1805,11 +1822,10 @@ bb0:                                              ; preds = %after_cooperate
   %cast_float_ext = fpext float %cast_float_src to double
   store double %cast_float_ext, ptr %local_1, align 8
   %call_arg = load double, ptr %local_1, align 8
-  %call_result = call ptr @hew_float_to_string(double %call_arg)
-  store ptr %call_result, ptr %local_2, align 8
-  br label %bb1
+  %call_result = invoke ptr @hew_float_to_string(double %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %move_load = load ptr, ptr %local_2, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
@@ -1820,6 +1836,15 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
 }
 
 define internal ptr @"string::fmt"(ptr %0) {
@@ -1982,7 +2007,7 @@ bb2:                                              ; preds = %bb0
   ret i64 %ret_val
 }
 
-define internal ptr @"duration::fmt"(i64 %0) {
+define internal ptr @"duration::fmt"(i64 %0) personality ptr @rust_eh_personality {
 entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i64, align 8
@@ -1997,24 +2022,24 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i64, ptr %local_0, align 8
-  %call_result = call i64 @hew_duration_nanos(i64 %call_arg)
-  store i64 %call_result, ptr %local_1, align 8
-  br label %bb1
+  %call_result = invoke i64 @hew_duration_nanos(i64 %call_arg)
+          to label %invoke.cont unwind label %invoke.cleanup
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %invoke.cont
   %call_arg1 = load i64, ptr %local_1, align 8
-  %call_result2 = call ptr @hew_i64_to_string(i64 %call_arg1)
-  store ptr %call_result2, ptr %local_2, align 8
-  br label %bb2
+  %call_result4 = invoke ptr @hew_i64_to_string(i64 %call_arg1)
+          to label %invoke.cont2 unwind label %invoke.cleanup3
 
-bb2:                                              ; preds = %bb1
+bb2:                                              ; preds = %invoke.cont2
   store ptr @str_lit, ptr %local_3, align 8
   %"hew_string_concat arg0" = load ptr, ptr %local_2, align 8
   %"hew_string_concat arg1" = load ptr, ptr %local_3, align 8
-  %hew_string_concat_call = call ptr @hew_string_concat(ptr %"hew_string_concat arg0", ptr %"hew_string_concat arg1")
-  store ptr %hew_string_concat_call, ptr %local_4, align 8
-  %"hew_string_drop drop" = load ptr, ptr %local_2, align 8
-  call void @hew_string_drop(ptr %"hew_string_drop drop")
+  %hew_string_concat_call = invoke ptr @hew_string_concat(ptr %"hew_string_concat arg0", ptr %"hew_string_concat arg1")
+          to label %invoke.cont6 unwind label %invoke.cleanup7
+
+bb3:                                              ; preds = %invoke.cont6
+  %"hew_string_drop drop9" = load ptr, ptr %local_2, align 8
+  call void @hew_string_drop(ptr %"hew_string_drop drop9")
   store ptr null, ptr %local_2, align 8
   %move_load = load ptr, ptr %local_4, align 8
   store ptr %move_load, ptr %return_slot, align 8
@@ -2026,6 +2051,36 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+invoke.cont:                                      ; preds = %bb0
+  store i64 %call_result, ptr %local_1, align 8
+  br label %bb1
+
+invoke.cleanup:                                   ; preds = %bb0
+  %hew.exception = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception
+
+invoke.cont2:                                     ; preds = %bb1
+  store ptr %call_result4, ptr %local_2, align 8
+  br label %bb2
+
+invoke.cleanup3:                                  ; preds = %bb1
+  %hew.exception5 = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %hew.exception5
+
+invoke.cont6:                                     ; preds = %bb2
+  store ptr %hew_string_concat_call, ptr %local_4, align 8
+  br label %bb3
+
+invoke.cleanup7:                                  ; preds = %bb2
+  %hew.exception8 = landingpad { ptr, i32 }
+          cleanup
+  %"hew_string_drop drop" = load ptr, ptr %local_2, align 8
+  call void @hew_string_drop(ptr %"hew_string_drop drop")
+  store ptr null, ptr %local_2, align 8
+  resume { ptr, i32 } %hew.exception8
 }
 
 define internal i32 @__hew_record_clone_inplace_HeapRow(ptr %0, ptr %1) {
@@ -2164,6 +2219,10 @@ declare ptr @hew_vec_new_with_elem_layout(ptr)
 
 declare ptr @hew_vec_new_i64()
 
+declare i32 @rust_eh_personality(...)
+
+declare void @hew_vec_free(ptr)
+
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64) #1
 
@@ -2223,18 +2282,6 @@ declare void @llvm.coro.end(ptr, i1, token) #5
 declare void @hew_cont_resume(ptr)
 
 declare void @hew_gen_coro_destroy(ptr)
-
-declare i1 @hew_cont_crash_cleanup_deactivate(i64)
-
-define internal void @__hew_frame_cleanup_022e4605beb6817e(ptr %0) {
-entry:
-  call void @__hew_record_drop_inplace_Holder(ptr %0)
-  ret void
-}
-
-declare i64 @hew_cont_crash_cleanup_arm(i64, ptr, i64, i64, ptr, i32, i32)
-
-declare i1 @hew_cont_crash_cleanup_retire(i64)
 
 declare i32 @hew_runtime_exit_status()
 

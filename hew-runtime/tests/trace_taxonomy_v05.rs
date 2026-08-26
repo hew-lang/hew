@@ -294,7 +294,7 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
     // are sent: `record_send` and the crash lifecycle emission both gate
     // on a current trace context (`trace_context()`), which is installed
     // only inside actor dispatch / scheduler frames. External
-    // `hew_actor_send` and crash-recovery longjmp paths intentionally do
+    // `hew_actor_send` and crash-recovery unwind paths intentionally do
     // not synthesise one. Their emission sites are still wired to the
     // closed taxonomy (see `EVENT_TYPE_NAMES`) and round-tripped by the
     // tracing-module unit tests; this probe asserts the no-unknown

@@ -11,10 +11,10 @@ use super::{
 /// slots cleared after the leaf is transferred to a local owner.
 ///
 /// This is deliberately an identity allowlist, not a broad resource rule.
-/// `Sender` and `Receiver` close implementations accept their null/empty
-/// representation, just like the existing `Vec` and `CancellationToken`
-/// cases. Streams and generators use different lifecycle protocols and must
-/// keep going through their dedicated transfer paths.
+/// `Sender`, `Receiver`, `Stream`, and `Sink` close implementations accept
+/// their null/empty representation, just like the existing `Vec` and
+/// `CancellationToken` cases. Generators use a distinct suspend/drop protocol
+/// and must keep going through their dedicated transfer path.
 fn scope_exit_tuple_projection_has_null_safe_drop(ty: &ResolvedTy) -> bool {
     ty == &ResolvedTy::CancellationToken
         || matches!(
@@ -24,6 +24,8 @@ fn scope_exit_tuple_projection_has_null_safe_drop(ty: &ResolvedTy) -> bool {
                     hew_types::BuiltinType::Vec
                         | hew_types::BuiltinType::Sender
                         | hew_types::BuiltinType::Receiver
+                        | hew_types::BuiltinType::Stream
+                        | hew_types::BuiltinType::Sink
                 ),
                 ..
             }
@@ -81,11 +83,11 @@ impl Builder {
     ///
     /// This authority is deliberately limited to leaves whose structural drop
     /// accepts an empty representation after transfer. Other
-    /// `HandleTransfer` leaves (generator, stream/sink, indirect-enum, map/set)
-    /// have distinct consume and close protocols; treating them as a plain
-    /// projected owner duplicates their downstream release. Inline aggregate
-    /// aliases, retained strings, and `bytes` (whose MIR ownership pass inserts
-    /// an explicit retain for field loads) likewise do not seed this route.
+    /// `HandleTransfer` leaves (generator, indirect-enum, map/set) have distinct
+    /// consume and close protocols; treating them as a plain projected owner
+    /// duplicates their downstream release. Inline aggregate aliases, retained
+    /// strings, and `bytes` (whose MIR ownership pass inserts an explicit retain
+    /// for field loads) likewise do not seed this route.
     pub(crate) fn note_carrier_projection(
         &mut self,
         aggregate: Place,
@@ -461,6 +463,30 @@ impl Builder {
         }
     }
 
+    /// Copy a composite result while preserving a typed non-consuming
+    /// `VecIter<T>` read as a borrow of the source cursor owner.
+    ///
+    /// The parallel result sidecar is the runtime authority for whether the
+    /// copied cursor snapshot needs release. A `false` transfer frame means
+    /// byte motion into a block/if/match result local must not be reinterpreted
+    /// later as consumption of the source binding.
+    pub(crate) fn push_composite_result_move(
+        &mut self,
+        dest: Place,
+        src: Place,
+        result_ty: &hew_types::ResolvedTy,
+    ) {
+        if self
+            .vec_iter_cursor_release_symbol(&self.subst_ty(result_ty))
+            .is_some()
+            && self.vec_iter_move_result_transfers.last() == Some(&false)
+        {
+            self.nonowning_vec_iter_copy_moves
+                .insert((self.current_block_id, src, dest));
+        }
+        self.push_instr(Instr::Move { dest, src });
+    }
+
     fn is_direct_projected_resource_handoff(
         &self,
         expr: &HirExpr,
@@ -495,31 +521,8 @@ impl Builder {
         requested_transfer: bool,
         composite_result_handoff: bool,
     ) -> Option<Place> {
-        if requested_transfer {
-            if let HirExprKind::BindingRef {
-                name,
-                resolved: ResolvedRef::Binding(binding),
-            } = &expr.kind
-            {
-                if self
-                    .vec_iter_borrowed_sources
-                    .iter()
-                    .any(|(_, source)| source == binding)
-                {
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: format!("moving `{name}` while a VecIter cursor borrows it"),
-                            site: expr.site,
-                        },
-                        note: "the active for-loop cursor reads this Vec's handle directly; \
-                               moving the source would neutralize or release that handle while \
-                               the cursor can still execute. Move the Vec before entering the \
-                               loop, or wait until the loop has finished"
-                            .to_string(),
-                    });
-                    return None;
-                }
-            }
+        if requested_transfer && self.reject_vec_iter_borrowed_source_move(expr) {
+            return None;
         }
         if self.reject_capture_env_whole_escape_expr(expr) {
             return None;
@@ -529,6 +532,7 @@ impl Builder {
             .is_some();
         let mut pushed_result_flag = false;
         let mut result_flag = None;
+        let mut owns_vec_iter_snapshot = false;
         if vec_iter_move {
             let flag = if let Some(flag) = self.vec_iter_move_result_flags.last().copied() {
                 flag
@@ -543,6 +547,7 @@ impl Builder {
             // Composite result paths overwrite this initialization in their
             // recursively lowered arm/tail. Direct fresh producers keep it.
             let owns_snapshot = self.vec_iter_value_is_owned(expr);
+            owns_vec_iter_snapshot = owns_snapshot;
             self.push_instr(Instr::ConstI64 {
                 dest: flag,
                 value: i64::from(!owns_snapshot),
@@ -582,6 +587,12 @@ impl Builder {
         }
         let value = value?;
         if vec_iter_move && !effective_transfer {
+            self.adopt_nontransferred_vec_iter_value_owner(
+                expr,
+                value,
+                owns_vec_iter_snapshot,
+                result_flag,
+            );
             return Some(value);
         }
         let transfers_carrier = vec_iter_move && self.owned_carrier_neutralize.contains_key(&value);
@@ -599,6 +610,73 @@ impl Builder {
             }
         }
         Some(transferred)
+    }
+
+    fn reject_vec_iter_borrowed_source_move(&mut self, expr: &HirExpr) -> bool {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(binding),
+        } = &expr.kind
+        else {
+            return false;
+        };
+        if !self
+            .vec_iter_borrowed_sources
+            .iter()
+            .any(|(_, source)| source == binding)
+        {
+            return false;
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: format!("moving `{name}` while a VecIter cursor borrows it"),
+                site: expr.site,
+            },
+            note: "the active for-loop cursor reads this Vec's handle directly; moving the source \
+                   would neutralize or release that handle while the cursor can still execute. \
+                   Move the Vec before entering the loop, or wait until the loop has finished"
+                .to_string(),
+        });
+        true
+    }
+
+    fn adopt_nontransferred_vec_iter_value_owner(
+        &mut self,
+        expr: &HirExpr,
+        value: Place,
+        owns_snapshot: bool,
+        result_flag: Option<Place>,
+    ) {
+        if !owns_snapshot || self.binding_locals.values().any(|place| *place == value) {
+            return;
+        }
+        let Place::Local(local) = value else {
+            return;
+        };
+        let ty = self.subst_ty(&expr.ty);
+        let warrant = self.owner_warrant_for_admitted_temp(expr);
+        let binding = self.adopt_synthetic_owned_local(
+            super::SYNTHETIC_VEC_ITER_VALUE_NAME,
+            expr.site,
+            local,
+            ty,
+            warrant,
+        );
+        let (Some(generation), Some(flag)) =
+            (self.owner_generations.get(&binding).copied(), result_flag)
+        else {
+            return;
+        };
+        let owner = crate::model::OwnerId {
+            binding,
+            generation,
+        };
+        self.push_instr(Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+            owner,
+            flag,
+            kind: crate::model::OwnershipGuardKind::VecIter,
+        }));
+        self.vec_iter_value_owners.insert(expr.site, owner);
     }
 
     /// Transfer one carrier-tracked place into an owning sink. Whole carriers
@@ -1084,16 +1162,19 @@ mod scope_exit_tuple_projection_tests {
     }
 
     #[test]
-    fn admits_only_null_safe_channel_endpoint_leaves() {
-        assert!(scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(
-            BuiltinType::Sender
-        )));
-        assert!(scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(
-            BuiltinType::Receiver
-        )));
-        assert!(scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(
-            BuiltinType::Vec
-        )));
+    fn admits_null_safe_owned_handle_leaves() {
+        for builtin in [
+            BuiltinType::Sender,
+            BuiltinType::Receiver,
+            BuiltinType::Stream,
+            BuiltinType::Sink,
+            BuiltinType::Vec,
+        ] {
+            assert!(
+                scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(builtin)),
+                "{builtin:?} must clear its source tuple slot on transfer"
+            );
+        }
         assert!(scope_exit_tuple_projection_has_null_safe_drop(
             &ResolvedTy::CancellationToken
         ));
@@ -1104,8 +1185,6 @@ mod scope_exit_tuple_projection_tests {
         for builtin in [
             BuiltinType::Generator,
             BuiltinType::AsyncGenerator,
-            BuiltinType::Stream,
-            BuiltinType::Sink,
             BuiltinType::Duplex,
             BuiltinType::SendHalf,
             BuiltinType::RecvHalf,

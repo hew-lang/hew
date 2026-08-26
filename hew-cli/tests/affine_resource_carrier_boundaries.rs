@@ -14,7 +14,7 @@ mod support;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use support::leak_slope::compile_to_native;
+use support::leak_slope::{compile_to_native, measure_leaks_exact, run_under_malloc_scribble};
 use support::{describe_output, hew_binary, repo_root, require_codegen, strip_ansi};
 
 const TOKEN: &str = r#"
@@ -103,6 +103,20 @@ fn main() -> i64 {
     let items: Vec<Token> = Vec.new();
     let stored = store_or_drop(items, Token { id: 13 }, true);
     println(stored.len());
+    0
+}
+";
+
+const PARAMETER_REUSE_BODY: &str = r"
+fn store_then_reuse(items: Vec<Token>, value: Token) -> Vec<Token> {
+    items.push(value);
+    value.close();
+    items
+}
+
+fn main() -> i64 {
+    let items: Vec<Token> = Vec.new();
+    let _stored = store_then_reuse(items, Token { id: 13 });
     0
 }
 ";
@@ -209,6 +223,7 @@ fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
     var receivers: Vec<channel.Receiver<Token>> = Vec.new();
     receivers.push(rx);
+    println(receivers.len());
     0
 }
 ";
@@ -221,9 +236,40 @@ fn main() -> i64 {
     let (_tx2, rx2): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
     var receivers: Vec<channel.Receiver<Token>> = [rx1];
     receivers.set(0, rx2);
+    println(receivers.len());
     0
 }
 ";
+
+const CONDITIONAL_HEAP_RESOURCE_SOURCE: &str = r#"
+#[resource]
+type Buf {
+    data: Vec<i64>;
+    id: i64;
+}
+
+impl Buf {
+    fn close(b: Buf) {
+        println(f"CLOSE {b.id}");
+        let _len = b.data.len();
+    }
+}
+
+fn make(id: i64) -> Buf {
+    let data: Vec<i64> = Vec.new();
+    data.push(id);
+    Buf { data: data, id: id }
+}
+
+fn main() {
+    for i in 0 .. 4 {
+        let b = make(i);
+        if i == -1 {
+            b.close();
+        }
+    }
+}
+"#;
 
 fn source(body: &str) -> String {
     format!("{TOKEN}\n{body}")
@@ -316,6 +362,21 @@ fn function<'a>(dump: &'a str, header: &str) -> &'a str {
     &tail[..end]
 }
 
+fn assert_channel_affine_guards(mir: &str) {
+    for symbol in [
+        "fn std$channel$try_new",
+        "fn std.channel.ChannelPair::close",
+    ] {
+        let guarded_function = function(mir, symbol);
+        assert!(
+            guarded_function.lines().any(|line| {
+                line.contains("ownership Guard") && line.contains("kind: AffineRelease")
+            }),
+            "{symbol} must publish its physical close flag as an explicit OwnerId/generation Guard event:\n{guarded_function}"
+        );
+    }
+}
+
 fn assert_ordered(haystack: &str, needles: &[&str]) {
     let mut cursor = 0;
     for needle in needles {
@@ -356,6 +417,19 @@ fn carrier_helper_locals_do_not_displace_trailing_abi_parameters() {
         "parameter_order",
         PARAMETER_ORDER_BODY,
         "1\nclosing token id=13\n",
+    );
+}
+
+#[test]
+fn resource_parameter_reuse_after_collection_transfer_is_rejected() {
+    let stderr = compile_rejected("parameter_reuse", PARAMETER_REUSE_BODY);
+    assert!(
+        stderr.contains("E_MIR_CHECK")
+            && stderr.contains("binding `value` is used after it was consumed")
+            && stderr.contains("binding consumed here")
+            && stderr.contains("value.close()")
+            && stderr.contains("items.push(value)"),
+        "a real same-function use after collection transfer must remain rejected:\n{stderr}"
     );
 }
 
@@ -506,10 +580,11 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
         !output.status.success()
-            && stderr.contains("Vec<std.channel.Receiver<Token>>")
-            && stderr.contains("cannot be cloned")
-            && stderr.contains("affine close contract"),
-        "Receiver has no dup helper and must be rejected by the shared affine-clone authority:\n{stderr}"
+            && stderr.contains("E_NOT_YET_IMPLEMENTED")
+            && stderr.contains("drop-only `Vec` element operation `clone/iter`")
+            && stderr.contains("drop callback but no semantic clone")
+            && stderr.contains("would create a second owner"),
+        "Receiver has no dup helper and must be rejected by the canonical drop-only Vec clone authority:\n{stderr}"
     );
 }
 
@@ -537,6 +612,7 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
 
     let mir = raw_mir("receiver_move", CHANNEL_RECEIVER_MOVE_BODY);
+    assert_channel_affine_guards(&mir);
     assert!(
         mir.contains("call hew_vec_push_owned_move(")
             && mir.lines().any(|line| {
@@ -561,27 +637,100 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
         "Receiver Vec must emit clone-null descriptor, move ingress, and one close-on-free wrapper:\n{ir}"
     );
 
+    for (name, body, symbol, consumed) in [
+        (
+            "receiver_bound_push",
+            CHANNEL_RECEIVER_COPY_PUSH_BODY,
+            "hew_vec_push_owned_move",
+            " rx ",
+        ),
+        (
+            "receiver_bound_set",
+            CHANNEL_RECEIVER_COPY_SET_BODY,
+            "hew_vec_set_owned_move",
+            " rx2 ",
+        ),
+    ] {
+        let accepted = compile_to_native(&source(body), dir.path(), name);
+        let output = Command::new(&accepted)
+            .current_dir(repo_root())
+            .output()
+            .expect("run bound Receiver Vec move fixture");
+        assert!(
+            output.status.success() && output.stdout == b"1\n",
+            "{name} must move the source endpoint into the descriptor and close once:\n{}",
+            describe_output(&output)
+        );
+        let mir = raw_mir(name, body);
+        assert!(
+            mir.contains(&format!("call {symbol}("))
+                && mir.lines().any(|line| {
+                    line.contains(consumed)
+                        && line.contains("ty=Receiver<Token>")
+                        && line.contains("intent=Consume")
+                }),
+            "{name} must carry an explicit move-in consume event:\n{mir}"
+        );
+    }
+
     for (name, body) in [
         ("receiver_get", CHANNEL_RECEIVER_GET_BODY),
         ("receiver_index", CHANNEL_RECEIVER_INDEX_BODY),
         ("receiver_slice", CHANNEL_RECEIVER_SLICE_BODY),
         ("receiver_iter", CHANNEL_RECEIVER_ITER_BODY),
-        ("receiver_copy_push", CHANNEL_RECEIVER_COPY_PUSH_BODY),
-        ("receiver_copy_set", CHANNEL_RECEIVER_COPY_SET_BODY),
     ] {
         let stderr = compile_rejected(name, body);
         assert!(
-            (stderr.contains("drop-only")
+            (stderr.contains("single-consumer endpoint")
+                || stderr.contains("drop-only")
                 || stderr.contains("affine close contract")
                 || stderr.contains("opaque/resource handle")
                 || stderr.contains("owned handle"))
                 && (stderr.contains("semantic clone")
+                    || stderr.contains("non-cloneable")
                     || stderr.contains("clone an affine value")
                     || stderr.contains("cannot be cloned")
                     || stderr.contains("owned handle")),
             "{name} must reject the copy/read surface through the affine Receiver contract:\n{stderr}"
         );
     }
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "exact leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn conditional_heap_resource_scope_exit_closes_and_frees_fields_exactly_once() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("conditional-heap-resource-close-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        CONDITIONAL_HEAP_RESOURCE_SOURCE,
+        dir.path(),
+        "conditional_heap_resource_close",
+    );
+
+    let poisoned = run_under_malloc_scribble(&bin);
+    assert!(
+        poisoned.status.success(),
+        "guarded in-place resource teardown must not double-free:\n{}",
+        describe_output(&poisoned)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&poisoned.stdout),
+        "CLOSE 0\nCLOSE 1\nCLOSE 2\nCLOSE 3\n",
+        "each conditionally-live Buf generation must run its close ritual once"
+    );
+
+    let measured = measure_leaks_exact(&bin);
+    assert_eq!(
+        measured,
+        (0, 0),
+        "the recipe-derived in-place helper must close Buf and recursively free its Vec field"
+    );
 }
 
 fn contains_native_artifact(dir: &Path) -> bool {

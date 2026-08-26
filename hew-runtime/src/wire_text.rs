@@ -63,7 +63,7 @@ const FORMAT_YAML: c_int = 1;
 //
 // The compiler emits a compact JSON descriptor string per wire type that maps
 // each field's wire tag (`@N`) to its JSON/YAML key name, recursively for nested
-// wire structs/enums, vectors, and options. The runtime parses it once per bridge
+// wire structs/enums, collections, and options. The runtime parses it once per bridge
 // call. The format is intentionally small and explicit so the codegen emitter is
 // trivial to keep in sync with this parser.
 //
@@ -72,6 +72,8 @@ const FORMAT_YAML: c_int = 1;
 //   struct : {"k":"struct","f":[{"t":<tag>,"n":"<name>","d":<node>}, ...]}
 //   enum   : {"k":"enum","v":[{"t":<tag>,"n":"<name>","p":[<node>, ...]}, ...]}
 //   vec    : {"k":"vec","e":<node>}
+//   set    : {"k":"set","e":<node>}
+//   map    : {"k":"map","key":<node>,"value":<node>}
 //   option : {"k":"opt","e":<node>}
 //   opaque : {"k":"opaque"}   // a shape outside the text floor — fail closed
 
@@ -97,6 +99,11 @@ enum Desc {
     Enum(Vec<EnumVariant>),
     /// A `Vec<T>`: CBOR array ↔ JSON array, element-wise transcoded.
     Vec(Box<Desc>),
+    /// A `HashSet<T>`: a deterministically ordered CBOR/JSON array.
+    Set(Box<Desc>),
+    /// A `HashMap<K, V>`: CBOR map ↔ a JSON object for string keys, otherwise
+    /// an array of `[key, value]` pairs so key types are never stringified.
+    Map(Box<Desc>, Box<Desc>),
     /// An `Option<T>`: CBOR null/value ↔ JSON null/value.
     Opt(Box<Desc>),
     /// A shape the text codec does not support (outside the wire-body floor).
@@ -116,6 +123,184 @@ struct EnumVariant {
     tag: u64,
     name: String,
     payload: Vec<Desc>,
+}
+
+/// Duplicate-preserving text value used only on the untrusted deserialize
+/// direction. `serde_json::Value` and YAML's value representation both store
+/// mappings in unique-key maps, which normalises duplicate keys before the
+/// typed wire walk can reject them. Keeping mapping entries in a `Vec` makes
+/// duplicate rejection part of the typed JSON/YAML contract instead.
+#[derive(Debug, Clone)]
+enum TextValue {
+    Null,
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    F64(f64),
+    String(String),
+    Array(Vec<Self>),
+    Object(Vec<(Self, Self)>),
+}
+
+struct TextValueVisitor;
+
+impl<'de> serde::de::Visitor<'de> for TextValueVisitor {
+    type Value = TextValue;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a JSON or YAML value")
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(TextValue::Null)
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(TextValue::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        serde::Deserialize::deserialize(deserializer)
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(TextValue::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(TextValue::I64(value))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(TextValue::U64(value))
+    }
+
+    fn visit_i128<E>(self, value: i128) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        i64::try_from(value)
+            .map(TextValue::I64)
+            .map_err(|_| E::custom("integer is outside the supported 64-bit range"))
+    }
+
+    fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        u64::try_from(value)
+            .map(TextValue::U64)
+            .map_err(|_| E::custom("integer is outside the supported 64-bit range"))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+        Ok(TextValue::F64(value))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(TextValue::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(TextValue::String(value))
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut values = Vec::with_capacity(sequence.size_hint().unwrap_or(0));
+        while let Some(value) = sequence.next_element()? {
+            values.push(value);
+        }
+        Ok(TextValue::Array(values))
+    }
+
+    fn visit_map<A>(self, mut mapping: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut entries = Vec::with_capacity(mapping.size_hint().unwrap_or(0));
+        while let Some(entry) = mapping.next_entry()? {
+            entries.push(entry);
+        }
+        Ok(TextValue::Object(entries))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TextValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(TextValueVisitor)
+    }
+}
+
+impl TextValue {
+    fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::I64(value) => Some(*value),
+            Self::U64(value) => i64::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+
+    fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::U64(value) => Some(*value),
+            Self::I64(value) => u64::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "JSON/YAML numeric coercion intentionally matches serde_json::Number::as_f64"
+    )]
+    fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::I64(value) => Some(*value as f64),
+            Self::U64(value) => Some(*value as f64),
+            Self::F64(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn as_array(&self) -> Option<&[Self]> {
+        match self {
+            Self::Array(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    fn as_object(&self) -> Option<&[(Self, Self)]> {
+        match self {
+            Self::Object(entries) => Some(entries),
+            _ => None,
+        }
+    }
+
+    fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
 }
 
 impl Desc {
@@ -138,6 +323,11 @@ impl Desc {
             "bytes" => Some(Self::Bytes),
             "opaque" => Some(Self::Opaque),
             "vec" => Some(Self::Vec(Box::new(Self::parse(obj.get("e")?, depth + 1)?))),
+            "set" => Some(Self::Set(Box::new(Self::parse(obj.get("e")?, depth + 1)?))),
+            "map" => Some(Self::Map(
+                Box::new(Self::parse(obj.get("key")?, depth + 1)?),
+                Box::new(Self::parse(obj.get("value")?, depth + 1)?),
+            )),
             "opt" => Some(Self::Opt(Box::new(Self::parse(obj.get("e")?, depth + 1)?))),
             "struct" => {
                 let mut fields = Vec::new();
@@ -191,6 +381,10 @@ unsafe fn parse_descriptor(ptr: *const c_char) -> Option<Desc> {
 /// integer field tags) into a `serde_json::Value` (keyed by JSON/YAML key names)
 /// guided by `desc`. Fails closed on any shape that does not match the
 /// descriptor.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeping the exhaustive descriptor conversion in one match makes the accepted wire shapes auditable"
+)]
 fn cbor_to_json(value: &CborValue, desc: &Desc, depth: usize) -> Result<serde_json::Value, String> {
     if depth >= MAX_TRANSCODE_DEPTH {
         return Err("value nesting exceeds the supported depth".to_string());
@@ -254,7 +448,7 @@ fn cbor_to_json(value: &CborValue, desc: &Desc, depth: usize) -> Result<serde_js
             CborValue::Null => Ok(serde_json::Value::Null),
             other => cbor_to_json(other, inner, depth + 1),
         },
-        Desc::Vec(elem) => match value {
+        Desc::Vec(elem) | Desc::Set(elem) => match value {
             CborValue::Array(items) => {
                 let mut out = Vec::with_capacity(items.len());
                 for it in items {
@@ -264,6 +458,33 @@ fn cbor_to_json(value: &CborValue, desc: &Desc, depth: usize) -> Result<serde_js
             }
             _ => Err("expected an array".to_string()),
         },
+        Desc::Map(key_desc, value_desc) => {
+            let CborValue::Map(entries) = value else {
+                return Err("expected a map".to_string());
+            };
+            if matches!(key_desc.as_ref(), Desc::Str) {
+                let mut out = serde_json::Map::new();
+                for (key, item) in entries {
+                    let CborValue::Text(name) = key else {
+                        return Err("expected a string map key".to_string());
+                    };
+                    if out.contains_key(name) {
+                        return Err("duplicate map key".to_string());
+                    }
+                    out.insert(name.clone(), cbor_to_json(item, value_desc, depth + 1)?);
+                }
+                Ok(serde_json::Value::Object(out))
+            } else {
+                let mut out = Vec::with_capacity(entries.len());
+                for (key, item) in entries {
+                    out.push(serde_json::Value::Array(vec![
+                        cbor_to_json(key, key_desc, depth + 1)?,
+                        cbor_to_json(item, value_desc, depth + 1)?,
+                    ]));
+                }
+                Ok(serde_json::Value::Array(out))
+            }
+        }
         Desc::Struct(fields) => {
             let CborValue::Map(pairs) = value else {
                 return Err("expected a map".to_string());
@@ -362,10 +583,15 @@ fn enum_cbor_to_json(
 
 // ── text → CBOR (deserialize: from_json / from_yaml) ─────────────────────────
 
-/// Transcode a `serde_json::Value` (parsed from JSON or YAML, keyed by names)
+/// Transcode a duplicate-preserving text value (parsed from JSON or YAML,
+/// keyed by names)
 /// into a `ciborium::Value` (keyed by integer tags) matching exactly the shape
 /// the binary CBOR decode walk expects. Fails closed on any shape mismatch.
-fn json_to_cbor(value: &serde_json::Value, desc: &Desc, depth: usize) -> Result<CborValue, String> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeping the exhaustive descriptor conversion in one match makes the accepted wire shapes auditable"
+)]
+fn text_value_to_cbor(value: &TextValue, desc: &Desc, depth: usize) -> Result<CborValue, String> {
     if depth >= MAX_TRANSCODE_DEPTH {
         return Err("value nesting exceeds the supported depth".to_string());
     }
@@ -420,28 +646,83 @@ fn json_to_cbor(value: &serde_json::Value, desc: &Desc, depth: usize) -> Result<
             if value.is_null() {
                 Ok(CborValue::Null)
             } else {
-                json_to_cbor(value, inner, depth + 1)
+                text_value_to_cbor(value, inner, depth + 1)
             }
         }
-        Desc::Vec(elem) => {
+        Desc::Vec(elem) | Desc::Set(elem) => {
             let arr = value
                 .as_array()
                 .ok_or_else(|| "expected an array".to_string())?;
             let mut out = Vec::with_capacity(arr.len());
             for it in arr {
-                out.push(json_to_cbor(it, elem, depth + 1)?);
+                out.push(text_value_to_cbor(it, elem, depth + 1)?);
             }
             Ok(CborValue::Array(out))
+        }
+        Desc::Map(key_desc, value_desc) => {
+            let mut out = Vec::new();
+            if matches!(key_desc.as_ref(), Desc::Str) {
+                let obj = value
+                    .as_object()
+                    .ok_or_else(|| "expected an object for a string-keyed map".to_string())?;
+                out.reserve(obj.len());
+                let mut seen = std::collections::HashSet::with_capacity(obj.len());
+                for (key, item) in obj {
+                    let key = key
+                        .as_str()
+                        .ok_or_else(|| "expected string keys in a string-keyed map".to_string())?;
+                    if !seen.insert(key) {
+                        return Err(format!("duplicate map key `{key}`"));
+                    }
+                    out.push((
+                        CborValue::Text(key.to_string()),
+                        text_value_to_cbor(item, value_desc, depth + 1)?,
+                    ));
+                }
+            } else {
+                let entries = value.as_array().ok_or_else(|| {
+                    "expected an array of [key, value] pairs for a non-string-keyed map".to_string()
+                })?;
+                out.reserve(entries.len());
+                for entry in entries {
+                    let pair = entry
+                        .as_array()
+                        .ok_or_else(|| "map entry is not a [key, value] pair".to_string())?;
+                    if pair.len() != 2 {
+                        return Err("map entry must contain exactly two values".to_string());
+                    }
+                    out.push((
+                        text_value_to_cbor(&pair[0], key_desc, depth + 1)?,
+                        text_value_to_cbor(&pair[1], value_desc, depth + 1)?,
+                    ));
+                }
+            }
+            Ok(CborValue::Map(out))
         }
         Desc::Struct(fields) => {
             let obj = value
                 .as_object()
                 .ok_or_else(|| "expected an object".to_string())?;
+            let mut named_entries = Vec::with_capacity(obj.len());
+            let mut seen = std::collections::HashSet::with_capacity(obj.len());
+            for (key, field_value) in obj {
+                let key = key
+                    .as_str()
+                    .ok_or_else(|| "expected string keys in an object".to_string())?;
+                if !seen.insert(key) {
+                    return Err(format!("duplicate object key `{key}`"));
+                }
+                named_entries.push((key, field_value));
+            }
             let mut entries = Vec::with_capacity(fields.len());
             for field in fields {
-                match obj.get(&field.name) {
+                match named_entries
+                    .iter()
+                    .find(|(name, _)| *name == field.name)
+                    .map(|(_, value)| *value)
+                {
                     Some(v) => {
-                        let cv = json_to_cbor(v, &field.desc, depth + 1)?;
+                        let cv = text_value_to_cbor(v, &field.desc, depth + 1)?;
                         entries.push((CborValue::Integer(Integer::from(field.tag)), cv));
                     }
                     None => {
@@ -472,13 +753,13 @@ fn json_to_cbor(value: &serde_json::Value, desc: &Desc, depth: usize) -> Result<
 /// bare integer tag (unit variant); a JSON object `{"VariantName": [payload...]}`
 /// becomes the CBOR map-of-one `{tag: [payload...]}`.
 fn enum_json_to_cbor(
-    value: &serde_json::Value,
+    value: &TextValue,
     variants: &[EnumVariant],
     depth: usize,
 ) -> Result<CborValue, String> {
     match value {
         // Unit variant: a JSON string naming the variant.
-        serde_json::Value::String(name) => {
+        TextValue::String(name) => {
             let variant = variants
                 .iter()
                 .find(|v| &v.name == name)
@@ -493,14 +774,17 @@ fn enum_json_to_cbor(
             Ok(CborValue::Integer(Integer::from(variant.tag)))
         }
         // Payload variant: a single-key object `{"VariantName": [payload...]}`.
-        serde_json::Value::Object(obj) => {
+        TextValue::Object(obj) => {
             if obj.len() != 1 {
                 return Err("enum object must have exactly one variant key".to_string());
             }
             let (name, body) = obj.iter().next().expect("len checked == 1");
+            let name = name
+                .as_str()
+                .ok_or_else(|| "enum variant key must be a string".to_string())?;
             let variant = variants
                 .iter()
-                .find(|v| &v.name == name)
+                .find(|v| v.name == name)
                 .ok_or_else(|| format!("unknown enum variant `{name}`"))?;
             let arr = body
                 .as_array()
@@ -515,7 +799,7 @@ fn enum_json_to_cbor(
             }
             let mut payload = Vec::with_capacity(arr.len());
             for (it, pd) in arr.iter().zip(variant.payload.iter()) {
-                payload.push(json_to_cbor(it, pd, depth + 1)?);
+                payload.push(text_value_to_cbor(it, pd, depth + 1)?);
             }
             Ok(CborValue::Map(vec![(
                 CborValue::Integer(Integer::from(variant.tag)),
@@ -624,7 +908,7 @@ pub unsafe extern "C" fn hew_wire_text_to_cbor(
         // SAFETY: descriptor is null or a valid C string per the contract.
         let desc = unsafe { parse_descriptor(descriptor) }
             .ok_or_else(|| "internal: malformed wire descriptor".to_string())?;
-        let parsed: serde_json::Value = match format {
+        let parsed: TextValue = match format {
             FORMAT_JSON => {
                 serde_json::from_str(text_str).map_err(|e| format!("invalid JSON: {e}"))?
             }
@@ -633,7 +917,7 @@ pub unsafe extern "C" fn hew_wire_text_to_cbor(
             }
             _ => return Err("unknown text format".to_string()),
         };
-        let cbor = json_to_cbor(&parsed, &desc, 0)?;
+        let cbor = text_value_to_cbor(&parsed, &desc, 0)?;
         let mut encoded: Vec<u8> = Vec::new();
         ciborium::ser::into_writer(&cbor, &mut encoded)
             .map_err(|_| "internal: CBOR re-encode failed".to_string())?;
@@ -689,6 +973,42 @@ fn write_err(out_err: *mut *mut c_char, msg: &str) {
 mod tests {
     use super::*;
     use hew_cabi::cabi::free_cstring;
+
+    fn text_value_from_json(value: &serde_json::Value) -> TextValue {
+        match value {
+            serde_json::Value::Null => TextValue::Null,
+            serde_json::Value::Bool(value) => TextValue::Bool(*value),
+            serde_json::Value::Number(value) => {
+                if let Some(value) = value.as_i64() {
+                    TextValue::I64(value)
+                } else if let Some(value) = value.as_u64() {
+                    TextValue::U64(value)
+                } else {
+                    TextValue::F64(value.as_f64().expect("JSON number is representable"))
+                }
+            }
+            serde_json::Value::String(value) => TextValue::String(value.clone()),
+            serde_json::Value::Array(values) => {
+                TextValue::Array(values.iter().map(text_value_from_json).collect())
+            }
+            serde_json::Value::Object(entries) => TextValue::Object(
+                entries
+                    .iter()
+                    .map(|(key, value)| {
+                        (TextValue::String(key.clone()), text_value_from_json(value))
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn json_to_cbor(
+        value: &serde_json::Value,
+        desc: &Desc,
+        depth: usize,
+    ) -> Result<CborValue, String> {
+        text_value_to_cbor(&text_value_from_json(value), desc, depth)
+    }
 
     /// Release a header-aware C string produced by `malloc_cstring` (the
     /// production callers free these via `hew_string_drop`; bare `libc::free`
@@ -1000,5 +1320,82 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str("[256]").unwrap();
         let err = json_to_cbor(&json, &Desc::Bytes, 0).unwrap_err();
         assert!(err.contains("exceeds 255"), "got: {err}");
+    }
+
+    #[test]
+    fn maps_and_sets_preserve_key_types_in_json() {
+        let string_map = Desc::Map(Box::new(Desc::Str), Box::new(Desc::Int));
+        let cbor = CborValue::Map(vec![
+            (
+                CborValue::Text("a".to_string()),
+                CborValue::Integer(1.into()),
+            ),
+            (
+                CborValue::Text("b".to_string()),
+                CborValue::Integer(2.into()),
+            ),
+        ]);
+        let json = cbor_to_json(&cbor, &string_map, 0).unwrap();
+        assert_eq!(serde_json::to_string(&json).unwrap(), r#"{"a":1,"b":2}"#);
+        assert_eq!(json_to_cbor(&json, &string_map, 0).unwrap(), cbor);
+
+        let int_map = Desc::Map(Box::new(Desc::Int), Box::new(Desc::Str));
+        let pairs: serde_json::Value = serde_json::from_str(r#"[[1,"one"],[2,"two"]]"#).unwrap();
+        let encoded = json_to_cbor(&pairs, &int_map, 0).unwrap();
+        assert!(matches!(encoded, CborValue::Map(_)));
+        assert_eq!(cbor_to_json(&encoded, &int_map, 0).unwrap(), pairs);
+
+        let set = Desc::Set(Box::new(Desc::Int));
+        let values: serde_json::Value = serde_json::from_str("[1,2,3]").unwrap();
+        let encoded = json_to_cbor(&values, &set, 0).unwrap();
+        assert_eq!(cbor_to_json(&encoded, &set, 0).unwrap(), values);
+    }
+
+    #[test]
+    fn map_text_shapes_fail_closed_without_key_coercion() {
+        let string_map = Desc::Map(Box::new(Desc::Str), Box::new(Desc::Int));
+        let err = json_to_cbor(
+            &serde_json::from_str::<serde_json::Value>(r#"[["a",1]]"#).unwrap(),
+            &string_map,
+            0,
+        )
+        .unwrap_err();
+        assert!(err.contains("string-keyed map"), "got: {err}");
+
+        let int_map = Desc::Map(Box::new(Desc::Int), Box::new(Desc::Str));
+        let object = serde_json::from_str::<serde_json::Value>(r#"{"1":"one"}"#).unwrap();
+        let err = json_to_cbor(&object, &int_map, 0).unwrap_err();
+        assert!(err.contains("[key, value]"), "got: {err}");
+        let malformed = serde_json::from_str::<serde_json::Value>(r#"[[1,"one",3]]"#).unwrap();
+        let err = json_to_cbor(&malformed, &int_map, 0).unwrap_err();
+        assert!(err.contains("exactly two"), "got: {err}");
+    }
+
+    #[test]
+    fn duplicate_json_string_map_key_is_rejected_before_cbor_decode() {
+        const STRING_MAP_DESC: &str = r#"{"k":"map","key":{"k":"str"},"value":{"k":"i64"}}"#;
+        match text_to_cbor(r#"{"same":1,"same":2}"#, STRING_MAP_DESC, FORMAT_JSON) {
+            TextToCbor::Err(message) => {
+                assert!(
+                    message.contains("duplicate map key `same`"),
+                    "got: {message}"
+                );
+            }
+            TextToCbor::Ok(_) => panic!("duplicate JSON map key must be rejected"),
+        }
+    }
+
+    #[test]
+    fn duplicate_yaml_string_map_key_is_rejected_before_cbor_decode() {
+        const STRING_MAP_DESC: &str = r#"{"k":"map","key":{"k":"str"},"value":{"k":"i64"}}"#;
+        match text_to_cbor("same: 1\nsame: 2\n", STRING_MAP_DESC, FORMAT_YAML) {
+            TextToCbor::Err(message) => {
+                assert!(
+                    message.contains("duplicate map key `same`"),
+                    "got: {message}"
+                );
+            }
+            TextToCbor::Ok(_) => panic!("duplicate YAML map key must be rejected"),
+        }
     }
 }

@@ -238,8 +238,13 @@ fn fixes_from_code_actions(
 /// span (e.g. import-resolution failures, manifest errors). The code is the
 /// generic `E_MESSAGE` family and the span is zero.
 pub(crate) fn message_diagnostic(message: &str) -> JsonDiagnostic {
+    coded_message_diagnostic("E_MESSAGE", message)
+}
+
+/// Build a source-less diagnostic with a stable frontend-authored code.
+pub(crate) fn coded_message_diagnostic(code: &str, message: &str) -> JsonDiagnostic {
     JsonDiagnostic {
-        code: "E_MESSAGE".to_string(),
+        code: code.to_string(),
         severity: SEVERITY_ERROR.to_string(),
         source: "hew".to_string(),
         file: String::new(),
@@ -353,12 +358,6 @@ pub(crate) fn from_hir_diagnostic(
 
 /// Build a [`JsonDiagnostic`] from a MIR diagnostic, located at its primary
 /// site when source context is available.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "renders one MIR diagnostic: source/filename/span/code/message/notes/\
-              context-notes plus the advisory-severity flag; each is an independent \
-              input the JSON record carries verbatim"
-)]
 pub(crate) fn from_mir_diagnostic(
     source: Option<&str>,
     filename: Option<&str>,
@@ -367,7 +366,6 @@ pub(crate) fn from_mir_diagnostic(
     message: &str,
     notes: &[(Range<usize>, String)],
     context_notes: &[String],
-    is_advisory: bool,
 ) -> JsonDiagnostic {
     let primary_span = match (source, span) {
         (Some(src), Some(span)) => JsonSpan::from_range(src, span),
@@ -388,17 +386,9 @@ pub(crate) fn from_mir_diagnostic(
             span: None,
         });
     }
-    // Advisory MIR diagnostics (obligation under-release leaks) carry the
-    // `warning` severity — a compile-time diagnostic that does not fail the
-    // build; all other MIR diagnostics are the hard `error` family.
-    let severity = if is_advisory {
-        SEVERITY_WARNING
-    } else {
-        SEVERITY_ERROR
-    };
     JsonDiagnostic {
         code: code.to_string(),
-        severity: severity.to_string(),
+        severity: SEVERITY_ERROR.to_string(),
         source: "hew-mir".to_string(),
         file: filename.unwrap_or("<unknown>").to_string(),
         span: primary_span,
@@ -523,7 +513,6 @@ mod tests {
              is not implemented yet",
             &[],
             &["MIR kind: NotYetImplemented".to_string()],
-            false,
         );
         assert_eq!(diag.code, "NotYetImplemented");
         assert_eq!(diag.severity, SEVERITY_ERROR);
@@ -533,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn advisory_mir_diagnostic_carries_warning_severity() {
+    fn ownership_mir_diagnostic_carries_error_severity() {
         let diag = from_mir_diagnostic(
             None,
             None,
@@ -542,12 +531,10 @@ mod tests {
             "obligation balance in `decode`: owned value `out` is never released",
             &[],
             &["MIR kind: ObligationUnderReleased".to_string()],
-            true,
         );
         assert_eq!(
-            diag.severity, SEVERITY_WARNING,
-            "an advisory MIR diagnostic (under-release leak) must carry the \
-             `warning` severity, not `error`"
+            diag.severity, SEVERITY_ERROR,
+            "an ownership under-release must block LLVM emission"
         );
     }
 }

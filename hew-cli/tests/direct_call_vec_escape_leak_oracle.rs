@@ -17,7 +17,7 @@ use support::{describe_output, repo_root, require_codegen};
 #[test]
 fn direct_call_vec_escape_releases_every_owner() {
     require_codegen();
-    let source = std::fs::read_to_string(repo_root().join("tests/obligation-advisory/rC.hew"))
+    let source = std::fs::read_to_string(repo_root().join("tests/ownership-balance/rC.hew"))
         .expect("read rC fixture");
     let directory = tempfile::Builder::new()
         .prefix("direct-call-vec-escape-")

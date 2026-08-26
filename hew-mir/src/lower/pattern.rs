@@ -14,7 +14,7 @@ use super::{
     HirLiteral, Instr, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
     ProducedValueOwnership, ProjectedPayloadOrigin, ProjectedPayloadProvenance,
     ProjectedPayloadRejectReason, ProjectedScrutinee, ReleaseSymbolVerdict, ResolvedRef,
-    ResolvedTy, SiteId, Terminator, TrapKind, ValueClass, VecElementRelease,
+    ResolvedTy, ScopeId, SiteId, Terminator, TrapKind, ValueClass, VecElementRelease,
     SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
 };
 
@@ -77,6 +77,26 @@ enum ProjectFieldDischarge {
         field_idx: u32,
         field_ty: ResolvedTy,
     },
+}
+
+/// A whole-value project fallback has completed its owner handoff only when
+/// both physical endpoints publish one unique generation for the exact
+/// bindings involved. `current_owner_id_at_place` represents zero or multiple
+/// candidates as `None`, so unknown and ambiguous places deliberately retain
+/// the ordinary consume marker and remain validator-visible.
+fn exact_whole_binding_owner_handoff(
+    source: Option<crate::model::OwnerId>,
+    source_binding: BindingId,
+    destination: Option<crate::model::OwnerId>,
+    destination_binding: BindingId,
+) -> bool {
+    matches!(
+        (source, destination),
+        (Some(source), Some(destination))
+            if source.binding == source_binding
+                && destination.binding == destination_binding
+                && source.binding != destination.binding
+    )
 }
 
 /// Classify a complete match chain before either parameter-consumption facts
@@ -346,19 +366,25 @@ impl Builder {
                     value,
                     condition: crate::model::StringRetainCondition::Always,
                 });
+                self.yield_share_instr_exempt
+                    .insert((self.current_block_id, self.instructions.len()));
                 self.push_instr(Instr::Move {
                     dest: retained,
                     src: value,
                 });
+                self.restore_owner_after_retained_share(value, retained);
                 retained
             }
             ResolvedTy::Bytes => {
                 let retained = self.alloc_local(ResolvedTy::Bytes);
                 self.push_instr(Instr::BytesRetain { value });
+                self.yield_share_instr_exempt
+                    .insert((self.current_block_id, self.instructions.len()));
                 self.push_instr(Instr::Move {
                     dest: retained,
                     src: value,
                 });
+                self.restore_owner_after_retained_share(value, retained);
                 retained
             }
             _ => value,
@@ -746,18 +772,168 @@ impl Builder {
             });
             return;
         };
-        if self.generator_yield_binding_drop_safe(body_start_block_id, body_start_instr_len, local)
-        {
+        // A whole-local Move inside the consuming body is an ownership handoff,
+        // not by itself an escape. Follow a unique linear handoff chain and
+        // release its terminal owner. This is the OSSA rule: the source's
+        // obligation moves with the value; it is not discarded merely because
+        // the physical slot changed. Branching/multiple handoffs remain
+        // fail-closed and are rejected by the balance verifier.
+        let drop_place = self
+            .generator_yield_linear_handoff_owner(body_start_block_id, body_start_instr_len, local)
+            .unwrap_or(place);
+        let drop_local = base_local(drop_place).unwrap_or(local);
+        if self.generator_yield_binding_drop_safe(
+            body_start_block_id,
+            body_start_instr_len,
+            drop_local,
+        ) {
             self.push_instr(Instr::Drop {
-                place,
+                place: drop_place,
                 ty: ty.clone(),
                 drop_fn: Some(drop_fn),
             });
+            self.record_body_end_release_event(binding, drop_place, ty, site);
         }
         // else: the value escapes the consuming body — leak-not-double-free.
         // No diagnostic: an escaping yield is a legitimate (if leaky) program,
         // not a lowering defect, unlike the Vec<String> getter which has no
         // other release path.
+    }
+
+    /// Record the logical lifetime end paired with a concrete body-end drop.
+    /// The event lives in the release block, so predecessor unwind edges still
+    /// see the generation as live while normal successors see it consumed.
+    /// This is the block-level drop-flag transition used by drop elaboration;
+    /// the physical `Instr::Drop` remains codegen's release operation.
+    fn record_body_end_release_event(
+        &mut self,
+        binding: BindingId,
+        place: Place,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) {
+        let name = self
+            .owned_locals
+            .iter()
+            .find(|entry| entry.binding == binding)
+            .map_or_else(
+                || "__hew_body_end_owner".to_string(),
+                |entry| entry.name.clone(),
+            );
+        self.statements.push(MirStatement::Use {
+            binding,
+            name,
+            site,
+            ty: ty.clone(),
+            intent: hew_hir::IntentKind::Consume,
+        });
+        self.release_owned_local_from(
+            binding,
+            place,
+            super::Disposition::ConsumedAt {
+                transferee: None,
+                site: super::DischargeSite::InlineRelease,
+            },
+        );
+    }
+
+    /// Follow the sole whole-local ownership handoff of a yielded/received
+    /// frame owner. Returns the terminal local only when every intermediate
+    /// owner has exactly one ownership-transferring use and that use is a
+    /// `Move` into another local. This deliberately rejects forks and moves to
+    /// aggregates/returns; those require path- or destination-owned cleanup.
+    fn generator_yield_linear_handoff_owner(
+        &self,
+        start_block_id: u32,
+        start_instr_len: usize,
+        source: u32,
+    ) -> Option<Place> {
+        // The body-end block is still buffered while this query runs. Add a
+        // read-only terminal snapshot so the ordinary CFG dominator proof can
+        // distinguish a true linear handoff from a Move that occurs on only
+        // one branch before the shared body-end cleanup.
+        let mut body_cfg = self.pending_blocks.clone();
+        body_cfg.push(super::BasicBlock {
+            id: self.current_block_id,
+            statements: self.statements.clone(),
+            instructions: self.instructions.clone(),
+            terminator: Terminator::Return,
+        });
+        let body_blocks = super::cfg_util::blocks_reachable_from(&body_cfg, start_block_id);
+        let body_end_dominators = super::cfg_util::block_dominators(&body_cfg)
+            .remove(&self.current_block_id)
+            .unwrap_or_default();
+        let mut current = source;
+        let mut visited = HashSet::from([source]);
+        let mut moved = false;
+
+        loop {
+            let mut handoffs = Vec::new();
+            let mut other_escape = false;
+            for block in body_cfg
+                .iter()
+                .filter(|block| body_blocks.contains(&block.id) || block.id == start_block_id)
+            {
+                let block_id = block.id;
+                let instructions = block.instructions.as_slice();
+                let start = if block_id == start_block_id {
+                    start_instr_len.min(instructions.len())
+                } else {
+                    0
+                };
+                for (offset, instr) in instructions[start..].iter().enumerate() {
+                    let instruction_index = start + offset;
+                    // An adjacent retain makes this physical Move a fork, not
+                    // the yielded owner's linear handoff. Lowering records the
+                    // exact Move program point when it authors the retained
+                    // share; the binder therefore stays at `current` for its
+                    // per-iteration body-end release, while the destination
+                    // owns the new count.
+                    if self
+                        .yield_share_instr_exempt
+                        .contains(&(block_id, instruction_index))
+                    {
+                        continue;
+                    }
+                    if !generator_yield_instr_escapes(instr, current) {
+                        continue;
+                    }
+                    match instr {
+                        Instr::Move {
+                            dest: Place::Local(dest),
+                            src: Place::Local(src),
+                        } if *src == current => handoffs.push((block_id, *dest)),
+                        _ => other_escape = true,
+                    }
+                }
+                if generator_yield_terminator_escapes(
+                    &block.terminator,
+                    self.suspend_kinds.get(&block_id),
+                    current,
+                ) {
+                    other_escape = true;
+                }
+            }
+
+            let [(handoff_block, next)] = handoffs.as_slice() else {
+                break;
+            };
+            if other_escape || !body_end_dominators.contains(handoff_block) {
+                // A branch-local handoff cannot select the shared cleanup
+                // place: another predecessor still owns `current`. Leaving
+                // the chain unresolved makes the ordinary escape scan omit
+                // the unsafe body-end drop, while abandonment analysis emits
+                // the explicit MaybeConsumed fail-closed diagnostic.
+                break;
+            }
+            if !visited.insert(*next) {
+                return None;
+            }
+            current = *next;
+            moved = true;
+        }
+
+        moved.then_some(Place::Local(current))
     }
 
     /// Body-shape drop-safety scan for a generator-yielded binding. Unlike the
@@ -776,6 +952,79 @@ impl Builder {
         start_block_id: u32,
         start_instr_len: usize,
         local: u32,
+    ) -> bool {
+        self.generator_yield_binding_drop_safe_until_scope(
+            start_block_id,
+            start_instr_len,
+            local,
+            None,
+        )
+    }
+
+    /// Bound a minted call-result carrier's escape scan to its exact lexical
+    /// lifetime. A loop reuses the same physical result local and static Mint
+    /// on its next iteration; scanning past the non-carrying `ScopeExit`
+    /// conflates that future value with the selected arm's current owner and
+    /// can suppress the current generation's release.
+    ///
+    /// Only one binding/place/scope relation earns this boundary. Missing or
+    /// aliased metadata retains the existing unbounded, fail-closed scan.
+    fn call_carrier_body_end_drop_safe(
+        &self,
+        binding: BindingId,
+        start_block_id: u32,
+        start_instr_len: usize,
+        local: u32,
+    ) -> bool {
+        let exact_bindings = self
+            .binding_locals
+            .iter()
+            .filter_map(|(candidate, place)| {
+                (base_local(*place) == Some(local) && self.binding_scope.contains_key(candidate))
+                    .then_some(*candidate)
+            })
+            .collect::<Vec<_>>();
+        let lifetime = (self.call_scrutinee_carrier_mint_locals.contains(&local)
+            && matches!(exact_bindings.as_slice(), [candidate] if *candidate == binding))
+        .then(|| {
+            self.binding_scope
+                .get(&binding)
+                .copied()
+                .map(|scope| (scope, binding))
+        })
+        .flatten()
+        .filter(|lifetime| {
+            self.owner_generations
+                .get(&binding)
+                .copied()
+                .map(|generation| crate::model::OwnerId {
+                    binding,
+                    generation,
+                })
+                .is_some_and(|owner| {
+                    self.call_carrier_release_precedes_scope(
+                        start_block_id,
+                        start_instr_len,
+                        owner,
+                        Place::Local(local),
+                        *lifetime,
+                    )
+                })
+        });
+        self.generator_yield_binding_drop_safe_until_scope(
+            start_block_id,
+            start_instr_len,
+            local,
+            lifetime,
+        )
+    }
+
+    fn generator_yield_binding_drop_safe_until_scope(
+        &self,
+        start_block_id: u32,
+        start_instr_len: usize,
+        local: u32,
+        lifetime: Option<(ScopeId, BindingId)>,
     ) -> bool {
         // A minted enum carrier's projected payload binder is an interior
         // alias until an exact `NeutralizePayloadSlot` transfers that slot.
@@ -846,6 +1095,7 @@ impl Builder {
                 start_block_id,
                 start_instr_len,
                 alias,
+                lifetime,
                 &mut visiting,
                 &mut memo,
             ) {
@@ -859,17 +1109,109 @@ impl Builder {
             start_block_id,
             start_instr_len,
             local,
+            lifetime,
             &mut visiting,
             &mut memo,
         )
     }
 
+    /// Return the first non-carrying lexical close of the exact synthetic
+    /// carrier lifetime. Instructions after this marker belong to a later
+    /// iteration when the loop reuses the result slot and must not influence
+    /// the current owner's escape decision.
+    fn call_carrier_scope_boundary(
+        instructions: &[Instr],
+        start: usize,
+        local: u32,
+        lifetime: Option<(ScopeId, BindingId)>,
+    ) -> Option<usize> {
+        let (scope, binding) = lifetime?;
+        instructions[start..]
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+                        scopes,
+                        carry_places,
+                        carried,
+                        ..
+                    }) if scopes.contains(&scope)
+                        && !carry_places.iter().any(|place| base_local(*place) == Some(local))
+                        && !carried.iter().any(|owner| owner.binding == binding)
+                )
+            })
+            .map(|offset| start + offset)
+    }
+
+    /// Whether this selected arm already has an early-exit release before its
+    /// carrier lifetime closes. Only that asymmetric shape needs a matching
+    /// normal-fallthrough release before the scope join; an ordinary loop with
+    /// all arms still live must retain its established single scope/backedge
+    /// cleanup instead of being rewritten into per-arm drops.
+    fn call_carrier_release_precedes_scope(
+        &self,
+        start_block_id: u32,
+        start_instr_len: usize,
+        owner: crate::model::OwnerId,
+        place: Place,
+        lifetime: (ScopeId, BindingId),
+    ) -> bool {
+        let mut pending = vec![start_block_id];
+        let mut visited = HashSet::new();
+        while let Some(block_id) = pending.pop() {
+            if !visited.insert(block_id) {
+                continue;
+            }
+            let (instructions, successors) = if block_id == self.current_block_id {
+                (self.instructions.as_slice(), Vec::new())
+            } else if let Some(block) = self
+                .pending_blocks
+                .iter()
+                .find(|block| block.id == block_id)
+            {
+                (block.instructions.as_slice(), block.successors())
+            } else {
+                continue;
+            };
+            let start = if block_id == start_block_id {
+                start_instr_len.min(instructions.len())
+            } else {
+                0
+            };
+            let boundary = Self::call_carrier_scope_boundary(
+                instructions,
+                start,
+                base_local(place).expect("call carrier place is Local-backed"),
+                Some(lifetime),
+            );
+            let end = boundary.unwrap_or(instructions.len());
+            if instructions[start..end].iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Release {
+                        owner: released,
+                        place: released_place,
+                    }) if *released == owner && *released_place == place
+                )
+            }) {
+                return true;
+            }
+            if boundary.is_none() {
+                pending.extend(successors);
+            }
+        }
+        false
+    }
+
     #[allow(
+        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "exhaustive Terminator match — adding new variants \
                   (most recently `MakeLambdaActor`) edges past the 100-line \
-                  ceiling without changing the function's structural \
-                  responsibility (single yield-block walk)"
+                  ceiling, while the exact optional lifetime boundary joins the \
+                  existing traversal state without changing the function's \
+                  structural responsibility (single yield-block walk)"
     )]
     #[allow(
         clippy::match_same_arms,
@@ -886,6 +1228,7 @@ impl Builder {
         start_block_id: u32,
         start_instr_len: usize,
         local: u32,
+        lifetime: Option<(ScopeId, BindingId)>,
         visiting: &mut HashSet<u32>,
         memo: &mut HashMap<u32, bool>,
     ) -> bool {
@@ -907,7 +1250,9 @@ impl Builder {
             } else {
                 0
             };
-            return self.instructions[start..]
+            let end = Self::call_carrier_scope_boundary(&self.instructions, start, local, lifetime)
+                .unwrap_or(self.instructions.len());
+            return self.instructions[start..end]
                 .iter()
                 .enumerate()
                 .all(|(offset, instr)| {
@@ -979,6 +1324,9 @@ impl Builder {
             } else {
                 0
             };
+            let boundary =
+                Self::call_carrier_scope_boundary(&block.instructions, start, local, lifetime);
+            let end = boundary.unwrap_or(block.instructions.len());
             // An escape in this block's instructions OR its terminator makes the
             // body-end drop unsound (the value left the body) — return false
             // immediately. Otherwise recurse into the successor(s).
@@ -987,7 +1335,7 @@ impl Builder {
             // the `+1` retain mints the destination's own owner — so they do
             // not suppress the body-end drop.
             let escapes_here =
-                block.instructions[start..]
+                block.instructions[start..end]
                     .iter()
                     .enumerate()
                     .any(|(offset, instr)| {
@@ -1005,7 +1353,8 @@ impl Builder {
                                 )))
                             && generator_yield_instr_escapes(instr, local)
                     })
-                    || (!self.yield_share_term_exempt.contains(&(block_id, local))
+                    || (boundary.is_none()
+                        && !self.yield_share_term_exempt.contains(&(block_id, local))
                         && generator_yield_terminator_escapes(
                             &block.terminator,
                             self.suspend_kinds.get(&block.id),
@@ -1013,6 +1362,8 @@ impl Builder {
                         ));
             if escapes_here {
                 false
+            } else if boundary.is_some() {
+                true
             } else {
                 match &block.terminator {
                     Terminator::Goto { target } => self.generator_yield_block_paths_drop_safe(
@@ -1020,6 +1371,7 @@ impl Builder {
                         start_block_id,
                         start_instr_len,
                         local,
+                        lifetime,
                         visiting,
                         memo,
                     ),
@@ -1031,6 +1383,7 @@ impl Builder {
                             start_block_id,
                             start_instr_len,
                             local,
+                            lifetime,
                             visiting,
                             memo,
                         ),
@@ -1044,6 +1397,7 @@ impl Builder {
                             start_block_id,
                             start_instr_len,
                             local,
+                            lifetime,
                             visiting,
                             memo,
                         ) && self.generator_yield_block_paths_drop_safe(
@@ -1051,6 +1405,7 @@ impl Builder {
                             start_block_id,
                             start_instr_len,
                             local,
+                            lifetime,
                             visiting,
                             memo,
                         )
@@ -1727,7 +2082,37 @@ impl Builder {
         clippy::too_many_lines,
         reason = "typed overwrite release keeps every supported owner shape in one dispatch"
     )]
-    pub(crate) fn emit_local_overwrite_release(&mut self, dest: Place, target_ty: &ResolvedTy) {
+    fn publish_overwrite_owner_release(
+        &mut self,
+        binding: BindingId,
+        place: Place,
+        guard: Option<Place>,
+    ) {
+        let Some(generation) = self.owner_generations.get(&binding).copied() else {
+            return;
+        };
+        let owner = crate::model::OwnerId {
+            binding,
+            generation,
+        };
+        let event = guard.map_or(
+            crate::model::OwnershipEvent::Release { owner, place },
+            |flag| crate::model::OwnershipEvent::GuardedRelease { owner, place, flag },
+        );
+        self.push_instr(Instr::OwnershipEvent(event));
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "overwrite lowering publishes the physical guard, release, generation reset, and recipe together"
+    )]
+    pub(crate) fn emit_local_overwrite_release(
+        &mut self,
+        binding: BindingId,
+        dest: Place,
+        target_ty: &ResolvedTy,
+        guard: Option<Place>,
+    ) {
         let ty = self.subst_ty(target_ty);
         // A `var` reassignment is a GENERATION BOUNDARY: the slot's previous
         // value is a distinct owner whose obligation must be discharged HERE,
@@ -1749,6 +2134,7 @@ impl Builder {
                     ty,
                     drop_fn: Some(spec),
                 });
+                self.publish_overwrite_owner_release(binding, dest, guard);
             }
             // A resource with no resolvable close is rejected upstream
             // (E_RESOURCE_MISSING_CLOSE); nothing further to release either
@@ -1756,6 +2142,7 @@ impl Builder {
             return;
         }
         if self.emit_refcounted_overwrite_release(dest, &ty) {
+            self.publish_overwrite_owner_release(binding, dest, guard);
             return;
         }
         // Single-pointer / fat-triple COW leaf (string / Vec / HashMap /
@@ -1770,6 +2157,7 @@ impl Builder {
                 ty,
                 drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
             });
+            self.publish_overwrite_owner_release(binding, dest, guard);
             return;
         }
         // A record or tuple whose OLD generation transitively carries a close
@@ -1807,6 +2195,7 @@ impl Builder {
                         crate::ownership::InPlaceReleaseKind::Record,
                     )),
                 });
+                self.publish_overwrite_owner_release(binding, dest, guard);
             }
             // Inadmissible shapes keep the fail-open skip (leak, never a
             // partial or wrong-ABI free).
@@ -1823,6 +2212,7 @@ impl Builder {
                         crate::ownership::InPlaceReleaseKind::AggregateRecursive,
                     )),
                 });
+                self.publish_overwrite_owner_release(binding, dest, guard);
             }
             return;
         }
@@ -1841,6 +2231,7 @@ impl Builder {
             }) {
                 return;
             }
+            let mut emitted = false;
             for (idx, fty) in owned {
                 let ReleaseSymbolVerdict::Wired(symbol) =
                     self.project_field_inline_drop_symbol(&fty)
@@ -1855,6 +2246,7 @@ impl Builder {
                         ty: fty,
                         drop_fn: crate::model::DropFnSpec::Release(symbol),
                     });
+                    emitted = true;
                 } else {
                     let old_val = self.alloc_local(fty.clone());
                     self.push_instr(Instr::RecordFieldLoad {
@@ -1867,7 +2259,11 @@ impl Builder {
                         ty: fty,
                         drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
                     });
+                    emitted = true;
                 }
+            }
+            if emitted {
+                self.publish_overwrite_owner_release(binding, dest, guard);
             }
         }
     }
@@ -1908,6 +2304,7 @@ impl Builder {
         dest: Place,
         target_ty: &ResolvedTy,
         value: &HirExpr,
+        guard: Option<Place>,
     ) {
         let ty = self.subst_ty(target_ty);
         if !super::ty_is_heap_owning_enum_composite(
@@ -2117,6 +2514,7 @@ impl Builder {
                             crate::ownership::InPlaceReleaseKind::Enum,
                         )),
                     });
+                    self.publish_overwrite_owner_release(binding, dest, guard);
                     self.finish_current_block(Terminator::Goto { target: cont_bb });
                     self.start_block(transfer_bb);
                     for (_, transfer_flag) in &promoted {
@@ -2151,6 +2549,7 @@ impl Builder {
                 crate::ownership::InPlaceReleaseKind::Enum,
             )),
         });
+        self.publish_overwrite_owner_release(binding, dest, guard);
     }
 
     pub(crate) fn project_tuple_owned_field_list(&self, ty: &ResolvedTy) -> Vec<(u32, ResolvedTy)> {
@@ -2317,27 +2716,7 @@ impl Builder {
             };
 
             // For Binding arms, bind the scrutinee to the pattern name.
-            if let hew_hir::HirMatchArmPredicate::Binding {
-                binding_id,
-                name,
-                ty,
-            } = &arm.predicate
-            {
-                let binding_ty = self.subst_ty(ty);
-                self.push_bind_statement(
-                    *binding_id,
-                    name.clone(),
-                    arm.body.site,
-                    binding_ty.clone(),
-                );
-                self.record_binding_scope(*binding_id);
-                let dest = self.alloc_local(binding_ty);
-                self.push_instr(Instr::Move {
-                    dest,
-                    src: Place::Local(scrutinee_local),
-                });
-                self.binding_locals.insert(*binding_id, dest);
-            }
+            self.emit_match_arm_binding(arm, Place::Local(scrutinee_local), None);
 
             // Guard check: failure branches to the next arm.
             if let Some(guard) = &arm.guard {
@@ -2356,10 +2735,7 @@ impl Builder {
             // Arm body.
             let value = self.lower_composite_result_value(&arm.body);
             if let Some(src) = value {
-                self.push_instr(Instr::Move {
-                    dest: result_place,
-                    src,
-                });
+                self.push_composite_result_move(result_place, src, result_ty);
             }
             if !self.cursor_unreachable {
                 join_reachable = true;
@@ -2539,6 +2915,7 @@ impl Builder {
         let scrutinee_is_interior_alias =
             consume_owned && self.local_storage_is_interior_alias(scrutinee_local);
         let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len() + 1);
+        let mut whole_binding_owner_handoff = false;
 
         for binding in &arm.bindings {
             let binding_ty = self.subst_ty(&binding.ty);
@@ -2548,7 +2925,7 @@ impl Builder {
                 arm.body.site,
                 binding_ty.clone(),
             );
-            self.record_binding_scope(binding.binding);
+            self.record_match_arm_binding_scope(binding.binding, arm);
             // U1 — the payload binder's owner is minted over a field of the
             // scrutinee, so the provenance question is the scrutinee's. The
             // warrant is what `register_owned_local` requires; the seed gate
@@ -2558,24 +2935,8 @@ impl Builder {
             let keep_for_drop_elab =
                 self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
             let binding_is_string = matches!(binding_ty, ResolvedTy::String);
-            if keep_for_drop_elab {
-                self.register_owned_local(
-                    binding.binding,
-                    binding.name.clone(),
-                    binding_ty.clone(),
-                    warrant,
-                );
-                if ty_is_generator_handle(&binding_ty) {
-                    if let Some(scope) = self.active_scopes.last().copied() {
-                        self.scope_generator_bindings.push((
-                            scope,
-                            binding.binding,
-                            binding_ty.clone(),
-                        ));
-                    }
-                }
-            }
-            let dest = self.alloc_local(binding_ty);
+            let dest = self.alloc_local(binding_ty.clone());
+            let previous = self.binding_locals.insert(binding.binding, dest);
             if consume_scrutinee.is_some() && keep_for_drop_elab {
                 if let Some(local_idx) = base_local(dest) {
                     self.match_project_consumed_binder_locals.insert(local_idx);
@@ -2598,6 +2959,23 @@ impl Builder {
                 }
                 _ => unreachable!("project bindings passed selected-arm preflight"),
             }
+            if keep_for_drop_elab {
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                    warrant,
+                );
+                if ty_is_generator_handle(&binding_ty) {
+                    if let Some(scope) = self.active_scopes.last().copied() {
+                        self.scope_generator_bindings.push((
+                            scope,
+                            binding.binding,
+                            binding_ty.clone(),
+                        ));
+                    }
+                }
+            }
             if consume_scrutinee.is_some() && !scrutinee_is_interior_alias && binding_is_string {
                 let field = match &arm.predicate {
                     hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
@@ -2614,7 +2992,6 @@ impl Builder {
                     ty: ResolvedTy::String,
                 });
             }
-            let previous = self.binding_locals.insert(binding.binding, dest);
             overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
         }
 
@@ -2626,21 +3003,33 @@ impl Builder {
         {
             let binding_ty = self.subst_ty(ty);
             self.push_bind_statement(*binding_id, name.clone(), arm.body.site, binding_ty.clone());
-            self.record_binding_scope(*binding_id);
+            self.record_match_arm_binding_scope(*binding_id, arm);
             let warrant =
                 self.owner_warrant_for_scrutinee_payload(*binding_id, scrutinee, &binding_ty);
             let keep_for_drop_elab = consume_owned
                 && self.binding_seeds_drop_elaboration(&binding_ty)
                 && !warrant.withholds_mint();
-            if keep_for_drop_elab {
-                self.register_owned_local(*binding_id, name.clone(), binding_ty.clone(), warrant);
-            }
-            let dest = self.alloc_local(binding_ty);
+            let source_owner = consume_scrutinee.as_ref().and_then(|(source, _)| {
+                self.current_owner_id_at_place(Place::Local(scrutinee_local))
+                    .filter(|owner| owner.binding == *source)
+            });
+            let dest = self.alloc_local(binding_ty.clone());
+            let previous = self.binding_locals.insert(*binding_id, dest);
             self.push_instr(Instr::Move {
                 dest,
                 src: Place::Local(scrutinee_local),
             });
-            let previous = self.binding_locals.insert(*binding_id, dest);
+            if keep_for_drop_elab {
+                self.register_owned_local(*binding_id, name.clone(), binding_ty.clone(), warrant);
+                if let Some((source_binding, _)) = consume_scrutinee.as_ref() {
+                    whole_binding_owner_handoff = exact_whole_binding_owner_handoff(
+                        source_owner,
+                        *source_binding,
+                        self.current_owner_id_at_place(dest),
+                        *binding_id,
+                    );
+                }
+            }
             overwritten_bindings.push((*binding_id, previous, keep_for_drop_elab));
         }
 
@@ -2707,7 +3096,9 @@ impl Builder {
                 ty: self.subst_ty(&scrutinee.ty),
                 intent: IntentKind::Consume,
             });
-            self.mark_binding_moved(scrutinee_id);
+            if !whole_binding_owner_handoff {
+                self.mark_binding_moved(scrutinee_id);
+            }
         }
 
         let value = self.lower_composite_result_value(&arm.body);
@@ -2722,10 +3113,7 @@ impl Builder {
             }
         }
         if let Some(src) = value {
-            self.push_instr(Instr::Move {
-                dest: result_place,
-                src,
-            });
+            self.push_composite_result_move(result_place, src, &arm.body.ty);
         }
         !self.cursor_unreachable
     }
@@ -2864,6 +3252,9 @@ impl Builder {
         let body_bb = self.alloc_block();
         self.finish_current_block(Terminator::Goto { target: body_bb });
         self.start_block(body_bb);
+        if let Some(scope) = selected.scope {
+            self.active_scopes.push(scope);
+        }
         let join_reachable = self.emit_selected_project_arm(
             scrutinee,
             scrutinee_local,
@@ -2872,6 +3263,10 @@ impl Builder {
             consume_owned,
             result_place,
         );
+        if let Some(scope) = selected.scope {
+            self.emit_scope_exit_marker_with_carries([scope], [result_place]);
+            self.active_scopes.pop();
+        }
         self.finish_current_block(Terminator::Goto { target: join_bb });
         self.start_block(join_bb);
         if !join_reachable {
@@ -3055,6 +3450,9 @@ impl Builder {
                 }
             }
 
+            if let Some(scope) = arm.scope {
+                self.active_scopes.push(scope);
+            }
             join_reachable |= self.emit_selected_project_arm(
                 scrutinee,
                 scrutinee_local,
@@ -3063,6 +3461,10 @@ impl Builder {
                 consume_owned,
                 result_place,
             );
+            if let Some(scope) = arm.scope {
+                self.emit_scope_exit_marker_with_carries([scope], [result_place]);
+                self.active_scopes.pop();
+            }
             self.finish_current_block(Terminator::Goto { target: join_bb });
         }
 
@@ -3239,10 +3641,7 @@ impl Builder {
 
             // Arm body: produce the result and jump to the join.
             if let Some(src) = self.lower_composite_result_value(&arm.body) {
-                self.push_instr(Instr::Move {
-                    dest: result_place,
-                    src,
-                });
+                self.push_composite_result_move(result_place, src, result_ty);
             }
             if !self.cursor_unreachable {
                 join_reachable = true;
@@ -3847,10 +4246,7 @@ impl Builder {
 
             let value = self.lower_composite_result_value(&arm.body);
             if let Some(src) = value {
-                self.push_instr(Instr::Move {
-                    dest: result_place,
-                    src,
-                });
+                self.push_composite_result_move(result_place, src, result_ty);
             }
             if !self.cursor_unreachable {
                 join_reachable = true;
@@ -4240,6 +4636,16 @@ impl Builder {
                 });
                 self.projected_payload_overwrite_flags
                     .insert(binding_id, flag);
+                if let Some(generation) = self.owner_generations.get(&binding_id).copied() {
+                    self.push_instr(Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                        owner: crate::model::OwnerId {
+                            binding: binding_id,
+                            generation,
+                        },
+                        flag,
+                        kind: crate::model::OwnershipGuardKind::ProjectedPayload,
+                    }));
+                }
             }
         }
     }
@@ -4669,7 +5075,8 @@ impl Builder {
             if !self.cursor_unreachable {
                 join_reachable = true;
             }
-            if wildcard.scope.is_some() {
+            if let Some(scope) = wildcard.scope {
+                self.emit_scope_exit_marker_with_carries([scope], [result_place]);
                 self.active_scopes.pop();
             }
             self.finish_current_block(Terminator::Goto { target: join_bb });
@@ -4882,7 +5289,20 @@ impl Builder {
                 });
                 let keep_for_drop_elab =
                     self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
+                let dest = self.alloc_local(binding.ty.clone());
+                let previous = self.binding_locals.insert(binding.binding, dest);
+                let payload_source = Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                };
+                self.push_instr(Instr::Move {
+                    dest,
+                    src: payload_source,
+                });
                 if keep_for_drop_elab {
+                    let unguarded_payload_move =
+                        call_scrutinee_owner.is_some() && arm.guard.is_none() && keep_for_drop_elab;
                     self.register_owned_local(
                         binding.binding,
                         binding.name.clone(),
@@ -4891,22 +5311,25 @@ impl Builder {
                     );
                     // A path-complete direct-call carrier release owns every
                     // untransferred payload slot on the selected arm. A
-                    // Weak.upgrade shell likewise remains the sole owner. In
-                    // both cases the binder is an alias unless a consuming
-                    // use transfers the slot and changes its disposition.
+                    // `Weak.upgrade` payload follows that rule only while the
+                    // carrier slot remains populated. An unguarded physical
+                    // payload move is neutralized below, so its binder keeps
+                    // the exact owner instead of becoming an alias whose
+                    // emptied carrier cannot release it.
                     let binder_is_contextual_sink = matches!(
                         super::drop_plan::resource_drop_fn(&binding_ty, &self.type_classes),
                         Some(crate::model::DropFnSpec::Runtime(
                             hew_types::runtime_call::RuntimeDropDescriptor::SinkClose
                         ))
                     );
-                    if weak_upgrade_owner_ty.is_some()
-                        || (call_scrutinee_owner_needs_arm_release && !binder_is_contextual_sink)
+                    if (weak_upgrade_owner_ty.is_some() && !unguarded_payload_move)
+                        || (call_scrutinee_owner_needs_arm_release
+                            && arm.guard.is_some()
+                            && !binder_is_contextual_sink)
                     {
                         self.set_owned_local_disposition(binding.binding, Disposition::AliasOf);
                     }
                 }
-                let dest = self.alloc_local(binding.ty.clone());
                 if fresh_active_payload && keep_for_drop_elab {
                     self.fresh_variant_payload_bindings.insert(binding.binding);
                     if let Some(local) = base_local(dest) {
@@ -4922,6 +5345,7 @@ impl Builder {
                 // authority; exempting them here would admit both the binder
                 // and shell releases for one owner.
                 if call_scrutinee_owner.is_some()
+                    && arm.guard.is_some()
                     && keep_for_drop_elab
                     && (self.is_owned_aggregate_record_ty(&binding_ty)
                         || call_carrier_has_resource_payload)
@@ -4930,16 +5354,6 @@ impl Builder {
                         call_carrier_match_result_candidates.push((binding.binding, local));
                     }
                 }
-                let payload_source = Place::MachineVariant {
-                    local: scrutinee_local,
-                    variant_idx,
-                    field_idx: binding.field_idx,
-                };
-                self.push_instr(Instr::Move {
-                    dest,
-                    src: payload_source,
-                });
-                let previous = self.binding_locals.insert(binding.binding, dest);
                 // Clearing the carrier slot here would neutralize it before a
                 // guard on this arm has selected it: a false guard falls
                 // through to a later arm that re-destructures the same slot and
@@ -4965,12 +5379,29 @@ impl Builder {
                         crate::model::NeutralizeAuthority::EphemeralTempConsume,
                     );
                 }
+                // Once an unguarded arm is selected, moving its active payload
+                // into the binder is an ownership transfer, not a long-lived
+                // alias. Commit the structural move path immediately so every
+                // later unwind edge cleans the binder generation. Guarded arms
+                // defer this commit until their true edge; neutralizing before
+                // a guard would corrupt fallthrough into sibling arms.
+                let payload_binding_transfer_committed = call_scrutinee_owner.is_some()
+                    && arm.guard.is_none()
+                    && keep_for_drop_elab
+                    && !transferred_sink;
+                if payload_binding_transfer_committed {
+                    self.push_instr(Instr::NeutralizePayloadSlot {
+                        place: payload_source,
+                        transferee: Some(dest),
+                        authority: crate::model::NeutralizeAuthority::PayloadBindingTransfer,
+                    });
+                }
                 // An owned call-carrier scrutinee gets a terminal snapshot
                 // drop on every exit, so a payload binder that MOVES the
                 // payload out must neutralize the variant slot on that arm —
                 // the funnel authority registered here fires only when the
                 // binder crosses an ownership boundary.
-                if !transferred_sink {
+                if !transferred_sink && !payload_binding_transfer_committed {
                     self.note_carrier_payload_binder(
                         scrutinee_local,
                         payload_source,
@@ -4996,7 +5427,7 @@ impl Builder {
                 // that transfer as a re-readable-place move-out. Skip it.
                 let is_fresh_owned_frame_payload =
                     arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some;
-                if !is_fresh_owned_frame_payload {
+                if !is_fresh_owned_frame_payload && !payload_binding_transfer_committed {
                     // A binder that took the contextual `Sink` handoff is still a
                     // projected payload and must route its consumes through the
                     // same default-deny hook — a guard that consumes it (or moves
@@ -5227,10 +5658,11 @@ impl Builder {
                     // carrier's recursive drop unsafe: the sibling wildcard
                     // still owns and releases its payload exactly once.
                     if call_carrier_needs_skipped_payload_owner {
-                        self.push_move_out_neutralize(
-                            source,
-                            crate::model::NeutralizeAuthority::EphemeralTempConsume,
-                        );
+                        self.push_instr(Instr::NeutralizePayloadSlot {
+                            place: source,
+                            transferee: Some(dest),
+                            authority: crate::model::NeutralizeAuthority::PayloadBindingTransfer,
+                        });
                     }
                 }
             }
@@ -5260,15 +5692,8 @@ impl Builder {
                 );
                 let keep_for_drop_elab =
                     self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
-                if keep_for_drop_elab {
-                    self.register_owned_local(
-                        binding.binding,
-                        binding.name.clone(),
-                        binding_ty,
-                        warrant,
-                    );
-                }
                 let dest = self.alloc_local(binding.ty.clone());
+                let previous = self.binding_locals.insert(binding.binding, dest);
                 self.push_instr(Instr::Move {
                     dest,
                     src: Place::MachineVariant {
@@ -5277,7 +5702,14 @@ impl Builder {
                         field_idx: binding.field_idx,
                     },
                 });
-                let previous = self.binding_locals.insert(binding.binding, dest);
+                if keep_for_drop_elab {
+                    self.register_owned_local(
+                        binding.binding,
+                        binding.name.clone(),
+                        binding_ty,
+                        warrant,
+                    );
+                }
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 // #2523 F2 — a NESTED-pattern payload binder is bound from a
                 // TRANSIENT copy the predicate phase loaded (`src_local`), NOT
@@ -5474,10 +5906,7 @@ impl Builder {
 
             if let Some(src) = value {
                 let src = self.retain_typed_join_branch(result_site, &arm.body, src, result_ty);
-                self.push_instr(Instr::Move {
-                    dest: result_place,
-                    src,
-                });
+                self.push_composite_result_move(result_place, src, result_ty);
             }
             for (binding, place, ty, site) in generator_yield_drop_bindings {
                 if arm_is_fresh_owned_vec_iter_some {
@@ -5485,7 +5914,6 @@ impl Builder {
                         self.vec_iter_yield_exit_drops
                             .push(super::VecIterYieldExitDrop {
                                 binding,
-                                place,
                                 ty: ty.clone(),
                                 kind,
                                 body_start_block: body_start_block_id,
@@ -5498,18 +5926,20 @@ impl Builder {
                     .is_some_and(|local| self.call_scrutinee_carrier_mint_locals.contains(&local));
                 if is_minted_call_carrier {
                     if let Some(local) = base_local(place) {
-                        if self.generator_yield_binding_drop_safe(
+                        if self.call_carrier_body_end_drop_safe(
+                            binding,
                             body_start_block_id,
                             body_start_instr_len,
                             local,
                         ) {
                             self.push_instr(Instr::Drop {
                                 place,
-                                ty,
+                                ty: ty.clone(),
                                 drop_fn: Some(crate::model::DropFnSpec::InPlace(
                                     crate::ownership::InPlaceReleaseKind::Enum,
                                 )),
                             });
+                            self.record_body_end_release_event(binding, place, &ty, site);
                         }
                     }
                 } else {
@@ -5531,7 +5961,8 @@ impl Builder {
             if !self.cursor_unreachable {
                 join_reachable = true;
             }
-            if arm.scope.is_some() {
+            if let Some(scope) = arm.scope {
+                self.emit_scope_exit_marker_with_carries([scope], [result_place]);
                 self.active_scopes.pop();
             }
             self.finish_current_block(Terminator::Goto { target: join_bb });
@@ -5663,8 +6094,15 @@ impl Builder {
         Some(())
     }
 
-    /// Emit the binding for a `Binding`-predicate arm: move the entire
-    /// scrutinee value into a fresh local and register it in `binding_locals`.
+    /// Emit the binding for a `Binding`-predicate arm and register it in
+    /// `binding_locals`.
+    ///
+    /// A guarded arm is only tentatively selected. Its binder therefore cannot
+    /// consume a `CoW` scrutinee before the guard succeeds: the false edge must
+    /// retry the next arm with the original value. Retain the string/bytes
+    /// share before copying it into the binder, giving that arm an independent
+    /// owner which its guard/body exits can release. Unguarded binders keep the
+    /// ordinary last-use move/transfer path.
     ///
     /// `variant_idx` is `Some` when the arm is inside an enum-tag dispatch
     /// (binding a variant payload rather than the whole scrutinee); `None`
@@ -5686,12 +6124,31 @@ impl Builder {
         };
         let binding_ty = self.subst_ty(ty);
         self.push_bind_statement(*binding_id, name.clone(), arm.body.site, binding_ty.clone());
-        self.record_binding_scope(*binding_id);
-        let dest = self.alloc_local(binding_ty);
+        self.record_match_arm_binding_scope(*binding_id, arm);
+        let dest = self.alloc_local(binding_ty.clone());
+        let retained_guard_binder =
+            arm.guard.is_some() && matches!(binding_ty, ResolvedTy::String | ResolvedTy::Bytes);
+        if retained_guard_binder {
+            match binding_ty {
+                ResolvedTy::String => self.push_instr(Instr::StringRetain {
+                    value: scrutinee_local,
+                    condition: crate::model::StringRetainCondition::Always,
+                }),
+                ResolvedTy::Bytes => {
+                    self.push_instr(Instr::BytesRetain {
+                        value: scrutinee_local,
+                    });
+                }
+                _ => {}
+            }
+        }
         self.push_instr(Instr::Move {
             dest,
             src: scrutinee_local,
         });
+        if retained_guard_binder {
+            self.restore_owner_after_retained_share(scrutinee_local, dest);
+        }
         self.binding_locals.insert(*binding_id, dest);
     }
 }
@@ -5699,6 +6156,114 @@ impl Builder {
 #[cfg(test)]
 mod builtin_carrier_tests {
     use super::*;
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    #[test]
+    fn dominating_yield_handoff_selects_the_terminal_owner() {
+        let builder = Builder {
+            current_block_id: 1,
+            pending_blocks: vec![crate::model::BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![Instr::Move {
+                    dest: Place::Local(1),
+                    src: Place::Local(0),
+                }],
+                terminator: Terminator::Goto { target: 1 },
+            }],
+            ..Builder::default()
+        };
+
+        assert_eq!(
+            builder.generator_yield_linear_handoff_owner(0, 0, 0),
+            Some(Place::Local(1)),
+            "a Move on every path to body end transfers the shared cleanup place"
+        );
+    }
+
+    #[test]
+    fn branch_local_yield_handoff_does_not_select_a_shared_cleanup_place() {
+        let builder = Builder {
+            current_block_id: 3,
+            pending_blocks: vec![
+                crate::model::BasicBlock {
+                    id: 0,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Branch {
+                        cond: Place::Local(2),
+                        then_target: 1,
+                        else_target: 2,
+                    },
+                },
+                crate::model::BasicBlock {
+                    id: 1,
+                    statements: vec![],
+                    instructions: vec![Instr::Move {
+                        dest: Place::Local(1),
+                        src: Place::Local(0),
+                    }],
+                    terminator: Terminator::Goto { target: 3 },
+                },
+                crate::model::BasicBlock {
+                    id: 2,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Goto { target: 3 },
+                },
+            ],
+            ..Builder::default()
+        };
+
+        assert_eq!(
+            builder.generator_yield_linear_handoff_owner(0, 0, 0),
+            None,
+            "a branch-only Move must leave shared cleanup authority unresolved"
+        );
+    }
+
+    #[test]
+    fn exact_whole_binding_handoff_requires_both_named_generations() {
+        let source = BindingId(10);
+        let destination = BindingId(12);
+        assert!(exact_whole_binding_owner_handoff(
+            Some(crate::model::OwnerId {
+                binding: source,
+                generation: 3,
+            }),
+            source,
+            Some(crate::model::OwnerId {
+                binding: destination,
+                generation: 0,
+            }),
+            destination,
+        ));
+    }
+
+    #[test]
+    fn ambiguous_or_wrong_whole_binding_handoff_stays_unadmitted() {
+        let source = BindingId(10);
+        let destination = BindingId(12);
+        let destination_owner = Some(crate::model::OwnerId {
+            binding: destination,
+            generation: 0,
+        });
+        assert!(!exact_whole_binding_owner_handoff(
+            None,
+            source,
+            destination_owner,
+            destination,
+        ));
+        assert!(!exact_whole_binding_owner_handoff(
+            Some(crate::model::OwnerId {
+                binding: BindingId(11),
+                generation: 0,
+            }),
+            source,
+            destination_owner,
+            destination,
+        ));
+    }
 
     #[test]
     fn option_carrier_uses_builtin_identity_not_presentation() {
@@ -5711,5 +6276,92 @@ mod builtin_carrier_tests {
 
         let shadow = ResolvedTy::named_user("Option", vec![ResolvedTy::String]);
         assert!(!is_builtin_option_carrier(&shadow));
+    }
+
+    fn carrier_scope_exit(
+        scope: ScopeId,
+        carried: Vec<OwnerId>,
+        carry_places: Vec<Place>,
+    ) -> Instr {
+        Instr::OwnershipEvent(OwnershipEvent::ScopeExit {
+            scopes: vec![scope],
+            owners: Vec::new(),
+            carry_places,
+            carried,
+        })
+    }
+
+    fn carrier_scan_builder(binding: BindingId, scope: ScopeId) -> Builder {
+        let mut builder = Builder::default();
+        builder.call_scrutinee_carrier_mint_locals.insert(0);
+        builder.binding_locals.insert(binding, Place::Local(0));
+        builder.binding_scope.insert(binding, scope);
+        builder.owner_generations.insert(binding, 0);
+        builder
+    }
+
+    #[test]
+    fn exact_noncarrying_scope_exit_bounds_call_carrier_scan() {
+        let binding = BindingId(90);
+        let scope = ScopeId(12);
+        let mut builder = carrier_scan_builder(binding, scope);
+        let owner = OwnerId {
+            binding,
+            generation: 0,
+        };
+        builder.instructions = vec![
+            Instr::OwnershipEvent(OwnershipEvent::Release {
+                owner,
+                place: Place::Local(0),
+            }),
+            carrier_scope_exit(scope, Vec::new(), Vec::new()),
+            // This write belongs to a later physical-slot lifetime. The
+            // current generation's scan must stop at the lexical close.
+            Instr::Move {
+                dest: Place::Local(1),
+                src: Place::Local(0),
+            },
+        ];
+
+        assert!(builder.call_carrier_body_end_drop_safe(binding, 0, 0, 0));
+    }
+
+    #[test]
+    fn carried_or_co_live_carrier_scope_does_not_hide_a_stale_use() {
+        let binding = BindingId(91);
+        let scope = ScopeId(13);
+        let owner = OwnerId {
+            binding,
+            generation: 0,
+        };
+        let stale_use = Instr::Move {
+            dest: Place::Local(1),
+            src: Place::Local(0),
+        };
+
+        let mut carried = carrier_scan_builder(binding, scope);
+        carried.instructions = vec![
+            Instr::OwnershipEvent(OwnershipEvent::Release {
+                owner,
+                place: Place::Local(0),
+            }),
+            carrier_scope_exit(scope, vec![owner], Vec::new()),
+            stale_use.clone(),
+        ];
+        assert!(
+            !carried.call_carrier_body_end_drop_safe(binding, 0, 0, 0),
+            "a carried OwnerId is not ended by the lexical marker"
+        );
+
+        let mut co_live = carrier_scan_builder(binding, scope);
+        co_live
+            .binding_locals
+            .insert(BindingId(92), Place::Local(0));
+        co_live.binding_scope.insert(BindingId(92), scope);
+        co_live.instructions = vec![carrier_scope_exit(scope, Vec::new(), Vec::new()), stale_use];
+        assert!(
+            !co_live.call_carrier_body_end_drop_safe(binding, 0, 0, 0),
+            "ambiguous same-place bindings must retain the fail-closed unbounded scan"
+        );
     }
 }

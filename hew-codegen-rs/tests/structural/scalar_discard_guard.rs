@@ -97,6 +97,7 @@ fn pipeline_discard_extern_owned(
         decisions: vec![],
         checks: vec![],
         cooperate_sites: vec![],
+        ownership_elaboration: None,
     };
     let elab = ElaboratedMirFunction {
         name: "probe".to_string(),

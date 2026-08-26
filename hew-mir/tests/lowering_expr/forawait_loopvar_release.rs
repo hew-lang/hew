@@ -89,6 +89,48 @@ fn assert_no_nyi(pl: &IrPipeline) {
     assert!(nyi.is_empty(), "unexpected NYI diagnostics: {nyi:#?}");
 }
 
+fn string_drops_for_call_arg(
+    pl: &IrPipeline,
+    fn_name: &str,
+    target_callee: &str,
+    arg_index: usize,
+) -> usize {
+    let function = pl
+        .raw_mir
+        .iter()
+        .find(|function| function.name == fn_name)
+        .expect("function must be present in raw MIR");
+    let arg_place = function
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee: actual_callee,
+                args,
+                ..
+            } if actual_callee == target_callee => args.get(arg_index).copied(),
+            _ => None,
+        })
+        .expect("named call argument must be present in raw MIR");
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                Instr::Drop {
+                    place,
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(spec),
+                    ..
+                } if *place == arg_place
+                    && *spec == hew_mir::DropFnSpec::Release("hew_string_drop")
+            )
+        })
+        .count()
+}
+
 /// A stream can be created before an unrelated await and transferred into its
 /// `for await` cursor only after that suspension resumes.  Destroying the
 /// coroutine while parked must close the original stream; after the transfer,
@@ -645,46 +687,51 @@ fn forawait_break_forwarded_via_call_escapes_without_release() {
         "#,
     );
     assert_no_nyi(&pl);
-    let f = pl
-        .raw_mir
-        .iter()
-        .find(|f| f.name == "main")
-        .expect("function must be present in raw_mir");
-    // Identify `v`'s own Place from the `wrap` call site: `args[0]` of the
-    // `Terminator::Call { callee: "wrap", .. }` IS the loop variable's place.
-    // Scoping the drop count to that exact place (rather than every
-    // `hew_string_drop` in `main`) keeps this assertion independent of the
-    // unrelated, EXPECTED drop-on-reassignment release that fires for
-    // `carry`'s own prior value ("init") when `carry = wrap(v)` overwrites it.
-    let v_place = f
-        .blocks
-        .iter()
-        .find_map(|block| match &block.terminator {
-            Terminator::Call { callee, args, .. } if callee == "wrap" => Some(args[0]),
-            _ => None,
-        })
-        .expect("a `wrap` call terminator must be present in `main`");
-    let v_place_drops: usize = f
-        .blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter(|i| {
-            matches!(
-                i,
-                Instr::Drop {
-                    place,
-                    ty: ResolvedTy::String,
-                    drop_fn: Some(s),
-                    ..
-                } if *place == v_place && *s == hew_mir::DropFnSpec::Release("hew_string_drop")
-            )
-        })
-        .count();
+    // Scoping the drop count to `wrap`'s exact argument place keeps this
+    // assertion independent of `carry`'s expected overwrite release.
+    let v_place_drops = string_drops_for_call_arg(&pl, "main", "wrap", 0);
     assert_eq!(
         v_place_drops, 0,
         "a loop variable forwarded through an identity callee (`wrap`) before \
          `break` is not on the verified-borrow list; any emitted release of \
          `v`'s own place double-frees the buffer `carry` now aliases"
+    );
+}
+
+/// NEGATIVE: `ParamsOnly` identifies a parameter-derived result, but does not
+/// identify WHICH parameter. With two heap arguments, lowering must not guess
+/// that the result carries the active yield binder and suppress its break-edge
+/// cleanup.
+#[test]
+fn forawait_break_ambiguous_forward_keeps_yield_cleanup() {
+    let pl = pipeline_with_tc(
+        r#"
+        actor Maker {
+            receive gen fn items() -> string {
+                yield "one";
+            }
+        }
+        fn choose(a: string, b: string, first: bool) -> string {
+            if first { return a; }
+            b
+        }
+        fn main() -> i64 {
+            let m = spawn Maker;
+            var carry = "init";
+            for await v in m.items() {
+                carry = choose(v, "fallback", true);
+                break;
+            }
+            println(carry);
+            0
+        }
+        "#,
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        string_drops_for_call_arg(&pl, "main", "choose", 0),
+        1,
+        "two heap arguments leave the forwarded parameter ambiguous, so the active yield binder must retain its break-edge cleanup",
     );
 }
 

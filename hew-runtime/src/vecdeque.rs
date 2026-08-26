@@ -98,7 +98,7 @@ pub unsafe extern "C" fn hew_deque_push_back(dq: *mut HewDeque, value: i64) {
 ///
 /// `dq` must be a valid pointer returned by [`hew_deque_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_deque_pop_front(dq: *mut HewDeque) -> i64 {
+pub unsafe extern "C-unwind" fn hew_deque_pop_front(dq: *mut HewDeque) -> i64 {
     if dq.is_null() {
         return 0;
     }
@@ -120,7 +120,7 @@ pub unsafe extern "C" fn hew_deque_pop_front(dq: *mut HewDeque) -> i64 {
 ///
 /// `dq` must be a valid pointer returned by [`hew_deque_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_deque_pop_back(dq: *mut HewDeque) -> i64 {
+pub unsafe extern "C-unwind" fn hew_deque_pop_back(dq: *mut HewDeque) -> i64 {
     if dq.is_null() {
         return 0;
     }

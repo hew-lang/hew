@@ -153,13 +153,13 @@ repros/03_hashmap_string_vec_value.hew
 repros/p0a_hashmap_string_vec_value.hew
 repros/p0c_method_value_failclosed.hew
 
-# ── tests/obligation-advisory/ ───────────────────────────────────────────────
+# ── tests/ownership-balance/ ───────────────────────────────────────────────
 
 # corpus-intentional-refusal: the ownership corpus's refusal row. It reads a
 # consumed binding on purpose so the obligation gate can assert a blocking MIR
-# finding and a non-zero exit; tests/obligation-advisory/baseline.tsv pins both,
+# finding and a non-zero exit; tests/ownership-balance/baseline.tsv pins both,
 # and run.py refuses to run at all if the corpus loses its refusal.
-tests/obligation-advisory/retained_hard_refusal.hew
+tests/ownership-balance/retained_hard_refusal.hew
 
 # ── tests/corpus/ ────────────────────────────────────────────────────────────
 

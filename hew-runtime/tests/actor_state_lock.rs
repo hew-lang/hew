@@ -14,7 +14,7 @@ use hew_runtime::actor::{
     HEW_ACTOR_STATE_LOCK_ERR, HEW_ACTOR_STATE_LOCK_OK,
 };
 use hew_runtime::hew_last_error;
-use hew_runtime_testkit::{ensure_scheduler, TestActor};
+use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -257,14 +257,23 @@ fn scheduler_releases_state_lock_after_handler_panic() {
     let actor = TestActor::spawn_with_state(&mut initial, panic_then_count_dispatch);
 
     actor.send_empty(1);
-    actor.send_empty(2);
-
     assert!(
-        PANIC_RELEASE_SIGNAL.wait_for(1, Duration::from_secs(10)),
-        "second dispatch did not run after the first handler panicked"
+        actor.wait_for_state(HewActorState::Crashed, Duration::from_secs(10)),
+        "a handler panic must make the actor terminal"
     );
-    let final_state = unsafe { *(*actor.as_ptr()).state.cast::<i32>() };
-    assert_eq!(final_state, 1);
+    assert_eq!(
+        unsafe { hew_actor_state_lock_acquire(actor.as_ptr()) },
+        HEW_ACTOR_STATE_LOCK_OK,
+        "scheduler crash recovery must release the handler's state lock"
+    );
+    assert_eq!(
+        unsafe { hew_actor_state_lock_release(actor.as_ptr()) },
+        HEW_ACTOR_STATE_LOCK_OK
+    );
+    assert!(
+        !PANIC_RELEASE_SIGNAL.wait_for(1, Duration::from_millis(25)),
+        "the panicking handler must not continue into its success path"
+    );
 }
 
 static NULL_LOCK_SIGNAL: DispatchSignal = DispatchSignal::new();

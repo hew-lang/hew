@@ -2055,8 +2055,8 @@ impl Builder {
     ///   `Vec` with a wired element release, `HashMap`, `HashSet`, generator
     ///   handles) releases through one whole-value `Instr::Drop` — the same
     ///   inline release the overwrite path emits for these shapes. A static
-    ///   string literal is safe here: `hew_string_drop` skips read-only
-    ///   segment pointers via its `is_static_string` guard.
+    ///   string literal is safe here: it is absent from the exact managed-string
+    ///   provenance registry, so `hew_string_drop` treats it as borrowed.
     /// - an Unwired `Vec` (element release protocol unwired) is refused fail
     ///   closed, per the picker contract ("a `Wired`-gated pre-flight can no
     ///   longer admit the buffer-only free"). Unreachable today: a receive
@@ -2366,7 +2366,7 @@ impl Builder {
         }
 
         let stream_ty = self.subst_ty(&expr.ty);
-        let (sink, stream) = self.build_receive_gen_channel(&sink_ty, stream_ty);
+        let (sink, stream) = self.build_receive_gen_channel(&sink_ty, stream_ty, expr);
 
         lowered.push((sink, sink_ty));
         let value = if let [(place, _)] = &lowered[..] {
@@ -2416,6 +2416,7 @@ impl Builder {
         &mut self,
         sink_ty: &ResolvedTy,
         stream_ty: ResolvedTy,
+        owner_expr: &HirExpr,
     ) -> (Place, Place) {
         let capacity = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::ConstI64 {
@@ -2447,6 +2448,16 @@ impl Builder {
             next: after_sink,
         });
         self.start_block(after_sink);
+        let Place::Local(sink_local) = sink else {
+            unreachable!("receive-generator sink must use local storage")
+        };
+        self.adopt_synthetic_owned_local(
+            "__hew_receive_gen_sink",
+            owner_expr.site,
+            sink_local,
+            sink_ty.clone(),
+            self.owner_warrant_for_admitted_temp(owner_expr),
+        );
 
         let stream = self.alloc_local(stream_ty);
         let after_stream = self.alloc_block();
@@ -2458,6 +2469,12 @@ impl Builder {
             next: after_stream,
         });
         self.start_block(after_stream);
+        // The extracted stream becomes caller-owned on the successful
+        // `hew_stream_pair_stream` successor, before freeing the empty pair
+        // carrier. Mint its exact provisional generation here so a panic in
+        // `hew_stream_pair_free` closes the stream on that unwind edge.
+        self.publish_produced_value_place(owner_expr, stream);
+        self.adopt_typed_produced_value_owner(owner_expr, stream);
 
         // Free the now-empty carrier (see the doc comment above): both halves
         // are extracted, so this releases only the two-pointer box.
@@ -3093,9 +3110,27 @@ impl Builder {
         }
         self.push_instr(Instr::RecordInit {
             ty: state_ty,
-            fields,
+            fields: fields.clone(),
             dest,
         });
+        // Every initial-state field was lowered with move semantics (an
+        // explicit argument uses `lower_value_for_move`; defaults are fresh
+        // values). The actor adopts those fields when the state record is
+        // constructed. Publish each exact member handoff beside that primitive
+        // so Checked MIR, rather than the historical spawn/aggregate escape
+        // scan, ends any live source generation before caller cleanup.
+        for (offset, source) in fields {
+            let field_ty = &layout.state_field_tys
+                [usize::try_from(offset.0).expect("actor state field offset must fit usize")];
+            if !self.aggregate_ingress_moves_binding_ty(field_ty) {
+                continue;
+            }
+            self.push_instr(Instr::NeutralizePayloadSlot {
+                place: source,
+                transferee: Some(dest),
+                authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
+            });
+        }
         Ok(Some(dest))
     }
 

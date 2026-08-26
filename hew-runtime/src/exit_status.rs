@@ -163,10 +163,11 @@ const MAX_OPEN_RECORDS: usize = 64;
 /// transitions can be exercised without touching process-global state.
 ///
 /// LOCK-FREE by requirement, not by preference: [`open_record`] is called from
-/// `actor::hew_actor_trap_inner`, which runs on the crash path — including the
-/// `siglongjmp` recovery of a SEGV/BUS/FPE/ILL. Taking a mutex there can block
-/// behind a thread the crash just interrupted. A fixed table of atomic slots
-/// gives exactly-once settling with no lock on any path.
+/// `actor::hew_actor_trap_inner`, which runs on the language-panic unwind path.
+/// Taking a mutex there can block behind a thread involved in crash handling.
+/// A fixed table of atomic slots gives exactly-once settling with no lock on any
+/// path. Hardware synchronous faults terminate the process and never enter this
+/// recovery state machine.
 #[derive(Debug)]
 pub(crate) struct ExitStatusAuthority {
     /// A fault reached a state with no recovery authority left. Never lowered

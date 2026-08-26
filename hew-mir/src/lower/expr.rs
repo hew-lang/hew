@@ -155,7 +155,8 @@ pub(super) fn binding_seeds_drop_elaboration(
     ty: &ResolvedTy,
     type_classes: &hew_hir::TypeClassTable,
 ) -> bool {
-    ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
+    !super::drop_plan::ty_is_nonowning_handle_leaf(ty)
+        && ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
 }
 
 #[cfg(test)]
@@ -1509,9 +1510,8 @@ impl Builder {
             .is_some_and(|elem| self.is_owned_vec_element(elem))
     }
 
-    /// True when a Vec element descriptor has a drop callback but no clone
-    /// callback. Receiver endpoints and trait-object boxes are affine; every
-    /// operation that would manufacture a second owner must be refused.
+    /// True when a Vec element descriptor is move-only. Push/set transfer the
+    /// source generation into the collection; copy-out operations are refused.
     pub(super) fn vec_receiver_has_drop_only_element(&self, vec_ty: &ResolvedTy) -> bool {
         let ResolvedTy::Named {
             args,
@@ -1521,14 +1521,17 @@ impl Builder {
         else {
             return false;
         };
-        matches!(args.first(), Some(ResolvedTy::TraitObject { .. }))
-            || matches!(
-                args.first(),
-                Some(ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::Receiver),
-                    ..
-                })
-            )
+        args.first().is_some_and(|elem| {
+            matches!(self.subst_ty(elem), ResolvedTy::TraitObject { .. })
+                || matches!(
+                    self.subst_ty(elem),
+                    ResolvedTy::Named {
+                        builtin: Some(hew_types::BuiltinType::Receiver),
+                        ..
+                    }
+                )
+                || self.collection_clone_affine_blocker(elem).is_some()
+        })
     }
 
     pub(super) fn reject_drop_only_vec_operation(
@@ -1547,18 +1550,6 @@ impl Builder {
                 .to_string(),
         });
         None
-    }
-
-    fn vec_receiver_has_trait_object_element(&self, vec_ty: &ResolvedTy) -> bool {
-        let ResolvedTy::Named {
-            args,
-            builtin: Some(hew_types::BuiltinType::Vec),
-            ..
-        } = self.subst_ty(vec_ty)
-        else {
-            return false;
-        };
-        matches!(args.first(), Some(ResolvedTy::TraitObject { .. }))
     }
 
     /// Prove that a concrete collection payload has a total semantic clone and
@@ -1620,6 +1611,14 @@ impl Builder {
             )),
             Err(error) => Err(error.to_string()),
         }
+    }
+
+    /// Canonical transitive affine capability used by every Vec copy/move
+    /// boundary. A non-`None` result means the element may move but may not be
+    /// cloned into a second owner.
+    pub(super) fn collection_clone_affine_blocker(&self, value_ty: &ResolvedTy) -> Option<String> {
+        let concrete = self.subst_ty(value_ty);
+        self.collection_clone_affine_marker_blocker(&concrete, &mut HashSet::new())
     }
 
     /// Return the first non-cloneable resource / linear value reachable from a
@@ -2057,6 +2056,35 @@ impl Builder {
                 if pending {
                     self.pending_lambda_actor_handle = None;
                 }
+                // Establish the binding's canonical backend storage before
+                // minting ownership. The former order registered ordinary let
+                // owners against the `Local(0)` fallback, then allocated their
+                // real slot after the mint; produced-value handoffs consequently
+                // left both the intermediate and final Vec/record slots in the
+                // exit template. Storage-first construction gives every OwnerId
+                // its real immutable Place from birth.
+                if !pending {
+                    if let Some(src) = value_place {
+                        let binding_place = match src {
+                            Place::DuplexHandle(_)
+                            | Place::SendHalf(_)
+                            | Place::RecvHalf(_)
+                            | Place::LambdaActorHandle(_)
+                            | Place::ActorHandle(_) => Some(src),
+                            Place::Local(n) if self.tuple_decomp.contains_key(&n) => Some(src),
+                            Place::Local(_) | Place::ReturnSlot => {
+                                Some(self.alloc_local(binding_ty.clone()))
+                            }
+                            Place::MachineTag(_)
+                            | Place::MachineVariant { .. }
+                            | Place::EnumTag(_)
+                            | Place::EnumVariant { .. } => None,
+                        };
+                        if let Some(place) = binding_place {
+                            self.binding_locals.insert(binding.id, place);
+                        }
+                    }
+                }
                 // Suspendable-callee discriminator: when this binding holds a
                 // closure literal whose invoke-shim carries a suspend terminator,
                 // record it so a later `read_once()` call lowers to the driving
@@ -2138,17 +2166,21 @@ impl Builder {
                 let value_ty = self.subst_ty(&value.ty);
                 let dyn_owned =
                     matches!(value_ty, ResolvedTy::TraitObject { .. }) && value_place.is_some();
-                let ordinary_owner_warrant =
-                    if !dyn_owned && self.vec_iter_cursor_release_symbol(&binding_ty).is_none() {
-                        self.let_binder_owner_warrant(
-                            binding.id,
-                            value,
-                            &binding_ty,
-                            pending || value_place.is_some(),
-                        )
-                    } else {
-                        None
-                    };
+                let borrowed_runtime_result = value_place
+                    .is_some_and(|place| self.borrowed_runtime_result_places.contains(&place));
+                let ordinary_owner_warrant = if !dyn_owned
+                    && !borrowed_runtime_result
+                    && self.vec_iter_cursor_release_symbol(&binding_ty).is_none()
+                {
+                    self.let_binder_owner_warrant(
+                        binding.id,
+                        value,
+                        &binding_ty,
+                        pending || value_place.is_some(),
+                    )
+                } else {
+                    None
+                };
                 if dyn_owned {
                     // dyn-trait owned local: classify storage from the RHS
                     // expression shape and push into `owned_locals` with the
@@ -2261,20 +2293,53 @@ impl Builder {
                     // the `string`-Retained and single-pointer HandleTransfer
                     // load classes, and every fresh producer — keeps its
                     // `ScopeExit` ownership.
-                    match self.field_projection_alias_provenance(value, &binding_ty) {
-                        Some(provenance) => self.register_owned_local_alias(
-                            binding.id,
-                            binding.name.clone(),
-                            binding_ty.clone(),
-                            provenance,
-                            warrant,
-                        ),
-                        None => self.register_owned_local(
-                            binding.id,
-                            binding.name.clone(),
-                            binding_ty.clone(),
-                            warrant,
-                        ),
+                    let inherited_alias = match &value.kind {
+                        HirExprKind::BindingRef {
+                            resolved: ResolvedRef::Binding(source),
+                            ..
+                        } => self.exact_owned_local_alias_provenance(*source, &binding_ty),
+                        _ => super::ownership::OwnedAliasInheritance::NotAlias,
+                    };
+                    let alias_inheritance_ambiguous = matches!(
+                        &inherited_alias,
+                        super::ownership::OwnedAliasInheritance::Ambiguous
+                    );
+                    let inherited_alias_provenance = match inherited_alias {
+                        super::ownership::OwnedAliasInheritance::Exact(provenance) => {
+                            Some(provenance)
+                        }
+                        super::ownership::OwnedAliasInheritance::NotAlias => None,
+                        super::ownership::OwnedAliasInheritance::Ambiguous => {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: "ambiguous byte-copy alias rebind".to_string(),
+                                    site: value.site,
+                                },
+                                note: "the initializer binding has multiple owner-ledger rows or a mismatched aggregate type; MIR refuses to mint a successor over storage whose alias provenance is not unique"
+                                    .to_string(),
+                            });
+                            None
+                        }
+                    };
+                    if !alias_inheritance_ambiguous {
+                        match self
+                            .field_projection_alias_provenance(value, &binding_ty)
+                            .or(inherited_alias_provenance)
+                        {
+                            Some(provenance) => self.register_owned_local_alias(
+                                binding.id,
+                                binding.name.clone(),
+                                binding_ty.clone(),
+                                provenance,
+                                warrant,
+                            ),
+                            None => self.register_owned_local(
+                                binding.id,
+                                binding.name.clone(),
+                                binding_ty.clone(),
+                                warrant,
+                            ),
+                        }
                     }
                     // Tag generator/`AsyncGenerator` handle bindings with their
                     // declaring scope so a per-scope-exit `hew_gen_coro_destroy` fires
@@ -2311,19 +2376,6 @@ impl Builder {
                         }
                     }
                 }
-                // Cursor ownership is independent of the ordinary
-                // `owned_locals` mint. In particular, a first-class root-scope
-                // `.iter()` / `.into_iter()` binding may have no function-exit
-                // drop-plan class, but its `vec` snapshot is still a concrete
-                // owner. Register fresh cursors and transfer whole-value
-                // rebinds after the backend slot is known to exist.
-                self.register_vec_iter_scope_owner(
-                    binding.id,
-                    value,
-                    &binding_ty,
-                    pending || value_place.is_some(),
-                    value_place,
-                );
                 if owned_string_record_key.is_some() && value_place.is_some() {
                     self.owned_string_record_bindings.insert(binding.id);
                 }
@@ -2363,7 +2415,9 @@ impl Builder {
                             self.binding_locals.insert(binding.id, src);
                         }
                         Place::Local(_) | Place::ReturnSlot => {
-                            let slot = self.alloc_local(binding_ty.clone());
+                            let slot = *self.binding_locals.get(&binding.id).expect(
+                                "let binding storage must be established before owner mint",
+                            );
                             // A `let` share of an ACTIVE `string` yield binder
                             // gets the same inline retain-backed share as the
                             // `assign` path: the binder's count stays with its
@@ -2382,7 +2436,16 @@ impl Builder {
                                     .insert((self.current_block_id, self.instructions.len()));
                             }
                             self.push_instr(Instr::Move { dest: slot, src });
-                            self.binding_locals.insert(binding.id, slot);
+                            if borrowed_runtime_result {
+                                self.push_instr(Instr::OwnershipEvent(
+                                    crate::model::OwnershipEvent::AliasRelocate {
+                                        from: src,
+                                        to: slot,
+                                    },
+                                ));
+                                self.borrowed_runtime_result_places.remove(&src);
+                                self.borrowed_runtime_result_places.insert(slot);
+                            }
                             if let Some(source_binding) = for_await_handoff_source {
                                 if self.binding_locals.get(&source_binding) == Some(&src) {
                                     self.for_await_handle_handoffs.push(
@@ -2423,13 +2486,50 @@ impl Builder {
                     }
                     self.retire_provisional_owner_for_bound_value(binding.id, &binding.name, src);
                 }
+                // Cursor ownership is sealed only after the physical binding
+                // move. A whole-VecIter rebind can then publish one exact
+                // source-generation -> destination-generation Transfer at
+                // that program point; registering before the Move minted a
+                // parallel owner and left both generations attached to the
+                // destination slot.
+                self.register_vec_iter_scope_owner(
+                    binding.id,
+                    &binding.name,
+                    value,
+                    &binding_ty,
+                    pending || value_place.is_some(),
+                    value_place,
+                );
                 // #1933 / #1941 — allocate the path-sensitive drop-flag for a
-                // non-idempotent user `#[resource]` binding now that its backend
-                // Place is wired into `binding_locals`. Zero-initialised here so
-                // the flag dominates every `Consume` use site and every
-                // scope-exit drop; set to 1 at each consume. A no-op for every
-                // other binding class (see `affine_release_needs_drop_flag`).
-                self.maybe_alloc_affine_release_flag(binding.id, &binding_ty);
+                // non-idempotent user `#[resource]` OWNER now that its backend
+                // Place is wired into `binding_locals`. A typed runtime result
+                // whose contract returned `InteriorAliasOfReceiver` is not an
+                // owner: the collection retains the sole close authority and
+                // the alias validator below diagnoses escape/consume/rebind.
+                // Giving that binder an affine flag would fabricate cleanup
+                // authority (and cannot publish a Guard because no generation
+                // was minted). Keep missing-owner failures closed for every
+                // other affine binder by retaining the assertion inside
+                // `maybe_alloc_affine_release_flag`.
+                if borrowed_runtime_result {
+                    let place = self
+                        .binding_locals
+                        .get(&binding.id)
+                        .copied()
+                        .expect("typed interior-alias binding must have backend storage");
+                    assert!(
+                        self.current_owner_id_at_place(place).is_none(),
+                        "typed interior-alias binding {:?} unexpectedly owns {:?}",
+                        binding.id,
+                        place
+                    );
+                } else {
+                    // Zero-initialised here so the flag dominates every later
+                    // `Consume` use site and every scope-exit drop; set to 1 at
+                    // each consume. A no-op for every other binding class (see
+                    // `affine_release_needs_drop_flag`).
+                    self.maybe_alloc_affine_release_flag(binding.id, &binding_ty);
+                }
                 self.maybe_alloc_overwrite_guard_flag(binding);
                 // #2418 — allocate the path-sensitive scope-exit drop-flag for
                 // an owned collection local the pre-pass saw consumed, so a
@@ -2613,10 +2713,12 @@ impl Builder {
             {
                 if let Some(place) = self.lower_vec_iter_value_for_read(expr) {
                     if let Some(flag) = self.vec_iter_value_drop_flags.get(&expr.site).copied() {
+                        let owner = self.vec_iter_value_owners.get(&expr.site).copied();
                         self.emit_flag_gated_vec_iter_value_release(
                             place,
                             &discarded_vec_iter_ty,
                             flag,
+                            owner,
                         );
                     }
                 }
@@ -2841,9 +2943,7 @@ impl Builder {
                     });
                     let direct_vec_iter_move =
                         self.vec_iter_direct_move_sites.last().copied() == Some(expr.site);
-                    if matches!(use_intent, IntentKind::Consume | IntentKind::Discharge)
-                        || direct_vec_iter_move
-                    {
+                    if matches!(use_intent, IntentKind::Consume) || direct_vec_iter_move {
                         if let Some(flag) = self.vec_iter_drop_flags.get(id).copied() {
                             if direct_vec_iter_move {
                                 if let Some(result_flag) =
@@ -2884,7 +2984,14 @@ impl Builder {
                         // move-checker and the per-exit `BindingState`. Every
                         // other consumed owned class keeps the legacy
                         // path-insensitive `owned_locals` removal.
-                        if self.vec_iter_drop_flags.contains_key(id) {
+                        if use_intent == IntentKind::Discharge {
+                            // A consuming method may unwind before it
+                            // discharges the receiver. Keep both its OwnerId
+                            // and guard live through the call; the finalized
+                            // CFG publishes the flag store, terminal Transfer,
+                            // and physical neutralization in the normal
+                            // successor only.
+                        } else if self.vec_iter_drop_flags.contains_key(id) {
                             // Updated above even when a value-producing
                             // if/match arm retained HIR Read intent.
                         } else if let Some(flag) = self.affine_release_flags.get(id).copied() {
@@ -3485,6 +3592,20 @@ impl Builder {
             )),
             HirExprKind::GeneratorNext { receiver, yield_ty } => {
                 let ctx = self.lower_value(receiver)?;
+                let ctx_owner = match &receiver.kind {
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(binding),
+                        ..
+                    } => self
+                        .owner_generations
+                        .get(binding)
+                        .copied()
+                        .map(|generation| crate::model::OwnerId {
+                            binding: *binding,
+                            generation,
+                        }),
+                    _ => None,
+                };
                 // `expr.ty` is the checker-authoritative `Option<yield_ty>`; the
                 // dest enum slot is allocated with that exact type so codegen
                 // resolves the registered Option layout for the unbox.
@@ -3492,6 +3613,7 @@ impl Builder {
                 self.push_instr(Instr::GeneratorNext {
                     dest,
                     ctx,
+                    ctx_owner,
                     yield_ty: yield_ty.clone(),
                 });
                 Some(dest)
@@ -3943,7 +4065,8 @@ impl Builder {
                             if let Some(flag) =
                                 self.vec_iter_value_drop_flags.get(&arg.site).copied()
                             {
-                                vec_iter_read_args.push((place, arg_ty, flag));
+                                let owner = self.vec_iter_value_owners.get(&arg.site).copied();
+                                vec_iter_read_args.push((place, arg_ty, flag, owner));
                             }
                             arg_places.push(place);
                         } else {
@@ -3972,19 +4095,20 @@ impl Builder {
                             is_final: false,
                         });
                         self.start_block(next);
-                        for (place, ty, flag) in vec_iter_read_args {
-                            self.emit_flag_gated_vec_iter_value_release(place, &ty, flag);
+                        for (place, ty, flag, owner) in vec_iter_read_args {
+                            self.emit_flag_gated_vec_iter_value_release(place, &ty, flag, owner);
                         }
                         return dest;
                     }
                     self.push_instr(Instr::CallClosure {
+                        call_site: expr.site,
                         callee: callee_place,
                         args: arg_places,
                         ret_ty,
                         dest,
                     });
-                    for (place, ty, flag) in vec_iter_read_args {
-                        self.emit_flag_gated_vec_iter_value_release(place, &ty, flag);
+                    for (place, ty, flag, owner) in vec_iter_read_args {
+                        self.emit_flag_gated_vec_iter_value_release(place, &ty, flag, owner);
                     }
                     return dest;
                 }
@@ -4037,7 +4161,7 @@ impl Builder {
                 let result = if let Some(tail) = block.tail.as_ref() {
                     if let Some(src) = self.lower_composite_result_value(tail) {
                         let secured = self.alloc_local(self.subst_ty(&tail.ty));
-                        self.push_instr(Instr::Move { dest: secured, src });
+                        self.push_composite_result_move(secured, src, &tail.ty);
                         Some(secured)
                     } else {
                         None
@@ -4068,6 +4192,7 @@ impl Builder {
                 // before the enclosing function continues — waking a parked
                 // producer and preventing the deadlock.
                 self.emit_scope_stream_drops(block.scope);
+                self.emit_scope_exit_marker_with_carries([block.scope], result.iter().copied());
                 self.active_scopes.pop();
                 result
             }
@@ -5185,6 +5310,18 @@ impl Builder {
                     method_table: method_table.clone(),
                     vtable_entries: vtable_entries.clone(),
                 });
+                // Boxing a concrete value into an owned trait object moves the
+                // concrete payload into the box. Publish that exact physical
+                // handoff in MIR so the concrete source generation ends here
+                // while the separately-minted dyn generation owns `dest`.
+                // Anonymous aggregate producers are registered owners too;
+                // relying only on `dyn_rebind_source_binding` misses them and
+                // lets return/unwind cleanup destroy the boxed payload twice.
+                self.push_instr(Instr::NeutralizePayloadSlot {
+                    place: value_place,
+                    transferee: Some(dest),
+                    authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                });
                 // Concrete-source drop suppression at the coerce site.
                 //
                 // The coerced concrete value is *moved* into the fat
@@ -5475,7 +5612,7 @@ impl Builder {
                 // caller keeps its own independent drop.
                 let callee = if callee == "hew_vec_push_owned"
                     && args.len() == 1
-                    && (self.vec_receiver_has_trait_object_element(&receiver.ty)
+                    && (self.vec_receiver_has_drop_only_element(&receiver.ty)
                         || self.expr_is_owned_vec_move_ingress_owner(&args[0]))
                 {
                     "hew_vec_push_owned_move".to_string()
@@ -5504,12 +5641,13 @@ impl Builder {
                 // fresh unbound constructor operand has no name.
                 let callee = if callee == "hew_vec_set_owned"
                     && args.len() == 2
-                    && Self::expr_is_materialized_owner(
-                        &args[1],
-                        &self.call_scrutinee_provenance.fresh_owner_verdicts,
-                        &self.funcupdate_param_ids,
-                        &self.proven_foreign_bindings,
-                    ) {
+                    && (self.vec_receiver_has_drop_only_element(&receiver.ty)
+                        || Self::expr_is_materialized_owner(
+                            &args[1],
+                            &self.call_scrutinee_provenance.fresh_owner_verdicts,
+                            &self.funcupdate_param_ids,
+                            &self.proven_foreign_bindings,
+                        )) {
                     "hew_vec_set_owned_move".to_string()
                 } else {
                     callee
@@ -5812,7 +5950,7 @@ impl Builder {
                 let receiver_place = self.lower_value(receiver)?;
                 let mut arg_places = vec![receiver_place];
                 let mut yield_retained_locals: Vec<u32> = Vec::new();
-                for arg in args {
+                for (arg_index, arg) in args.iter().enumerate() {
                     // A trait-object element push is the one rewrite that turns
                     // a BARE-BINDING push into `hew_vec_push_owned_move` (the
                     // drop-only descriptor has no clone thunk for copy-in), so
@@ -5825,10 +5963,23 @@ impl Builder {
                     // moves an unbound temp with no binding to consume — a
                     // second move-ingress consume on either would double-record
                     // the same site as use-after-consume.
-                    let move_ingress = builtin_method_arg_is_move_ingress(*target_family)
-                        || (callee == "hew_vec_push_owned_move"
-                            && !vec_owned_move_array_ingress
-                            && self.vec_receiver_has_trait_object_element(&receiver.ty));
+                    let move_only_vec_ingress = self
+                        .vec_receiver_has_drop_only_element(&receiver.ty)
+                        && !vec_owned_move_array_ingress
+                        && matches!(
+                            (target_family, callee.as_str(), arg_index),
+                            (
+                                hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push),
+                                "hew_vec_push_owned_move",
+                                0
+                            ) | (
+                                hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Set),
+                                "hew_vec_set_owned_move",
+                                1
+                            )
+                        );
+                    let move_ingress =
+                        builtin_method_arg_is_move_ingress(*target_family) || move_only_vec_ingress;
                     // `HashMap`/`HashSet` ingress is MOVE by ABI — the runtime
                     // documents copy-in as intentionally absent — so the operand's
                     // heap is byte-transferred into the collection and the
@@ -6685,6 +6836,8 @@ impl Builder {
                 // release); only a cursor inside an ENCLOSING loop's window —
                 // `break @outer` from a nested `for` — is released here.
                 self.emit_vec_iter_drops_for_exit_edge(frame.scope_depth);
+                let exited_scopes = self.active_scopes[frame.scope_depth..].to_vec();
+                self.emit_scope_exit_marker(exited_scopes);
                 self.finish_current_block(Terminator::Goto {
                     target: frame.exit_target,
                 });
@@ -6773,8 +6926,11 @@ impl Builder {
                 // skipped). The fall-through back-edge is registered at the
                 // bottom of each `lower_*` loop; this is the analogous
                 // registration for the explicit-continue exit path.
-                self.loop_back_edge_blocks
-                    .insert(self.current_block_id, frame.body_scope);
+                let exited_scopes = self.active_scopes[frame.scope_depth..]
+                    .iter()
+                    .copied()
+                    .collect::<HashSet<_>>();
+                self.emit_scope_exit_marker(exited_scopes.iter().copied());
                 self.finish_current_block(Terminator::Goto {
                     target: frame.continue_target,
                 });
@@ -8264,10 +8420,7 @@ impl Builder {
                     "if then branch",
                     then_expr.site,
                 )?;
-                self.push_instr(Instr::Move {
-                    dest: result_place,
-                    src,
-                });
+                self.push_composite_result_move(result_place, src, result_ty);
             }
         }
         if !self.cursor_unreachable {
@@ -8291,10 +8444,7 @@ impl Builder {
                         "if else branch",
                         else_expr.site,
                     )?;
-                    self.push_instr(Instr::Move {
-                        dest: result_place,
-                        src,
-                    });
+                    self.push_composite_result_move(result_place, src, result_ty);
                 }
             }
         }
@@ -9352,6 +9502,11 @@ impl Builder {
                 .insert(self.current_block_id, proven_borrow_args);
         }
         self.note_owned_call_site(callee_item, hir_args, &arg_places);
+        let authority = if matches!(ret_ty, ResolvedTy::Never) {
+            authority.with_no_return()
+        } else {
+            authority
+        };
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
             authority,

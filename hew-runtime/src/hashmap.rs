@@ -112,6 +112,96 @@ pub struct HewLayoutHashMap {
     pub val_layout: HewMapValueLayout,
 }
 
+/// Opaque cursor for borrowing occupied entries from a layout-backed map.
+///
+/// The cursor owns no collection data. The map must remain alive and must not
+/// be mutated until the cursor is freed.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewLayoutHashMapIter {
+    map: *const HewLayoutHashMap,
+    next_slot: usize,
+}
+
+/// Create an iterator over the occupied entries in `m`.
+///
+/// # Safety
+///
+/// `m` must point to a live map and remain live and unmodified until the
+/// returned iterator is freed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_iter_new_layout(
+    m: *const HewLayoutHashMap,
+) -> *mut HewLayoutHashMapIter {
+    // SAFETY: m is a live map per this fn's contract.
+    unsafe { validate_op_map(m) };
+    Box::into_raw(Box::new(HewLayoutHashMapIter {
+        map: m,
+        next_slot: 0,
+    }))
+}
+
+/// Advance an iterator, returning borrowed pointers to its next key and value.
+///
+/// # Safety
+///
+/// `iter`, `out_key`, and `out_value` must be non-null. The iterator's map
+/// must still be live and unmodified. Returned pointers remain valid only
+/// while that condition holds.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_iter_next_layout(
+    iter: *mut HewLayoutHashMapIter,
+    out_key: *mut *const c_void,
+    out_value: *mut *const c_void,
+) -> bool {
+    if iter.is_null() || out_key.is_null() || out_value.is_null() {
+        crate::set_last_error("HewLayoutHashMap iterator: null argument");
+        std::process::abort();
+    }
+    // SAFETY: all three pointers were checked above; the caller guarantees the
+    // iterator and its source map remain live and unmodified.
+    let cursor = unsafe { &mut *iter };
+    // SAFETY: cursor.map is the live source map captured by the constructor.
+    unsafe { validate_op_map(cursor.map) };
+    // SAFETY: validate_op_map just established that cursor.map is live.
+    let map = unsafe { &*cursor.map };
+    while cursor.next_slot < map.cap {
+        let index = cursor.next_slot;
+        cursor.next_slot += 1;
+        // SAFETY: index is below map.cap and validate_op_map established the
+        // backing allocation and layout invariants.
+        if unsafe { *slot_state(map.entries, index, map.stride) } != OCCUPIED {
+            continue;
+        }
+        // SAFETY: this is an occupied in-bounds slot. The returned pointers
+        // borrow its initialized key/value storage for the iterator lifetime.
+        unsafe {
+            *out_key = slot_key(map.entries, index, map.stride, map.key_offset)
+                .cast_const()
+                .cast();
+            *out_value = slot_val(map.entries, index, map.stride, map.val_offset)
+                .cast_const()
+                .cast();
+        }
+        return true;
+    }
+    false
+}
+
+/// Free a map iterator. A null pointer is a no-op.
+///
+/// # Safety
+///
+/// `iter` must be null or a pointer returned by
+/// [`hew_hashmap_iter_new_layout`] that has not already been freed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_iter_free_layout(iter: *mut HewLayoutHashMapIter) {
+    if !iter.is_null() {
+        // SAFETY: iter has unique ownership from Box::into_raw per the contract.
+        drop(unsafe { Box::from_raw(iter) });
+    }
+}
+
 /// Borrow each occupied entry in slot order and append its structural rendering.
 ///
 /// # Safety

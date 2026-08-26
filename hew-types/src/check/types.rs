@@ -1864,6 +1864,13 @@ pub enum MethodCallRewrite {
         direction: WireCodecDirection,
         value_ty: crate::resolved_ty::ResolvedTy,
     },
+    /// Generic `std.encoding.wire` free-function facade. This carries the same
+    /// typed thunk identity as `WireCodec`, but its sole value/text/bytes
+    /// operand is the function argument rather than a method receiver.
+    GenericWireCodec {
+        direction: WireCodecDirection,
+        value_ty: crate::resolved_ty::ResolvedTy,
+    },
     /// User-record `clone` call: `clone p` or `p.clone()` where `p` has a
     /// user-defined record type that passed `record_clone_admissibility`. HIR
     /// lowers this to a call to the synthesised

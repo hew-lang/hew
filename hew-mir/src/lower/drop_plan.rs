@@ -11,18 +11,19 @@ use super::{
     derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
     derive_owned_tuple_handle_projection_bindings, derive_returned_aggregate_member_bindings,
     derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
-    derive_tuple_composite_drop_allowed, instr_source_places, outbound_record_layouts,
-    place_is_interior_projection, place_refs_local,
+    derive_tuple_composite_drop_allowed, instr_source_places, interior_alias_receiver_violations,
+    outbound_record_layouts, place_is_interior_projection, place_refs_local,
     propagate_seeded_whole_value_alias_roots_excluding_moves, propagate_whole_value_alias_roots,
     retained_string_terminator_drop_safe, short_name, string_call_borrows,
     terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
     BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction,
-    ClosureEnvFieldOwnership, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock, ElabDrop,
+    ClosureEnvFieldOwnership, ClosurePairRhs, DropKind, DropPlan, ElabBlock, ElabDrop,
     ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr, IntentKind,
     LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamCrashCleanupKind,
-    Place, RawMirFunction, ResolvedRef, ResolvedTy, ScopeId, SiteId, SuspendKind, Terminator,
+    Place, RawMirFunction, ResolvedRef, ResolvedTy, SiteId, SuspendKind, Terminator,
     TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
 };
+use crate::model::CooperateSite;
 #[cfg(test)]
 use hew_hir::ResourceMarker;
 
@@ -50,10 +51,10 @@ use vec_iter_yield_abandonment::vec_iter_yield_body_region;
 /// v0.6).
 ///
 /// Algorithm per HEW-SPEC §3.7.8.4 (lexical scope teardown):
-///   1. Walk the builder's `owned_locals` ledger (the per-function
-///      ordered list of non-`BitCopy` bindings introduced by `let`).
-///      The ledger is already maintained in source/declaration order
-///      with bindings removed when consumed (`mark_binding_moved`).
+///   1. Replay explicit Checked-MIR ownership events to obtain each typed
+///      `OwnerId`, its physical `Place`, generation, transfers, and guard.
+///      Builder ownership ledgers are lowering cursors only and are not
+///      cleanup-admission authority after the MIR stream is sealed.
 ///   2. For every `Terminator::Return` exit, emit a `DropPlan` whose
 ///      `drops` are the live owned-local list in reverse declaration
 ///      order (LIFO). `If`-lowering (Slice 2) constructs
@@ -81,14 +82,19 @@ use vec_iter_yield_abandonment::vec_iter_yield_body_region;
 ///     `PersistentShare`, `Unknown` — `Unknown` is itself an upstream
 ///     rejection).
 #[allow(
+    clippy::match_same_arms,
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "elaborate threads each per-class drop-allow derivation (cow / enum \
+    reason = "derivation threads the sealed Checked-MIR inputs and each per-class drop-allow derivation (cow / enum \
               / owned-Vec / owned-record / tuple-composite / returned-aggregate \
               members) into one ordered pass; each is a distinct fail-closed \
               authority and splitting them scatters the ordering contract"
 )]
-pub(super) fn elaborate(
-    checked: &CheckedMirFunction,
+pub(super) fn derive_elaboration(
+    name: &str,
+    return_ty: &ResolvedTy,
+    blocks: &[BasicBlock],
+    cooperate_sites: &[CooperateSite],
     builder: &Builder,
     flat_statements: &[MirStatement],
     dataflow_result: &dataflow::DataflowResult,
@@ -104,29 +110,231 @@ pub(super) fn elaborate(
     // block's `statements` in construction order — Slice 1 maintains
     // pre-CFG snapshot continuity by feeding the same union here.
     let mut elaborated_statements: Vec<MirStatement> = flat_statements.to_vec();
-    // The scope-exit-live owned-locals view, materialised once for the
-    // reverse-declaration drop stream and every per-class allow-set derivation
-    // below — the same `(binding, name, ty)` tuples the provers read before the
-    // ledger carried richer facts, in the same declaration order.
-    let owned_locals_snapshot = builder.owned_locals_snapshot();
-    let aggregate_member_neutralized_bindings: HashSet<BindingId> = checked
-        .blocks
+    // Every local that can own on any path to an exit, materialised once for
+    // the reverse-declaration drop stream and every per-class allow-set below.
+    // A later move/return is path-local: excluding `ConsumedAt` definitions
+    // globally leaves their earlier call-unwind intervals uncovered. Per-exit
+    // ownership dataflow suppresses the drop after a successful transfer.
+    let binding_names: HashMap<BindingId, String> = flat_statements
+        .iter()
+        .filter_map(|statement| match statement {
+            MirStatement::Bind { binding, name, .. } => Some((*binding, name.clone())),
+            _ => None,
+        })
+        .collect();
+    // Ownership cleanup admission is driven by explicit generation-aware MIR
+    // events. Lowering may stage facts while constructing Raw MIR, but once an
+    // event is emitted no elaboration step reverse-maps places, guesses from
+    // adjacent writes, or closes a whole-function Move ancestry.
+    let ownership_transfers: Vec<&crate::model::OwnershipEvent> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(event) => Some(event),
+            _ => None,
+        })
+        .collect();
+    // Owner definitions and storage are reconstructed only from the explicit
+    // program-point ownership operations. `binding_locals` remains available
+    // below for ordinary expression/projection topology, but it is not allowed
+    // to override where an OwnerId says its value resides.
+    let mut owned_locals_snapshot = Vec::new();
+    let mut ownership_binding_locals = HashMap::new();
+    let mut latest_owner_by_binding = HashMap::new();
+    let mut seen_owner_bindings = HashSet::new();
+    let mut record_owner_definition =
+        |owner: crate::model::OwnerId, place: Place, ty: ResolvedTy| {
+            ownership_binding_locals.insert(owner.binding, place);
+            latest_owner_by_binding
+                .entry(owner.binding)
+                .and_modify(|latest: &mut crate::model::OwnerId| {
+                    if owner.generation > latest.generation {
+                        *latest = owner;
+                    }
+                })
+                .or_insert(owner);
+            if seen_owner_bindings.insert(owner.binding) {
+                let name = binding_names
+                    .get(&owner.binding)
+                    .cloned()
+                    .unwrap_or_else(|| format!("__hew_owner_{}", owner.binding.0));
+                owned_locals_snapshot.push((owner.binding, name, ty));
+            }
+        };
+    for event in &ownership_transfers {
+        match event {
+            crate::model::OwnershipEvent::Mint { owner, place, ty } => {
+                record_owner_definition(*owner, *place, ty.clone());
+            }
+            crate::model::OwnershipEvent::Reset {
+                replacement,
+                place,
+                ty,
+                ..
+            }
+            | crate::model::OwnershipEvent::Rearm {
+                replacement,
+                place,
+                ty,
+                ..
+            } => {
+                record_owner_definition(*replacement, *place, ty.clone());
+            }
+            crate::model::OwnershipEvent::Transfer {
+                to: Some(place),
+                to_owner: Some(owner),
+                to_ty: Some(ty),
+                ..
+            } => {
+                record_owner_definition(*owner, *place, ty.clone());
+            }
+            crate::model::OwnershipEvent::Join {
+                replacement,
+                place,
+                ty,
+                ..
+            } => {
+                record_owner_definition(*replacement, *place, ty.clone());
+            }
+            crate::model::OwnershipEvent::DropRecipe { .. }
+            | crate::model::OwnershipEvent::Transfer { .. }
+            | crate::model::OwnershipEvent::Relocate { .. }
+            | crate::model::OwnershipEvent::Release { .. }
+            | crate::model::OwnershipEvent::GuardedRelease { .. }
+            | crate::model::OwnershipEvent::DemoteToAlias { .. }
+            | crate::model::OwnershipEvent::Guard { .. }
+            | crate::model::OwnershipEvent::InteriorAlias { .. }
+            | crate::model::OwnershipEvent::AliasRelocate { .. }
+            | crate::model::OwnershipEvent::AliasEnd { .. }
+            | crate::model::OwnershipEvent::EdgeCarry { .. }
+            | crate::model::OwnershipEvent::ScopeExit { .. } => {}
+        }
+    }
+    // A same-place transfer replaces a provisional publication identity with
+    // its named owner without changing physical storage. Both OwnerIds remain
+    // in the immutable history (the earlier one must still validate before the
+    // handoff), but there is only one destructor slot. Select the replacement
+    // identity from that explicit transfer operation before building the LIFO
+    // template; otherwise both historical identities would schedule the same
+    // Place on an unwind edge.
+    let adopted_owner_by_place: HashMap<Place, BindingId> = ownership_transfers
+        .iter()
+        .filter_map(|event| match event {
+            crate::model::OwnershipEvent::Transfer {
+                from,
+                to: Some(to),
+                to_owner: Some(owner),
+                ..
+            } if from == to => Some((*to, owner.binding)),
+            _ => None,
+        })
+        .collect();
+    owned_locals_snapshot.retain(|(binding, _, _)| {
+        let Some(place) = ownership_binding_locals.get(binding) else {
+            return false;
+        };
+        adopted_owner_by_place
+            .get(place)
+            .is_none_or(|adopted| binding == adopted)
+    });
+    let mir_owner_guards: HashMap<crate::model::OwnerId, Place> = ownership_transfers
+        .iter()
+        .filter_map(|event| match event {
+            crate::model::OwnershipEvent::Guard { owner, flag, .. } => Some((*owner, *flag)),
+            _ => None,
+        })
+        .collect();
+    let guard_flags = |kind: crate::model::OwnershipGuardKind| {
+        ownership_transfers
+            .iter()
+            .filter_map(|event| match event {
+                crate::model::OwnershipEvent::Guard {
+                    owner,
+                    flag,
+                    kind: actual,
+                } if *actual == kind => Some((owner.binding, *flag)),
+                _ => None,
+            })
+            .collect::<HashMap<BindingId, Place>>()
+    };
+    let affine_release_guard_flags = guard_flags(crate::model::OwnershipGuardKind::AffineRelease);
+    let overwrite_guard_flags = guard_flags(crate::model::OwnershipGuardKind::Overwrite);
+    let collection_guard_flags = guard_flags(crate::model::OwnershipGuardKind::Collection);
+    let actor_message_cow_guard_flags =
+        guard_flags(crate::model::OwnershipGuardKind::ActorMessageCow);
+    let conditional_record_guard_flags =
+        guard_flags(crate::model::OwnershipGuardKind::ConditionalRecord);
+    let vec_iter_guard_flags = guard_flags(crate::model::OwnershipGuardKind::VecIter);
+    let guarded_by_latest = |binding: BindingId, flags: &HashMap<BindingId, Place>| {
+        latest_owner_by_binding
+            .get(&binding)
+            .copied()
+            .and_then(|owner| {
+                flags
+                    .get(&binding)
+                    .copied()
+                    .filter(|flag| mir_owner_guards.get(&owner) == Some(flag))
+                    .map(|flag| crate::model::ElabDropGuard { owner, flag })
+            })
+    };
+    let path_local_transfer_cleanup_bindings: HashSet<BindingId> = ownership_transfers
+        .iter()
+        .filter_map(|event| match event {
+            crate::model::OwnershipEvent::Transfer { owner, .. } => Some(owner.binding),
+            crate::model::OwnershipEvent::Relocate { .. } => None,
+            crate::model::OwnershipEvent::Reset { replacement, .. }
+            | crate::model::OwnershipEvent::Rearm { replacement, .. } => Some(replacement.binding),
+            crate::model::OwnershipEvent::Join { replacement, .. } => Some(replacement.binding),
+            crate::model::OwnershipEvent::Mint { .. }
+            | crate::model::OwnershipEvent::DropRecipe { .. }
+            | crate::model::OwnershipEvent::Release { .. }
+            | crate::model::OwnershipEvent::GuardedRelease { .. }
+            | crate::model::OwnershipEvent::DemoteToAlias { .. }
+            | crate::model::OwnershipEvent::Guard { .. }
+            | crate::model::OwnershipEvent::InteriorAlias { .. }
+            | crate::model::OwnershipEvent::AliasRelocate { .. }
+            | crate::model::OwnershipEvent::AliasEnd { .. }
+            | crate::model::OwnershipEvent::EdgeCarry { .. }
+            | crate::model::OwnershipEvent::ScopeExit { .. } => None,
+        })
+        .collect();
+    let return_move_chain_cleanup_bindings: HashSet<BindingId> = ownership_transfers
+        .iter()
+        .filter_map(|event| match event {
+            crate::model::OwnershipEvent::Transfer {
+                owner,
+                to: Some(Place::ReturnSlot),
+                ..
+            } => Some(owner.binding),
+            _ => None,
+        })
+        .collect();
+    let mir_consumed_project_binder_locals: HashSet<u32> = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instruction| match instruction {
             Instr::NeutralizePayloadSlot {
-                place,
-                authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
+                place: Place::MachineVariant { .. } | Place::EnumVariant { .. },
+                transferee: Some(transferee),
                 ..
-            } => builder
-                .binding_locals
-                .iter()
-                .find_map(|(binding, binding_place)| {
-                    (*binding_place == *place).then_some(*binding)
-                }),
+            } => base_local(*transferee),
             _ => None,
         })
         .collect();
+    // Successful return transfers do not make an upstream owner globally
+    // absent: an earlier unwind edge still owns it. Projection and pattern
+    // consumption remain explicit exclusions until their own ownership events
+    // mint the destination generation.
+    let return_move_chain_resident_bindings = return_move_chain_cleanup_bindings.clone();
+    // A lexical-scope close may disposition a binding as `ScopeReleased`
+    // even when the scope's result immediately transfers that binding into the
+    // function return slot.  The disposition describes the successful normal
+    // edge; it says nothing about an earlier call's unwind edge.  Restore every
+    // structurally identified transfer source to the function-wide cleanup
+    // template and let the per-edge ownership state below decide whether it is
+    // uninitialized, still live, or already transferred.  This is the MIR
+    // analogue of LLVM `invoke`: the normal successor commits the handoff,
+    // while the exceptional successor destroys the pre-call live set.
     for (binding, name, ty) in owned_locals_snapshot.iter().rev() {
         if builder.back_edge_only_iteration_owners.contains(binding) {
             continue;
@@ -156,26 +364,26 @@ pub(super) fn elaborate(
     // therefore retain; it cannot override the alias verdict merely because
     // some sibling path consumes the binding.
     //
-    // Consume facts narrow the allow-set further: a binding `Consumed` or
-    // `MaybeConsumed` at any block exit is removed, because `enumerate_exits`
-    // treats `MaybeConsumed` as Live (the move-checker rejects that only for
-    // `MustConsume`/Linear types, not CoW values) and would otherwise fire the
-    // drop on a branch where the buffer was already moved out.
+    // Ambiguous consume facts narrow the allow-set further. A definite
+    // `Consumed`/`Discharged` state is path-local and remains in the LIFO
+    // template so an earlier unwind edge can destroy the owner; the per-edge
+    // state filter suppresses it after the handoff. `MaybeConsumed` is removed
+    // because the current CoW move checker cannot select a safe runtime arm.
     let mut cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
         precomputed.clone()
     } else {
         let fresh_owner_dest_locals = builder.fresh_owner_dest_locals();
         let mut derived = derive_cow_sole_owner(
-            &checked.blocks,
+            blocks,
             &builder.suspend_kinds,
             &owned_locals_snapshot,
-            &builder.binding_locals,
-            &builder.match_project_consumed_binder_locals,
+            &ownership_binding_locals,
+            &mir_consumed_project_binder_locals,
             &fresh_owner_dest_locals,
             &builder.locals,
             &builder.borrowed_string_param_locals,
             &builder.parameter_locals,
-            &builder.actor_message_cow_drop_flags,
+            &actor_message_cow_guard_flags,
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
@@ -185,10 +393,10 @@ pub(super) fn elaborate(
         )
         .allowed;
         derived.extend(derive_cow_fresh_borrowed_owner(
-            &checked.blocks,
+            blocks,
             &builder.suspend_kinds,
             &owned_locals_snapshot,
-            &builder.binding_locals,
+            &ownership_binding_locals,
             &builder.locals,
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
@@ -204,7 +412,7 @@ pub(super) fn elaborate(
                     dataflow::BindingState::Discharged(_)
                         | dataflow::BindingState::Consumed(_)
                         | dataflow::BindingState::MaybeConsumed(_)
-                ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+                ) && !actor_message_cow_guard_flags.contains_key(binding)
                 {
                     derived.remove(binding);
                 }
@@ -221,10 +429,10 @@ pub(super) fn elaborate(
     // synthetic test pipelines), so those bodies keep the pre-W5.020 posture.
     let outbound_records = outbound_record_layouts(builder);
     let mut enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
-        &checked.blocks,
+        blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.binding_scope,
         &builder.transient_local_scopes,
         &builder.scope_info,
@@ -245,23 +453,7 @@ pub(super) fn elaborate(
     // runtime ownership flag. Re-admit its fresh post-store generation: the
     // guarded scope-exit drop fires only where the reassignment reset the flag
     // to zero and is skipped where the prior value moved out.
-    enum_composite_drop_allowed.extend(builder.overwrite_guard_flags.keys().copied());
-    // A call scrutinee held across a `while let` iteration has an explicit,
-    // per-edge consume recorded by the loop lowerer.  Its short lifetime can
-    // make the whole-function sole-owner scan conservatively decline the
-    // normal scope-exit class, but that must not erase the typed drop template
-    // the already-recorded back-edge, mismatch, panic, and early-exit plans
-    // need.  These bindings come only from `record_iteration_owner_drop`,
-    // which is reached after the call-result admission proof; re-admitting
-    // them here gives those exact consume edges the same EnumInPlace drop they
-    // had before the scan without granting an arbitrary local a release.
-    enum_composite_drop_allowed.extend(
-        builder
-            .iteration_owner_drop_blocks
-            .values()
-            .flatten()
-            .copied(),
-    );
+    enum_composite_drop_allowed.extend(overwrite_guard_flags.keys().copied());
     let call_carrier_has_declared_release = |ty: &ResolvedTy| {
         super::composite_own::direct_payload_has_registered_resource_record(
             ty,
@@ -293,8 +485,7 @@ pub(super) fn elaborate(
     // callee-owned handle. Keep this veto exact so ordinary domestic carriers
     // such as rC, whose payload merely flows through local aggregate logic,
     // retain their required per-iteration release.
-    let neutralized_payload_slots: HashSet<Place> = checked
-        .blocks
+    let neutralized_payload_slots: HashSet<Place> = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instruction| match instruction {
@@ -319,8 +510,7 @@ pub(super) fn elaborate(
                 .get(binding)
                 .copied()
                 .and_then(base_local)?;
-            checked
-                .blocks
+            blocks
                 .iter()
                 .any(|block| {
                     matches!(
@@ -346,7 +536,7 @@ pub(super) fn elaborate(
                 .then_some(carrier)
         })
         .collect();
-    enum_composite_drop_allowed.extend(builder.binding_locals.iter().filter_map(
+    enum_composite_drop_allowed.extend(ownership_binding_locals.iter().filter_map(
         |(binding, place)| {
             let local = base_local(*place)?;
             let ty = builder.locals.get(local as usize)?;
@@ -362,8 +552,7 @@ pub(super) fn elaborate(
     // Re-admit that exact binding for its ordinary scope and loop-edge plans:
     // transferred paths see a null slot, while paths that keep the payload
     // still perform the required release.
-    let partially_transferred_carriers: HashSet<u32> = checked
-        .blocks
+    let partially_transferred_carriers: HashSet<u32> = blocks
         .iter()
         .filter(|block| matches!(block.terminator, Terminator::Return))
         .flat_map(|block| {
@@ -395,7 +584,7 @@ pub(super) fn elaborate(
         })
         .filter(|local| builder.call_scrutinee_carrier_mint_locals.contains(local))
         .collect();
-    enum_composite_drop_allowed.extend(builder.binding_locals.iter().filter_map(
+    enum_composite_drop_allowed.extend(ownership_binding_locals.iter().filter_map(
         |(binding, place)| {
             base_local(*place)
                 .filter(|local| partially_transferred_carriers.contains(local))
@@ -431,10 +620,10 @@ pub(super) fn elaborate(
     // escape to the generic enum prover. Fail-closed: anything the machine
     // prover cannot clear keeps the pre-existing leak posture.
     let machine_composite_drop_allowed = super::machine_own::derive_machine_composite_drop_allowed(
-        &checked.blocks,
+        blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.machine_layout_names,
         &builder.enum_layouts,
         &builder.record_field_orders,
@@ -470,14 +659,14 @@ pub(super) fn elaborate(
     // `raii-null-after-move`, `cleanup-all-exits`).
     let mut owned_vec_drop_allowed = admit_with_flagged_fallback(
         &owned_locals_snapshot,
-        &builder.collection_drop_flags,
+        &collection_guard_flags,
         |ty| builder.binding_ty_is_owned_element_vec(ty),
         |view| {
             derive_local_collection_drop_allowed(
-                &checked.blocks,
+                blocks,
                 &builder.suspend_kinds,
                 view,
-                &builder.binding_locals,
+                &ownership_binding_locals,
                 &builder.proven_borrow_call_args,
                 |ty| builder.binding_ty_is_owned_element_vec(ty),
             )
@@ -490,16 +679,17 @@ pub(super) fn elaborate(
     // release must remain on the source binding. Recover that carried fact from
     // the finalized RecordInit source place so increasing release depth and
     // cursor ownership classification move together.
-    let vec_iter_borrowed_owned_sources: HashSet<BindingId> = checked
-        .blocks
+    let vec_iter_borrowed_owned_sources: HashSet<BindingId> = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(vec_iter_record_init_vec_source)
         .filter_map(base_local)
         .filter_map(|local| {
-            builder.binding_locals.iter().find_map(|(binding, place)| {
-                (base_local(*place) == Some(local)).then_some(*binding)
-            })
+            ownership_binding_locals
+                .iter()
+                .find_map(|(binding, place)| {
+                    (base_local(*place) == Some(local)).then_some(*binding)
+                })
         })
         .filter(|binding| {
             owned_locals_snapshot.iter().any(|(candidate, _, ty)| {
@@ -520,7 +710,7 @@ pub(super) fn elaborate(
                 dataflow::BindingState::Discharged(_)
                     | dataflow::BindingState::Consumed(_)
                     | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.collection_drop_flags.contains_key(binding)
+            ) && !collection_guard_flags.contains_key(binding)
                 && !vec_iter_borrowed_owned_sources.contains(binding)
             {
                 owned_vec_drop_allowed.remove(binding);
@@ -537,7 +727,7 @@ pub(super) fn elaborate(
     // Vec UAF, one level up). Exclude every interior-alias-tainted binding;
     // over-exclusion only leaks (`boundary-fail-closed`, `cleanup-all-exits`).
     {
-        let owned_vec_interior_alias = compute_collection_interior_alias_taint(&checked.blocks);
+        let owned_vec_interior_alias = compute_collection_interior_alias_taint(blocks);
         owned_vec_drop_allowed.retain(|binding| {
             builder
                 .binding_locals
@@ -557,10 +747,10 @@ pub(super) fn elaborate(
     // releases (a double free). Collapse the chain so exactly the final owner
     // releases (`drop-allowset-from-value-flow`, `raii-null-after-move`).
     dedup_whole_value_handoff(
-        &checked.blocks,
-        &builder.binding_locals,
+        blocks,
+        &ownership_binding_locals,
         &mut owned_vec_drop_allowed,
-        &builder.collection_drop_flags,
+        &collection_guard_flags,
     );
 
     // Local `HashMap` / `HashSet` handle scope-exit drop allow-set. A local
@@ -578,14 +768,14 @@ pub(super) fn elaborate(
     // double-freed (`boundary-fail-closed`, `cleanup-all-exits`).
     let mut local_collection_drop_allowed = admit_with_flagged_fallback(
         &owned_locals_snapshot,
-        &builder.collection_drop_flags,
+        &collection_guard_flags,
         ty_is_local_collection_handle,
         |view| {
             derive_local_collection_drop_allowed(
-                &checked.blocks,
+                blocks,
                 &builder.suspend_kinds,
                 view,
-                &builder.binding_locals,
+                &ownership_binding_locals,
                 &builder.proven_borrow_call_args,
                 ty_is_local_collection_handle,
             )
@@ -601,7 +791,7 @@ pub(super) fn elaborate(
                 dataflow::BindingState::Discharged(_)
                     | dataflow::BindingState::Consumed(_)
                     | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.collection_drop_flags.contains_key(binding)
+            ) && !collection_guard_flags.contains_key(binding)
             {
                 local_collection_drop_allowed.remove(binding);
             }
@@ -620,42 +810,43 @@ pub(super) fn elaborate(
     // owned-Vec / collection arms use. Both directions only ever over-EXCLUDE
     // (leak), never re-admit — a binding the prover did not clear is never
     // double-freed (`boundary-fail-closed`, `cleanup-all-exits`).
-    let local_bytes_drop_allowed = if let Some(precomputed) = precomputed_local_bytes_drop_allowed {
-        precomputed.clone()
-    } else {
-        let mut derived = derive_local_bytes_drop_allowed(
-            &checked.blocks,
-            &builder.suspend_kinds,
-            &owned_locals_snapshot,
-            &builder.binding_locals,
-            &builder.locals,
-            &builder.borrowed_bytes_param_locals,
-        )
-        .allowed;
-        derived.extend(
-            owned_locals_snapshot
-                .iter()
-                .filter(|(binding, _, ty)| {
-                    matches!(ty, ResolvedTy::Bytes)
-                        && builder.actor_message_cow_drop_flags.contains_key(binding)
-                })
-                .map(|(binding, _, _)| *binding),
-        );
-        for states in dataflow_result.exit_states.values() {
-            for (binding, state) in states {
-                if matches!(
-                    state,
-                    dataflow::BindingState::Discharged(_)
-                        | dataflow::BindingState::Consumed(_)
-                        | dataflow::BindingState::MaybeConsumed(_)
-                ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
-                {
-                    derived.remove(binding);
+    let mut local_bytes_drop_allowed =
+        if let Some(precomputed) = precomputed_local_bytes_drop_allowed {
+            precomputed.clone()
+        } else {
+            let mut derived = derive_local_bytes_drop_allowed(
+                blocks,
+                &builder.suspend_kinds,
+                &owned_locals_snapshot,
+                &ownership_binding_locals,
+                &builder.locals,
+                &builder.borrowed_bytes_param_locals,
+            )
+            .allowed;
+            derived.extend(
+                owned_locals_snapshot
+                    .iter()
+                    .filter(|(binding, _, ty)| {
+                        matches!(ty, ResolvedTy::Bytes)
+                            && actor_message_cow_guard_flags.contains_key(binding)
+                    })
+                    .map(|(binding, _, _)| *binding),
+            );
+            for states in dataflow_result.exit_states.values() {
+                for (binding, state) in states {
+                    if matches!(
+                        state,
+                        dataflow::BindingState::Discharged(_)
+                            | dataflow::BindingState::Consumed(_)
+                            | dataflow::BindingState::MaybeConsumed(_)
+                    ) && !actor_message_cow_guard_flags.contains_key(binding)
+                    {
+                        derived.remove(binding);
+                    }
                 }
             }
-        }
-        derived
-    };
+            derived
+        };
 
     // Closure-pair `Vec<fn(...)>` handle scope-exit drop allow-set. Rides the
     // same receiver-borrow escape model as the HashMap/HashSet derivation
@@ -665,10 +856,10 @@ pub(super) fn elaborate(
     // excluded handle leaks (as every plain Vec local does today), never
     // double-frees.
     let mut closure_vec_drop_allowed = derive_local_collection_drop_allowed(
-        &checked.blocks,
+        blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.proven_borrow_call_args,
         ty_is_closure_pair_vec,
     );
@@ -703,14 +894,14 @@ pub(super) fn elaborate(
     // double-frees (`boundary-fail-closed`, `cleanup-all-exits`).
     let mut plain_vec_drop_allowed = admit_with_flagged_fallback(
         &owned_locals_snapshot,
-        &builder.collection_drop_flags,
+        &collection_guard_flags,
         |ty| builder.binding_ty_is_plain_vec(ty),
         |view| {
             derive_local_collection_drop_allowed(
-                &checked.blocks,
+                blocks,
                 &builder.suspend_kinds,
                 view,
-                &builder.binding_locals,
+                &ownership_binding_locals,
                 &builder.proven_borrow_call_args,
                 |ty| builder.binding_ty_is_plain_vec(ty),
             )
@@ -726,7 +917,7 @@ pub(super) fn elaborate(
                 dataflow::BindingState::Discharged(_)
                     | dataflow::BindingState::Consumed(_)
                     | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.collection_drop_flags.contains_key(binding)
+            ) && !collection_guard_flags.contains_key(binding)
             {
                 plain_vec_drop_allowed.remove(binding);
             }
@@ -737,16 +928,16 @@ pub(super) fn elaborate(
     // closure-pair set and the plain set; a handle never changes element
     // class across a `Move`, so the two sets cannot hand off to each other).
     dedup_whole_value_handoff(
-        &checked.blocks,
-        &builder.binding_locals,
+        blocks,
+        &ownership_binding_locals,
         &mut closure_vec_drop_allowed,
-        &builder.collection_drop_flags,
+        &collection_guard_flags,
     );
     dedup_whole_value_handoff(
-        &checked.blocks,
-        &builder.binding_locals,
+        blocks,
+        &ownership_binding_locals,
         &mut plain_vec_drop_allowed,
-        &builder.collection_drop_flags,
+        &collection_guard_flags,
     );
 
     // A by-value owned record (RC-4 bytes field / RC-6 string field / G12
@@ -773,10 +964,10 @@ pub(super) fn elaborate(
         builder.record_field_store_preserves_record_owner(record, field_offset)
     };
     let mut owned_record_drop_allowed = derive_owned_record_drop_allowed(
-        &checked.blocks,
+        blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.locals,
         &is_owned_record,
         &record_field_store_preserves_owner,
@@ -792,7 +983,7 @@ pub(super) fn elaborate(
     // reaches an owning sink; re-admit exactly the bindings whose construction
     // authority and consume hook installed the flag. The guarded drop fires
     // only where that sink did not execute.
-    owned_record_drop_allowed.extend(builder.conditional_record_drop_flags.keys().copied());
+    owned_record_drop_allowed.extend(conditional_record_guard_flags.keys().copied());
     // An active mixed-return payload is not an alias of a dropped enum shell:
     // its per-variant transfer proof deliberately withheld the shell owner and
     // assigned this binder the sole recursive record teardown. The usual record
@@ -816,10 +1007,10 @@ pub(super) fn elaborate(
     // owns it). Everything the prover does not clear leaks rather than
     // double-frees.
     let mut tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
-        &checked.blocks,
+        blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
@@ -828,27 +1019,66 @@ pub(super) fn elaborate(
         &builder.proven_borrow_call_args,
     );
 
-    for allowed in [
-        &mut enum_composite_drop_allowed,
-        &mut owned_vec_drop_allowed,
-        &mut local_collection_drop_allowed,
-        &mut closure_vec_drop_allowed,
-        &mut plain_vec_drop_allowed,
-        &mut owned_record_drop_allowed,
-        &mut tuple_composite_drop_allowed,
-    ] {
-        allowed.extend(aggregate_member_neutralized_bindings.iter().copied());
+    // Re-admit a transferred source only to the one drop class selected by its
+    // type. Extending every allow-set made a plain `Vec<i64>` match the earlier
+    // owned-element arm and call the wrong destructor on exceptional paths.
+    for (binding, _name, ty) in &owned_locals_snapshot {
+        // The template is a type/layout catalogue, not a whole-function
+        // liveness verdict.  Every explicit owner generation needs its one
+        // correctly-typed destructor available for an earlier unwind; the
+        // exact Checked-MIR owner state below decides whether that generation
+        // is live at each exit.  Global "consumed somewhere" removal leaked
+        // values on calls preceding a later aggregate/return handoff.
+        if matches!(ty, ResolvedTy::String) {
+            cow_drop_allowed.insert(*binding);
+        }
+        if ty_is_heap_owning_enum_composite(
+            ty,
+            &builder.record_field_orders,
+            &builder.enum_layouts,
+            builder.type_classes.lifecycle_registry(),
+        ) {
+            enum_composite_drop_allowed.insert(*binding);
+        }
+        if builder.binding_ty_is_owned_element_vec(ty) {
+            owned_vec_drop_allowed.insert(*binding);
+        }
+        if ty_is_local_collection_handle(ty) {
+            local_collection_drop_allowed.insert(*binding);
+        }
+        if matches!(ty, ResolvedTy::Bytes) {
+            local_bytes_drop_allowed.insert(*binding);
+        }
+        if ty_is_closure_pair_vec(ty) {
+            closure_vec_drop_allowed.insert(*binding);
+        }
+        if builder.binding_ty_is_plain_vec(ty) {
+            plain_vec_drop_allowed.insert(*binding);
+        }
+        if is_owned_record(ty) {
+            owned_record_drop_allowed.insert(*binding);
+        }
+        if ty_is_heap_owning_tuple(
+            ty,
+            &builder.record_field_orders,
+            &builder.enum_layouts,
+            builder.type_classes.lifecycle_registry(),
+        ) {
+            tuple_composite_drop_allowed.insert(*binding);
+        }
     }
 
     // W5.021 (defect #1) — owned members the caller now owns via a returned
     // aggregate; excluded from every drop class below (see the function doc).
     let mut returned_aggregate_members = derive_returned_aggregate_member_bindings(
-        &checked.blocks,
+        blocks,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
     );
-    returned_aggregate_members
-        .retain(|binding| !aggregate_member_neutralized_bindings.contains(binding));
+    returned_aggregate_members.retain(|binding| {
+        !path_local_transfer_cleanup_bindings.contains(binding)
+            && !return_move_chain_resident_bindings.contains(binding)
+    });
     // Path-sensitive re-admission map for values handed to the caller through the
     // return flow. The blanket exclusion (an aggregate member the return handoff
     // removes, `semver::try_parse`; or a whole-value return that retracts its
@@ -858,11 +1088,11 @@ pub(super) fn elaborate(
     // OR consume-retracted owners) so BOTH shapes are covered; this locates where
     // each candidate enters the return flow so the elaborator can restore its
     // scope-exit drop on exactly the `Return` exits that transfer cannot reach.
-    let returned_member_candidates = builder.owned_locals_exit_candidates();
+    let returned_member_candidates = owned_locals_snapshot.clone();
     let returned_member_transfer_blocks = derive_returned_member_transfer_blocks(
-        &checked.blocks,
+        blocks,
         &returned_member_candidates,
-        &builder.binding_locals,
+        &ownership_binding_locals,
     );
 
     // W3.053 — owned-handle members moved into a LOCAL aggregate and then
@@ -871,16 +1101,16 @@ pub(super) fn elaborate(
     // must not also drop. The local-aggregate analogue of
     // `returned_aggregate_members` (see the function doc).
     let mut consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
-        &checked.blocks,
+        blocks,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
         builder.type_classes.lifecycle_registry(),
     );
     consumed_local_aggregate_members
-        .retain(|binding| !aggregate_member_neutralized_bindings.contains(binding));
+        .retain(|binding| !path_local_transfer_cleanup_bindings.contains(binding));
     // CAP-08 — owned handle-leaf bindings moved into an actor initial-state
     // record consumed by `SpawnActor`. The actor's synthesised `state_drop_fn`
     // is the single free site (Stream→`hew_stream_close` / Sink→`hew_sink_close`),
@@ -888,42 +1118,13 @@ pub(super) fn elaborate(
     // gate consumes the SAME derivation via `source_excluded` so its free-count
     // model matches the drop this removal actually elides.
     let mut spawn_consumed_handle_members = derive_spawn_consumed_handle_bindings(
-        &checked.blocks,
+        blocks,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.locals,
     );
     spawn_consumed_handle_members
-        .retain(|binding| !aggregate_member_neutralized_bindings.contains(binding));
-
-    // Escaping-closure pair env-box drop allow-set. Starts from the
-    // `Let`-admitted ownership ledger (heap-mode literal / call result /
-    // admitted rebind — see `closure_pair_owned`), then removes every
-    // binding whose pair bits are aliased or moved out of the slot
-    // (returned, passed as a call argument, captured into an aggregate) via
-    // the fail-closed source-operand scan, and finally every binding the
-    // dataflow proves consumed or maybe-consumed at any exit (the same
-    // belt-and-suspenders net the owned-Vec / cow arms use). Both
-    // directions only ever over-EXCLUDE (leak), never re-admit
-    // (`boundary-fail-closed`, `cleanup-all-exits`).
-    let mut closure_pair_drop_allowed = derive_closure_pair_drop_allowed(
-        &checked.blocks,
-        &builder.suspend_kinds,
-        &builder.closure_pair_owned,
-        &builder.binding_locals,
-    );
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Discharged(_)
-                    | dataflow::BindingState::Consumed(_)
-                    | dataflow::BindingState::MaybeConsumed(_)
-            ) {
-                closure_pair_drop_allowed.remove(binding);
-            }
-        }
-    }
+        .retain(|binding| !path_local_transfer_cleanup_bindings.contains(binding));
 
     // Indirect-enum heap-node sole-owner allow-set (spec §3.7.4). A constructed
     // indirect-enum node earns its recursive `hew_dealloc` release UNLESS the
@@ -950,9 +1151,9 @@ pub(super) fn elaborate(
             HashSet::new()
         };
     let mut indirect_enum_drop_allowed = derive_indirect_enum_drop_allowed(
-        &checked.blocks,
+        blocks,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.enum_layouts,
         &actor_message_ingress_locals,
     );
@@ -977,7 +1178,8 @@ pub(super) fn elaborate(
     // `build_lifo_drops` runs before the record arm) so the child is freed on a
     // pre-construction early exit and no-ops on the moved-into-parent path.
     for (binding, _name, ty) in &owned_locals_snapshot {
-        if aggregate_member_neutralized_bindings.contains(binding)
+        if (path_local_transfer_cleanup_bindings.contains(binding)
+            || return_move_chain_cleanup_bindings.contains(binding))
             && ty_is_indirect_enum(ty, &builder.enum_layouts)
         {
             indirect_enum_drop_allowed.insert(*binding);
@@ -992,11 +1194,63 @@ pub(super) fn elaborate(
     // skipped there and cannot compete with the parent's recursive release.
     cow_drop_allowed.extend(builder.projected_payload_delayed_releases.iter().copied());
     let mut projection_alias_tainted = compute_projection_alias_taint(
-        &checked.blocks,
-        &builder.match_project_consumed_binder_locals,
+        blocks,
+        &mir_consumed_project_binder_locals,
         &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
     );
+    // A ledger-owned heap enum is a real carrier owner even when its payload is
+    // inspected by one or more non-consuming matches. Projection binders remain
+    // tainted aliases and are excluded; the carrier itself keeps the tag-aware
+    // terminal drop. This replaces the old global "payload was projected"
+    // escape inference, which leaked ordinary local enums after read-only
+    // matches.
+    let actor_state_load_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::ActorStateFieldLoad { dest, .. } => base_local(*dest),
+            _ => None,
+        })
+        .collect();
+    let actor_state_consumed_source_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::ActorStateFieldStore {
+                src,
+                handoff: crate::model::ActorStateStoreHandoff::ConsumeSource,
+                ..
+            } => base_local(*src),
+            _ => None,
+        })
+        .collect();
+    let consumed_enum_carrier_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot { place, .. } => payload_carrier_local(*place),
+            _ => None,
+        })
+        .collect();
+    enum_composite_drop_allowed.extend(owned_locals_snapshot.iter().filter_map(
+        |(binding, _name, ty)| {
+            let local = builder
+                .binding_locals
+                .get(binding)
+                .and_then(|place| base_local(*place))?;
+            (ty_is_heap_owning_enum_composite(
+                ty,
+                &builder.record_field_orders,
+                &builder.enum_layouts,
+                builder.type_classes.lifecycle_registry(),
+            ) && !projection_alias_tainted.contains(&local)
+                && !actor_state_load_locals.contains(&local)
+                && !actor_state_consumed_source_locals.contains(&local)
+                && !consumed_enum_carrier_locals.contains(&local))
+            .then_some(*binding)
+        },
+    ));
     projection_alias_tainted.retain(|local| {
         !builder
             .projected_payload_delayed_releases
@@ -1011,7 +1265,7 @@ pub(super) fn elaborate(
     });
     let mut borrowed_builtin_handle_projection_aliases =
         derive_borrowed_builtin_handle_projection_alias_bindings(
-            &builder.binding_locals,
+            &ownership_binding_locals,
             &builder.locals,
             &projection_alias_tainted,
         );
@@ -1020,7 +1274,7 @@ pub(super) fn elaborate(
     // withheld, suppressing the binder as an alias removes both release paths.
     // Keep alias suppression only for the exact carrier bindings present in the
     // enum allow-set; otherwise the binder remains the sole close authority.
-    let payload_alias_carriers = collect_payload_alias_map(&checked.blocks);
+    let payload_alias_carriers = collect_payload_alias_map(blocks);
     borrowed_builtin_handle_projection_aliases.retain(|binding| {
         let Some(alias_local) = builder
             .binding_locals
@@ -1042,39 +1296,28 @@ pub(super) fn elaborate(
         })
     });
     let owned_tuple_handle_projections = derive_owned_tuple_handle_projection_bindings(
-        &checked.blocks,
+        blocks,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.locals,
         &tuple_composite_drop_allowed,
     );
     borrowed_builtin_handle_projection_aliases
         .retain(|binding| !owned_tuple_handle_projections.contains(binding));
-    // A `ConsumedAt` disposition proves the value is absent only AFTER its
-    // consuming instruction.  It can still be live at an earlier Return or a
-    // coroutine-abandon edge, so the LIFO template must retain it and let the
-    // CFG state filter select the exact owning exits.  `BodyEndReleased`,
-    // `ScopeReleased`, and interior aliases stay excluded by this view.
-    let owned_locals_exit_candidates = builder.owned_locals_exit_candidates();
-    // Borrowed-element aliases of a live collection, SCOPED to close-obligated
-    // element types: their LIFO drop is suppressed (the collection is the sole
-    // discharge authority), which is sound only under the use validation
-    // below. Nested-collection handle borrows keep their pre-existing
-    // exclusion machinery and are deliberately NOT in this set.
-    let mut borrow_getter_aliases = collection_borrow_getter_alias_locals(&checked.blocks);
-    borrow_getter_aliases.retain(|local| {
-        builder.locals.get(*local as usize).is_some_and(|ty| {
-            crate::model::ty_drop_obligation(
-                ty,
-                &crate::model::MirHeapLayouts {
-                    record_field_orders: &builder.record_field_orders,
-                    enum_layouts: &builder.enum_layouts,
-                },
-                builder.type_classes.lifecycle_registry(),
-            )
-            .needs_close
-        })
-    });
+    // A final disposition proves absence only AFTER its explicit MIR
+    // transfer/release. The LIFO template therefore retains every real owner;
+    // the CFG state at each program point excludes generations that have not
+    // yet been minted or have already ended. Interior aliases are the sole
+    // non-owner class and were excluded by `owned_locals_exit_candidates`.
+    let owned_locals_exit_candidates = owned_locals_snapshot.clone();
+    // Every receiver-interior alias is ownerless: the collection remains the
+    // sole destructor authority for ordinary heap values, nested collections,
+    // and close-obligated handles alike.  The escape/use proof below is needed
+    // only for the close-obligated subset, but that narrower proof must never
+    // be confused with ownership admission.
+    let borrow_getter_aliases = collection_borrow_getter_alias_locals(blocks);
+    let close_obligated_borrow_aliases =
+        close_obligated_borrow_alias_locals(&borrow_getter_aliases, &builder.locals);
     // Fail-closed floor for the suppression: every use of a close-obligated
     // borrow must be a proven-safe read. An escape (return/store), a consume
     // (`e.close()`, `w.push(e)`, any call argument), or a reassignment refuses
@@ -1083,9 +1326,9 @@ pub(super) fn elaborate(
     // collection's release) and stays structurally unreachable only by
     // rejecting the unprovable shapes.
     for violation in close_obligated_borrow_alias_violations(
-        &checked.blocks,
-        &borrow_getter_aliases,
-        &tracked_obligation_locals(builder),
+        blocks,
+        &close_obligated_borrow_aliases,
+        &tracked_obligation_locals(builder, blocks),
     ) {
         elaboration_diagnostics.push(MirDiagnostic {
             kind: MirDiagnosticKind::DropPlanUndetermined {
@@ -1098,9 +1341,19 @@ pub(super) fn elaborate(
                 .to_string(),
         });
     }
+    for violation in interior_alias_receiver_violations(blocks) {
+        elaboration_diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::DropPlanUndetermined {
+                block: ENTRY_BLOCK_ID,
+                reason: violation,
+            },
+            note: "an interior collection alias may be used only while its exact receiver generation remains live and unmutated"
+                .to_string(),
+        });
+    }
     let lifo_drops = build_lifo_drops(
         &owned_locals_exit_candidates,
-        &builder.binding_locals,
+        &ownership_binding_locals,
         &builder.type_classes,
         &builder.dyn_trait_storage,
         &owned_record_drop_allowed,
@@ -1116,73 +1369,130 @@ pub(super) fn elaborate(
         &returned_aggregate_members,
         &consumed_local_aggregate_members,
         &spawn_consumed_handle_members,
-        &closure_pair_drop_allowed,
         &closure_vec_drop_allowed,
         &plain_vec_drop_allowed,
         &indirect_enum_drop_allowed,
-        &builder.affine_release_flags,
-        &builder.overwrite_guard_flags,
-        &builder.collection_drop_flags,
-        &builder.actor_message_cow_drop_flags,
-        &builder.conditional_record_drop_flags,
-        &builder.projected_payload_overwrite_flags,
+        &affine_release_guard_flags,
+        &overwrite_guard_flags,
+        &collection_guard_flags,
+        &actor_message_cow_guard_flags,
+        &conditional_record_guard_flags,
+        &vec_iter_guard_flags,
+        &latest_owner_by_binding,
         &projection_alias_tainted,
         &borrowed_builtin_handle_projection_aliases,
         &borrow_getter_aliases,
     );
-    let ordinary_lifo_drops: Vec<ElabDrop> = lifo_drops
-        .iter()
-        .filter(|drop| {
-            !builder
-                .back_edge_only_iteration_owners
-                .iter()
-                .any(|binding| builder.binding_locals.get(binding).copied() == Some(drop.place))
-        })
-        .cloned()
-        .collect();
     let (elab_blocks, mut drop_plans) = enumerate_exits(
-        &checked.blocks,
-        &ordinary_lifo_drops,
+        blocks,
+        &lifo_drops,
         &dataflow_result.exit_states,
         &dataflow_result.entry_states,
-        &builder.binding_locals,
-        &checked
-            .cooperate_sites
+        &ownership_binding_locals,
+        &cooperate_sites
             .iter()
             .map(|site| site.bb_id)
             .collect::<HashSet<_>>(),
-        &builder.binding_scope,
-        &builder.loop_back_edge_blocks,
         &projection_alias_tainted,
+        &mir_owner_guards,
     );
+
+    // `GeneratorNext` borrows its generator on the normal edge, but a panic
+    // from `hew_cont_resume` exits the whole caller before the loop's inline
+    // body-end destroy can run. Re-admit that exact carried OwnerId only on the
+    // instruction's unwind plan. This is program-point ownership, not a
+    // function-global type/shape recovery: Builder sealed the instruction as
+    // the block's last operation and attached the current owner generation.
+    for block in blocks {
+        let Some((ctx, owner)) =
+            block
+                .instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    Instr::GeneratorNext {
+                        ctx,
+                        ctx_owner: Some(owner),
+                        ..
+                    } => Some((*ctx, *owner)),
+                    _ => None,
+                })
+        else {
+            continue;
+        };
+        let Some((_, _, owner_ty)) = owned_locals_snapshot
+            .iter()
+            .find(|(binding, _, _)| *binding == owner.binding)
+        else {
+            elaboration_diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::DropPlanUndetermined {
+                    block: block.id,
+                    reason: format!(
+                        "GeneratorNext carries missing owner {owner:?} for context {ctx:?}"
+                    ),
+                },
+                note: "generator resume cleanup requires a live typed owner generation".to_string(),
+            });
+            continue;
+        };
+        let Some(owner_place) = ownership_binding_locals.get(&owner.binding).copied() else {
+            elaboration_diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::DropPlanUndetermined {
+                    block: block.id,
+                    reason: format!(
+                        "GeneratorNext owner {owner:?} has no canonical storage place"
+                    ),
+                },
+                note: "generator resume cleanup must release the carried owner, not its borrowed context alias"
+                    .to_string(),
+            });
+            continue;
+        };
+        let Some((_, plan)) = drop_plans.iter_mut().find(|(exit, _)| {
+            matches!(
+                exit,
+                ExitPath::Unwind { block: exit_block, callee }
+                    if *exit_block == block.id && callee == "hew_cont_resume"
+            )
+        }) else {
+            continue;
+        };
+        if !plan.drops.iter().any(|drop| drop.place == owner_place) {
+            plan.drops.push(ElabDrop {
+                place: owner_place,
+                ty: owner_ty.clone(),
+                drop_fn: None,
+                kind: drop_kind_for(owner_place, owner_ty, None),
+                guard: None,
+            });
+        }
+    }
 
     // A first-class VecIter cursor is an inline record whose field-0 Vec
     // snapshot is released on ordinary lexical/explicit exits by a
     // flag-gated RecordFieldDrop. Cancellation, panic, yield-destroy, and
     // suspend-destroy can abandon the frame without traversing that inline
     // cleanup. Re-admit the same typed field release on those alternate
-    // terminal edges only while dataflow says the cursor binding has been
-    // initialised and may still be live. The existing ownership sidecar is
-    // carried as ElabDrop::guard, so a conditional move, a borrowing cursor,
-    // or an earlier lexical release skips the drop at runtime.
+    // terminal edges only while exact owner replay says the cursor binding is
+    // live. A conditional cursor publishes a Guard event and carries it as the
+    // ElabDrop guard; an unconditional named cursor needs no sidecar and must
+    // still receive unwind cleanup.
     //
     // Function-entry cancellation observes the block ENTRY state because its
     // check runs before entry-block instructions. Every other abandonment
     // point observes EXIT state, matching enumerate_exits and codegen's
     // cooperate/suspend placement.
-    for (binding, cursor_ty) in builder.vec_iter_scope_owner_ledger.iter().rev() {
-        let Some(&place) = builder.binding_locals.get(binding) else {
-            continue;
-        };
-        let Some(&guard) = builder.vec_iter_drop_flags.get(binding) else {
+    let (vec_iter_owner_entries, vec_iter_owner_exits) = exact_owner_states(blocks);
+    for (binding, _, cursor_ty) in owned_locals_snapshot.iter().rev() {
+        let Some(&place) = ownership_binding_locals.get(binding) else {
             continue;
         };
         let Some(release) = builder.vec_iter_cursor_release_protocol(cursor_ty) else {
             continue;
         };
         for (exit, plan) in &mut drop_plans {
-            let block = match exit {
+            let _block = match exit {
                 ExitPath::Cancel { block }
+                | ExitPath::Unwind { block, .. }
                 | ExitPath::Panic { block }
                 | ExitPath::Yield { block, .. }
                 | ExitPath::Suspend { block, .. } => *block,
@@ -1195,25 +1505,16 @@ pub(super) fn elaborate(
                 | ExitPath::Select { .. }
                 | ExitPath::Join { .. } => continue,
             };
-            let is_entry_cancel =
-                matches!(exit, ExitPath::Cancel { .. }) && block == ENTRY_BLOCK_ID;
-            let state_maps = if is_entry_cancel {
-                &dataflow_result.entry_states
-            } else {
-                &dataflow_result.exit_states
-            };
-            let binding_may_own = matches!(
-                state_maps
-                    .get(&block)
-                    .and_then(|states| states.get(binding))
-                    .copied(),
-                Some(
-                    dataflow::BindingState::Live
-                        | dataflow::BindingState::MaybeConsumed(_)
-                        | dataflow::BindingState::AliasedIntoAggregate(_)
-                )
+            let exact_state = exact_owner_state_for_exit(
+                exit,
+                blocks,
+                &vec_iter_owner_entries,
+                &vec_iter_owner_exits,
             );
-            if !binding_may_own
+            let exact_owner = exact_state.iter().find_map(|(owner, owner_place)| {
+                (owner.binding == *binding && *owner_place == place).then_some(*owner)
+            });
+            if exact_owner.is_none()
                 || plan.drops.iter().any(|drop| {
                     drop.place == place && matches!(drop.kind, DropKind::VecIterCursor { .. })
                 })
@@ -1225,7 +1526,12 @@ pub(super) fn elaborate(
                 ty: cursor_ty.clone(),
                 drop_fn: None,
                 kind: DropKind::VecIterCursor { release },
-                guard: Some(guard),
+                guard: exact_owner.and_then(|owner| {
+                    mir_owner_guards
+                        .get(&owner)
+                        .copied()
+                        .map(|flag| crate::model::ElabDropGuard { owner, flag })
+                }),
             });
         }
     }
@@ -1239,11 +1545,12 @@ pub(super) fn elaborate(
     // drops after the inline release and would resurrect releases on the
     // corrected Option CFG's unreachable all-Uninit block.
     for exit_drop in &builder.vec_iter_yield_exit_drops {
-        let region = vec_iter_yield_body_region(&checked.blocks, exit_drop);
+        let region = vec_iter_yield_body_region(blocks, exit_drop);
 
         for (exit, plan) in &mut drop_plans {
             let block = match exit {
                 ExitPath::Cancel { block }
+                | ExitPath::Unwind { block, .. }
                 | ExitPath::Panic { block }
                 | ExitPath::Yield { block, .. }
                 | ExitPath::Suspend { block, .. } => *block,
@@ -1259,17 +1566,24 @@ pub(super) fn elaborate(
             if !region.contains(&block) {
                 continue;
             }
-            let binding_live = dataflow_result
-                .exit_states
-                .get(&block)
-                .and_then(|states| states.get(&exit_drop.binding))
-                .copied()
-                == Some(dataflow::BindingState::Live);
-            if !binding_live || plan.drops.iter().any(|drop| drop.place == exit_drop.place) {
+            let exact_state = exact_owner_state_for_exit(
+                exit,
+                blocks,
+                &vec_iter_owner_entries,
+                &vec_iter_owner_exits,
+            );
+            let exact_places = exact_state
+                .iter()
+                .filter_map(|(owner, place)| (owner.binding == exit_drop.binding).then_some(*place))
+                .collect::<Vec<_>>();
+            let [exact_place] = exact_places.as_slice() else {
+                continue;
+            };
+            if plan.drops.iter().any(|drop| drop.place == *exact_place) {
                 continue;
             }
             plan.drops.push(ElabDrop {
-                place: exit_drop.place,
+                place: *exact_place,
                 ty: exit_drop.ty.clone(),
                 drop_fn: None,
                 kind: exit_drop.kind,
@@ -1279,33 +1593,12 @@ pub(super) fn elaborate(
     }
 
     super::for_await_drop_plan::admit_terminal_handoff_drops(
-        checked,
+        blocks,
         builder,
         dataflow_result,
         &returned_member_candidates,
         &mut drop_plans,
     );
-
-    for (exit, plan) in &mut drop_plans {
-        let block = match exit {
-            ExitPath::Goto { block, .. } | ExitPath::Return { block } => *block,
-            _ => continue,
-        };
-        let Some(bindings) = builder.iteration_owner_drop_blocks.get(&block) else {
-            continue;
-        };
-        for binding in bindings {
-            let Some(place) = builder.binding_locals.get(binding) else {
-                continue;
-            };
-            if plan.drops.iter().any(|drop| drop.place == *place) {
-                continue;
-            }
-            if let Some(drop) = lifo_drops.iter().find(|drop| drop.place == *place) {
-                plan.drops.push(drop.clone());
-            }
-        }
-    }
 
     // Path-sensitive re-admission of returned-aggregate member drops. A member
     // handed to the caller through the `ReturnSlot` is removed from EVERY drop
@@ -1341,10 +1634,9 @@ pub(super) fn elaborate(
         // Cache transitive CFG reachability once. Besides the transfer/read
         // proofs below, this is the authority that prevents two re-admitted
         // plans for the same owner from firing in sequence.
-        let block_reach: HashMap<u32, HashSet<u32>> = checked
-            .blocks
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
             .iter()
-            .map(|block| (block.id, blocks_reachable_from(&checked.blocks, block.id)))
+            .map(|block| (block.id, blocks_reachable_from(blocks, block.id)))
             .collect();
         // Blocks each member's hand-off can reach (inclusive of the transfer
         // block itself). A `Return` exit inside this set is at or downstream of
@@ -1369,7 +1661,7 @@ pub(super) fn elaborate(
         // from each transfer. An unresolved/ambiguous route stays in this set
         // and therefore suppresses the re-admission (leak, never early free).
         let mut reverse_cfg: HashMap<u32, Vec<u32>> = HashMap::new();
-        for block in &checked.blocks {
+        for block in blocks {
             for successor in block.successors() {
                 reverse_cfg.entry(successor).or_default().push(block.id);
             }
@@ -1402,11 +1694,8 @@ pub(super) fn elaborate(
                     .map(|local| (local, *binding))
             })
             .collect();
-        let member_read_blocks = returned_member_alias_read_blocks(
-            &checked.blocks,
-            &builder.suspend_kinds,
-            &candidate_locals,
-        );
+        let member_read_blocks =
+            returned_member_alias_read_blocks(blocks, &builder.suspend_kinds, &candidate_locals);
         let mut member_read_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
         for (binding, read_blocks) in &member_read_blocks {
             let mut predecessors = read_blocks.clone();
@@ -1430,7 +1719,7 @@ pub(super) fn elaborate(
             if borrowed_builtin_handle_projection_aliases.contains(binding) {
                 continue;
             }
-            let Some(&place) = builder.binding_locals.get(binding) else {
+            let Some(&place) = ownership_binding_locals.get(binding) else {
                 continue;
             };
             let re_admission_drop = if matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
@@ -1462,7 +1751,7 @@ pub(super) fn elaborate(
                         resource_drop_fn(ty, &builder.type_classes),
                     ),
                     kind: drop_kind_for(place, ty, None),
-                    guard: builder.affine_release_flags.get(binding).copied(),
+                    guard: guarded_by_latest(*binding, &affine_release_guard_flags),
                 }
             } else {
                 continue;
@@ -1574,7 +1863,7 @@ pub(super) fn elaborate(
             let mut ambiguity = None;
             candidates.retain(|candidate| {
                 let replaced = match existing_releases_replaced_by_candidate(
-                    &checked.blocks,
+                    blocks,
                     &block_reach,
                     *candidate,
                     &existing_releases,
@@ -1606,7 +1895,7 @@ pub(super) fn elaborate(
             }
 
             let mut selected = match select_returned_member_re_admissions(
-                &checked.blocks,
+                blocks,
                 &block_reach,
                 &candidates,
             ) {
@@ -1648,7 +1937,7 @@ pub(super) fn elaborate(
                     || !existing_releases.iter().any(|release| {
                         !replaced_existing.contains(&release.plan_index)
                             && normal_goto_precedes_abandonment(
-                                &checked.blocks,
+                                blocks,
                                 &block_reach,
                                 *release,
                                 *candidate,
@@ -1660,12 +1949,8 @@ pub(super) fn elaborate(
                     continue;
                 }
                 for release in &existing_releases {
-                    if normal_goto_precedes_abandonment(
-                        &checked.blocks,
-                        &block_reach,
-                        *candidate,
-                        *release,
-                    ) {
+                    if normal_goto_precedes_abandonment(blocks, &block_reach, *candidate, *release)
+                    {
                         replaced_existing.insert(release.plan_index);
                     }
                 }
@@ -1718,10 +2003,10 @@ pub(super) fn elaborate(
     // this pass adds no new liveness authority — only a wider reach over
     // where the existing one is consulted.
     let bytes_mailbox_transfer_blocks = derive_bytes_actor_transfer_blocks(
-        &checked.blocks,
+        blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
-        &builder.binding_locals,
+        &ownership_binding_locals,
     );
     if !bytes_mailbox_transfer_blocks.is_empty() {
         let mut transfer_reach: HashMap<BindingId, HashSet<u32>> = HashMap::new();
@@ -1729,7 +2014,7 @@ pub(super) fn elaborate(
             let mut reach: HashSet<u32> = HashSet::new();
             for &transfer_block in transfer_blocks {
                 reach.insert(transfer_block);
-                reach.extend(blocks_reachable_from(&checked.blocks, transfer_block));
+                reach.extend(blocks_reachable_from(blocks, transfer_block));
             }
             transfer_reach.insert(*binding, reach);
         }
@@ -1737,7 +2022,7 @@ pub(super) fn elaborate(
         // sites. This is the exact "can normally reach the transfer itself"
         // set (not its downstream reach) in O(B+E) per binding.
         let mut reverse_cfg: HashMap<u32, Vec<u32>> = HashMap::new();
-        for block in &checked.blocks {
+        for block in blocks {
             for successor in block.successors() {
                 reverse_cfg.entry(successor).or_default().push(block.id);
             }
@@ -1775,10 +2060,10 @@ pub(super) fn elaborate(
             })
             .collect();
         let alias_roots =
-            propagate_whole_value_alias_roots(&checked.blocks, candidate_roots.keys().copied());
+            propagate_whole_value_alias_roots(blocks, candidate_roots.keys().copied());
         let mut read_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
         let mut aggregate_owner_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
-        for block in &checked.blocks {
+        for block in blocks {
             for instr in &block.instructions {
                 let owning_sources: Vec<Place> = match instr {
                     Instr::RecordInit { fields, .. } => {
@@ -1846,7 +2131,7 @@ pub(super) fn elaborate(
         for (binding, owner_blocks) in &aggregate_owner_blocks {
             let mut reach = owner_blocks.clone();
             for owner_block in owner_blocks {
-                reach.extend(blocks_reachable_from(&checked.blocks, *owner_block));
+                reach.extend(blocks_reachable_from(blocks, *owner_block));
             }
             aggregate_owner_reach.insert(*binding, reach);
         }
@@ -1858,6 +2143,7 @@ pub(super) fn elaborate(
             let is_release_boundary = match exit {
                 ExitPath::Return { .. }
                 | ExitPath::Panic { .. }
+                | ExitPath::Unwind { .. }
                 | ExitPath::Cancel { .. }
                 | ExitPath::Yield { .. }
                 | ExitPath::Suspend { .. }
@@ -1882,15 +2168,45 @@ pub(super) fn elaborate(
                 continue;
             };
             for (binding, reach) in &transfer_reach {
-                // A guarded actor-message Bytes binding already remains in the
-                // LIFO template across a `MaybeConsumed` join. Its shared exit
-                // drop is the sole release on the live path; adding the legacy
-                // frontier re-admission as well would release once at the
-                // non-transfer Goto and again at the shared exit while the
-                // flag is still zero. The only exception is function-entry
-                // cancellation, which precedes flag initialisation and is
-                // converted to an unconditional drop below.
-                if builder.actor_message_cow_drop_flags.contains_key(binding) && !is_entry_cancel {
+                // An actor-message guard is explicit runtime authority for a
+                // mixed live/transferred join. Re-admit it only at a terminal
+                // shared exit where the binding dataflow is `MaybeConsumed`:
+                // flag zero releases the live arm and flag one suppresses the
+                // transferred arm. Intermediate Gotos stay empty, so a later
+                // non-transfer read cannot observe a prematurely freed value.
+                // An aggregate-owner arm is excluded because its recursive
+                // drop, not this source slot, owns that arm's payload.
+                if actor_message_cow_guard_flags.contains_key(binding) && !is_entry_cancel {
+                    let guarded_terminal_join = matches!(
+                        exit,
+                        ExitPath::Return { .. }
+                            | ExitPath::Panic { .. }
+                            | ExitPath::Unwind { .. }
+                            | ExitPath::Cancel { .. }
+                            | ExitPath::Yield { .. }
+                            | ExitPath::Suspend { .. }
+                    ) && matches!(
+                        state_map.get(binding).copied(),
+                        Some(dataflow::BindingState::MaybeConsumed(_))
+                    ) && !aggregate_owner_reach
+                        .get(binding)
+                        .is_some_and(|owner_reach| owner_reach.contains(&block));
+                    if guarded_terminal_join {
+                        if let (Some(&place), Some(guard)) = (
+                            ownership_binding_locals.get(binding),
+                            guarded_by_latest(*binding, &actor_message_cow_guard_flags),
+                        ) {
+                            if !plan.drops.iter().any(|drop| drop.place == place) {
+                                plan.drops.push(ElabDrop {
+                                    place,
+                                    ty: ResolvedTy::Bytes,
+                                    drop_fn: None,
+                                    kind: drop_kind_for(place, &ResolvedTy::Bytes, None),
+                                    guard: Some(guard),
+                                });
+                            }
+                        }
+                    }
                     continue;
                 }
                 // This exit is at or downstream of the transfer: the
@@ -1944,7 +2260,7 @@ pub(super) fn elaborate(
                 ) {
                     continue;
                 }
-                let Some(&place) = builder.binding_locals.get(binding) else {
+                let Some(&place) = ownership_binding_locals.get(binding) else {
                     continue;
                 };
                 if let Some(existing) = plan.drops.iter_mut().find(|drop| drop.place == place) {
@@ -1992,10 +2308,79 @@ pub(super) fn elaborate(
         }
     }
 
+    // Final generation qualification covers every plan producer, including
+    // specialized cursor/generator and abandon-edge additions made after the
+    // generic exit enumeration. The exact owner state is replayed solely from
+    // Checked-MIR operations. A Guard event overrides only the matching owner
+    // generation; a later Reset can neither steal nor erase an earlier exit's
+    // guard.
+    let (exact_entries, exact_exits) = exact_owner_states(blocks);
+    let (maybe_entries, maybe_exits) = maybe_owner_states(blocks);
+    let actor_message_guard_owners = ownership_transfers
+        .iter()
+        .filter_map(|event| match event {
+            crate::model::OwnershipEvent::Guard {
+                owner,
+                kind: crate::model::OwnershipGuardKind::ActorMessageCow,
+                ..
+            } => Some(*owner),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    for (exit, plan) in &mut drop_plans {
+        let state = exact_owner_state_for_exit(exit, blocks, &exact_entries, &exact_exits);
+        let required = guarded_required_owners_for_exit(
+            exit,
+            blocks,
+            &exact_entries,
+            &exact_exits,
+            &maybe_entries,
+            &maybe_exits,
+            &actor_message_guard_owners,
+        );
+        // Specialized lowering paths may propose abandonment or returned-
+        // member cleanup, but the immutable OwnerId program is the final
+        // admission authority. The sole ownerless exception is a typed
+        // StreamSend's record/enum payload: the pump owns this escape-poisoned
+        // local without minting a lexical OwnerId, and its producer records the
+        // exact abandon-only twin of the inline resume-edge drop. Require all
+        // three closed facts (Suspend exit, StreamSend payload identity, exact
+        // composite extra-drop entry) so no unknown kind/place can bypass the
+        // validator. In particular, an explicit EdgeCarry still proves a Goto
+        // transports its generation; a retrospective re-admission must not
+        // schedule its destructor on that same edge.
+        plan.drops.retain(|drop| {
+            let owner_authorized = required.iter().any(|(owner, place)| {
+                *place == drop.place && drop.guard.is_none_or(|guard| guard.owner == *owner)
+            });
+            let stream_send_composite_authorized =
+                stream_send_composite_abandon_drops(builder, exit).contains(drop);
+            owner_authorized || stream_send_composite_authorized
+        });
+        for drop in &mut plan.drops {
+            let binding = drop.guard.map(|guard| guard.owner.binding);
+            let mut owners = state.iter().filter_map(|(owner, place)| {
+                (*place == drop.place && binding.is_none_or(|binding| owner.binding == binding))
+                    .then_some(*owner)
+            });
+            let Some(owner) = owners.next() else {
+                continue;
+            };
+            if owners.next().is_some() {
+                continue;
+            }
+            if let Some(flag) = mir_owner_guards.get(&owner).copied() {
+                drop.guard = Some(crate::model::ElabDropGuard { owner, flag });
+            } else if let Some(guard) = &mut drop.guard {
+                guard.owner = owner;
+            }
+        }
+    }
+
     (
         ElaboratedMirFunction {
-            name: checked.name.clone(),
-            return_ty: checked.return_ty.clone(),
+            name: name.to_owned(),
+            return_ty: return_ty.clone(),
             statements: elaborated_statements,
             decisions: builder.decisions.clone(),
             blocks: elab_blocks,
@@ -2019,6 +2404,5437 @@ pub(super) fn elaborate(
         elaboration_diagnostics,
     )
 }
+
+pub(super) fn owner_definition_drop_recipe(
+    builder: &Builder,
+    owner: crate::model::OwnerId,
+    place: Place,
+    ty: &ResolvedTy,
+    declaration_order: u32,
+) -> Option<crate::model::OwnerDropRecipe> {
+    let (kind, drop_fn) = if let ResolvedTy::Named {
+        args,
+        builtin: Some(BuiltinType::Vec),
+        ..
+    } = ty
+    {
+        let element = args
+            .first()
+            .unwrap_or_else(|| panic!("owner {owner:?} defines Vec without an element type"));
+        let release = match builder.classify_vec_element_release(element) {
+            crate::ownership::VecElementRelease::Plain => {
+                crate::ownership::CowHeapRelease::VecPlain
+            }
+            crate::ownership::VecElementRelease::OwnedElement => {
+                crate::ownership::CowHeapRelease::VecOwnedElement
+            }
+            crate::ownership::VecElementRelease::ClosurePair => {
+                crate::ownership::CowHeapRelease::VecClosurePairs
+            }
+            crate::ownership::VecElementRelease::Unsupported(
+                crate::ownership::FailClosedReason::UnenumeratedShape,
+            ) => crate::ownership::CowHeapRelease::VecPlain,
+            crate::ownership::VecElementRelease::Unsupported(
+                crate::ownership::FailClosedReason::NoReleaseProtocol,
+            ) if builder.elem_is_owned_abi_releasable(element) => {
+                crate::ownership::CowHeapRelease::VecOwnedElement
+            }
+            crate::ownership::VecElementRelease::Unsupported(_) => return None,
+        };
+        (DropKind::CowHeap { release }, None)
+    } else if let Some(release) = builder.vec_iter_cursor_release_protocol(ty) {
+        (DropKind::VecIterCursor { release }, None)
+    } else if ty_is_closure_pair(ty) {
+        (DropKind::ClosurePair, None)
+    } else if matches!(ty, ResolvedTy::TraitObject { .. }) {
+        let storage = builder
+            .dyn_trait_storage
+            .get(&owner.binding)
+            .copied()
+            .unwrap_or_else(|| {
+                panic!("owner {owner:?} defines dyn Trait without a storage discriminator")
+            });
+        (DropKind::TraitObject { storage }, None)
+    } else if ty_is_indirect_enum(ty, &builder.enum_layouts) {
+        (DropKind::IndirectEnum, None)
+    } else if ty_is_heap_owning_enum_composite(
+        ty,
+        &builder.record_field_orders,
+        &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
+    ) {
+        (DropKind::EnumInPlace, None)
+    } else if ty_is_heap_owning_tuple(
+        ty,
+        &builder.record_field_orders,
+        &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
+    ) {
+        (DropKind::TupleInPlace, None)
+    } else if builder.is_owned_aggregate_record_ty(ty) {
+        (DropKind::RecordInPlace, None)
+    } else {
+        let kind = drop_kind_for(
+            place,
+            ty,
+            matches!(ty, ResolvedTy::TraitObject { .. })
+                .then(|| builder.dyn_trait_storage.get(&owner.binding).copied())
+                .flatten(),
+        );
+        let drop_fn = place_aware_drop_fn(place, resource_drop_fn(ty, &builder.type_classes));
+        (kind, drop_fn)
+    };
+    Some(crate::model::OwnerDropRecipe {
+        ty: ty.clone(),
+        drop_fn,
+        kind,
+        declaration_order,
+    })
+}
+
+/// Carry a physical cleanup guard across an explicit owner-generation
+/// successor. A returns-receiver call is the canonical shape: the handle is
+/// the same dynamic owner at a new place/generation, so its affine flag and
+/// semantic guard kind are part of the transferred authority tuple.
+///
+/// Collection and overwrite guards have different transfer semantics: each
+/// belongs to a conditionally-moved SOURCE storage slot and is set to one on
+/// the exact edge that hands the value to a new lexical binding. That consumed
+/// bit cannot guard the destination owner -- doing so would skip the
+/// destination's only release. Preserve these storage-bound guards only
+/// through same-binding generation changes; a binding-changing transfer leaves
+/// the destination unguarded and path-exact.
+///
+/// This operates only on explicit MIR definitions. Conflicting/missing input
+/// guards are left untouched so sealing fails closed; no Builder flag map is
+/// consulted.
+pub(super) fn materialize_successor_guard_authority(blocks: &mut [BasicBlock]) {
+    use crate::model::OwnershipEvent;
+
+    loop {
+        let mut guards = HashMap::new();
+        let mut conflicts = HashSet::new();
+        for instruction in blocks.iter().flat_map(|block| &block.instructions) {
+            let Instr::OwnershipEvent(OwnershipEvent::Guard { owner, flag, kind }) = instruction
+            else {
+                continue;
+            };
+            if guards
+                .insert(*owner, (*flag, *kind))
+                .is_some_and(|prior| prior != (*flag, *kind))
+            {
+                conflicts.insert(*owner);
+            }
+        }
+        let mut changed = false;
+        for block in blocks.iter_mut() {
+            let mut insertions = Vec::new();
+            for (index, instruction) in block.instructions.iter().enumerate() {
+                let successor_guard = match instruction {
+                    Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                        owner,
+                        to_owner: Some(successor),
+                        ..
+                    }) if !conflicts.contains(owner) => {
+                        guards.get(owner).copied().and_then(|guard @ (_, kind)| {
+                            let storage_bound = matches!(
+                                kind,
+                                crate::model::OwnershipGuardKind::Collection
+                                    | crate::model::OwnershipGuardKind::Overwrite
+                            );
+                            (!storage_bound || successor.binding == owner.binding)
+                                .then_some((*successor, guard))
+                        })
+                    }
+                    Instr::OwnershipEvent(
+                        OwnershipEvent::Reset {
+                            previous,
+                            replacement,
+                            ..
+                        }
+                        | OwnershipEvent::Rearm {
+                            previous,
+                            replacement,
+                            ..
+                        },
+                    ) if !conflicts.contains(previous) => guards
+                        .get(previous)
+                        .copied()
+                        .map(|guard| (*replacement, guard)),
+                    Instr::OwnershipEvent(OwnershipEvent::Join {
+                        incoming,
+                        replacement,
+                        ..
+                    }) => {
+                        let inherited = incoming
+                            .iter()
+                            .filter_map(|owner| guards.get(owner).copied())
+                            .collect::<HashSet<_>>();
+                        (inherited.len() == 1
+                            && incoming.iter().all(|owner| guards.contains_key(owner)))
+                        .then(|| (*replacement, *inherited.iter().next().unwrap()))
+                    }
+                    _ => None,
+                };
+                let Some((successor, (flag, kind))) = successor_guard else {
+                    continue;
+                };
+                if guards.contains_key(&successor) || conflicts.contains(&successor) {
+                    continue;
+                }
+                insertions.push((index + 1, successor, flag, kind));
+            }
+            for (index, owner, flag, kind) in insertions.into_iter().rev() {
+                block.instructions.insert(
+                    index,
+                    Instr::OwnershipEvent(OwnershipEvent::Guard { owner, flag, kind }),
+                );
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+fn successor_guard_test_blocks(
+    source: crate::model::OwnerId,
+    successor: crate::model::OwnerId,
+    guards: &[(Place, crate::model::OwnershipGuardKind)],
+) -> Vec<BasicBlock> {
+    use crate::model::OwnershipEvent;
+
+    let mut instructions = vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+        owner: source,
+        place: Place::Local(1),
+        ty: ResolvedTy::String,
+    })];
+    instructions.extend(guards.iter().map(|(flag, kind)| {
+        Instr::OwnershipEvent(OwnershipEvent::Guard {
+            owner: source,
+            flag: *flag,
+            kind: *kind,
+        })
+    }));
+    instructions.push(Instr::OwnershipEvent(OwnershipEvent::Transfer {
+        owner: source,
+        from: Place::Local(1),
+        to: Some(Place::Local(2)),
+        to_owner: Some(successor),
+        to_ty: Some(ResolvedTy::String),
+    }));
+    vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions,
+        terminator: Terminator::Return,
+    }]
+}
+
+#[cfg(test)]
+fn successor_published_guards(
+    blocks: &[BasicBlock],
+    successor: crate::model::OwnerId,
+) -> Vec<(Place, crate::model::OwnershipGuardKind)> {
+    blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard { owner, flag, kind })
+                if *owner == successor =>
+            {
+                Some((*flag, *kind))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn successor_collection_guard_stays_with_same_binding_lineage() {
+    use crate::model::{OwnerId, OwnershipGuardKind};
+
+    let source = OwnerId {
+        binding: BindingId(200),
+        generation: 0,
+    };
+    let successor = OwnerId {
+        binding: source.binding,
+        generation: 1,
+    };
+    let expected = (Place::Local(3), OwnershipGuardKind::Collection);
+    let mut blocks = successor_guard_test_blocks(source, successor, &[expected]);
+
+    materialize_successor_guard_authority(&mut blocks);
+
+    assert_eq!(
+        successor_published_guards(&blocks, successor),
+        vec![expected]
+    );
+}
+
+#[test]
+fn successor_overwrite_guard_stays_with_same_binding_lineage() {
+    use crate::model::{OwnerId, OwnershipGuardKind};
+
+    let source = OwnerId {
+        binding: BindingId(205),
+        generation: 0,
+    };
+    let successor = OwnerId {
+        binding: source.binding,
+        generation: 1,
+    };
+    let expected = (Place::Local(3), OwnershipGuardKind::Overwrite);
+    let mut blocks = successor_guard_test_blocks(source, successor, &[expected]);
+
+    materialize_successor_guard_authority(&mut blocks);
+
+    assert_eq!(
+        successor_published_guards(&blocks, successor),
+        vec![expected]
+    );
+}
+
+#[test]
+fn successor_non_collection_guard_stays_with_dynamic_owner_transfer() {
+    use crate::model::{OwnerId, OwnershipGuardKind};
+
+    let source = OwnerId {
+        binding: BindingId(203),
+        generation: 0,
+    };
+    let successor = OwnerId {
+        binding: BindingId(204),
+        generation: 0,
+    };
+    let expected = (Place::Local(3), OwnershipGuardKind::AffineRelease);
+    let mut blocks = successor_guard_test_blocks(source, successor, &[expected]);
+
+    materialize_successor_guard_authority(&mut blocks);
+
+    assert_eq!(
+        successor_published_guards(&blocks, successor),
+        vec![expected]
+    );
+}
+
+#[test]
+fn successor_collection_guard_rejects_binding_changing_or_ambiguous_authority() {
+    use crate::model::{OwnerId, OwnershipGuardKind};
+
+    let source = OwnerId {
+        binding: BindingId(201),
+        generation: 0,
+    };
+    let rebound = OwnerId {
+        binding: BindingId(202),
+        generation: 0,
+    };
+    let mut rebound_blocks = successor_guard_test_blocks(
+        source,
+        rebound,
+        &[(Place::Local(3), OwnershipGuardKind::Collection)],
+    );
+    materialize_successor_guard_authority(&mut rebound_blocks);
+    assert!(
+        successor_published_guards(&rebound_blocks, rebound).is_empty(),
+        "a consumed source collection bit cannot suppress its new binding owner's release"
+    );
+
+    let same_binding = OwnerId {
+        binding: source.binding,
+        generation: 1,
+    };
+    let mut ambiguous_blocks = successor_guard_test_blocks(
+        source,
+        same_binding,
+        &[
+            (Place::Local(3), OwnershipGuardKind::Collection),
+            (Place::Local(4), OwnershipGuardKind::Collection),
+        ],
+    );
+    materialize_successor_guard_authority(&mut ambiguous_blocks);
+    assert!(
+        successor_published_guards(&ambiguous_blocks, same_binding).is_empty(),
+        "conflicting physical guard authority must remain validator-visible"
+    );
+}
+
+#[test]
+fn successor_overwrite_guard_rejects_binding_change_and_ambiguity() {
+    use crate::model::{OwnerId, OwnershipGuardKind};
+
+    let source = OwnerId {
+        binding: BindingId(206),
+        generation: 0,
+    };
+    let rebound = OwnerId {
+        binding: BindingId(207),
+        generation: 0,
+    };
+    let mut rebound_blocks = successor_guard_test_blocks(
+        source,
+        rebound,
+        &[(Place::Local(3), OwnershipGuardKind::Overwrite)],
+    );
+    materialize_successor_guard_authority(&mut rebound_blocks);
+    assert!(
+        successor_published_guards(&rebound_blocks, rebound).is_empty(),
+        "a consumed overwrite bit cannot suppress a new binding owner's release"
+    );
+
+    let same_binding = OwnerId {
+        binding: source.binding,
+        generation: 1,
+    };
+    let mut ambiguous_blocks = successor_guard_test_blocks(
+        source,
+        same_binding,
+        &[
+            (Place::Local(3), OwnershipGuardKind::Overwrite),
+            (Place::Local(4), OwnershipGuardKind::Overwrite),
+        ],
+    );
+    materialize_successor_guard_authority(&mut ambiguous_blocks);
+    assert!(
+        successor_published_guards(&ambiguous_blocks, same_binding).is_empty(),
+        "conflicting overwrite flags must remain validator-visible"
+    );
+}
+
+/// Publish the destructor ritual immediately beside every owner definition.
+/// The recipe is derived only from that definition's typed `(OwnerId, Place,
+/// Ty)` fact and the canonical type/layout registry. No LIFO template, exit
+/// plan, Builder ownership ledger, or move ancestry participates.
+pub(super) fn materialize_definition_site_drop_recipes(
+    blocks: &mut [BasicBlock],
+    builder: &Builder,
+) {
+    use crate::model::OwnershipEvent;
+
+    let mut binding_order = HashMap::<BindingId, u32>::new();
+    let mut next_order = 0_u32;
+    for block in blocks {
+        let instructions = std::mem::take(&mut block.instructions);
+        let mut rewritten = Vec::with_capacity(instructions.len());
+        for instruction in instructions {
+            let definition = match &instruction {
+                Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, ty }) => {
+                    Some((*owner, *place, ty.clone()))
+                }
+                Instr::OwnershipEvent(
+                    OwnershipEvent::Reset {
+                        replacement,
+                        place,
+                        ty,
+                        ..
+                    }
+                    | OwnershipEvent::Rearm {
+                        replacement,
+                        place,
+                        ty,
+                        ..
+                    }
+                    | OwnershipEvent::Join {
+                        replacement,
+                        place,
+                        ty,
+                        ..
+                    },
+                ) => Some((*replacement, *place, ty.clone())),
+                Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                    to: Some(place),
+                    to_owner: Some(owner),
+                    to_ty: Some(ty),
+                    ..
+                }) => Some((*owner, *place, ty.clone())),
+                Instr::OwnershipEvent(OwnershipEvent::DropRecipe { .. }) => {
+                    panic!("drop recipe was published before its owner-definition site")
+                }
+                _ => None,
+            };
+            rewritten.push(instruction);
+            if let Some((owner, place, ty)) = definition {
+                let order = *binding_order.entry(owner.binding).or_insert_with(|| {
+                    let order = next_order;
+                    next_order = next_order.saturating_add(1);
+                    order
+                });
+                if let Some(recipe) =
+                    owner_definition_drop_recipe(builder, owner, place, &ty, order)
+                {
+                    rewritten.push(Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                        owner,
+                        recipe,
+                    }));
+                }
+            }
+        }
+        block.instructions = rewritten;
+    }
+}
+
+/// Return the closed set of ownerless aggregate drops authorised for one
+/// generator suspend. A stream send borrows its payload, so the pump remains
+/// responsible for the in-flight value: normal resumption runs the inline
+/// in-place drop, while abandonment runs this mutually-exclusive plan twin.
+///
+/// This is physical-cleanup authority, not a lexical ownership ledger. Require
+/// the exact typed producer tuple recorded by lowering — Suspend block,
+/// `StreamSend` payload place, composite kind, and aggregate classification —
+/// so an unknown place/kind or a `BitCopy` record remains fail-closed.
+fn stream_send_composite_abandon_drops(builder: &Builder, exit: &ExitPath) -> Vec<ElabDrop> {
+    let ExitPath::Suspend { block, .. } = exit else {
+        return Vec::new();
+    };
+    let Some(SuspendKind::StreamSend { value, .. }) = builder.suspend_kinds.get(block) else {
+        return Vec::new();
+    };
+    builder
+        .suspend_abandon_extra_drops
+        .get(block)
+        .into_iter()
+        .flatten()
+        .filter(|drop| {
+            drop.place == *value
+                && drop.guard.is_none()
+                && drop.drop_fn.is_none()
+                && match drop.kind {
+                    DropKind::RecordInPlace => builder.is_owned_aggregate_record_ty(&drop.ty),
+                    DropKind::EnumInPlace => ty_is_heap_owning_enum_composite(
+                        &drop.ty,
+                        &builder.record_field_orders,
+                        &builder.enum_layouts,
+                        builder.type_classes.lifecycle_registry(),
+                    ),
+                    _ => false,
+                }
+        })
+        .cloned()
+        .collect()
+}
+
+fn rebuild_drop_plans_from_owner_recipes(
+    blocks: &[BasicBlock],
+    decisions: &[super::DecisionFact],
+    builder: &Builder,
+    elaboration: &mut ElaboratedMirFunction,
+) {
+    use crate::model::OwnershipEvent;
+
+    let mut recipes = HashMap::new();
+    for (owner, recipe) in blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe { owner, recipe }) => {
+                Some((*owner, recipe.clone()))
+            }
+            _ => None,
+        })
+    {
+        assert!(
+            recipes.insert(owner, recipe).is_none(),
+            "owner {owner:?} publishes more than one destructor recipe"
+        );
+    }
+    let guards = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Guard { owner, flag, .. }) => {
+                Some((*owner, *flag))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let guarded_owners = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Guard { owner, .. }) => Some(*owner),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let (entries, exits) = exact_owner_states(blocks);
+    let (maybe_entries, maybe_exits) = maybe_owner_states(blocks);
+    let entry_parameter_owners = entry_cancel_parameter_owners(blocks, decisions);
+    for (exit, plan) in &mut elaboration.drop_plans {
+        let is_entry_cancel =
+            matches!(exit, ExitPath::Cancel { block } if *block == ENTRY_BLOCK_ID);
+        let required = if is_entry_cancel {
+            entry_parameter_owners.clone()
+        } else {
+            guarded_required_owners_for_exit(
+                exit,
+                blocks,
+                &entries,
+                &exits,
+                &maybe_entries,
+                &maybe_exits,
+                &guarded_owners,
+            )
+        };
+        let mut synthesized = required
+            .iter()
+            .filter_map(|(owner, place)| {
+                recipes.get(owner).map(|recipe| {
+                    (
+                        recipe.declaration_order,
+                        *owner,
+                        ElabDrop {
+                            place: *place,
+                            ty: recipe.ty.clone(),
+                            drop_fn: recipe.drop_fn.clone(),
+                            kind: recipe.kind,
+                            // Codegen injects FunctionEntry cancellation after
+                            // storing ABI parameters but before executing MIR's
+                            // parameter guard initialisers. The incoming owner
+                            // is live there, but its sidecar is not readable yet.
+                            guard: if is_entry_cancel {
+                                None
+                            } else {
+                                guards
+                                    .get(owner)
+                                    .copied()
+                                    .map(|flag| crate::model::ElabDropGuard {
+                                        owner: *owner,
+                                        flag,
+                                    })
+                            },
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        synthesized.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+
+        let mut drops = synthesized
+            .into_iter()
+            .map(|(_, _, drop)| drop)
+            .collect::<Vec<_>>();
+        for drop in stream_send_composite_abandon_drops(builder, exit) {
+            if !drops.contains(&drop) {
+                drops.push(drop);
+            }
+        }
+        plan.drops = drops;
+    }
+}
+
+/// Exact owner generations already present when codegen's synthesized
+/// function-entry cancellation branch runs.
+///
+/// Parameter owner mints are represented as leading MIR operations so normal
+/// Checked-MIR replay can validate their later transfers. Physically, however,
+/// codegen stores every ABI argument before injecting `hew_actor_cooperate`.
+/// Therefore an owning parameter is live on that exceptional edge even though
+/// the ordinary entry-state lattice has not replayed its Mint instruction yet.
+/// The typed parameter-boundary fact is the authority: a body-local Mint and a
+/// borrowed/representation-loan parameter can never enter this set merely by
+/// sharing a low-numbered local.
+fn entry_cancel_parameter_owners(
+    blocks: &[BasicBlock],
+    decisions: &[super::DecisionFact],
+) -> ExactOwnerState {
+    let owned_parameters = decisions
+        .iter()
+        .filter_map(|decision| {
+            let super::Strategy::ParamBoundary(fact) = decision.strategy else {
+                return None;
+            };
+            matches!(
+                fact.mode,
+                super::ParamBoundaryMode::TransferResource
+                    | super::ParamBoundaryMode::OwnedMessage
+                    | super::ParamBoundaryMode::OwnedCarrier
+            )
+            .then_some(fact.param_index)
+        })
+        .collect::<HashSet<_>>();
+    let Some(entry) = blocks.iter().find(|block| block.id == ENTRY_BLOCK_ID) else {
+        return ExactOwnerState::new();
+    };
+    entry
+        .instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                owner,
+                place: place @ Place::Local(local),
+                ..
+            }) if owned_parameters.contains(local) => Some((*owner, *place)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn entry_cancel_owner_requires_typed_owned_parameter_boundary() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(91),
+        generation: 0,
+    };
+    let blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(0),
+            ty: ResolvedTy::Bytes,
+        })],
+        terminator: Terminator::Return,
+    }];
+    let boundary = |mode| super::DecisionFact {
+        site: SiteId(0),
+        value_class: ValueClass::CowValue,
+        ty: ResolvedTy::Bytes,
+        intent: IntentKind::Unknown,
+        strategy: super::Strategy::ParamBoundary(super::ParamBoundaryFact {
+            param_index: 0,
+            param_count: 1,
+            caller_visible_projection: false,
+            mode,
+        }),
+        why: "entry-cancel owner unit fixture".to_owned(),
+    };
+
+    assert_eq!(
+        entry_cancel_parameter_owners(&blocks, &[boundary(super::ParamBoundaryMode::OwnedMessage)]),
+        HashMap::from([(owner, Place::Local(0))]),
+        "an owned message is physically live after ABI ingress and before MIR replay"
+    );
+    assert!(
+        entry_cancel_parameter_owners(
+            &blocks,
+            &[boundary(super::ParamBoundaryMode::BorrowReadOnly)]
+        )
+        .is_empty(),
+        "a low-numbered Mint without typed owned-boundary authority must stay excluded"
+    );
+}
+
+/// Keep the legacy cleanup-block projection byte-for-byte synchronized with
+/// the exact OwnerId-derived panic plans. `drop_plans` is the sole authority;
+/// `ElabBlock::drops` remains only for dump/API compatibility until that field
+/// is removed from the public MIR model.
+fn synchronize_cleanup_blocks(elaboration: &mut ElaboratedMirFunction) {
+    let panic_drops = elaboration
+        .drop_plans
+        .iter()
+        .filter_map(|(exit, plan)| matches!(exit, ExitPath::Panic { .. }).then_some(&plan.drops))
+        .collect::<Vec<_>>();
+    let cleanup_blocks = elaboration
+        .blocks
+        .iter_mut()
+        .filter(|block| block.kind == BlockKind::Cleanup)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cleanup_blocks.len(),
+        panic_drops.len(),
+        "cleanup-block compatibility projection diverged from exact panic plans"
+    );
+    for (block, drops) in cleanup_blocks.into_iter().zip(panic_drops) {
+        block.drops.clone_from(drops);
+    }
+}
+
+pub(super) fn inline_drop_spec_for_recipe(
+    recipe: &crate::model::OwnerDropRecipe,
+) -> Option<crate::model::DropFnSpec> {
+    if let Some(spec) = &recipe.drop_fn {
+        return Some(spec.clone());
+    }
+    match recipe.kind {
+        crate::model::DropKind::CowHeap { release } => {
+            Some(crate::model::DropFnSpec::Release(release.release_symbol()))
+        }
+        crate::model::DropKind::RecordInPlace => Some(crate::model::DropFnSpec::InPlace(
+            crate::ownership::InPlaceReleaseKind::Record,
+        )),
+        crate::model::DropKind::AggregateRecursive | crate::model::DropKind::TupleInPlace => {
+            Some(crate::model::DropFnSpec::InPlace(
+                crate::ownership::InPlaceReleaseKind::AggregateRecursive,
+            ))
+        }
+        crate::model::DropKind::EnumInPlace => Some(crate::model::DropFnSpec::InPlace(
+            crate::ownership::InPlaceReleaseKind::Enum,
+        )),
+        crate::model::DropKind::Resource
+        | crate::model::DropKind::RcRelease
+        | crate::model::DropKind::WeakRelease
+        | crate::model::DropKind::DuplexClose
+        | crate::model::DropKind::DuplexHalfClose(_)
+        | crate::model::DropKind::LambdaActorRelease
+        | crate::model::DropKind::TraitObject { .. }
+        | crate::model::DropKind::VecIterCursor { .. }
+        | crate::model::DropKind::ClosurePair
+        | crate::model::DropKind::IndirectEnum => None,
+    }
+}
+
+/// Materialise replacement drops from immutable owner state and recipes.
+///
+/// Assignment lowering can no longer use its mutable `owned_locals`
+/// disposition as cleanup authority: a binding consumed on one branch may be
+/// live on this exact successor, and a loop Join may have renamed its current
+/// generation after source lowering.  At sealing time the complete answer is
+/// available in Checked-MIR form.  A typed provisional-to-binding Transfer
+/// whose destination already carries one exact generation of that binding is
+/// an overwrite. Drop/release that old generation immediately before the
+/// physical Move, preserving it on the call's unwind edge and installing the
+/// new generation only on normal success.
+#[allow(
+    clippy::too_many_lines,
+    reason = "overwrite retirement replays one exact owner-state transition and its physical cleanup atomically"
+)]
+pub(super) fn materialize_exact_overwrite_releases(blocks: &mut [BasicBlock]) {
+    use crate::model::OwnershipEvent;
+
+    let recipes = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe { owner, recipe }) => {
+                Some((*owner, recipe.clone()))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let guarded = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Guard { owner, .. }) => Some(*owner),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    loop {
+        let (entries, _) = exact_owner_states(blocks);
+        let mut inserted_any = false;
+        for block in blocks.iter_mut() {
+            let mut live = entries.get(&block.id).cloned().unwrap_or_default();
+            let mut insertions = Vec::new();
+            for (index, instruction) in block.instructions.iter().enumerate() {
+                if let Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                    owner: source_owner,
+                    from: source,
+                    to: Some(destination),
+                    to_owner: Some(successor),
+                    ..
+                }) = instruction
+                {
+                    let old = live
+                        .iter()
+                        .filter_map(|(candidate, place)| {
+                            (candidate.binding == successor.binding
+                                && candidate != successor
+                                && candidate != source_owner
+                                && *place == *destination)
+                                .then_some(*candidate)
+                        })
+                        .collect::<Vec<_>>();
+                    let move_index = index.checked_sub(2).filter(|move_index| {
+                        matches!(
+                            (
+                                block.instructions.get(*move_index),
+                                block.instructions.get(*move_index + 1),
+                            ),
+                            (
+                                Some(Instr::Move { dest, src }),
+                                Some(Instr::NeutralizePayloadSlot {
+                                    place,
+                                    transferee: Some(transferee),
+                                    ..
+                                })
+                            ) if dest == destination
+                                && src == source
+                                && place == source
+                                && transferee == destination
+                        )
+                    });
+                    if let ([old_owner], Some(move_index)) = (old.as_slice(), move_index) {
+                        if !guarded.contains(old_owner) {
+                            if let Some(recipe) = recipes.get(old_owner) {
+                                if let Some(drop_fn) = inline_drop_spec_for_recipe(recipe) {
+                                    let drop = if matches!(
+                                        recipe.kind,
+                                        crate::model::DropKind::RecordInPlace
+                                            | crate::model::DropKind::EnumInPlace
+                                    ) {
+                                        Instr::AggregateOverwriteRelease {
+                                            old: *destination,
+                                            replacement: *source,
+                                            ty: recipe.ty.clone(),
+                                        }
+                                    } else {
+                                        Instr::Drop {
+                                            place: *destination,
+                                            ty: recipe.ty.clone(),
+                                            drop_fn: Some(drop_fn),
+                                        }
+                                    };
+                                    insertions.push((
+                                        move_index,
+                                        drop,
+                                        Instr::OwnershipEvent(OwnershipEvent::Release {
+                                            owner: *old_owner,
+                                            place: *destination,
+                                        }),
+                                    ));
+                                    live.remove(old_owner);
+                                }
+                            }
+                        }
+                    }
+                }
+                apply_exact_owner_ops(std::slice::from_ref(instruction), &mut live);
+            }
+            if !insertions.is_empty() {
+                inserted_any = true;
+            }
+            for (index, drop, release) in insertions.into_iter().rev() {
+                block.instructions.insert(index, release);
+                block.instructions.insert(index, drop);
+            }
+        }
+        if !inserted_any {
+            break;
+        }
+    }
+}
+
+/// Seal the ownership portion of Checked MIR in the same transaction that
+/// creates the immutable function. Owner identity, generation, storage,
+/// transfer, release, and conditional guard authority come exclusively from
+/// the MIR operation stream. The remaining Builder reads are type/layout and
+/// physical-cleanup metadata used to select a destructor, never an ownership
+/// ledger or a retrospective move ancestry. Every later consumer replays and
+/// independently validates the frozen plan through [`elaborate`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "sealing must atomically freeze the complete Checked-MIR ownership authority"
+)]
+pub(super) fn seal_checked(
+    name: String,
+    return_ty: ResolvedTy,
+    blocks: Vec<BasicBlock>,
+    _raw: &RawMirFunction,
+    decisions: Vec<super::DecisionFact>,
+    checks: Vec<MirCheck>,
+    cooperate_sites: Vec<CooperateSite>,
+    builder: &Builder,
+    flat_statements: &[MirStatement],
+    dataflow_result: &dataflow::DataflowResult,
+    precomputed_cow_drop_allowed: Option<&HashSet<BindingId>>,
+    precomputed_local_bytes_drop_allowed: Option<&HashSet<BindingId>>,
+) -> (CheckedMirFunction, Vec<MirDiagnostic>) {
+    let (mut ownership_elaboration, mut diagnostics) = derive_elaboration(
+        &name,
+        &return_ty,
+        &blocks,
+        &cooperate_sites,
+        builder,
+        flat_statements,
+        dataflow_result,
+        precomputed_cow_drop_allowed,
+        precomputed_local_bytes_drop_allowed,
+    );
+    rebuild_drop_plans_from_owner_recipes(&blocks, &decisions, builder, &mut ownership_elaboration);
+    synchronize_cleanup_blocks(&mut ownership_elaboration);
+    let field_drop_admissible = |ty: &ResolvedTy| builder.field_drop_in_place_admissible(ty);
+    for check in validate_field_drop_in_place(
+        &blocks,
+        &ownership_elaboration,
+        &builder.locals,
+        &builder.enum_layouts,
+        &field_drop_admissible,
+    ) {
+        if let Some(diagnostic) = check_to_diagnostic(&check) {
+            diagnostics.push(diagnostic);
+        }
+    }
+    let checked = CheckedMirFunction {
+        name,
+        return_ty,
+        blocks,
+        decisions,
+        checks,
+        cooperate_sites,
+        ownership_elaboration: Some(Box::new(ownership_elaboration)),
+    };
+    // Final obligation proof runs immediately after sealing through
+    // `validate_ownership_events`.  It consumes this immutable Checked-MIR
+    // stream and the frozen elaboration only; the legacy local-count balance
+    // model remains available to its hand-built unit fixtures but is no
+    // longer production ownership authority.
+    (checked, diagnostics)
+}
+
+/// Replay ownership elaboration using Checked MIR as the sole authority.
+/// Absence is permitted only for hand-built analysis fixtures that never ask
+/// for code generation, so reaching this function without a frozen plan is an
+/// internal compiler invariant violation.
+pub(super) fn elaborate(checked: &CheckedMirFunction) -> ElaboratedMirFunction {
+    checked
+        .ownership_elaboration
+        .as_deref()
+        .cloned()
+        .expect("Checked MIR reached ownership elaboration without a sealed ownership plan")
+}
+
+/// Recover one unambiguous lexical Place per binding from owner definitions.
+fn unique_binding_definition_places(
+    definition_places: &HashMap<crate::model::OwnerId, Place>,
+) -> HashMap<BindingId, Place> {
+    let mut places_by_binding = HashMap::<BindingId, HashSet<Place>>::new();
+    for (owner, place) in definition_places {
+        places_by_binding
+            .entry(owner.binding)
+            .or_default()
+            .insert(*place);
+    }
+    places_by_binding
+        .into_iter()
+        .filter_map(|(binding, places)| {
+            if places.len() != 1 {
+                return None;
+            }
+            places.into_iter().next().map(|place| (binding, place))
+        })
+        .collect()
+}
+
+/// Anchor each definition-place relocation at its binding use in that block.
+fn definition_relocation_sites(
+    checked: &CheckedMirFunction,
+    definition_places: &HashMap<crate::model::OwnerId, Place>,
+) -> HashMap<BindingId, SiteId> {
+    use crate::model::OwnershipEvent;
+
+    let mut relocation_sites = HashMap::<BindingId, SiteId>::new();
+    for block in &checked.blocks {
+        let relocated = block
+            .instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instr::OwnershipEvent(OwnershipEvent::Relocate { owner, from, to })
+                    if from != to && definition_places.get(owner) == Some(from) =>
+                {
+                    Some(owner.binding)
+                }
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        for statement in &block.statements {
+            let MirStatement::Use { binding, site, .. } = statement else {
+                continue;
+            };
+            if relocated.contains(binding) {
+                relocation_sites.entry(*binding).or_insert(*site);
+            }
+        }
+    }
+    relocation_sites
+}
+
+/// Bindings defined in a block cannot be judged from its entry owner state.
+fn block_defined_bindings(block: &BasicBlock) -> HashSet<BindingId> {
+    use crate::model::OwnershipEvent;
+
+    block
+        .instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(
+                OwnershipEvent::Mint { owner, .. }
+                | OwnershipEvent::Transfer {
+                    to_owner: Some(owner),
+                    ..
+                },
+            ) => Some(owner.binding),
+            Instr::OwnershipEvent(
+                OwnershipEvent::Reset { replacement, .. }
+                | OwnershipEvent::Rearm { replacement, .. }
+                | OwnershipEvent::Join { replacement, .. },
+            ) => Some(replacement.binding),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Reject a lexical binding read when immutable owner state proves that its
+/// owner was physically relocated away from the binding's definition place on
+/// at least one reaching path.
+///
+/// `MirStatement::Use` carries binding identity rather than a backend Place.
+/// The definition-site `Mint`/successor facts provide that Place, while the
+/// exact owner-state intersection proves whether every path still owns the
+/// binding there. A conditional selection (`a` on one arm, `b` on the other)
+/// relocates `a` only on the selected arm; at the shared continuation there is
+/// therefore no one exact `a` owner at its lexical slot, and `a.len()` is a
+/// use-after-move. A clone publishes no source relocation and is untouched.
+///
+/// Admission is fail-closed but narrow: require one unambiguous definition
+/// place for the binding and an explicit Relocate from that place. Bindings
+/// with conflicting definition places remain the general ownership
+/// validator's responsibility rather than receiving a guessed diagnostic.
+fn relocated_binding_use_checks(
+    checked: &CheckedMirFunction,
+    entries: &HashMap<u32, ExactOwnerState>,
+    definition_places: &HashMap<crate::model::OwnerId, Place>,
+) -> Vec<MirCheck> {
+    let lexical_places = unique_binding_definition_places(definition_places);
+    let relocation_sites = definition_relocation_sites(checked, definition_places);
+    if relocation_sites.is_empty() {
+        return Vec::new();
+    }
+
+    let mut findings = Vec::new();
+    let mut seen = HashSet::new();
+    for block in &checked.blocks {
+        let Some(entry) = entries.get(&block.id) else {
+            continue;
+        };
+        let defined_here = block_defined_bindings(block);
+        for statement in &block.statements {
+            let MirStatement::Use {
+                binding,
+                name,
+                site,
+                ..
+            } = statement
+            else {
+                continue;
+            };
+            let (Some(consumed_at), Some(lexical_place)) = (
+                relocation_sites.get(binding).copied(),
+                lexical_places.get(binding).copied(),
+            ) else {
+                continue;
+            };
+            if *site == consumed_at || defined_here.contains(binding) {
+                continue;
+            }
+            let exact = entry
+                .iter()
+                .filter(|(owner, _)| owner.binding == *binding)
+                .collect::<Vec<_>>();
+            if matches!(exact.as_slice(), [(owner, place)] if **place == lexical_place
+                && definition_places.get(owner) == Some(&lexical_place))
+            {
+                continue;
+            }
+            if seen.insert((*binding, *site)) {
+                findings.push(MirCheck::UseAfterConsume {
+                    binding: *binding,
+                    name: name.clone(),
+                    consumed_at,
+                    used_at: *site,
+                });
+            }
+        }
+    }
+    findings
+}
+
+/// Validate the generation-aware ownership program carried by Checked MIR.
+/// The meet is intersection: an owner is usable after a join only when every
+/// predecessor still owns that exact generation. This rejects stale/reused
+/// generations and branch-dependent phantom ownership before codegen.
+#[must_use]
+#[allow(
+    clippy::match_same_arms,
+    clippy::too_many_lines,
+    reason = "the generation-aware transfer function and its diagnostics form one validator invariant"
+)]
+pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<MirCheck> {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let (entries, exits) = exact_owner_states(&checked.blocks);
+    let (maybe_entries, maybe_exits) = maybe_owner_states(&checked.blocks);
+    let (must_binding_entries, _) = must_binding_owner_states(&checked.blocks);
+    let entry_parameter_owners = entry_cancel_parameter_owners(&checked.blocks, &checked.decisions);
+
+    let mut findings = Vec::new();
+    let mut published_guards = HashMap::new();
+    let mut definition_types = HashMap::<OwnerId, ResolvedTy>::new();
+    let mut definition_places = HashMap::<OwnerId, Place>::new();
+    let mut recipes_by_owner = HashMap::<OwnerId, Vec<crate::model::OwnerDropRecipe>>::new();
+    for block in &checked.blocks {
+        for instruction in &block.instructions {
+            let definition = match instruction {
+                Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, ty }) => {
+                    definition_places.insert(*owner, *place);
+                    Some((*owner, ty))
+                }
+                Instr::OwnershipEvent(
+                    OwnershipEvent::Reset {
+                        replacement,
+                        place,
+                        ty,
+                        ..
+                    }
+                    | OwnershipEvent::Rearm {
+                        replacement,
+                        place,
+                        ty,
+                        ..
+                    }
+                    | OwnershipEvent::Join {
+                        replacement,
+                        place,
+                        ty,
+                        ..
+                    },
+                ) => {
+                    definition_places.insert(*replacement, *place);
+                    Some((*replacement, ty))
+                }
+                Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                    to: Some(place),
+                    to_owner: Some(owner),
+                    to_ty: Some(ty),
+                    ..
+                }) => {
+                    definition_places.insert(*owner, *place);
+                    Some((*owner, ty))
+                }
+                _ => None,
+            };
+            if let Some((owner, ty)) = definition {
+                if definition_types.insert(owner, ty.clone()).is_some() {
+                    findings.push(MirCheck::DischargeAuthorityDrift {
+                        function: checked.name.clone(),
+                        block: block.id,
+                        name: "ownership-recipe".to_owned(),
+                        reason: format!("owner {owner:?} has more than one definition site"),
+                    });
+                }
+            }
+            if let Instr::OwnershipEvent(OwnershipEvent::DropRecipe { owner, recipe }) = instruction
+            {
+                recipes_by_owner
+                    .entry(*owner)
+                    .or_default()
+                    .push(recipe.clone());
+            }
+            let Instr::OwnershipEvent(OwnershipEvent::Guard { owner, flag, kind }) = instruction
+            else {
+                continue;
+            };
+            if let Some((prior_flag, prior_kind)) = published_guards.insert(*owner, (*flag, *kind))
+            {
+                if prior_flag != *flag || prior_kind != *kind {
+                    findings.push(MirCheck::DischargeAuthorityDrift {
+                        function: checked.name.clone(),
+                        block: block.id,
+                        name: "ownership-generation".to_owned(),
+                        reason: format!(
+                            "owner {owner:?} publishes conflicting cleanup guards: {prior_kind:?}@{prior_flag:?} and {kind:?}@{flag:?}"
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    if checked.ownership_elaboration.is_some() {
+        for (owner, ty) in &definition_types {
+            match recipes_by_owner.get(owner).map(Vec::as_slice) {
+                Some([recipe]) if &recipe.ty == ty => {}
+                Some([recipe]) => findings.push(MirCheck::DischargeAuthorityDrift {
+                    function: checked.name.clone(),
+                    block: ENTRY_BLOCK_ID,
+                    name: "ownership-recipe".to_owned(),
+                    reason: format!(
+                        "owner {owner:?} is defined as {ty}, but its destructor recipe names {}",
+                        recipe.ty
+                    ),
+                }),
+                Some(recipes) => findings.push(MirCheck::DischargeAuthorityDrift {
+                    function: checked.name.clone(),
+                    block: ENTRY_BLOCK_ID,
+                    name: "ownership-recipe".to_owned(),
+                    reason: format!(
+                        "owner {owner:?} must publish exactly one destructor recipe, found {}",
+                        recipes.len()
+                    ),
+                }),
+                None => findings.push(MirCheck::DischargeAuthorityDrift {
+                    function: checked.name.clone(),
+                    block: ENTRY_BLOCK_ID,
+                    name: "ownership-recipe".to_owned(),
+                    reason: format!("owner {owner:?} has no definition-site destructor recipe"),
+                }),
+            }
+        }
+        for owner in recipes_by_owner.keys() {
+            if !definition_types.contains_key(owner) {
+                findings.push(MirCheck::DischargeAuthorityDrift {
+                    function: checked.name.clone(),
+                    block: ENTRY_BLOCK_ID,
+                    name: "ownership-recipe".to_owned(),
+                    reason: format!(
+                        "destructor recipe for {owner:?} has no matching owner definition"
+                    ),
+                });
+            }
+        }
+    }
+    findings.extend(relocated_binding_use_checks(
+        checked,
+        &entries,
+        &definition_places,
+    ));
+    let guarded_owners = published_guards.keys().copied().collect::<HashSet<_>>();
+    for block in &checked.blocks {
+        let Some(mut live) = entries.get(&block.id).cloned() else {
+            continue;
+        };
+        let mut maybe_live = maybe_entries.get(&block.id).cloned().unwrap_or_default();
+        let mut pending_relocations: HashMap<OwnerId, (Place, Place)> = HashMap::new();
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            let Instr::OwnershipEvent(event) = instruction else {
+                if let Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } =
+                    instruction
+                {
+                    for owner in live
+                        .iter()
+                        .filter_map(|(owner, place)| (*place == *src).then_some(*owner))
+                    {
+                        pending_relocations.insert(owner, (*src, *dest));
+                    }
+                }
+                apply_exact_owner_ops(std::slice::from_ref(instruction), &mut live);
+                apply_maybe_owner_ops(std::slice::from_ref(instruction), &mut maybe_live);
+                continue;
+            };
+            let defect = match event {
+                OwnershipEvent::Mint { owner, .. } => maybe_live
+                    .iter()
+                    .any(|(live_owner, _)| live_owner.binding == owner.binding)
+                    .then(|| {
+                        format!(
+                            "owner {owner:?} is minted while another generation of that binding is already live"
+                        )
+                    }),
+                OwnershipEvent::Transfer {
+                    owner,
+                    from,
+                    to,
+                    to_owner,
+                    to_ty,
+                } => match live.get(owner) {
+                    None => Some(format!(
+                        "owner {owner:?} is transferred after its generation ended"
+                    )),
+                    Some(actual) if actual != from => {
+                        let paired_relocation = to == &Some(*actual)
+                            && pending_relocations.get(owner) == Some(&(*from, *actual));
+                        if paired_relocation {
+                            None
+                        } else {
+                            Some(format!(
+                                "owner {owner:?} is transferred from {from:?}, but Checked MIR records its current place as {actual:?}"
+                            ))
+                        }
+                    }
+                    Some(_) if to_owner.is_some() && to.is_none() => Some(format!(
+                        "owner {owner:?} transfers to a new owner without a destination place"
+                    )),
+                    Some(_) if to_owner.is_some() != to_ty.is_some() => Some(format!(
+                        "owner {owner:?} transfer successor identity/type authority is incomplete"
+                    )),
+                    Some(_) if to_owner.is_some_and(|next| live.contains_key(&next)) => {
+                        Some(format!(
+                            "owner {owner:?} transfers into an already-live owner generation {to_owner:?}"
+                        ))
+                    }
+                    Some(_) => None,
+                },
+                OwnershipEvent::Relocate { owner, from, to } => match live.get(owner) {
+                    None if maybe_live.contains(&(*owner, *from))
+                        || maybe_live.contains(&(*owner, *to)) =>
+                    {
+                        None
+                    }
+                    None => Some(format!(
+                        "owner {owner:?} is relocated after its generation ended"
+                    )),
+                    Some(actual) if actual != from && actual != to => Some(format!(
+                        "owner {owner:?} is relocated from {from:?}, but Checked MIR records its current place as {actual:?}"
+                    )),
+                    Some(_) => None,
+                },
+                OwnershipEvent::Release { owner, place } => match live.get(owner) {
+                    None => Some(format!(
+                        "owner {owner:?} is released after its generation ended"
+                    )),
+                    Some(actual) if actual != place => Some(format!(
+                        "owner {owner:?} is released from {place:?}, but Checked MIR records its current place as {actual:?}"
+                    )),
+                    Some(_) => None,
+                },
+                OwnershipEvent::GuardedRelease { owner, place, flag } => {
+                    if published_guards.get(owner).map(|(published, _)| published) != Some(flag) {
+                        Some(format!(
+                            "guarded release for {owner:?} names {flag:?}, but that owner publishes {:?}",
+                            published_guards.get(owner).map(|(published, _)| published)
+                        ))
+                    } else if live.get(owner).is_some_and(|actual| actual != place) {
+                        Some(format!(
+                            "guarded release for {owner:?} names {place:?}, but Checked MIR records its current place as {:?}",
+                            live.get(owner)
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                OwnershipEvent::DemoteToAlias { owner, place } => match live.get(owner) {
+                    None => Some(format!(
+                        "owner {owner:?} is demoted after its generation ended"
+                    )),
+                    Some(actual) if actual != place => Some(format!(
+                        "owner {owner:?} is demoted at {place:?}, but Checked MIR records its current place as {actual:?}"
+                    )),
+                    Some(_) => None,
+                },
+                OwnershipEvent::Reset {
+                    previous,
+                    replacement,
+                    place,
+                    ..
+                } => {
+                    if replacement.binding != previous.binding
+                        || replacement.generation != previous.generation.saturating_add(1)
+                    {
+                        Some(format!(
+                            "reset {previous:?} -> {replacement:?} is not the next generation"
+                        ))
+                    } else if !(live.contains_key(previous)
+                        || (published_guards.contains_key(previous)
+                            && maybe_entries
+                                .get(&block.id)
+                                .is_some_and(|state| state.contains(&(*previous, *place)))))
+                    {
+                        Some(format!(
+                            "reset source {previous:?} is neither live on every incoming path nor conditionally live under its published guard"
+                        ))
+                    } else if live.get(previous).is_some_and(|actual| actual != place) {
+                        Some(format!(
+                            "reset source {previous:?} names {place:?}, but Checked MIR records its current place as {:?}",
+                            live.get(previous)
+                        ))
+                    } else if live.contains_key(replacement) {
+                        Some(format!("reset replacement {replacement:?} is already live"))
+                    } else {
+                        None
+                    }
+                }
+                OwnershipEvent::Rearm {
+                    previous,
+                    replacement,
+                    place,
+                    ty,
+                } => {
+                    let maybe_same_binding = maybe_live
+                        .iter()
+                        .filter(|(owner, _)| owner.binding == previous.binding)
+                        .copied()
+                        .collect::<Vec<_>>();
+                    let exact_same_binding = live
+                        .iter()
+                        .filter(|(owner, _)| owner.binding == previous.binding)
+                        .map(|(owner, actual)| (*owner, *actual))
+                        .collect::<Vec<_>>();
+                    if replacement.binding != previous.binding
+                        || replacement.generation != previous.generation.saturating_add(1)
+                    {
+                        Some(format!(
+                            "rearm {previous:?} -> {replacement:?} is not the next generation"
+                        ))
+                    } else if maybe_same_binding.as_slice() != [(*previous, *place)] {
+                        Some(format!(
+                            "rearm source {previous:?} is not the sole possibly-live generation at {place:?}: {maybe_same_binding:?}"
+                        ))
+                    } else if !exact_same_binding.is_empty()
+                        && exact_same_binding.as_slice() != [(*previous, *place)]
+                    {
+                        Some(format!(
+                            "rearm source {previous:?} has ambiguous exact generations/places {exact_same_binding:?}"
+                        ))
+                    } else if definition_places.get(previous) != Some(place)
+                        || definition_places.get(replacement) != Some(place)
+                    {
+                        Some(format!(
+                            "rearm {previous:?} -> {replacement:?} does not preserve its definition place {place:?}"
+                        ))
+                    } else if definition_types.get(previous) != Some(ty)
+                        || definition_types.get(replacement) != Some(ty)
+                    {
+                        Some(format!(
+                            "rearm {previous:?} -> {replacement:?} does not preserve its definition type {ty}"
+                        ))
+                    } else if !published_guards.contains_key(previous)
+                        || published_guards.get(previous) != published_guards.get(replacement)
+                    {
+                        Some(format!(
+                            "rearm {previous:?} -> {replacement:?} does not preserve one exact cleanup guard"
+                        ))
+                    } else if recipes_by_owner.get(previous).map(Vec::as_slice)
+                        != recipes_by_owner.get(replacement).map(Vec::as_slice)
+                        || recipes_by_owner
+                            .get(previous)
+                            .is_none_or(|recipes| recipes.len() != 1)
+                    {
+                        Some(format!(
+                            "rearm {previous:?} -> {replacement:?} does not preserve one exact destructor recipe"
+                        ))
+                    } else if maybe_live.contains(&(*replacement, *place))
+                        || live.contains_key(replacement)
+                    {
+                        Some(format!(
+                            "rearm replacement {replacement:?} is already live before its lineage event"
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                OwnershipEvent::Guard { owner, flag, .. } => {
+                    (!live.contains_key(owner)).then(|| {
+                        format!("cleanup guard {flag:?} is attached after owner {owner:?} ended")
+                    })
+                }
+                OwnershipEvent::Join {
+                    incoming,
+                    replacement,
+                    place,
+                    ty,
+                } => {
+                    let same_binding = incoming
+                        .iter()
+                        .all(|owner| owner.binding == replacement.binding);
+                    let distinct = incoming.iter().all(|owner| owner != replacement)
+                        && incoming.iter().copied().collect::<HashSet<_>>().len()
+                            == incoming.len();
+                    let declared = incoming
+                        .iter()
+                        .copied()
+                        .map(|owner| (owner, *place))
+                        .collect::<HashSet<_>>();
+                    let possible = maybe_live
+                        .iter()
+                        .filter(|(owner, _)| owner.binding == replacement.binding)
+                        .copied()
+                        .collect::<HashSet<_>>();
+                    let exact_same_binding = live
+                        .iter()
+                        .filter(|(owner, _)| owner.binding == replacement.binding)
+                        .map(|(owner, current)| (*owner, *current))
+                        .collect::<HashSet<_>>();
+                    let metadata_matches = incoming
+                        .iter()
+                        .chain(std::iter::once(replacement))
+                        .all(|owner| {
+                            definition_places.get(owner) == Some(place)
+                                && definition_types.get(owner) == Some(ty)
+                                && published_guards.get(owner)
+                                    == published_guards.get(replacement)
+                                && recipes_by_owner.get(owner).map(Vec::as_slice)
+                                    == recipes_by_owner.get(replacement).map(Vec::as_slice)
+                                && recipes_by_owner
+                                    .get(owner)
+                                    .is_some_and(|recipes| recipes.len() == 1)
+                        });
+                    if incoming.is_empty() || !same_binding || !distinct {
+                        Some(format!(
+                            "ownership join {incoming:?} -> {replacement:?} is not a non-empty set of distinct same-binding predecessors and successor"
+                        ))
+                    } else if possible != declared {
+                        Some(format!(
+                            "ownership join {incoming:?} -> {replacement:?} does not enumerate its exact possible incoming owners at {place:?}: {possible:?}"
+                        ))
+                    } else if !exact_same_binding.is_subset(&declared) {
+                        Some(format!(
+                            "ownership join {incoming:?} -> {replacement:?} has ambiguous exact incoming owners {exact_same_binding:?}"
+                        ))
+                    } else if must_binding_entries
+                        .get(&block.id)
+                        .and_then(|state| state.get(&replacement.binding))
+                        != Some(place)
+                    {
+                        Some(format!(
+                            "ownership join {incoming:?} -> {replacement:?} has an ownerless or wrong-place incoming path"
+                        ))
+                    } else if live.contains_key(replacement)
+                        || maybe_live.contains(&(*replacement, *place))
+                    {
+                        Some(format!(
+                            "ownership join replacement {replacement:?} is already live before convergence"
+                        ))
+                    } else if !metadata_matches {
+                        Some(format!(
+                            "ownership join {incoming:?} -> {replacement:?} does not preserve one exact place/type/guard/recipe"
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                OwnershipEvent::DropRecipe { .. }
+                | OwnershipEvent::InteriorAlias { .. }
+                | OwnershipEvent::AliasRelocate { .. }
+                | OwnershipEvent::AliasEnd { .. }
+                | OwnershipEvent::EdgeCarry { .. }
+                | OwnershipEvent::ScopeExit { .. } => None,
+            };
+            if let Some(reason) = defect {
+                findings.push(MirCheck::DischargeAuthorityDrift {
+                    function: checked.name.clone(),
+                    block: block.id,
+                    name: "ownership-generation".to_owned(),
+                    reason: format!("{reason} at instruction {instruction_index}"),
+                });
+            }
+            apply_exact_owner_ops(std::slice::from_ref(instruction), &mut live);
+            apply_maybe_owner_ops(std::slice::from_ref(instruction), &mut maybe_live);
+            match event {
+                OwnershipEvent::Mint { owner, .. }
+                | OwnershipEvent::Transfer { owner, .. }
+                | OwnershipEvent::Relocate { owner, .. }
+                | OwnershipEvent::Release { owner, .. }
+                | OwnershipEvent::GuardedRelease { owner, .. }
+                | OwnershipEvent::DemoteToAlias { owner, .. }
+                | OwnershipEvent::Guard { owner, .. } => {
+                    pending_relocations.remove(owner);
+                }
+                OwnershipEvent::Reset {
+                    previous,
+                    replacement,
+                    ..
+                } => {
+                    pending_relocations.remove(previous);
+                    pending_relocations.remove(replacement);
+                }
+                OwnershipEvent::Rearm {
+                    previous,
+                    replacement,
+                    ..
+                } => {
+                    pending_relocations.remove(previous);
+                    pending_relocations.remove(replacement);
+                }
+                OwnershipEvent::Join {
+                    incoming,
+                    replacement,
+                    ..
+                } => {
+                    for owner in incoming {
+                        pending_relocations.remove(owner);
+                    }
+                    pending_relocations.remove(replacement);
+                }
+                OwnershipEvent::DropRecipe { .. }
+                | OwnershipEvent::InteriorAlias { .. }
+                | OwnershipEvent::AliasRelocate { .. }
+                | OwnershipEvent::AliasEnd { .. }
+                | OwnershipEvent::EdgeCarry { .. }
+                | OwnershipEvent::ScopeExit { .. } => {}
+            }
+        }
+    }
+    // Revalidate every unconditional cleanup against the same Checked-MIR
+    // program. This is deliberately downstream of sealing and accepts no
+    // Builder: codegen cannot consume a frozen drop plan whose owner/place is
+    // not reproducible from the immutable event/dataflow stream.
+    if let Some(elaboration) = checked.ownership_elaboration.as_deref() {
+        let owner_types = &definition_types;
+        let owner_guards: HashMap<OwnerId, Place> = checked
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| match instruction {
+                Instr::OwnershipEvent(OwnershipEvent::Guard { owner, flag, .. }) => {
+                    Some((*owner, *flag))
+                }
+                _ => None,
+            })
+            .collect();
+        let binding_metadata: HashMap<BindingId, (String, SiteId)> = checked
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter_map(|statement| match statement {
+                MirStatement::Bind {
+                    binding,
+                    name,
+                    site,
+                    ..
+                } => Some((*binding, (name.clone(), *site))),
+                _ => None,
+            })
+            .collect();
+        for (exit, plan) in &elaboration.drop_plans {
+            let block_id = exit_block_id(exit);
+            let Some(_block) = checked.blocks.iter().find(|block| block.id == block_id) else {
+                continue;
+            };
+            let live = exact_owner_state_for_exit(exit, &checked.blocks, &entries, &exits);
+            let required = if matches!(exit, ExitPath::Cancel { block } if *block == ENTRY_BLOCK_ID)
+            {
+                entry_parameter_owners.clone()
+            } else {
+                guarded_required_owners_for_exit(
+                    exit,
+                    &checked.blocks,
+                    &entries,
+                    &exits,
+                    &maybe_entries,
+                    &maybe_exits,
+                    &guarded_owners,
+                )
+            };
+            for (binding, candidates) in ambiguous_guarded_owners_for_exit(
+                exit,
+                &checked.blocks,
+                &maybe_entries,
+                &maybe_exits,
+                &guarded_owners,
+            ) {
+                if required.keys().any(|owner| owner.binding == binding) {
+                    continue;
+                }
+                let (name, site) = binding_metadata
+                    .get(&binding)
+                    .cloned()
+                    .unwrap_or_else(|| (format!("{binding:?}"), SiteId(0)));
+                let local_ty = candidates
+                    .first()
+                    .and_then(|(owner, _)| definition_types.get(owner))
+                    .map_or_else(|| "<unknown>".to_owned(), ToString::to_string);
+                findings.push(MirCheck::ObligationUnderReleased {
+                    function: checked.name.clone(),
+                    blocks: vec![block_id],
+                    site,
+                    name,
+                    local_ty,
+                    mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
+                    reason: format!(
+                        "conditionally live guarded owner has ambiguous generations/places {candidates:?} on {exit:?}; no frozen cleanup can be admitted"
+                    ),
+                });
+            }
+            let mut matched = HashSet::new();
+            for drop in &plan.drops {
+                if let Some(guard) = drop.guard {
+                    let exact_live_owners: Vec<OwnerId> = live
+                        .iter()
+                        .filter_map(|(owner, place)| (*place == drop.place).then_some(*owner))
+                        .collect();
+                    if let [owner] = exact_live_owners.as_slice() {
+                        if *owner != guard.owner || owner_guards.get(owner) != Some(&guard.flag) {
+                            findings.push(MirCheck::DischargeAuthorityDrift {
+                                function: checked.name.clone(),
+                                block: block_id,
+                                name: "checked-ownership-plan".to_owned(),
+                                reason: format!(
+                                    "cleanup at {:?} is guarded by {:?}@{:?}, but live generation {owner:?} carries {:?}",
+                                    drop.place,
+                                    guard.owner,
+                                    guard.flag,
+                                    owner_guards.get(owner)
+                                ),
+                            });
+                        }
+                    }
+                }
+                let candidates: Vec<OwnerId> = required
+                    .iter()
+                    .filter_map(|(owner, place)| {
+                        let guard_matches = drop.guard.is_none_or(|guard| guard.owner == *owner);
+                        (guard_matches
+                            && *place == drop.place
+                            && owner_types.get(owner) == Some(&drop.ty))
+                        .then_some(*owner)
+                    })
+                    .collect();
+                match candidates.as_slice() {
+                    [owner]
+                        if recipes_by_owner.get(owner).is_some_and(|recipes| {
+                            matches!(recipes.as_slice(), [recipe]
+                                if recipe.ty == drop.ty
+                                    && recipe.kind == drop.kind
+                                    && recipe.drop_fn == drop.drop_fn)
+                        }) && matched.insert(*owner) => {}
+                    [owner]
+                        if recipes_by_owner.get(owner).is_some_and(|recipes| {
+                            matches!(recipes.as_slice(), [recipe]
+                                if recipe.ty != drop.ty
+                                    || recipe.kind != drop.kind
+                                    || recipe.drop_fn != drop.drop_fn)
+                        }) => findings.push(MirCheck::DischargeAuthorityDrift {
+                            function: checked.name.clone(),
+                            block: block_id,
+                            name: "ownership-recipe".to_owned(),
+                            reason: format!(
+                                "cleanup ritual at {:?} does not equal the definition-site recipe for {owner:?}",
+                                drop.place
+                            ),
+                        }),
+                    [owner] => findings.push(MirCheck::ObligationOverReleased {
+                        function: checked.name.clone(),
+                        block: block_id,
+                        name: binding_metadata
+                            .get(&owner.binding)
+                            .map_or_else(|| format!("{owner:?}"), |(name, _)| name.clone()),
+                        reason: format!(
+                            "frozen exit plan contains more than one cleanup for exact owner {owner:?} at {:?}",
+                            drop.place,
+                        ),
+                    }),
+                    [] => findings.push(MirCheck::ObligationOverReleased {
+                        function: checked.name.clone(),
+                        block: block_id,
+                        name: "checked-ownership-plan".to_owned(),
+                        reason: format!(
+                            "frozen exit plan drops {:?} as {}, but Checked MIR has no exact live owner requiring that cleanup on {exit:?}",
+                            drop.place, drop.ty,
+                        ),
+                    }),
+                    _ => findings.push(MirCheck::DischargeAuthorityDrift {
+                        function: checked.name.clone(),
+                        block: block_id,
+                        name: "checked-ownership-plan".to_owned(),
+                        reason: format!(
+                            "cleanup at {:?} ambiguously matches multiple exact owner generations {candidates:?}",
+                            drop.place,
+                        ),
+                    }),
+                }
+            }
+            for (owner, place) in required {
+                if matched.contains(&owner) {
+                    continue;
+                }
+                let ty = owner_types
+                    .get(&owner)
+                    .map_or_else(|| "<unknown>".to_owned(), ToString::to_string);
+                let (name, site) = binding_metadata
+                    .get(&owner.binding)
+                    .cloned()
+                    .unwrap_or_else(|| (format!("{owner:?}"), SiteId(0)));
+                findings.push(MirCheck::ObligationUnderReleased {
+                    function: checked.name.clone(),
+                    blocks: vec![block_id],
+                    site,
+                    name,
+                    local_ty: ty,
+                    mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
+                    reason: format!(
+                        "exact owner {owner:?} remains live at {place:?} on {exit:?}, but the frozen cleanup plan contains no matching destructor"
+                    ),
+                });
+            }
+        }
+    }
+    findings
+}
+
+#[cfg(test)]
+fn checked_with_ownership_events(events: Vec<Instr>) -> CheckedMirFunction {
+    CheckedMirFunction {
+        name: "ownership_event_falsifier".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        blocks: vec![BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: events,
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        checks: vec![],
+        cooperate_sites: vec![],
+        ownership_elaboration: None,
+    }
+}
+
+#[cfg(test)]
+fn checked_test_string_recipe() -> crate::model::OwnerDropRecipe {
+    crate::model::OwnerDropRecipe {
+        ty: ResolvedTy::String,
+        drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+        kind: DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::String,
+        },
+        declaration_order: 0,
+    }
+}
+
+#[cfg(test)]
+fn checked_recipe_fixture(
+    recipes: Vec<crate::model::OwnerDropRecipe>,
+    drops: Vec<ElabDrop>,
+) -> CheckedMirFunction {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(177),
+        generation: 0,
+    };
+    let place = Place::Local(7);
+    let mut instructions = vec![Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+        owner,
+        place,
+        ty: ResolvedTy::String,
+    })];
+    instructions.extend(recipes.into_iter().map(|recipe| {
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::DropRecipe { owner, recipe })
+    }));
+    CheckedMirFunction {
+        name: "recipe_invariant".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        blocks: vec![BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions,
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        checks: vec![],
+        cooperate_sites: vec![],
+        ownership_elaboration: Some(Box::new(ElaboratedMirFunction {
+            name: "recipe_invariant".to_owned(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return {
+                    block: ENTRY_BLOCK_ID,
+                },
+                DropPlan { drops },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        })),
+    }
+}
+
+#[cfg(test)]
+fn checked_rearm_fixture(rearm_place: Place, replacement_flag: Place) -> CheckedMirFunction {
+    use crate::model::{OwnerId, OwnershipEvent, OwnershipGuardKind};
+
+    let old = OwnerId {
+        binding: BindingId(178),
+        generation: 0,
+    };
+    let replacement = OwnerId {
+        binding: old.binding,
+        generation: 1,
+    };
+    let place = Place::Local(7);
+    let flag = Place::Local(8);
+    let recipe = checked_test_string_recipe();
+    checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: old,
+            place,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: old,
+            recipe: recipe.clone(),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Guard {
+            owner: old,
+            flag,
+            kind: OwnershipGuardKind::Overwrite,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Rearm {
+            previous: old,
+            replacement,
+            place: rearm_place,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: replacement,
+            recipe,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Guard {
+            owner: replacement,
+            flag: replacement_flag,
+            kind: OwnershipGuardKind::Overwrite,
+        }),
+    ])
+}
+
+#[test]
+fn sequential_same_slot_rearm_is_exact() {
+    let checked = checked_rearm_fixture(Place::Local(7), Place::Local(8));
+    assert_eq!(validate_ownership_events(&checked), []);
+}
+
+#[test]
+fn relocated_use_does_not_guess_an_ambiguous_definition_place() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let binding = BindingId(205);
+    let first = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let conflicting = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let mut checked = checked_with_ownership_events(vec![]);
+    checked.blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![
+                MirStatement::Bind {
+                    binding,
+                    name: "ambiguous".to_owned(),
+                    site: SiteId(1),
+                    ty: ResolvedTy::String,
+                },
+                MirStatement::Use {
+                    binding,
+                    name: "ambiguous".to_owned(),
+                    site: SiteId(2),
+                    ty: ResolvedTy::String,
+                    intent: IntentKind::Read,
+                },
+            ],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner: first,
+                    place: Place::Local(1),
+                    ty: ResolvedTy::String,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner: conflicting,
+                    place: Place::Local(2),
+                    ty: ResolvedTy::String,
+                }),
+                Instr::Move {
+                    dest: Place::Local(3),
+                    src: Place::Local(1),
+                },
+                Instr::OwnershipEvent(OwnershipEvent::Relocate {
+                    owner: first,
+                    from: Place::Local(1),
+                    to: Place::Local(3),
+                }),
+            ],
+            terminator: Terminator::Goto { target: 1 },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![MirStatement::Use {
+                binding,
+                name: "ambiguous".to_owned(),
+                site: SiteId(3),
+                ty: ResolvedTy::String,
+                intent: IntentKind::Read,
+            }],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+
+    let findings = validate_ownership_events(&checked);
+    assert!(findings.iter().any(|finding| matches!(
+        finding,
+        MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("minted while another generation")
+    )));
+    assert!(
+        findings
+            .iter()
+            .all(|finding| !matches!(finding, MirCheck::UseAfterConsume { .. })),
+        "conflicting definition places stay the ownership validator's ambiguity instead of receiving a guessed use-after-move: {findings:?}"
+    );
+}
+
+#[test]
+fn rearm_rejects_wrong_place_or_guard() {
+    let wrong_place =
+        validate_ownership_events(&checked_rearm_fixture(Place::Local(9), Place::Local(8)));
+    assert!(wrong_place.iter().any(|finding| matches!(
+        finding,
+        MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("rearm source") && reason.contains("sole possibly-live")
+    )));
+
+    let wrong_guard =
+        validate_ownership_events(&checked_rearm_fixture(Place::Local(7), Place::Local(9)));
+    assert!(wrong_guard.iter().any(|finding| matches!(
+        finding,
+        MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("rearm") && reason.contains("guard")
+    )));
+}
+
+#[test]
+fn rearm_rejects_co_live_generation() {
+    use crate::model::{OwnerId, OwnershipEvent, OwnershipGuardKind};
+
+    let mut checked = checked_rearm_fixture(Place::Local(7), Place::Local(8));
+    let other = OwnerId {
+        binding: BindingId(178),
+        generation: 2,
+    };
+    checked.blocks[0].instructions.splice(
+        3..3,
+        [
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: other,
+                place: Place::Local(10),
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                owner: other,
+                recipe: checked_test_string_recipe(),
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Guard {
+                owner: other,
+                flag: Place::Local(11),
+                kind: OwnershipGuardKind::Overwrite,
+            }),
+        ],
+    );
+    let findings = validate_ownership_events(&checked);
+    assert!(findings.iter().any(|finding| matches!(
+        finding,
+        MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("rearm source") && reason.contains("sole possibly-live")
+    )));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the branch fixture exposes both possible predecessor generations explicitly"
+)]
+fn rearm_rejects_branch_ambiguous_generation() {
+    use crate::model::{OwnerId, OwnershipEvent, OwnershipGuardKind};
+
+    let binding = BindingId(179);
+    let old = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let branch_owner = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let replacement = OwnerId {
+        binding,
+        generation: 2,
+    };
+    let place = Place::Local(12);
+    let flag = Place::Local(13);
+    let recipe = checked_test_string_recipe();
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner: old,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                    owner: old,
+                    recipe: recipe.clone(),
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Guard {
+                    owner: old,
+                    flag,
+                    kind: OwnershipGuardKind::Overwrite,
+                }),
+            ],
+            terminator: Terminator::Branch {
+                cond: Place::Local(14),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Reset {
+                    previous: old,
+                    replacement: branch_owner,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                    owner: branch_owner,
+                    recipe: recipe.clone(),
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Guard {
+                    owner: branch_owner,
+                    flag,
+                    kind: OwnershipGuardKind::Overwrite,
+                }),
+            ],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Rearm {
+                    previous: branch_owner,
+                    replacement,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                    owner: replacement,
+                    recipe,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Guard {
+                    owner: replacement,
+                    flag,
+                    kind: OwnershipGuardKind::Overwrite,
+                }),
+            ],
+            terminator: Terminator::Return,
+        },
+    ];
+    let mut checked = checked_with_ownership_events(vec![]);
+    checked.blocks = blocks;
+    let findings = validate_ownership_events(&checked);
+    assert!(findings.iter().any(|finding| matches!(
+        finding,
+        MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("rearm source") && reason.contains("sole possibly-live")
+    )));
+}
+
+#[cfg(test)]
+fn checked_join_rearm_fixture() -> CheckedMirFunction {
+    use crate::model::{OwnerId, OwnershipEvent, OwnershipGuardKind};
+
+    let binding = BindingId(180);
+    let initial = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let branch = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let joined = OwnerId {
+        binding,
+        generation: 2,
+    };
+    let rearmed = OwnerId {
+        binding,
+        generation: 3,
+    };
+    let place = Place::Local(15);
+    let flag = Place::Local(16);
+    let recipe = checked_test_string_recipe();
+    let publish = |owner| {
+        [
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                owner,
+                recipe: recipe.clone(),
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Guard {
+                owner,
+                flag,
+                kind: OwnershipGuardKind::Overwrite,
+            }),
+        ]
+    };
+    let mut entry_instructions = vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+        owner: initial,
+        place,
+        ty: ResolvedTy::String,
+    })];
+    entry_instructions.extend(publish(initial));
+    let mut reset_instructions = vec![Instr::OwnershipEvent(OwnershipEvent::Reset {
+        previous: initial,
+        replacement: branch,
+        place,
+        ty: ResolvedTy::String,
+    })];
+    reset_instructions.extend(publish(branch));
+    let mut join_instructions = vec![Instr::OwnershipEvent(OwnershipEvent::Join {
+        incoming: vec![initial, branch],
+        replacement: joined,
+        place,
+        ty: ResolvedTy::String,
+    })];
+    join_instructions.extend(publish(joined));
+    join_instructions.push(Instr::OwnershipEvent(OwnershipEvent::Rearm {
+        previous: joined,
+        replacement: rearmed,
+        place,
+        ty: ResolvedTy::String,
+    }));
+    join_instructions.extend(publish(rearmed));
+    let mut checked = checked_with_ownership_events(vec![]);
+    checked.blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: entry_instructions,
+            terminator: Terminator::Branch {
+                cond: Place::Local(17),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: reset_instructions,
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: join_instructions,
+            terminator: Terminator::Return,
+        },
+    ];
+    checked
+}
+
+#[test]
+fn exact_join_then_rearm_lineage_is_valid() {
+    assert_eq!(validate_ownership_events(&checked_join_rearm_fixture()), []);
+}
+
+#[test]
+fn join_lineage_rejects_missing_incoming_and_ambiguous_owner() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let mut missing = checked_join_rearm_fixture();
+    let join = missing.blocks[3]
+        .instructions
+        .iter_mut()
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Join { incoming, .. }) => Some(incoming),
+            _ => None,
+        })
+        .expect("fixture contains a Join");
+    join.pop();
+    assert!(validate_ownership_events(&missing)
+        .iter()
+        .any(|finding| matches!(
+            finding,
+            MirCheck::DischargeAuthorityDrift { reason, .. }
+                if reason.contains("does not enumerate its exact possible incoming owners")
+        )));
+
+    let mut ambiguous = checked_join_rearm_fixture();
+    let extra = OwnerId {
+        binding: BindingId(180),
+        generation: 4,
+    };
+    ambiguous.blocks[1]
+        .instructions
+        .push(Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: extra,
+            place: Place::Local(15),
+            ty: ResolvedTy::String,
+        }));
+    assert!(validate_ownership_events(&ambiguous)
+        .iter()
+        .any(|finding| matches!(
+            finding,
+            MirCheck::DischargeAuthorityDrift { reason, .. }
+                if reason.contains("does not enumerate its exact possible incoming owners")
+                    || reason.contains("ambiguous exact incoming owners")
+        )));
+}
+
+#[test]
+fn final_join_refresh_leaves_ambiguous_stale_event_for_validation() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let mut checked = checked_join_rearm_fixture();
+    let extra = OwnerId {
+        binding: BindingId(180),
+        generation: 4,
+    };
+    checked.blocks[1]
+        .instructions
+        .push(Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: extra,
+            place: Place::Local(15),
+            ty: ResolvedTy::String,
+        }));
+    let declared_before = checked.blocks[3]
+        .instructions
+        .iter()
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Join { incoming, .. }) => Some(incoming.clone()),
+            _ => None,
+        })
+        .expect("fixture contains a Join");
+
+    super::canonicalize_join_incoming_owner_ids(&mut checked.blocks, &Builder::default());
+
+    let declared_after = checked.blocks[3]
+        .instructions
+        .iter()
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Join { incoming, .. }) => Some(incoming),
+            _ => None,
+        })
+        .expect("fixture contains a Join");
+    assert_eq!(declared_after, &declared_before);
+    assert!(validate_ownership_events(&checked)
+        .iter()
+        .any(|finding| matches!(
+            finding,
+            MirCheck::DischargeAuthorityDrift { reason, .. }
+                if reason.contains("does not enumerate its exact possible incoming owners")
+        )));
+}
+
+#[test]
+fn join_lineage_rejects_wrong_guard_or_place() {
+    use crate::model::OwnershipEvent;
+
+    let mut wrong_guard = checked_join_rearm_fixture();
+    let changed_guard = wrong_guard.blocks[3]
+        .instructions
+        .iter_mut()
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Guard { owner, flag, .. })
+                if owner.generation == 2 =>
+            {
+                Some(flag)
+            }
+            _ => None,
+        })
+        .expect("fixture publishes the Join guard");
+    *changed_guard = Place::Local(18);
+    assert!(validate_ownership_events(&wrong_guard)
+        .iter()
+        .any(|finding| matches!(
+            finding,
+            MirCheck::DischargeAuthorityDrift { reason, .. }
+                if reason.contains("does not preserve one exact place/type/guard/recipe")
+        )));
+
+    let mut wrong_place = checked_join_rearm_fixture();
+    let join_place = wrong_place.blocks[3]
+        .instructions
+        .iter_mut()
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Join { place, .. }) => Some(place),
+            _ => None,
+        })
+        .expect("fixture contains a Join");
+    *join_place = Place::Local(19);
+    assert!(validate_ownership_events(&wrong_place)
+        .iter()
+        .any(|finding| matches!(
+            finding,
+            MirCheck::DischargeAuthorityDrift { reason, .. }
+                if reason.contains("does not enumerate its exact possible incoming owners")
+                    || reason.contains("wrong-place incoming path")
+                    || reason.contains("does not preserve one exact place/type/guard/recipe")
+        )));
+}
+
+#[test]
+fn checked_owner_definition_rejects_multiple_drop_recipes() {
+    let recipe = checked_test_string_recipe();
+    let checked = checked_recipe_fixture(vec![recipe.clone(), recipe], vec![]);
+    assert!(validate_ownership_events(&checked).iter().any(|finding| {
+        matches!(finding, MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("exactly one destructor recipe, found 2"))
+    }));
+}
+
+#[test]
+fn checked_owner_definition_rejects_recipe_type_drift() {
+    let mut recipe = checked_test_string_recipe();
+    recipe.ty = ResolvedTy::Bytes;
+    let checked = checked_recipe_fixture(vec![recipe], vec![]);
+    assert!(validate_ownership_events(&checked).iter().any(|finding| {
+        matches!(finding, MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("is defined as string") && reason.contains("names bytes"))
+    }));
+}
+
+#[test]
+fn checked_exit_rejects_cleanup_ritual_that_differs_from_recipe() {
+    let checked = checked_recipe_fixture(
+        vec![checked_test_string_recipe()],
+        vec![ElabDrop {
+            place: Place::Local(7),
+            ty: ResolvedTy::String,
+            drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+            kind: DropKind::Resource,
+            guard: None,
+        }],
+    );
+    assert!(validate_ownership_events(&checked).iter().any(|finding| {
+        matches!(finding, MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("does not equal the definition-site recipe"))
+    }));
+}
+
+#[test]
+fn generic_vec_definition_publishes_outer_buffer_recipe() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(178),
+        generation: 0,
+    };
+    let ty = ResolvedTy::named_builtin(
+        "Vec",
+        BuiltinType::Vec,
+        vec![ResolvedTy::TypeParam {
+            name: "T".to_owned(),
+        }],
+    );
+    let recipe = owner_definition_drop_recipe(&Builder::default(), owner, Place::Local(8), &ty, 0)
+        .expect("a generic Vec still owns and must release its outer buffer");
+    assert_eq!(
+        recipe.kind,
+        DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::VecPlain,
+        }
+    );
+}
+
+#[test]
+fn unwired_vec_definition_publishes_no_unsafe_recipe() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(179),
+        generation: 0,
+    };
+    let ty = ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::Bytes]);
+    assert!(
+        owner_definition_drop_recipe(
+            &Builder::default(),
+            owner,
+            Place::Local(9),
+            &ty,
+            0,
+        )
+        .is_none(),
+        "an unwired per-element ABI must fail sealing instead of publishing a wrong buffer-only destructor"
+    );
+}
+
+#[test]
+fn ownership_event_validator_rejects_reused_generation() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(7),
+        generation: 0,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(1),
+            ty: ResolvedTy::Bytes,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+            owner,
+            from: Place::Local(1),
+            to: Some(Place::MachineVariant {
+                local: 2,
+                variant_idx: 0,
+                field_idx: 1,
+            }),
+            to_owner: None,
+            to_ty: None,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+            owner,
+            from: Place::Local(1),
+            to: Some(Place::MachineVariant {
+                local: 2,
+                variant_idx: 0,
+                field_idx: 2,
+            }),
+            to_owner: None,
+            to_ty: None,
+        }),
+    ]);
+    assert_eq!(validate_ownership_events(&checked).len(), 1);
+}
+
+#[test]
+fn ownership_event_validator_rejects_stale_generation_after_overwrite() {
+    let old = crate::model::OwnerId {
+        binding: BindingId(9),
+        generation: 0,
+    };
+    let new = crate::model::OwnerId {
+        binding: BindingId(9),
+        generation: 1,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner: old,
+            place: Place::Local(3),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Reset {
+            previous: old,
+            replacement: new,
+            place: Place::Local(3),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Release {
+            owner: old,
+            place: Place::Local(3),
+        }),
+    ]);
+    assert_eq!(validate_ownership_events(&checked).len(), 1);
+}
+
+#[test]
+fn ownership_event_validator_keeps_and_rejects_separated_stale_relocate() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(10),
+        generation: 0,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(3),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Release {
+            owner,
+            place: Place::Local(3),
+        }),
+        Instr::ConstI64 {
+            dest: Place::Local(9),
+            value: 1,
+        },
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+            owner,
+            from: Place::Local(3),
+            to: Place::Local(4),
+        }),
+    ]);
+    assert!(validate_ownership_events(&checked).iter().any(|finding| {
+        matches!(finding, MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("relocated after its generation ended"))
+    }));
+}
+
+#[test]
+fn ownership_event_validator_rejects_transfer_from_stale_place() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(11),
+        generation: 0,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(4),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+            owner,
+            from: Place::Local(0),
+            to: Some(Place::Local(5)),
+            to_owner: None,
+            to_ty: None,
+        }),
+    ]);
+    assert_eq!(validate_ownership_events(&checked).len(), 1);
+}
+
+#[test]
+fn ownership_event_validator_rejects_fabricated_from_even_when_to_matches_live_place() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(16),
+        generation: 0,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(4),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+            owner,
+            from: Place::Local(0),
+            to: Some(Place::Local(4)),
+            to_owner: None,
+            to_ty: None,
+        }),
+    ]);
+    assert_eq!(validate_ownership_events(&checked).len(), 1);
+}
+
+#[test]
+fn ownership_event_validator_rejects_release_from_stale_place() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(12),
+        generation: 0,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(6),
+            ty: ResolvedTy::Bytes,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Release {
+            owner,
+            place: Place::Local(0),
+        }),
+    ]);
+    assert_eq!(validate_ownership_events(&checked).len(), 1);
+}
+
+#[test]
+fn ownership_event_validator_accepts_exact_place_transfer() {
+    let first = crate::model::OwnerId {
+        binding: BindingId(13),
+        generation: 0,
+    };
+    let second = crate::model::OwnerId {
+        binding: BindingId(14),
+        generation: 0,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner: first,
+            place: Place::Local(7),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+            owner: first,
+            from: Place::Local(7),
+            to: Some(Place::Local(8)),
+            to_owner: Some(second),
+            to_ty: Some(ResolvedTy::String),
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Release {
+            owner: second,
+            place: Place::Local(8),
+        }),
+    ]);
+    assert!(validate_ownership_events(&checked).is_empty());
+}
+
+#[test]
+fn physical_move_does_not_relocate_owner_without_explicit_event() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(140),
+        generation: 0,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(1),
+            ty: ResolvedTy::String,
+        }),
+        Instr::Move {
+            dest: Place::Local(2),
+            src: Place::Local(1),
+        },
+    ]);
+    let (_, exits) = exact_owner_states(&checked.blocks);
+    assert_eq!(
+        exits
+            .get(&ENTRY_BLOCK_ID)
+            .and_then(|state| state.get(&owner)),
+        Some(&Place::Local(1)),
+        "a physical copy must not silently become ownership authority"
+    );
+}
+
+#[test]
+fn cleanup_block_projection_is_rebuilt_from_exact_panic_plan() {
+    let exact = ElabDrop {
+        place: Place::Local(4),
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::String,
+        },
+        guard: None,
+    };
+    let mut elaboration = ElaboratedMirFunction {
+        name: "cleanup_projection".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![ElabBlock {
+            id: 1,
+            kind: BlockKind::Cleanup,
+            drops: vec![],
+            successor: None,
+        }],
+        drop_plans: vec![(
+            ExitPath::Panic { block: 0 },
+            DropPlan {
+                drops: vec![exact.clone()],
+            },
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+    synchronize_cleanup_blocks(&mut elaboration);
+    assert_eq!(elaboration.blocks[0].drops, vec![exact]);
+}
+
+#[test]
+fn checked_ownership_plan_replays_without_builder_state() {
+    let binding = BindingId(15);
+    let owner = crate::model::OwnerId {
+        binding,
+        generation: 0,
+    };
+    let mut checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(9),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::DropRecipe {
+            owner,
+            recipe: checked_test_string_recipe(),
+        }),
+    ]);
+    checked.ownership_elaboration = Some(Box::new(ElaboratedMirFunction {
+        name: checked.name.clone(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(
+            ExitPath::Return {
+                block: ENTRY_BLOCK_ID,
+            },
+            DropPlan {
+                drops: vec![ElabDrop {
+                    place: Place::Local(10),
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+                    kind: DropKind::CowHeap {
+                        release: crate::ownership::CowHeapRelease::String,
+                    },
+                    guard: None,
+                }],
+            },
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    }));
+    assert!(validate_ownership_events(&checked).iter().any(|finding| {
+        matches!(finding, MirCheck::ObligationOverReleased { reason, .. }
+            if reason.contains("no exact live owner"))
+    }));
+}
+
+#[test]
+fn checked_ownership_plan_requires_explicit_guard_event() {
+    let binding = BindingId(16);
+    let owner = crate::model::OwnerId {
+        binding,
+        generation: 0,
+    };
+    let place = Place::Local(9);
+    let flag = Place::Local(20);
+    let make_checked = |publish_guard: bool| {
+        let mut events = vec![
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                owner,
+                place,
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::DropRecipe {
+                owner,
+                recipe: checked_test_string_recipe(),
+            }),
+        ];
+        if publish_guard {
+            events.push(Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                owner,
+                flag,
+                kind: crate::model::OwnershipGuardKind::AffineRelease,
+            }));
+        }
+        let mut checked = checked_with_ownership_events(events);
+        checked.ownership_elaboration = Some(Box::new(ElaboratedMirFunction {
+            name: checked.name.clone(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return {
+                    block: ENTRY_BLOCK_ID,
+                },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place,
+                        ty: ResolvedTy::String,
+                        drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+                        kind: DropKind::CowHeap {
+                            release: crate::ownership::CowHeapRelease::String,
+                        },
+                        guard: Some(crate::model::ElabDropGuard { owner, flag }),
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        }));
+        checked
+    };
+
+    assert_eq!(
+        validate_ownership_events(&make_checked(false)).len(),
+        1,
+        "a physical cleanup flag without a Checked-MIR Guard event must fail closed"
+    );
+    assert!(
+        validate_ownership_events(&make_checked(true)).is_empty(),
+        "a matching OwnerId/generation Guard event must reproduce the cleanup plan without Builder state"
+    );
+}
+
+#[test]
+fn checked_ownership_plan_rejects_conflicting_guard_authorities() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(18),
+        generation: 0,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(9),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+            owner,
+            flag: Place::Local(20),
+            kind: crate::model::OwnershipGuardKind::AffineRelease,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+            owner,
+            flag: Place::Local(21),
+            kind: crate::model::OwnershipGuardKind::Overwrite,
+        }),
+    ]);
+
+    let findings = validate_ownership_events(&checked);
+    assert_eq!(findings.len(), 1);
+    assert!(matches!(
+        &findings[0],
+        MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("conflicting cleanup guards")
+    ));
+}
+
+#[test]
+fn checked_ownership_plan_rejects_stale_generation_guard() {
+    let binding = BindingId(17);
+    let old = crate::model::OwnerId {
+        binding,
+        generation: 0,
+    };
+    let replacement = crate::model::OwnerId {
+        binding,
+        generation: 1,
+    };
+    let flag = Place::Local(20);
+    let mut checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner: old,
+            place: Place::Local(9),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+            owner: old,
+            flag,
+            kind: crate::model::OwnershipGuardKind::ActorMessageCow,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Reset {
+            previous: old,
+            replacement,
+            place: Place::Local(9),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::DropRecipe {
+            owner: old,
+            recipe: checked_test_string_recipe(),
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::DropRecipe {
+            owner: replacement,
+            recipe: checked_test_string_recipe(),
+        }),
+    ]);
+    checked.ownership_elaboration = Some(Box::new(ElaboratedMirFunction {
+        name: checked.name.clone(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(
+            ExitPath::Return {
+                block: ENTRY_BLOCK_ID,
+            },
+            DropPlan {
+                drops: vec![ElabDrop {
+                    place: Place::Local(9),
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+                    kind: DropKind::CowHeap {
+                        release: crate::ownership::CowHeapRelease::String,
+                    },
+                    guard: Some(crate::model::ElabDropGuard { owner: old, flag }),
+                }],
+            },
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    }));
+    assert!(validate_ownership_events(&checked).iter().any(|finding| {
+        matches!(finding, MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains("guarded by") && reason.contains("live generation"))
+    }));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the two-exit fixture spells out both generations and their complete MIR operations"
+)]
+fn exit_plans_keep_each_live_generation_guard_across_reset() {
+    use crate::model::{ElabDropGuard, OwnerId, OwnershipEvent};
+
+    let binding = BindingId(41);
+    let old = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let replacement = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let place = Place::Local(9);
+    let old_flag = Place::Local(20);
+    let replacement_flag = Place::Local(21);
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner: old,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Guard {
+                    owner: old,
+                    flag: old_flag,
+                    kind: crate::model::OwnershipGuardKind::ActorMessageCow,
+                }),
+            ],
+            terminator: Terminator::Branch {
+                cond: Place::Local(0),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Reset {
+                    previous: old,
+                    replacement,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Guard {
+                    owner: replacement,
+                    flag: replacement_flag,
+                    kind: crate::model::OwnershipGuardKind::ActorMessageCow,
+                }),
+            ],
+            terminator: Terminator::Return,
+        },
+    ];
+    let lifo = vec![ElabDrop {
+        place,
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::String,
+        },
+        guard: None,
+    }];
+    let live = std::collections::BTreeMap::from([(binding, dataflow::BindingState::Live)]);
+    let states = HashMap::from([(0, live.clone()), (1, live.clone()), (2, live)]);
+    let binding_locals = HashMap::from([(binding, place)]);
+    let owner_guards = HashMap::from([(old, old_flag), (replacement, replacement_flag)]);
+
+    let (_, plans) = enumerate_exits(
+        &blocks,
+        &lifo,
+        &states,
+        &states,
+        &binding_locals,
+        &HashSet::new(),
+        &HashSet::new(),
+        &owner_guards,
+    );
+    let return_guard = |block| {
+        plans
+            .iter()
+            .find_map(|(exit, plan)| {
+                matches!(exit, ExitPath::Return { block: actual } if *actual == block)
+                    .then(|| plan.drops.first().and_then(|drop| drop.guard))
+                    .flatten()
+            })
+            .expect("return plan must retain its generation-qualified guard")
+    };
+    assert_eq!(
+        return_guard(1),
+        ElabDropGuard {
+            owner: old,
+            flag: old_flag,
+        }
+    );
+    assert_eq!(
+        return_guard(2),
+        ElabDropGuard {
+            owner: replacement,
+            flag: replacement_flag,
+        }
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the structural oracle pins the complete scope-exit owner program and derived edge plan"
+)]
+fn scope_close_is_an_explicit_checked_mir_release_not_a_goto_plan() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let binding = BindingId(42);
+    let owner = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let place = Place::Local(9);
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Branch {
+                cond: Place::Local(0),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+                Instr::Drop {
+                    place,
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+                },
+                Instr::OwnershipEvent(OwnershipEvent::Release { owner, place }),
+                Instr::OwnershipEvent(OwnershipEvent::ScopeExit {
+                    scopes: vec![ScopeId(7)],
+                    owners: vec![owner],
+                    carry_places: vec![],
+                    carried: vec![],
+                }),
+            ],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    let lifo = vec![ElabDrop {
+        place,
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::String,
+        },
+        guard: None,
+    }];
+    // Deliberately stale: the former scope-edge selector read this map and
+    // deferred the arm-local owner past the join, losing its only cleanup.
+    let stale_live = std::collections::BTreeMap::from([(binding, dataflow::BindingState::Live)]);
+    let states = HashMap::from([
+        (ENTRY_BLOCK_ID, stale_live.clone()),
+        (1, stale_live.clone()),
+        (2, stale_live.clone()),
+        (3, stale_live),
+    ]);
+
+    let (_, plans) = enumerate_exits(
+        &blocks,
+        &lifo,
+        &states,
+        &states,
+        &HashMap::from([(binding, place)]),
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+    );
+    let drops_on = |needle: ExitPath| {
+        plans
+            .iter()
+            .find(|(exit, _)| *exit == needle)
+            .map_or(0, |(_, plan)| plan.drops.len())
+    };
+    assert_eq!(
+        drops_on(ExitPath::Goto {
+            block: 1,
+            target: 3,
+        }),
+        0,
+        "scope cleanup executes at ScopeExit; the Goto plan must not rediscover it"
+    );
+    assert_eq!(
+        drops_on(ExitPath::Goto {
+            block: 2,
+            target: 3,
+        }),
+        0,
+        "the sibling path never minted the owner"
+    );
+    assert_eq!(
+        drops_on(ExitPath::Return { block: 3 }),
+        0,
+        "an owner absent at the join must not be rediscovered at return"
+    );
+    let (_, exits) = exact_owner_states(&blocks);
+    assert!(
+        exits
+            .get(&1)
+            .is_some_and(|state| !state.contains_key(&owner)),
+        "the explicit Release must end the exact generation before the edge"
+    );
+}
+
+#[test]
+fn scope_close_defers_same_generation_that_survives_the_join() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let binding = BindingId(43);
+    let owner = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let place = Place::Local(9);
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner,
+                place,
+                ty: ResolvedTy::String,
+            })],
+            terminator: Terminator::Branch {
+                cond: Place::Local(0),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    let lifo = vec![ElabDrop {
+        place,
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::String,
+        },
+        guard: None,
+    }];
+    let live = std::collections::BTreeMap::from([(binding, dataflow::BindingState::Live)]);
+    let states = HashMap::from([
+        (ENTRY_BLOCK_ID, live.clone()),
+        (1, live.clone()),
+        (2, live.clone()),
+        (3, live),
+    ]);
+
+    let (_, plans) = enumerate_exits(
+        &blocks,
+        &lifo,
+        &states,
+        &states,
+        &HashMap::from([(binding, place)]),
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+    );
+    for block in [1, 2] {
+        let (_, plan) = plans
+            .iter()
+            .find(|(exit, _)| *exit == ExitPath::Goto { block, target: 3 })
+            .expect("each branch has a scope-edge plan");
+        assert!(
+            plan.drops.is_empty(),
+            "the same generation survives branch {block} and must not close early"
+        );
+    }
+    let (_, return_plan) = plans
+        .iter()
+        .find(|(exit, _)| *exit == ExitPath::Return { block: 3 })
+        .expect("join return plan");
+    assert_eq!(return_plan.drops.len(), 1);
+}
+
+#[test]
+fn exact_goto_plan_requires_only_owners_not_named_by_edge_carry() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(44),
+        generation: 0,
+    };
+    let place = Place::Local(7);
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                    owner,
+                    place,
+                    target: 1,
+                }),
+            ],
+            terminator: Terminator::Goto { target: 1 },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    let (entries, exits) = exact_owner_states(&blocks);
+    let required = exact_required_owners_for_exit(
+        &ExitPath::Goto {
+            block: ENTRY_BLOCK_ID,
+            target: 1,
+        },
+        &blocks,
+        &entries,
+        &exits,
+    );
+
+    assert!(
+        required.is_empty(),
+        "the exact source-side EdgeCarry is the sole authority that preserves this generation"
+    );
+}
+
+#[test]
+fn exact_goto_plan_requires_live_owner_when_edge_carry_is_missing() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(45),
+        generation: 0,
+    };
+    let place = Place::Local(2);
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner,
+                place,
+                ty: ResolvedTy::String,
+            })],
+            terminator: Terminator::Goto { target: 1 },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    let (entries, exits) = exact_owner_states(&blocks);
+    let required = exact_required_owners_for_exit(
+        &ExitPath::Goto {
+            block: ENTRY_BLOCK_ID,
+            target: 1,
+        },
+        &blocks,
+        &entries,
+        &exits,
+    );
+
+    assert_eq!(required, HashMap::from([(owner, place)]));
+}
+
+#[test]
+fn exact_goto_plan_rejects_stale_generation_edge_carry() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let binding = BindingId(46);
+    let old = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let replacement = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let place = Place::Local(3);
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner: old,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Reset {
+                    previous: old,
+                    replacement,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                    owner: old,
+                    place,
+                    target: 1,
+                }),
+            ],
+            terminator: Terminator::Goto { target: 1 },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    let (entries, exits) = exact_owner_states(&blocks);
+    let required = exact_required_owners_for_exit(
+        &ExitPath::Goto {
+            block: ENTRY_BLOCK_ID,
+            target: 1,
+        },
+        &blocks,
+        &entries,
+        &exits,
+    );
+
+    assert_eq!(
+        required,
+        HashMap::from([(replacement, place)]),
+        "a stale EdgeCarry must never preserve the replacement generation"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the unit spells the complete guarded branch/join ownership program"
+)]
+fn guarded_terminal_join_admits_one_unique_conditional_generation() {
+    use crate::model::{OwnerDropRecipe, OwnerId, OwnershipEvent, OwnershipGuardKind};
+
+    let owner = OwnerId {
+        binding: BindingId(146),
+        generation: 0,
+    };
+    let place = Place::Local(3);
+    let flag = Place::Local(4);
+    let recipe = OwnerDropRecipe {
+        ty: ResolvedTy::Bytes,
+        drop_fn: None,
+        kind: DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::Bytes,
+        },
+        declaration_order: 0,
+    };
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![MirStatement::Bind {
+                binding: owner.binding,
+                name: "data".to_owned(),
+                site: SiteId(1),
+                ty: ResolvedTy::Bytes,
+            }],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner,
+                    place,
+                    ty: ResolvedTy::Bytes,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                    owner,
+                    recipe: recipe.clone(),
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Guard {
+                    owner,
+                    flag,
+                    kind: OwnershipGuardKind::ConditionalRecord,
+                }),
+            ],
+            terminator: Terminator::Branch {
+                cond: Place::Local(5),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: place,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            })],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                owner,
+                place,
+                target: 3,
+            })],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    let mut elaboration = ElaboratedMirFunction {
+        name: "guarded_one_generation".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(ExitPath::Return { block: 3 }, DropPlan::default())],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+
+    rebuild_drop_plans_from_owner_recipes(&blocks, &[], &Builder::default(), &mut elaboration);
+    assert_eq!(
+        elaboration.drop_plans[0].1.drops,
+        vec![ElabDrop {
+            place,
+            ty: recipe.ty.clone(),
+            drop_fn: recipe.drop_fn.clone(),
+            kind: recipe.kind,
+            guard: Some(crate::model::ElabDropGuard { owner, flag }),
+        }]
+    );
+    let checked = CheckedMirFunction {
+        name: elaboration.name.clone(),
+        return_ty: ResolvedTy::Unit,
+        blocks,
+        decisions: vec![],
+        checks: vec![],
+        cooperate_sites: vec![],
+        ownership_elaboration: Some(Box::new(elaboration)),
+    };
+    assert!(
+        validate_ownership_events(&checked).is_empty(),
+        "one guarded generation is exact conditional cleanup authority"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the unit spells the complete reset-generation branch/join ownership program"
+)]
+fn guarded_terminal_join_rejects_ambiguous_conditional_reset_generation() {
+    use crate::model::{OwnerDropRecipe, OwnerId, OwnershipEvent, OwnershipGuardKind};
+
+    let binding = BindingId(147);
+    let old = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let replacement = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let place = Place::Local(6);
+    let recipe = OwnerDropRecipe {
+        ty: ResolvedTy::Bytes,
+        drop_fn: None,
+        kind: DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::Bytes,
+        },
+        declaration_order: 0,
+    };
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![MirStatement::Bind {
+                binding,
+                name: "data".to_owned(),
+                site: SiteId(2),
+                ty: ResolvedTy::Bytes,
+            }],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner: old,
+                    place,
+                    ty: ResolvedTy::Bytes,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                    owner: old,
+                    recipe: recipe.clone(),
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Guard {
+                    owner: old,
+                    flag: Place::Local(7),
+                    kind: OwnershipGuardKind::ConditionalRecord,
+                }),
+            ],
+            terminator: Terminator::Branch {
+                cond: Place::Local(8),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                owner: old,
+                place,
+                target: 3,
+            })],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Reset {
+                    previous: old,
+                    replacement,
+                    place,
+                    ty: ResolvedTy::Bytes,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                    owner: replacement,
+                    recipe,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Guard {
+                    owner: replacement,
+                    flag: Place::Local(9),
+                    kind: OwnershipGuardKind::ConditionalRecord,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                    owner: replacement,
+                    place,
+                    target: 3,
+                }),
+            ],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    let mut elaboration = ElaboratedMirFunction {
+        name: "guarded_ambiguous_generation".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(ExitPath::Return { block: 3 }, DropPlan::default())],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+
+    rebuild_drop_plans_from_owner_recipes(&blocks, &[], &Builder::default(), &mut elaboration);
+    assert!(
+        elaboration.drop_plans[0].1.drops.is_empty(),
+        "two generations for one binding/place must not acquire cleanup authority"
+    );
+    let checked = CheckedMirFunction {
+        name: elaboration.name.clone(),
+        return_ty: ResolvedTy::Unit,
+        blocks,
+        decisions: vec![],
+        checks: vec![],
+        cooperate_sites: vec![],
+        ownership_elaboration: Some(Box::new(elaboration)),
+    };
+    assert!(validate_ownership_events(&checked).iter().any(|finding| {
+        matches!(finding, MirCheck::ObligationUnderReleased { reason, .. }
+            if reason.contains("ambiguous generations/places"))
+    }));
+}
+
+#[test]
+fn terminal_transfer_uses_the_live_adopted_generation() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let provisional = OwnerId {
+        binding: BindingId(u32::MAX - 64),
+        generation: 0,
+    };
+    let named = OwnerId {
+        binding: BindingId(47),
+        generation: 0,
+    };
+    let mut blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: provisional,
+                place: Place::Local(0),
+                ty: ResolvedTy::String,
+            }),
+            Instr::Move {
+                dest: Place::Local(3),
+                src: Place::Local(0),
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: provisional,
+                from: Place::Local(0),
+                to: Some(Place::Local(3)),
+                to_owner: Some(named),
+                to_ty: Some(ResolvedTy::String),
+            }),
+            Instr::Move {
+                dest: Place::Local(5),
+                src: Place::Local(3),
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Relocate {
+                owner: named,
+                from: Place::Local(3),
+                to: Place::Local(5),
+            }),
+            // This models a carrier-neutralisation event emitted before the
+            // provisional-to-named adoption was sealed.
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: provisional,
+                from: Place::Local(5),
+                to: Some(Place::Local(5)),
+                to_owner: None,
+                to_ty: None,
+            }),
+        ],
+        terminator: Terminator::Return,
+    }];
+
+    super::canonicalize_terminal_transfer_owner_ids(&mut blocks);
+
+    assert!(matches!(
+        blocks[0].instructions.last(),
+        Some(Instr::OwnershipEvent(OwnershipEvent::Transfer { owner, .. }))
+            if *owner == named
+    ));
+    let (_, exits) = exact_owner_states(&blocks);
+    assert!(
+        exits.get(&ENTRY_BLOCK_ID).is_some_and(HashMap::is_empty),
+        "the terminal carrier consume must end the adopted generation"
+    );
+}
+
+#[test]
+fn terminal_transfer_preserves_an_already_correct_named_generation() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let named = OwnerId {
+        binding: BindingId(48),
+        generation: 0,
+    };
+    let place = Place::Local(5);
+    let mut blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: named,
+                place,
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: named,
+                from: place,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            }),
+        ],
+        terminator: Terminator::Return,
+    }];
+
+    super::canonicalize_terminal_transfer_owner_ids(&mut blocks);
+
+    assert!(matches!(
+        blocks[0].instructions.last(),
+        Some(Instr::OwnershipEvent(OwnershipEvent::Transfer { owner, .. }))
+            if *owner == named
+    ));
+    let (_, exits) = exact_owner_states(&blocks);
+    assert!(exits.get(&ENTRY_BLOCK_ID).is_some_and(HashMap::is_empty));
+}
+
+#[test]
+fn one_neutralize_keeps_only_the_relocated_terminal_transfer() {
+    use crate::model::{NeutralizeAuthority, OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(49),
+        generation: 0,
+    };
+    let source = Place::Local(2);
+    let relocated = Place::Local(16);
+    let block = BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::Move {
+                dest: relocated,
+                src: source,
+            },
+            Instr::NeutralizePayloadSlot {
+                place: source,
+                transferee: Some(relocated),
+                authority: NeutralizeAuthority::SendTransferLastUse,
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: relocated,
+                to: Some(relocated),
+                to_owner: None,
+                to_ty: None,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: source,
+                to: Some(relocated),
+                to_owner: None,
+                to_ty: None,
+            }),
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert_eq!(
+        super::duplicate_terminal_neutralize_transfer(&block, 3),
+        Some(3),
+        "the source-slot publication duplicates the relocated owner consume"
+    );
+}
+
+#[test]
+fn adopted_successor_is_not_terminally_consumed_by_the_same_neutralize() {
+    use crate::model::{NeutralizeAuthority, OwnerId, OwnershipEvent};
+
+    let provisional = OwnerId {
+        binding: BindingId(u32::MAX - 65),
+        generation: 0,
+    };
+    let named = OwnerId {
+        binding: BindingId(55),
+        generation: 0,
+    };
+    let source = Place::Local(1);
+    let destination = Place::Local(8);
+    let block = BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: provisional,
+                from: source,
+                to: Some(destination),
+                to_owner: Some(named),
+                to_ty: Some(ResolvedTy::String),
+            }),
+            Instr::NeutralizePayloadSlot {
+                place: source,
+                transferee: Some(destination),
+                authority: NeutralizeAuthority::WholeCarrierConsume,
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: named,
+                from: destination,
+                to: Some(destination),
+                to_owner: None,
+                to_ty: None,
+            }),
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert!(super::terminal_transfer_duplicates_adopted_successor(
+        &block, 2
+    ));
+}
+
+#[test]
+fn adopted_successor_replaces_same_point_legacy_relocation_only() {
+    use crate::model::{NeutralizeAuthority, OwnerId, OwnershipEvent, OwnershipGuardKind};
+
+    let predecessor = OwnerId {
+        binding: BindingId(56),
+        generation: 0,
+    };
+    let successor = OwnerId {
+        binding: BindingId(57),
+        generation: 0,
+    };
+    let source = Place::Local(2);
+    let destination = Place::Local(8);
+    let physical = vec![
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: predecessor,
+            place: source,
+            ty: ResolvedTy::String,
+        }),
+        Instr::Move {
+            dest: destination,
+            src: source,
+        },
+        Instr::NeutralizePayloadSlot {
+            place: source,
+            transferee: Some(destination),
+            authority: NeutralizeAuthority::DivergentSelectionTransfer,
+        },
+        Instr::OwnershipEvent(OwnershipEvent::Transfer {
+            owner: predecessor,
+            from: source,
+            to: Some(destination),
+            to_owner: Some(successor),
+            to_ty: Some(ResolvedTy::String),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: successor,
+            recipe: checked_test_string_recipe(),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Guard {
+            owner: successor,
+            flag: Place::Local(9),
+            kind: OwnershipGuardKind::Collection,
+        }),
+        Instr::NeutralizePayloadSlot {
+            place: source,
+            transferee: Some(destination),
+            authority: NeutralizeAuthority::WholeCarrierConsume,
+        },
+        Instr::OwnershipEvent(OwnershipEvent::Relocate {
+            owner: predecessor,
+            from: source,
+            to: destination,
+        }),
+    ];
+    let mut blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: physical.clone(),
+        terminator: Terminator::Return,
+    }];
+
+    assert!(super::relocation_duplicates_prior_adoption(&blocks[0], 7));
+    assert_eq!(
+        super::duplicate_neutralize_before_relocation(&blocks[0], 7),
+        Some(6)
+    );
+    super::deduplicate_ownership_spines(&mut blocks, &mut Builder::default());
+    assert_eq!(
+        blocks[0]
+            .instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, Instr::NeutralizePayloadSlot { .. }))
+            .count(),
+        1
+    );
+    assert!(!blocks[0].instructions.iter().any(|instruction| matches!(
+        instruction,
+        Instr::OwnershipEvent(OwnershipEvent::Relocate { owner, .. }) if *owner == predecessor
+    )));
+    let (_, exits) = exact_owner_states(&blocks);
+    assert_eq!(exits[&ENTRY_BLOCK_ID].get(&successor), Some(&destination));
+
+    let mut separated = BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: physical,
+        terminator: Terminator::Return,
+    };
+    separated.instructions.insert(
+        6,
+        Instr::ConstI64 {
+            dest: Place::Local(10),
+            value: 1,
+        },
+    );
+    assert!(
+        !super::relocation_duplicates_prior_adoption(&separated, 8),
+        "an executable instruction separates ownership program points"
+    );
+}
+
+#[cfg(test)]
+fn nested_aggregate_rewrap_fixture(
+    relocation_generation: u32,
+) -> (Vec<BasicBlock>, crate::model::OwnerId) {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let live = OwnerId {
+        binding: BindingId(58),
+        generation: 7,
+    };
+    let stale = OwnerId {
+        binding: live.binding,
+        generation: 6,
+    };
+    let relocation = OwnerId {
+        binding: live.binding,
+        generation: relocation_generation,
+    };
+    let aggregate_owner = OwnerId {
+        binding: BindingId(u32::MAX - 96),
+        generation: 0,
+    };
+    let field = Place::MachineVariant {
+        local: 12,
+        variant_idx: 0,
+        field_idx: 0,
+    };
+    let aggregate = Place::Local(12);
+    let blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: live,
+                place: Place::Local(5),
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Relocate {
+                owner: live,
+                from: Place::Local(5),
+                to: field,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: live,
+                from: field,
+                to: Some(field),
+                to_owner: None,
+                to_ty: None,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Relocate {
+                owner: relocation,
+                from: Place::Local(5),
+                to: field,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: stale,
+                from: field,
+                to: Some(aggregate),
+                to_owner: None,
+                to_ty: None,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: aggregate_owner,
+                place: aggregate,
+                ty: ResolvedTy::String,
+            }),
+        ],
+        terminator: Terminator::Return,
+    }];
+    (blocks, relocation)
+}
+
+#[test]
+fn nested_aggregate_rewrap_keeps_one_terminal_child_handoff() {
+    use crate::model::OwnershipEvent;
+
+    let (mut blocks, _) = nested_aggregate_rewrap_fixture(0);
+
+    assert!(super::historical_relocation_duplicates_exact_handoff(
+        &blocks[0],
+        3,
+        &HashMap::new(),
+    ));
+    assert!(super::terminal_transfer_rewraps_ended_aggregate_member(
+        &blocks[0],
+        4,
+        &HashMap::new(),
+    ));
+    super::deduplicate_ownership_spines(&mut blocks, &mut Builder::default());
+    assert_eq!(
+        blocks[0]
+            .instructions
+            .iter()
+            .filter(|instruction| matches!(
+                instruction,
+                Instr::OwnershipEvent(OwnershipEvent::Transfer { .. })
+            ))
+            .count(),
+        1
+    );
+    assert!(validate_ownership_events(&checked_with_ownership_events(
+        blocks.remove(0).instructions
+    ))
+    .is_empty());
+}
+
+#[test]
+fn future_generation_aggregate_relocation_remains_a_hard_error() {
+    use crate::model::OwnershipEvent;
+
+    let (mut blocks, future) = nested_aggregate_rewrap_fixture(8);
+    assert!(
+        !super::historical_relocation_duplicates_exact_handoff(&blocks[0], 3, &HashMap::new(),),
+        "a future generation is not historical residue"
+    );
+    super::deduplicate_ownership_spines(&mut blocks, &mut Builder::default());
+    assert!(blocks[0].instructions.iter().any(|instruction| matches!(
+        instruction,
+        Instr::OwnershipEvent(OwnershipEvent::Relocate { owner, .. }) if *owner == future
+    )));
+    let future_findings = validate_ownership_events(&checked_with_ownership_events(
+        blocks.remove(0).instructions,
+    ));
+    assert!(future_findings.iter().any(|finding| matches!(
+        finding,
+        MirCheck::DischargeAuthorityDrift { reason, .. }
+            if reason.contains(&format!("owner {future:?} is relocated after its generation ended"))
+    )), "a fabricated future-generation relocation must remain a hard error; got {future_findings:?}");
+}
+
+#[test]
+fn co_live_older_generation_relocation_is_not_deduplicated() {
+    use crate::model::OwnershipEvent;
+
+    let (mut blocks, older) = nested_aggregate_rewrap_fixture(6);
+    blocks[0].instructions.insert(
+        1,
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: older,
+            place: Place::Local(5),
+            ty: ResolvedTy::String,
+        }),
+    );
+    assert!(
+        !super::historical_relocation_duplicates_exact_handoff(&blocks[0], 4, &HashMap::new(),),
+        "an older generation that is still live is not historical residue"
+    );
+    super::deduplicate_ownership_spines(&mut blocks, &mut Builder::default());
+    assert!(blocks[0].instructions.iter().any(|instruction| matches!(
+        instruction,
+        Instr::OwnershipEvent(OwnershipEvent::Relocate { owner, .. }) if *owner == older
+    )));
+    let findings = validate_ownership_events(&checked_with_ownership_events(
+        blocks.remove(0).instructions,
+    ));
+    assert!(
+        findings.iter().any(|finding| matches!(
+            finding,
+            MirCheck::DischargeAuthorityDrift { reason, .. }
+                if reason.contains("another generation of that binding is already live")
+        )),
+        "co-live generations must remain a hard error; got {findings:?}"
+    );
+}
+
+#[test]
+fn mint_rejects_prior_generation_live_on_only_one_join_predecessor() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let prior = OwnerId {
+        binding: BindingId(257),
+        generation: 0,
+    };
+    let replacement = OwnerId {
+        binding: prior.binding,
+        generation: 1,
+    };
+    let place = Place::Local(7);
+    let mut checked = checked_with_ownership_events(vec![]);
+    checked.blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: prior,
+                place,
+                ty: ResolvedTy::String,
+            })],
+            terminator: Terminator::Branch {
+                cond: Place::Local(0),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Release {
+                owner: prior,
+                place,
+            })],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: replacement,
+                place,
+                ty: ResolvedTy::String,
+            })],
+            terminator: Terminator::Return,
+        },
+    ];
+
+    let findings = validate_ownership_events(&checked);
+    assert!(
+        findings.iter().any(|finding| matches!(
+            finding,
+            MirCheck::DischargeAuthorityDrift { block: 3, reason, .. }
+                if reason.contains("another generation of that binding is already live")
+        )),
+        "a generation live on only one predecessor must still make the join mint invalid; got {findings:?}"
+    );
+}
+
+#[test]
+fn unrelated_stale_terminal_transfer_is_not_hidden_as_an_aggregate_rewrap() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(59),
+        generation: 0,
+    };
+    let field = Place::MachineVariant {
+        local: 13,
+        variant_idx: 0,
+        field_idx: 0,
+    };
+    let block = BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner,
+                place: field,
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: field,
+                to: Some(field),
+                to_owner: None,
+                to_ty: None,
+            }),
+            Instr::ConstI64 {
+                dest: Place::Local(99),
+                value: 0,
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: field,
+                to: Some(Place::Local(13)),
+                to_owner: None,
+                to_ty: None,
+            }),
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert!(!super::terminal_transfer_rewraps_ended_aggregate_member(
+        &block,
+        3,
+        &HashMap::new(),
+    ));
+    assert_eq!(
+        validate_ownership_events(&checked_with_ownership_events(block.instructions)).len(),
+        1,
+        "a separated reused-generation transfer must remain a hard error"
+    );
+}
+
+#[test]
+fn terminal_consume_occurs_after_the_physical_carrier_move() {
+    use crate::model::{NeutralizeAuthority, OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(57),
+        generation: 0,
+    };
+    let stale = OwnerId {
+        binding: BindingId(u32::MAX - 66),
+        generation: 0,
+    };
+    let source = Place::Local(4);
+    let destination = Place::Local(17);
+    let block = BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: source,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            }),
+            Instr::Move {
+                dest: destination,
+                src: source,
+            },
+            Instr::NeutralizePayloadSlot {
+                place: source,
+                transferee: Some(destination),
+                authority: NeutralizeAuthority::SendTransferLastUse,
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: stale,
+                from: destination,
+                to: Some(destination),
+                to_owner: None,
+                to_ty: None,
+            }),
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert!(super::terminal_transfer_precedes_its_physical_carrier_move(
+        &block, 0
+    ));
+}
+
+#[test]
+fn pre_call_relocation_suppresses_same_point_terminal_consume() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(60),
+        generation: 2,
+    };
+    let source = Place::Local(1);
+    let carrier = Place::Local(22);
+    let mut blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner,
+                place: source,
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Relocate {
+                owner,
+                from: source,
+                to: carrier,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: source,
+                to: Some(carrier),
+                to_owner: None,
+                to_ty: None,
+            }),
+        ],
+        terminator: Terminator::Return,
+    }];
+
+    assert!(super::terminal_transfer_duplicates_prior_relocation(
+        &blocks[0], 2
+    ));
+    super::deduplicate_ownership_spines(&mut blocks, &mut Builder::default());
+    assert!(matches!(
+        blocks[0].instructions.last(),
+        Some(Instr::OwnershipEvent(OwnershipEvent::Relocate { .. }))
+    ));
+    let (_, exits) = exact_owner_states(&blocks);
+    assert_eq!(exits[&ENTRY_BLOCK_ID].get(&owner), Some(&carrier));
+}
+
+#[test]
+fn dyn_coercion_has_one_post_coercion_terminal_authority() {
+    use crate::model::{NeutralizeAuthority, OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(58),
+        generation: 0,
+    };
+    let source = Place::Local(4);
+    let destination = Place::Local(18);
+    let block = BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: source,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            }),
+            Instr::CoerceToDynTrait {
+                value: source,
+                dest: destination,
+                trait_name: "Display".to_string(),
+                concrete_type: ResolvedTy::String,
+                method_table: vec![],
+                vtable_entries: vec![],
+            },
+            Instr::NeutralizePayloadSlot {
+                place: source,
+                transferee: Some(destination),
+                authority: NeutralizeAuthority::WholeCarrierConsume,
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: source,
+                to: Some(destination),
+                to_owner: None,
+                to_ty: None,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: source,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            }),
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert!(super::terminal_transfer_precedes_dyn_coercion(&block, 0));
+    assert!(super::duplicate_dyn_coercion_terminal_transfer(&block, 4));
+
+    let mut separated = block;
+    separated.instructions.insert(
+        4,
+        Instr::ConstI64 {
+            dest: Place::Local(19),
+            value: 1,
+        },
+    );
+    assert!(
+        !super::duplicate_dyn_coercion_terminal_transfer(&separated, 5),
+        "a distinct executable program point must remain validator-visible"
+    );
+}
+
+#[test]
+fn occupied_place_mint_is_an_explicit_owner_adoption() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let predecessor = OwnerId {
+        binding: BindingId(59),
+        generation: 0,
+    };
+    let provisional = OwnerId {
+        binding: BindingId(u32::MAX - 67),
+        generation: 0,
+    };
+    let place = Place::Local(21);
+    let mut blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: predecessor,
+                place,
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: provisional,
+                place,
+                ty: ResolvedTy::String,
+            }),
+            Instr::ConstI64 {
+                dest: Place::Local(22),
+                value: 0,
+            },
+        ],
+        terminator: Terminator::Return,
+    }];
+
+    super::canonicalize_preminted_move_adoptions(&mut blocks);
+
+    assert!(matches!(
+        blocks[0].instructions.get(1),
+        Some(Instr::OwnershipEvent(OwnershipEvent::Transfer {
+            owner,
+            from,
+            to: Some(destination),
+            to_owner: Some(successor),
+            ..
+        })) if *owner == predecessor
+            && *from == place
+            && *destination == place
+            && *successor == provisional
+    ));
+    let (_, exits) = exact_owner_states(&blocks);
+    assert_eq!(
+        exits[&ENTRY_BLOCK_ID],
+        HashMap::from([(provisional, place)]),
+        "one physical carrier must have one exact owner generation"
+    );
+}
+
+#[test]
+fn separated_terminal_transfers_remain_validator_visible() {
+    use crate::model::{NeutralizeAuthority, OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(50),
+        generation: 0,
+    };
+    let source = Place::Local(2);
+    let relocated = Place::Local(16);
+    let block = BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::NeutralizePayloadSlot {
+                place: source,
+                transferee: Some(relocated),
+                authority: NeutralizeAuthority::SendTransferLastUse,
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: relocated,
+                to: Some(relocated),
+                to_owner: None,
+                to_ty: None,
+            }),
+            Instr::ConstI64 {
+                dest: Place::Local(20),
+                value: 1,
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from: source,
+                to: Some(relocated),
+                to_owner: None,
+                to_ty: None,
+            }),
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert_eq!(
+        super::duplicate_terminal_neutralize_transfer(&block, 3),
+        None,
+        "an executable program point prevents ownership-spine deduplication"
+    );
+}
+
+#[test]
+fn scope_exit_owner_set_is_the_adjacent_cleanup_authority() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(56),
+        generation: 0,
+    };
+    let cleanup = |owners| BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::Drop {
+                place: Place::Local(9),
+                ty: ResolvedTy::String,
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Release {
+                owner,
+                place: Place::Local(9),
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::ScopeExit {
+                scopes: vec![hew_hir::ScopeId(3)],
+                owners,
+                carry_places: vec![],
+                carried: vec![],
+            }),
+        ],
+        terminator: Terminator::Return,
+    };
+
+    let unclaimed = cleanup(vec![]);
+    assert_eq!(
+        super::adjacent_scope_release_owners(
+            &unclaimed,
+            2,
+            &HashSet::from([hew_hir::ScopeId(3)]),
+            &HashMap::from([(owner.binding, hew_hir::ScopeId(3))]),
+            &HashSet::new(),
+        ),
+        vec![owner],
+        "a physical release at the same lexical program point must be adopted by ScopeExit"
+    );
+    assert_eq!(
+        super::unowned_scope_exit_cleanup_pair(&unclaimed, 2),
+        Some((0, 1))
+    );
+    assert_eq!(
+        super::unowned_scope_exit_cleanup_pair(&cleanup(vec![owner]), 2),
+        None,
+        "a cleanup explicitly claimed by ScopeExit must remain"
+    );
+}
+
+#[cfg(test)]
+fn conditional_scope_exit_fixture(
+    guard_kind: Option<crate::model::OwnershipGuardKind>,
+    recipe: crate::model::OwnerDropRecipe,
+) -> (Vec<BasicBlock>, super::Builder) {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let binding = BindingId(63);
+    let owner = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let replacement = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let place = Place::Local(1);
+    let flag = Place::Local(2);
+    let ty = recipe.ty.clone();
+    let mut definition = vec![
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner,
+            place,
+            ty: ty.clone(),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner,
+            recipe: recipe.clone(),
+        }),
+    ];
+    if let Some(kind) = guard_kind {
+        definition.push(Instr::OwnershipEvent(OwnershipEvent::Guard {
+            owner,
+            flag,
+            kind,
+        }));
+    }
+    let blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: definition,
+            terminator: Terminator::Branch {
+                cond: Place::Local(3),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![
+                Instr::ConstI64 {
+                    dest: flag,
+                    value: 1,
+                },
+                Instr::OwnershipEvent(OwnershipEvent::Release { owner, place }),
+            ],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::ScopeExit {
+                scopes: vec![hew_hir::ScopeId(7)],
+                owners: vec![],
+                carry_places: vec![],
+                carried: vec![],
+            })],
+            terminator: Terminator::Goto { target: 4 },
+        },
+        BasicBlock {
+            id: 4,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner: replacement,
+                    place,
+                    ty,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                    owner: replacement,
+                    recipe,
+                }),
+            ],
+            terminator: Terminator::Return,
+        },
+    ];
+    let mut builder = super::Builder {
+        locals: vec![ResolvedTy::I64; 8],
+        next_block_id: 5,
+        ..super::Builder::default()
+    };
+    builder.type_classes.insert(
+        "Buf".to_owned(),
+        (hew_hir::ResourceMarker::Resource, Some("close".to_owned())),
+    );
+    builder.binding_scope.insert(binding, hew_hir::ScopeId(7));
+    (blocks, builder)
+}
+
+#[test]
+fn conditional_scope_exit_materializes_guarded_physical_and_logical_release() {
+    use crate::model::{OwnerDropRecipe, OwnershipEvent, OwnershipGuardKind};
+
+    let (mut blocks, mut builder) = conditional_scope_exit_fixture(
+        Some(OwnershipGuardKind::AffineRelease),
+        OwnerDropRecipe {
+            ty: ResolvedTy::named_user("Buf", vec![]),
+            drop_fn: None,
+            kind: DropKind::RecordInPlace,
+            declaration_order: 0,
+        },
+    );
+    super::materialize_conditional_scope_exit_releases(&mut blocks, &mut builder);
+    super::materialize_explicit_scope_exits(&mut blocks, &mut builder);
+
+    let owner = crate::model::OwnerId {
+        binding: BindingId(63),
+        generation: 0,
+    };
+    let scope_block = blocks.iter().find(|block| block.id == 3).unwrap();
+    assert!(matches!(
+        scope_block.instructions.as_slice(),
+        [
+            Instr::OwnershipEvent(OwnershipEvent::GuardedRelease {
+                owner: released,
+                place: Place::Local(1),
+                flag: Place::Local(2),
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. }),
+        ] if *released == owner && owners == &vec![owner]
+    ));
+    assert!(blocks.iter().any(|block| {
+        matches!(
+            block.instructions.as_slice(),
+            [
+                Instr::Drop {
+                    place: Place::Local(1),
+                    drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::Record,
+                    )),
+                    ..
+                },
+                Instr::ConstI64 {
+                    dest: Place::Local(2),
+                    value: 1,
+                },
+            ]
+        )
+    }));
+    let (maybe_entries, _) = maybe_owner_states(&blocks);
+    assert!(
+        !maybe_entries
+            .get(&4)
+            .is_some_and(|state| state.iter().any(|(candidate, _)| *candidate == owner)),
+        "the explicit GuardedRelease must retire the conditional generation before reinitialization"
+    );
+}
+
+#[test]
+fn conditional_scope_exit_preserves_scalar_resource_close_recipe() {
+    let (mut blocks, mut builder) = conditional_scope_exit_fixture(
+        Some(crate::model::OwnershipGuardKind::AffineRelease),
+        crate::model::OwnerDropRecipe {
+            ty: ResolvedTy::named_user("Token", vec![]),
+            drop_fn: Some(crate::model::DropFnSpec::UserClose(
+                "Token::close".to_owned(),
+            )),
+            kind: DropKind::Resource,
+            declaration_order: 0,
+        },
+    );
+    builder.type_classes.insert(
+        "Token".to_owned(),
+        (hew_hir::ResourceMarker::Resource, Some("close".to_owned())),
+    );
+    super::materialize_conditional_scope_exit_releases(&mut blocks, &mut builder);
+
+    assert!(blocks.iter().any(|block| {
+        matches!(
+            block.instructions.as_slice(),
+            [
+                Instr::Drop {
+                    place: Place::Local(1),
+                    drop_fn: Some(crate::model::DropFnSpec::UserClose(symbol)),
+                    ..
+                },
+                Instr::ConstI64 {
+                    dest: Place::Local(2),
+                    value: 1,
+                },
+            ] if symbol == "Token::close"
+        )
+    }));
+}
+
+#[test]
+fn conditional_scope_exit_without_published_guard_remains_fail_closed() {
+    let (mut blocks, mut builder) = conditional_scope_exit_fixture(
+        None,
+        crate::model::OwnerDropRecipe {
+            ty: ResolvedTy::named_user("Buf", vec![]),
+            drop_fn: None,
+            kind: DropKind::RecordInPlace,
+            declaration_order: 0,
+        },
+    );
+    let original_len = blocks.len();
+    super::materialize_conditional_scope_exit_releases(&mut blocks, &mut builder);
+
+    assert_eq!(blocks.len(), original_len);
+    let old = crate::model::OwnerId {
+        binding: BindingId(63),
+        generation: 0,
+    };
+    let (maybe_entries, _) = maybe_owner_states(&blocks);
+    assert!(
+        maybe_entries
+            .get(&4)
+            .is_some_and(|state| state.iter().any(|(candidate, _)| *candidate == old)),
+        "missing guard authority must not silently end the conditionally-live generation"
+    );
+}
+
+#[test]
+fn conditional_scope_exit_rejects_non_affine_guard_family() {
+    let (mut blocks, mut builder) = conditional_scope_exit_fixture(
+        Some(crate::model::OwnershipGuardKind::Overwrite),
+        crate::model::OwnerDropRecipe {
+            ty: ResolvedTy::named_user("Buf", vec![]),
+            drop_fn: None,
+            kind: DropKind::RecordInPlace,
+            declaration_order: 0,
+        },
+    );
+    let original_len = blocks.len();
+    super::materialize_conditional_scope_exit_releases(&mut blocks, &mut builder);
+    assert_eq!(
+        blocks.len(),
+        original_len,
+        "non-affine flags cannot acquire affine scope-cleanup semantics"
+    );
+}
+
+#[test]
+fn conditional_scope_exit_rejects_kind_only_non_resource_recipe() {
+    let (mut blocks, mut builder) = conditional_scope_exit_fixture(
+        Some(crate::model::OwnershipGuardKind::AffineRelease),
+        crate::model::OwnerDropRecipe {
+            ty: ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
+            drop_fn: None,
+            kind: DropKind::CowHeap {
+                release: crate::ownership::CowHeapRelease::VecPlain,
+            },
+            declaration_order: 0,
+        },
+    );
+    let original_len = blocks.len();
+    super::materialize_conditional_scope_exit_releases(&mut blocks, &mut builder);
+    assert_eq!(
+        blocks.len(),
+        original_len,
+        "a kind-only Vec recipe cannot be logically released without a supported physical ritual"
+    );
+}
+
+#[test]
+fn checked_owner_recipe_rebuilds_the_exact_exit_without_builder_state() {
+    use crate::model::{OwnerDropRecipe, OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(53),
+        generation: 0,
+    };
+    let place = Place::Local(7);
+    let blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![MirStatement::Bind {
+            binding: owner.binding,
+            name: "s".to_owned(),
+            site: SiteId(1),
+            ty: ResolvedTy::String,
+        }],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner,
+                place,
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                owner,
+                recipe: OwnerDropRecipe {
+                    ty: ResolvedTy::String,
+                    drop_fn: None,
+                    kind: drop_kind_for(place, &ResolvedTy::String, None),
+                    declaration_order: 3,
+                },
+            }),
+        ],
+        terminator: Terminator::Return,
+    }];
+    let mut elaboration = ElaboratedMirFunction {
+        name: "recipe_replay".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![ElabBlock {
+            id: ENTRY_BLOCK_ID,
+            kind: BlockKind::Normal,
+            drops: vec![],
+            successor: None,
+        }],
+        drop_plans: vec![(
+            ExitPath::Return {
+                block: ENTRY_BLOCK_ID,
+            },
+            DropPlan::default(),
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+
+    rebuild_drop_plans_from_owner_recipes(&blocks, &[], &Builder::default(), &mut elaboration);
+    assert_eq!(elaboration.drop_plans[0].1.drops.len(), 1);
+    assert_eq!(elaboration.drop_plans[0].1.drops[0].place, place);
+    let checked = CheckedMirFunction {
+        name: "recipe_replay".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        blocks,
+        decisions: vec![],
+        checks: vec![],
+        cooperate_sites: vec![],
+        ownership_elaboration: Some(Box::new(elaboration)),
+    };
+    assert!(validate_ownership_events(&checked).is_empty());
+}
+
+#[test]
+fn missing_checked_owner_recipe_cannot_materialize_a_destructor() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let owner = OwnerId {
+        binding: BindingId(54),
+        generation: 0,
+    };
+    let blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(8),
+            ty: ResolvedTy::String,
+        })],
+        terminator: Terminator::Return,
+    }];
+    let mut elaboration = ElaboratedMirFunction {
+        name: "missing_recipe".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(
+            ExitPath::Return {
+                block: ENTRY_BLOCK_ID,
+            },
+            DropPlan::default(),
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+
+    rebuild_drop_plans_from_owner_recipes(&blocks, &[], &Builder::default(), &mut elaboration);
+    assert!(elaboration.drop_plans[0].1.drops.is_empty());
+    let checked = CheckedMirFunction {
+        name: "missing_recipe".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        blocks,
+        decisions: vec![],
+        checks: vec![],
+        cooperate_sites: vec![],
+        ownership_elaboration: Some(Box::new(elaboration)),
+    };
+    assert!(validate_ownership_events(&checked)
+        .iter()
+        .any(|finding| matches!(finding, MirCheck::ObligationUnderReleased { .. })));
+}
+
+#[test]
+fn exact_overwrite_releases_old_generation_before_store() {
+    use crate::model::{NeutralizeAuthority, OwnerDropRecipe, OwnerId, OwnershipEvent};
+
+    let binding = BindingId(61);
+    let old = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let source = OwnerId {
+        binding: BindingId(u32::MAX - 68),
+        generation: 0,
+    };
+    let replacement = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let destination = Place::Local(24);
+    let source_place = Place::Local(25);
+    let recipe = OwnerDropRecipe {
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: crate::model::DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::String,
+        },
+        declaration_order: 0,
+    };
+    let mut blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: old,
+                place: destination,
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: source,
+                place: source_place,
+                ty: ResolvedTy::String,
+            }),
+            Instr::Move {
+                dest: destination,
+                src: source_place,
+            },
+            Instr::NeutralizePayloadSlot {
+                place: source_place,
+                transferee: Some(destination),
+                authority: NeutralizeAuthority::WholeCarrierConsume,
+            },
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: source,
+                from: source_place,
+                to: Some(destination),
+                to_owner: Some(replacement),
+                to_ty: Some(ResolvedTy::String),
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                owner: old,
+                recipe: recipe.clone(),
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                owner: replacement,
+                recipe,
+            }),
+        ],
+        terminator: Terminator::Return,
+    }];
+
+    materialize_exact_overwrite_releases(&mut blocks);
+
+    assert!(matches!(
+        blocks[0].instructions.get(2),
+        Some(Instr::Drop {
+            place,
+            drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+            ..
+        }) if *place == destination
+    ));
+    assert!(matches!(
+        blocks[0].instructions.get(3),
+        Some(Instr::OwnershipEvent(OwnershipEvent::Release { owner, place }))
+            if *owner == old && *place == destination
+    ));
+    let (_, exits) = exact_owner_states(&blocks);
+    assert_eq!(
+        exits[&ENTRY_BLOCK_ID]
+            .iter()
+            .filter(|(owner, place)| owner.binding == binding && **place == destination)
+            .count(),
+        1
+    );
+    assert_eq!(exits[&ENTRY_BLOCK_ID].get(&replacement), Some(&destination));
+}
+
+#[test]
+fn nested_join_phi_is_one_exact_generation_at_outer_loop_header() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let binding = BindingId(49);
+    let owner = |generation| OwnerId {
+        binding,
+        generation,
+    };
+    let place = Place::Local(2);
+    let arm = |id, generation| BasicBlock {
+        id,
+        statements: vec![],
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: owner(0),
+                from: place,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: owner(generation),
+                place,
+                ty: ResolvedTy::String,
+            }),
+        ],
+        terminator: Terminator::Goto { target: 4 },
+    };
+    let mut blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: owner(0),
+                place,
+                ty: ResolvedTy::String,
+            })],
+            terminator: Terminator::Goto { target: 1 },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Branch {
+                cond: Place::Local(0),
+                then_target: 2,
+                else_target: 3,
+            },
+        },
+        arm(2, 1),
+        arm(3, 2),
+        BasicBlock {
+            id: 4,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 5 },
+        },
+        BasicBlock {
+            id: 5,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 1 },
+        },
+    ];
+
+    super::materialize_exact_owner_join_transfers(&mut blocks, &mut Builder::default());
+
+    let (entries, exits) = exact_owner_states(&blocks);
+    let mut header = entries
+        .get(&1)
+        .expect("outer loop header is reachable")
+        .clone();
+    let header_block = blocks
+        .iter()
+        .find(|block| block.id == 1)
+        .expect("outer loop header exists");
+    // `Join` is an explicit ownership-SSA block parameter. The fixed-point
+    // entry map is the predecessor state immediately before that parameter;
+    // replay the header operations to inspect its canonical exact identity.
+    apply_exact_owner_ops(&header_block.instructions, &mut header);
+    let exact = header
+        .iter()
+        .filter(|(candidate, candidate_place)| {
+            candidate.binding == binding && **candidate_place == place
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(exact.len(), 1);
+    assert!(
+        exact[0].0.generation >= 3,
+        "the outer loop must receive one generation after coalescing the initial and two branch identities: {exact:?}; header ops: {:?}",
+        header_block.instructions
+    );
+    assert!(exits.values().all(|state| {
+        state
+            .keys()
+            .filter(|candidate| candidate.binding == binding)
+            .count()
+            <= 1
+    }));
+}
+
+#[test]
+fn cyclic_conditional_reassignment_uses_must_owned_join_parameter() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let binding = BindingId(50);
+    let initial = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let reassigned = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let place = Place::Local(2);
+    let mut blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: initial,
+                place,
+                ty: ResolvedTy::String,
+            })],
+            terminator: Terminator::Goto { target: 1 },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Branch {
+                cond: Place::Local(0),
+                then_target: 2,
+                else_target: 3,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![
+                Instr::OwnershipEvent(OwnershipEvent::Release {
+                    owner: initial,
+                    place,
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner: reassigned,
+                    place,
+                    ty: ResolvedTy::String,
+                }),
+            ],
+            terminator: Terminator::Goto { target: 4 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 4 },
+        },
+        BasicBlock {
+            id: 4,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 1 },
+        },
+    ];
+
+    super::materialize_exact_owner_join_transfers(&mut blocks, &mut Builder::default());
+
+    assert!(blocks
+        .iter()
+        .find(|block| block.id == 1)
+        .is_some_and(|block| block.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instr::OwnershipEvent(OwnershipEvent::Join {
+                    replacement,
+                    place: joined_place,
+                    ..
+                }) if replacement.binding == binding && *joined_place == place
+            )
+        })));
+    let (_, exits) = exact_owner_states(&blocks);
+    assert!(exits.get(&1).is_some_and(|state| {
+        state
+            .iter()
+            .any(|(owner, owner_place)| owner.binding == binding && *owner_place == place)
+    }));
+}
+
+#[test]
+fn join_canonicalizes_common_and_edge_local_generations() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let binding = BindingId(60);
+    let common = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let edge_local = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let place = Place::Local(23);
+    let mut blocks = vec![
+        BasicBlock {
+            id: ENTRY_BLOCK_ID,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: common,
+                place,
+                ty: ResolvedTy::String,
+            })],
+            terminator: Terminator::Branch {
+                cond: Place::Local(0),
+                then_target: 1,
+                else_target: 2,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: edge_local,
+                place,
+                ty: ResolvedTy::String,
+            })],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+
+    super::materialize_exact_owner_join_transfers(&mut blocks, &mut Builder::default());
+
+    let target = blocks.iter().find(|block| block.id == 3).unwrap();
+    assert!(target.instructions.iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instr::OwnershipEvent(OwnershipEvent::Join { incoming, .. })
+                if incoming.contains(&common) && incoming.contains(&edge_local)
+        )
+    }));
+    let (entries, _) = exact_owner_states(&blocks);
+    let mut at_target = entries[&3].clone();
+    apply_exact_owner_ops(&target.instructions, &mut at_target);
+    assert_eq!(
+        at_target
+            .keys()
+            .filter(|owner| owner.binding == binding)
+            .count(),
+        1,
+        "the common identity and edge-local stale identity must become one SSA owner"
+    );
+}
+
 /// Owning-block id for an `ExitPath`. Every variant carries a `block`
 /// field — surfacing it as a single function keeps `validate_drop_plan`
 /// uniform across exit kinds.
@@ -2029,6 +7845,7 @@ pub(super) fn exit_block_id(exit: &ExitPath) -> u32 {
         | ExitPath::Goto { block, .. }
         | ExitPath::Branch { block, .. }
         | ExitPath::Call { block, .. }
+        | ExitPath::Unwind { block, .. }
         | ExitPath::Panic { block }
         | ExitPath::Cancel { block }
         | ExitPath::Yield { block, .. }
@@ -2049,6 +7866,7 @@ pub(super) fn exit_kind_label(exit: &ExitPath) -> &'static str {
         ExitPath::Goto { .. } => "Goto",
         ExitPath::Branch { .. } => "Branch",
         ExitPath::Call { .. } => "Call",
+        ExitPath::Unwind { .. } => "Unwind",
         ExitPath::Panic { .. } => "Panic",
         ExitPath::Cancel { .. } => "Cancel",
         ExitPath::Yield { .. } => "Yield",
@@ -2146,6 +7964,230 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
     validate_lambda_captures(&elab.lambda_captures, &mut findings);
     findings
 }
+
+/// Prove that every potentially-unwinding MIR call has exactly one normal
+/// continuation plan and one exceptional cleanup plan. LLVM codegen consumes
+/// these as the two successors of `invoke`; accepting a missing or duplicated
+/// sibling would make cleanup depend on backend guesswork.
+#[must_use]
+pub(super) fn validate_unwind_cleanup_coverage(
+    elab: &ElaboratedMirFunction,
+    raw: &RawMirFunction,
+) -> Vec<MirCheck> {
+    validate_unwind_cleanup_coverage_over(elab, &raw.blocks)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "coverage validates runtime calls, generator resumes, and ordinary calls under one exact sibling-plan rule"
+)]
+fn validate_unwind_cleanup_coverage_over(
+    elab: &ElaboratedMirFunction,
+    blocks: &[BasicBlock],
+) -> Vec<MirCheck> {
+    let mut findings = Vec::new();
+    let mut expected: HashSet<(u32, String)> = HashSet::new();
+
+    for block in blocks {
+        let generator_resume_count = block
+            .instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, Instr::GeneratorNext { .. }))
+            .count();
+        if generator_resume_count == 0 {
+            continue;
+        }
+        expected.insert((block.id, "hew_cont_resume".to_owned()));
+        let unwind_count = elab
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| {
+                matches!(
+                    exit,
+                    ExitPath::Unwind { block: exit_block, callee }
+                        if *exit_block == block.id && callee == "hew_cont_resume"
+                )
+            })
+            .count();
+        if generator_resume_count != 1 || unwind_count != 1 {
+            findings.push(MirCheck::ObligationBalanceUnverified {
+                function: elab.name.clone(),
+                reason: format!(
+                    "generator resume bb{} must carry exactly one GeneratorNext and one unwind \
+                     cleanup plan; found {generator_resume_count} resume operations and \
+                     {unwind_count} unwind plans",
+                    block.id,
+                ),
+            });
+        }
+        if block.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instr::GeneratorNext {
+                    ctx_owner: None,
+                    ..
+                }
+            )
+        }) {
+            findings.push(MirCheck::ObligationBalanceUnverified {
+                function: elab.name.clone(),
+                reason: format!(
+                    "generator resume bb{} has no explicit context OwnerId; lowering must carry \
+                     the live owner generation into Checked MIR",
+                    block.id,
+                ),
+            });
+        }
+    }
+
+    for block in blocks {
+        let Terminator::Call {
+            callee,
+            authority,
+            next,
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        expected.insert((block.id, callee.clone()));
+
+        let normal: Vec<_> = elab
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| {
+                matches!(
+                    exit,
+                    ExitPath::Call {
+                        block: exit_block,
+                        callee: exit_callee,
+                        next: exit_next,
+                    } if *exit_block == block.id && exit_callee == callee && exit_next == next
+                )
+            })
+            .collect();
+        let unwind: Vec<_> = elab
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| {
+                matches!(
+                    exit,
+                    ExitPath::Unwind {
+                        block: exit_block,
+                        callee: exit_callee,
+                    } if *exit_block == block.id && exit_callee == callee
+                )
+            })
+            .collect();
+
+        let expected_normal = usize::from(!authority.is_no_return());
+        if normal.len() != expected_normal || unwind.len() != 1 {
+            findings.push(MirCheck::ObligationBalanceUnverified {
+                function: elab.name.clone(),
+                reason: format!(
+                    "call bb{} -> `{callee}` must have exactly {expected_normal} normal plan(s) \
+                     and one unwind cleanup plan; found {} normal and {} unwind plans",
+                    block.id,
+                    normal.len(),
+                    unwind.len(),
+                ),
+            });
+            continue;
+        }
+        if normal
+            .first()
+            .is_some_and(|(_, plan)| !plan.drops.is_empty())
+        {
+            findings.push(MirCheck::ObligationBalanceUnverified {
+                function: elab.name.clone(),
+                reason: format!(
+                    "normal continuation for call bb{} -> `{callee}` destroys owners before \
+                     entering bb{next}; normal call edges must carry ownership forward",
+                    block.id,
+                ),
+            });
+        }
+
+        let mut places = HashSet::new();
+        for drop in &unwind[0].1.drops {
+            if !places.insert(drop.place) {
+                findings.push(MirCheck::ObligationBalanceUnverified {
+                    function: elab.name.clone(),
+                    reason: format!(
+                        "unwind cleanup for call bb{} -> `{callee}` destroys place {:?} more \
+                         than once",
+                        block.id, drop.place,
+                    ),
+                });
+            }
+        }
+    }
+
+    for block in blocks {
+        for call_site in block
+            .instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instr::CallClosure { call_site, .. } => Some(*call_site),
+                _ => None,
+            })
+        {
+            let closure_key = crate::model::indirect_closure_callee(call_site);
+            expected.insert((block.id, closure_key.clone()));
+            let unwind: Vec<_> = elab
+                .drop_plans
+                .iter()
+                .filter(|(exit, _)| {
+                    matches!(
+                        exit,
+                        ExitPath::Unwind { block: exit_block, callee }
+                            if *exit_block == block.id
+                                && callee == &closure_key
+                    )
+                })
+                .collect();
+            if unwind.len() != 1 {
+                findings.push(MirCheck::ObligationBalanceUnverified {
+                function: elab.name.clone(),
+                reason: format!(
+                    "indirect closure call bb{} at {call_site} must have exactly one unwind cleanup plan; found {}",
+                    block.id,
+                    unwind.len()
+                ),
+            });
+                continue;
+            }
+            let mut places = HashSet::new();
+            for drop in &unwind[0].1.drops {
+                if !places.insert(drop.place) {
+                    findings.push(MirCheck::ObligationBalanceUnverified {
+                    function: elab.name.clone(),
+                    reason: format!(
+                        "indirect closure unwind cleanup for bb{} at {call_site} destroys place {:?} more than once",
+                        block.id, drop.place,
+                    ),
+                });
+                }
+            }
+        }
+    }
+
+    for (exit, _) in &elab.drop_plans {
+        let ExitPath::Unwind { block, callee } = exit else {
+            continue;
+        };
+        if !expected.contains(&(*block, callee.clone())) {
+            findings.push(MirCheck::ObligationBalanceUnverified {
+                function: elab.name.clone(),
+                reason: format!(
+                    "orphan unwind cleanup for bb{block} -> `{callee}` has no matching MIR call"
+                ),
+            });
+        }
+    }
+
+    findings
+}
 // ============================================================================
 // S1 — lite obligation-balance validator
 // ============================================================================
@@ -2216,6 +8258,7 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 /// walk over that slot a null-tolerant no-op — so drops observed after a
 /// neutralization must not count as discharges on that path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 enum PayloadNeutralized {
     /// No neutralization on any reaching path.
     No,
@@ -2226,6 +8269,7 @@ enum PayloadNeutralized {
     Maybe,
 }
 
+#[cfg(test)]
 impl PayloadNeutralized {
     fn meet(self, other: Self) -> Self {
         if self == other {
@@ -2238,6 +8282,7 @@ impl PayloadNeutralized {
 
 /// Discharge counts saturate here: 0, 1, and "2 or more" are the only
 /// balance-relevant magnitudes.
+#[cfg(test)]
 const OBLIGATION_COUNT_SATURATION: u8 = 2;
 
 /// Owner-mint and discharge-count intervals for one tracked local over the CFG
@@ -2261,6 +8306,7 @@ const OBLIGATION_COUNT_SATURATION: u8 = 2;
 ///     aggregation operands, single-owner-resolved-elsewhere transfers)
 ///     cannot manufacture a false over-release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 struct ObligationState {
     /// Minimum/maximum owner mints present on reaching paths.  Ordinary
     /// defining writes reset this to one; explicit retain instructions add a
@@ -2281,6 +8327,7 @@ struct ObligationState {
     neutralized: PayloadNeutralized,
 }
 
+#[cfg(test)]
 impl ObligationState {
     fn minted() -> Self {
         Self {
@@ -2376,6 +8423,7 @@ impl ObligationState {
 
 /// Per-block obligation state: tracked local (root) → interval. Absent key =
 /// unminted on every path reaching the point.
+#[cfg(test)]
 type ObligationMap = BTreeMap<u32, ObligationState>;
 
 /// The local id a place addresses AS A WHOLE OWNED VALUE — the granularity
@@ -2419,6 +8467,7 @@ fn payload_carrier_local(place: Place) -> Option<u32> {
 /// the slot; a payload write materialises the heap-owning generation of an
 /// enum/machine carrier. A tag-only write selects an empty variant and must
 /// not re-mint a release obligation that an earlier payload path discharged.
+#[cfg(test)]
 fn mint_target_local(place: Place) -> Option<u32> {
     match place {
         Place::Local(n)
@@ -2435,20 +8484,8 @@ fn mint_target_local(place: Place) -> Option<u32> {
     }
 }
 
-/// Runtime-ABI symbols that CONSUME (take ownership of) exactly one argument:
-/// the `*_move` copy-in family byte-transfers the element's heap into the
-/// collection. Returns the consumed argument's index in C-ABI order.
-fn runtime_consumed_arg_index(symbol: &str) -> Option<usize> {
-    match symbol {
-        // hew_vec_push_owned_move(v, data): `data`'s heap moves into the Vec.
-        "hew_vec_push_owned_move" => Some(1),
-        // hew_vec_set_owned_move(v, index, data): `data`'s heap moves in.
-        "hew_vec_set_owned_move" => Some(2),
-        _ => None,
-    }
-}
-
 /// Shared read-only context for the balance transfer functions.
+#[cfg(test)]
 struct ObligationCtx<'a> {
     /// Tracked mint set: root local → source-level name.
     tracked: &'a BTreeMap<u32, String>,
@@ -2467,11 +8504,17 @@ struct ObligationCtx<'a> {
     /// Empty COW literals inserted immediately after an aggregate ownership
     /// handoff to clear the moved-from publication slot.
     cow_handoff_commit_sites: &'a HashSet<(u32, usize)>,
-    /// Exact call/await result generations whose projected-slot neutralize is
-    /// only a partial transfer; the remaining carrier still needs a drop.
-    partial_transfer_carrier_mints: &'a HashSet<u32>,
+    /// Exact structural move paths whose neutralize transfers only one field
+    /// of a multi-field active variant. The residual fields remain owned by
+    /// the carrier. A sole-field active variant has no residual obligation:
+    /// its payload handoff forwards the carrier generation in full.
+    partial_transfer_payload_slots: &'a HashSet<Place>,
+    /// Guarded projection binders that become owners only at their later,
+    /// path-local carrier-neutralization commit.
+    deferred_payload_transfer_binders: &'a HashSet<u32>,
 }
 
+#[cfg(test)]
 impl ObligationCtx<'_> {
     /// Resolve a local through the payload-alias chain (hop-capped: the map
     /// is acyclic by construction, the cap is defensive).
@@ -2499,6 +8542,7 @@ impl ObligationCtx<'_> {
     }
 }
 
+#[cfg(test)]
 fn obligation_entry(state: &mut ObligationMap, root: u32) -> &mut ObligationState {
     state.entry(root).or_insert_with(ObligationState::minted)
 }
@@ -2516,6 +8560,7 @@ fn obligation_entry(state: &mut ObligationMap, root: u32) -> &mut ObligationStat
 /// resolution would need per-place release sets; the widen-only treatment
 /// is AMBIGUOUS, which can neither certify balance nor manufacture a
 /// definite verdict on either kind of path.
+#[cfg(test)]
 fn apply_plan_drop(
     state: &mut ObligationMap,
     drop: &ElabDrop,
@@ -2541,6 +8586,7 @@ fn apply_plan_drop(
 /// Meet two per-block obligation maps. A local absent on one side is
 /// unminted on that side's paths — no obligation there — so the present
 /// side's interval carries through unchanged (identity meet).
+#[cfg(test)]
 fn meet_obligation_maps(a: &ObligationMap, b: &ObligationMap) -> ObligationMap {
     let mut out = a.clone();
     for (&local, &st) in b {
@@ -2644,6 +8690,7 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
 /// tracked while an ephemeral result carrier is absent from `tracked`; folding
 /// that publication into the absent carrier would erase the only obligation
 /// the validator can see and silently certify a real leak.
+#[cfg(test)]
 fn collect_balance_payload_alias_map(
     blocks: &[BasicBlock],
     tracked: &BTreeMap<u32, String>,
@@ -2668,6 +8715,51 @@ fn collect_balance_payload_alias_map(
                 || tracked.contains_key(carrier)
         })
         .collect()
+}
+
+/// Projection binders whose ownership commit is deliberately deferred to a
+/// different basic block (guarded match arms). The initial projection load is
+/// a borrow: only the later `NeutralizePayloadSlot` path nulls the carrier and
+/// turns the binder into an owner. Treating the load itself as a mint creates a
+/// phantom owner on the guard-fallthrough edge.
+#[cfg(test)]
+fn collect_deferred_payload_transfer_binders(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let commits: HashSet<(Place, Place, u32)> = blocks
+        .iter()
+        .flat_map(|block| {
+            block
+                .instructions
+                .iter()
+                .filter_map(move |instr| match instr {
+                    Instr::NeutralizePayloadSlot {
+                        place,
+                        transferee: Some(transferee),
+                        ..
+                    } => Some((*place, *transferee, block.id)),
+                    _ => None,
+                })
+        })
+        .collect();
+    let mut deferred = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let (dest, src) = match instr {
+                Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => (*dest, *src),
+                _ => continue,
+            };
+            let Some(dest_local) = whole_owner_local(dest) else {
+                continue;
+            };
+            if payload_carrier_local(src).is_some()
+                && commits.iter().any(|(place, transferee, commit_block)| {
+                    *place == src && *transferee == dest && *commit_block != block.id
+                })
+            {
+                deferred.insert(dest_local);
+            }
+        }
+    }
+    deferred
 }
 
 #[cfg(test)]
@@ -2738,7 +8830,7 @@ mod payload_alias_closure_tests {
         assert_eq!(
             aliases.get(&1),
             None,
-            "a tracked publication must retain its advisory when its carrier is outside the balance"
+            "a tracked publication must retain its obligation when its carrier is outside the balance"
         );
     }
 }
@@ -2779,6 +8871,7 @@ fn collect_retained_move_sites(blocks: &[BasicBlock]) -> HashSet<(u32, usize)> {
     sites
 }
 
+#[cfg(test)]
 fn collect_cow_handoff_commit_sites(blocks: &[BasicBlock]) -> HashSet<(u32, usize)> {
     let mut sites = HashSet::new();
     for block in blocks {
@@ -2822,6 +8915,7 @@ fn collect_cow_handoff_commit_sites(blocks: &[BasicBlock]) -> HashSet<(u32, usiz
               distinct transfer classes (aggregation vs capture vs dispatch); \
               merging them would erase the per-class rationale comments"
 )]
+#[cfg(test)]
 fn apply_balance_instr(
     state: &mut ObligationMap,
     instr: &Instr,
@@ -2957,17 +9051,40 @@ fn apply_balance_instr(
                 }
             }
         }
-        Instr::NeutralizePayloadSlot { place, .. } => {
+        Instr::NeutralizePayloadSlot {
+            place, transferee, ..
+        } => {
+            let destination_root = transferee.and_then(|destination| cx.tracked_root(destination));
+            if let Some(dest) = transferee.and_then(whole_owner_local) {
+                if cx.deferred_payload_transfer_binders.contains(&dest)
+                    && cx.tracked.contains_key(&dest)
+                {
+                    state.insert(dest, ObligationState::minted());
+                }
+            }
             if let Some(root) = cx
                 .tracked_root(*place)
                 .or_else(|| cx.tracked_carrier(*place))
             {
-                if payload_carrier_local(*place).is_some()
-                    && cx.partial_transfer_carrier_mints.contains(&root)
-                {
+                if cx.partial_transfer_payload_slots.contains(place) {
                     // The selected payload moved, but this minted call carrier
                     // still owns its shell and unselected slots. Only a later
                     // carrier drop discharges the whole-generation obligation.
+                    return;
+                }
+                // A proven whole-value handoff is a generation rename, not a
+                // terminal release. Move the outstanding obligation to the
+                // transferee and remove the moved-from generation from the
+                // normal-edge state. Earlier exceptional edges retain the
+                // source state because this instruction has not executed
+                // there. Counting the handoff as a discharge and then counting
+                // the transferee's eventual drop as another discharge folds
+                // two generations into one and manufactures a double-free.
+                if let Some(destination_root) = destination_root.filter(|dest| *dest != root) {
+                    let mut transferred =
+                        state.remove(&root).unwrap_or_else(ObligationState::minted);
+                    transferred.neutralized = PayloadNeutralized::No;
+                    state.insert(destination_root, transferred);
                     return;
                 }
                 let entry = obligation_entry(state, root);
@@ -3024,10 +9141,11 @@ fn apply_balance_instr(
             }
         }
         Instr::CallRuntimeAbi(call) => {
-            let consumed = runtime_consumed_arg_index(call.symbol());
             for (i, arg) in call.args().iter().enumerate() {
                 if let Some(root) = cx.tracked_root(*arg) {
-                    if consumed == Some(i) {
+                    if call.family().arg_consume_verdict(i)
+                        == hew_types::runtime_call::ConsumeVerdict::ProvenConsume
+                    {
                         obligation_entry(state, root).definite_discharge();
                     } else if i == 0 && call.symbol() == "hew_structural_format" {
                         // Structural formatting observes the value by address.
@@ -3156,6 +9274,11 @@ fn apply_balance_instr(
         if matches!(instr, Instr::StringLit { dest, .. } if *dest == write)
             || (cx.cow_handoff_commit_sites.contains(&(block, instr_index))
                 && matches!(instr, Instr::BytesLit { dest, .. } if *dest == write))
+            || matches!(instr, Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. }
+            if payload_carrier_local(*src).is_some()
+                && whole_owner_local(*dest).is_some_and(|local| {
+                    cx.deferred_payload_transfer_binders.contains(&local)
+                }))
         {
             continue;
         }
@@ -3221,6 +9344,7 @@ pub(super) fn terminator_mint_places(term: &Terminator) -> Vec<Place> {
 /// balance instead models `coro.destroy` as a terminal edge whose frame drops
 /// are carried by `ExitPath::Suspend`; propagating the parked frame state into
 /// `cleanup` would mix abandon-only execution into the resumed body.
+#[cfg(test)]
 fn obligation_successors(block: &BasicBlock) -> Vec<u32> {
     match &block.terminator {
         Terminator::Suspend { resume, .. } => vec![*resume],
@@ -3243,6 +9367,7 @@ fn obligation_successors(block: &BasicBlock) -> Vec<u32> {
 /// These cannot be minted in the suspend block's common state: the destroy
 /// edge never initializes them, and charging them there would manufacture
 /// frame obligations on abandon.
+#[cfg(test)]
 fn suspend_resume_mint_places(kind: &SuspendKind) -> Vec<Place> {
     match kind {
         SuspendKind::Ask {
@@ -3299,6 +9424,7 @@ fn suspend_resume_mint_places(kind: &SuspendKind) -> Vec<Place> {
     }
 }
 
+#[cfg(test)]
 fn apply_suspend_resume_mints(
     state: &mut ObligationMap,
     predecessor: &BasicBlock,
@@ -3325,6 +9451,7 @@ fn apply_suspend_resume_mints(
 }
 
 /// Forward transfer of a block's terminator: discharge events, then mints.
+#[cfg(test)]
 fn apply_balance_terminator(
     state: &mut ObligationMap,
     block: &BasicBlock,
@@ -3404,22 +9531,59 @@ fn apply_balance_terminator(
     }
 }
 
-/// The mint set: every heap-owning owned local from the per-function
-/// registration ledger (INCLUDING entries dispositioned off `ScopeExit` —
-/// the dispositions are under test), minus the trusted exclusions:
-/// `Disposition::AliasOf` interior aliases (not independent mints) and
-/// parameter slots (by-value params are caller-retained `CoW` borrows — the
-/// caller owns the release; A278).
+/// The mint set comes from explicit ownership operations in MIR, never from
+/// the mutable lowering ledger. Parameter slots are removed by the caller;
+/// alias-only registrations emit no mint, while a provisional owner demoted to
+/// an alias carries a program-point `Release` event that ends its generation.
 fn tracked_obligation_locals_with_sites(
     builder: &Builder,
     blocks: &[BasicBlock],
 ) -> (BTreeMap<u32, String>, BTreeMap<u32, SiteId>) {
     let mut tracked: BTreeMap<u32, String> = BTreeMap::new();
     let mut mint_sites: BTreeMap<u32, SiteId> = BTreeMap::new();
-    for entry in builder.owned_locals_ledger() {
-        if matches!(entry.disposition, Disposition::AliasOf) {
-            continue;
-        }
+    let binding_metadata: HashMap<BindingId, (String, SiteId)> = blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter_map(|statement| match statement {
+            MirStatement::Bind {
+                binding,
+                name,
+                site,
+                ..
+            } => Some((*binding, (name.clone(), *site))),
+            _ => None,
+        })
+        .collect();
+    for (owner, place, ty) in blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint { owner, place, ty }) => {
+                Some((*owner, *place, ty.clone()))
+            }
+            Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Reset {
+                    replacement,
+                    place,
+                    ty,
+                    ..
+                }
+                | crate::model::OwnershipEvent::Rearm {
+                    replacement,
+                    place,
+                    ty,
+                    ..
+                },
+            ) => Some((*replacement, *place, ty.clone())),
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                to_owner: Some(owner),
+                to: Some(place),
+                to_ty: Some(ty),
+                ..
+            }) => Some((*owner, *place, ty.clone())),
+            _ => None,
+        })
+    {
         // Re-apply the heap-ownership authority: the seed test admits every
         // non-BitCopy value class, which includes heap-free direct enums
         // (`Result<i64, AskError>`, `Colour`) that carry NO release
@@ -3427,34 +9591,30 @@ fn tracked_obligation_locals_with_sites(
         // heap (`ty_owns_heap` — the single structural authority) or its
         // class carries a non-heap drop ritual (`@resource` close /
         // `@linear` consume — the all-bitcopy resource record case).
-        let class = ValueClass::of_ty(&entry.ty, &builder.type_classes);
+        let class = ValueClass::of_ty(&ty, &builder.type_classes);
         let owns_heap = crate::model::ty_owns_heap_mir(
-            &entry.ty,
+            &ty,
             &builder.record_field_orders,
             &builder.enum_layouts,
         );
         if !owns_heap && !matches!(class, ValueClass::AffineResource | ValueClass::Linear) {
             continue;
         }
-        let Some(place) = builder.binding_locals.get(&entry.binding) else {
+        let Some(local) = base_local(place) else {
             continue;
         };
-        let Some(local) = base_local(*place) else {
-            continue;
-        };
-        if builder.parameter_locals.contains(&local) {
-            continue;
-        }
-        let binding_site = blocks.iter().flat_map(|block| &block.statements).find_map(
-            |statement| match statement {
-                MirStatement::Bind { binding, site, .. } if *binding == entry.binding => {
-                    Some(*site)
-                }
-                _ => None,
-            },
-        );
+        let binding = binding_metadata.get(&owner.binding);
+        let binding_site = binding.map(|(_, site)| *site);
         let diagnostic = builder.call_scrutinee_diagnostics.get(&local);
-        let name = diagnostic.map_or_else(|| entry.name.clone(), |(_, label)| label.clone());
+        let name = diagnostic.map_or_else(
+            || {
+                binding.map_or_else(
+                    || format!("__hew_owner_{}", owner.binding.0),
+                    |(name, _)| name.clone(),
+                )
+            },
+            |(_, label)| label.clone(),
+        );
         let site = diagnostic.map(|(site, _)| *site).or(binding_site);
         tracked.entry(local).or_insert(name);
         if let Some(site) = site {
@@ -3464,72 +9624,17 @@ fn tracked_obligation_locals_with_sites(
     (tracked, mint_sites)
 }
 
-fn tracked_obligation_locals(builder: &Builder) -> BTreeMap<u32, String> {
-    tracked_obligation_locals_with_sites(builder, &[]).0
+fn tracked_obligation_locals(builder: &Builder, blocks: &[BasicBlock]) -> BTreeMap<u32, String> {
+    tracked_obligation_locals_with_sites(builder, blocks).0
 }
 
-/// S1 obligation-balance validation over one elaborated function. See the
-/// module-section comment above for the model; called at the `mod.rs` gate
-/// site immediately after `validate_drop_plan`. Additive sibling pass —
-/// `validate_drop_plan` is not consulted or modified.
-#[must_use]
-pub(super) fn validate_obligation_balance(
-    elab: &ElaboratedMirFunction,
-    raw: &RawMirFunction,
-    builder: &Builder,
-) -> Vec<MirCheck> {
-    let (mut tracked, mut mint_sites) = tracked_obligation_locals_with_sites(builder, &raw.blocks);
-    // Structural parameter exclusion: `locals[0..params.len()]` ARE the
-    // parameter slots (the RawMirFunction invariant). Synthesized bodies can
-    // register a param-backed binding without a `parameter_locals` entry;
-    // by-value params are caller-retained borrows either way.
-    let n_params = u32::try_from(raw.params.len()).unwrap_or(u32::MAX);
-    tracked.retain(|local, _| *local >= n_params);
-    mint_sites.retain(|local, _| tracked.contains_key(local));
-    if tracked.is_empty() {
-        return Vec::new();
-    }
-    // Rendered types of the tracked locals, keyed by root, for the registry
-    // scoping discriminator carried on each under-release finding. The type
-    // narrows an allowlist entry to its minting site so a same-named local of
-    // a different type in another compilation unit cannot ride it.
-    let local_types: BTreeMap<u32, String> = tracked
-        .keys()
-        .filter_map(|&root| {
-            raw.locals
-                .get(root as usize)
-                .map(|ty| (root, format!("{ty}")))
-        })
-        .collect();
-    let partial_transfer_carrier_mints = builder
-        .call_scrutinee_carrier_mint_locals
-        .iter()
-        .copied()
-        .filter(|local| {
-            raw.locals.get(*local as usize).is_none_or(|ty| {
-                !super::composite_own::direct_payload_has_registered_resource_record(
-                    ty,
-                    &builder.enum_layouts,
-                    &builder.lifecycle_registry,
-                )
-            })
-        })
-        .collect();
-    validate_obligation_balance_with(
-        elab,
-        &raw.blocks,
-        &raw.suspend_kinds,
-        &tracked,
-        (&local_types, &mint_sites),
-        &builder.parameter_locals,
-        &partial_transfer_carrier_mints,
-    )
-}
-
-/// Decomposed core of [`validate_obligation_balance`] — the unit-test entry
+/// Decomposed core of the retired obligation-balance validator. These
+/// hand-constructed falsifiers remain test-only; production cleanup authority
+/// is the exact `OwnerId` interpreter and frozen `DropRecipe` plan.
 /// (hand-constructed blocks + drop plans + tracked set, no `Builder`).
 /// Computes the default fixpoint iteration cap and forwards to
 /// [`validate_obligation_balance_capped`].
+#[cfg(test)]
 fn validate_obligation_balance_with(
     elab: &ElaboratedMirFunction,
     blocks: &[BasicBlock],
@@ -3537,7 +9642,7 @@ fn validate_obligation_balance_with(
     tracked_in: &BTreeMap<u32, String>,
     diagnostic_info: (&BTreeMap<u32, String>, &BTreeMap<u32, SiteId>),
     parameter_locals: &HashSet<u32>,
-    partial_transfer_carrier_mints: &HashSet<u32>,
+    partial_transfer_payload_slots: &HashSet<Place>,
 ) -> Vec<MirCheck> {
     // Iteration cap for the monotone worklist. The lattice is finite and the
     // transfer monotone, so convergence is guaranteed well within this bound;
@@ -3551,7 +9656,7 @@ fn validate_obligation_balance_with(
         tracked_in,
         diagnostic_info,
         parameter_locals,
-        partial_transfer_carrier_mints,
+        partial_transfer_payload_slots,
         iteration_cap,
     )
 }
@@ -3565,6 +9670,7 @@ fn validate_obligation_balance_with(
     reason = "single fixpoint + exit-verdict walk; splitting would obscure \
               the dataflow (mirrors validate_cross_block_split_consume)"
 )]
+#[cfg(test)]
 fn validate_obligation_balance_capped(
     elab: &ElaboratedMirFunction,
     blocks: &[BasicBlock],
@@ -3572,7 +9678,7 @@ fn validate_obligation_balance_capped(
     tracked_in: &BTreeMap<u32, String>,
     diagnostic_info: (&BTreeMap<u32, String>, &BTreeMap<u32, SiteId>),
     parameter_locals: &HashSet<u32>,
-    partial_transfer_carrier_mints: &HashSet<u32>,
+    partial_transfer_payload_slots: &HashSet<Place>,
     iteration_cap: usize,
 ) -> Vec<MirCheck> {
     use std::collections::VecDeque;
@@ -3586,6 +9692,7 @@ fn validate_obligation_balance_capped(
     let alias_to = collect_balance_payload_alias_map(blocks, tracked_in);
     let retained_move_sites = collect_retained_move_sites(blocks);
     let cow_handoff_commit_sites = collect_cow_handoff_commit_sites(blocks);
+    let deferred_payload_transfer_binders = collect_deferred_payload_transfer_binders(blocks);
     // A payload-alias binder's discharges fold into its carrier; the binder
     // is not an independent obligation.
     let mut tracked = tracked_in.clone();
@@ -3675,16 +9782,19 @@ fn validate_obligation_balance_capped(
         parameter_locals,
         retained_move_sites: &retained_move_sites,
         cow_handoff_commit_sites: &cow_handoff_commit_sites,
-        partial_transfer_carrier_mints,
+        partial_transfer_payload_slots,
+        deferred_payload_transfer_binders: &deferred_payload_transfer_binders,
     };
 
     // Scope-exit releases ride the NORMAL-continuation exit plans (a
     // `goto[bbN->bbM]` edge closing an inner scope carries real drops), so
     // those plans participate in the dataflow at their owning block.
-    // Exception edges (`Panic` / `Cancel`) fire only on unwind. `Return`
-    // and `Suspend` plans are folded at their terminal verdicts: a suspend
-    // plan belongs solely to the coro.destroy abandon edge and must never
-    // discharge the still-live frame state flowing into resume.
+    // Exception edges (`Panic` / `Cancel` / `Unwind`) fire only on their
+    // exceptional path. `Return`, `Suspend`, and `Unwind` plans are folded at
+    // their terminal verdicts: a suspend plan belongs solely to the
+    // coro.destroy abandon edge and must never discharge the still-live frame
+    // state flowing into resume; an unwind plan belongs solely to LLVM
+    // `invoke`'s cleanup successor and must never discharge the normal state.
     let mut edge_drops: HashMap<u32, Vec<&ElabDrop>> = HashMap::new();
     for (exit, plan) in &elab.drop_plans {
         if matches!(
@@ -3692,6 +9802,7 @@ fn validate_obligation_balance_capped(
             ExitPath::Return { .. }
                 | ExitPath::Panic { .. }
                 | ExitPath::Cancel { .. }
+                | ExitPath::Unwind { .. }
                 | ExitPath::Suspend { .. }
         ) {
             continue;
@@ -3817,6 +9928,7 @@ fn validate_obligation_balance_capped(
         let (block, exit_label) = match exit {
             ExitPath::Return { block } => (*block, "return"),
             ExitPath::Suspend { block, .. } => (*block, "suspend-abandon"),
+            ExitPath::Unwind { block, .. } => (*block, "unwind"),
             _ => continue,
         };
         if !reachable.contains(&block) {
@@ -3826,6 +9938,24 @@ fn validate_obligation_balance_capped(
             continue;
         };
         let mut state = block_state.clone();
+        if matches!(exit, ExitPath::Unwind { .. }) {
+            // `exit_states` includes the terminator's normal-edge destination
+            // write. An `invoke` that unwinds never produces that result, so
+            // the destination owner is uninitialized on the exceptional edge
+            // and must not be diagnosed as a leaked mint. Argument handoffs do
+            // happen at call entry and deliberately remain in the state.
+            if let Some(Terminator::Call {
+                dest: Some(dest), ..
+            }) = blocks
+                .iter()
+                .find(|candidate| candidate.id == block)
+                .map(|candidate| &candidate.terminator)
+            {
+                if let Some(local) = whole_owner_local(*dest) {
+                    state.remove(&local);
+                }
+            }
+        }
         for drop in &plan.drops {
             apply_plan_drop(&mut state, drop, &inline_dropped, &cx);
         }
@@ -3900,7 +10030,6 @@ fn validate_obligation_balance_capped(
             name: name.clone(),
             local_ty: local_types.get(&root).cloned().unwrap_or_default(),
             mint_provenance,
-            hard: mint_provenance.is_blocking(),
             reason: format!(
                 "owned value `{name}` has up to {mints} owner mint(s), but at most \
                  {discharges} discharge(s), on {count} reachable exit path(s): {exits}; \
@@ -3958,151 +10087,6 @@ fn validate_discharge_authority_over(function: &str, blocks: &[BasicBlock]) -> V
                         "NeutralizePayloadSlot carries authority {authority:?}, which moves \
                          ownership into a destination local, but no transferee was recorded — \
                          the discharge fact was erased at the emit site"
-                    ),
-                });
-            }
-        }
-    }
-    findings
-}
-
-/// Discharge-authority corroboration pin (D159 dual-carrier / L211). INDEPENDENT
-/// of the carried authority: it re-derives, from the primitive `Instr` stream
-/// ALONE, whether each named `transferee` is a real destination the routing
-/// actually writes, and reports drift when the two carriers of the one
-/// ownership-transfer fact disagree.
-///
-/// S1's [`validate_obligation_balance`] does NOT read these facts — it re-derives
-/// the discharge set from the primitive stream and never consults the carried
-/// authority (independence preserved; a ledger-trusting validator inherits ledger
-/// bugs). This is a THIRD pass comparing the carried authority against a
-/// from-primitives re-derivation. A `transferee` the stream never writes is a
-/// fabricated transfer — the routing-vs-disposition drift class (S1889-F3).
-pub(super) fn validate_discharge_authority_corroboration(
-    elab: &ElaboratedMirFunction,
-    raw: &RawMirFunction,
-) -> Vec<MirCheck> {
-    validate_discharge_authority_corroboration_over(&elab.name, &raw.blocks)
-}
-
-/// Testable core of [`validate_discharge_authority_corroboration`] — hand-
-/// constructed blocks, no `RawMirFunction`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one corroboration proof keeps its primitive routing facts and findings together"
-)]
-fn validate_discharge_authority_corroboration_over(
-    function: &str,
-    blocks: &[BasicBlock],
-) -> Vec<MirCheck> {
-    // Carrier 2 (independent): every local the primitive stream writes through
-    // Move/WitnessMove, plus each exact source/destination pair written by a
-    // tuple or record constructor. Derived WITHOUT reading any
-    // NeutralizePayloadSlot authority.
-    let mut move_destinations: HashSet<u32> = HashSet::new();
-    let mut aggregate_member_destinations: HashSet<(Place, Place)> = HashSet::new();
-    for block in blocks {
-        for instr in &block.instructions {
-            match instr {
-                Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
-                    if let Some(local) = whole_owner_local(*dest) {
-                        move_destinations.insert(local);
-                    }
-                    if let Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. } =
-                        dest
-                    {
-                        aggregate_member_destinations.insert((*src, Place::Local(*local)));
-                    }
-                }
-                Instr::TupleConstruct { elements, dest } => {
-                    aggregate_member_destinations
-                        .extend(elements.iter().map(|source| (*source, *dest)));
-                }
-                Instr::RecordInit { fields, dest, .. } => {
-                    aggregate_member_destinations
-                        .extend(fields.iter().map(|(_offset, source)| (*source, *dest)));
-                }
-                Instr::RecordFieldStore { record, src, .. } => {
-                    aggregate_member_destinations.insert((*src, *record));
-                }
-                _ => {}
-            }
-        }
-    }
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for instr in &block.instructions {
-                let (Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. }) = instr
-                else {
-                    continue;
-                };
-                let Some(dest_local) = whole_owner_local(*dest) else {
-                    continue;
-                };
-                let inherited: Vec<Place> = aggregate_member_destinations
-                    .iter()
-                    .filter_map(|(source, aggregate)| {
-                        (whole_owner_local(*source) == Some(dest_local)).then_some(*aggregate)
-                    })
-                    .collect();
-                for aggregate in inherited {
-                    changed |= aggregate_member_destinations.insert((*src, aggregate));
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let mut findings = Vec::new();
-    for block in blocks {
-        for instr in &block.instructions {
-            // Carrier 1: the carried transferee fact.
-            let Instr::NeutralizePayloadSlot {
-                place,
-                transferee: Some(transferee),
-                authority,
-            } = instr
-            else {
-                continue;
-            };
-            let Some(dest_local) = whole_owner_local(*transferee) else {
-                continue;
-            };
-            let corroborated = if matches!(
-                authority,
-                crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
-                    | crate::model::NeutralizeAuthority::AggregateMemberConsume
-            ) {
-                aggregate_member_destinations.contains(&(*place, *transferee))
-            } else {
-                move_destinations.contains(&dest_local)
-            };
-            if !corroborated {
-                let primitive = if matches!(
-                    authority,
-                    crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
-                        | crate::model::NeutralizeAuthority::AggregateMemberConsume
-                ) {
-                    format!(
-                        "the primitive instruction stream never constructs {transferee:?} from \
-                         source {place:?}"
-                    )
-                } else {
-                    format!(
-                        "the primitive instruction stream never moves any value into \
-                         local_{dest_local}"
-                    )
-                };
-                findings.push(MirCheck::DischargeAuthorityDrift {
-                    function: function.to_string(),
-                    block: block.id,
-                    name: format!("local_{dest_local}"),
-                    reason: format!(
-                        "NeutralizePayloadSlot ({authority:?}) names transferee local_{dest_local} \
-                         as the new owner of the neutralized slot, but {primitive}: the carried \
-                         transfer fact and the actual routing disagree (dual-carrier drift)"
                     ),
                 });
             }
@@ -4484,6 +10468,7 @@ fn validate_lambda_captures(captures: &[LambdaCapture], findings: &mut Vec<MirCh
 /// only the callee's non-handle-leaf args are borrowed; owned-handle-leaf args
 /// are still poisoned. For callees that borrow EVERY arg including owned-handle
 /// leaves, see [`is_handle_borrowing_call_abi`].
+#[cfg(test)]
 pub(super) fn is_borrowing_call_abi(
     builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
 ) -> bool {
@@ -4518,6 +10503,7 @@ pub(super) fn is_borrowing_call_abi(
 /// leaves the endpoint's ownership in the caller's slot; adding a callee that
 /// actually consumes the handle here would silently disable the double-free
 /// gate for its caller.
+#[cfg(test)]
 pub(super) fn is_handle_borrowing_call_abi(
     builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
 ) -> bool {
@@ -4556,6 +10542,64 @@ pub(super) fn ty_is_nonowning_handle_leaf(ty: &ResolvedTy) -> bool {
                 Some(hew_types::builtin_type::BuiltinHandleFamily::ActorPid)
             ) && b.close_method().is_none()
     )
+}
+
+/// Narrow collection-element aliases to values that actually carry a release
+/// obligation.
+///
+/// `LocalPid`/`RemotePid` are tracked as affine resources for move checking,
+/// but their actor-pid handles are non-owning snapshots with no close ABI and
+/// no drop glue. Borrowing one from `Vec<LocalPid<_>>` is therefore safe both
+/// as an actor-send receiver and as a bit-copy insertion into another vector:
+/// neither operation can create a second release authority. Every owning
+/// handle remains gated, and a missing local type fails closed by retaining the
+/// alias in the validator set.
+#[must_use]
+fn close_obligated_borrow_alias_locals(
+    aliases: &HashSet<u32>,
+    local_tys: &[ResolvedTy],
+) -> HashSet<u32> {
+    aliases
+        .iter()
+        .copied()
+        .filter(|local| {
+            local_tys
+                .get(*local as usize)
+                .is_none_or(|ty| !ty_is_nonowning_handle_leaf(ty))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod close_obligated_borrow_alias_tests {
+    use super::*;
+
+    #[test]
+    fn nonowning_actor_pid_alias_is_not_a_close_obligation() {
+        let local_tys = vec![ResolvedTy::Named {
+            name: "LocalPid".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(BuiltinType::LocalPid),
+            is_opaque: false,
+        }];
+
+        assert!(close_obligated_borrow_alias_locals(&HashSet::from([0]), &local_tys,).is_empty());
+    }
+
+    #[test]
+    fn owning_or_untyped_alias_stays_fail_closed() {
+        let local_tys = vec![ResolvedTy::Named {
+            name: "Stream".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(BuiltinType::Stream),
+            is_opaque: false,
+        }];
+
+        assert_eq!(
+            close_obligated_borrow_alias_locals(&HashSet::from([0, 1]), &local_tys),
+            HashSet::from([0, 1]),
+        );
+    }
 }
 /// True when `ty` is an owned-HANDLE LEAF the W3.053 gate guards: a
 /// `Generator`/`AsyncGenerator` context, a `CancellationToken`, or a
@@ -5417,91 +11461,6 @@ pub(super) fn classify_closure_pair_rhs(
 pub(super) fn ty_is_closure_pair(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
 }
-/// Fail-closed sole-owner narrowing for closure-pair drops. Starts from the
-/// `Let`-admitted `closure_pair_owned` ledger and KEEPS a binding only when
-/// its backing local is never read as a source operand by anything other
-/// than the closure-call drivers' callee read (`Instr::CallClosure` /
-/// `Terminator::SuspendingCallClosure` — calling the pair is the borrow it
-/// exists for). Every other read aliases or moves the pair bits out of the
-/// slot with no retain:
-///
-/// - `Move { dest: ReturnSlot }` — the caller owns the env now (function
-///   tails do not emit a consume fact, so an exit-state gate alone would
-///   double-free the returned pair);
-/// - a call argument — the callee may return or store the same pair
-///   (`let b = id_fn(a)` would otherwise free one env twice);
-/// - `RecordInit` / aggregate ingress — a nested closure capturing the pair
-///   or a record/Vec storing it owns the env through the aggregate.
-///
-/// Excluded bindings leak (as before this fix); they never double-free.
-fn derive_closure_pair_drop_allowed(
-    blocks: &[BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
-    closure_pair_owned: &HashSet<BindingId>,
-    binding_locals: &HashMap<BindingId, Place>,
-) -> HashSet<BindingId> {
-    if closure_pair_owned.is_empty() {
-        return HashSet::new();
-    }
-    let mut aliased: HashSet<u32> = HashSet::new();
-    let mark = |p: Place, aliased: &mut HashSet<u32>| {
-        if let Some(l) = base_local(p) {
-            aliased.insert(l);
-        }
-    };
-    for block in blocks {
-        for instr in &block.instructions {
-            match instr {
-                Instr::CallClosure { args, .. } => {
-                    // The callee read is benign; args may alias a pair out.
-                    for p in args {
-                        mark(*p, &mut aliased);
-                    }
-                }
-                _ => {
-                    for p in instr_source_places(instr) {
-                        mark(p, &mut aliased);
-                    }
-                }
-            }
-        }
-        match &block.terminator {
-            // The suspendable-callee driver (now a bare `Suspend` carrying a
-            // `SuspendKind::CallClosure`) marks only its forwarded `args` as
-            // aliased — the closure pair (`callee`) is a borrowed read, NOT
-            // aliased out, so it stays drop-eligible. Folding it into the `other`
-            // arm below would over-mark `callee` (which `terminator_source_places`
-            // reports as a CallClosure source), wrongly excluding the pair.
-            Terminator::Suspend { .. }
-                if matches!(
-                    suspend_kinds.get(&block.id),
-                    Some(SuspendKind::CallClosure { .. })
-                ) =>
-            {
-                if let Some(SuspendKind::CallClosure { args, .. }) = suspend_kinds.get(&block.id) {
-                    for p in args {
-                        mark(*p, &mut aliased);
-                    }
-                }
-            }
-            other => {
-                for p in terminator_source_places(other, suspend_kinds.get(&block.id)) {
-                    mark(p, &mut aliased);
-                }
-            }
-        }
-    }
-    closure_pair_owned
-        .iter()
-        .filter(|binding| {
-            binding_locals
-                .get(binding)
-                .and_then(|place| base_local(*place))
-                .is_some_and(|local| !aliased.contains(&local))
-        })
-        .copied()
-        .collect()
-}
 /// Whole-value hand-off dedup for a Vec-handle drop allow-set. The
 /// array-literal desugar binds the fresh vec to a synthetic let
 /// (`__hew_array_N`) and the user binding then receives the SAME handle
@@ -5552,6 +11511,22 @@ fn whole_value_handoff_move_edges(blocks: &[BasicBlock]) -> Vec<(u32, u32)> {
         for (instr_index, instr) in block.instructions.iter().enumerate() {
             if let Instr::Move { dest, src } = instr {
                 if place_is_interior_projection(*src) && neutralized_sources.contains(src) {
+                    continue;
+                }
+                // A typed produced-value handoff is a physical move when the
+                // immediately following commit zeroes its whole source slot.
+                // The two slots never alias after this point, so this is not an
+                // edge in the shared-bits handoff graph.
+                if block.instructions.get(instr_index + 1).is_some_and(|next| {
+                    matches!(
+                        next,
+                        Instr::NeutralizePayloadSlot {
+                            place,
+                            transferee: Some(transferee),
+                            authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                        } if *place == *src && *transferee == *dest
+                    )
+                }) {
                     continue;
                 }
                 // A divergent-arm selection transfer nulls the whole source
@@ -6086,10 +12061,9 @@ fn build_lifo_drops(
     local_collection_drop_allowed: &HashSet<BindingId>,
     local_bytes_drop_allowed: &HashSet<BindingId>,
     tuple_composite_drop_allowed: &HashSet<BindingId>,
-    returned_aggregate_members: &HashSet<BindingId>,
-    consumed_local_aggregate_members: &HashSet<BindingId>,
-    spawn_consumed_handle_members: &HashSet<BindingId>,
-    closure_pair_drop_allowed: &HashSet<BindingId>,
+    _returned_aggregate_members: &HashSet<BindingId>,
+    _consumed_local_aggregate_members: &HashSet<BindingId>,
+    _spawn_consumed_handle_members: &HashSet<BindingId>,
     closure_vec_drop_allowed: &HashSet<BindingId>,
     plain_vec_drop_allowed: &HashSet<BindingId>,
     indirect_enum_drop_allowed: &HashSet<BindingId>,
@@ -6098,13 +12072,29 @@ fn build_lifo_drops(
     collection_drop_flags: &HashMap<BindingId, Place>,
     actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
     conditional_record_drop_flags: &HashMap<BindingId, Place>,
-    projected_payload_overwrite_flags: &HashMap<BindingId, Place>,
+    vec_iter_drop_flags: &HashMap<BindingId, Place>,
+    latest_owner_by_binding: &HashMap<BindingId, crate::model::OwnerId>,
     projection_alias_tainted: &HashSet<u32>,
     borrowed_builtin_handle_projection_aliases: &HashSet<BindingId>,
     collection_borrow_getter_aliases: &HashSet<u32>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
+    let guarded = |binding: &BindingId, flag: Option<Place>| {
+        flag.and_then(|flag| {
+            latest_owner_by_binding
+                .get(binding)
+                .copied()
+                .map(|owner| crate::model::ElabDropGuard { owner, flag })
+        })
+    };
     for (binding, _name, ty) in owned_locals.iter().rev() {
+        // `VecIter` is an inline cursor whose field-0 ownership is discharged
+        // by the dedicated `VecIterCursor` protocol below. Its explicit Guard
+        // event makes it a real Checked-MIR owner, but must not also route it
+        // through the generic named-record destructor template.
+        if vec_iter_drop_flags.contains_key(binding) {
+            continue;
+        }
         // A binding whose value came from a BORROWING element getter
         // (`hew_vec_get_owned` / `hew_vec_get_ptr` — contract:
         // `returns_receiver_interior_alias`) is an interior alias of a
@@ -6121,40 +12111,13 @@ fn build_lifo_drops(
         {
             continue;
         }
-        // W5.021 (defect #1) — a member handed to the caller through a returned
-        // aggregate is owned by the caller now; the callee must NOT drop it or
-        // it double-frees (the value-flow `derive_returned_aggregate_member_
-        // bindings` authority covers every return shape, syntactic or not).
-        // Skip BEFORE any drop-class arm so no class can re-admit it.
-        if returned_aggregate_members.contains(binding) {
-            continue;
-        }
-        // W3.053 — an owned handle moved into a LOCAL aggregate and then
-        // extracted-and-consumed back out (for-in / `let` extraction) is owned by
-        // the downstream consumer now; the source binding must NOT also drop it or
-        // it double-frees the ctx the consumer's inline `hew_gen_coro_destroy` already
-        // releases (the value-flow `derive_consumed_local_aggregate_member_
-        // bindings` authority). Field-precise, so a no-consume sibling field keeps
-        // the source binding's own sole drop. Skip BEFORE any drop-class arm.
-        if consumed_local_aggregate_members.contains(binding) {
-            continue;
-        }
-        // CAP-08 — an owned handle-leaf moved into an actor initial-state record
-        // consumed by `SpawnActor` is owned by the spawned actor now: its
-        // synthesised `state_drop_fn` frees the handle exactly once
-        // (Stream→`hew_stream_close` / Sink→`hew_sink_close`). The M-COW spine
-        // byte-copies the handle into the state record with no retain, so the
-        // source binding must NOT also drop it (that is the double-free the
-        // W3.053 gate refuses when this proof is absent). The
-        // `derive_spawn_consumed_handle_bindings` authority admits only a handle
-        // whose single owning ingress is the spawn-state record; the gate
-        // consumes the SAME set via `source_excluded`. Skip BEFORE any drop-class
-        // arm so the unconditional `AffineResource` handle drop below cannot
-        // re-admit it. LESSONS: raii-null-after-move, cleanup-all-exits,
-        // boundary-fail-closed.
-        if spawn_consumed_handle_members.contains(binding) {
-            continue;
-        }
+        // Return, aggregate-ingress, and spawn handoffs do not mutate this
+        // destructor catalogue. Their exact Checked-MIR Transfer operations
+        // end or relocate the corresponding OwnerId at the program point where
+        // ownership changes; per-exit owner state below then excludes the old
+        // generation. Whole-function ancestry sets are intentionally not
+        // cleanup authority because they erase the owner from earlier unwind
+        // edges and misclassify retain-backed return copies.
         // A typed builtin handle projected without retain from a live
         // aggregate remains owned by that aggregate. The projection-alias
         // derivation excludes neutralized move-outs, so this skip applies only
@@ -6225,7 +12188,7 @@ fn build_lifo_drops(
                 // fired where it reads 0 (still owned). `None` for every
                 // unflagged binding (the common case) — byte-identical to the
                 // pre-#2418 drop.
-                guard: collection_drop_flags.get(binding).copied(),
+                guard: guarded(binding, collection_drop_flags.get(binding).copied()),
             });
             continue;
         }
@@ -6264,7 +12227,7 @@ fn build_lifo_drops(
                 },
                 // #2418 — path-sensitive exactly-once gate for a
                 // conditionally-moved handle; see the owned-Vec arm above.
-                guard: collection_drop_flags.get(binding).copied(),
+                guard: guarded(binding, collection_drop_flags.get(binding).copied()),
             });
             continue;
         }
@@ -6304,7 +12267,7 @@ fn build_lifo_drops(
                 kind: drop_kind_for(place, ty, None),
                 // #2418 — path-sensitive exactly-once gate for a
                 // conditionally-moved handle; see the owned-Vec arm above.
-                guard: collection_drop_flags.get(binding).copied(),
+                guard: guarded(binding, collection_drop_flags.get(binding).copied()),
             });
             continue;
         }
@@ -6343,7 +12306,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: drop_kind_for(place, ty, None),
-                guard: actor_message_cow_drop_flags.get(binding).copied(),
+                guard: guarded(binding, actor_message_cow_drop_flags.get(binding).copied()),
             });
             continue;
         }
@@ -6376,7 +12339,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::EnumInPlace,
-                guard: overwrite_guard_flags.get(binding).copied(),
+                guard: guarded(binding, overwrite_guard_flags.get(binding).copied()),
             });
             continue;
         }
@@ -6483,10 +12446,13 @@ fn build_lifo_drops(
                 // Resource-record flags take the same precedence as the
                 // consume hook in `lower_value_for_move`; ordinary conditional
                 // record flags cover the disjoint String/BitCopy record class.
-                guard: affine_release_flags
-                    .get(binding)
-                    .or_else(|| conditional_record_drop_flags.get(binding))
-                    .copied(),
+                guard: guarded(
+                    binding,
+                    affine_release_flags
+                        .get(binding)
+                        .or_else(|| conditional_record_drop_flags.get(binding))
+                        .copied(),
+                ),
             });
             continue;
         }
@@ -6544,7 +12510,14 @@ fn build_lifo_drops(
         // before this fix); it never double-frees.
         // LESSONS: cleanup-all-exits, raii-null-after-move,
         // boundary-fail-closed, ffi-ownership-contracts.
-        if closure_pair_drop_allowed.contains(binding) && ty_is_closure_pair(ty) {
+        // Checked-MIR owner construction is the admission proof here:
+        // `register_owned_local` mints a closure-pair OwnerId only for a
+        // HeapBox `MakeClosure` (or its exact transferred successor). Named
+        // functions and stack/null pairs never enter this owner catalogue.
+        // Per-exit OwnerId replay then follows Relocate/Transfer into the
+        // actual carrier, so a function-global source-operand alias scan is
+        // neither necessary nor authoritative.
+        if ty_is_closure_pair(ty) {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
                     "build_lifo_drops invariant: closure-pair binding {binding:?} is in \
@@ -6679,7 +12652,7 @@ fn build_lifo_drops(
                 // unguarded as before. `drops_for_exit` independently excludes
                 // the drop entirely on an unconditionally-`Consumed` exit, so
                 // the guard only does runtime work at a genuine join.
-                let guard = affine_release_flags.get(binding).copied();
+                let guard = guarded(binding, affine_release_flags.get(binding).copied());
                 drops.push(ElabDrop {
                     place,
                     ty: ty.clone(),
@@ -6728,10 +12701,15 @@ fn build_lifo_drops(
                             ty: ty.clone(),
                             drop_fn: None,
                             kind: drop_kind_for(*place, ty, None),
-                            guard: actor_message_cow_drop_flags
-                                .get(binding)
-                                .or_else(|| projected_payload_overwrite_flags.get(binding))
-                                .copied(),
+                            // Projected-payload guards are generation-specific
+                            // Checked-MIR events and are attached per exit by
+                            // `enumerate_exits`. Actor-message flags predate
+                            // that stream but are still qualified with the
+                            // current generation before the plan is sealed.
+                            guard: guarded(
+                                binding,
+                                actor_message_cow_drop_flags.get(binding).copied(),
+                            ),
                         });
                     }
                 }
@@ -7237,6 +13215,617 @@ pub(super) fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bo
 /// treats it as if `Live` for drop-plan purposes, but the program
 /// would have already been rejected before reaching codegen so the
 /// drop list is informational.
+pub(super) type ExactOwnerState = HashMap<crate::model::OwnerId, Place>;
+pub(super) type MaybeOwnerState = HashSet<(crate::model::OwnerId, Place)>;
+pub(super) type MustBindingOwnerState = HashMap<BindingId, Place>;
+
+#[derive(Clone)]
+enum OwnerStateOperation {
+    Mint {
+        owner: crate::model::OwnerId,
+        place: Place,
+    },
+    Transfer {
+        owner: crate::model::OwnerId,
+        successor: Option<(crate::model::OwnerId, Place)>,
+    },
+    RelocateOwner {
+        owner: crate::model::OwnerId,
+        to: Place,
+    },
+    End {
+        owner: crate::model::OwnerId,
+    },
+    Reset {
+        previous: crate::model::OwnerId,
+        replacement: crate::model::OwnerId,
+        place: Place,
+    },
+    Rearm {
+        previous: crate::model::OwnerId,
+        replacement: crate::model::OwnerId,
+        place: Place,
+    },
+    Join {
+        incoming: Vec<crate::model::OwnerId>,
+        replacement: crate::model::OwnerId,
+        place: Place,
+    },
+    None,
+}
+
+#[allow(
+    clippy::match_same_arms,
+    reason = "explicit physical-copy and unclassified-operation arms document distinct ownership semantics"
+)]
+fn owner_state_operation(instruction: &Instr) -> OwnerStateOperation {
+    use crate::model::OwnershipEvent;
+
+    match instruction {
+        // Physical copies are backend mechanics. They never mutate ownership
+        // state implicitly: lowering must publish an exact `Relocate` or
+        // `Transfer` event at the same program point. This distinction also
+        // permits borrowed ABI copies without accidentally moving the owner.
+        Instr::Move { .. } | Instr::WitnessMove { .. } => OwnerStateOperation::None,
+        Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, .. }) => {
+            OwnerStateOperation::Mint {
+                owner: *owner,
+                place: *place,
+            }
+        }
+        Instr::OwnershipEvent(OwnershipEvent::Transfer {
+            owner,
+            to,
+            to_owner,
+            ..
+        }) => OwnerStateOperation::Transfer {
+            owner: *owner,
+            successor: to_owner.zip(*to),
+        },
+        Instr::OwnershipEvent(OwnershipEvent::Relocate { owner, to, .. }) => {
+            OwnerStateOperation::RelocateOwner {
+                owner: *owner,
+                to: *to,
+            }
+        }
+        Instr::OwnershipEvent(
+            OwnershipEvent::Release { owner, .. }
+            | OwnershipEvent::GuardedRelease { owner, .. }
+            | OwnershipEvent::DemoteToAlias { owner, .. },
+        ) => OwnerStateOperation::End { owner: *owner },
+        Instr::OwnershipEvent(OwnershipEvent::Reset {
+            previous,
+            replacement,
+            place,
+            ..
+        }) => OwnerStateOperation::Reset {
+            previous: *previous,
+            replacement: *replacement,
+            place: *place,
+        },
+        Instr::OwnershipEvent(OwnershipEvent::Rearm {
+            previous,
+            replacement,
+            place,
+            ..
+        }) => OwnerStateOperation::Rearm {
+            previous: *previous,
+            replacement: *replacement,
+            place: *place,
+        },
+        Instr::OwnershipEvent(OwnershipEvent::Join {
+            incoming,
+            replacement,
+            place,
+            ..
+        }) => OwnerStateOperation::Join {
+            incoming: incoming.clone(),
+            replacement: *replacement,
+            place: *place,
+        },
+        _ => OwnerStateOperation::None,
+    }
+}
+
+pub(super) fn apply_exact_owner_ops(instructions: &[Instr], live: &mut ExactOwnerState) {
+    for instruction in instructions {
+        match owner_state_operation(instruction) {
+            OwnerStateOperation::Mint { owner, place } => {
+                live.insert(owner, place);
+            }
+            OwnerStateOperation::Transfer { owner, successor } => {
+                live.remove(&owner);
+                if let Some((next, destination)) = successor {
+                    live.insert(next, destination);
+                }
+            }
+            OwnerStateOperation::RelocateOwner { owner, to } => {
+                if let Some(place) = live.get_mut(&owner) {
+                    *place = to;
+                }
+            }
+            OwnerStateOperation::End { owner } => {
+                live.remove(&owner);
+            }
+            OwnerStateOperation::Reset {
+                previous,
+                replacement,
+                place,
+            }
+            | OwnerStateOperation::Rearm {
+                previous,
+                replacement,
+                place,
+            } => {
+                live.remove(&previous);
+                live.insert(replacement, place);
+            }
+            OwnerStateOperation::Join {
+                incoming: _,
+                replacement,
+                place,
+            } => {
+                live.retain(|owner, _| owner.binding != replacement.binding);
+                live.insert(replacement, place);
+            }
+            OwnerStateOperation::None => {}
+        }
+    }
+}
+
+pub(super) fn apply_maybe_owner_ops(instructions: &[Instr], live: &mut MaybeOwnerState) {
+    for instruction in instructions {
+        match owner_state_operation(instruction) {
+            OwnerStateOperation::Mint { owner, place } => {
+                live.insert((owner, place));
+            }
+            OwnerStateOperation::Transfer { owner, successor } => {
+                live.retain(|(candidate, _)| *candidate != owner);
+                if let Some(next) = successor {
+                    live.insert(next);
+                }
+            }
+            OwnerStateOperation::RelocateOwner { owner, to } => {
+                let was_live = live.iter().any(|(candidate, _)| *candidate == owner);
+                live.retain(|(candidate, _)| *candidate != owner);
+                if was_live {
+                    live.insert((owner, to));
+                }
+            }
+            OwnerStateOperation::End { owner } => {
+                live.retain(|(candidate, _)| *candidate != owner);
+            }
+            OwnerStateOperation::Reset {
+                previous,
+                replacement,
+                place,
+            } => {
+                live.retain(|(candidate, _)| *candidate != previous);
+                live.insert((replacement, place));
+            }
+            OwnerStateOperation::Rearm {
+                previous,
+                replacement,
+                place,
+            } => {
+                live.retain(|(candidate, _)| *candidate != previous);
+                live.insert((replacement, place));
+            }
+            OwnerStateOperation::Join {
+                incoming: _,
+                replacement,
+                place,
+            } => {
+                live.retain(|(owner, _)| owner.binding != replacement.binding);
+                live.insert((replacement, place));
+            }
+            OwnerStateOperation::None => {}
+        }
+    }
+}
+
+pub(super) fn exact_owner_states(
+    blocks: &[BasicBlock],
+) -> (HashMap<u32, ExactOwnerState>, HashMap<u32, ExactOwnerState>) {
+    let mut entries = HashMap::from([(ENTRY_BLOCK_ID, ExactOwnerState::new())]);
+    let mut exits = HashMap::new();
+    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
+    while let Some(block_id) = queue.pop_front() {
+        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();
+        apply_exact_owner_ops(&block.instructions, &mut outgoing);
+        exits.insert(block_id, outgoing.clone());
+        for successor in block.successors() {
+            let changed = if let Some(existing) = entries.get_mut(&successor) {
+                let joined: ExactOwnerState = existing
+                    .iter()
+                    .filter_map(|(owner, place)| {
+                        (outgoing.get(owner) == Some(place)).then_some((*owner, *place))
+                    })
+                    .collect();
+                if *existing == joined {
+                    false
+                } else {
+                    *existing = joined;
+                    true
+                }
+            } else {
+                entries.insert(successor, outgoing.clone());
+                true
+            };
+            if changed {
+                queue.push_back(successor);
+            }
+        }
+    }
+    (entries, exits)
+}
+
+pub(super) fn maybe_owner_states(
+    blocks: &[BasicBlock],
+) -> (HashMap<u32, MaybeOwnerState>, HashMap<u32, MaybeOwnerState>) {
+    let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MaybeOwnerState::new())]);
+    let mut exits = HashMap::new();
+    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
+    while let Some(block_id) = queue.pop_front() {
+        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();
+        apply_maybe_owner_ops(&block.instructions, &mut outgoing);
+        exits.insert(block_id, outgoing.clone());
+        for successor in block.successors() {
+            let changed = if let Some(existing) = entries.get_mut(&successor) {
+                let before = existing.len();
+                existing.extend(outgoing.iter().copied());
+                existing.len() != before
+            } else {
+                entries.insert(successor, outgoing.clone());
+                true
+            };
+            if changed {
+                queue.push_back(successor);
+            }
+        }
+    }
+    (entries, exits)
+}
+
+fn apply_must_binding_owner_ops(instructions: &[Instr], live: &mut MustBindingOwnerState) {
+    for instruction in instructions {
+        match owner_state_operation(instruction) {
+            OwnerStateOperation::Mint { owner, place } => {
+                live.insert(owner.binding, place);
+            }
+            OwnerStateOperation::Transfer { owner, successor } => {
+                live.remove(&owner.binding);
+                if let Some((next, destination)) = successor {
+                    live.insert(next.binding, destination);
+                }
+            }
+            OwnerStateOperation::RelocateOwner { owner, to } => {
+                if let Some(place) = live.get_mut(&owner.binding) {
+                    *place = to;
+                }
+            }
+            OwnerStateOperation::End { owner } => {
+                live.remove(&owner.binding);
+            }
+            OwnerStateOperation::Reset {
+                previous,
+                replacement,
+                place,
+            }
+            | OwnerStateOperation::Rearm {
+                previous,
+                replacement,
+                place,
+            } => {
+                live.remove(&previous.binding);
+                live.insert(replacement.binding, place);
+            }
+            OwnerStateOperation::Join {
+                incoming,
+                replacement,
+                place,
+            } => {
+                for owner in incoming {
+                    live.remove(&owner.binding);
+                }
+                live.insert(replacement.binding, place);
+            }
+            OwnerStateOperation::None => {}
+        }
+    }
+}
+
+/// Generation-erased must-own state used only to justify an ownership-SSA
+/// Join. Unlike exact `OwnerId` intersection, this lattice preserves a binding
+/// when every predecessor owns it in the same physical place even if their
+/// generations differ. It is derived solely from explicit ownership events.
+pub(super) fn must_binding_owner_states(
+    blocks: &[BasicBlock],
+) -> (
+    HashMap<u32, MustBindingOwnerState>,
+    HashMap<u32, MustBindingOwnerState>,
+) {
+    let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MustBindingOwnerState::new())]);
+    let mut exits = HashMap::new();
+    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
+    while let Some(block_id) = queue.pop_front() {
+        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();
+        apply_must_binding_owner_ops(&block.instructions, &mut outgoing);
+        exits.insert(block_id, outgoing.clone());
+        for successor in block.successors() {
+            let changed = if let Some(existing) = entries.get_mut(&successor) {
+                let joined = existing
+                    .iter()
+                    .filter_map(|(binding, place)| {
+                        (outgoing.get(binding) == Some(place)).then_some((*binding, *place))
+                    })
+                    .collect::<MustBindingOwnerState>();
+                if *existing == joined {
+                    false
+                } else {
+                    *existing = joined;
+                    true
+                }
+            } else {
+                entries.insert(successor, outgoing.clone());
+                true
+            };
+            if changed {
+                queue.push_back(successor);
+            }
+        }
+    }
+    (entries, exits)
+}
+
+/// Reproduce the owner set visible at one exit program point. Terminator exits
+/// observe the completed block; entry cancellation observes the pre-prologue
+/// state; an indirect closure unwind observes the prefix immediately before
+/// its site-keyed instruction.
+fn exact_owner_state_for_exit(
+    exit: &ExitPath,
+    blocks: &[BasicBlock],
+    entries: &HashMap<u32, ExactOwnerState>,
+    exits: &HashMap<u32, ExactOwnerState>,
+) -> ExactOwnerState {
+    let block_id = exit_block_id(exit);
+    if matches!(exit, ExitPath::Cancel { block } if *block == ENTRY_BLOCK_ID) {
+        return entries.get(&block_id).cloned().unwrap_or_default();
+    }
+    if let ExitPath::Unwind { callee, .. } = exit {
+        if let Some((block, position)) =
+            blocks
+                .iter()
+                .find(|block| block.id == block_id)
+                .and_then(|block| {
+                    block
+                        .instructions
+                        .iter()
+                        .position(|instruction| {
+                            matches!(
+                                instruction,
+                                Instr::CallClosure { call_site, .. }
+                                    if crate::model::indirect_closure_callee(*call_site) == *callee
+                            )
+                        })
+                        .map(|position| (block, position))
+                })
+        {
+            let mut state = entries.get(&block_id).cloned().unwrap_or_default();
+            apply_exact_owner_ops(&block.instructions[..position], &mut state);
+            return state;
+        }
+    }
+    exits.get(&block_id).cloned().unwrap_or_default()
+}
+
+/// Reproduce the generations that can be live at an exit on at least one
+/// incoming path. This mirrors [`exact_owner_state_for_exit`], including the
+/// pre-prologue entry-cancel and instruction-prefix unwind program points.
+fn maybe_owner_state_for_exit(
+    exit: &ExitPath,
+    blocks: &[BasicBlock],
+    entries: &HashMap<u32, MaybeOwnerState>,
+    exits: &HashMap<u32, MaybeOwnerState>,
+) -> MaybeOwnerState {
+    let block_id = exit_block_id(exit);
+    if matches!(exit, ExitPath::Cancel { block } if *block == ENTRY_BLOCK_ID) {
+        return entries.get(&block_id).cloned().unwrap_or_default();
+    }
+    if let ExitPath::Unwind { callee, .. } = exit {
+        if let Some((block, position)) =
+            blocks
+                .iter()
+                .find(|block| block.id == block_id)
+                .and_then(|block| {
+                    block
+                        .instructions
+                        .iter()
+                        .position(|instruction| {
+                            matches!(
+                                instruction,
+                                Instr::CallClosure { call_site, .. }
+                                    if crate::model::indirect_closure_callee(*call_site) == *callee
+                            )
+                        })
+                        .map(|position| (block, position))
+                })
+        {
+            let mut state = entries.get(&block_id).cloned().unwrap_or_default();
+            apply_maybe_owner_ops(&block.instructions[..position], &mut state);
+            return state;
+        }
+    }
+    exits.get(&block_id).cloned().unwrap_or_default()
+}
+
+/// Exact generations that must be destroyed when one exit is taken.
+///
+/// This is the single continuation rule shared by elaboration and final
+/// validation. It consumes only Checked-MIR ownership operations: Goto uses
+/// source-side `EdgeCarry`, ordinary normal successors use their exact entry
+/// state, and terminal/unwind/abandon exits retain every live non-return owner.
+fn exact_required_owners_for_exit(
+    exit: &ExitPath,
+    blocks: &[BasicBlock],
+    entries: &HashMap<u32, ExactOwnerState>,
+    exits: &HashMap<u32, ExactOwnerState>,
+) -> ExactOwnerState {
+    let block_id = exit_block_id(exit);
+    let live = exact_owner_state_for_exit(exit, blocks, entries, exits);
+    live.into_iter()
+        .filter(|(owner, place)| {
+            if matches!(place, Place::ReturnSlot) {
+                return false;
+            }
+            let continues = match exit {
+                ExitPath::Goto { target, .. } => blocks
+                    .iter()
+                    .find(|block| block.id == block_id)
+                    .is_some_and(|block| {
+                        block.instructions.iter().any(|instruction| {
+                            matches!(
+                                instruction,
+                                Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
+                                    owner: carried,
+                                    place: carried_place,
+                                    target: carried_target,
+                                }) if carried == owner
+                                    && carried_place == place
+                                    && carried_target == target
+                            )
+                        })
+                    }),
+                ExitPath::Call { next, .. }
+                | ExitPath::Send { next, .. }
+                | ExitPath::Ask { next, .. }
+                | ExitPath::Select { next, .. }
+                | ExitPath::Join { next, .. } => entries
+                    .get(next)
+                    .is_some_and(|state| state.get(owner) == Some(place)),
+                ExitPath::Branch { .. } => true,
+                ExitPath::Return { .. }
+                | ExitPath::Unwind { .. }
+                | ExitPath::Panic { .. }
+                | ExitPath::Cancel { .. }
+                | ExitPath::Yield { .. }
+                | ExitPath::Suspend { .. } => false,
+            };
+            !continues
+        })
+        .collect()
+}
+
+type GuardedOwnerGroups = HashMap<BindingId, HashMap<Place, HashSet<crate::model::OwnerId>>>;
+
+fn guarded_owner_groups_for_exit(
+    exit: &ExitPath,
+    blocks: &[BasicBlock],
+    maybe_entries: &HashMap<u32, MaybeOwnerState>,
+    maybe_exits: &HashMap<u32, MaybeOwnerState>,
+    guarded_owners: &HashSet<crate::model::OwnerId>,
+) -> GuardedOwnerGroups {
+    if !matches!(
+        exit,
+        ExitPath::Return { .. }
+            | ExitPath::Panic { .. }
+            | ExitPath::Unwind { .. }
+            | ExitPath::Cancel { .. }
+            | ExitPath::Yield { .. }
+            | ExitPath::Suspend { .. }
+    ) {
+        return HashMap::new();
+    }
+
+    let maybe_live = maybe_owner_state_for_exit(exit, blocks, maybe_entries, maybe_exits);
+    let mut groups = GuardedOwnerGroups::new();
+    for (owner, place) in maybe_live {
+        if guarded_owners.contains(&owner) && !matches!(place, Place::ReturnSlot) {
+            groups
+                .entry(owner.binding)
+                .or_default()
+                .entry(place)
+                .or_default()
+                .insert(owner);
+        }
+    }
+    groups
+}
+
+fn ambiguous_guarded_owners_for_exit(
+    exit: &ExitPath,
+    blocks: &[BasicBlock],
+    maybe_entries: &HashMap<u32, MaybeOwnerState>,
+    maybe_exits: &HashMap<u32, MaybeOwnerState>,
+    guarded_owners: &HashSet<crate::model::OwnerId>,
+) -> Vec<(BindingId, Vec<(crate::model::OwnerId, Place)>)> {
+    let mut ambiguous =
+        guarded_owner_groups_for_exit(exit, blocks, maybe_entries, maybe_exits, guarded_owners)
+            .into_iter()
+            .filter_map(|(binding, places)| {
+                let mut candidates = places
+                    .into_iter()
+                    .flat_map(|(place, owners)| owners.into_iter().map(move |owner| (owner, place)))
+                    .collect::<Vec<_>>();
+                candidates.sort_by_key(|(owner, _)| *owner);
+                (candidates.len() != 1).then_some((binding, candidates))
+            })
+            .collect::<Vec<_>>();
+    ambiguous.sort_by_key(|(binding, _)| *binding);
+    ambiguous
+}
+
+/// Extend must-live cleanup authority with a narrowly typed conditional owner.
+///
+/// Every [`crate::model::OwnershipEvent::Guard`] publishes the runtime
+/// discriminator for one exact owner generation. At a terminal join, the
+/// must-owner intersection intentionally loses an owner that is live on only
+/// some incoming paths, but the may-owner union plus that definition-site
+/// guard proves a guarded destructor is both necessary on the live path and
+/// suppressed on the transferred path. No continuation exit receives this
+/// authority, and an unguarded or ambiguously generated owner remains
+/// excluded.
+fn guarded_required_owners_for_exit(
+    exit: &ExitPath,
+    blocks: &[BasicBlock],
+    exact_entries: &HashMap<u32, ExactOwnerState>,
+    exact_exits: &HashMap<u32, ExactOwnerState>,
+    maybe_entries: &HashMap<u32, MaybeOwnerState>,
+    maybe_exits: &HashMap<u32, MaybeOwnerState>,
+    guarded_owners: &HashSet<crate::model::OwnerId>,
+) -> ExactOwnerState {
+    let mut required = exact_required_owners_for_exit(exit, blocks, exact_entries, exact_exits);
+    for (_, places) in
+        guarded_owner_groups_for_exit(exit, blocks, maybe_entries, maybe_exits, guarded_owners)
+    {
+        if places.len() != 1 {
+            continue;
+        }
+        let (place, owners) = places
+            .into_iter()
+            .next()
+            .expect("one guarded place was proven above");
+        if owners.len() != 1 {
+            continue;
+        }
+        let owner = owners
+            .into_iter()
+            .next()
+            .expect("one guarded owner generation was proven above");
+        required.entry(owner).or_insert(place);
+    }
+    required
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "enumerate_exits is a flat match over Terminator variants \
@@ -7264,9 +13853,8 @@ pub(super) fn enumerate_exits(
     >,
     binding_locals: &HashMap<BindingId, Place>,
     cancellation_blocks: &HashSet<u32>,
-    binding_scope: &HashMap<BindingId, ScopeId>,
-    loop_back_edge_blocks: &HashMap<u32, ScopeId>,
     projection_alias_tainted: &HashSet<u32>,
+    owner_guards: &HashMap<crate::model::OwnerId, Place>,
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
     // Track the highest block id observed so cleanup-block ids can
     // start past it. Slice 2 onwards may emit multiple non-trivial
@@ -7285,6 +13873,8 @@ pub(super) fn enumerate_exits(
     let mut next_cleanup_id = max_normal_id.saturating_add(1);
     let mut plans: Vec<(ExitPath, DropPlan)> = Vec::new();
     let drops_template = lifo.to_vec();
+    let (owner_entry_states, owner_exit_states) = exact_owner_states(blocks);
+    let empty_owner_state = ExactOwnerState::new();
 
     // Map each owned-local's Place back to its BindingId so the
     // per-exit filter can consult exit_states. The drops in `lifo`
@@ -7292,19 +13882,41 @@ pub(super) fn enumerate_exits(
     // builder's `binding_locals` (BindingId -> Place) is the cleanest
     // bridge. Builds only as large as there are owned bindings.
     //
-    // Adoption/transfer/machine-synth seams legitimately point two bindings
-    // at one `Place`, so this reversal is not always injective. `.collect()`
-    // over a `HashMap` iteration order would let a random one win —
-    // `RandomState`-nondeterministic across runs, violating the compiler's
-    // determinism doctrine. Fold with an explicit tie-break instead: the
-    // lowest `BindingId` (first-declared) wins.
+    // Adoption can point two lowering identities at one Place. Resolve that
+    // only from the explicit old-generation → new-owner event emitted at the
+    // adoption site. There is deliberately no BindingId ordering fallback:
+    // identity order is not ownership authority.
+    let adopted_owner_by_place: HashMap<Place, BindingId> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                from,
+                to: Some(to),
+                to_owner: Some(owner),
+                ..
+            }) if from == to => Some((*to, owner.binding)),
+            _ => None,
+        })
+        .collect();
     let mut place_to_binding: std::collections::HashMap<Place, BindingId> =
         std::collections::HashMap::with_capacity(binding_locals.len());
     for (&binding, &place) in binding_locals {
-        place_to_binding
-            .entry(place)
-            .and_modify(|existing| *existing = (*existing).min(binding))
-            .or_insert(binding);
+        match place_to_binding.get(&place).copied() {
+            None => {
+                place_to_binding.insert(place, binding);
+            }
+            Some(existing) if existing == binding => {}
+            Some(_) => {
+                if let Some(adopted) = adopted_owner_by_place.get(&place).copied() {
+                    place_to_binding.insert(place, adopted);
+                } else {
+                    // Ambiguous ownership is rejected by obligation balance;
+                    // never pick an owner by hash iteration or numeric id.
+                    place_to_binding.remove(&place);
+                }
+            }
+        }
     }
 
     // Payload-alias → carrier composite map: `Ok(w)` / `Some(s)` binders whose
@@ -7315,6 +13927,11 @@ pub(super) fn enumerate_exits(
     // the checker's balance accounting agree on which binders alias which
     // carrier.
     let payload_alias_carrier = collect_payload_alias_map(blocks);
+    if std::env::var_os("HEW_DEBUG_DROP_ENUM").is_some() {
+        eprintln!(
+            "HEW_DEBUG_DROP_ENUM lifo={drops_template:#?} places={place_to_binding:#?} aliases={payload_alias_carrier:#?} owner_exits={owner_exit_states:#?}"
+        );
+    }
 
     // Carrier locals that are non-owning borrowed views of persistent actor
     // state (`ActorStateFieldLoad { mode: Borrowed }` — a bare byte-copy alias;
@@ -7339,28 +13956,21 @@ pub(super) fn enumerate_exits(
         })
         .collect();
 
-    // Narrow the function-wide LIFO to the drops whose owning binding is
-    // live (`Live` / `MaybeConsumed` / `AliasedIntoAggregate`) in `state_map`.
-    // A binding `Consumed` (moved out) or `Uninit` (not yet, or never,
-    // constructed) on the reaching path is excluded — firing its drop would
-    // double-free a moved value or free/demonitor an uninitialised slot.
-    let filter_drops_by_state = |state_map: &std::collections::BTreeMap<
+    // Narrow the type/layout drop catalogue solely with the exact OwnerId
+    // generations live at this program point.  HIR binding state is useful for
+    // move diagnostics, but it is not cleanup authority: one binding may have
+    // several sequential generations and a later successful transfer must not
+    // erase the same binding's earlier unwind interval.
+    let filter_drops_by_state = |_state_map: &std::collections::BTreeMap<
         hew_hir::BindingId,
         dataflow::BindingState,
-    >|
+    >,
+                                 owner_state: &ExactOwnerState|
      -> Vec<ElabDrop> {
-        let live: Vec<ElabDrop> = drops_template
+        let mut live: Vec<ElabDrop> = drops_template
             .iter()
             .filter(|drop| match place_to_binding.get(&drop.place) {
-                Some(binding) => matches!(
-                    state_map
-                        .get(binding)
-                        .copied()
-                        .unwrap_or(dataflow::BindingState::Uninit),
-                    dataflow::BindingState::Live
-                        | dataflow::BindingState::MaybeConsumed(_)
-                        | dataflow::BindingState::AliasedIntoAggregate(_)
-                ),
+                Some(binding) => owner_state.keys().any(|owner| owner.binding == *binding),
                 // No binding mapping → conservatively DROP the drop, not
                 // keep it. This crate's posture is leak-not-double-free: an
                 // unrecognised place with no dataflow-tracked owning binding
@@ -7373,6 +13983,35 @@ pub(super) fn enumerate_exits(
             })
             .cloned()
             .collect();
+        // Bind every guarded cleanup to the exact owner generation live at
+        // this exit. A projected-payload guard exists only in the immutable
+        // Checked-MIR event stream; legacy physical flag producers contribute
+        // only the flag place already present on the template. In both cases
+        // the exit-local OwnerId replaces any function-global generation.
+        for drop in &mut live {
+            let Some(binding) = place_to_binding.get(&drop.place).copied() else {
+                continue;
+            };
+            let exact_owners = owner_state
+                .iter()
+                .filter_map(|(owner, place)| (owner.binding == binding).then_some((*owner, *place)))
+                .collect::<Vec<_>>();
+            let [(owner, current_place)] = exact_owners.as_slice() else {
+                continue;
+            };
+            // Whole-place MIR moves relocate the same generation. Cleanup
+            // follows that explicit program-point state instead of the
+            // lexical slot captured by the pre-sealing LIFO template.
+            drop.place = *current_place;
+            if let Some(flag) = owner_guards.get(owner).copied() {
+                drop.guard = Some(crate::model::ElabDropGuard {
+                    owner: *owner,
+                    flag,
+                });
+            } else if let Some(guard) = &mut drop.guard {
+                guard.owner = *owner;
+            }
+        }
         // A projection-alias payload binder (`Ok(w)` destructured out of a
         // call-scrutinee `Result<Resource, _>`) is freed by its OWNING
         // composite's recursive `EnumInPlace` scope-exit drop. When the sibling
@@ -7419,7 +14058,28 @@ pub(super) fn enumerate_exits(
             // analyze). Fall back to the function-wide LIFO.
             return drops_template.clone();
         };
-        filter_drops_by_state(state_map)
+        filter_drops_by_state(
+            state_map,
+            owner_exit_states
+                .get(&block_id)
+                .unwrap_or(&empty_owner_state),
+        )
+    };
+
+    // An instruction-level may-unwind edge observes ownership immediately
+    // before that instruction. Replaying only the immutable operation prefix
+    // keeps a temporary owner live on the exceptional edge even when its
+    // normal-path Release follows later in the same block.
+    let drops_before_instruction = |block: &BasicBlock, instruction_index: usize| {
+        let Some(state_map) = exit_states.get(&block.id) else {
+            return drops_template.clone();
+        };
+        let mut owners = owner_entry_states
+            .get(&block.id)
+            .cloned()
+            .unwrap_or_default();
+        apply_exact_owner_ops(&block.instructions[..instruction_index], &mut owners);
+        filter_drops_by_state(state_map, &owners)
     };
 
     // Drop set for a `CooperateKind::FunctionEntry` cancel exit. The cancel
@@ -7437,44 +14097,18 @@ pub(super) fn enumerate_exits(
         let Some(state_map) = entry_states.get(&block_id) else {
             return drops_template.clone();
         };
-        filter_drops_by_state(state_map)
+        filter_drops_by_state(
+            state_map,
+            owner_entry_states
+                .get(&block_id)
+                .unwrap_or(&empty_owner_state),
+        )
     };
 
     // Per-iteration drops for a loop-body back-edge `Goto`. Restricts
     // `drops_for_exit` to bindings declared in this loop body's scope so the
     // back-edge releases ONLY per-iteration bindings (`let opt = await
-    // rx.recv();` in a `while`, `let item = ...` in a `loop`) and never the
-    // outer-scope bindings whose drop belongs at function exit (the receiver
-    // itself, function parameters, bindings declared before the loop). The
-    // body-scope match is exact, not transitive: nested block-scope bindings
-    // already self-drop via the existing scope-exit pass when their inner
-    // block closes, so this back-edge sees only the body's own bindings as
-    // Live in `exit_states`.
-    //
-    // The escape / first-iteration / pass-by-value double-free corner cases
-    // are handled by `drops_for_exit`'s `BindingState` filter (the same one
-    // that gates `Return`/`Cancel`): a binding `Consumed` mid-body (moved out
-    // to `break x;` or to a by-value call) is excluded — the consumer owns
-    // the release; a binding `Uninit` on a path that misses its
-    // initialisation (first iteration before the let runs) is excluded — no
-    // value, nothing to free. So the back-edge plan is structurally safe.
-    let drops_for_back_edge = |block_id: u32, body_scope: ScopeId| -> Vec<ElabDrop> {
-        drops_for_exit(block_id)
-            .into_iter()
-            .filter(|drop| match place_to_binding.get(&drop.place) {
-                Some(binding) => binding_scope.get(binding).copied() == Some(body_scope),
-                // Unknown binding mapping — conservatively skip the
-                // back-edge drop. The function-exit / cancel plans still
-                // hold any unbound drop entries via their own paths, so a
-                // miss here at worst leaves the value for the function-exit
-                // pass to handle (leak-not-double-free posture matching the
-                // existing `drops_for_exit` None arm).
-                None => false,
-            })
-            .collect()
-    };
-
-    // Scope-close drops on a forward (non-back-edge) `Goto`. A binding bound on
+    // Scope-close drops on every `Goto`, including loop backedges. A binding bound on
     // ONLY ONE arm of a `match`/`if` is `Live` at the arm's closing `Goto` but
     // goes OUT OF SCOPE crossing the join: at the join target's entry the dataflow
     // meets this arm's `Live` with the sibling arm's `Uninit`, yielding `Uninit`
@@ -7492,20 +14126,6 @@ pub(super) fn enumerate_exits(
     // is already excluded by `drops_for_exit`'s state filter (never freeing a
     // moved-out or uninitialised slot). So the release fires on exactly the path
     // where the binding is the live sole owner and on no other.
-    let target_entry_keeps_alive = |target: u32, binding: &BindingId| -> bool {
-        entry_states
-            .get(&target)
-            .and_then(|state_map| state_map.get(binding))
-            .copied()
-            .is_some_and(|state| {
-                matches!(
-                    state,
-                    dataflow::BindingState::Live
-                        | dataflow::BindingState::MaybeConsumed(_)
-                        | dataflow::BindingState::AliasedIntoAggregate(_)
-                )
-            })
-    };
     // Projection-alias taint: a binding that is a non-owning interior alias of a
     // composite (a match/if-let payload binder destructured out of an enum
     // scrutinee — `Ok(inner)` / `Some(s)` — or a `*FieldLoad` interior pointer).
@@ -7542,26 +14162,33 @@ pub(super) fn enumerate_exits(
     // consumed-project binder set exempts only field-load destinations whose
     // parent composite is consume-marked on the selected arm; those destinations
     // are sole owners and must close on this edge before the join loses them.
-    let drops_for_scope_close_goto = |block_id: u32, target: u32| -> Vec<ElabDrop> {
-        drops_for_exit(block_id)
-            .into_iter()
-            .filter(|drop| {
-                if let Some(l) = base_local(drop.place) {
-                    if projection_alias_tainted.contains(&l) {
-                        return false;
+    // Physical owners committed to `ReturnSlot` by this exact return block.
+    // The binding-state analysis operates on HIR bindings and can leave the
+    // original binding `Live` when expression lowering inserts anonymous move
+    // carriers.  Follow the block-local whole-place move chain instead: every
+    // source reaching `ReturnSlot` has transferred on this edge and must not
+    // also run its cleanup drop.  Keeping this per block preserves owners on a
+    // sibling early-return path that returns a different value.
+    let return_transfer_places_for_block = |block: &BasicBlock| -> HashSet<Place> {
+        let mut transferred = HashSet::from([Place::ReturnSlot]);
+        loop {
+            let mut changed = false;
+            for instruction in &block.instructions {
+                let (dest, src) = match instruction {
+                    Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
+                        (*dest, *src)
                     }
+                    _ => continue,
+                };
+                if transferred.contains(&dest) {
+                    changed |= transferred.insert(src);
                 }
-                match place_to_binding.get(&drop.place) {
-                    // Drop here only when the binding leaves scope crossing this
-                    // edge (not kept alive at the target). Kept-alive → its later
-                    // exit owns the release (no double-free).
-                    Some(binding) => !target_entry_keeps_alive(target, binding),
-                    // No binding mapping → conservatively skip (leak-not-double-free,
-                    // matching the back-edge None arm).
-                    None => false,
-                }
-            })
-            .collect()
+            }
+            if !changed {
+                break;
+            }
+        }
+        transferred
     };
 
     for block in blocks {
@@ -7575,30 +14202,29 @@ pub(super) fn enumerate_exits(
                 // so this stage preserves the Raw-MIR CFG identity explicitly.
                 continue;
             }
-            Terminator::Return => (
-                ExitPath::Return { block: block_id },
-                DropPlan {
-                    drops: drops_for_exit(block_id),
-                },
-            ),
+            Terminator::Return => {
+                let transferred = return_transfer_places_for_block(block);
+                (
+                    ExitPath::Return { block: block_id },
+                    DropPlan {
+                        drops: drops_for_exit(block_id)
+                            .into_iter()
+                            .filter(|drop| !transferred.contains(&drop.place))
+                            .collect(),
+                    },
+                )
+            }
             Terminator::Goto { target } => {
-                // Per-iteration drops fire on loop-body back-edges; a forward
-                // `Goto` that closes an inner (match/if-arm/block) scope releases
-                // the bindings that leave scope crossing the join
-                // (`drops_for_scope_close_goto`) — the bindings whose drop the
-                // function-exit pass would otherwise miss because the join meets
-                // them to `Uninit`. Bindings still live on the join stay for the
-                // eventual exit.
-                let drops = match loop_back_edge_blocks.get(&block_id) {
-                    Some(&body_scope) => drops_for_back_edge(block_id, body_scope),
-                    None => drops_for_scope_close_goto(block_id, *target),
-                };
+                // Lexical releases are executable Drop+Release operations at a
+                // first-class ScopeExit program point. Every generation that
+                // survives this source edge is named by EdgeCarry. There is no
+                // target-block ownership rediscovery here.
                 (
                     ExitPath::Goto {
                         block: block_id,
                         target: *target,
                     },
-                    DropPlan { drops },
+                    DropPlan::default(),
                 )
             }
             Terminator::Branch {
@@ -7861,7 +14487,63 @@ pub(super) fn enumerate_exits(
                 },
             ),
         };
-        plans.push(plan);
+        if !matches!(
+            &block.terminator,
+            Terminator::Call { authority, .. } if authority.is_no_return()
+        ) {
+            plans.push(plan);
+        }
+        if let Terminator::Call { callee, .. } = &block.terminator {
+            plans.push((
+                ExitPath::Unwind {
+                    block: block_id,
+                    callee: callee.clone(),
+                },
+                DropPlan {
+                    drops: drops_for_exit(block_id),
+                },
+            ));
+        }
+        for (instruction_index, call_site) in
+            block
+                .instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(instruction_index, instruction)| match instruction {
+                    Instr::CallClosure { call_site, .. } => Some((instruction_index, *call_site)),
+                    _ => None,
+                })
+        {
+            plans.push((
+                ExitPath::Unwind {
+                    block: block_id,
+                    callee: crate::model::indirect_closure_callee(call_site),
+                },
+                DropPlan {
+                    drops: drops_before_instruction(block, instruction_index),
+                },
+            ));
+        }
+        if block
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instr::GeneratorNext { .. }))
+        {
+            // `Builder::push_instr` seals a GeneratorNext as the last
+            // instruction in its block. Its continuation resume is therefore
+            // a unique may-unwind program point keyed by this block id, and
+            // the successful destination ownership events live in the normal
+            // successor rather than contaminating this exceptional live set.
+            plans.push((
+                ExitPath::Unwind {
+                    block: block_id,
+                    callee: "hew_cont_resume".to_string(),
+                },
+                DropPlan {
+                    drops: drops_for_exit(block_id),
+                },
+            ));
+        }
         if cancellation_blocks.contains(&block_id) {
             // The drop set depends on WHERE the cooperate-cancel branch leaves
             // the function (see `CooperateKind`). A `FunctionEntry` site (always
@@ -7901,9 +14583,8 @@ mod semantic_unreachable_tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
-            &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(elaborated.len(), 1);
@@ -8335,758 +15016,7 @@ mod field_drop_in_place_verifier {
     }
 }
 #[cfg(test)]
-mod drop_admission_type_shape_pins {
-    //! Frozen-verdict pins for the type-shape axis of MIR drop admission: the
-    //! owned-locals seed gate, the collection-handle release bucket, and the
-    //! two release-symbol pickers. Each pin enumerates its own function's
-    //! decision domain and freezes today's verdict as a literal, so a moved
-    //! admission decision is a named test failure — never a silent
-    //! reclassification. An admission that widens over-drops (double-free,
-    //! the worst outcome); one that narrows leaks.
-    use super::*;
-    use crate::ownership::{DropClass, HeapLeaf};
-
-    fn vec_of(elem: ResolvedTy) -> ResolvedTy {
-        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![elem])
-    }
-
-    fn named(name: &str) -> ResolvedTy {
-        ResolvedTy::named_user(name, vec![])
-    }
-
-    fn hashmap_str_i64() -> ResolvedTy {
-        ResolvedTy::named_builtin(
-            "HashMap",
-            BuiltinType::HashMap,
-            vec![ResolvedTy::String, ResolvedTy::I64],
-        )
-    }
-
-    fn hashset_i64() -> ResolvedTy {
-        ResolvedTy::named_builtin("HashSet", BuiltinType::HashSet, vec![ResolvedTy::I64])
-    }
-
-    fn generator_i64() -> ResolvedTy {
-        ResolvedTy::named_builtin(
-            "Generator",
-            BuiltinType::Generator,
-            vec![ResolvedTy::I64, ResolvedTy::Unit],
-        )
-    }
-
-    fn bare_fn() -> ResolvedTy {
-        ResolvedTy::Function {
-            params: vec![],
-            ret: Box::new(ResolvedTy::Unit),
-        }
-    }
-
-    fn empty_capture_closure() -> ResolvedTy {
-        ResolvedTy::Closure {
-            params: vec![],
-            ret: Box::new(ResolvedTy::Unit),
-            captures: vec![],
-        }
-    }
-
-    /// `indirect enum Foo { A(i64); B }` — a heap-boxed node whose per-element
-    /// `Vec` release is unwired (`Unsupported(NoReleaseProtocol)`).
-    fn builder_with_indirect_enum_foo() -> Builder {
-        Builder {
-            enum_layouts: vec![crate::model::EnumLayout {
-                name: "Foo".to_string(),
-                tag_width: 1,
-                variants: vec![
-                    crate::model::MachineVariantLayout {
-                        name: "A".to_string(),
-                        field_tys: vec![ResolvedTy::I64],
-                        field_names: vec![],
-                    },
-                    crate::model::MachineVariantLayout {
-                        name: "B".to_string(),
-                        field_tys: vec![],
-                        field_names: vec![],
-                    },
-                ],
-                is_indirect: true,
-            }],
-            ..Builder::default()
-        }
-    }
-
-    /// Builder carrying the field-drop classifier corpus's registered
-    /// layouts: user records over every slot class, an inline enum, and the
-    /// indirect enums `Foo` (from `builder_with_indirect_enum_foo`) and the
-    /// self-recursive `ListNode`.
-    fn builder_for_field_drop_classifier() -> Builder {
-        let mut builder = builder_with_indirect_enum_foo();
-        builder.enum_layouts.push(crate::model::EnumLayout {
-            name: "Msg".to_string(),
-            tag_width: 1,
-            variants: vec![
-                crate::model::MachineVariantLayout {
-                    name: "Text".to_string(),
-                    field_tys: vec![ResolvedTy::String],
-                    field_names: vec![],
-                },
-                crate::model::MachineVariantLayout {
-                    name: "Ping".to_string(),
-                    field_tys: vec![],
-                    field_names: vec![],
-                },
-            ],
-            is_indirect: false,
-        });
-        builder.enum_layouts.push(crate::model::EnumLayout {
-            name: "ListNode".to_string(),
-            tag_width: 1,
-            variants: vec![
-                crate::model::MachineVariantLayout {
-                    name: "Cons".to_string(),
-                    field_tys: vec![ResolvedTy::I64, named("ListNode")],
-                    field_names: vec![],
-                },
-                crate::model::MachineVariantLayout {
-                    name: "Nil".to_string(),
-                    field_tys: vec![],
-                    field_names: vec![],
-                },
-            ],
-            is_indirect: true,
-        });
-        for (record, fields) in [
-            (
-                "Row",
-                vec![
-                    ("name".to_string(), ResolvedTy::String),
-                    ("n".to_string(), ResolvedTy::I64),
-                ],
-            ),
-            (
-                "Outer",
-                vec![
-                    ("row".to_string(), named("Row")),
-                    ("k".to_string(), ResolvedTy::I64),
-                ],
-            ),
-            ("HoldsFoo", vec![("f".to_string(), named("Foo"))]),
-            (
-                "HoldsBadVec",
-                vec![("xs".to_string(), vec_of(named("Foo")))],
-            ),
-            (
-                "HoldsSlice",
-                vec![(
-                    "s".to_string(),
-                    ResolvedTy::Slice(Box::new(ResolvedTy::I64)),
-                )],
-            ),
-            ("HoldsClosure", vec![("f".to_string(), bare_fn())]),
-            (
-                "HoldsToken",
-                vec![("t".to_string(), ResolvedTy::CancellationToken)],
-            ),
-        ] {
-            builder
-                .record_field_orders
-                .insert(record.to_string(), fields);
-        }
-        builder
-    }
-
-    /// The `FieldDropInPlace` admissibility classifier — the ONE predicate
-    /// MIR admission and the drop-plan verifier consult — with the verdict
-    /// frozen per shape. Admission mirrors codegen's `emit_heap_slot_drop`
-    /// dispatch: the five aggregate shapes over registered layouts admit
-    /// when every reachable slot is dischargeable; leaf COW types stay on
-    /// their own authority (refused at top level); everything the dispatcher
-    /// fail-closes on (slices, dyn traits, closure pairs, affine handles,
-    /// unwired `Vec` elements, unregistered layouts, free type params) is
-    /// refused. A widened verdict here is a wrong-ABI free at codegen; a
-    /// narrowed one is a lost capability — both are named test failures.
-    #[test]
-    fn field_drop_classifier_verdicts_are_frozen_per_shape() {
-        let builder = builder_for_field_drop_classifier();
-
-        let corpus: Vec<(&str, ResolvedTy, bool)> = vec![
-            // Admitted aggregate shapes.
-            ("record of string+i64", named("Row"), true),
-            ("record nesting an admissible record", named("Outer"), true),
-            ("record with indirect-enum field", named("HoldsFoo"), true),
-            (
-                "tuple of (string, i64)",
-                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
-                true,
-            ),
-            (
-                "fixed array of string",
-                ResolvedTy::Array(Box::new(ResolvedTy::String), 3),
-                true,
-            ),
-            ("inline enum with string payload", named("Msg"), true),
-            ("indirect enum", named("Foo"), true),
-            (
-                "self-recursive indirect enum (cycle guard)",
-                named("ListNode"),
-                true,
-            ),
-            (
-                "tuple with a wired Vec element",
-                ResolvedTy::Tuple(vec![vec_of(ResolvedTy::I64)]),
-                true,
-            ),
-            // Refused: a reachable slot the dispatcher cannot discharge.
-            (
-                "record with unwired Vec<indirect enum> field",
-                named("HoldsBadVec"),
-                false,
-            ),
-            ("record with slice field", named("HoldsSlice"), false),
-            ("record with closure field", named("HoldsClosure"), false),
-            (
-                "record with affine-handle field",
-                named("HoldsToken"),
-                false,
-            ),
-            (
-                "tuple with dyn-trait element",
-                ResolvedTy::Tuple(vec![ResolvedTy::TraitObject {
-                    traits: vec![hew_types::ResolvedTraitBound {
-                        trait_name: "Display".to_string(),
-                        args: vec![],
-                        assoc_bindings: vec![],
-                    }],
-                }]),
-                false,
-            ),
-            (
-                "tuple with free type-param element",
-                ResolvedTy::Tuple(vec![ResolvedTy::TypeParam {
-                    name: "T".to_string(),
-                }]),
-                false,
-            ),
-            // Refused: leaf / non-aggregate top levels (the admission OR
-            // keeps leaves on `project_field_inline_drop_symbol`; `string`'s
-            // reroute onto the op is its own decision, not a classifier
-            // verdict).
-            ("string top level", ResolvedTy::String, false),
-            ("bytes top level", ResolvedTy::Bytes, false),
-            ("Vec top level", vec_of(ResolvedTy::I64), false),
-            ("i64 top level", ResolvedTy::I64, false),
-            (
-                "slice top level",
-                ResolvedTy::Slice(Box::new(ResolvedTy::I64)),
-                false,
-            ),
-            ("unregistered named type", named("Ghost"), false),
-            (
-                "free type param top level",
-                ResolvedTy::TypeParam {
-                    name: "T".to_string(),
-                },
-                false,
-            ),
-        ];
-
-        for (label, ty, admitted) in corpus {
-            assert_eq!(
-                builder.field_drop_in_place_admissible(&ty),
-                admitted,
-                "field-drop admissibility verdict moved for `{label}` \
-                 ({ty:?}); a widened verdict reaches codegen with no in-place \
-                 release (wrong-ABI / fail-closed error), a narrowed one \
-                 regresses an admitted discharge shape to the NYI refusal"
-            );
-        }
-    }
-
-    /// The owned-locals seed gate — "does a binding of this TYPE oblige drop
-    /// elaboration?" — with the verdict frozen per shape over every class
-    /// `ValueClass::of_ty` can answer. Only `BitCopy` declines to seed; every
-    /// other class (including the record-blind `Unknown` for unmarked user
-    /// records — a known, preserved limitation) enters `owned_locals`.
-    #[test]
-    fn seed_gate_matches_value_class_authority() {
-        let mut type_classes = hew_hir::TypeClassTable::new();
-        type_classes.insert("CopyRec".to_string(), (ResourceMarker::BitCopy, None));
-        type_classes.insert("Sock".to_string(), (ResourceMarker::Resource, None));
-        type_classes.insert("Once".to_string(), (ResourceMarker::Linear, None));
-        let builder = Builder {
-            type_classes,
-            ..Builder::default()
-        };
-
-        // (shape, type, seeds-drop-elaboration) — the verdict column is the
-        // FROZEN admission decision; a row here may only change together with
-        // a deliberate, reviewed seed-rule change.
-        let corpus: Vec<(&str, ResolvedTy, bool)> = vec![
-            // BitCopy — the only class that does NOT seed.
-            ("i64 scalar", ResolvedTy::I64, false),
-            ("bool scalar", ResolvedTy::Bool, false),
-            ("duration", ResolvedTy::Duration, false),
-            ("unit", ResolvedTy::Unit, false),
-            (
-                "instant builtin",
-                ResolvedTy::named_builtin("instant", BuiltinType::Instant, vec![]),
-                false,
-            ),
-            ("bitcopy-marked record", named("CopyRec"), false),
-            // CowValue seeds.
-            ("string", ResolvedTy::String, true),
-            ("bytes", ResolvedTy::Bytes, true),
-            ("builtin Vec", vec_of(ResolvedTy::I64), true),
-            (
-                "tuple",
-                ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
-                true,
-            ),
-            // PersistentShare seeds.
-            ("bare fn", bare_fn(), true),
-            ("empty-capture closure", empty_capture_closure(), true),
-            (
-                "dyn trait",
-                ResolvedTy::TraitObject {
-                    traits: vec![hew_types::ResolvedTraitBound {
-                        trait_name: "Display".to_string(),
-                        args: vec![],
-                        assoc_bindings: vec![],
-                    }],
-                },
-                true,
-            ),
-            // AffineResource seeds.
-            ("cancellation token", ResolvedTy::CancellationToken, true),
-            ("generator handle", generator_i64(), true),
-            ("resource-marked named", named("Sock"), true),
-            // Linear seeds (its release is the move-checker's MustConsume,
-            // but membership in the candidate ledger is what is decided here).
-            (
-                "task handle",
-                ResolvedTy::Task(Box::new(ResolvedTy::I64)),
-                true,
-            ),
-            ("linear-marked named", named("Once"), true),
-            // View seeds (build_lifo_drops elaborates its no-retain no-op arm).
-            (
-                "borrow",
-                ResolvedTy::Borrow {
-                    pointee: Box::new(ResolvedTy::I64),
-                },
-                true,
-            ),
-            ("slice", ResolvedTy::Slice(Box::new(ResolvedTy::I64)), true),
-            (
-                "pointer",
-                ResolvedTy::Pointer {
-                    is_mutable: false,
-                    pointee: Box::new(ResolvedTy::I64),
-                },
-                true,
-            ),
-            // Unknown seeds — the record-blind arm: an unmarked user record
-            // classifies Unknown, not BitCopy, so it enters the ledger.
-            ("unmarked named", named("Mystery"), true),
-            (
-                "type param",
-                ResolvedTy::TypeParam {
-                    name: "T".to_string(),
-                },
-                true,
-            ),
-        ];
-
-        for (label, ty, seeds) in corpus {
-            assert_eq!(
-                builder.binding_seeds_drop_elaboration(&ty),
-                seeds,
-                "owned-locals seed verdict moved for `{label}` ({ty:?}); \
-                 seeding decides drop-elaboration membership, so a flipped \
-                 verdict is an over-drop (double-free) or an under-seed (leak)"
-            );
-            assert_eq!(
-                builder.binding_seeds_drop_elaboration(&ty),
-                ValueClass::of_ty(&ty, &builder.type_classes) != ValueClass::BitCopy,
-                "the seed authority's verdict must remain the value-class \
-                 seed for `{label}` ({ty:?})"
-            );
-        }
-    }
-
-    /// `ty_is_local_collection_handle` is a projection of the typed ownership
-    /// classification: it answers `true` exactly when the decision's drop
-    /// class is the `HashMap` / `HashSet` copy-on-write leaf. Corpus: every
-    /// heap leaf the authority recognises, plus the user-Named collision
-    /// negative (a user `type HashMap` shares the name but not the `builtin`
-    /// discriminator and must never be mistaken for the runtime handle).
-    #[test]
-    fn collection_handle_predicate_projects_from_heap_leaf() {
-        let records: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
-        let type_classes = hew_hir::TypeClassTable::new();
-        let ctx = OwnershipCtx::new(&records, &[], &type_classes);
-
-        let corpus: Vec<(&str, ResolvedTy, bool)> = vec![
-            ("string", ResolvedTy::String, false),
-            ("bytes", ResolvedTy::Bytes, false),
-            ("vec", vec_of(ResolvedTy::I64), false),
-            ("hashmap", hashmap_str_i64(), true),
-            ("hashset", hashset_i64(), true),
-            ("generator", generator_i64(), false),
-            ("cancellation token", ResolvedTy::CancellationToken, false),
-            ("user-named HashMap collision", named("HashMap"), false),
-        ];
-
-        for (label, ty, expected) in corpus {
-            assert_eq!(
-                ty_is_local_collection_handle(&ty),
-                expected,
-                "collection-handle bucket membership moved for `{label}` ({ty:?})"
-            );
-            let projects = matches!(
-                OwnershipDecision::classify(&ty, Place::Local(0), &ctx).drop_class(),
-                Some(DropClass::CowHeapLeaf {
-                    leaf: HeapLeaf::HashMap | HeapLeaf::HashSet
-                })
-            );
-            assert_eq!(
-                projects, expected,
-                "`{label}` ({ty:?}): the typed classification and \
-                 `ty_is_local_collection_handle` must answer identically — \
-                 a future builtin collection added to one but not the other \
-                 splits bucket admission from classification"
-            );
-        }
-
-        // Symbol-agreement tripwire: the leaves' canonical release symbols are
-        // exactly the two symbols the collection-handle bucket emits in
-        // `build_lifo_drops` (via `drop_kind_for`).
-        assert_eq!(
-            HeapLeaf::HashMap.release_symbol(),
-            "hew_hashmap_free_layout",
-            "HashMap leaf release symbol must match the bucket's emission"
-        );
-        assert_eq!(
-            HeapLeaf::HashSet.release_symbol(),
-            "hew_hashset_free_layout",
-            "HashSet leaf release symbol must match the bucket's emission"
-        );
-    }
-
-    /// The complete release-verdict table for both Builder-side pickers —
-    /// `generator_yield_drop_symbol` (matches the RAW type) and
-    /// `project_field_inline_drop_symbol` (substitutes FIRST) — frozen per
-    /// shape: the `Vec` arm over every `VecElementRelease` variant (both
-    /// `FailClosedReason` arms represented), the defensive no-type-arg `Vec`,
-    /// and the non-`Vec` arms.
-    ///
-    /// The `Unsupported(NoReleaseProtocol)` rows with no owned-ABI release
-    /// (`Vec<bytes>`, `Vec<indirect enum>`) assert the FAIL-CLOSED verdict
-    /// (`Unwired`): the per-element release for those shapes is unwired, so
-    /// every consulting site must refuse the construct at compile time —
-    /// never emit the buffer-only `hew_vec_free` over owned element nodes.
-    /// The residual `Unsupported(UnenumeratedShape)` sub-domain deliberately
-    /// keeps the buffer-only verdict, drawing the same boundary as the compile
-    /// reject `unsupported_vec_element_walk`:
-    ///   - `UnenumeratedShape` (`Vec<T>` unsubstituted): the element owns no
-    ///     heap as a flat element, so the buffer free IS the complete
-    ///     release — refusing would reject un-monomorphised generic bodies;
-    ///
-    /// A registered heap-owning record observed without this function's
-    /// harvest key is instead classified harvest-independently and released
-    /// through `hew_vec_free_owned`.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the length is intrinsic: one frozen symbol matrix over every \
-                  picker input shape, asserted against both pickers — splitting \
-                  it would scatter the single-table proof across functions"
-    )]
-    fn yield_and_field_pickers_match_legacy_symbol_table() {
-        use ReleaseSymbolVerdict::{NoDropPath, Unwired, Wired};
-
-        let mut builder = builder_with_indirect_enum_foo();
-        // A registered heap-owning record whose `Vec` is owned-ABI releasable
-        // program-wide but whose key is NOT in this builder's per-function
-        // harvest set — the boundary row for the releasable `Unsupported`
-        // sub-domain.
-        builder.record_field_orders.insert(
-            "HeapRow".to_string(),
-            vec![("s".to_string(), ResolvedTy::String)],
-        );
-
-        // (shape, type, generator-yield verdict, project-field verdict) —
-        // every verdict column FROZEN. The two pickers agree on every row
-        // here; the substitution-order asymmetry is pinned separately below.
-        let corpus: Vec<(&str, ResolvedTy, ReleaseSymbolVerdict, ReleaseSymbolVerdict)> = vec![
-            // Vec arm — Plain elements.
-            (
-                "Vec<i64> (Plain)",
-                vec_of(ResolvedTy::I64),
-                Wired("hew_vec_free"),
-                Wired("hew_vec_free"),
-            ),
-            (
-                "Vec<string> (Plain)",
-                vec_of(ResolvedTy::String),
-                Wired("hew_vec_free"),
-                Wired("hew_vec_free"),
-            ),
-            // Vec arm — OwnedElement elements.
-            (
-                "Vec<Vec<i64>> (OwnedElement)",
-                vec_of(vec_of(ResolvedTy::I64)),
-                Wired("hew_vec_free_owned"),
-                Wired("hew_vec_free_owned"),
-            ),
-            (
-                "Vec<HashMap<string,i64>> (OwnedElement)",
-                vec_of(hashmap_str_i64()),
-                Wired("hew_vec_free_owned"),
-                Wired("hew_vec_free_owned"),
-            ),
-            (
-                "Vec<(string,i64)> (OwnedElement)",
-                vec_of(ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64])),
-                Wired("hew_vec_free_owned"),
-                Wired("hew_vec_free_owned"),
-            ),
-            // Vec arm — ClosurePair elements.
-            (
-                "Vec<fn> (ClosurePair)",
-                vec_of(bare_fn()),
-                Wired("hew_vec_free_owned"),
-                Wired("hew_vec_free_owned"),
-            ),
-            (
-                "Vec<closure> (ClosurePair)",
-                vec_of(empty_capture_closure()),
-                Wired("hew_vec_free_owned"),
-                Wired("hew_vec_free_owned"),
-            ),
-            // Vec arm — Unsupported elements with NO owned-ABI release: the
-            // FAIL-CLOSED verdict. A buffer-only free over these element
-            // nodes is a per-element leak, so the pickers refuse instead of
-            // picking a symbol; every consulting site rejects at compile
-            // time (see the test doc).
-            (
-                "Vec<bytes> (Unsupported/NoReleaseProtocol)",
-                vec_of(ResolvedTy::Bytes),
-                Unwired(FailClosedReason::NoReleaseProtocol),
-                Unwired(FailClosedReason::NoReleaseProtocol),
-            ),
-            (
-                "Vec<indirect enum> (Unsupported/NoReleaseProtocol)",
-                vec_of(named("Foo")),
-                Unwired(FailClosedReason::NoReleaseProtocol),
-                Unwired(FailClosedReason::NoReleaseProtocol),
-            ),
-            // Vec arm — the residual Unsupported sub-domain that keeps the
-            // buffer-only verdict (the boundary
-            // `unsupported_vec_element_walk` draws; see the test doc).
-            (
-                "Vec<T> unsubstituted (Unsupported/UnenumeratedShape)",
-                vec_of(ResolvedTy::TypeParam {
-                    name: "T".to_string(),
-                }),
-                Wired("hew_vec_free"),
-                Wired("hew_vec_free"),
-            ),
-            (
-                "Vec<HeapRow> unharvested (Unsupported/NoReleaseProtocol, owned-ABI releasable)",
-                vec_of(named("HeapRow")),
-                Wired("hew_vec_free_owned"),
-                Wired("hew_vec_free_owned"),
-            ),
-            // Vec arm — defensive no-type-arg fall-through.
-            (
-                "Vec with no type arg (defensive)",
-                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![]),
-                Wired("hew_vec_free"),
-                Wired("hew_vec_free"),
-            ),
-            // Non-Vec arms — must not move when the Vec arm reroutes.
-            (
-                "string",
-                ResolvedTy::String,
-                Wired("hew_string_drop"),
-                Wired("hew_string_drop"),
-            ),
-            (
-                "bytes",
-                ResolvedTy::Bytes,
-                Wired("hew_bytes_drop"),
-                Wired("hew_bytes_drop"),
-            ),
-            // VecIter clone-out and the existing generator/receiver frame
-            // contracts hand these collection values to the body as sole
-            // owners. Their layout-aware releases close the common per-yield
-            // lifecycle.
-            (
-                "HashMap",
-                hashmap_str_i64(),
-                Wired("hew_hashmap_free_layout"),
-                Wired("hew_hashmap_free_layout"),
-            ),
-            (
-                "HashSet",
-                hashset_i64(),
-                Wired("hew_hashset_free_layout"),
-                Wired("hew_hashset_free_layout"),
-            ),
-            (
-                "Generator",
-                generator_i64(),
-                NoDropPath,
-                Wired("hew_gen_coro_destroy"),
-            ),
-            ("i64", ResolvedTy::I64, NoDropPath, NoDropPath),
-            ("unmarked user record", named("Rec"), NoDropPath, NoDropPath),
-        ];
-
-        for (label, ty, want_yield, want_field) in corpus {
-            assert_eq!(
-                builder.generator_yield_drop_symbol(&ty),
-                want_yield,
-                "generator-yield release verdict moved for `{label}` ({ty:?})"
-            );
-            assert_eq!(
-                builder.project_field_inline_drop_symbol(&ty),
-                want_field,
-                "project-field release verdict moved for `{label}` ({ty:?})"
-            );
-        }
-
-        // The Unsupported rows above carry exactly the two fail-closed
-        // reasons: the unwired release protocols and the anti-drift sentinel.
-        assert_eq!(
-            builder.classify_vec_element_release(&ResolvedTy::Bytes),
-            VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
-        );
-        assert_eq!(
-            builder.classify_vec_element_release(&named("Foo")),
-            VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
-        );
-        assert_eq!(
-            builder.classify_vec_element_release(&ResolvedTy::TypeParam {
-                name: "T".to_string(),
-            }),
-            VecElementRelease::Unsupported(FailClosedReason::UnenumeratedShape)
-        );
-        // The releasable-boundary row rides `NoReleaseProtocol` too — it is
-        // the `elem_is_owned_abi_releasable` exclusion, not the reason, that
-        // keeps it off the fail-closed verdict.
-        assert_eq!(
-            builder.classify_vec_element_release(&named("HeapRow")),
-            VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
-        );
-        assert!(builder.elem_is_owned_abi_releasable(&named("HeapRow")));
-        assert!(!builder.elem_is_owned_abi_releasable(&named("Foo")));
-
-        // Substitution-order asymmetry, frozen: `generator_yield_drop_symbol`
-        // classifies the RAW type (a yield's type is already concrete at its
-        // producer); `project_field_inline_drop_symbol` substitutes through
-        // the monomorphisation map FIRST (a field type may still spell the
-        // function's type parameter). With `T ↦ fn() -> unit` the two pickers
-        // therefore answer differently for `Vec<T>` — harmonising them would
-        // move release decisions.
-        builder.subst = [("T".to_string(), bare_fn())].into_iter().collect();
-        let vec_t = vec_of(ResolvedTy::TypeParam {
-            name: "T".to_string(),
-        });
-        assert_eq!(
-            builder.generator_yield_drop_symbol(&vec_t),
-            Wired("hew_vec_free"),
-            "the yield picker must classify the raw (unsubstituted) type"
-        );
-        assert_eq!(
-            builder.project_field_inline_drop_symbol(&vec_t),
-            Wired("hew_vec_free_owned"),
-            "the field picker must substitute before classifying"
-        );
-    }
-
-    /// The production (non-test) sources of the lower module. CRLF-normalised
-    /// so a Windows checkout (`core.autocrlf=true`) still splits on the
-    /// LF-anchored test-module boundary (mirrors `layout_key_shortening_guard`).
-    fn production_source() -> String {
-        [
-            include_str!("mod.rs"),
-            include_str!("drop_plan.rs"),
-            include_str!("ownership.rs"),
-            include_str!("scope.rs"),
-            include_str!("expr.rs"),
-            include_str!("pattern.rs"),
-            include_str!("control_flow.rs"),
-            include_str!("task.rs"),
-            include_str!("actor.rs"),
-            include_str!("closure_gen.rs"),
-        ]
-        .into_iter()
-        .map(|src| {
-            src.replace("\r\n", "\n")
-                .split("\n#[cfg(test)]\nmod ")
-                .next()
-                .expect("lower module source has a non-test prefix")
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-    }
-
-    /// Structural inventory pin for the owned-locals seed fact: every
-    /// occurrence of the non-`BitCopy` value-class polarity test in production
-    /// code is named below, so a raw copy of the seed comparison cannot appear
-    /// (or disappear) silently under any spelling — the whitespace-stripped
-    /// scan catches line-wrapped and temp-variable forms alike.
-    #[test]
-    fn seed_fact_comparison_site_inventory_is_closed() {
-        let squeezed: String = production_source()
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        // The seed fact has exactly one production spelling: the body of
-        // `binding_seeds_drop_elaboration`, the authority the 11 seed sites
-        // and the consume-side removal mirror all call.
-        assert!(
-            squeezed.contains("fnbinding_seeds_drop_elaboration"),
-            "the owned-locals seed authority must exist in production code"
-        );
-        let count = squeezed.matches("!=ValueClass::BitCopy").count();
-        // The complete allowlist of the non-`BitCopy` polarity test:
-        //   - `binding_seeds_drop_elaboration` — the seed authority's own
-        //     body, the single spelling of the seed fact;
-        //   - `gen_env_capture_admissible` — generator-env capture
-        //     flat-copyability, a DIFFERENT fact that must not follow a
-        //     future seed-rule change;
-        //   - the user-record value-class diagnostic reason builder — names
-        //     the first non-BitCopy field in a rejection note (diagnostic
-        //     wording, not admission).
-        assert_eq!(
-            count, 3,
-            "a raw copy of the owned-locals seed comparison appeared in (or \
-             an allowlisted use vanished from) lower module production code; \
-             seed decisions route through `binding_seeds_drop_elaboration`, \
-             never an inline class test — classify any change to this \
-             population in the allowlist above deliberately"
-        );
-    }
-
-    #[test]
-    fn seed_fact_comparison_inventory_rejects_a_raw_counterfactual() {
-        let squeezed: String = production_source()
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        let baseline = squeezed.matches("!=ValueClass::BitCopy").count();
-        let counterfactual = format!("{squeezed}ifraw!=ValueClass::BitCopy{{}}");
-        assert_eq!(baseline, 3, "the production inventory changed unexpectedly");
-        assert_ne!(
-            counterfactual.matches("!=ValueClass::BitCopy").count(),
-            baseline,
-            "a newly introduced raw seed comparison must make the inventory red"
-        );
-    }
-}
+mod drop_admission_type_shape_pins;
 #[cfg(test)]
 mod twin_gate_classifier {
     //! #2648 (S3) — direct unit tests of the #2523 projected-payload twin
@@ -9731,6 +15661,7 @@ mod returned_member_read_aliases {
 }
 #[cfg(test)]
 mod obligation_balance_validator;
+#[cfg(test)]
 #[derive(Default)]
 struct UnderReleaseAggregate {
     blocks: Vec<u32>,

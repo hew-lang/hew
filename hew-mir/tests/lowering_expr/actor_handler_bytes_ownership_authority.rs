@@ -569,7 +569,7 @@ fn main() -> i64 { 0 }
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instr| match instr {
-            hew_mir::Instr::ConstI64 { dest, value } if *dest == flag => Some(*value),
+            hew_mir::Instr::ConstI64 { dest, value } if *dest == flag.flag => Some(*value),
             _ => None,
         })
         .collect();
@@ -817,6 +817,7 @@ fn cooperate_then_forward_through_a_not_live_fungible_child_releases_once() {
 actor Worker {
     receive fn take(data: bytes) { let _ = data.len(); }
 }
+
 supervisor App {
     strategy: one_for_one,
     child worker: Worker
@@ -885,5 +886,170 @@ fn main() -> i64 { 0 }
     assert!(
         return_bytes[0].guard.is_some(),
         "the shared Bytes drop must discriminate delivered from undelivered paths"
+    );
+}
+
+/// A multi-argument tell packs its values with `RecordInit` in the live block.
+/// The guarded Bytes transfer must be committed before that pack reads the
+/// prepared carrier; the not-live edge keeps and carries the original owner.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression pins one ordered MIR sequence and its exclusive recover edge"
+)]
+fn fungible_multi_arg_transfer_precedes_record_pack_only_on_the_live_edge() {
+    let source = r"
+actor Worker {
+    receive fn take(data: bytes, tag: i64) {
+        println(data.len() as i64 + tag);
+    }
+}
+supervisor App {
+    strategy: one_for_one,
+    child worker: Worker
+}
+actor Forwarder {
+    let app: LocalPid<App>;
+    receive fn forward(data: bytes) {
+        app.worker.take(data, 7);
+    }
+}
+fn main() -> i64 { 0 }
+";
+    let pipeline = pipeline_with_tc(source);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "no diagnostics expected: {:#?}",
+        pipeline.diagnostics
+    );
+    let function = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Forwarder__recv__forward")
+        .expect("Forwarder__recv__forward raw MIR must be present");
+    let (owner, flag) = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instruction| match instruction {
+            hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::Guard {
+                owner,
+                flag,
+                kind: hew_mir::OwnershipGuardKind::ActorMessageCow,
+            }) => Some((*owner, *flag)),
+            _ => None,
+        })
+        .expect("handler Bytes owner must publish an actor-message guard");
+    let source_place = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instruction| match instruction {
+            hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::Mint {
+                owner: candidate,
+                place,
+                ..
+            }) if *candidate == owner => Some(*place),
+            _ => None,
+        })
+        .expect("guarded owner must have a definition-site place");
+    let send_block = function
+        .blocks
+        .iter()
+        .find(|block| matches!(block.terminator, hew_mir::Terminator::Send { .. }))
+        .expect("fungible live edge must contain the Send");
+    let record_index = send_block
+        .instructions
+        .iter()
+        .position(|instruction| matches!(instruction, hew_mir::Instr::RecordInit { .. }))
+        .expect("two message arguments must be packed with RecordInit");
+    let flag_index = send_block
+        .instructions
+        .iter()
+        .position(|instruction| {
+            matches!(instruction, hew_mir::Instr::ConstI64 { dest, value: 1 } if *dest == flag)
+        })
+        .expect("live delivery must commit the actor-message guard");
+    let move_index = send_block
+        .instructions
+        .iter()
+        .position(|instruction| {
+            matches!(instruction, hew_mir::Instr::Move { src, .. } if *src == source_place)
+        })
+        .expect("live delivery must move the Bytes source into its carrier");
+    let neutralize_index = send_block
+        .instructions
+        .iter()
+        .position(|instruction| {
+            matches!(instruction, hew_mir::Instr::NeutralizePayloadSlot { place, .. }
+                if *place == source_place)
+        })
+        .expect("live delivery must neutralize the moved source slot");
+    let transfer_index = send_block
+        .instructions
+        .iter()
+        .position(|instruction| {
+            matches!(instruction,
+                hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                    owner: candidate,
+                    ..
+                }) if *candidate == owner)
+        })
+        .expect("live delivery must publish the owner transfer");
+    assert!(
+        [flag_index, move_index, neutralize_index, transfer_index]
+            .into_iter()
+            .all(|index| index < record_index),
+        "all transfer preparation must precede RecordInit: {:#?}",
+        send_block.instructions
+    );
+
+    let recover_block = function
+        .blocks
+        .iter()
+        .find_map(|block| match block.terminator {
+            hew_mir::Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } if then_target == send_block.id => function
+                .blocks
+                .iter()
+                .find(|candidate| candidate.id == else_target),
+            _ => None,
+        })
+        .expect("fungible liveness branch must have a recover block");
+    assert!(
+        recover_block
+            .instructions
+            .iter()
+            .all(|instruction| !matches!(instruction, hew_mir::Instr::ValueSnapshotDrop { .. }))
+            && recover_block
+                .instructions
+                .iter()
+                .all(|instruction| !matches!(
+                    instruction,
+                    hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                        owner: candidate,
+                        ..
+                    }) if *candidate == owner
+                )),
+        "recover must neither transfer nor snapshot-drop the guarded source: {:#?}",
+        recover_block.instructions
+    );
+    assert!(
+        recover_block
+            .instructions
+            .iter()
+            .any(|instruction| matches!(
+                instruction,
+                hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::EdgeCarry {
+                    owner: candidate,
+                    place,
+                    ..
+                }) if *candidate == owner && *place == source_place
+            )),
+        "recover must carry the original guarded owner: {:#?}",
+        recover_block.instructions
     );
 }

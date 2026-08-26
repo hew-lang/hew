@@ -134,9 +134,9 @@ fn probe() -> i64 {
     assert!(
         pipeline.diagnostics.iter().all(|diagnostic| !matches!(
             diagnostic.kind,
-            MirDiagnosticKind::ObligationUnderReleased { hard: true, .. }
+            MirDiagnosticKind::ObligationUnderReleased { .. }
         )),
-        "a non-carrier local match must not be promoted to a hard call-carrier failure: {:?}",
+        "a non-carrier local match must not produce a call-carrier under-release: {:?}",
         pipeline.diagnostics
     );
 }

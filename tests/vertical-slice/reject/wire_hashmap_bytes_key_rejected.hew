@@ -1,0 +1,14 @@
+// Reject at the shared Serializable boundary: owned `bytes` has a runtime
+// Hash+Eq layout, but the ordinary HashMap insertion path cannot yet release
+// an overwritten caller key. Wire decoding must not bypass that capability.
+#[wire]
+type ByteKeyed {
+    values: HashMap<bytes, string> @1,
+}
+
+fn main() -> i64 {
+    match ByteKeyed.from_json("{\"values\":[]}") {
+        .Ok(_) => 2,
+        .Err(_) => 1,
+    }
+}

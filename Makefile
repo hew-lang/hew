@@ -143,6 +143,7 @@
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint hew hew-debug hew-profile-check hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check baselines-check-build
 .PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-obligation-advisory-corpus test-obligation-advisory-runner-selftest core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-unsafe-clippy runtime-unsafe-geiger unsafe-pattern-audit runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check test-build-harness forced-cancel-composite-check
+.PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean stdlib-user-build-clean-build
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check test-python310-toml-compat
 # Repository files consumed by commands evaluated while this Makefile is
@@ -1457,26 +1458,26 @@ funcupdate-mir-baselines-golden: hew
 test-core-matrix-build: hew-native runtime $(LIBHEW_READY)
 	@:
 
-# inputs: tests/obligation-advisory/* scripts/tests/test_obligation_advisory_run.py
+# inputs: tests/ownership-balance/* scripts/tests/test_ownership_balance_run.py
 # Direct-call match carriers have a separate exact-count corpus because the
-# ordinary Hew suites do not read advisory counts. Every fixture is checked
+# ordinary Hew suites do not pin ownership-verifier finding counts. Every fixture is checked
 # under inherited and HEW_*-scrubbed environments, and any count drift in
 # either direction fails.
-test-obligation-advisory-corpus: hew-native
+test-ownership-balance-corpus: hew-native
 	cargo build -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
 	HEW_BIN="$(DEBUG_DIR)/hew" HEW_RELEASE_BIN="$(RELEASE_LIB_DIR)/hew" \
-		python3 tests/obligation-advisory/run.py
+		python3 tests/ownership-balance/run.py
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-test-obligation-advisory-corpus-build: hew-native
+test-ownership-balance-corpus-build: hew-native
 	cargo build -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
 
-# inputs: scripts/tests/test_obligation_advisory_run.py tests/obligation-advisory/run.py scripts/tests/test_obligation_site_diff.py scripts/obligation-site-diff.py
-test-obligation-advisory-runner-selftest:
-	python3 scripts/tests/test_obligation_advisory_run.py
+# inputs: scripts/tests/test_ownership_balance_run.py tests/ownership-balance/run.py scripts/tests/test_obligation_site_diff.py scripts/obligation-site-diff.py
+test-ownership-balance-runner-selftest:
+	python3 scripts/tests/test_ownership_balance_run.py
 	python3 scripts/tests/test_obligation_site_diff.py
 
-test-obligation-advisory-runner-selftest-build:
+test-ownership-balance-runner-selftest-build:
 	@:
 
 # The -O0-vs-O2 differential-exec parity gate: every compiled `.hew` program

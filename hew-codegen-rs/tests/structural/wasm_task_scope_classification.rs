@@ -21,9 +21,9 @@
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
-    BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, SelectArm,
-    SelectArmKind, Terminator,
+    BasicBlock, BlockKind, CallAuthority, CheckedMirFunction, DropPlan, ElabBlock,
+    ElaboratedMirFunction, ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction,
+    SelectArm, SelectArmKind, Terminator,
 };
 use hew_types::ResolvedTy;
 
@@ -36,15 +36,28 @@ fn task_scope_ty() -> ResolvedTy {
 /// Any wasm-target codegen of this pipeline must fail-closed with the
 /// `WasmUnsupportedSubstrate` diagnostic before invoking `wasm-ld`.
 fn pipeline_with_task_scope_new_call() -> IrPipeline {
-    let raw_blocks = vec![BasicBlock {
-        id: 0,
-        statements: vec![],
-        instructions: vec![Instr::CallRuntimeAbi(
-            RuntimeCall::new("hew_task_scope_new", vec![], Some(Place::DuplexHandle(0)))
-                .expect("hew_task_scope_new is on the runtime allowlist"),
-        )],
-        terminator: Terminator::Return,
-    }];
+    let raw_blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Call {
+                callee: "hew_task_scope_new".to_owned(),
+                authority: CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::TaskScopeNew,
+                ),
+                args: vec![],
+                dest: Some(Place::DuplexHandle(0)),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
@@ -75,19 +88,28 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![ElabBlock {
-                id: 0,
-                kind: BlockKind::Normal,
-                drops: vec![],
-                successor: None,
-            }],
-            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            blocks: vec![
+                ElabBlock {
+                    id: 0,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: Some(1),
+                },
+                ElabBlock {
+                    id: 1,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+            ],
+            drop_plans: vec![(ExitPath::Return { block: 1 }, DropPlan::default())],
             coroutine: None,
             lambda_captures: vec![],
         }],
@@ -114,15 +136,28 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
 }
 
 fn pipeline_with_task_new_call() -> IrPipeline {
-    let raw_blocks = vec![BasicBlock {
-        id: 0,
-        statements: vec![],
-        instructions: vec![Instr::CallRuntimeAbi(
-            RuntimeCall::new("hew_task_new", vec![], Some(Place::DuplexHandle(0)))
-                .expect("hew_task_new is on the runtime allowlist"),
-        )],
-        terminator: Terminator::Return,
-    }];
+    let raw_blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Call {
+                callee: "hew_task_new".to_owned(),
+                authority: CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::TaskNew,
+                ),
+                args: vec![],
+                dest: Some(Place::DuplexHandle(0)),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
@@ -153,19 +188,28 @@ fn pipeline_with_task_new_call() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![ElabBlock {
-                id: 0,
-                kind: BlockKind::Normal,
-                drops: vec![],
-                successor: None,
-            }],
-            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            blocks: vec![
+                ElabBlock {
+                    id: 0,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: Some(1),
+                },
+                ElabBlock {
+                    id: 1,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+            ],
+            drop_plans: vec![(ExitPath::Return { block: 1 }, DropPlan::default())],
             coroutine: None,
             lambda_captures: vec![],
         }],
@@ -201,6 +245,8 @@ fn pipeline_with_spawn_task_instruction() -> IrPipeline {
         task: Place::DuplexHandle(0),
         callee_symbol: "worker".to_string(),
     }];
+    pipeline.raw_mir[0].blocks[0].terminator = Terminator::Return;
+    pipeline.checked_mir[0].blocks[0].terminator = Terminator::Return;
     pipeline
 }
 

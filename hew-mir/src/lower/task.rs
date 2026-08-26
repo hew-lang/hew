@@ -5,12 +5,12 @@
 
 use super::{
     check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow, elaborate,
-    finalize_bytes_ownership, finalize_string_ownership, BasicBlock, BindingId, Builder,
-    BuiltinType, CheckedMirFunction, ClosureEnvFieldInit, ClosureEnvFieldOwnership, FieldOffset,
-    HirBlock, HirExpr, HirExprKind, HirFn, HirJoin, HirSelect, HirSelectArmKind, HirStmtKind,
-    Instr, IntentKind, JoinBranch, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    Place, RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin,
-    SpawnEnvFieldOwnership, SuspendKind, Terminator, ThirFunction, ValueClass,
+    finalize_bytes_ownership, finalize_string_ownership, seal_checked, BasicBlock, BindingId,
+    Builder, BuiltinType, ClosureEnvFieldInit, ClosureEnvFieldOwnership, FieldOffset, HirBlock,
+    HirExpr, HirExprKind, HirFn, HirJoin, HirSelect, HirSelectArmKind, HirStmtKind, Instr,
+    IntentKind, JoinBranch, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership,
+    SuspendKind, Terminator, ThirFunction, ValueClass,
 };
 use crate::model::StableActorRole;
 
@@ -127,6 +127,7 @@ impl Builder {
             let _ = self.lower_value(tail);
         }
         self.emit_pending_defers(body.scope);
+        self.emit_scope_exit_marker([body.scope]);
         self.active_scopes.pop();
         self.current_task_scope = saved_scope;
 
@@ -436,22 +437,21 @@ impl Builder {
         let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
         let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
-        let checked = CheckedMirFunction {
-            name: adapter_symbol.to_string(),
-            return_ty: adapter_return_ty,
-            blocks: raw.blocks.clone(),
-            decisions: vec![],
-            checks: dataflow_result.checks.clone(),
+        let (checked, elaboration_diagnostics) = seal_checked(
+            adapter_symbol.to_string(),
+            adapter_return_ty,
+            raw.blocks.clone(),
+            &raw,
+            vec![],
+            dataflow_result.checks.clone(),
             cooperate_sites,
-        };
-        let (elaborated, elaboration_diagnostics) = elaborate(
-            &checked,
             &builder,
             &[],
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
         LoweredFunction {
             thir,
@@ -808,6 +808,27 @@ impl Builder {
         for arg in args {
             arg_places.push(self.lower_value(arg)?);
         }
+        let mut owned_arg_handoffs = Vec::new();
+        for (place, ty) in arg_places.iter().copied().zip(&arg_tys) {
+            if ValueClass::of_ty(ty, &self.type_classes) == ValueClass::BitCopy {
+                continue;
+            }
+            let Some(owner) = self.current_owner_id_at_place(place) else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "spawned call argument ownership handoff".to_string(),
+                        site,
+                    },
+                    note: format!(
+                        "task spawn argument of type `{}` has no unique source owner to transfer \
+                         into the task environment; refusing to fabricate an owning manifest",
+                        ty.user_facing()
+                    ),
+                });
+                return None;
+            };
+            owned_arg_handoffs.push((owner, place));
+        }
 
         // Pack the lowered args into a fork-env record (RecordInit memcpys
         // the fields; the layout registers alongside closure env records).
@@ -871,6 +892,20 @@ impl Builder {
                 })
                 .collect(),
         });
+        // This instruction is the physical handoff. Every earlier runtime
+        // boundary keeps the source live for unwind cleanup; only afterward may
+        // the task environment become the sole owner.
+        for (owner, from) in owned_arg_handoffs {
+            self.push_instr(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner,
+                    from,
+                    to: None,
+                    to_owner: None,
+                    to_ty: None,
+                },
+            ));
+        }
         Some(task_place)
     }
 
@@ -1022,22 +1057,21 @@ impl Builder {
         let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
         let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
-        let checked = CheckedMirFunction {
-            name: shim_name.to_string(),
-            return_ty: ResolvedTy::Unit,
-            blocks: raw.blocks.clone(),
-            decisions: builder.decisions.clone(),
-            checks: dataflow_result.checks.clone(),
+        let (checked, elaboration_diagnostics) = seal_checked(
+            shim_name.to_string(),
+            ResolvedTy::Unit,
+            raw.blocks.clone(),
+            &raw,
+            builder.decisions.clone(),
+            dataflow_result.checks.clone(),
             cooperate_sites,
-        };
-        let (elaborated, elaboration_diagnostics) = elaborate(
-            &checked,
             &builder,
             &thir.statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
@@ -1121,6 +1155,7 @@ impl Builder {
             env_ty,
             env_ownership: spawn_env_ownership_from_closure_manifest(&manifest),
         });
+        self.publish_closure_env_moved_handoffs(&manifest);
         Some(task_place)
     }
 
@@ -1245,6 +1280,7 @@ impl Builder {
             env_ty,
             env_ownership: spawn_env_ownership_from_closure_manifest(&manifest),
         });
+        self.publish_closure_env_moved_handoffs(&manifest);
         Some(task_place)
     }
 
@@ -1775,6 +1811,9 @@ impl Builder {
         // result_place plays the role of an SSA phi for the join).
         for (arm_index, arm) in select.arms.iter().enumerate() {
             self.start_block(body_bbs[arm_index]);
+            if let Some(scope) = arm.scope {
+                self.active_scopes.push(scope);
+            }
             // ActorAsk arms with a value-bearing binding: emit a
             // `MirStatement::Bind` at the body-block entry so the
             // dataflow pass sees the binding initialised before the
@@ -1811,7 +1850,18 @@ impl Builder {
                     arm.body.site,
                     ty_of_place.clone(),
                 );
-                self.record_binding_scope(binding_id);
+                let Some(scope) = arm.scope else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "select arm binding without lexical scope".to_string(),
+                            site: arm.body.site,
+                        },
+                        note: "HIR must preserve the synthetic select-arm scope that encloses the runtime-produced binding and its body"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                self.record_binding_scope_in(binding_id, scope);
                 // The select-arm binding owns the value the runtime
                 // materialises into its slot on the win edge (the reply
                 // channel / channel reaps only NON-consumed legs), so it
@@ -1867,6 +1917,10 @@ impl Builder {
                     dest: result_place,
                     src,
                 });
+            }
+            if let Some(scope) = arm.scope {
+                self.emit_scope_exit_marker_with_carries([scope], [result_place]);
+                self.active_scopes.pop();
             }
             self.finish_current_block(Terminator::Goto { target: join_bb });
         }

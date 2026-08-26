@@ -152,6 +152,29 @@ pub(super) fn shift_instr_spans_on_insert(
         instr_spans.insert((bid, idx.saturating_add(1)), span);
     }
 }
+
+/// Realign instruction spans after removing one post-lowering instruction.
+/// The removed operation may itself have no span, but every later authored
+/// instruction still moves down by one and must retain its original source
+/// location.
+pub(super) fn shift_instr_spans_on_remove(
+    instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
+    block_id: u32,
+    at: u32,
+) {
+    instr_spans.remove(&(block_id, at));
+    let shifted: Vec<((u32, u32), (u32, u32))> = instr_spans
+        .iter()
+        .filter(|((bid, idx), _)| *bid == block_id && *idx > at)
+        .map(|(key, span)| (*key, *span))
+        .collect();
+    for (key, _) in &shifted {
+        instr_spans.remove(key);
+    }
+    for ((bid, idx), span) in shifted {
+        instr_spans.insert((bid, idx.saturating_sub(1)), span);
+    }
+}
 /// Block ids transitively reachable FROM `start` (via its successors; `start`
 /// itself is included only when a cycle re-enters it).
 pub(super) fn blocks_reachable_from(blocks: &[BasicBlock], start: u32) -> HashSet<u32> {

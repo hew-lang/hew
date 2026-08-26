@@ -803,8 +803,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_set_terminate( *mut HewActor, unsafe extern \"C\" fn(*mut c_void), )",
-        "wasm32-wasip1": "fn hew_actor_set_terminate( *mut HewActor, unsafe extern \"C\" fn(*mut c_void), )"
+        "native": "fn hew_actor_set_terminate( *mut HewActor, unsafe extern \"C-unwind\" fn(*mut c_void), )",
+        "wasm32-wasip1": "fn hew_actor_set_terminate( *mut HewActor, unsafe extern \"C-unwind\" fn(*mut c_void), )"
       },
       "symbol": "hew_actor_set_terminate"
     },
@@ -2078,8 +2078,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_bytes_index( *mut u8, u32, u32, i64) -> u8",
-        "wasm32-wasip1": "fn hew_bytes_index( *mut u8, u32, u32, i64) -> u8"
+        "native": "fn hew_bytes_index( *mut u8, u32, u32, i64, ) -> u8",
+        "wasm32-wasip1": "fn hew_bytes_index( *mut u8, u32, u32, i64, ) -> u8"
       },
       "symbol": "hew_bytes_index"
     },
@@ -2368,6 +2368,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_cbor_de_enter_map_iter( *mut c_void)",
+        "wasm32-wasip1": "fn hew_cbor_de_enter_map_iter( *mut c_void)"
+      },
+      "symbol": "hew_cbor_de_enter_map_iter"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_cbor_de_enum_begin( *mut c_void) -> u64",
         "wasm32-wasip1": "fn hew_cbor_de_enum_begin( *mut c_void) -> u64"
       },
@@ -2417,6 +2432,21 @@
         "wasm32-wasip1": "fn hew_cbor_de_exit_map( *mut c_void)"
       },
       "symbol": "hew_cbor_de_exit_map"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_cbor_de_exit_map_iter( *mut c_void)",
+        "wasm32-wasip1": "fn hew_cbor_de_exit_map_iter( *mut c_void)"
+      },
+      "symbol": "hew_cbor_de_exit_map_iter"
     },
     {
       "availability": [
@@ -2522,6 +2552,36 @@
         "wasm32-wasip1": "fn hew_cbor_de_is_null( *mut c_void) -> i32"
       },
       "symbol": "hew_cbor_de_is_null"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_cbor_de_map_next( *mut c_void) -> i32",
+        "wasm32-wasip1": "fn hew_cbor_de_map_next( *mut c_void) -> i32"
+      },
+      "symbol": "hew_cbor_de_map_next"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_cbor_de_map_value( *mut c_void)",
+        "wasm32-wasip1": "fn hew_cbor_de_map_value( *mut c_void)"
+      },
+      "symbol": "hew_cbor_de_map_value"
     },
     {
       "availability": [
@@ -2638,10 +2698,40 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_cbor_ser_begin_key( *mut c_void)",
+        "wasm32-wasip1": "fn hew_cbor_ser_begin_key( *mut c_void)"
+      },
+      "symbol": "hew_cbor_ser_begin_key"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_cbor_ser_begin_map( *mut c_void)",
         "wasm32-wasip1": "fn hew_cbor_ser_begin_map( *mut c_void)"
       },
       "symbol": "hew_cbor_ser_begin_map"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_cbor_ser_begin_set( *mut c_void)",
+        "wasm32-wasip1": "fn hew_cbor_ser_begin_set( *mut c_void)"
+      },
+      "symbol": "hew_cbor_ser_begin_set"
     },
     {
       "availability": [
@@ -5898,6 +5988,51 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_hashmap_iter_free_layout( *mut HewLayoutHashMapIter)",
+        "wasm32-wasip1": "fn hew_hashmap_iter_free_layout( *mut HewLayoutHashMapIter)"
+      },
+      "symbol": "hew_hashmap_iter_free_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_iter_new_layout( *const HewLayoutHashMap, ) -> *mut HewLayoutHashMapIter",
+        "wasm32-wasip1": "fn hew_hashmap_iter_new_layout( *const HewLayoutHashMap, ) -> *mut HewLayoutHashMapIter"
+      },
+      "symbol": "hew_hashmap_iter_new_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_iter_next_layout( *mut HewLayoutHashMapIter, *mut *const c_void, *mut *const c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_iter_next_layout( *mut HewLayoutHashMapIter, *mut *const c_void, *mut *const c_void, ) -> bool"
+      },
+      "symbol": "hew_hashmap_iter_next_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_hashmap_keys_layout( *const HewLayoutHashMap) -> *mut HewVec",
         "wasm32-wasip1": "fn hew_hashmap_keys_layout( *const HewLayoutHashMap) -> *mut HewVec"
       },
@@ -6067,6 +6202,51 @@
         "wasm32-wasip1": "fn hew_hashset_is_empty_layout( *const HewLayoutHashSet) -> bool"
       },
       "symbol": "hew_hashset_is_empty_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_iter_free_layout( *mut HewLayoutHashSetIter)",
+        "wasm32-wasip1": "fn hew_hashset_iter_free_layout( *mut HewLayoutHashSetIter)"
+      },
+      "symbol": "hew_hashset_iter_free_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_iter_new_layout( *const HewLayoutHashSet, ) -> *mut HewLayoutHashSetIter",
+        "wasm32-wasip1": "fn hew_hashset_iter_new_layout( *const HewLayoutHashSet, ) -> *mut HewLayoutHashSetIter"
+      },
+      "symbol": "hew_hashset_iter_new_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_iter_next_layout( *mut HewLayoutHashSetIter, *mut *const c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashset_iter_next_layout( *mut HewLayoutHashSetIter, *mut *const c_void, ) -> bool"
+      },
+      "symbol": "hew_hashset_iter_next_layout"
     },
     {
       "availability": [

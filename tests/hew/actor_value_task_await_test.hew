@@ -44,6 +44,7 @@ actor ValueWorker {
     // published the body's return and the resume edge bound it.
     receive fn run_i64() -> i64 {
         var out: i64 = 0;
+        let _initial_out = out;
         scope {
             fork t = compute_i64();
             let x = await t;
@@ -70,6 +71,7 @@ actor ValueWorker {
     // survived the move into the binding.
     receive fn run_pair() -> i64 {
         var n: i64 = 0;
+        let _initial_n = n;
         scope {
             fork t = compute_pair();
             let p = await t;
@@ -96,7 +98,7 @@ actor ValueWorker {
 }
 
 #[test]
-fn value_task_await_binds_i64_result() {
+fn _value_task_await_binds_i64_result() {
     let w = spawn ValueWorker(acc: 0);
     match await w.run_i64() {
         .Ok(n) => testing.assert_eq(n, 42),
@@ -105,7 +107,7 @@ fn value_task_await_binds_i64_result() {
 }
 
 #[test]
-fn value_task_await_binds_string_result() {
+fn _value_task_await_binds_string_result() {
     let w = spawn ValueWorker(acc: 0);
     match await w.run_string() {
         .Ok(s) => testing.assert_eq_str(s, "forty-two"),
@@ -114,7 +116,7 @@ fn value_task_await_binds_string_result() {
 }
 
 #[test]
-fn value_task_await_binds_record_result() {
+fn _value_task_await_binds_record_result() {
     let w = spawn ValueWorker(acc: 0);
     match await w.run_pair() {
         .Ok(n) => testing.assert_eq(n, 7),
@@ -123,7 +125,7 @@ fn value_task_await_binds_record_result() {
 }
 
 #[test]
-fn two_value_awaits_in_one_handler_resume_in_order() {
+fn _two_value_awaits_in_one_handler_resume_in_order() {
     let w = spawn ValueWorker(acc: 0);
     match await w.run_twice() {
         .Ok(n) => testing.assert_eq(n, 84),

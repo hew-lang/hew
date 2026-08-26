@@ -1,0 +1,75 @@
+// Validation: HashMap and HashSet are first-class fields/payloads in a named
+// #[wire] value. String-keyed maps use JSON objects, non-string-keyed maps use
+// [key, value] pairs, and sets use canonical arrays. Decoding reconstructs
+// ordinary mutable collections.
+#[wire]
+type Feature {
+    enabled: bool @1,
+    note: string @2,
+}
+
+#[wire]
+type Registry {
+    features: HashMap<string, Feature> @1,
+    codes: HashMap<i64, string> @2,
+    ids: HashSet<i64> @3,
+}
+
+fn main() -> i64 {
+    let features: HashMap<string, Feature> = HashMap.new();
+    features.insert("beta", Feature { enabled: false, note: "later" });
+    features.insert("alpha", Feature { enabled: true, note: "now" });
+
+    let codes: HashMap<i64, string> = HashMap.new();
+    codes.insert(2, "two");
+    codes.insert(1, "one");
+
+    let ids: HashSet<i64> = HashSet.new();
+    ids.insert(3);
+    ids.insert(1);
+    ids.insert(2);
+
+    let registry = Registry { features: features, codes: codes, ids: ids };
+
+    let binary_back = Registry.decode(registry.encode());
+    if binary_back.features.len() != 2 { return 12; }
+    if binary_back.codes.len() != 2 { return 13; }
+    if binary_back.ids.len() != 3 { return 14; }
+
+    let yaml = registry.to_yaml();
+    match Registry.from_yaml(yaml) {
+        .Ok(yaml_back) => {
+            if yaml_back.features.len() != 2 { return 15; }
+            if yaml_back.codes.len() != 2 { return 16; }
+            if yaml_back.ids.len() != 3 { return 17; }
+        },
+        .Err(_) => { return 18; }
+    }
+
+    let json = registry.to_json();
+    if json != "{\"codes\":[[1,\"one\"],[2,\"two\"]],\"features\":{\"alpha\":{\"enabled\":true,\"note\":\"now\"},\"beta\":{\"enabled\":false,\"note\":\"later\"}},\"ids\":[1,2,3]}" {
+        return 1;
+    }
+
+    match Registry.from_json(json) {
+        .Ok(back) => {
+            if back.features.len() != 2 { return 2; }
+            if back.codes.len() != 2 { return 3; }
+            if back.ids.len() != 3 { return 4; }
+            if !back.ids.contains(2) { return 5; }
+            match back.features.get("alpha") {
+                .Some(feature) => {
+                    if !feature.enabled { return 6; }
+                    if feature.note != "now" { return 7; }
+                },
+                .None => { return 8; }
+            }
+            match back.codes.get(2) {
+                .Some(label) => { if label != "two" { return 9; } },
+                .None => { return 10; }
+            }
+            42
+        },
+        .Err(_) => 11,
+    }
+}

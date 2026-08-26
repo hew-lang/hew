@@ -1,0 +1,38 @@
+// Validation: bare Serializable collections use the generic wire facade and
+// the same typed CBOR/text thunks as #[wire] methods. Serialization borrows the
+// map, deserialization returns an ordinary mutable HashMap, and ordering stays
+// deterministic across the JSON/YAML/CBOR formats.
+import std.encoding.wire;
+
+fn main() -> i64 {
+    let values: HashMap<string, i64> = HashMap.new();
+    values.insert("beta", 2);
+    values.insert("alpha", 1);
+
+    let json = wire.to_json(values);
+    if json != "{\"alpha\":1,\"beta\":2}" { return 1; }
+    values.insert("gamma", 3);
+
+    match wire.from_json<HashMap<string, i64>>(json) {
+        .Ok(json_back) => {
+            if json_back.len() != 2 { return 2; }
+            match json_back.get("beta") {
+                .Some(value) => { if value != 2 { return 3; } },
+                .None => { return 4; }
+            }
+        },
+        .Err(_) => { return 5; }
+    }
+
+    let yaml = wire.to_yaml(values);
+    match wire.from_yaml<HashMap<string, i64>>(yaml) {
+        .Ok(yaml_back) => { if yaml_back.len() != 3 { return 6; } },
+        .Err(_) => { return 7; }
+    }
+
+    let binary = wire.encode(values);
+    let binary_back = wire.decode<HashMap<string, i64>>(binary);
+    if binary_back.len() != 3 { return 8; }
+    if values.len() != 3 { return 9; }
+    42
+}

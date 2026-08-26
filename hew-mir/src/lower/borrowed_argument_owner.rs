@@ -25,6 +25,14 @@ impl Builder {
         place: Place,
         role: BorrowedValueRole,
     ) {
+        if self.borrowed_runtime_result_places.contains(&place) {
+            // A receiver-interior result can be borrowed by the next call, but
+            // it cannot become that call site's synthetic temporary owner.
+            // The collection retains the sole destructor authority; minting
+            // here would drop the aliased element after the call and corrupt
+            // the still-live collection.
+            return;
+        }
         let ownership = self
             .param_ownership
             .produced_value_facts

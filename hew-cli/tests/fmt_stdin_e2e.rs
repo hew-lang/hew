@@ -35,7 +35,7 @@ fn fmt_no_args_exits_one_with_usage_message() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Usage: hew fmt"), "stderr: {stderr}");
-    assert!(stderr.contains("--stdin | <file.hew>"), "stderr: {stderr}");
+    assert!(stderr.contains("--stdin | <path>"), "stderr: {stderr}");
 }
 
 #[test]

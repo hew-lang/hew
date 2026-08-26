@@ -34,7 +34,8 @@
 //! admitted everything (the double-free this fix must never introduce).
 
 use hew_mir::{
-    DropKind, ElabDrop, ExitPath, Instr, IrPipeline, NeutralizeAuthority, Place, Terminator,
+    DropFnSpec, DropKind, ElabDrop, ExitPath, Instr, IrPipeline, MirStatement, OwnerId,
+    OwnershipEvent, Place, Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
@@ -71,10 +72,19 @@ fn cancel_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
     drops_matching(p, fn_name, |exit| matches!(exit, ExitPath::Cancel { .. }))
 }
 
+/// Every `ElabDrop` on unwind edges from calls to `callee`.
+fn unwind_drops(p: &IrPipeline, fn_name: &str, callee: &str) -> Vec<ElabDrop> {
+    drops_matching(
+        p,
+        fn_name,
+        |exit| matches!(exit, ExitPath::Unwind { callee: unwind_callee, .. } if unwind_callee == callee),
+    )
+}
+
 /// Every `ElabDrop` across EVERY exit of the named function (used by the
 /// negative controls: an escaped handle must not be dropped on ANY path).
 fn all_exit_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
-    drops_matching(p, fn_name, |_| true)
+    drops_matching(p, fn_name, |exit| !matches!(exit, ExitPath::Unwind { .. }))
 }
 
 fn drops_matching(
@@ -115,23 +125,108 @@ fn count_calls(p: &IrPipeline, fn_name: &str, symbol: &str) -> usize {
         .count()
 }
 
-/// Every source `Place` nulled by a divergent-arm selection transfer in
-/// `fn_name`. The arm locals in that set keep their scope-exit release
-/// precisely because the transfer nulled them.
-fn selection_transfer_sources(p: &IrPipeline, fn_name: &str) -> Vec<Place> {
+fn count_binds_with_prefix(p: &IrPipeline, fn_name: &str, prefix: &str) -> usize {
     p.raw_mir
         .iter()
         .find(|f| f.name == fn_name)
         .unwrap_or_else(|| panic!("function {fn_name} must be present in raw_mir"))
         .blocks
         .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| match instr {
+        .flat_map(|block| block.statements.iter())
+        .filter(|statement| {
+            matches!(statement, MirStatement::Bind { name, .. } if name.starts_with(prefix))
+        })
+        .count()
+}
+
+fn neutralized_sources(p: &IrPipeline, fn_name: &str) -> std::collections::HashSet<Place> {
+    p.raw_mir
+        .iter()
+        .find(|function| function.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
             Instr::NeutralizePayloadSlot {
                 place,
-                authority: NeutralizeAuthority::DivergentSelectionTransfer,
+                transferee: Some(_),
                 ..
             } => Some(*place),
+            _ => None,
+        })
+        .collect()
+}
+
+fn live_vec_free_places(p: &IrPipeline, fn_name: &str) -> std::collections::HashSet<Place> {
+    let neutralized = neutralized_sources(p, fn_name);
+    return_drops(p, fn_name)
+        .iter()
+        .filter(|drop| is_cow_heap_free(drop, "hew_vec_free"))
+        .map(|drop| drop.place)
+        .filter(|place| !neutralized.contains(place))
+        .collect()
+}
+
+/// The largest set of distinct owner identities carried from mutually
+/// exclusive predecessors into one shared selection carrier.
+fn divergent_arm_carries(p: &IrPipeline, fn_name: &str) -> Vec<(OwnerId, Place, u32)> {
+    let function = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in raw_mir"));
+    let mut groups = std::collections::HashMap::<(Place, u32), Vec<OwnerId>>::new();
+    for (owner, place, target) in function
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                owner,
+                place,
+                target,
+            }) => Some((*owner, *place, *target)),
+            _ => None,
+        })
+    {
+        let owners = groups.entry((place, target)).or_default();
+        if !owners.contains(&owner) {
+            owners.push(owner);
+        }
+    }
+    groups
+        .into_iter()
+        .max_by_key(|(_, owners)| owners.len())
+        .filter(|(_, owners)| owners.len() >= 2)
+        .map_or_else(Vec::new, |((place, target), owners)| {
+            owners
+                .into_iter()
+                .map(|owner| (owner, place, target))
+                .collect()
+        })
+}
+
+/// Inline plain-Vec cleanup rituals whose physical Drop is immediately paired
+/// with the exact logical Release it discharges.
+fn inline_plain_vec_releases(p: &IrPipeline, fn_name: &str) -> Vec<(OwnerId, Place)> {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in raw_mir"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.windows(2))
+        .filter_map(|pair| match pair {
+            [Instr::Drop {
+                place: dropped,
+                drop_fn: Some(DropFnSpec::Release(symbol)),
+                ..
+            }, Instr::OwnershipEvent(OwnershipEvent::Release { owner, place })]
+                if *symbol == "hew_vec_free" && dropped == place =>
+            {
+                Some((*owner, *place))
+            }
             _ => None,
         })
         .collect()
@@ -210,11 +305,12 @@ fn plain_vec_local_drop_array_literal_frees_exactly_once() {
     );
     let drops = all_exit_drops(&pipeline, "main");
     assert_eq!(
-        count_free(&drops, "hew_vec_free"),
+        live_vec_free_places(&pipeline, "main").len(),
         1,
         "an array-literal vec must free exactly once across all exits — the \
          synthetic desugar binding and the user binding share ONE handle; \
-         got {drops:?}"
+         neutralized {:?}; got {drops:?}",
+        neutralized_sources(&pipeline, "main")
     );
 }
 
@@ -273,7 +369,7 @@ fn plain_vec_local_drop_bitcopy_record_array_repeat_frees_exactly_once() {
     );
     let drops = all_exit_drops(&pipeline, "main");
     assert_eq!(
-        count_free(&drops, "hew_vec_free"),
+        live_vec_free_places(&pipeline, "main").len(),
         1,
         "an array-repeat of a BitCopy record must free exactly once across all \
          exits — the desugar binding and the user binding share ONE handle; \
@@ -452,11 +548,12 @@ fn owned_vec_index_uses_fresh_clone_choke() {
 // Escape — negative controls (no drop where the handle leaves this scope).
 // ---------------------------------------------------------------------------
 
-/// A vec returned to the caller (`Move { dest: ReturnSlot }`) is owned by the
-/// caller now; the producing function must NOT free it.
-/// LESSONS: `boundary-fail-closed`.
+/// A vec returned to the caller (`Move { dest: ReturnSlot }`) is transferred on
+/// the successful Return edge, but remains owned by the producer on earlier
+/// unwind edges. The release decision is per-exit, never a global escape bit.
+/// LESSONS: `boundary-fail-closed`, `cleanup-all-exits`.
 #[test]
-fn plain_vec_local_drop_excludes_returned_vec() {
+fn plain_vec_return_transfers_on_return_and_cleans_up_on_earlier_unwind() {
     let pipeline = pipeline_with_tc(
         r"
         fn make() -> Vec<i64> {
@@ -467,12 +564,23 @@ fn plain_vec_local_drop_excludes_returned_vec() {
         fn main() -> i64 { 0 }
         ",
     );
-    let drops = all_exit_drops(&pipeline, "make");
+    let drops = return_drops(&pipeline, "make");
     assert_eq!(
         count_free(&drops, "hew_vec_free"),
         0,
-        "a returned vec must NOT be freed in its producing function — the \
-         caller owns it; got {drops:?}"
+        "a returned vec must NOT be freed on the successful Return edge — the \
+         caller owns it there; got {drops:?}"
+    );
+
+    let unwind = unwind_drops(&pipeline, "make", "hew_vec_push_i64");
+    assert_eq!(
+        unwind
+            .iter()
+            .filter(|drop| matches!(drop.kind, DropKind::CowHeap { .. }))
+            .count(),
+        1,
+        "an initialized vec must be released when a later push unwinds before \
+         the Return-slot transfer; got {unwind:?}"
     );
 }
 
@@ -511,14 +619,11 @@ fn plain_vec_local_drop_excludes_spawn_escaped_vec() {
 // fire their own free (the Vec-pipeline receiver rebind shape).
 // ---------------------------------------------------------------------------
 
-/// A Vec used as the receiver of MULTIPLE pipeline stages is whole-value
-/// rebound into one synthetic `__hew_pipe_src_N` PER stage — sibling aliases
-/// of ONE handle, none flowing into another. The fan-out collapse must leave
-/// at most one free per Move-connected component: here the receiver's whole
-/// alias group is ambiguous, so it leaks (fail-closed) and ONLY the two
-/// pipeline result vecs are freed. Before the collapse, every sibling fired
-/// its own `hew_vec_free` of the receiver's handle — the exit-time
-/// invalid-free crash. LESSONS: `boundary-fail-closed`.
+/// A Vec used as the receiver of MULTIPLE pipeline stages is explicitly cloned
+/// for each stage. Each clone has a distinct owner and an inline Drop+Release;
+/// the original receiver plus the two Vec results remain live at Return. The
+/// old assertion deliberately expected the ambiguous receiver group to leak,
+/// before clone/result ownership became first-class Checked MIR authority.
 #[test]
 fn plain_vec_multi_pipeline_receiver_never_double_freed() {
     let pipeline = pipeline_with_tc(
@@ -533,14 +638,28 @@ fn plain_vec_multi_pipeline_receiver_never_double_freed() {
         }
         ",
     );
-    let drops = return_drops(&pipeline, "main");
+    let returned = return_drops(&pipeline, "main");
+    let inline = inline_plain_vec_releases(&pipeline, "main");
     assert_eq!(
-        count_free(&drops, "hew_vec_free"),
-        2,
-        "three pipeline stages over one receiver share ONE handle across the \
-         synthetic per-stage rebinds; the plan must free exactly the two \
-         result vecs and leak the ambiguous receiver group — one extra free \
-         is the exit-time invalid-free crash; got {drops:?}"
+        count_free(&returned, "hew_vec_free"),
+        3,
+        "the original receiver and two Vec results are three exact live owners at Return: \
+         {returned:?}"
+    );
+    assert_eq!(
+        inline.len(),
+        count_calls(&pipeline, "main", "hew_vec_clone"),
+        "every explicit receiver clone must have one adjacent physical/logical cleanup pair: \
+         {inline:?}"
+    );
+    assert_eq!(
+        inline
+            .iter()
+            .map(|(owner, _)| *owner)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        inline.len(),
+        "no receiver generation may be released twice: {inline:?}"
     );
 }
 
@@ -562,7 +681,7 @@ fn plain_vec_single_pipeline_frees_receiver_and_result_exactly_once() {
     );
     let drops = return_drops(&pipeline, "main");
     assert_eq!(
-        count_free(&drops, "hew_vec_free"),
+        live_vec_free_places(&pipeline, "main").len(),
         2,
         "a single-stage pipeline has two distinct handles (receiver + result), \
          each with exactly one admitted owner; both must free exactly once; \
@@ -570,10 +689,10 @@ fn plain_vec_single_pipeline_frees_receiver_and_result_exactly_once() {
     );
 }
 
-/// The chained form hands each intermediate vec off through exactly one
-/// downstream synthetic rebind — a CHAIN, not a fan-out. Every intermediate
-/// must keep its exactly-one free (the collapse must not over-exclude
-/// single-owner components). LESSONS: `cleanup-all-exits`.
+/// The chained form closes each stage receiver at its lexical `ScopeExit`. Those
+/// exact Drop+Release pairs are inline Checked-MIR operations, while only the
+/// original root survives to the Return plan. Counting Return drops alone is
+/// therefore a stale representation assertion.
 #[test]
 fn plain_vec_chained_pipeline_frees_each_intermediate_exactly_once() {
     let pipeline = pipeline_with_tc(
@@ -584,13 +703,26 @@ fn plain_vec_chained_pipeline_frees_each_intermediate_exactly_once() {
         }
         ",
     );
-    let drops = return_drops(&pipeline, "main");
+    let returned = return_drops(&pipeline, "main");
+    let inline = inline_plain_vec_releases(&pipeline, "main");
     assert_eq!(
-        count_free(&drops, "hew_vec_free"),
+        count_free(&returned, "hew_vec_free"),
+        1,
+        "only the original root remains live at Return: {returned:?}"
+    );
+    assert_eq!(
+        inline.len(),
         3,
-        "a filter->map->reduce chain has three distinct handles (receiver, \
-         filter out, map out), each a single-owner hand-off chain; all three \
-         must free exactly once; got {drops:?}"
+        "filter, map and reduce each close their exact stage receiver inline: {inline:?}"
+    );
+    assert_eq!(
+        inline
+            .iter()
+            .map(|(owner, _)| *owner)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        inline.len(),
+        "each inline cleanup must discharge a distinct owner generation: {inline:?}"
     );
 }
 
@@ -606,11 +738,10 @@ fn plain_vec_chained_pipeline_frees_each_intermediate_exactly_once() {
 /// hung at ~9.6s CPU on this exact shape). The fix EVICTS the dual-rooted
 /// result slot so the fixpoint converges.
 ///
-/// Eviction alone made the shape fail closed by excluding EVERY arm local from
-/// the drop set — which leaks the arm that loses the selection. The selection
-/// transfer now nulls each arm's slot as it hands its handle to the join slot,
-/// so each arm local keeps its OWN scope-exit release: a null-tolerant no-op
-/// on the path that transferred, a real free on the path that did not.
+/// Each arm now publishes an exact Relocate plus `EdgeCarry` into the shared
+/// result carrier. Since these fresh arm owners are mutually exclusive, there
+/// is no losing live owner to drop on either arm; the selected carrier moves
+/// directly into `ReturnSlot`.
 ///
 /// What must still never appear is a release of the RESULT slot in the
 /// producing function — the caller owns what it receives.
@@ -630,36 +761,60 @@ fn plain_vec_local_drop_multi_arm_match_returned_releases_only_neutralized_arm_l
         fn main() -> i64 { 0 }
         ",
     );
-    let neutralized = selection_transfer_sources(&pipeline, "codes");
+    let carries = divergent_arm_carries(&pipeline, "codes");
     assert_eq!(
-        neutralized.len(),
+        carries.len(),
         2,
-        "each arm hands its fresh local to the shared result slot, so each arm local must be \
-         nulled at its transfer; got {neutralized:?}"
+        "each mutually-exclusive arm must carry its distinct owner into the shared result: \
+         {carries:?}"
     );
-    let freed: Vec<Place> = all_exit_drops(&pipeline, "codes")
+    assert!(carries.windows(2).all(|pair| {
+        pair[0].0 != pair[1].0 && pair[0].1 == pair[1].1 && pair[0].2 == pair[1].2
+    }));
+    let join_place = carries[0].1;
+    let function = pipeline
+        .raw_mir
         .iter()
-        .filter(|drop| is_cow_heap_free(drop, "hew_vec_free"))
-        .map(|drop| drop.place)
-        .collect();
+        .find(|function| function.name == "codes")
+        .unwrap();
     assert!(
-        !freed.is_empty() && freed.iter().all(|place| neutralized.contains(place)),
-        "every plain-Vec release in the producing function must target an arm local that its own \
-         selection transfer nulled; a release of the result slot double-frees what the caller \
-         owns; neutralized {neutralized:?}, freed {freed:?}"
+        function.blocks.iter().any(|block| {
+            matches!(block.terminator, Terminator::Return)
+                && block.instructions.windows(2).any(|pair| {
+                    matches!(
+                        pair,
+                        [
+                            Instr::Move {
+                                dest: Place::ReturnSlot,
+                                src,
+                            },
+                            Instr::NeutralizePayloadSlot {
+                                place,
+                                transferee: Some(Place::ReturnSlot),
+                                ..
+                            },
+                        ] if *src == join_place && *place == join_place
+                    )
+                })
+        }),
+        "the shared carrier must transfer directly into ReturnSlot"
+    );
+    assert_eq!(
+        count_free(&return_drops(&pipeline, "codes"), "hew_vec_free"),
+        0,
+        "the successful Return transfers the selected Vec to its caller and must release none"
+    );
+    assert_eq!(
+        count_free(&cancel_drops(&pipeline, "codes"), "hew_vec_free"),
+        2,
+        "each mutually-exclusive arm cancellation point must still clean its live selected owner"
     );
 }
 
 /// The same dual-root result slot when the match value is consumed LOCALLY
-/// rather than returned: convergence must still hold, and now the frame owns
-/// three separately-minted handles — the two arm locals and the result binding.
-/// Each earns exactly one release, and the two arm releases are the ones the
-/// selection transfer nulls, so at runtime the frame frees the live handle once
-/// and no-ops on the transferred slot.
-///
-/// Pre-fix this exit released only the result, leaking whichever arm won the
-/// selection into it — the divergent-arm leak stated structurally.
-/// LESSONS: `cleanup-all-exits`, `raii-null-after-move`.
+/// rather than returned: the two mutually-exclusive arm identities carry one
+/// physical value into the shared carrier, which the lexical result binding
+/// adopts. Exactly that result owner remains live at Return.
 #[test]
 fn plain_vec_local_drop_multi_arm_match_consumed_locally_releases_every_owner() {
     let pipeline = pipeline_with_tc(
@@ -674,25 +829,29 @@ fn plain_vec_local_drop_multi_arm_match_consumed_locally_releases_every_owner() 
         }
         ",
     );
-    let neutralized = selection_transfer_sources(&pipeline, "main");
+    let carries = divergent_arm_carries(&pipeline, "main");
     assert_eq!(
-        neutralized.len(),
+        carries.len(),
         2,
-        "both arm locals transfer into the shared result slot; got {neutralized:?}"
+        "both arm owners must reach the same shared carrier: {carries:?}"
     );
-    let freed: Vec<Place> = all_exit_drops(&pipeline, "main")
+    assert!(carries.windows(2).all(|pair| {
+        pair[0].0 != pair[1].0 && pair[0].1 == pair[1].1 && pair[0].2 == pair[1].2
+    }));
+    let freed = return_drops(&pipeline, "main")
         .iter()
         .filter(|drop| is_cow_heap_free(drop, "hew_vec_free"))
         .map(|drop| drop.place)
-        .collect();
-    let result_releases = freed
-        .iter()
-        .filter(|place| !neutralized.contains(place))
-        .count();
+        .collect::<Vec<_>>();
     assert_eq!(
-        result_releases, 1,
-        "the result binding is one live handle and earns exactly one release; more is a \
-         double-free, none re-opens the leak; neutralized {neutralized:?}, freed {freed:?}"
+        freed.len(),
+        1,
+        "the selected carrier is adopted by one lexical result owner and freed exactly once: \
+         carries {carries:?}, freed {freed:?}"
+    );
+    assert_ne!(
+        freed[0], carries[0].1,
+        "cleanup belongs to the adopted result place, not the predecessor carrier"
     );
 }
 
@@ -745,6 +904,73 @@ fn plain_vec_local_drop_keeps_vec_across_borrowing_value_call() {
         1,
         "a borrow-only by-value helper leaves the Vec caller-owned; the caller \
          must free it exactly once; got {drops:?}"
+    );
+}
+
+/// An anonymous array literal already has one exact-site `__hew_array_N`
+/// owner. Passing it to a proven-borrow generic helper must reuse that owner,
+/// never mint a parallel `__hew_temp_arg` over the same Vec local.
+#[test]
+fn array_literal_borrowing_generic_call_reuses_desugar_owner() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn first<T>(xs: Vec<T>) -> T {
+            xs[0]
+        }
+        fn main() -> i64 {
+            first([1, 2, 3])
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the one physical Vec owner must verify without authority drift: {:#?}",
+        pipeline.diagnostics
+    );
+    assert_eq!(
+        count_binds_with_prefix(&pipeline, "main", "__hew_array_"),
+        1
+    );
+    assert_eq!(
+        count_binds_with_prefix(&pipeline, "main", "__hew_temp_arg"),
+        0
+    );
+    assert!(
+        !neutralized_sources(&pipeline, "main").is_empty(),
+        "the array desugar owner must cross a committed scoped-tail Move"
+    );
+}
+
+/// Negative control: a parameter-forwarding helper transfers the array Vec
+/// through its result. The borrowing-owner repair must not retain a caller
+/// temporary at the call edge; only the result binding owns the live handle.
+#[test]
+fn array_literal_forwarding_generic_call_does_not_mint_borrow_owner() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn identity<T>(xs: Vec<T>) -> Vec<T> {
+            xs
+        }
+        fn main() -> i64 {
+            let out = identity([1, 2, 3]);
+            out.len()
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the transferred Vec must keep one exact owner: {:#?}",
+        pipeline.diagnostics
+    );
+    assert_eq!(
+        count_binds_with_prefix(&pipeline, "main", "__hew_temp_arg"),
+        0
+    );
+    let drops = all_exit_drops(&pipeline, "main");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free"),
+        1,
+        "only the returned Vec binding may release the transferred handle; got {drops:?}"
     );
 }
 

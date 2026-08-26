@@ -505,7 +505,6 @@ fn lex(source: string) -> i32 {
         // string literals (double-quoted)
         if ch == 34 {
             pos = pos + 1;
-            var str_val = "";
             while pos < len {
                 let c = source.char_at(pos).unwrap_or('\0') as i32;
                 if c == 34 {
@@ -757,7 +756,7 @@ fn test_string_builtins() -> i32 {
     if "hello".len() == 5 {
         passed = passed + 1;
     }
-    if "".len() == 0 {
+    if "".is_empty() {
         passed = passed + 1;
     }
     if "fn".len() == 2 {

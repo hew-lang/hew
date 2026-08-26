@@ -1241,7 +1241,7 @@ pub struct HewActor {
     /// concatenates every hook body (in lexical declaration order) into
     /// a single synthetic `_terminate` symbol so the runtime ABI stays
     /// one C function pointer. See HEW-SPEC-2026 §9.1.2.
-    pub terminate_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub terminate_fn: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
 
     /// Optional state-drop function that runs `impl Drop` callbacks on every
     /// owned field of the actor's live state immediately before
@@ -2782,9 +2782,8 @@ pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
 
 /// Run the actor's terminate callback exactly once, with crash recovery.
 ///
-/// Sets up the actor lane and (on worker threads) a `sigsetjmp` recovery frame
-/// so that Hew panics or signals inside the terminate block are
-/// caught instead of aborting the process.
+/// Sets up the actor lane and catches Hew language panics unwinding from the
+/// terminate block. Hardware synchronous faults remain process-fatal.
 ///
 /// Called at terminal state transitions (→ Stopped), **not** at free time.
 ///
@@ -2816,6 +2815,7 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     let mut execution_context = crate::execution_context::HewExecutionContext {
         actor,
         actor_id: a.id,
+        flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
         arena: a.arena,
         prev_context: crate::execution_context::current_context(),
         ..crate::execution_context::HewExecutionContext::default()
@@ -2845,68 +2845,19 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     // terminate body, satisfying `enter`'s lifetime obligation.
     let _rt_guard = crate::runtime::rt_default().map(|rt| unsafe { crate::runtime::enter(rt) });
 
-    // Set up crash recovery (returns null on non-worker threads).
-    // SAFETY: `actor` is valid and in a terminal state; null msg is fine.
-    let jmp_buf_ptr = unsafe { crate::signal::prepare_dispatch_recovery(actor, ptr::null_mut()) };
-
-    let is_normal_path = if jmp_buf_ptr.is_null() {
-        // No recovery context (external thread or not initialised).
-        // Hew panics (longjmp) from an external thread will still
-        // abort the process — that's an acceptable limitation.
-        true
-    } else {
-        // SAFETY: jmp_buf_ptr is valid (from prepare_dispatch_recovery).
-        let ret = unsafe { crate::signal::sigsetjmp(jmp_buf_ptr, 1) };
-        if ret == 0 {
-            crate::signal::mark_recovery_active();
-            true
-        } else {
-            false
-        }
-    };
-
-    if is_normal_path {
-        // catch_unwind guards against Rust panics; the sigsetjmp frame
-        // (when present) guards against Hew panics and signals.
-        //
-        // The terminate callback (emitted by codegen) acquires the actor-state
-        // lock before calling the user's on(stop) body, mirroring the
-        // dispatch-handler lock protocol (LESSONS: cleanup-all-exits P0).
-        // If the user body panics, catch_unwind returns Err and the lock is
-        // still held — release it here on the panic path so teardown can
-        // proceed (state_drop_fn and arena free both run unconditionally).
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // SAFETY: terminate_fn and state are valid; actor is not
-            // being dispatched.
-            unsafe { terminate_fn(state) };
-        }));
-        if let Err(panic_payload) = result {
-            // Release a lock the trampoline may have acquired before the panic.
-            // This is a no-op when no terminate_fn was set or the lock was
-            // already released normally.
-            // SAFETY: actor is valid; the lock registry tolerates an unheld
-            // or unregistered lock (same invariant as the scheduler panic path).
-            unsafe {
-                let _ = hew_actor_state_lock_release_after_panic(actor);
-            }
-            crate::util::quarantine_panic_payload(panic_payload);
-        }
-        if !jmp_buf_ptr.is_null() {
-            crate::signal::clear_dispatch_recovery();
-        }
-    } else {
-        // Terminate block crashed via signal/longjmp. The actor is
-        // already in a terminal state so hew_actor_trap is a no-op for
-        // the state transition, but handle_crash_recovery properly
-        // clears in_recovery and logs a crash report.
-        // Release any lock the trampoline acquired before the crash (same
-        // invariant as the scheduler signal-recovery path at scheduler.rs:991).
-        // SAFETY: actor is valid; the release helper tolerates an unheld lock.
+    // The emitted terminate callback acquires the actor-state lock. Structured
+    // unwinding runs generated lexical cleanups; this boundary releases the
+    // state lock and contains the lifecycle failure.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: terminate_fn and state are valid; actor is not dispatched.
+        unsafe { terminate_fn(state) };
+    }));
+    if let Err(panic_payload) = result {
+        // SAFETY: actor is valid; the registry tolerates an unheld lock.
         unsafe {
             let _ = hew_actor_state_lock_release_after_panic(actor);
         }
-        // SAFETY: called immediately after sigsetjmp returned non-zero.
-        unsafe { crate::signal::handle_crash_recovery() };
+        crate::util::quarantine_panic_payload(panic_payload);
     }
 
     a.terminate_finished.store(true, Ordering::Release);
@@ -5351,7 +5302,7 @@ pub unsafe extern "C" fn hew_actor_set_sys_dispatch(
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_terminate(
     actor: *mut HewActor,
-    terminate_fn: unsafe extern "C" fn(*mut c_void),
+    terminate_fn: unsafe extern "C-unwind" fn(*mut c_void),
 ) {
     cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
@@ -6932,15 +6883,15 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
 /// `hew_trap_with_code(i32)` symbol with identical semantics but from different
 /// modules, because the crash seam itself differs per target.
 ///
-/// * Native (`crate::supervisor::hew_trap_with_code`): longjmps to the
-///   scheduler's recovery frame — terminal `Crashed`, the carried reason
+/// * Native (`crate::supervisor::hew_trap_with_code`): unwinds through generated
+///   cleanup pads to the scheduler's recovery boundary — terminal `Crashed`, the carried reason
 ///   stamped, link / monitor / supervisor fan-out.
 /// * wasm32 (`crate::trap_code::hew_trap_with_code`): stamps the carried reason
 ///   on the actor and panics; under `panic = "abort"` (the wasm32-wasip1 runtime
 ///   profile) the panic aborts the module — the fail-closed crash. On a host
 ///   build with unwinding the cooperative scheduler's `catch_unwind` activation
 ///   boundary observes the stamped code and transitions the actor to `Crashed`,
-///   the WASM counterpart of the native longjmp seam. wasm32 has no `supervisor`
+///   the WASM counterpart of the native caught-unwind seam. wasm32 has no `supervisor`
 ///   module (it is `#[cfg(not(target_arch = "wasm32"))]`), so the call must
 ///   target `trap_code` there or the wasm runtime archive does not compile.
 ///
@@ -6960,10 +6911,9 @@ pub extern "C-unwind" fn hew_actor_exit_unhandled(reason: i32) {
     } else {
         reason
     };
-    // SAFETY: routes through the per-target crash seam. Native's
-    // `try_direct_longjmp_with_code` checks the per-thread recovery context and
-    // is a no-op when none is active; wasm32's stamps the actor error code and
-    // panics. Both are safe to call from generated dispatch code.
+    // SAFETY: routes through the per-target language-trap seam. Native stamps
+    // the actor error and unwinds through the C-unwind ABI; wasm32 stamps the
+    // error and panics. Both are safe to call from generated dispatch code.
     #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         crate::supervisor::hew_trap_with_code(crash_code);
@@ -7003,11 +6953,53 @@ pub(crate) fn stamp_wasm_actor_panic() -> bool {
     crate::trap_code::stamp_current_actor_error_code(101)
 }
 
+/// Typed payload propagated through generated LLVM cleanup landing pads to the
+/// scheduler's actor-dispatch `catch_unwind` boundary.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HewPanic {
+    pub(crate) code: i32,
+}
+
+/// Whether a panic-hook invocation is the typed language unwind that the
+/// current runtime boundary is about to catch.
+///
+/// Rust invokes the process-global panic hook before `catch_unwind`. Printing
+/// the default `panicked at ...` diagnostic for this internal control-flow
+/// payload makes a successfully isolated actor crash look like a process abort
+/// to external runners. Ordinary Rust panics and Hew panics without a proven
+/// catch boundary must retain the host's prior hook unchanged.
+#[cfg(not(target_arch = "wasm32"))]
+fn is_caught_hew_panic(payload: &(dyn std::any::Any + Send)) -> bool {
+    payload.is::<HewPanic>() && crate::execution_context::current_context_can_unwind()
+}
+
+/// Install the process-global filter for typed Hew language unwinds.
+///
+/// The filter is installed once before scheduler workers start. Its decision
+/// is thread-local through [`crate::execution_context::current_context_can_unwind`],
+/// so unrelated threads and lifecycle/main contexts continue through the hook
+/// that was installed before the runtime initialized.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn install_hew_panic_hook() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if is_caught_hew_panic(info.payload()) {
+                return;
+            }
+            previous(info);
+        }));
+    });
+}
+
 /// Trigger a panic in the current execution context.
 ///
-/// Inside an actor: longjmps back to the scheduler on native. On the production
-/// wasm32-wasip1 panic=abort artifact it stamps the panic sentinel and then
-/// terminates the module; actor-local containment is not available there.
+/// Inside a native actor this Rust-unwinds through the MIR-authored LLVM cleanup
+/// edges and is caught exactly once by the scheduler. Hardware signals never
+/// use this path. On wasm32 it stamps the panic sentinel and terminates the
+/// module because portable WASM EH is not enabled by the shipped target.
 ///
 /// Outside an actor (e.g. `main`): exits the process with code 101.
 ///
@@ -7026,23 +7018,22 @@ pub extern "C-unwind" fn hew_panic() {
         std::process::exit(101);
     }
 
-    // Try direct longjmp recovery first. This avoids going through the
-    // signal/exception path, which is essential on Windows where longjmp
-    // from a VEH handler causes STATUS_BAD_STACK.
-    //
-    // SAFETY: Called from actor dispatch context (stack chain includes the
-    // scheduler's sigsetjmp frame). If recovery context exists, longjmps
-    // directly — never returns. If no context, returns and we fall through
-    // to a clean process exit.
     #[cfg(not(target_arch = "wasm32"))]
-    unsafe {
-        crate::signal::try_direct_longjmp();
+    {
+        let actor_stamped = crate::trap_code::stamp_current_actor_error_code(101);
+        if actor_stamped && crate::execution_context::current_context_can_unwind() {
+            std::panic::panic_any(HewPanic { code: 101 });
+        }
+        // A generated native `main` has no Rust catch boundary. Starting a
+        // foreign exception here would therefore ask the platform unwinder to
+        // cross the process entry frame and can terminate with an unwinder
+        // initialization failure instead of Hew's documented panic status.
+        // A synchronous lifecycle hook also installs an actor context, but has
+        // no catch boundary. In either that case or main/free-function context,
+        // process termination is the ownership boundary and the OS reclaims all
+        // remaining process resources.
+        std::process::exit(101);
     }
-
-    // No recovery context (e.g. panic called from main) — exit cleanly.
-    // Exit code 101 follows Rust's convention for panics.
-    #[cfg(not(target_arch = "wasm32"))]
-    std::process::exit(101);
 }
 
 /// Crash the current actor after printing a message.
@@ -8363,6 +8354,29 @@ mod tests {
     static USER_PROBE_SEEN: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
     static SYS_PROBE_SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     static SYS_PROBE_LAST_KIND: AtomicI32 = AtomicI32::new(-1);
+
+    #[test]
+    fn panic_hook_filter_requires_typed_payload_and_live_boundary() {
+        let typed = HewPanic { code: 101 };
+        let ordinary = "ordinary Rust panic";
+
+        assert!(
+            !is_caught_hew_panic(&typed),
+            "a typed payload without a catch boundary must remain visible"
+        );
+        let _ctx = TestExecutionContext::install(HewExecutionContext {
+            flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
+            ..HewExecutionContext::default()
+        });
+        assert!(
+            is_caught_hew_panic(&typed),
+            "typed Hew control flow inside the scheduler boundary is silent"
+        );
+        assert!(
+            !is_caught_hew_panic(&ordinary),
+            "ordinary Rust panics must continue through the prior hook"
+        );
+    }
 
     unsafe extern "C-unwind" fn channel_split_user_probe(
         _ctx: *mut crate::execution_context::HewExecutionContext,
@@ -11025,7 +11039,7 @@ mod tests {
         assert_eq!(v, 0, "expected zero sentinel for null actor");
     }
 
-    unsafe extern "C" fn null_guard_dummy_terminate(_: *mut c_void) {}
+    unsafe extern "C-unwind" fn null_guard_dummy_terminate(_: *mut c_void) {}
 
     #[test]
     fn null_actor_set_terminate_returns_without_crash() {
@@ -15326,7 +15340,7 @@ mod tests {
     static TERMINATE_CALL_COUNT: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
 
-    unsafe extern "C" fn counting_terminate_callback(_state: *mut c_void) {
+    unsafe extern "C-unwind" fn counting_terminate_callback(_state: *mut c_void) {
         TERMINATE_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -15813,7 +15827,8 @@ mod tests {
     // ── arena_cap_bytes threading via hew_actor_spawn_opts ───────────────
 
     /// `hew_actor_spawn_opts` with `arena_cap_bytes > 0` spawns an actor whose
-    /// arena enforces the cap: the first allocation over the cap returns null.
+    /// arena enforces the cap: the first allocation over the cap raises the
+    /// typed `HeapExceeded` unwind caught by the scheduler.
     #[test]
     fn max_heap_spawn_opts_threads_cap_to_arena() {
         let _guard = crate::runtime_test_guard();
@@ -15841,7 +15856,7 @@ mod tests {
         );
 
         // Verify the arena cap was set: install the actor's arena, attempt to
-        // alloc 129 bytes (one over cap), and assert it returns null.
+        // alloc 129 bytes (one over cap), and catch the scheduler-facing unwind.
         // SAFETY: actor is valid; arena pointer comes from the actor struct.
         let arena = unsafe { (*actor).arena };
         assert!(!arena.is_null(), "actor arena must be allocated");
@@ -15850,6 +15865,9 @@ mod tests {
         let _ctx = TestExecutionContext::install(HewExecutionContext {
             actor,
             actor_id,
+            // This unit fixture explicitly supplies the catch boundary that a
+            // real scheduler dispatch installs around arena allocation.
+            flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
             ..HewExecutionContext::default()
         });
 
@@ -15862,12 +15880,15 @@ mod tests {
         let p = unsafe { crate::arena::hew_arena_malloc(128) };
         assert!(!p.is_null(), "128-byte alloc at cap must succeed");
 
-        // Now exceed the cap: one more byte should return null.
-        // SAFETY: arena is still installed.
-        let over = unsafe { crate::arena::hew_arena_malloc(1) };
-        assert!(
-            over.is_null(),
-            "alloc over arena cap must return null (HeapExceeded path)"
+        // Now exceed the cap: one more byte raises HeapExceeded.
+        let exhausted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: arena is still installed.
+            let _ = unsafe { crate::arena::hew_arena_malloc(1) };
+        }))
+        .expect_err("alloc over arena cap must unwind");
+        assert_eq!(
+            exhausted.downcast_ref::<HewPanic>().map(|panic| panic.code),
+            Some(crate::supervisor::HEW_TRAP_HEAP_EXCEEDED)
         );
 
         // Restore no-arena state before teardown.

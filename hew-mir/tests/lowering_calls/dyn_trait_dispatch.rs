@@ -11,7 +11,10 @@
 //! the MIR `Instr` shape is end-to-end-verified, not mocked in isolation.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, DropKind, Instr, IrPipeline};
+use hew_mir::{
+    lower_hir_module, DropKind, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place,
+    TraitObjectStorage,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::{Checker, ResolvedTy};
 
@@ -48,6 +51,47 @@ fn all_instrs(p: &IrPipeline, fn_name: &str) -> Vec<Instr> {
         .iter()
         .flat_map(|b| b.instructions.iter().cloned())
         .collect()
+}
+
+fn assert_path_exact_heap_boxed_cleanup(function: &ElaboratedMirFunction, owner: Place) {
+    let drops: Vec<_> = function
+        .drop_plans
+        .iter()
+        .flat_map(|(exit, plan)| plan.drops.iter().map(move |drop| (exit, drop)))
+        .filter(|(_, drop)| {
+            matches!(
+                drop.kind,
+                DropKind::TraitObject {
+                    storage: TraitObjectStorage::HeapBoxed
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        drops.len(),
+        2,
+        "one logical dyn owner must have one cleanup on each mutually exclusive exit"
+    );
+    assert!(
+        drops.iter().all(|(_, drop)| drop.place == owner),
+        "normal and unwind cleanup must release the same dyn owner: {drops:#?}"
+    );
+    assert_eq!(
+        drops
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+            .count(),
+        1,
+        "the dyn owner needs exactly one normal-return cleanup: {drops:#?}"
+    );
+    assert_eq!(
+        drops
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Unwind { callee, .. } if callee == "use_display"))
+            .count(),
+        1,
+        "the dyn owner needs exactly one use_display-unwind cleanup: {drops:#?}"
+    );
 }
 
 /// `T → dyn Display` argument coercion at a call site emits exactly one
@@ -98,7 +142,7 @@ fn int_to_dyn_display_coercion_emits_coerce_instr() {
 
 #[test]
 fn borrowed_dyn_coercion_temporary_is_owned_and_dropped_by_caller() {
-    use hew_mir::{Place, Terminator, TraitObjectStorage};
+    use hew_mir::Terminator;
 
     let source = r"
         fn use_display(value: dyn Display) {
@@ -144,25 +188,7 @@ fn borrowed_dyn_coercion_temporary_is_owned_and_dropped_by_caller() {
         .iter()
         .find(|f| f.name == "main")
         .expect("main elaborated MIR");
-    let caller_drops: Vec<_> = main_elab
-        .drop_plans
-        .iter()
-        .flat_map(|(_, plan)| &plan.drops)
-        .filter(|drop| {
-            drop.place == coerce_dest
-                && matches!(
-                    drop.kind,
-                    DropKind::TraitObject {
-                        storage: TraitObjectStorage::HeapBoxed
-                    }
-                )
-        })
-        .collect();
-    assert_eq!(
-        caller_drops.len(),
-        1,
-        "a borrowed fresh dyn coercion must have exactly one caller-side HeapBoxed drop"
-    );
+    assert_path_exact_heap_boxed_cleanup(main_elab, coerce_dest);
     assert!(matches!(coerce_dest, Place::Local(_)));
 
     let callee_elab = p
@@ -182,7 +208,7 @@ fn borrowed_dyn_coercion_temporary_is_owned_and_dropped_by_caller() {
 
 #[test]
 fn already_dyn_argument_is_not_reboxed_as_its_original_concrete() {
-    use hew_mir::{Terminator, TraitObjectStorage};
+    use hew_mir::Terminator;
 
     let source = r"
         fn use_display(value: dyn Display) {
@@ -236,24 +262,7 @@ fn already_dyn_argument_is_not_reboxed_as_its_original_concrete() {
         .iter()
         .find(|function| function.name == "main")
         .expect("main elaborated MIR");
-    let dyn_drops = main_elab
-        .drop_plans
-        .iter()
-        .flat_map(|(_, plan)| &plan.drops)
-        .filter(|drop| {
-            matches!(
-                drop.kind,
-                DropKind::TraitObject {
-                    storage: TraitObjectStorage::HeapBoxed
-                }
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        dyn_drops.len(),
-        1,
-        "the named dyn value retains exactly one HeapBoxed drop authority"
-    );
+    assert_path_exact_heap_boxed_cleanup(main_elab, call_arg);
 }
 
 #[test]

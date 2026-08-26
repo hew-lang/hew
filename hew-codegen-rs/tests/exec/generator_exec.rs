@@ -335,6 +335,8 @@ fn count_main_release_calls(ir: &str, symbol: &str) -> usize {
     let needle = format!("call void @{symbol}(");
     let mut in_main = false;
     let mut count = 0;
+    let mut block_count = 0;
+    let mut excluded_block = false;
     for line in ir.lines() {
         if line.starts_with("define ") && line.contains("@main(") {
             in_main = true;
@@ -342,10 +344,24 @@ fn count_main_release_calls(ir: &str, symbol: &str) -> usize {
         }
         if in_main {
             if line == "}" {
+                if !excluded_block {
+                    count += block_count;
+                }
                 break;
             }
+            if !line.starts_with(char::is_whitespace) && line.contains(':') {
+                if !excluded_block {
+                    count += block_count;
+                }
+                block_count = 0;
+                excluded_block =
+                    line.starts_with("invoke.cleanup") || line.starts_with("cancel_exit");
+            }
+            if line.contains("landingpad") || line.contains("call void @llvm.trap(") {
+                excluded_block = true;
+            }
             if line.contains(&needle) {
-                count += 1;
+                block_count += 1;
             }
         }
     }
@@ -353,30 +369,106 @@ fn count_main_release_calls(ir: &str, symbol: &str) -> usize {
 }
 
 /// Count normal-flow direct `call void @<symbol>(` sites across the emitted
-/// module. Generated `__hew_frame_cleanup_*` thunks are excluded: those are
-/// crash-only alternatives to an ordinary drop whose dynamic token is retired
-/// before normal cleanup, so including both call sites would report a false
-/// double-release even though their paths are mutually exclusive.
+/// module. Generated `__hew_frame_cleanup_*` thunks and `invoke.cleanup` blocks
+/// are excluded: both are exceptional alternatives to an ordinary drop, so
+/// counting their static call sites together with normal flow would report a
+/// false double-release even though the paths are mutually exclusive.
 fn count_release_calls_in_module(ir: &str, symbol: &str) -> usize {
     let needle = format!("call void @{symbol}(");
     let mut in_crash_cleanup_thunk = false;
+    let mut in_function = false;
     let mut count = 0;
+    let mut block_count = 0;
+    let mut excluded_block = false;
     for line in ir.lines() {
-        if line.starts_with("define internal void @__hew_frame_cleanup_") {
-            in_crash_cleanup_thunk = true;
+        if line.starts_with("define ") {
+            in_function = true;
+            in_crash_cleanup_thunk = line.contains("@__hew_frame_cleanup_");
+            block_count = 0;
+            excluded_block = in_crash_cleanup_thunk;
             continue;
         }
-        if in_crash_cleanup_thunk {
-            if line == "}" {
-                in_crash_cleanup_thunk = false;
-            }
+        if !in_function {
             continue;
+        }
+        if line == "}" {
+            if !excluded_block {
+                count += block_count;
+            }
+            in_function = false;
+            in_crash_cleanup_thunk = false;
+            continue;
+        }
+        if !line.starts_with(char::is_whitespace) && line.contains(':') {
+            if !excluded_block {
+                count += block_count;
+            }
+            block_count = 0;
+            excluded_block = in_crash_cleanup_thunk
+                || line.starts_with("invoke.cleanup")
+                || line.starts_with("cancel_exit");
+        }
+        if line.contains("landingpad") || line.contains("call void @llvm.trap(") {
+            excluded_block = true;
         }
         if line.contains(&needle) {
-            count += 1;
+            block_count += 1;
         }
     }
     count
+}
+
+#[test]
+fn generator_resume_is_an_owned_invoke_with_parent_cleanup() {
+    let repo = repo_root();
+    let ir = emit_llvm_ir(
+        &repo,
+        "generator_resume_owned_invoke",
+        r#"gen fn values() -> i64 { yield 1; yield 2 }
+
+fn main() {
+    let keep = "parent-owned";
+    let g = values();
+    let _first = g.next();
+    let _second = g.next();
+    println(keep);
+}
+"#,
+    );
+    let mut containing_body = None;
+    let mut body = String::new();
+    let mut in_function = false;
+    for line in ir.lines() {
+        if line.starts_with("define ") {
+            in_function = true;
+            body.clear();
+        }
+        if in_function {
+            body.push_str(line);
+            body.push('\n');
+            if line == "}" {
+                if body.contains("@hew_cont_resume(") {
+                    containing_body = Some(body.clone());
+                    break;
+                }
+                in_function = false;
+            }
+        }
+    }
+    let body = containing_body.expect("missing function that resumes the generator");
+    assert!(
+        body.contains("invoke void @hew_cont_resume")
+            && body.contains("landingpad { ptr, i32 }")
+            && body.contains("call void @hew_gen_coro_destroy")
+            && body.contains("call void @hew_string_drop"),
+        "GeneratorNext must carry its exact generator owner and every live parent owner into the resume unwind cleanup:\n{body}"
+    );
+    assert!(
+        !body
+            .lines()
+            .any(|line| line.trim_start().starts_with("call void @hew_cont_resume")),
+        "a C-unwind continuation resume must never remain a plain call:\n{body}"
+    );
 }
 
 /// Leak 1 (consumer side): `for v in lists()` over a `Vec<i64>` yield must

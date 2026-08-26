@@ -111,6 +111,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "trap_probe".to_string(),

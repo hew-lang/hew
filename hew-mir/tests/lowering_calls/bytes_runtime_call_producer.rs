@@ -2,7 +2,7 @@
 //!
 //! `bytes.len()` and `bytes.get(i)` are declared in `std/io.hew`'s
 //! `impl bytes` extern block. `len` binds `#[extern_symbol(hew_vec_len)]` and
-//! lowers to an `Instr::CallRuntimeAbi(hew_vec_len)`. `get` binds
+//! lowers to a terminal `hew_vec_len` call with typed runtime authority. `get` binds
 //! `#[extern_symbol(hew_bytes_get)]` returning `Option<u8>`; it lowers to a
 //! `Terminator::Call { callee: "hew_bytes_get", dest: Some(Option<u8>) }` whose
 //! callee codegen intercepts to build `Some(byte)` in bounds / `None` out of
@@ -21,7 +21,7 @@ use hew_hir::{
     HirLiteral, HirModule, HirStmt, HirStmtKind, IntentKind, ResolutionCtx, ResolvedRef, ScopeId,
     TypeClassTable, ValueClass,
 };
-use hew_mir::{lower_hir_module, Instr, Place, Terminator};
+use hew_mir::{lower_hir_module, CallAuthority, Place, Terminator};
 use hew_types::{
     module_registry::ModuleRegistry, runtime_call::RuntimeCallFamily, Checker, ResolvedTy,
 };
@@ -183,20 +183,39 @@ fn find_probe(pipeline: &hew_mir::IrPipeline) -> &hew_mir::RawMirFunction {
         .expect("probe function must be present in raw_mir")
 }
 
-fn find_abi_call<'a>(
+#[derive(Debug, Clone, Copy)]
+struct TerminalRuntimeCall<'a> {
+    args: &'a [Place],
+    dest: Option<Place>,
+}
+
+impl<'a> TerminalRuntimeCall<'a> {
+    fn args(self) -> &'a [Place] {
+        self.args
+    }
+
+    fn dest(self) -> Option<Place> {
+        self.dest
+    }
+}
+
+fn find_runtime_call<'a>(
     func: &'a hew_mir::RawMirFunction,
     symbol: &str,
-) -> Option<&'a hew_mir::RuntimeCall> {
+) -> Option<TerminalRuntimeCall<'a>> {
     func.blocks
         .iter()
-        .flat_map(|b| b.instructions.iter())
-        .find_map(|i| {
-            if let Instr::CallRuntimeAbi(c) = i {
-                if c.symbol() == symbol {
-                    return Some(c);
-                }
+        .find_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee,
+                authority: CallAuthority::Runtime(family),
+                args,
+                dest,
+                ..
+            } if callee == symbol && family.c_symbol() == symbol => {
+                Some(TerminalRuntimeCall { args, dest: *dest })
             }
-            None
+            _ => None,
         })
 }
 
@@ -234,7 +253,7 @@ fn same_spelling_indirect_call_is_not_runtime_authority() {
     let pipeline = lower_hir_module(&module_with_stmt(&mut ids, call));
 
     assert!(
-        find_abi_call(find_probe(&pipeline), "hew_vec_len").is_none(),
+        find_runtime_call(find_probe(&pipeline), "hew_vec_len").is_none(),
         "an indirect call must not acquire runtime authority from linker spelling"
     );
 }
@@ -326,7 +345,7 @@ fn std_io_bytes_calls_preserve_checker_runtime_targets_in_hir() {
 }
 
 /// `bytes.len()` in statement position (discarded result) must emit
-/// `CallRuntimeAbi { symbol: "hew_vec_len", args: [buf], dest: None }`.
+/// `Terminator::Call { authority: Runtime(VecLen), args: [buf], dest: None }`.
 ///
 /// Before the fix this fell into the `_ =>` NYI arm and produced
 /// `MirDiagnosticKind::NotYetImplemented` without any instruction.
@@ -357,9 +376,8 @@ fn bytes_len_discarded_emits_call_runtime_abi() {
     );
 
     let func = find_probe(&pipeline);
-    let call = find_abi_call(func, "hew_vec_len").expect(
-        "bytes.len() must emit Instr::CallRuntimeAbi(hew_vec_len); no such instruction found",
-    );
+    let call = find_runtime_call(func, "hew_vec_len")
+        .expect("bytes.len() must emit a typed terminal hew_vec_len call");
 
     assert_eq!(
         call.args().len(),
@@ -443,8 +461,8 @@ fn bytes_len_value_needed_emits_i64_dest() {
     );
 
     let func = find_probe(&pipeline);
-    let call = find_abi_call(func, "hew_vec_len")
-        .expect("bytes.len() in value-needed context must emit hew_vec_len CallRuntimeAbi");
+    let call = find_runtime_call(func, "hew_vec_len")
+        .expect("bytes.len() in value-needed context must emit typed terminal hew_vec_len");
 
     let dest = call
         .dest()
@@ -470,9 +488,9 @@ fn bytes_len_value_needed_emits_i64_dest() {
 /// `bytes.get(index)` lowers to a `Terminator::Call` whose callee is the
 /// synthetic `hew_bytes_get` (codegen intercepts it to build the `Option<u8>`),
 /// carrying the two producer args `[buf, idx]`. It is NOT an
-/// `Instr::CallRuntimeAbi`: the result is an `Option`, constructed at the call
-/// site, so the call rides the terminator route the move/borrow/drop analyses
-/// already understand for Vec/HashMap `.get`.
+/// Both runtime surfaces now ride the terminal route understood by
+/// move/borrow/drop analysis; the typed `BytesGet` authority distinguishes
+/// this Option-producing specialized lowering from ordinary calls.
 #[test]
 fn bytes_get_emits_terminator_call_to_hew_bytes_get() {
     let mut ids = IdGen::default();
@@ -501,15 +519,15 @@ fn bytes_get_emits_terminator_call_to_hew_bytes_get() {
     );
 
     let func = find_probe(&pipeline);
-    assert!(
-        find_abi_call(func, "hew_bytes_get").is_none(),
-        "bytes.get() must NOT emit Instr::CallRuntimeAbi — it rides Terminator::Call"
-    );
-
     let term = find_terminator_call(func, "hew_bytes_get")
         .expect("bytes.get() must emit Terminator::Call(hew_bytes_get)");
-    let Terminator::Call { args, .. } = term else {
-        unreachable!("find_terminator_call returns only Terminator::Call");
+    let Terminator::Call {
+        authority: CallAuthority::Runtime(RuntimeCallFamily::BytesGet),
+        args,
+        ..
+    } = term
+    else {
+        panic!("bytes.get() terminal call must carry BytesGet authority: {term:?}");
     };
     assert_eq!(
         args.len(),

@@ -10,12 +10,12 @@
 //! Trap mechanism: the test's dispatch invokes
 //! `hew_runtime::supervisor::hew_trap_with_code(HEW_TRAP_DIVIDE_BY_ZERO)`,
 //! which is exactly the C-ABI entry-point codegen emits in the IR it
-//! produces for `lhs / 0`. The longjmp recovery seam catches the trap,
+//! produces for `lhs / 0`. The caught-unwind recovery seam catches the trap,
 //! `handle_crash_recovery_impl` builds a `CrashReport` with
 //! `signal = HEW_TRAP_DIVIDE_BY_ZERO`, and pushes it to the global crash
 //! log that `snapshot_crashes_json` serialises.
 //!
-//! Gating: the longjmp seam is native-only. WASM has its own non-actor
+//! Gating: native actor unwind recovery is native-only. WASM has its own non-actor
 //! `hew_trap_with_code` path (no recovery context, no `CrashReport`).
 //! The producer-side `trap_kind` derivation lives in
 //! `hew-runtime/src/crash.rs::snapshot_crashes_json`, behind the same
@@ -94,8 +94,8 @@ unsafe extern "C-unwind" fn divide_by_zero_dispatch(
     _borrow_mode: i32,
 ) -> *mut c_void {
     if msg_type == MSG_DIV_BY_ZERO {
-        // Same C-ABI seam codegen emits for `Terminator::Trap { kind: DivideByZero }`.
-        // Longjmps back to the scheduler's sigsetjmp frame; never returns.
+        // Same C-unwind ABI seam codegen emits for
+        // `Terminator::Trap { kind: DivideByZero }`. Never returns.
         unsafe {
             hew_trap_with_code(HEW_TRAP_DIVIDE_BY_ZERO);
         }
@@ -131,7 +131,7 @@ unsafe fn wait_for_new_crash(log_before: i32, timeout: Duration) -> Option<(u64,
 /// 1. Supervised actor spawns with `divide_by_zero_dispatch`.
 /// 2. The actor is sent `MSG_DIV_BY_ZERO`, which calls
 ///    `hew_trap_with_code(HEW_TRAP_DIVIDE_BY_ZERO)`.
-/// 3. The longjmp seam recovers, pushes a `CrashReport` with
+/// 3. The caught-unwind seam recovers, pushes a `CrashReport` with
 ///    `signal = HEW_TRAP_DIVIDE_BY_ZERO` (202).
 /// 4. `snapshot_crashes_json()` serialises the report; the new `trap_kind`
 ///    field resolves to `"DivideByZero"` via

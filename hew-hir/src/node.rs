@@ -3235,6 +3235,9 @@ pub struct HirSelect {
 /// (e.g. `AfterTimer` arms; arms without an `<name> from` pattern).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSelectArm {
+    /// Lexical scope introduced for a value-bearing arm's binding and body.
+    /// `None` for timer arms, which introduce no binding.
+    pub scope: Option<ScopeId>,
     pub kind: HirSelectArmKind,
     pub binding_name: Option<String>,
     pub binding_id: Option<BindingId>,

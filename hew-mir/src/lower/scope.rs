@@ -153,12 +153,12 @@ impl Builder {
             let Some(place) = self.binding_locals.get(&binding).copied() else {
                 continue;
             };
-            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
             self.push_instr(Instr::Drop {
                 place,
                 ty,
                 drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_coro_destroy")),
             });
+            self.release_owned_local(binding, Disposition::ScopeReleased);
         }
     }
     /// The scope-exit release symbol for a sole-owner `for x in …` cursor's
@@ -234,6 +234,7 @@ impl Builder {
     pub(crate) fn register_vec_iter_scope_owner(
         &mut self,
         binding: BindingId,
+        binding_name: &str,
         value: &HirExpr,
         binding_ty: &ResolvedTy,
         slot_is_wired: bool,
@@ -243,6 +244,43 @@ impl Builder {
             || self.vec_iter_cursor_release_symbol(binding_ty).is_none()
             || self.vec_iter_drop_flags.contains_key(&binding)
         {
+            return;
+        }
+        if !self.owner_generations.contains_key(&binding) {
+            let warrant = self.owner_warrant_for_initializer(binding, value, binding_ty);
+            let transferred = match &value.kind {
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(source_binding),
+                    ..
+                } => self
+                    .binding_locals
+                    .get(&binding)
+                    .copied()
+                    .is_some_and(|destination| {
+                        self.register_owned_local_transfer_from(
+                            binding,
+                            binding_name.to_owned(),
+                            binding_ty.clone(),
+                            *source_binding,
+                            (destination, destination),
+                            warrant,
+                        )
+                    }),
+                _ => false,
+            };
+            if !transferred {
+                self.register_owned_local(
+                    binding,
+                    binding_name.to_owned(),
+                    binding_ty.clone(),
+                    warrant,
+                );
+            }
+        }
+        // A proven-foreign initializer withholds the owner mint. In that case
+        // there is deliberately no cleanup authority and therefore no runtime
+        // guard to publish either.
+        if !self.owner_generations.contains_key(&binding) {
             return;
         }
         let flag = self.alloc_local(ResolvedTy::I64);
@@ -282,6 +320,14 @@ impl Builder {
                 dest: flag,
                 src: value_flag,
             });
+            assert!(
+                self.publish_current_owner_guard(
+                    binding,
+                    flag,
+                    crate::model::OwnershipGuardKind::VecIter,
+                ),
+                "VecIter guard flag for {binding:?} has no explicit owner generation"
+            );
             return;
         }
         let owns_snapshot = self.vec_iter_value_is_owned(value);
@@ -289,6 +335,14 @@ impl Builder {
             dest: flag,
             value: i64::from(!owns_snapshot),
         });
+        assert!(
+            self.publish_current_owner_guard(
+                binding,
+                flag,
+                crate::model::OwnershipGuardKind::VecIter,
+            ),
+            "VecIter guard flag for {binding:?} has no explicit owner generation"
+        );
     }
 
     /// Release the `vec` handle of every sole-owner `for x in …` cursor
@@ -422,7 +476,15 @@ impl Builder {
         let Some(place) = self.binding_locals.get(&binding).copied() else {
             return false;
         };
-        self.emit_flag_gated_vec_iter_value_release(place, cursor_ty, flag)
+        let owner = self
+            .owner_generations
+            .get(&binding)
+            .copied()
+            .map(|generation| crate::model::OwnerId {
+                binding,
+                generation,
+            });
+        self.emit_flag_gated_vec_iter_value_release(place, cursor_ty, flag, owner)
     }
 
     /// Emit `if owner_flag == 0 { drop value.vec }` for a materialized cursor
@@ -433,6 +495,7 @@ impl Builder {
         place: Place,
         cursor_ty: &ResolvedTy,
         flag: Place,
+        owner: Option<crate::model::OwnerId>,
     ) -> bool {
         let zero = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::ConstI64 {
@@ -467,6 +530,19 @@ impl Builder {
         }
         self.finish_current_block(super::Terminator::Goto { target: cont_bb });
         self.start_block(cont_bb);
+        if emitted {
+            if let Some(owner) = owner {
+                // The physical destructor runs only on the `flag == 0` arm,
+                // but both arms have finished this logical cursor lifetime:
+                // the skip arm proves the value was already non-owning. End
+                // the Checked-MIR generation at their shared continuation so
+                // a loop backedge cannot carry the skipped-path generation
+                // into the next iteration's Mint.
+                self.push_instr(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::GuardedRelease { owner, place, flag },
+                ));
+            }
+        }
         emitted
     }
 
@@ -758,12 +834,12 @@ impl Builder {
             let Some(descriptor) = stream_handle_drop_descriptor(&ty) else {
                 continue;
             };
-            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
             self.push_instr(Instr::Drop {
                 place,
                 ty,
                 drop_fn: Some(crate::model::DropFnSpec::Runtime(descriptor)),
             });
+            self.release_owned_local(binding, Disposition::ScopeReleased);
         }
     }
     /// Close a `Stream<T>` / `Receiver<T>` for-await cursor opened INSIDE a loop
@@ -985,11 +1061,25 @@ impl Builder {
                 // releases at its own drop site, no leak.
                 continue;
             }
+            // An active yield entry may also carry one exact lexical OwnerId
+            // (VecIter clone-out binders do, while plain generator/receive
+            // binders do not). End that unique generation beside the cloned
+            // break/continue/return drop so the later ScopeExit cannot
+            // materialize a second physical destructor for the same carrier.
+            // Missing or ambiguous place authority remains fail-closed: the
+            // physical edge cleanup is still emitted, but no owner identity is
+            // guessed or discharged.
+            let lexical_owner = self.current_owner_id_at_place(place);
             self.push_instr(Instr::Drop {
                 place,
                 ty,
                 drop_fn: Some(drop_fn),
             });
+            if let Some(owner) = lexical_owner {
+                self.push_instr(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Release { owner, place },
+                ));
+            }
         }
     }
     pub(crate) fn resolve_loop_frame(
@@ -1023,5 +1113,79 @@ impl Builder {
             ),
         });
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lower::owner_mint::OwnerMintWarrant;
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    fn active_string_yield_builder(bindings: &[BindingId]) -> Builder {
+        let mut builder = Builder::default();
+        for binding in bindings {
+            builder.binding_locals.insert(*binding, Place::Local(0));
+            builder.register_owned_local(
+                *binding,
+                format!("owner_{}", binding.0),
+                ResolvedTy::String,
+                OwnerMintWarrant::granting_for_tests(),
+            );
+        }
+        builder.instructions.clear();
+        builder.active_generator_yield_values.push((
+            0,
+            Place::Local(0),
+            ResolvedTy::String,
+            crate::model::DropFnSpec::Release("hew_string_drop"),
+            0,
+            0,
+        ));
+        builder
+    }
+
+    #[test]
+    fn exit_edge_drop_discharges_one_unique_lexical_owner() {
+        let binding = BindingId(7);
+        let mut builder = active_string_yield_builder(&[binding]);
+
+        builder.emit_generator_yield_value_drops_for_exit_edge(0);
+
+        assert!(matches!(
+            builder.instructions.as_slice(),
+            [
+                Instr::Drop {
+                    place: Place::Local(0),
+                    ty: ResolvedTy::String,
+                    ..
+                },
+                Instr::OwnershipEvent(OwnershipEvent::Release {
+                    owner: OwnerId {
+                        binding: released,
+                        generation: 0
+                    },
+                    place: Place::Local(0)
+                })
+            ] if *released == binding
+        ));
+    }
+
+    #[test]
+    fn exit_edge_drop_does_not_guess_missing_or_ambiguous_owner() {
+        for bindings in [vec![], vec![BindingId(7), BindingId(8)]] {
+            let mut builder = active_string_yield_builder(&bindings);
+
+            builder.emit_generator_yield_value_drops_for_exit_edge(0);
+
+            assert!(matches!(
+                builder.instructions.as_slice(),
+                [Instr::Drop {
+                    place: Place::Local(0),
+                    ty: ResolvedTy::String,
+                    ..
+                }]
+            ));
+        }
     }
 }

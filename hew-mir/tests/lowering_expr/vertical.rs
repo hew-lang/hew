@@ -745,10 +745,177 @@ fn checked_mir_rejects_second_resource_close() {
     );
 }
 
-/// An explicitly-closed `#[resource]` value is excluded from the function-exit
-/// drop set: the explicit `close()` is the single release, and the scope-exit
-/// implicit drop is suppressed (no double-close). The drop plan for `serve`
-/// carries no `DropKind::Resource` for `c`.
+/// Assert the Checked-MIR discharge protocol around a consuming call. The
+/// caller retains the guarded release authority on the unwind edge; only the
+/// successful continuation arms the guard, applies the call-kind's exact slot
+/// neutralization policy, and retires the owner. Normal call/return paths
+/// therefore carry no competing close.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the test helper pins one complete Checked-MIR owner lifecycle and every exit edge"
+)]
+fn assert_resource_call_discharge_paths_are_exact(
+    pipeline: &hew_mir::IrPipeline,
+    function_name: &str,
+    callee_name: &str,
+    neutralizes_slot: bool,
+) {
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == function_name)
+        .unwrap_or_else(|| panic!("{function_name} checked MIR present"));
+    assert!(
+        checked.checks.is_empty(),
+        "the discharge authority must pass Checked MIR unchanged: {:?}",
+        checked.checks
+    );
+    let (call_block, argument, continuation) = checked
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee, args, next, ..
+            } if callee == callee_name => {
+                let [argument] = args.as_slice() else {
+                    panic!("{callee_name} must have exactly one resource argument: {args:?}");
+                };
+                Some((block, *argument, *next))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{function_name} must call {callee_name}"));
+    let (owner, flag) = call_block
+        .instructions
+        .iter()
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Guard { owner, flag, .. }) => {
+                Some((*owner, *flag))
+            }
+            _ => None,
+        })
+        .expect("the live caller owner must carry one release guard");
+    let continuation_block = checked
+        .blocks
+        .iter()
+        .find(|block| block.id == continuation)
+        .expect("call continuation block present");
+    let exact_discharge = if neutralizes_slot {
+        continuation_block.instructions.windows(3).any(|window| {
+            matches!(
+                window,
+                [
+                    Instr::ConstI64 { dest, value: 1 },
+                    Instr::NeutralizePayloadSlot {
+                        place,
+                        transferee: None,
+                        authority: hew_mir::NeutralizeAuthority::CallDischargeConsume,
+                    },
+                    Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                        owner: transfer_owner,
+                        from,
+                        to: None,
+                        to_owner: None,
+                        to_ty: None,
+                    }),
+                ] if *dest == flag
+                    && *place == argument
+                    && *transfer_owner == owner
+                    && *from == argument
+            )
+        })
+    } else {
+        continuation_block.instructions.windows(2).any(|window| {
+            matches!(
+                window,
+                [
+                    Instr::ConstI64 { dest, value: 1 },
+                    Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                        owner: transfer_owner,
+                        from,
+                        to: None,
+                        to_owner: None,
+                        to_ty: None,
+                    }),
+                ] if *dest == flag && *transfer_owner == owner && *from == argument
+            )
+        }) && continuation_block.instructions.iter().all(|instruction| {
+            !matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot { place, .. } if *place == argument
+            )
+        })
+    };
+    assert!(
+        exact_discharge,
+        "only the successful continuation may discharge the caller owner: {:?}",
+        continuation_block.instructions
+    );
+
+    let elaborated = checked
+        .ownership_elaboration
+        .as_ref()
+        .expect("Checked MIR must carry sealed ownership elaboration");
+    let unwind_drops = elaborated
+        .drop_plans
+        .iter()
+        .find_map(|(exit, plan)| {
+            matches!(
+                exit,
+                hew_mir::ExitPath::Unwind { block, callee }
+                    if *block == call_block.id && callee == callee_name
+            )
+            .then_some(&plan.drops)
+        })
+        .expect("the consuming call must expose its unwind cleanup plan");
+    assert_eq!(
+        unwind_drops.len(),
+        1,
+        "the pre-discharge unwind edge has exactly one live resource owner: {unwind_drops:?}"
+    );
+    let unwind_drop = &unwind_drops[0];
+    assert!(
+        unwind_drop.place == argument
+            && unwind_drop.kind == hew_mir::DropKind::Resource
+            && matches!(
+                &unwind_drop.drop_fn,
+                Some(hew_mir::DropFnSpec::UserClose(symbol)) if symbol == "Conn::close"
+            )
+            && unwind_drop
+                .guard
+                .is_some_and(|guard| guard.owner == owner && guard.flag == flag),
+        "the unwind edge must close the exact guarded pre-discharge owner: {unwind_drop:?}"
+    );
+    assert!(
+        elaborated.drop_plans.iter().all(|(exit, plan)| {
+            !matches!(
+                exit,
+                hew_mir::ExitPath::Call { block, callee, .. }
+                    if *block == call_block.id && callee == callee_name
+            ) || plan
+                .drops
+                .iter()
+                .all(|drop| drop.kind != hew_mir::DropKind::Resource)
+        }),
+        "the normal call edge must not close before its continuation: {:?}",
+        elaborated.drop_plans
+    );
+    assert!(
+        elaborated.drop_plans.iter().all(|(exit, plan)| {
+            !matches!(exit, hew_mir::ExitPath::Return { .. })
+                || plan
+                    .drops
+                    .iter()
+                    .all(|drop| drop.kind != hew_mir::DropKind::Resource)
+        }),
+        "the successful transfer must suppress every later caller return close: {:?}",
+        elaborated.drop_plans
+    );
+}
+
+/// An explicit `close()` retains the caller's guarded release only on the
+/// pre-discharge unwind edge. The successful continuation transfers the owner
+/// to terminal `None`, so no normal scope-exit close competes with the call.
 #[test]
 fn explicit_resource_close_suppresses_scope_exit_drop() {
     let p = lower_source(
@@ -767,20 +934,7 @@ fn explicit_resource_close_suppresses_scope_exit_drop() {
         "a single explicit close must type-check cleanly: {:?}",
         p.diagnostics
     );
-    let serve = p
-        .elaborated_mir
-        .iter()
-        .find(|f| f.name == "serve")
-        .expect("serve function present");
-    assert!(
-        serve.drop_plans.iter().all(|(_, plan)| plan
-            .drops
-            .iter()
-            .all(|d| d.kind != hew_mir::DropKind::Resource)),
-        "an explicitly-closed `#[resource]` must NOT also earn a scope-exit \
-         resource drop — that is the #1295 double-close: {:?}",
-        serve.drop_plans
-    );
+    assert_resource_call_discharge_paths_are_exact(&p, "serve", "Conn::close", true);
 }
 
 /// A `#[resource]` value that is NEVER explicitly closed keeps its scope-exit
@@ -1109,7 +1263,7 @@ fn direct_string_resource_move_has_only_resource_flag_authority() {
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(
         zero_init_places,
-        std::collections::HashSet::from([affine_guard]),
+        std::collections::HashSet::from([affine_guard.flag]),
         "the resource binding must not receive a second, zero-only \
          conditional-record flag: {checked:#?}"
     );
@@ -1120,18 +1274,16 @@ fn direct_string_resource_move_has_only_resource_flag_authority() {
             .flat_map(|block| &block.instructions)
             .any(|instr| matches!(
                 instr,
-                Instr::ConstI64 { dest, value: 1 } if *dest == affine_guard
+                Instr::ConstI64 { dest, value: 1 } if *dest == affine_guard.flag
             )),
         "the direct transfer must execute the resource flag handoff: \
          {checked:#?}"
     );
 }
 
-/// Control for the flag scoping: a `#[resource]` consumed UNCONDITIONALLY (a
-/// single straight-line `close()`) reaches its exit at `Consumed`, so the
-/// per-exit dataflow filter EXCLUDES it entirely — no scope-exit resource
-/// drop, guarded or not. The flag mechanism only does runtime work at a
-/// genuine `MaybeConsumed` join, never on an unconditional consume.
+/// Duplicate source-shape control for the release-flag protocol: even an
+/// unconditional close keeps unwind cleanup until the call succeeds. The
+/// continuation then performs the exact discharge and leaves no return drop.
 #[test]
 fn unconditional_resource_close_emits_no_scope_exit_drop() {
     let p = lower_source(
@@ -1146,20 +1298,7 @@ fn unconditional_resource_close_emits_no_scope_exit_drop() {
     ",
     );
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
-    let serve = p
-        .elaborated_mir
-        .iter()
-        .find(|f| f.name == "serve")
-        .expect("serve function present");
-    assert!(
-        serve.drop_plans.iter().all(|(_, plan)| plan
-            .drops
-            .iter()
-            .all(|d| d.kind != hew_mir::DropKind::Resource)),
-        "an unconditionally-closed `#[resource]` must earn NO scope-exit \
-         resource drop (the explicit close is the single release): {:?}",
-        serve.drop_plans
-    );
+    assert_resource_call_discharge_paths_are_exact(&p, "serve", "Conn::close", true);
 }
 
 /// A never-closed `#[resource]` earns its implicit scope-exit close, and that
@@ -1210,8 +1349,10 @@ fn never_closed_resource_keeps_flag_guarded_scope_exit_drop() {
 
 /// #1941 — a `#[resource]` moved BY VALUE into an ordinary free function is an
 /// ownership transfer into the callee (Hew has no by-reference parameters):
-/// the callee owns and closes it, so the caller's binding transitions to
-/// `Consumed` and earns NO scope-exit close. Before the fix the argument
+/// the callee owns and closes it after the call succeeds, so the caller's
+/// binding transitions to `Consumed` and earns no normal scope-exit close.
+/// Until that success edge, the unwind plan retains the caller's guarded
+/// cleanup. Before the fix the argument
 /// lowered `IntentKind::Read`, the caller stayed `Live`, and the caller's
 /// implicit drop double-closed what the callee already closed.
 #[test]
@@ -1234,21 +1375,7 @@ fn value_move_into_free_fn_consumes_caller_binding() {
          {:?}",
         p.diagnostics
     );
-    let run = p
-        .elaborated_mir
-        .iter()
-        .find(|f| f.name == "run")
-        .expect("run function present");
-    assert!(
-        run.drop_plans.iter().all(|(_, plan)| plan
-            .drops
-            .iter()
-            .all(|d| d.kind != hew_mir::DropKind::Resource)),
-        "a `#[resource]` moved by value into a consumer must earn NO \
-         scope-exit close in the CALLER — the callee owns and closes it; a \
-         caller close is the #1941 double-close: {:?}",
-        run.drop_plans
-    );
+    assert_resource_call_discharge_paths_are_exact(&p, "run", "sink", false);
 }
 
 /// #1941 negative — reading a `#[resource]` after moving it by value into a
@@ -1896,7 +2023,7 @@ fn recv_handler_conditional_string_transfer_uses_guarded_drop() {
                 .any(|instr| matches!(
                     instr,
                     Instr::ConstI64 { dest, value }
-                        if *dest == guard && *value == expected
+                        if *dest == guard.flag && *value == expected
                 )),
             "conditional mailbox string flag must be assigned {expected}: {:?}",
             checked.blocks
@@ -2940,13 +3067,15 @@ fn recv_handler_borrow_only_record_param_earns_record_inplace_drop() {
     );
 }
 
-/// #2747 boundary (the double-free guard) — when the handler MOVES the delivered
-/// record's owned field INTO actor state (`store = b.payload`), the field
-/// escapes; the synthesised `state_drop_fn` is that buffer's single free. The
-/// escape-scan must therefore SUPPRESS the handler's `RecordInPlace` drop for
-/// that record — admitting it would free the same buffer twice. Fail-closed: a
-/// retained record is excluded, never re-admitted.
+/// #2747 hard-cutover boundary — publishing a field of the delivered record
+/// into actor state is a retained COW share, not a destructive projection.
+/// The retain gives state an independent count while the mailbox record keeps
+/// its original field owner, so its `RecordInPlace` shell drop must remain.
+/// This pins the producer event and the matching source cleanup together: a
+/// bare state store or a missing shell drop would each leak or double-free.
 #[test]
+// Historical name retained because CI invokes this identity exactly; the
+// hard-cutover contract now proves that the shell drop is required.
 fn recv_handler_record_param_retained_into_state_suppresses_record_inplace_drop() {
     let pipeline = lower_source(
         r"
@@ -2967,21 +3096,50 @@ fn recv_handler_record_param_retained_into_state_suppresses_record_inplace_drop(
         }
         ",
     );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "TestSink__recv__take")
+        .expect("TestSink.take raw MIR present");
     assert!(
-        !fn_has_record_inplace_drop(&pipeline, "TestSink__recv__take"),
-        "a receive-handler record whose owned field is retained into actor \
-         state must NOT earn a RecordInPlace drop — the state_drop_fn is its \
-         single free; admitting it double-frees: {:?}",
-        pipeline.elaborated_mir
+        raw.blocks.iter().any(|block| {
+            block.instructions.windows(2).any(|window| {
+                matches!(
+                    window,
+                    [
+                        Instr::StringRetain {
+                            value,
+                            condition: hew_mir::StringRetainCondition::AggregateBorrowedIngress,
+                        },
+                        Instr::ActorStateFieldStore {
+                            src,
+                            handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
+                            ..
+                        },
+                    ] if value == src
+                )
+            })
+        }),
+        "the state publication must first retain the record field as an \
+         independent COW owner: {:?}",
+        raw.blocks
+    );
+    assert!(
+        fn_has_record_inplace_drop(&pipeline, "TestSink__recv__take"),
+        "the retained state co-owner must not erase the mailbox record's \
+         original field owner; its RecordInPlace shell drop balances that \
+         count: {:?}",
+        pipeline.elaborated_mir,
     );
 }
 
 /// A receive parameter forwarded to another mailbox has exactly one owner on
 /// each transport edge. The handler moves the Vec into the prepared send
-/// carrier, so neither the source parameter nor the carrier may remain in a
-/// scope-exit drop plan. The `Send.cleanup_plan` is the carrier's sole local
-/// release authority and codegen emits it only on the mutually-exclusive
-/// transport-failure edge.
+/// carrier and nulls the source parameter. The moved-from source may retain its
+/// ordinary RAII destructor because it is now a guaranteed no-op; the live
+/// carrier must not remain in a scope-exit drop plan. The `Send.cleanup_plan`
+/// is the carrier's sole local release authority and codegen emits it only on
+/// the mutually-exclusive transport-failure edge.
 #[test]
 fn recv_handler_forwarded_vec_param_has_no_scope_exit_double_release() {
     let pipeline = lower_source(
@@ -3031,6 +3189,21 @@ fn recv_handler_forwarded_vec_param_has_no_scope_exit_double_release() {
         "the receive parameter must move into the prepared send carrier: {:?}",
         raw.blocks
     );
+    assert!(
+        raw.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    place,
+                    transferee: Some(transferee),
+                    ..
+                } if *place == param && *transferee == send_value
+            )),
+        "the receive parameter must be null after its move into the send carrier: {:?}",
+        raw.blocks
+    );
 
     let elaborated = pipeline
         .elaborated_mir
@@ -3038,12 +3211,12 @@ fn recv_handler_forwarded_vec_param_has_no_scope_exit_double_release() {
         .find(|f| f.name == "Relay__recv__forward")
         .expect("Relay.forward elaborated MIR present");
     assert!(
-        elaborated.drop_plans.iter().all(|(_, plan)| plan
-            .drops
+        elaborated
+            .drop_plans
             .iter()
-            .all(|drop| drop.place != param && drop.place != send_value)),
-        "a delivered or accepted mailbox owner must not retain a handler-exit \
-         release for the source or carrier: {:?}",
+            .all(|(_, plan)| plan.drops.iter().all(|drop| drop.place != send_value)),
+        "the delivered or accepted mailbox carrier must not retain a competing \
+         handler-exit release; the neutralized source destructor is harmless: {:?}",
         elaborated.drop_plans
     );
 
@@ -3115,7 +3288,7 @@ fn conditional_record_state_handoff_keeps_guarded_scope_exit_drop() {
                 .any(|instr| matches!(
                     instr,
                     Instr::ConstI64 { dest, value }
-                        if *dest == guard && *value == expected
+                        if *dest == guard.flag && *value == expected
                 )),
             "the conditional record owner flag must be assigned {expected}: \
              {checked:#?}"
@@ -3124,10 +3297,15 @@ fn conditional_record_state_handoff_keeps_guarded_scope_exit_drop() {
 }
 
 /// A mutable direct record that is consumed and then overwritten belongs only
-/// to #2301's overwrite protocol. Giving it the conditional-record flag as
-/// well lets assignment reset one family while the other still describes the
-/// moved value, causing a shared-exit double release.
+/// to #2301's storage-bound overwrite protocol. The old and replacement
+/// generations of `current` use the same resettable flag, but a distinct
+/// `moved` binding must not inherit the already-armed source flag: doing so
+/// suppresses its unwind release. No conditional-record guard participates.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the regression pins both owner generations, the shared reset flag, and the moved-owner negative"
+)]
 fn mutable_conditional_record_consume_then_overwrite_uses_only_overwrite_protocol() {
     let pipeline = lower_source(
         r#"
@@ -3149,33 +3327,125 @@ fn mutable_conditional_record_consume_then_overwrite_uses_only_overwrite_protoco
         "the mutable consume/reassign control must lower cleanly: {:?}",
         pipeline.diagnostics
     );
-    let run = pipeline
-        .elaborated_mir
-        .iter()
-        .find(|function| function.name == "run")
-        .expect("mutable consume/reassign function present");
-    assert!(
-        run.drop_plans
-            .iter()
-            .flat_map(|(_, plan)| &plan.drops)
-            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
-            .all(|drop| drop.guard.is_none()),
-        "the mutable binding must not acquire a conditional RecordInPlace \
-         guard in addition to #2301's overwrite guard: {run:#?}"
-    );
     let checked = pipeline
         .checked_mir
         .iter()
         .find(|function| function.name == "run")
         .expect("mutable consume/reassign checked MIR present");
-    assert!(
+    let binding_named = |name: &str| {
         checked
             .blocks
             .iter()
-            .flat_map(|block| &block.instructions)
-            .any(|instr| matches!(instr, Instr::IntCmp { .. })),
-        "the control must genuinely exercise #2301's guarded old-value \
-         release before overwrite: {checked:#?}"
+            .flat_map(|block| &block.statements)
+            .find_map(|statement| match statement {
+                MirStatement::Bind {
+                    binding,
+                    name: seen,
+                    ..
+                } if seen == name => Some(*binding),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{name} binding present"))
+    };
+    let current_binding = binding_named("current");
+    let moved_binding = binding_named("moved");
+    let instructions = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .collect::<Vec<_>>();
+    let current_guards = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Guard { owner, flag, kind })
+                if owner.binding == current_binding =>
+            {
+                Some((*owner, *flag, *kind))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        current_guards.len(),
+        2,
+        "the old and replacement `current` generations need one guard each: {checked:#?}"
+    );
+    let overwrite_flag = current_guards[0].1;
+    assert!(
+        current_guards.iter().all(|(owner, flag, kind)| {
+            owner.binding == current_binding
+                && matches!(owner.generation, 0 | 1)
+                && *flag == overwrite_flag
+                && *kind == hew_mir::OwnershipGuardKind::Overwrite
+        }),
+        "both `current` generations must use only the shared overwrite flag: {current_guards:?}"
+    );
+    assert!(
+        instructions.iter().all(|instruction| !matches!(
+            instruction,
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Guard { owner, .. })
+                if owner.binding == moved_binding
+        )),
+        "the distinct `moved` owner must not inherit the armed source overwrite flag: {checked:#?}"
+    );
+    assert!(
+        instructions.iter().all(|instruction| !matches!(
+            instruction,
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Guard {
+                kind: hew_mir::OwnershipGuardKind::ConditionalRecord,
+                ..
+            })
+        )),
+        "the consume/reassign shape must not acquire conditional-record authority: {checked:#?}"
+    );
+    for expected in [0, 1] {
+        assert!(
+            instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instr::ConstI64 { dest, value }
+                    if *dest == overwrite_flag && *value == expected
+            )),
+            "the overwrite flag must be assigned {expected}: {checked:#?}"
+        );
+    }
+    assert!(
+        instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::GuardedRelease {
+                owner,
+                flag,
+                ..
+            }) if owner.binding == current_binding
+                && owner.generation == 0
+                && *flag == overwrite_flag
+        )),
+        "overwrite must release the exact live old generation under its flag: {checked:#?}"
+    );
+
+    let run = checked
+        .ownership_elaboration
+        .as_ref()
+        .expect("mutable consume/reassign ownership elaboration present");
+    let moved_place = instructions
+        .iter()
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                to: Some(place),
+                to_owner: Some(owner),
+                ..
+            }) if owner.binding == moved_binding => Some(*place),
+            _ => None,
+        })
+        .expect("moved owner definition present");
+    let moved_drops = run
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| drop.place == moved_place && drop.kind == hew_mir::DropKind::RecordInPlace)
+        .collect::<Vec<_>>();
+    assert!(
+        !moved_drops.is_empty() && moved_drops.iter().all(|drop| drop.guard.is_none()),
+        "the distinct moved owner must keep its unconditional path cleanup: {moved_drops:?}"
     );
 }
 

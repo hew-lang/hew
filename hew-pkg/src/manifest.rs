@@ -276,12 +276,23 @@ impl ManifestTemplate {
     }
 
     #[must_use]
-    pub fn scaffold_source(self) -> &'static str {
+    pub fn scaffold_source(self, package_name: &str) -> String {
         match self {
-            Self::Bin | Self::Actor => "main.hew",
-            Self::Lib => "lib.hew",
+            Self::Bin | Self::Actor => "main.hew".to_string(),
+            Self::Lib => package_root_source(package_name),
         }
     }
+}
+
+/// Canonical root source for a library package.
+///
+/// Package names are module paths: `hew.selfqualtype` materializes below
+/// `hew/selfqualtype/`, and the final segment names the directory module entry
+/// `selfqualtype.hew`. Simple names are the one-segment form of the same rule.
+#[must_use]
+pub fn package_root_source(package_name: &str) -> String {
+    let leaf = package_name.rsplit('.').next().unwrap_or(package_name);
+    format!("{leaf}.hew")
 }
 
 /// A parsed `hew.toml` manifest.
@@ -383,9 +394,13 @@ pub fn write_manifest_with_template(
     name: &str,
     template: ManifestTemplate,
 ) -> Result<(), ManifestError> {
+    let entry = match template {
+        ManifestTemplate::Lib => format!("main = \"{}\"\n", package_root_source(name)),
+        ManifestTemplate::Bin | ManifestTemplate::Actor => String::new(),
+    };
     let content = format!(
-        "[package]\nname = \"{name}\"\nedition = \"2026\"\nversion = \"0.1.0\"\ndescription = \"{}\"\n\n[dependencies]\n",
-        template.description()
+        "[package]\nname = \"{name}\"\nedition = \"2026\"\nversion = \"0.1.0\"\ndescription = \"{}\"\n{entry}\n[dependencies]\n",
+        template.description(),
     );
     std::fs::write(path, content)?;
     Ok(())
@@ -809,7 +824,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for (template, expected_desc, expected_source) in [
             (ManifestTemplate::Bin, "A Hew binary project", "main.hew"),
-            (ManifestTemplate::Lib, "A Hew library", "lib.hew"),
+            (ManifestTemplate::Lib, "A Hew library", "tpl.hew"),
             (ManifestTemplate::Actor, "A Hew actor project", "main.hew"),
         ] {
             let path = dir.path().join(format!("{template:?}.toml"));
@@ -819,8 +834,20 @@ mod tests {
             assert_eq!(m.package.name, "tpl");
             assert_eq!(m.package.version, "0.1.0");
             assert_eq!(template.description(), expected_desc);
-            assert_eq!(template.scaffold_source(), expected_source);
+            assert_eq!(template.scaffold_source("tpl"), expected_source);
         }
+    }
+
+    #[test]
+    fn dotted_library_root_uses_final_package_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hew.toml");
+        write_manifest_with_template(&path, "hew.selfqualtype", ManifestTemplate::Lib).unwrap();
+
+        let manifest = parse_manifest(&path).unwrap();
+        assert_eq!(package_root_source("local_dep"), "local_dep.hew");
+        assert_eq!(package_root_source("hew.selfqualtype"), "selfqualtype.hew");
+        assert_eq!(manifest.package.main_source(), "selfqualtype.hew");
     }
 
     #[test]

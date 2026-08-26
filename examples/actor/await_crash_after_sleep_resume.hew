@@ -5,9 +5,9 @@
 // as a RESUMED continuation — the rest of a suspended handler, driven on the
 // scheduler's resume re-entry, not the fresh-dispatch frame.
 //
-// The resume re-entry must install the same crash-recovery `sigsetjmp` frame the
-// fresh dispatch does: without it the trap unwound past the worker frame and
-// downed the whole process. With it, the crash routes to the actor (not the
+// The resume re-entry must install the same caught-unwind recovery boundary the
+// fresh dispatch does: without it the trap escapes the worker and downs the
+// whole process. With it, the crash routes to the actor (not the
 // runtime), the outer `await reader.go(0)` resolves to `Err` (the empty crash
 // fallback), and the program completes.
 //

@@ -2,7 +2,7 @@
 
 use hew_mir::{
     CallAuthority, DropFnSpec, DropKind, ElaboratedMirFunction, ExitPath, Instr, IrPipeline,
-    MirDiagnosticKind, ProjectedPayloadRejectReason, RawMirFunction, Terminator,
+    MirDiagnosticKind, Place, ProjectedPayloadRejectReason, RawMirFunction, Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::runtime_call::{RuntimeCallFamily, RuntimeDropDescriptor};
@@ -268,18 +268,60 @@ fn source_sink_close_count(function: &RawMirFunction) -> usize {
         .count()
 }
 
+fn inline_sink_close_count(function: &RawMirFunction) -> usize {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| {
+            block
+                .instructions
+                .iter()
+                .enumerate()
+                .filter_map(move |(index, instruction)| {
+                    let Instr::Drop {
+                        place,
+                        drop_fn: Some(DropFnSpec::Runtime(RuntimeDropDescriptor::SinkClose)),
+                        ..
+                    } = instruction
+                    else {
+                        return None;
+                    };
+                    block.instructions[index + 1..]
+                        .iter()
+                        .any(|later| {
+                            matches!(
+                                later,
+                                Instr::OwnershipEvent(hew_mir::OwnershipEvent::Release {
+                                    place: released,
+                                    ..
+                                }) if released == place
+                            )
+                        })
+                        .then_some(())
+                })
+        })
+        .count()
+}
+
 fn transfer_neutralize_count(function: &RawMirFunction) -> usize {
     function
         .blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter(|instruction| {
+            let Instr::NeutralizePayloadSlot {
+                transferee: Some(Place::Local(local)),
+                ..
+            } = instruction
+            else {
+                return false;
+            };
             matches!(
-                instruction,
-                Instr::NeutralizePayloadSlot {
-                    transferee: Some(_),
+                function.locals.get(*local as usize),
+                Some(hew_types::ResolvedTy::Named {
+                    builtin: Some(hew_types::BuiltinType::Sink),
                     ..
-                }
+                })
             )
         })
         .count()
@@ -378,12 +420,12 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
         pipeline.diagnostics
     );
     let siblings = [
-        ("if_implicit", "if_explicit"),
-        ("match_implicit", "match_explicit"),
-        ("while_implicit", "while_explicit"),
-        ("let_else_implicit", "let_else_explicit"),
+        ("if_implicit", "if_explicit", 1),
+        ("match_implicit", "match_explicit", 1),
+        ("while_implicit", "while_explicit", 1),
+        ("let_else_implicit", "let_else_explicit", 0),
     ];
-    for (implicit, explicit) in siblings {
+    for (implicit, explicit, implicit_inline_closes) in siblings {
         let implicit_raw = raw_function(&pipeline, implicit);
         let explicit_raw = raw_function(&pipeline, explicit);
 
@@ -391,6 +433,12 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
         assert_eq!(transfer_neutralize_count(explicit_raw), 1, "{explicit}");
         assert_eq!(source_sink_close_count(implicit_raw), 0, "{implicit}");
         assert_eq!(source_sink_close_count(explicit_raw), 1, "{explicit}");
+        assert_eq!(
+            inline_sink_close_count(implicit_raw),
+            implicit_inline_closes,
+            "{implicit}"
+        );
+        assert_eq!(inline_sink_close_count(explicit_raw), 0, "{explicit}");
     }
 
     let if_implicit = elaborated_function(&pipeline, "if_implicit");
@@ -401,10 +449,10 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
             block: 5,
             target: 4,
         },
-        1,
+        0,
         0,
     );
-    assert_exit_drop_counts(if_implicit, ExitPath::Cancel { block: 5 }, 1, 1);
+    assert_exit_drop_counts(if_implicit, ExitPath::Cancel { block: 5 }, 0, 1);
 
     let if_explicit = elaborated_function(&pipeline, "if_explicit");
     assert_exit_drop_counts(if_explicit, ExitPath::Return { block: 4 }, 0, 1);
@@ -420,20 +468,20 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
     assert_exit_drop_counts(if_explicit, ExitPath::Cancel { block: 6 }, 0, 1);
 
     let match_implicit = elaborated_function(&pipeline, "match_implicit");
-    assert_exit_drop_counts(match_implicit, ExitPath::Return { block: 2 }, 0, 1);
+    assert_exit_drop_counts(match_implicit, ExitPath::Return { block: 2 }, 0, 0);
     assert_exit_drop_counts(
         match_implicit,
         ExitPath::Goto {
             block: 6,
             target: 2,
         },
-        1,
+        0,
         0,
     );
-    assert_exit_drop_counts(match_implicit, ExitPath::Cancel { block: 6 }, 1, 1);
+    assert_exit_drop_counts(match_implicit, ExitPath::Cancel { block: 6 }, 0, 0);
 
     let match_explicit = elaborated_function(&pipeline, "match_explicit");
-    assert_exit_drop_counts(match_explicit, ExitPath::Return { block: 2 }, 0, 1);
+    assert_exit_drop_counts(match_explicit, ExitPath::Return { block: 2 }, 0, 0);
     assert_exit_drop_counts(
         match_explicit,
         ExitPath::Goto {
@@ -443,7 +491,7 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
         0,
         0,
     );
-    assert_exit_drop_counts(match_explicit, ExitPath::Cancel { block: 7 }, 0, 1);
+    assert_exit_drop_counts(match_explicit, ExitPath::Cancel { block: 7 }, 0, 0);
 
     let while_implicit = elaborated_function(&pipeline, "while_implicit");
     assert_exit_drop_counts(
@@ -453,7 +501,7 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
             target: 3,
         },
         0,
-        1,
+        0,
     );
     assert_exit_drop_counts(
         while_implicit,
@@ -461,10 +509,10 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
             block: 6,
             target: 3,
         },
-        1,
-        1,
+        0,
+        0,
     );
-    assert_exit_drop_counts(while_implicit, ExitPath::Cancel { block: 6 }, 1, 0);
+    assert_exit_drop_counts(while_implicit, ExitPath::Cancel { block: 6 }, 0, 0);
 
     let while_explicit = elaborated_function(&pipeline, "while_explicit");
     assert_exit_drop_counts(
@@ -474,7 +522,7 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
             target: 3,
         },
         0,
-        1,
+        0,
     );
     assert_exit_drop_counts(
         while_explicit,
@@ -483,7 +531,7 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
             target: 3,
         },
         0,
-        1,
+        0,
     );
     assert_exit_drop_counts(while_explicit, ExitPath::Cancel { block: 7 }, 0, 0);
 
@@ -632,6 +680,11 @@ fn guarded_match_arm_defers_its_sink_handoff_past_the_guard() {
         transfer_neutralize_count(guarded),
         2,
         "each `.Ok` arm binder takes the carrier's close authority"
+    );
+    assert_eq!(
+        inline_sink_close_count(guarded),
+        2,
+        "each selected `.Ok` arm closes its binder exactly once"
     );
 
     // None of those handoffs may run while the guard's answer is still

@@ -347,11 +347,11 @@ pub unsafe fn destroy_parked(a: &HewActor) -> ExecGuard {
     ExecGuard::Ok
 }
 
-/// Reclaim a continuation abandoned mid-resume by a crash longjmp.
+/// Reclaim a continuation abandoned mid-resume by a caught language unwind.
 ///
 /// When a Hew `panic()` / hard trap fires inside the `.resume` outline, the
-/// scheduler's crash-recovery `siglongjmp` unwinds the C stack back to the
-/// worker frame WITHOUT running the coroutine's suspend/settle machinery, so
+/// scheduler's `catch_unwind` boundary regains control without running the
+/// coroutine's suspend/settle machinery, so
 /// the tag is left at `Resuming` (set by [`begin_resume`]) and the slot still
 /// holds the frame. This transitions `Resuming → Destroyed`, nulls the slot, and
 /// reclaims the frame's HEAP BLOCK directly via [`cont::hew_cont_frame_free`].
@@ -374,7 +374,7 @@ pub unsafe fn destroy_parked(a: &HewActor) -> ExecGuard {
 /// This is DISTINCT from [`destroy_parked`], which REFUSES a `Resuming` tag to
 /// protect a LIVE concurrent resume (FG2 — see
 /// `fg2_destroy_refused_in_resuming_window_with_real_free`). The crash edge has
-/// the opposite invariant: the resume is provably dead (the longjmp killed it)
+/// the opposite invariant: the resume is provably dead (unwinding left it)
 /// and the worker owns the actor exclusively (Running CAS held), so there is no
 /// concurrent resume to UAF. Without this, the actor-free path's
 /// `has_live_parked_cont` + `destroy_parked` would find the tag `Resuming`,

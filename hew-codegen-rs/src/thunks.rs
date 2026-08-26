@@ -3908,8 +3908,8 @@ pub(crate) fn emit_actor_sys_dispatch_trampoline<'ctx>(
     // Emit the unhandled-`HewSysMsg::Exit` case body — a non-trapping actor
     // crashes via the controlled crash path. Read `reason` (field 1 of the
     // `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind: i32 }`
-    // payload) and call `hew_actor_exit_unhandled(reason)`, which longjmps to the
-    // scheduler crash frame (terminal Crashed, the carried reason stamped) — never
+    // payload) and call `hew_actor_exit_unhandled(reason)`, which unwinds to the
+    // scheduler's actor boundary (terminal Crashed, carried reason stamped) — never
     // the exhaustiveness `llvm.trap` (UB / SIGILL on Linux).
     if let Some(unhandled_exit_bb) = unhandled_exit_bb {
         builder.position_at_end(unhandled_exit_bb);
@@ -3934,7 +3934,7 @@ pub(crate) fn emit_actor_sys_dispatch_trampoline<'ctx>(
                 "call_exit_unhandled",
             )
             .llvm_ctx("actor sys dispatch unhandled exit call")?;
-        // hew_actor_exit_unhandled longjmps to the scheduler crash frame inside a
+        // hew_actor_exit_unhandled unwinds to the scheduler boundary inside a
         // dispatch, so control never returns here; branch to done_bb to satisfy
         // the CFG (the branch is unreachable in practice).
         builder
@@ -4081,7 +4081,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     // (corrupt / mis-built envelope node, or a `clone_alias`/`fork` race
     // that left no buffer) must NEVER be by-value loaded below — that would
     // be a silent null deref / wild read at the `build_load`. Refuse hard:
-    // null payload ⇒ `hew_panic` (longjmps to the scheduler crash frame, or
+    // null payload ⇒ `hew_panic` (unwinds to the scheduler actor boundary, or
     // exits the process), never a quiet dereference. Real control flow, not
     // a `select`: the load only ever sees a proven-non-null pointer.
     let borrow_payload_is_null = builder
@@ -4104,8 +4104,8 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     // frame catches it; otherwise the process exits. It cannot Rust-unwind.
     builder.position_at_end(borrow_null_bb);
     let panic_fn = llvm_mod.get_function("hew_panic").unwrap_or_else(|| {
-        // `void hew_panic(void)` (hew-runtime/src/actor.rs) — diverges via
-        // the actor recovery longjmp or a clean process exit.
+        // `void hew_panic(void)` (hew-runtime/src/actor.rs) — diverges via a
+        // language unwind or a clean process exit.
         let panic_ty = ctx.void_type().fn_type(&[], false);
         llvm_mod.add_function("hew_panic", panic_ty, Some(Linkage::External))
     });

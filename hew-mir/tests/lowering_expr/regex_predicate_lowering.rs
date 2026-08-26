@@ -6,12 +6,13 @@
 //! Every test runs the full parse → HIR-lower → MIR-lower pipeline so the
 //! assertions are on the real production path, not hand-built fixtures.
 //!
-//! Gate: slice 4 — verifies `hew_regex_match` / `hew_regex_capture`
-//! `CallRuntimeAbi` emission and the null-check branch chain.
+//! Gate: slice 4 — verifies typed `hew_regex_match` / `hew_regex_capture`
+//! terminal-call emission and the null-check branch chain.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, CmpPred, Instr, IrPipeline, Terminator};
+use hew_mir::{lower_hir_module, CallAuthority, CmpPred, Instr, IrPipeline, Place, Terminator};
 use hew_types::module_registry::ModuleRegistry;
+use hew_types::runtime_call::RuntimeCallFamily;
 use hew_types::Checker;
 
 /// Run the full parse → typecheck → HIR → MIR pipeline.
@@ -41,6 +42,44 @@ fn find_fn<'a>(p: &'a IrPipeline, name: &str) -> &'a hew_mir::RawMirFunction {
         .unwrap_or_else(|| panic!("function `{name}` not found in raw_mir"))
 }
 
+/// Find the named function's canonical Checked MIR.
+fn find_checked_fn<'a>(p: &'a IrPipeline, name: &str) -> &'a hew_mir::CheckedMirFunction {
+    p.checked_mir
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| panic!("function `{name}` not found in checked_mir"))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CheckedRuntimeCall<'a> {
+    args: &'a [Place],
+    dest: Option<Place>,
+}
+
+/// Collect only calls whose linker spelling and typed runtime authority agree.
+/// A name collision with an ordinary extern therefore cannot satisfy these
+/// structural assertions.
+fn checked_runtime_calls(
+    f: &hew_mir::CheckedMirFunction,
+    family: RuntimeCallFamily,
+) -> Vec<CheckedRuntimeCall<'_>> {
+    f.blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee,
+                authority: CallAuthority::Runtime(actual_family),
+                args,
+                dest,
+                ..
+            } if *actual_family == family && callee == family.c_symbol() => {
+                Some(CheckedRuntimeCall { args, dest: *dest })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Collect all instructions from all blocks in a function.
 fn all_instrs(f: &hew_mir::RawMirFunction) -> Vec<&Instr> {
     f.blocks
@@ -50,8 +89,8 @@ fn all_instrs(f: &hew_mir::RawMirFunction) -> Vec<&Instr> {
 }
 
 /// A regex arm with no named captures must emit exactly one
-/// `CallRuntimeAbi { symbol: "hew_regex_match" }` instruction and no
-/// `CallRuntimeAbi { symbol: "hew_regex_capture" }` instructions.
+/// typed `Terminator::Call` for `hew_regex_match` and no typed
+/// `hew_regex_capture` terminal calls.
 #[test]
 fn regex_arm_no_captures_emits_regex_match_not_capture() {
     let src = r#"
@@ -63,13 +102,8 @@ fn regex_arm_no_captures_emits_regex_match_not_capture() {
         }
     "#;
     let pipeline = pipeline_with_tc(src);
-    let f = find_fn(&pipeline, "classify");
-    let instrs = all_instrs(f);
-
-    let match_calls: Vec<_> = instrs
-        .iter()
-        .filter(|i| matches!(i, Instr::CallRuntimeAbi(c) if c.symbol() == "hew_regex_match"))
-        .collect();
+    let f = find_checked_fn(&pipeline, "classify");
+    let match_calls = checked_runtime_calls(f, RuntimeCallFamily::RegexMatch);
     assert_eq!(
         match_calls.len(),
         1,
@@ -77,10 +111,7 @@ fn regex_arm_no_captures_emits_regex_match_not_capture() {
         match_calls.len()
     );
 
-    let capture_calls: Vec<_> = instrs
-        .iter()
-        .filter(|i| matches!(i, Instr::CallRuntimeAbi(c) if c.symbol() == "hew_regex_capture"))
-        .collect();
+    let capture_calls = checked_runtime_calls(f, RuntimeCallFamily::RegexCapture);
     assert!(
         capture_calls.is_empty(),
         "expected no hew_regex_capture calls for a no-capture pattern; got {}",
@@ -101,26 +132,17 @@ fn regex_match_call_has_two_args_scrutinee_and_literal_id() {
         }
     "#;
     let pipeline = pipeline_with_tc(src);
-    let f = find_fn(&pipeline, "classify");
-    let instrs = all_instrs(f);
-
-    let call = instrs
-        .iter()
-        .find_map(|i| {
-            if let Instr::CallRuntimeAbi(c) = i {
-                if c.symbol() == "hew_regex_match" {
-                    return Some(c);
-                }
-            }
-            None
-        })
-        .expect("hew_regex_match call must be present");
+    let f = find_checked_fn(&pipeline, "classify");
+    let calls = checked_runtime_calls(f, RuntimeCallFamily::RegexMatch);
+    let call = calls
+        .first()
+        .expect("typed hew_regex_match call must be present");
 
     assert_eq!(
-        call.args().len(),
+        call.args.len(),
         2,
         "hew_regex_match must receive 2 args (scrutinee, literal_id); got {}",
-        call.args().len()
+        call.args.len()
     );
 }
 
@@ -138,13 +160,8 @@ fn two_regex_arms_emit_two_regex_match_calls() {
         }
     "#;
     let pipeline = pipeline_with_tc(src);
-    let f = find_fn(&pipeline, "route");
-    let instrs = all_instrs(f);
-
-    let match_calls: Vec<_> = instrs
-        .iter()
-        .filter(|i| matches!(i, Instr::CallRuntimeAbi(c) if c.symbol() == "hew_regex_match"))
-        .collect();
+    let f = find_checked_fn(&pipeline, "route");
+    let match_calls = checked_runtime_calls(f, RuntimeCallFamily::RegexMatch);
     assert_eq!(
         match_calls.len(),
         2,
@@ -240,7 +257,7 @@ fn regex_match_without_wildcard_has_exhaustiveness_trap() {
 }
 
 /// A regex arm with no captures and no wildcard: the `hew_regex_match`
-/// result local must be the `dest` of the `CallRuntimeAbi` — not None.
+/// result local must be the `dest` of the typed terminal call — not `None`.
 #[test]
 fn regex_match_call_has_dest_not_none() {
     let src = r#"
@@ -252,23 +269,14 @@ fn regex_match_call_has_dest_not_none() {
         }
     "#;
     let pipeline = pipeline_with_tc(src);
-    let f = find_fn(&pipeline, "classify");
-    let instrs = all_instrs(f);
-
-    let call = instrs
-        .iter()
-        .find_map(|i| {
-            if let Instr::CallRuntimeAbi(c) = i {
-                if c.symbol() == "hew_regex_match" {
-                    return Some(c);
-                }
-            }
-            None
-        })
-        .expect("hew_regex_match call must be present");
+    let f = find_checked_fn(&pipeline, "classify");
+    let calls = checked_runtime_calls(f, RuntimeCallFamily::RegexMatch);
+    let call = calls
+        .first()
+        .expect("typed hew_regex_match call must be present");
 
     assert!(
-        call.dest().is_some(),
+        call.dest.is_some(),
         "hew_regex_match must have a dest local (the i32 match result); got None"
     );
 }

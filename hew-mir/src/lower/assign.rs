@@ -186,6 +186,34 @@ impl Builder {
                 src,
                 handoff: ActorStateStoreHandoff::ConsumeSource,
             });
+            // Actor state is an owning sink outside the MIR Place domain. End
+            // the exact source generation only after the store completes, and
+            // clear the frame-local carrier so inline/legacy cleanup cannot
+            // release the value now owned by the actor. A named source uses
+            // its lexical OwnerId; a fresh result uses its typed publication
+            // SiteId. Borrowed and bit-copy sources publish no owner and remain
+            // unmodified.
+            let transferred = if let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                ..
+            } = &value.kind
+            {
+                let owns_source = self.owner_generations.contains_key(binding)
+                    && self.binding_locals.get(binding) == Some(&src);
+                if owns_source {
+                    self.mark_binding_moved(*binding);
+                }
+                owns_source
+            } else {
+                self.consume_typed_produced_value_owner_into_actor_state(value.site, src)
+            };
+            if transferred {
+                self.push_instr(Instr::NeutralizePayloadSlot {
+                    place: src,
+                    transferee: None,
+                    authority: crate::model::NeutralizeAuthority::ActorStateStoreConsume,
+                });
+            }
             return;
         }
         match &target.kind {
@@ -342,6 +370,7 @@ impl Builder {
                 ..
             } => {
                 if let Some(dest) = self.binding_locals.get(binding).copied() {
+                    let mut cursor_owner_handoff = false;
                     let cursor_flag = self.vec_iter_drop_flags.get(binding).copied();
                     let cursor_value_flag =
                         self.vec_iter_value_drop_flags.get(&value.site).copied();
@@ -383,6 +412,19 @@ impl Builder {
                                 dest: flag,
                                 value: i64::from(!owns_snapshot),
                             });
+                        }
+                        if let HirExprKind::BindingRef {
+                            resolved: ResolvedRef::Binding(source_binding),
+                            ..
+                        } = &value.kind
+                        {
+                            cursor_owner_handoff = self.transfer_vec_iter_assignment_owner(
+                                *binding,
+                                *source_binding,
+                                src,
+                                dest,
+                                &target.ty,
+                            );
                         }
                     } else if let Some(flag) = self.affine_release_flags.get(binding).copied() {
                         // A `var` reassignment is a GENERATION BOUNDARY for an
@@ -478,8 +520,10 @@ impl Builder {
                                     && entry.disposition == Disposition::ScopeExit
                             })
                         {
-                            self.emit_local_overwrite_release(dest, &target.ty);
-                            self.emit_enum_overwrite_release(*binding, dest, &target.ty, value);
+                            self.emit_local_overwrite_release(*binding, dest, &target.ty, None);
+                            self.emit_enum_overwrite_release(
+                                *binding, dest, &target.ty, value, None,
+                            );
                         }
                         if yield_share_move {
                             self.push_instr(Instr::StringRetain {
@@ -515,9 +559,11 @@ impl Builder {
                     // adopted the RHS temp, retire that exact source-place owner
                     // now; the destination binding remains the sole authority
                     // whose drop plan fans out across exits.
-                    self.retire_provisional_owner_after_assignment_move(
-                        *binding, dest, &target.ty, src, &value.ty,
-                    );
+                    if !cursor_owner_handoff {
+                        self.retire_provisional_owner_after_assignment_move(
+                            *binding, dest, &target.ty, src, &value.ty,
+                        );
+                    }
                     // Generation boundary: a straight-line (top-level-scope)
                     // reassignment of a caller-borrowed parameter slot replaces
                     // the caller's value with a frame-owned one; the borrowed

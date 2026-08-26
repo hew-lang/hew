@@ -1,4 +1,4 @@
-//! E4: codegen happy-path coverage for `Instr::CallRuntimeAbi` lowering
+//! E4: codegen happy-path coverage for typed terminal runtime calls
 //! of `hew_duplex_pair` + `hew_duplex_send`, plus the `Instr::Drop`
 //! ritual for `hew_duplex_close`.
 //!
@@ -10,8 +10,8 @@
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
-    BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator,
+    BasicBlock, BlockKind, CallAuthority, CheckedMirFunction, DropPlan, ElabBlock,
+    ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place, RawMirFunction, Terminator,
 };
 use hew_types::{BuiltinType, ResolvedTy};
 
@@ -28,72 +28,86 @@ use hew_types::{BuiltinType, ResolvedTy};
 fn duplex_exemplar_pipeline() -> IrPipeline {
     let duplex_ty =
         ResolvedTy::named_builtin("renamed.DuplexPresentation", BuiltinType::Duplex, vec![]);
-    let raw_blocks = vec![BasicBlock {
-        id: 0,
-        statements: vec![],
-        instructions: vec![
-            // cap = 16
-            Instr::ConstI64 {
-                dest: Place::Local(0),
-                value: 16,
+    let raw_blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                // cap = 16
+                Instr::ConstI64 {
+                    dest: Place::Local(0),
+                    value: 16,
+                },
+            ],
+            terminator: Terminator::Call {
+                callee: "hew_duplex_pair".to_owned(),
+                authority: CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::DuplexPair,
+                ),
+                args: vec![
+                    Place::Local(0),
+                    Place::Local(0),
+                    Place::DuplexHandle(1),
+                    Place::DuplexHandle(2),
+                ],
+                dest: None,
+                next: 1,
             },
-            // hew_duplex_pair(cap, cap, &A, &B)
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new(
-                    "hew_duplex_pair",
-                    vec![
-                        Place::Local(0),
-                        Place::Local(0),
-                        Place::DuplexHandle(1),
-                        Place::DuplexHandle(2),
-                    ],
-                    None,
-                )
-                .expect("hew_duplex_pair is on the M2 allowlist"),
-            ),
-            // msg = 42
-            Instr::ConstI64 {
-                dest: Place::Local(3),
-                value: 42,
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![
+                // msg = 42
+                Instr::ConstI64 {
+                    dest: Place::Local(3),
+                    value: 42,
+                },
+                // len = 8
+                Instr::ConstI64 {
+                    dest: Place::Local(4),
+                    value: 8,
+                },
+            ],
+            terminator: Terminator::Call {
+                callee: "hew_duplex_send".to_owned(),
+                authority: CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::DuplexSend,
+                ),
+                args: vec![Place::DuplexHandle(1), Place::Local(3), Place::Local(4)],
+                dest: None,
+                next: 2,
             },
-            // len = 8
-            Instr::ConstI64 {
-                dest: Place::Local(4),
-                value: 8,
-            },
-            // hew_duplex_send(A, &msg, len)
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new(
-                    "hew_duplex_send",
-                    vec![Place::DuplexHandle(1), Place::Local(3), Place::Local(4)],
-                    None,
-                )
-                .expect("hew_duplex_send is on the M2 allowlist"),
-            ),
-            // Drop A then B (LIFO close-on-exit ritual).
-            Instr::Drop {
-                place: Place::DuplexHandle(2),
-                ty: duplex_ty.clone(),
-                drop_fn: Some(hew_mir::DropFnSpec::Runtime(
-                    hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
-                )),
-            },
-            Instr::Drop {
-                place: Place::DuplexHandle(1),
-                ty: duplex_ty.clone(),
-                drop_fn: Some(hew_mir::DropFnSpec::Runtime(
-                    hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
-                )),
-            },
-            // Populate the return slot so the integer-only return
-            // contract holds (the spine subset declares main->i64).
-            Instr::ConstI64 {
-                dest: Place::ReturnSlot,
-                value: 0,
-            },
-        ],
-        terminator: Terminator::Return,
-    }];
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![
+                // Drop A then B (LIFO close-on-exit ritual).
+                Instr::Drop {
+                    place: Place::DuplexHandle(2),
+                    ty: duplex_ty.clone(),
+                    drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                        hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                    )),
+                },
+                Instr::Drop {
+                    place: Place::DuplexHandle(1),
+                    ty: duplex_ty.clone(),
+                    drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                        hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                    )),
+                },
+                // Populate the return slot so the integer-only return
+                // contract holds (the spine subset declares main->i64).
+                Instr::ConstI64 {
+                    dest: Place::ReturnSlot,
+                    value: 0,
+                },
+            ],
+            terminator: Terminator::Return,
+        },
+    ];
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
@@ -130,19 +144,22 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![ElabBlock {
-                id: 0,
-                kind: BlockKind::Normal,
-                drops: vec![],
-                successor: None,
-            }],
-            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            blocks: (0..=2)
+                .map(|id| ElabBlock {
+                    id,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: (id < 2).then_some(id + 1),
+                })
+                .collect(),
+            drop_plans: vec![(ExitPath::Return { block: 2 }, DropPlan::default())],
             coroutine: None,
             lambda_captures: vec![],
         }],
@@ -232,8 +249,8 @@ fn duplex_runtime_decls_match_c_abi_shapes() {
 fn duplex_exemplar_emits_one_call_per_site() {
     let pipeline = duplex_exemplar_pipeline();
     let ll = emit_textual_ll(&pipeline, "duplex_call_sites");
-    let pair_calls = ll.matches("call i32 @hew_duplex_pair").count();
-    let send_calls = ll.matches("call i32 @hew_duplex_send").count();
+    let pair_calls = ll.matches("invoke i32 @hew_duplex_pair").count();
+    let send_calls = ll.matches("invoke i32 @hew_duplex_send").count();
     let close_calls = ll.matches("call i32 @hew_duplex_close").count();
     assert_eq!(
         pair_calls, 1,

@@ -1125,20 +1125,6 @@ fn site_source<'a>(
     }
 }
 
-fn site_is_imported_stdlib(site: &hew_hir::HirSiteSource) -> bool {
-    site.source_module.as_deref().is_some_and(|module| {
-        module == "std" || module.starts_with("std.") || module.starts_with("std::")
-    })
-}
-
-fn mir_site_is_user_facing(
-    advisory: bool,
-    site: &hew_hir::HirSiteSource,
-    show_imported_stdlib: bool,
-) -> bool {
-    !advisory || show_imported_stdlib || !site_is_imported_stdlib(site)
-}
-
 fn mir_source_context_unavailable_note(site: &hew_hir::HirSiteSource) -> String {
     site.source_module.as_ref().map_or_else(
         || ROOT_SOURCE_CONTEXT_UNAVAILABLE.to_string(),
@@ -1178,18 +1164,7 @@ fn render_mir_diagnostic_without_source(
     diagnostic: &hew_mir::MirDiagnostic,
     site: Option<&hew_hir::HirSiteSource>,
 ) {
-    // Advisory diagnostics (obligation under-release leaks) are compile-time
-    // warnings, not build errors — render the `warning:` severity prefix so the
-    // location-less advisory reads honestly and no consumer treats it as fatal.
-    let severity = if diagnostic.kind.is_advisory() {
-        "warning"
-    } else {
-        "error"
-    };
-    emit_plain_diagnostic_line(&format!(
-        "{severity}: {}",
-        mir_diagnostic_message(diagnostic)
-    ));
+    emit_plain_diagnostic_line(&format!("error: {}", mir_diagnostic_message(diagnostic)));
     for note in mir_context_notes(diagnostic) {
         emit_plain_diagnostic_line(&format!("  = note: {note}"));
     }
@@ -1216,13 +1191,7 @@ pub(crate) fn render_mir_diagnostics(
     diagnostics: &[hew_mir::MirDiagnostic],
 ) {
     let json = crate::diagnostic_json::json_output_active();
-    let show_imported_stdlib = std::env::var_os("HEW_STDLIB_SOURCE_GATE").is_some();
     for diagnostic in diagnostics {
-        // Advisory diagnostics (obligation under-release leaks) render as
-        // WARNINGS and never fail the build; everything else is a hard error.
-        // The severity is a property of the diagnostic kind
-        // (`MirDiagnosticKind::is_advisory`), the single source of truth.
-        let advisory = diagnostic.kind.is_advisory();
         let primary_site = mir_primary_site(&diagnostic.kind)
             .and_then(|site| site_spans.get(&site).map(|source| (site, source)));
         let Some((_, site)) = primary_site else {
@@ -1233,14 +1202,6 @@ pub(crate) fn render_mir_diagnostics(
             }
             continue;
         };
-        // Decide the user-facing boundary before selecting a text or JSON
-        // renderer. Compiler-shipped implementation advisories remain visible
-        // when their stdlib file is checked directly, where the site has root
-        // origin, or when the stdlib source gate requests them explicitly;
-        // imported stdlib sites are not actionable in ordinary user builds.
-        if !mir_site_is_user_facing(advisory, site, show_imported_stdlib) {
-            continue;
-        }
         let Some((source, filename)) =
             site_source(root_source, root_filename, module_source_map, site)
         else {
@@ -1259,15 +1220,6 @@ pub(crate) fn render_mir_diagnostics(
                 Some((source, filename)),
                 Some(&site.span),
                 &secondary_spans,
-            );
-        } else if advisory {
-            render_warning_with_raw_notes(
-                source,
-                filename,
-                &site.span,
-                &mir_diagnostic_message(diagnostic),
-                &secondary_spans,
-                &suggestions,
             );
         } else {
             render_diagnostic_with_raw_notes(
@@ -1309,7 +1261,6 @@ fn push_mir_json_diagnostic(
         message,
         secondary_spans,
         &mir_context_notes(diagnostic),
-        diagnostic.kind.is_advisory(),
     ));
 }
 
@@ -1602,28 +1553,6 @@ mod tests {
             0..4,
             "cannot find function `oops` in this scope",
         )
-    }
-
-    #[test]
-    fn imported_stdlib_site_is_not_user_facing() {
-        let stdlib = hew_hir::HirSiteSource {
-            span: 0..1,
-            source_module: Some("std.net.http".to_string()),
-        };
-        let user = hew_hir::HirSiteSource {
-            span: 0..1,
-            source_module: None,
-        };
-        let dependency = hew_hir::HirSiteSource {
-            span: 0..1,
-            source_module: Some("my_package.std_helpers".to_string()),
-        };
-
-        assert!(!mir_site_is_user_facing(true, &stdlib, false));
-        assert!(mir_site_is_user_facing(true, &stdlib, true));
-        assert!(mir_site_is_user_facing(false, &stdlib, false));
-        assert!(mir_site_is_user_facing(true, &user, false));
-        assert!(mir_site_is_user_facing(true, &dependency, false));
     }
 
     #[test]

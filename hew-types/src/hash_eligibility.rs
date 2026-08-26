@@ -60,6 +60,32 @@ pub(crate) enum HashEligibility {
     IneligibleError,
 }
 
+/// Whether an owned collection key has a complete insertion ownership
+/// protocol. This is deliberately separate from `Hash + Eq`: hashing answers
+/// identity, while insertion must also dispose of the caller's fresh key when
+/// an equal stored key already exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CollectionKeyOwnershipCapability {
+    /// Vacant insertion can move the key and duplicate insertion can release it.
+    Complete,
+    /// The runtime can hash/equal this key, but codegen cannot yet release the
+    /// caller-owned duplicate on the overwrite path.
+    MissingOverwriteRelease,
+}
+
+/// Single typed authority for the key-ownership half of ordinary map/set
+/// insertion and wire collection reconstruction.
+#[must_use]
+pub(crate) const fn collection_key_ownership_capability(
+    ty: &Ty,
+) -> CollectionKeyOwnershipCapability {
+    if matches!(ty, Ty::Bytes) {
+        CollectionKeyOwnershipCapability::MissingOverwriteRelease
+    } else {
+        CollectionKeyOwnershipCapability::Complete
+    }
+}
+
 /// Returns `Some(rejection)` if `ty` is not hash-eligible, `None` if eligible.
 ///
 /// This inner form is passed as a `fn` pointer to

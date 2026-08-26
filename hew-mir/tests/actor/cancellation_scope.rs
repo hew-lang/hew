@@ -3,6 +3,7 @@ use hew_mir::{
     lower_hir_module, Instr, IrPipeline, MirCheck, MirDiagnosticKind, SpawnEnvFieldOwnership,
 };
 use hew_types::module_registry::ModuleRegistry;
+use hew_types::runtime_call::RuntimeCallFamily;
 use hew_types::Checker;
 
 /// Parse + check + HIR-lower + MIR-lower a source string, asserting the
@@ -66,6 +67,110 @@ fn all_checks(mir: &IrPipeline) -> Vec<&MirCheck> {
         .iter()
         .flat_map(|func| func.checks.iter())
         .collect()
+}
+
+/// Prove the two sides of a scope-owned task-environment handoff: the parent
+/// retains its String cleanup on every unwind before `SpawnTaskClosure`, then
+/// the exact terminal transfer retires that owner for all later exits. The
+/// generated shim never owns a second copy.
+fn assert_moved_string_task_env_handoff(mir: &IrPipeline, parent_name: &str, shim_name: &str) {
+    assert!(
+        mir.diagnostics.is_empty(),
+        "task environment handoff must pass ownership validation: {:#?}",
+        mir.diagnostics
+    );
+    let parent_raw = mir
+        .raw_mir
+        .iter()
+        .find(|func| func.name == parent_name)
+        .unwrap_or_else(|| panic!("parent function `{parent_name}` must lower"));
+    let (handoff_block, handoff_index) = parent_raw
+        .blocks
+        .iter()
+        .find_map(|block| {
+            block
+                .instructions
+                .iter()
+                .position(|instr| {
+                    matches!(
+                        instr,
+                        Instr::SpawnTaskClosure { env_ownership, .. }
+                            if env_ownership.contains(&SpawnEnvFieldOwnership::OwnsMoved)
+                    )
+                })
+                .map(|index| (block, index))
+        })
+        .expect("parent must contain an owning SpawnTaskClosure handoff");
+    let post_handoff_transfers = handoff_block.instructions[handoff_index + 1..]
+        .iter()
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                    to: None,
+                    to_owner: None,
+                    ..
+                })
+            )
+        })
+        .count();
+    assert_eq!(
+        post_handoff_transfers, 1,
+        "the owning task-env handoff must terminally transfer exactly one source owner: {:#?}",
+        handoff_block.instructions
+    );
+
+    let parent = mir
+        .elaborated_mir
+        .iter()
+        .find(|func| func.name == parent_name)
+        .expect("parent elaborated MIR must exist");
+    let mut pre_handoff_unwind_drops = 0_usize;
+    for (exit, plan) in &parent.drop_plans {
+        if plan.drops.is_empty() {
+            continue;
+        }
+        let hew_mir::ExitPath::Unwind { block, .. } = exit else {
+            panic!("post-handoff parent exit must not retain the moved owner: {exit:?} {plan:#?}");
+        };
+        assert!(
+            *block < handoff_block.id,
+            "unwind at/after task-env handoff must not release the transferred owner: \
+             {exit:?} {plan:#?}"
+        );
+        assert_eq!(
+            plan.drops.len(),
+            1,
+            "each pre-handoff unwind must carry exactly the source String owner"
+        );
+        let drop = &plan.drops[0];
+        assert_eq!(drop.ty, hew_types::ResolvedTy::String);
+        assert!(matches!(
+            drop.kind,
+            hew_mir::DropKind::CowHeap {
+                release: hew_mir::CowHeapRelease::String
+            }
+        ));
+        assert!(drop.guard.is_none());
+        pre_handoff_unwind_drops += 1;
+    }
+    assert!(
+        pre_handoff_unwind_drops > 0,
+        "unwind before the task-env handoff must retain source cleanup authority"
+    );
+
+    let shim = mir
+        .elaborated_mir
+        .iter()
+        .find(|func| func.name == shim_name)
+        .unwrap_or_else(|| panic!("task entry shim `{shim_name}` must lower"));
+    assert!(
+        shim.drop_plans
+            .iter()
+            .all(|(_, plan)| plan.drops.is_empty()),
+        "task entry shim must not acquire a second source owner: {:#?}",
+        shim.drop_plans
+    );
 }
 
 const FORK_AWAIT_DRIVER: &str = r"
@@ -215,30 +320,16 @@ fn fork_string_arg_spawns_via_fork_entry_shim() {
 
 #[test]
 fn fork_string_arg_parent_and_shim_emit_no_drops_for_moved_arg() {
-    // Drop-plan oracle (the truth standard): the moved-in string rides the
-    // env bytes into the child. The parent's emitted drop plans carry NO
-    // release for it (the consume fact removed it) and the shim's plans are
-    // empty. The shim does emit an explicit inline release for its temporary
-    // retained env load; the Rc environment callback remains the sole release
-    // site for the moved source owner.
+    // Drop-plan oracle: the parent owns the String through every runtime
+    // boundary before SpawnTaskClosure. The successful handoff retires that
+    // owner, so later parent exits and the shim carry no second release.
     let mir = lower_clean_to_mir(FORK_ARGS_DRIVER);
-    for func in &mir.elaborated_mir {
-        if func.name.contains("drive") || func.name.starts_with("__hew_fork_entry_") {
-            for (exit, plan) in &func.drop_plans {
-                assert!(
-                    plan.drops.is_empty(),
-                    "{}: expected empty drop plan at {exit:?}, got {:#?}",
-                    func.name,
-                    plan.drops
-                );
-            }
-        }
-    }
     let shim = mir
         .raw_mir
         .iter()
         .find(|func| func.name.starts_with("__hew_fork_entry_"))
         .expect("arg-bearing fork entry shim");
+    assert_moved_string_task_env_handoff(&mir, "_Driver__recv__drive", &shim.name);
     let inline_string_drops = shim
         .blocks
         .iter()
@@ -304,9 +395,9 @@ fn spawned_move_closure_env_owns_its_scope_owned_capture() {
 
 #[test]
 fn spawned_move_closure_parent_and_shim_emit_no_drops_for_moved_capture() {
-    // The parent transfers the string owner into the scope-owned environment,
-    // and the closure shim only reads that environment field. The task Rc
-    // environment callback is therefore the sole release site.
+    // The parent retains unwind cleanup until the scope-owned environment is
+    // handed to SpawnTaskClosure. After that exact boundary, the task Rc
+    // environment callback is the sole release site and the shim only reads.
     let mir = lower_clean_to_mir(SCOPE_MOVE_CLOSURE_OWNED_CAPTURE);
     let shim_name = mir
         .raw_mir
@@ -319,34 +410,8 @@ fn spawned_move_closure_parent_and_shim_emit_no_drops_for_moved_capture() {
         })
         .expect("spawned move closure entry shim");
 
-    // The elaborated receive handler carries the `__recv__` infix; a substring
-    // match on `Driver__run` silently covers nothing, so match the exact names
-    // and prove BOTH halves were visited.
     let parent_name = "Driver__recv__run";
-    let mut matched = 0_usize;
-    for func in &mir.elaborated_mir {
-        if func.name == parent_name || func.name == shim_name {
-            matched += 1;
-            for (exit, plan) in &func.drop_plans {
-                assert!(
-                    plan.drops.is_empty(),
-                    "{}: expected empty drop plan at {exit:?}, got {:#?}",
-                    func.name,
-                    plan.drops
-                );
-            }
-        }
-    }
-    assert_eq!(
-        matched,
-        2,
-        "both the parent handler `{parent_name}` and the closure shim `{shim_name}` must be \
-         present in the elaborated MIR; saw {matched} of 2 (functions: {:?})",
-        mir.elaborated_mir
-            .iter()
-            .map(|func| func.name.as_str())
-            .collect::<Vec<_>>()
-    );
+    assert_moved_string_task_env_handoff(&mir, parent_name, shim_name);
 }
 
 #[test]
@@ -369,16 +434,21 @@ fn spawned_closure_env_borrows_its_scope_owned_capture() {
         }
         "#,
     );
-    let ownership = mir
+    let (ownership, post_handoff) = mir
         .raw_mir
         .iter()
         .flat_map(|func| &func.blocks)
-        .flat_map(|block| block.instructions.iter())
-        .find_map(|instr| match instr {
-            Instr::SpawnTaskClosure { env_ownership, .. } if !env_ownership.is_empty() => {
-                Some(env_ownership)
-            }
-            _ => None,
+        .find_map(|block| {
+            block
+                .instructions
+                .iter()
+                .enumerate()
+                .find_map(|(index, instr)| match instr {
+                    Instr::SpawnTaskClosure { env_ownership, .. } if !env_ownership.is_empty() => {
+                        Some((env_ownership, &block.instructions[index + 1..]))
+                    }
+                    _ => None,
+                })
         })
         .expect("spawned closure must emit a non-empty scope-owned environment manifest");
     assert!(
@@ -387,6 +457,20 @@ fn spawned_closure_env_borrows_its_scope_owned_capture() {
             .all(|ownership| *ownership == SpawnEnvFieldOwnership::BorrowsOnly),
         "scope-owned closure captures remain borrowed and must not receive an Rc payload drop: \
          {ownership:?}"
+    );
+    assert!(
+        post_handoff.iter().all(|instr| {
+            !matches!(
+                instr,
+                Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                    to: None,
+                    to_owner: None,
+                    ..
+                })
+            )
+        }),
+        "a borrowed task environment must not fabricate a terminal source-owner transfer: \
+         {post_handoff:#?}"
     );
 }
 
@@ -577,12 +661,23 @@ fn scope_fork_after_lowers_to_executable_task_and_deadline_abi() {
         "single-call scope fork must retain its direct task path; instructions: {instructions:#?}"
     );
     assert!(
-        instructions.iter().any(|instr| matches!(
-            instr,
-            Instr::CallRuntimeAbi(call)
-                if call.symbol() == "hew_task_scope_cancel_after_ns"
-        )),
-        "after(duration) must lower to deadline cancellation ABI; instructions: {instructions:#?}"
+        mir.raw_mir
+            .iter()
+            .flat_map(|func| &func.blocks)
+            .any(|block| {
+                matches!(
+                    &block.terminator,
+                    hew_mir::Terminator::Call {
+                        callee,
+                        authority,
+                        ..
+                    } if callee == "hew_task_scope_cancel_after_ns"
+                        && authority.runtime_family()
+                            == Some(RuntimeCallFamily::TaskScopeCancelAfterNs)
+                )
+            }),
+        "after(duration) must lower to the typed deadline-cancellation call; raw MIR: {:#?}",
+        mir.raw_mir
     );
 }
 

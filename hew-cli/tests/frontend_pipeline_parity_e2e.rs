@@ -8,14 +8,10 @@
 //!
 //! ## Equality predicate
 //!
-//! `hew check` always appends `failure.message` (e.g. "type errors found",
-//! "undeclared dependencies") to stderr after rendering span-attributed
-//! diagnostics.  `hew compile` only appends the message when no span
-//! diagnostics were emitted.  The load-bearing invariant is the *diagnostic
-//! body* (the span-attributed lines), not the trailing summary.
-//!
-//! `diagnostic_body_from_check_stderr` strips the known trailing summary
-//! lines so that both outputs can be compared byte-for-byte.
+//! Both commands render the same span-attributed diagnostic body. A bare
+//! `FrontendFailure::message` is emitted only when no structured diagnostic
+//! is available, so a structured diagnostic must be compared in full,
+//! including its final source caret.
 //!
 //! ## Scenario map
 //!
@@ -86,29 +82,12 @@ fn run_compile_with_target(path: &str, target: &str) -> (std::process::Output, t
     (output, emit_dir)
 }
 
-/// Extract the diagnostic body from `hew check` stderr.
+/// Extract the diagnostic body from `hew check` stderr without terminal color.
 ///
-/// `hew check` always appends the [`FrontendFailure::message`] (e.g.
-/// "type errors found", "undeclared dependencies", "parsing failed") as a bare
-/// line after the span-attributed diagnostics.  `hew compile` only appends
-/// that line when no span diagnostics were emitted
-/// (`lower_file_to_mir:main.rs` — the `if failure.diagnostics.is_empty()`
-/// guard).  Strip the trailing summary so both outputs share the same body.
-///
-/// Specifically: remove the last non-empty trailing line when it contains no
-/// `:` (span lines all contain `filename:line:col:`), after ANSI stripping.
+/// Do not infer that a final line without `:` is a failure summary: a rendered
+/// source caret has exactly that shape and is part of the diagnostic contract.
 fn diagnostic_body_from_check_stderr(stderr: &str) -> String {
-    let stripped = strip_ansi(stderr);
-    let lines: Vec<&str> = stripped.lines().collect();
-    // The summary line is the final non-empty line that contains no `:`.
-    // Span lines always contain at least one `:` (e.g. "file.hew:2:10: error:").
-    // Source-context lines (` 2 | ...`) and hint lines (`  hint:`) do too.
-    // Summary messages like "type errors found" or "undeclared dependencies" do not.
-    let trimmed = match lines.iter().rposition(|l| !l.trim().is_empty()) {
-        Some(last_idx) if !lines[last_idx].contains(':') => &lines[..last_idx],
-        _ => &lines,
-    };
-    trimmed.join("\n")
+    strip_ansi(stderr)
 }
 
 // ---------------------------------------------------------------------------

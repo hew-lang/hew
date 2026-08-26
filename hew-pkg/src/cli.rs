@@ -148,8 +148,8 @@ pub enum PkgCommand {
     },
 }
 
-fn init_follow_up_hint(template: manifest::ManifestTemplate) -> String {
-    let source = template.scaffold_source();
+fn init_follow_up_hint(template: manifest::ManifestTemplate, package_name: &str) -> String {
+    let source = template.scaffold_source(package_name);
     match template {
         manifest::ManifestTemplate::Lib => format!("Next: `hew check {source}`"),
         manifest::ManifestTemplate::Bin | manifest::ManifestTemplate::Actor => {
@@ -455,8 +455,8 @@ fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::PkgC
 
             // Write .gitignore with target/ and .hew/ (merged, never replaced).
             write_init_gitignore(dir);
-            let source = template.scaffold_source();
-            let follow_up = init_follow_up_hint(template);
+            let source = template.scaffold_source(&name);
+            let follow_up = init_follow_up_hint(template, &name);
 
             // Parse back to verify and display the confirmed package name.
             match manifest::parse_manifest(&manifest_path) {
@@ -480,11 +480,15 @@ fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::PkgC
 fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTemplate) {
     let (filename, content) = match template {
         manifest::ManifestTemplate::Lib => (
-            "lib.hew",
-            format!("// {name} library\n\nfn add(a: i32, b: i32) -> i32 {{\n    a + b\n}}\n"),
+            // A package name is a module path. Its final segment names the
+            // directory entry (`hew.selfqualtype` installs at
+            // `hew/selfqualtype/selfqualtype.hew`). Scaffold that exact root so
+            // init, install, and import share one convention.
+            manifest::package_root_source(name),
+            format!("// {name} library\n\npub fn add(a: i32, b: i32) -> i32 {{\n    a + b\n}}\n"),
         ),
         manifest::ManifestTemplate::Actor => (
-            "main.hew",
+            "main.hew".to_string(),
             "actor Counter {\n    let count: i32;\n\n    receive fn increment() {\n        \
              count = count + 1;\n        println(count);\n    }\n}\n\n\
              fn main() {\n    let c = spawn Counter(count: 0);\n    c.increment();\n    \
@@ -492,11 +496,11 @@ fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTem
                 .to_string(),
         ),
         manifest::ManifestTemplate::Bin => (
-            "main.hew",
+            "main.hew".to_string(),
             format!("fn main() {{\n    println(\"Hello from {name}!\");\n}}\n"),
         ),
     };
-    let path = dir.join(filename);
+    let path = dir.join(&filename);
     if !path.exists() {
         if let Err(e) = std::fs::write(&path, content) {
             eprintln!("warning: could not create {filename}: {e}");
@@ -3640,7 +3644,7 @@ mod tests {
     }
 
     #[test]
-    fn init_lib_creates_lib_hew() {
+    fn init_lib_creates_canonical_package_module() {
         let dir = tempfile::tempdir().unwrap();
         let manifest_path = dir.path().join("hew.toml");
         manifest::write_manifest_with_template(
@@ -3656,12 +3660,12 @@ mod tests {
             !dir.path().join("main.hew").exists(),
             "lib should not create main.hew"
         );
-        assert!(dir.path().join("lib.hew").exists());
-        let src = std::fs::read_to_string(dir.path().join("lib.hew")).unwrap();
-        assert!(src.contains("fn add("), "lib.hew should contain fn add");
+        assert!(dir.path().join("mylib.hew").exists());
+        let src = std::fs::read_to_string(dir.path().join("mylib.hew")).unwrap();
+        assert!(src.contains("fn add("), "mylib.hew should contain fn add");
         assert!(
             src.contains("// mylib library"),
-            "lib.hew should have library comment"
+            "mylib.hew should have library comment"
         );
 
         let m = manifest::parse_manifest(&manifest_path).unwrap();
@@ -3731,15 +3735,15 @@ mod tests {
     #[test]
     fn init_follow_up_hint_matches_template() {
         assert_eq!(
-            init_follow_up_hint(manifest::ManifestTemplate::Bin),
+            init_follow_up_hint(manifest::ManifestTemplate::Bin, "proj"),
             "Next: `hew check main.hew` then `hew run main.hew`"
         );
         assert_eq!(
-            init_follow_up_hint(manifest::ManifestTemplate::Lib),
-            "Next: `hew check lib.hew`"
+            init_follow_up_hint(manifest::ManifestTemplate::Lib, "proj"),
+            "Next: `hew check proj.hew`"
         );
         assert_eq!(
-            init_follow_up_hint(manifest::ManifestTemplate::Actor),
+            init_follow_up_hint(manifest::ManifestTemplate::Actor, "proj"),
             "Next: `hew check main.hew` then `hew run main.hew`"
         );
     }

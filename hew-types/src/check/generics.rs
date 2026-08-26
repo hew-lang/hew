@@ -1086,7 +1086,11 @@ impl Checker {
                         | crate::BuiltinType::RemotePid,
                     ),
                 ..
-            } => MarkerTrait::from_name(trait_name)
+            } if MarkerTrait::from_name(trait_name).is_some() => MarkerTrait::from_name(trait_name)
+                .is_some_and(|marker| self.registry.implements_marker(ty, marker)),
+            Ty::Named {
+                builtin: Some(_), ..
+            } if MarkerTrait::from_name(trait_name).is_some() => MarkerTrait::from_name(trait_name)
                 .is_some_and(|marker| self.registry.implements_marker(ty, marker)),
             Ty::Named { name, .. } => {
                 let name = name.clone();

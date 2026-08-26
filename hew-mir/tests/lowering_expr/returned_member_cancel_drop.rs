@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use hew_mir::{lower_hir_module, DropKind, ExitPath, IrPipeline};
+use hew_mir::{
+    lower_hir_module, DropFnSpec, DropKind, ExitPath, Instr, IrPipeline, MirStatement,
+    OwnershipEvent, Terminator,
+};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 const SOURCE: &str = r#"
@@ -71,6 +74,10 @@ fn is_string_drop(drop: &hew_mir::ElabDrop) -> bool {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the regression audits one owner across mint, normal, unwind, cancel, and return paths"
+)]
 fn returned_member_cancellation_uses_one_owner_before_and_after_normal_goto() {
     let pipeline = pipeline();
     assert!(
@@ -83,6 +90,64 @@ fn returned_member_cancellation_uses_one_owner_before_and_after_normal_goto() {
         .iter()
         .find(|function| function.name == "Driver__recv__resolve")
         .expect("receive handler must be lowered");
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "Driver__recv__resolve")
+        .expect("checked receive handler must be present");
+    let index_binding = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find_map(|statement| match statement {
+            MirStatement::Bind { binding, name, .. } if name == "index" => Some(*binding),
+            _ => None,
+        })
+        .expect("index binding must be present");
+    let handoffs = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                to: Some(place),
+                to_owner: Some(owner),
+                ..
+            }) if owner.binding == index_binding => Some((*owner, *place)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [(index_owner, index_place)] = handoffs.as_slice() else {
+        panic!("index must receive exactly one owner handoff: {handoffs:?}");
+    };
+
+    let inline_cleanup_blocks = checked
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, Terminator::Goto { .. }))
+        .filter(|block| {
+            block.instructions.windows(3).any(|window| {
+                matches!(window,
+                [Instr::Drop {
+                    place: drop_place,
+                    drop_fn: Some(DropFnSpec::Release(symbol)),
+                    ..
+                }, Instr::OwnershipEvent(OwnershipEvent::Release {
+                    owner,
+                    place: release_place,
+                }), Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. })]
+                    if *symbol == "hew_string_drop"
+                        && drop_place == index_place
+                        && release_place == index_place
+                        && owner == index_owner
+                        && owners.iter().filter(|candidate| *candidate == index_owner).count() == 1)
+            })
+        })
+        .count();
+    assert_eq!(
+        inline_cleanup_blocks, 1,
+        "the normal Goto path must close index once at its lexical ScopeExit"
+    );
 
     let cancellation_owners: Vec<HashSet<_>> = resolve
         .drop_plans
@@ -96,7 +161,7 @@ fn returned_member_cancellation_uses_one_owner_before_and_after_normal_goto() {
                 .collect()
         })
         .collect();
-    let normal_path_owners: HashSet<_> = resolve
+    let goto_plan_owners: HashSet<_> = resolve
         .drop_plans
         .iter()
         .filter(|(exit, _)| matches!(exit, ExitPath::Goto { .. }))
@@ -105,16 +170,17 @@ fn returned_member_cancellation_uses_one_owner_before_and_after_normal_goto() {
         .map(|drop| drop.place)
         .collect();
 
-    assert_eq!(
-        normal_path_owners.len(),
-        1,
-        "the scope-closing Goto must release index before the following loop: {:#?}",
-        resolve.drop_plans,
-    );
     assert!(
+        !goto_plan_owners.contains(index_place),
+        "the inline scope close must not be duplicated in a Goto plan: {:#?}",
+        resolve.drop_plans
+    );
+    assert_eq!(
         cancellation_owners
             .iter()
-            .any(|owners| { owners.is_superset(&normal_path_owners) }),
+            .filter(|owners| owners.contains(index_place))
+            .count(),
+        1,
         "the loop before the Goto must still release index when cancellation \
          bypasses its normal release: {:#?}",
         resolve.drop_plans,
@@ -122,10 +188,40 @@ fn returned_member_cancellation_uses_one_owner_before_and_after_normal_goto() {
     assert!(
         cancellation_owners
             .iter()
-            .any(|owners| !owners.is_empty() && owners.is_disjoint(&normal_path_owners)),
+            .any(|owners| !owners.is_empty() && !owners.contains(index_place)),
         "the loop after the Goto must not release index again; its normal \
          scope-close already owns that release: {:#?}",
         resolve.drop_plans,
+    );
+    let unwind_index_drops = resolve
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Unwind { callee, .. } if callee == "exists"))
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| drop.place == *index_place && is_string_drop(drop))
+        .count();
+    assert_eq!(
+        unwind_index_drops, 1,
+        "the borrowing exists(index) call must preserve index for its unwind cleanup"
+    );
+    let return_transfers = checked
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, Terminator::Return))
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| {
+            matches!(instruction,
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from,
+                to: None,
+                ..
+            }) if owner == index_owner && from == index_place)
+        })
+        .count();
+    assert_eq!(
+        return_transfers, 1,
+        "the early return must transfer the same index owner to the caller"
     );
     let returned_owners: HashSet<_> = resolve
         .drop_plans
@@ -136,7 +232,7 @@ fn returned_member_cancellation_uses_one_owner_before_and_after_normal_goto() {
         .map(|drop| drop.place)
         .collect();
     assert!(
-        normal_path_owners.is_disjoint(&returned_owners),
+        !returned_owners.contains(index_place),
         "the completed return transfers index to the caller rather than releasing \
          it a second time: {:#?}",
         resolve.drop_plans

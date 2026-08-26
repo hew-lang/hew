@@ -63,6 +63,7 @@ pub(super) struct ReturnedMemberReAdmissionAmbiguity {
 pub(super) fn returned_member_re_admission_path(exit: &ExitPath) -> ReturnedMemberReAdmissionPath {
     match exit {
         ExitPath::Panic { .. }
+        | ExitPath::Unwind { .. }
         | ExitPath::Cancel { .. }
         | ExitPath::Yield { .. }
         | ExitPath::Suspend { .. } => ReturnedMemberReAdmissionPath::Abandonment,

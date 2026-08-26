@@ -15,7 +15,10 @@
 //! foreign assertion with an identically shaped domestic control so no
 //! assertion can be satisfied by deleting a mint outright.
 
-use hew_mir::{DropKind, DumpStage, IrPipeline};
+use hew_mir::{
+    DropFnSpec, DropKind, DumpStage, ElaboratedMirFunction, ExitPath, InPlaceReleaseKind, Instr,
+    IrPipeline, MirStatement, NeutralizeAuthority, OwnerId, OwnershipEvent, Place, RawMirFunction,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -68,6 +71,7 @@ fn record_in_place_drops(p: &IrPipeline, fn_name: &str) -> usize {
         .unwrap_or_else(|| panic!("function {fn_name} must be present"))
         .drop_plans
         .iter()
+        .filter(|(exit, _)| !matches!(exit, ExitPath::Unwind { .. }))
         .flat_map(|(_, plan)| plan.drops.iter())
         .filter(|drop| matches!(drop.kind, DropKind::RecordInPlace))
         .count()
@@ -80,9 +84,218 @@ fn cow_heap_drops(p: &IrPipeline, fn_name: &str) -> usize {
         .unwrap_or_else(|| panic!("function {fn_name} must be present"))
         .drop_plans
         .iter()
+        .filter(|(exit, _)| !matches!(exit, ExitPath::Unwind { .. }))
         .flat_map(|(_, plan)| plan.drops.iter())
         .filter(|drop| matches!(drop.kind, DropKind::CowHeap { .. }))
         .count()
+}
+
+fn binding_named(function: &RawMirFunction, name: &str) -> hew_hir::BindingId {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find_map(|statement| match statement {
+            MirStatement::Bind {
+                binding,
+                name: binding_name,
+                ..
+            } if binding_name == name => Some(*binding),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("binding {name} must be present"))
+}
+
+fn unique_owner_acquisition(function: &RawMirFunction, name: &str) -> (OwnerId, Place) {
+    let binding = binding_named(function, name);
+    let publications = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, .. })
+                if owner.binding == binding =>
+            {
+                Some((*owner, *place))
+            }
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                to: Some(place),
+                to_owner: Some(owner),
+                ..
+            }) if owner.binding == binding => Some((*owner, *place)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        publications.len(),
+        1,
+        "domestic binding {name} must acquire exactly one owner: {publications:?}"
+    );
+    publications[0]
+}
+
+fn inline_in_place_drop_release_count(
+    function: &RawMirFunction,
+    owner: OwnerId,
+    place: Place,
+    kind: InPlaceReleaseKind,
+) -> usize {
+    function
+        .blocks
+        .iter()
+        .filter(|block| {
+            let drop_index = block.instructions.iter().position(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::Drop {
+                        place: dropped,
+                        drop_fn: Some(DropFnSpec::InPlace(actual_kind)),
+                        ..
+                    } if *dropped == place && *actual_kind == kind
+                )
+            });
+            let release_index = block.instructions.iter().position(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(OwnershipEvent::Release {
+                        owner: released_owner,
+                        place: released_place,
+                    }) if *released_owner == owner && *released_place == place
+                )
+            });
+            matches!((drop_index, release_index), (Some(drop), Some(release)) if drop < release)
+        })
+        .count()
+}
+
+fn assert_typed_recipe(function: &RawMirFunction, owner: OwnerId, expected: DropKind) {
+    let recipes = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                owner: recipe_owner,
+                recipe,
+            }) if *recipe_owner == owner => Some(recipe.kind),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(recipes, vec![expected]);
+}
+
+fn drop_paths(function: &ElaboratedMirFunction, place: Place, kind: DropKind) -> Vec<&ExitPath> {
+    function
+        .drop_plans
+        .iter()
+        .filter(|(_, plan)| {
+            plan.drops
+                .iter()
+                .any(|drop| drop.place == place && drop.kind == kind)
+        })
+        .map(|(exit, _)| exit)
+        .collect()
+}
+
+fn assert_shell_plan_paths(paths: &[&ExitPath], expected_cancel: usize, expected_panic: usize) {
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|exit| matches!(exit, ExitPath::Cancel { .. }))
+            .count(),
+        expected_cancel
+    );
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|exit| matches!(exit, ExitPath::Panic { .. }))
+            .count(),
+        expected_panic
+    );
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|exit| matches!(exit, ExitPath::Unwind { .. }))
+            .count(),
+        4
+    );
+    assert_eq!(
+        paths.len(),
+        expected_cancel + expected_panic + 4,
+        "the shell must appear only on its live exceptional paths"
+    );
+}
+
+fn assert_payload_plan_paths(paths: &[&ExitPath]) {
+    assert_eq!(paths.len(), 4);
+    assert!(
+        paths
+            .iter()
+            .all(|exit| matches!(exit, ExitPath::Unwind { .. })),
+        "the payload binder's remaining plans are exactly its four unwind paths: {paths:?}"
+    );
+}
+
+fn assert_domestic_payload_release_paths(
+    p: &IrPipeline,
+    expected_shell_cancel: usize,
+    expected_shell_panic: usize,
+) {
+    let raw = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main raw MIR");
+    let (shell_owner, shell_place) = unique_owner_acquisition(raw, "b");
+    let (payload_owner, payload_place) = unique_owner_acquisition(raw, "h");
+
+    assert_typed_recipe(raw, shell_owner, DropKind::EnumInPlace);
+    assert_typed_recipe(raw, payload_owner, DropKind::RecordInPlace);
+    assert_eq!(
+        inline_in_place_drop_release_count(raw, shell_owner, shell_place, InPlaceReleaseKind::Enum,),
+        1,
+        "normal loop fallthrough releases the shell exactly once"
+    );
+    assert_eq!(
+        inline_in_place_drop_release_count(
+            raw,
+            payload_owner,
+            payload_place,
+            InPlaceReleaseKind::Record,
+        ),
+        1,
+        "the selected arm releases its payload binder exactly once"
+    );
+
+    let payload_transfers = raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot {
+                    transferee: Some(transferee),
+                    authority: NeutralizeAuthority::PayloadBindingTransfer,
+                    ..
+                } if *transferee == payload_place
+            )
+        })
+        .count();
+    assert_eq!(
+        payload_transfers, 1,
+        "the payload projection must transfer into its domestic binder exactly once"
+    );
+
+    let elaborated = p
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main elaborated MIR");
+    let shell_paths = drop_paths(elaborated, shell_place, DropKind::EnumInPlace);
+    assert_shell_plan_paths(&shell_paths, expected_shell_cancel, expected_shell_panic);
+    let payload_paths = drop_paths(elaborated, payload_place, DropKind::RecordInPlace);
+    assert_payload_plan_paths(&payload_paths);
 }
 
 /// The same declarations every round-5 fixture uses, so the only variable
@@ -500,30 +713,17 @@ fn a_match_payload_binder_over_a_proven_foreign_scrutinee_mints_no_owner() {
     assert_eq!(cow_heap_drops(&p, "main"), 0);
 }
 
-/// The domestic control: six `EnumInPlace` releases across the loop body's exit
-/// edges, unchanged by the warrant.
+/// The domestic control: the payload binder and its enum shell retain one owner
+/// each. Normal cleanup is inline; live unwind, panic, and cancel edges retain
+/// their typed plans.
 #[test]
 fn a_match_payload_binder_over_a_domestic_scrutinee_keeps_its_releases() {
     let p = in_loop(DOMESTIC_MK, MATCH_BODY);
-    let enum_drops = p
-        .elaborated_mir
-        .iter()
-        .find(|f| f.name == "main")
-        .expect("main")
-        .drop_plans
-        .iter()
-        .flat_map(|(_, plan)| plan.drops.iter())
-        .filter(|drop| matches!(drop.kind, DropKind::EnumInPlace))
-        .count();
-    assert_eq!(
-        enum_drops, 6,
-        "the domestic shape keeps every release it had — a blanket withhold \
-         would leak ordinary payload binders"
-    );
+    assert_domestic_payload_release_paths(&p, 2, 2);
 }
 
-/// The same for the `if let` payload binder, which is a separate mint site in
-/// `control_flow.rs` and therefore a separate warrant.
+/// The same foreign withholding for the `if let` payload binder, which is a
+/// separate mint site in `control_flow.rs` and therefore a separate warrant.
 #[test]
 fn an_if_let_payload_binder_over_a_proven_foreign_scrutinee_mints_no_owner() {
     let p = in_loop(FOREIGN_MK, IF_LET_BODY);
@@ -534,17 +734,7 @@ fn an_if_let_payload_binder_over_a_proven_foreign_scrutinee_mints_no_owner() {
 #[test]
 fn an_if_let_payload_binder_over_a_domestic_scrutinee_keeps_its_releases() {
     let p = in_loop(DOMESTIC_MK, IF_LET_BODY);
-    let enum_drops = p
-        .elaborated_mir
-        .iter()
-        .find(|f| f.name == "main")
-        .expect("main")
-        .drop_plans
-        .iter()
-        .flat_map(|(_, plan)| plan.drops.iter())
-        .filter(|drop| matches!(drop.kind, DropKind::EnumInPlace))
-        .count();
-    assert_eq!(enum_drops, 4);
+    assert_domestic_payload_release_paths(&p, 1, 1);
 }
 
 // ---------------------------------------------------------------------------

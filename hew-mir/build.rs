@@ -50,22 +50,31 @@ fn checked_runtime_results(path: &Path) -> BTreeMap<String, String> {
         .expect("runtime_symbols.rs must declare TOML_RESULT_CONSISTENCY");
     let mut results = BTreeMap::new();
 
+    let mut entry = String::new();
     for line in source[start..].lines().skip(1) {
         let line = line.trim();
         if line == "];" {
             break;
         }
-        if !line.starts_with("(\"") {
+        if line.starts_with('(') {
+            entry.clear();
+        }
+        if entry.is_empty() && !line.starts_with('(') {
             continue;
         }
-        let quoted = line.split('"').collect::<Vec<_>>();
-        assert!(quoted.len() >= 4, "malformed consistency row: {line}");
+        entry.push_str(line);
+        if !line.ends_with("),") {
+            continue;
+        }
+        let quoted = entry.split('"').collect::<Vec<_>>();
+        assert!(quoted.len() >= 4, "malformed consistency row: {entry}");
         let symbol = quoted[1].to_owned();
         let result = quoted[3].to_owned();
         assert!(
             results.insert(symbol.clone(), result).is_none(),
             "duplicate runtime consistency row for {symbol}"
         );
+        entry.clear();
     }
     assert!(
         !results.is_empty(),

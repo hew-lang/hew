@@ -311,9 +311,16 @@ fn fungible_join_uses_stable_supervisor_role_and_local_pid_submission() {
         "#,
     );
 
-    assert!(
-        ll.contains("call i64 @hew_supervisor_direct_id("),
-        "fungible role binding must capture the stable supervisor token:\n{ll}"
+    let stable_token_captures = ll
+        .lines()
+        .filter(|line| {
+            line.contains(" call i64 @hew_supervisor_direct_id(")
+                || line.contains(" invoke i64 @hew_supervisor_direct_id(")
+        })
+        .count();
+    assert_eq!(
+        stable_token_captures, 2,
+        "the role binding and await-restart expression must each capture their stable supervisor token, whether the call is nounwind or carries cleanup:\n{ll}"
     );
     assert!(
         !ll.contains("@hew_local_pid_supervisor_child_get("),

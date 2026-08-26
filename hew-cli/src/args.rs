@@ -98,7 +98,7 @@ pub enum Command {
     Wire(WireCommand),
     /// State machine tools.
     Machine(MachineCommand),
-    /// Format source files in-place or from stdin.
+    /// Format Hew source files or project directories in-place, or read stdin.
     Fmt(FmtArgs),
     /// Scaffold a manifest-first project (`hew.toml` + starter source + merged `.gitignore`).
     Init(InitArgs),
@@ -861,12 +861,13 @@ pub struct MachineListArgs {
 
 #[derive(Debug, Args)]
 pub struct FmtArgs {
-    /// Source files to format in-place.
+    /// Hew source files or directories to format in-place (use --root for directory migration).
+    #[arg(value_name = "PATH")]
     pub files: Vec<PathBuf>,
-    /// Read source from stdin and write formatted output to stdout (cannot be used with FILES).
+    /// Read source from stdin and write formatted output to stdout (cannot be used with PATHS).
     #[arg(long, conflicts_with = "files")]
     pub stdin: bool,
-    /// Check formatting without writing (files or stdin; exit 1 if unformatted).
+    /// Check formatting without writing (paths or stdin; exit 1 if unformatted).
     #[arg(long)]
     pub check: bool,
     /// Rewrite legacy path and variant syntax before formatting.
@@ -885,7 +886,7 @@ pub struct FmtArgs {
 pub struct InitArgs {
     /// Project name (creates the directory if needed; omit to init the current directory).
     pub name: Option<String>,
-    /// Scaffold a library project (`lib.hew`).
+    /// Scaffold a library project (`<final-package-segment>.hew`).
     #[arg(long, conflicts_with = "actor")]
     pub lib: bool,
     /// Scaffold an actor project.

@@ -606,8 +606,8 @@ mod tests {
             }
         }
         assert_eq!(
-            sites, 2,
-            "expected exactly the two registrar push sites in {REGISTRAR_FILE}; a \
+            sites, 3,
+            "expected exactly the three warranted registrar push sites in {REGISTRAR_FILE}; a \
              different count means a mint site was added or removed and this \
              inventory must be re-read rather than re-numbered"
         );

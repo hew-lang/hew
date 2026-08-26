@@ -19,9 +19,11 @@
 
 use std::collections::HashSet;
 
-use hew_mir::{DropFnSpec, DropKind, Instr, IrPipeline, Place, Terminator};
+use hew_mir::{
+    DropFnSpec, DropKind, ExitPath, Instr, IrPipeline, OwnershipEvent, Place, Terminator,
+};
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::Checker;
+use hew_types::{Checker, ResolvedTy};
 
 fn pipeline_with_tc(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -48,6 +50,7 @@ fn cow_heap_drops(p: &IrPipeline, fn_name: &str) -> usize {
         .unwrap_or_else(|| panic!("function {fn_name} must be present"))
         .drop_plans
         .iter()
+        .filter(|(exit, _)| !matches!(exit, ExitPath::Unwind { .. }))
         .flat_map(|(_, plan)| plan.drops.iter())
         .filter(|drop| matches!(drop.kind, DropKind::CowHeap { .. }))
         .count()
@@ -90,6 +93,7 @@ fn call_result_release_count(p: &IrPipeline, fn_name: &str, callee: &str) -> usi
         .unwrap_or_else(|| panic!("function {fn_name} must be present"))
         .drop_plans
         .iter()
+        .filter(|(exit, _)| !matches!(exit, ExitPath::Unwind { .. }))
         .flat_map(|(_, plan)| &plan.drops)
         .filter(|drop| {
             destinations.contains(&drop.place) && matches!(drop.kind, DropKind::CowHeap { .. })
@@ -98,15 +102,119 @@ fn call_result_release_count(p: &IrPipeline, fn_name: &str, callee: &str) -> usi
     inline + exit
 }
 
-fn record_in_place_drops(p: &IrPipeline, fn_name: &str) -> usize {
+fn call_result_mint_count(p: &IrPipeline, fn_name: &str, callee: &str) -> usize {
+    let raw = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"));
+    let destinations: HashSet<Place> = raw
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee: symbol,
+                dest: Some(dest),
+                ..
+            } if symbol == callee => Some(*dest),
+            _ => None,
+        })
+        .collect();
+    raw.blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| {
+            matches!(instruction,
+                Instr::OwnershipEvent(OwnershipEvent::Mint { place, .. })
+                    if destinations.contains(place)
+            )
+        })
+        .count()
+}
+
+fn unwind_cow_heap_drops(p: &IrPipeline, fn_name: &str, callee: &str) -> usize {
     p.elaborated_mir
         .iter()
         .find(|f| f.name == fn_name)
         .unwrap_or_else(|| panic!("function {fn_name} must be present"))
         .drop_plans
         .iter()
+        .filter(
+            |(exit, _)| matches!(exit, ExitPath::Unwind { callee: symbol, .. } if symbol == callee),
+        )
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| matches!(drop.kind, DropKind::CowHeap { .. }))
+        .count()
+}
+
+fn domestic_record_mints(p: &IrPipeline, fn_name: &str) -> usize {
+    let function = p
+        .checked_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"));
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| {
+            matches!(instruction,
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    ty: ResolvedTy::Named { name, .. },
+                    ..
+                }) if name == "Holder")
+        })
+        .count()
+}
+
+fn inline_record_scope_cleanups(p: &IrPipeline, fn_name: &str) -> usize {
+    p.checked_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.windows(3))
+        .filter(|window| {
+            matches!(window,
+            [Instr::Drop { place: drop_place, drop_fn: Some(DropFnSpec::InPlace(_)), .. },
+             Instr::OwnershipEvent(OwnershipEvent::Release { owner, place: release_place }),
+             Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. })]
+                if drop_place == release_place
+                    && owners.iter().filter(|candidate| *candidate == owner).count() == 1)
+        })
+        .count()
+}
+
+fn record_in_place_drops(p: &IrPipeline, fn_name: &str) -> usize {
+    let neutralized: HashSet<Place> = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(_),
+                ..
+            } => Some(*place),
+            _ => None,
+        })
+        .collect();
+    p.elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| !matches!(exit, ExitPath::Unwind { .. }))
         .flat_map(|(_, plan)| plan.drops.iter())
-        .filter(|drop| matches!(drop.kind, DropKind::RecordInPlace))
+        .filter(|drop| {
+            matches!(drop.kind, DropKind::RecordInPlace) && !neutralized.contains(&drop.place)
+        })
         .count()
 }
 
@@ -222,7 +330,14 @@ fn temp_argument_passed_to_a_hew_fn_keeps_its_mint() {
          fn hew_sink(s: string) -> i64 { s.len() }",
         "hew_sink(mk(3));",
     );
-    assert_eq!(cow_heap_drops(&p, "main"), 1);
+    assert_eq!(call_result_mint_count(&p, "main", "mk"), 1);
+    assert_eq!(call_result_release_count(&p, "main", "mk"), 1);
+    assert_eq!(unwind_cow_heap_drops(&p, "main", "hew_sink"), 1);
+    assert_eq!(
+        cow_heap_drops(&p, "main"),
+        0,
+        "the normal release is now adjacent to the borrowing call, not deferred to Return"
+    );
 }
 
 // ── non-string heap classes ───────────────────────────────────────────────
@@ -534,11 +649,12 @@ fn a_let_bound_domestic_record_still_gets_its_scope_exit_drop() {
         "fn mk(n: i64) -> Holder { Holder { label: f\"x{n}\" } }",
         "var i: i64 = 0;\n    while i < 2 {\n        let h = mk(i);\n        let n = h.label.len();\n        println(f\"x={n}\");\n        i = i + 1;\n    }",
     );
+    assert_eq!(domestic_record_mints(&p, "main"), 1);
+    assert_eq!(inline_record_scope_cleanups(&p, "main"), 1);
     assert_eq!(
         record_in_place_drops(&p, "main"),
-        3,
-        "the veto is provenance-directed: a domestic producer keeps its release \
-         at each of the loop body's three exit edges"
+        1,
+        "the terminal panic edge retains its exact record cleanup; normal scope cleanup is inline"
     );
 }
 

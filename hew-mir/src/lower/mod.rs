@@ -104,6 +104,7 @@ use self::actor_state_handle::{
 use self::cfg_util::{
     block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
     local_is_rewritten_after_current_iteration, local_is_used_after, shift_instr_spans_on_insert,
+    shift_instr_spans_on_remove,
 };
 #[cfg(not(test))]
 use self::composite_own::{
@@ -115,7 +116,6 @@ use self::composite_own::{
     derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
     derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
     detect_builtin_handle_record_field_overwrite, detect_opaque_resource_field_misuse,
-    detect_unproven_aggregate_handle_double_free,
 };
 #[cfg(not(test))]
 use self::consts::{
@@ -136,15 +136,14 @@ use self::drop_plan::{
     binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
     builtin_method_arg_is_move_ingress, check_to_diagnostic, classify_closure_pair_rhs,
     classify_dyn_trait_storage, cow_value_leaf_drop_symbol, describe_vec_element,
-    dyn_rebind_source_binding, elaborate, exit_block_id, field_override_uses_record_field_drop,
-    is_borrowing_call_abi, is_handle_borrowing_call_abi, note_payload_escape,
-    propagate_payload_binder_root, render_owned_handle_ty, resource_drop_fn,
-    stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow, ty_is_closure_pair,
-    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
-    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_nonowning_handle_leaf,
+    dyn_rebind_source_binding, elaborate, field_override_uses_record_field_drop,
+    note_payload_escape, propagate_payload_binder_root, render_owned_handle_ty, resource_drop_fn,
+    seal_checked, stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow,
+    ty_is_closure_pair, ty_is_generator_handle, ty_is_heap_owning_enum_composite,
+    ty_is_heap_owning_tuple, ty_is_indirect_enum, ty_is_local_collection_handle,
     ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
-    validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
-    validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
+    validate_drop_plan, validate_ownership_events, validate_unwind_cleanup_coverage,
+    vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
     vec_iter_yield_abandonment_diagnostics, PayloadBinderRoot,
 };
 pub use self::drop_plan::{crash_only_cleanup_drop, drop_kind_for_test_only};
@@ -166,7 +165,6 @@ use self::split_consume::{
     descend_match_bound_hop_aliases, local_is_byte_copy_aggregate, place_is_interior_projection,
     place_is_tag_read, propagate_seeded_whole_value_alias_roots_excluding_moves,
     propagate_whole_value_alias_roots, propagate_whole_value_alias_roots_excluding_moves,
-    validate_cross_block_split_consume,
 };
 pub use self::suspend_places::instr_source_places;
 pub use self::suspend_places::suspend_kind_source_places;
@@ -175,8 +173,8 @@ pub use self::suspend_places::terminator_source_places;
 #[cfg(not(test))]
 use self::suspend_places::{
     generator_yield_instr_escapes, generator_yield_terminator_escapes,
-    hir_expr_contains_synthetic_vec_get_clone, instr_escape_places, option_payload_ty,
-    place_refs_local, retained_string_terminator_drop_safe, terminator_escape_places,
+    hir_expr_contains_synthetic_vec_get_clone, option_payload_ty, place_refs_local,
+    retained_string_terminator_drop_safe,
 };
 #[cfg(not(test))]
 use self::temp_drop::{
@@ -188,8 +186,8 @@ use self::temp_drop::{
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
     derive_bytes_actor_transfer_blocks, derive_cow_fresh_borrowed_owner, derive_cow_sole_owner,
     finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
-    forward_move_closure, readmit_retained_bytes_tuple_roots, string_call_borrows,
-    string_field_load_producer_dest,
+    forward_move_closure, interior_alias_receiver_violations, readmit_retained_bytes_tuple_roots,
+    string_call_borrows, string_field_load_producer_dest,
 };
 
 /// Maps each original (unsanitized) callee symbol to the adapter symbol
@@ -343,6 +341,7 @@ const SYNTHETIC_TEMP_RECEIVER_NAME: &str = "__hew_temp_receiver";
 /// The binding owns the temporary's retained share only; the parameter remains
 /// caller-owned and keeps its natural drop.
 const SYNTHETIC_COPY_IN_PARAM_TEMP_NAME: &str = "__hew_copy_in_param_temp";
+const SYNTHETIC_VEC_ITER_VALUE_NAME: &str = "__hew_vec_iter_value";
 
 /// Prefix of the synthetic for-iteration cursor binding minted by the HIR
 /// for-loop desugar (`hew-hir/src/lower.rs`, `lower_for_iter_desugar`:
@@ -613,6 +612,10 @@ struct Builder {
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
     pub(crate) binding_locals: HashMap<BindingId, Place>,
+    /// Current immutable generation number for each source binding. Every
+    /// transition is also emitted as `Instr::OwnershipEvent`; this map is only
+    /// the lowering cursor used to mint the next identity.
+    owner_generations: HashMap<BindingId, u32>,
     /// Owned match-like payload bindings whose lexical mapping is restored
     /// when their body ends, but whose concrete backend place must remain
     /// available to scope-exit drop elaboration. Ownership finalization runs
@@ -648,6 +651,12 @@ struct Builder {
     /// This is identity-only metadata used for receiver-owner transfer; it
     /// neither schedules nor owns cleanup.
     published_value_places: HashMap<SiteId, Place>,
+    /// Result places whose typed runtime-call authority says the returned bits
+    /// alias storage owned by the receiver. This is lowering-cursor state only:
+    /// it prevents an owner Mint while the source expression is bound. Checked
+    /// MIR retains the authoritative typed RuntimeCall/CallAuthority operation,
+    /// so drop elaboration can reproduce the ownerless result without this set.
+    borrowed_runtime_result_places: HashSet<Place>,
     /// Narrow lowering context for the `for await` desugar's cursor
     /// initializer. Its existing cursor owner is recorded after the `let`
     /// bind, once the destination scope is known; publishing a second generic
@@ -922,6 +931,13 @@ struct Builder {
     /// closure/borrow calls use `false`, preserving a binding source while
     /// still describing whether a fresh expression result owns a snapshot.
     pub(crate) vec_iter_move_result_transfers: Vec<bool>,
+    /// Typed non-consuming `VecIter<T>` composite-result copies.
+    ///
+    /// Block/if/match value security copies a read result through fresh locals,
+    /// but the source cursor binding remains the owner and the result sidecar
+    /// stays moved.  Record the exact physical handoff so the late generic
+    /// Move sealer does not manufacture a relocation from byte motion alone.
+    pub(crate) nonowning_vec_iter_copy_moves: HashSet<(u32, Place, Place)>,
     /// Direct binding-reference sites currently crossing a `VecIter<T>`
     /// ownership boundary. HIR may retain `Read` intent for a match arm even
     /// though its value moves; this exact-site stack distinguishes that result
@@ -938,6 +954,10 @@ struct Builder {
     /// bytes, preserving both owning and borrowing topologies through composite
     /// if/match/block results.
     pub(crate) vec_iter_value_drop_flags: HashMap<hew_hir::SiteId, Place>,
+    /// Exact owner generation for an owning, unbound `VecIter` value sidecar.
+    /// Published into MIR immediately after the value materializes; this map is
+    /// only a lowering cursor used to emit the normal-path Release event.
+    pub(crate) vec_iter_value_owners: HashMap<hew_hir::SiteId, crate::model::OwnerId>,
     /// `Stream<T>` / `Receiver<T>` for-await cursor bindings tagged with the
     /// block scope they were declared in, so a per-scope-exit close
     /// (`hew_stream_close` / `hew_channel_receiver_close`) fires when that scope
@@ -1060,10 +1080,8 @@ struct Builder {
     /// would either fire ALL live bindings on a back-edge (double-freeing
     /// outer-scope values like the receiver itself) or fire NONE (the current
     /// behaviour, which leaks the per-iteration heap-owning let-bindings).
-    /// Restricting the back-edge plan to bindings whose `binding_scope` matches
-    /// the loop body's scope (recorded in `loop_back_edge_blocks`) makes the
-    /// drop set per-iteration and CFG-correct: outer-scope bindings keep their
-    /// function-exit drop, inner-scope bindings get one drop per iteration.
+    /// Before sealing, these lexical facts resolve `ScopeExit` into immutable
+    /// `OwnerId` releases. They are not consulted by Checked-MIR elaboration.
     pub(crate) binding_scope: HashMap<BindingId, ScopeId>,
     /// Scope facts for transient payload-binding locals whose `binding_locals`
     /// entry is restored after a match-like body lowers. The enum sole-owner
@@ -1091,26 +1109,9 @@ struct Builder {
     /// lines stay distinct even before lexical-block scoping. Absent → codegen
     /// falls back to the function-declaration line.
     pub(crate) binding_decl_byte: HashMap<BindingId, u32>,
-    /// Map from each loop-body back-edge `Goto`'s emitting block id to the HIR
-    /// `ScopeId` of the loop body that closes there. Populated immediately
-    /// before each loop's body→header (or body→inc) `Terminator::Goto` is
-    /// emitted, in `lower_while`/`lower_while_let`/`lower_for_range`/
-    /// `lower_loop`. Consulted by `enumerate_exits` to populate the back-edge's
-    /// `DropPlan` with drops for bindings whose `binding_scope` matches this
-    /// scope — releasing exactly the per-iteration heap-owning let-bindings
-    /// (`Option<T>` recv results, owned strings/Vecs/maps bound inside the body)
-    /// before the next iteration overwrites their slots.
-    ///
-    /// The dataflow's `BindingState` filter in `drops_for_exit` automatically
-    /// excludes bindings that are `Consumed` (moved out) or `Uninit` (not yet
-    /// assigned on the first iteration's first reach), so escape via `break x`
-    /// / pass-by-value / first-iteration-uninit double-free corner cases are
-    /// handled by the existing dataflow without bespoke logic.
-    pub(crate) loop_back_edge_blocks: HashMap<u32, ScopeId>,
     /// Goto-edge blocks that must release header-defined iteration owners.
     /// Each binding is also marked consumed in the source block's statement
     /// stream, so the target's later function exit cannot release it again.
-    pub(crate) iteration_owner_drop_blocks: HashMap<u32, Vec<BindingId>>,
     /// Header snapshot owners whose drop template is valid only on a recorded
     /// loop back-edge. Ordinary exit plans exclude these bindings because the
     /// source binding still owns the same value on tag-false and pre-reassign
@@ -1703,6 +1704,17 @@ struct Builder {
     /// `build_lifo_drops` consult this same map, so allocation, move marking,
     /// and guarded release cannot drift.
     pub(crate) actor_message_cow_drop_flags: HashMap<BindingId, Place>,
+    /// Mailbox-owned `string` parameters remain lexical owners even when the
+    /// pre-pass classifies an aggregate handoff as definitely consuming. A
+    /// loop-carried state ingress can still require a retained co-owner on
+    /// every iteration and the zero-iteration path still owns the parameter.
+    ///
+    /// This ledger is deliberately independent of the runtime flag map: flags
+    /// are allocated only for path-conditional transfers, while this set is
+    /// the durable typed authority used by late String retain derivation. It
+    /// contains only actor-handler parameters already registered as exact
+    /// scope-exit owners; ordinary String locals and aliases never enter it.
+    pub(crate) actor_message_string_owner_bindings: HashSet<BindingId>,
     /// Direct actor-call argument bindings whose finalized outbound mode may
     /// become `TransferLastUse` even when HIR intent remains borrow-like until
     /// CFG analysis. This pre-pass fact lets `ActorHandler` `bytes` allocate its
@@ -4299,6 +4311,89 @@ fn outbound_record_layouts(builder: &Builder) -> Vec<RecordLayout> {
         .collect()
 }
 
+/// Rebuild one already-prepared call carrier from the exact owner state at
+/// its physical move, rather than retaining generations recorded while the
+/// assignment overwrite was still being assembled.
+///
+/// The rewrite is intentionally limited to the contiguous relocation spine
+/// immediately following the carrier's `NeutralizePayloadSlot`. A stale
+/// relocation separated by an executable instruction is not construction
+/// scaffolding and remains in Checked MIR for the authority validator to
+/// reject.
+fn canonicalize_prepared_call_carrier_spine(
+    block_id: u32,
+    instructions: &mut Vec<Instr>,
+    builder: &mut Builder,
+    entry: &drop_plan::ExactOwnerState,
+    carrier: Place,
+) -> Vec<crate::model::OwnerId> {
+    let Some(neutralize_index) = instructions.iter().rposition(|instruction| {
+        matches!(
+            instruction,
+            Instr::NeutralizePayloadSlot {
+                transferee: Some(transferee),
+                ..
+            } if *transferee == carrier
+        )
+    }) else {
+        return Vec::new();
+    };
+    let Instr::NeutralizePayloadSlot {
+        place: original_source,
+        ..
+    } = instructions[neutralize_index]
+    else {
+        unreachable!("the carrier neutralize index was matched above");
+    };
+
+    let mut live = entry.clone();
+    drop_plan::apply_exact_owner_ops(&instructions[..=neutralize_index], &mut live);
+    let owners = live
+        .iter()
+        .filter_map(|(owner, place)| (*place == original_source).then_some(*owner))
+        .collect::<Vec<_>>();
+    let [owner] = owners.as_slice() else {
+        // Ambiguous or absent authority must survive to sealing and fail
+        // closed; carrier preparation may not guess a generation.
+        return owners;
+    };
+
+    let relocation_start = neutralize_index + 1;
+    let mut relocation_end = relocation_start;
+    while matches!(
+        instructions.get(relocation_end),
+        Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+            from,
+            to,
+            ..
+        })) if *from == original_source && *to == carrier
+    ) {
+        relocation_end += 1;
+    }
+    for index in (relocation_start..relocation_end).rev() {
+        instructions.remove(index);
+        shift_instr_spans_on_remove(
+            &mut builder.instr_spans,
+            block_id,
+            u32::try_from(index).unwrap_or(u32::MAX),
+        );
+    }
+    instructions.insert(
+        relocation_start,
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+            owner: *owner,
+            from: original_source,
+            to: carrier,
+        }),
+    );
+    shift_instr_spans_on_insert(
+        &mut builder.instr_spans,
+        block_id,
+        u32::try_from(relocation_start).unwrap_or(u32::MAX),
+    );
+    owners
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the post-CFG carrier boundary keeps classification, liveness, transfer, and fail-closed diagnostics together"
@@ -4311,12 +4406,19 @@ fn prepare_owned_call_carriers(
     let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
     let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_owned_call_args);
+    let mut normal_owner_commits = Vec::new();
 
-    for block in blocks.iter_mut() {
+    for block_index in 0..blocks.len() {
+        // Earlier call sites may have just committed ownership transfers.
+        // Recompute the immutable MIR state before inspecting this site rather
+        // than carrying one pre-rewrite whole-function snapshot through every
+        // block (which made every historical generation appear live later).
+        let (owner_entries, owner_exits) = drop_plan::exact_owner_states(blocks);
+        let block = &mut blocks[block_index];
         let Some(site) = pending.get(&block.id) else {
             continue;
         };
-        let Terminator::Call { args, .. } = &mut block.terminator else {
+        let Terminator::Call { args, next, .. } = &mut block.terminator else {
             builder.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "owned call-carrier facts without call terminator".to_string(),
@@ -4332,7 +4434,10 @@ fn prepare_owned_call_carriers(
                 *local_counts.entry(local).or_default() += 1;
             }
         }
-
+        let mut exact_owners = owner_exits
+            .get(&block.id)
+            .cloned()
+            .unwrap_or_else(|| owner_entries.get(&block.id).cloned().unwrap_or_default());
         for arg in &site.args {
             let plan =
                 match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
@@ -4373,7 +4478,45 @@ fn prepare_owned_call_carriers(
                             && local_counts.get(&local) == Some(&1)
                     })
                     && args.get(arg.index) == Some(&arg.source);
-                if !unique_terminal_use {
+                if unique_terminal_use {
+                    // `lower_value_for_move` has already moved and
+                    // neutralized this sole owner into `arg.source`.  The
+                    // physical Move keeps it live there for unwind cleanup;
+                    // normal return must still commit the callee consume.
+                    // Recover the original slot only from the adjacent
+                    // explicit neutralization operation so a following
+                    // assignment overwrite can retire its now-superseded old
+                    // cleanup without consulting Builder ownership ledgers.
+                    let original_source = block
+                        .instructions
+                        .iter()
+                        .rev()
+                        .find_map(|instruction| match instruction {
+                            Instr::NeutralizePayloadSlot {
+                                place,
+                                transferee: Some(transferee),
+                                ..
+                            } if *transferee == arg.source => Some(*place),
+                            _ => None,
+                        })
+                        .unwrap_or(arg.source);
+                    let entry = owner_entries.get(&block.id).cloned().unwrap_or_default();
+                    let owners = canonicalize_prepared_call_carrier_spine(
+                        block.id,
+                        &mut block.instructions,
+                        builder,
+                        &entry,
+                        arg.source,
+                    );
+                    for owner in owners {
+                        normal_owner_commits.push((*next, owner, original_source, arg.source));
+                        builder.set_owned_local_consumed_post_lowering(
+                            owner.binding,
+                            Some(arg.source),
+                            DischargeSite::BindingMoved,
+                        );
+                    }
+                } else {
                     builder.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::NotYetImplemented {
                             construct: format!(
@@ -4411,22 +4554,26 @@ fn prepare_owned_call_carriers(
                 // scope-exit drop plan. This is the path-sensitive fact the
                 // record sole-owner prover cannot recover from a flow-insensitive
                 // scan of `NeutralizePayloadSlot` alone.
-                let transferred_binding = local.and_then(|source_local| {
-                    builder.owned_locals.iter().find_map(|entry| {
-                        (builder.binding_locals.get(&entry.binding)
-                            == Some(&Place::Local(source_local)))
-                        .then(|| {
-                            (
-                                entry.binding,
-                                entry.name.clone(),
-                                entry.ty.clone(),
-                                entry.disposition,
-                            )
+                let transferring_owners = exact_owners
+                    .iter()
+                    .filter_map(|(owner, place)| (*place == arg.source).then_some((*owner, *place)))
+                    .collect::<Vec<_>>();
+                let transferred_bindings = transferring_owners
+                    .iter()
+                    .filter_map(|(owner, _)| {
+                        builder.owned_locals.iter().find_map(|entry| {
+                            (entry.binding == owner.binding).then(|| {
+                                (
+                                    entry.binding,
+                                    entry.name.clone(),
+                                    entry.ty.clone(),
+                                    entry.disposition,
+                                )
+                            })
                         })
                     })
-                });
+                    .collect::<Vec<_>>();
                 let dest = builder.alloc_local(arg.ty.clone());
-                builder.transfer_typed_produced_value_owner(arg.site, arg.source, dest);
                 block.instructions.push(Instr::Move {
                     dest,
                     src: arg.source,
@@ -4436,10 +4583,36 @@ fn prepare_owned_call_carriers(
                     transferee: Some(dest),
                     authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
                 });
+                drop_plan::apply_exact_owner_ops(
+                    &block.instructions[block.instructions.len().saturating_sub(2)..],
+                    &mut exact_owners,
+                );
+                for (owner, _) in &transferring_owners {
+                    // Carrier preparation only relocates physical storage
+                    // before the invoke. The caller retains cleanup authority
+                    // on unwind; the normal successor alone commits the ABI
+                    // consume.
+                    block.instructions.push(Instr::OwnershipEvent(
+                        crate::model::OwnershipEvent::Relocate {
+                            owner: *owner,
+                            from: arg.source,
+                            to: dest,
+                        },
+                    ));
+                    normal_owner_commits.push((*next, *owner, arg.source, dest));
+                    builder.set_owned_local_consumed_post_lowering(
+                        owner.binding,
+                        Some(dest),
+                        DischargeSite::BindingMoved,
+                    );
+                }
                 if let Some(slot) = args.get_mut(arg.index) {
                     *slot = dest;
                 }
-                if let Some((binding, name, ty, Disposition::ScopeExit)) = transferred_binding {
+                for (binding, name, ty, disposition) in transferred_bindings {
+                    if disposition != Disposition::ScopeExit {
+                        continue;
+                    }
                     // The HIR use may already carry Consume intent (for an
                     // ordinary consuming parameter). Do not author a second
                     // transition at the same call site: the checker would
@@ -4511,6 +4684,32 @@ fn prepare_owned_call_carriers(
                 }),
             }
         }
+        for (next, owner, source, carrier) in normal_owner_commits.drain(..) {
+            let Some(successor) = blocks.iter_mut().find(|block| block.id == next) else {
+                continue;
+            };
+            suppress_transferred_owner_overwrite_release(successor, builder, owner, source);
+            let mut operations = Vec::new();
+            if let Some(flag) = builder.affine_release_flags.get(&owner.binding).copied() {
+                operations.push(Instr::ConstI64 {
+                    dest: flag,
+                    value: 1,
+                });
+            }
+            operations.push(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner,
+                    from: carrier,
+                    to: None,
+                    to_owner: None,
+                    to_ty: None,
+                },
+            ));
+            for instruction in operations.into_iter().rev() {
+                shift_instr_spans_on_insert(&mut builder.instr_spans, next, 0);
+                successor.instructions.insert(0, instruction);
+            }
+        }
     }
 
     for (block, site) in pending {
@@ -4523,6 +4722,66 @@ fn prepare_owned_call_carriers(
                 note: "raw call-carrier facts must be discharged before checked MIR".to_string(),
             });
         }
+    }
+}
+
+/// Remove the old-slot overwrite ritual when a proven owned-call carrier has
+/// already transferred that exact generation to the callee on normal return.
+///
+/// Assignment lowering runs while the RHS call is still represented by a raw
+/// pending carrier fact, so it conservatively emits the ordinary
+/// `physical-drop; Release(owner); Move(new, slot)` sequence.  Once post-CFG
+/// liveness proves a unique last-use transfer, the normal-successor ownership
+/// commit supersedes only that old-generation release.  Snapshot/borrow paths
+/// never call this helper and therefore retain their required overwrite drop.
+fn suppress_transferred_owner_overwrite_release(
+    successor: &mut BasicBlock,
+    builder: &mut Builder,
+    owner: crate::model::OwnerId,
+    source: Place,
+) {
+    let Some(release_index) = successor.instructions.iter().position(|instruction| {
+        matches!(
+            instruction,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Release {
+                owner: released,
+                place,
+            }) if *released == owner && *place == source
+        )
+    }) else {
+        return;
+    };
+    let replacement_store = successor.instructions[release_index + 1..]
+        .iter()
+        .position(|instruction| matches!(instruction, Instr::Move { dest, .. } if *dest == source))
+        .map(|offset| release_index + 1 + offset);
+    if replacement_store != Some(release_index + 1) {
+        return;
+    }
+
+    let mut cleanup_start = release_index;
+    while cleanup_start > 0
+        && matches!(
+            successor.instructions[cleanup_start - 1],
+            Instr::Drop { .. } | Instr::RecordFieldDrop { .. } | Instr::RecordFieldLoad { .. }
+        )
+    {
+        cleanup_start -= 1;
+    }
+    // Never erase a bare ownership event. The physical destructor immediately
+    // before it is the structural proof this is the assignment-overwrite
+    // ritual, rather than an unrelated duplicate event that must remain a
+    // validator failure.
+    if cleanup_start == release_index {
+        return;
+    }
+    for index in (cleanup_start..=release_index).rev() {
+        successor.instructions.remove(index);
+        shift_instr_spans_on_remove(
+            &mut builder.instr_spans,
+            successor.id,
+            u32::try_from(index).unwrap_or(u32::MAX),
+        );
     }
 }
 
@@ -4899,8 +5158,19 @@ fn prepare_outbound_actor_payloads(
     resolved: &HashMap<u32, Vec<ResolvedOutboundSite>>,
     projection_tainted: &HashSet<u32>,
 ) {
+    struct FungibleEdgeInsertion {
+        prepare_block: u32,
+        live_block: u32,
+        live_insert_at: usize,
+        recover_block: u32,
+        prepare: Vec<Instr>,
+        live: Vec<Instr>,
+        recover: Vec<Instr>,
+    }
+
     let record_layouts = outbound_record_layouts(builder);
-    let mut edge_insertions: Vec<(u32, u32, Vec<Instr>, Vec<Instr>)> = Vec::new();
+    let (owner_entries, owner_exits) = drop_plan::exact_owner_states(blocks);
+    let mut edge_insertions = Vec::new();
     for block in blocks.iter_mut() {
         let Some(sites) = resolved.get(&block.id) else {
             continue;
@@ -4943,12 +5213,31 @@ fn prepare_outbound_actor_payloads(
             };
 
             let mut prep = Vec::new();
+            let mut live_edge_prep = Vec::new();
             let mut recover_drops = Vec::new();
             let mut prepared = Vec::with_capacity(args.len());
             let fungible_edges = matches!(site.target, PendingOutboundTarget::Direct)
                 .then(|| builder.fungible_outbound_edges.get(&block.id).copied())
                 .flatten()
                 .filter(|_| args.iter().all(|arg| !ty_contains_channel_handle(&arg.ty)));
+            let insert_at = if args.len() > 1 {
+                block
+                    .instructions
+                    .iter()
+                    .position(
+                        |instr| matches!(instr, Instr::RecordInit { dest, .. } if *dest == payload),
+                    )
+                    .unwrap_or(block.instructions.len())
+            } else {
+                block.instructions.len()
+            };
+            let mut exact_owners = if let Some((prepare_block, _)) = fungible_edges {
+                owner_exits.get(&prepare_block).cloned().unwrap_or_default()
+            } else {
+                let mut state = owner_entries.get(&block.id).cloned().unwrap_or_default();
+                drop_plan::apply_exact_owner_ops(&block.instructions[..insert_at], &mut state);
+                state
+            };
             for arg in args {
                 match arg.mode {
                     SendAliasMode::SnapshotBitCopy => prepared.push(arg.source),
@@ -4960,40 +5249,52 @@ fn prepare_outbound_actor_payloads(
                         // same path-local hand-off here, at the authority that
                         // selected `TransferLastUse`, before moving and
                         // neutralising the source slot.
-                        let guarded_transfer = builder.owned_locals.iter().find_map(|entry| {
-                            if builder.binding_locals.get(&entry.binding) != Some(&arg.source) {
-                                return None;
-                            }
-                            builder
+                        let transferring_owners = exact_owners
+                            .iter()
+                            .filter_map(|(owner, place)| {
+                                (*place == arg.source).then_some((*owner, *place))
+                            })
+                            .collect::<Vec<_>>();
+                        let path_local_actor_message_transfer = fungible_edges.is_some()
+                            && matches!(transferring_owners.as_slice(), [(owner, _)]
+                                if builder
+                                    .actor_message_cow_drop_flags
+                                    .contains_key(&owner.binding));
+                        let mut transfer_prep = Vec::new();
+                        for (owner, _) in &transferring_owners {
+                            let Some(entry) = builder
+                                .owned_locals
+                                .iter()
+                                .find(|entry| entry.binding == owner.binding)
+                            else {
+                                continue;
+                            };
+                            let binding = entry.binding;
+                            let name = entry.name.clone();
+                            let ty = entry.ty.clone();
+                            let flag = builder
                                 .affine_release_flags
-                                .get(&entry.binding)
-                                .or_else(|| {
-                                    builder.actor_message_cow_drop_flags.get(&entry.binding)
-                                })
-                                .or_else(|| builder.collection_drop_flags.get(&entry.binding))
-                                .or_else(|| {
-                                    builder.conditional_record_drop_flags.get(&entry.binding)
-                                })
-                                .copied()
-                                .map(|flag| {
-                                    (entry.binding, flag, entry.name.clone(), entry.ty.clone())
-                                })
-                        });
-                        if let Some((binding, flag, name, ty)) = guarded_transfer {
-                            let already_set = block.instructions.iter().any(|instr| {
-                                matches!(
-                                    instr,
-                                    Instr::ConstI64 {
-                                        dest,
-                                        value: 1
-                                    } if *dest == flag
-                                )
-                            });
-                            if !already_set {
-                                prep.push(Instr::ConstI64 {
-                                    dest: flag,
-                                    value: 1,
+                                .get(&binding)
+                                .or_else(|| builder.actor_message_cow_drop_flags.get(&binding))
+                                .or_else(|| builder.collection_drop_flags.get(&binding))
+                                .or_else(|| builder.conditional_record_drop_flags.get(&binding))
+                                .copied();
+                            if let Some(flag) = flag {
+                                let already_set = block.instructions.iter().any(|instr| {
+                                    matches!(
+                                        instr,
+                                        Instr::ConstI64 {
+                                            dest,
+                                            value: 1
+                                        } if *dest == flag
+                                    )
                                 });
+                                if !already_set {
+                                    transfer_prep.push(Instr::ConstI64 {
+                                        dest: flag,
+                                        value: 1,
+                                    });
+                                }
                             }
                             let already_consumed = block.statements.iter().any(|statement| {
                                 matches!(
@@ -5017,33 +5318,45 @@ fn prepare_outbound_actor_payloads(
                             }
                         }
                         let dest = builder.alloc_local(arg.ty.clone());
-                        builder.transfer_typed_produced_value_owner(arg.site, arg.source, dest);
-                        prep.push(Instr::Move {
+                        let ownership_operations =
+                            builder.take_exact_owner_transfers(&transferring_owners, dest);
+                        transfer_prep.push(Instr::Move {
                             dest,
                             src: arg.source,
                         });
-                        prep.push(Instr::NeutralizePayloadSlot {
+                        transfer_prep.push(Instr::NeutralizePayloadSlot {
                             place: arg.source,
                             transferee: Some(dest),
                             authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
                         });
-                        if let Ok(plan) =
-                            crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+                        transfer_prep.extend(ownership_operations);
+                        drop_plan::apply_exact_owner_ops(&transfer_prep, &mut exact_owners);
+                        if path_local_actor_message_transfer {
+                            // A fungible child may be absent. Commit the
+                            // actor-message transfer only on the live branch;
+                            // the recover branch keeps the source generation
+                            // and reaches the shared guard-zero cleanup.
+                            live_edge_prep.extend(transfer_prep);
+                        } else {
+                            prep.extend(transfer_prep);
+                        }
+                        if !path_local_actor_message_transfer {
+                            if let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                                 &arg.ty,
                                 &record_layouts,
                                 &builder.enum_layouts,
                                 &builder.opaque_handle_names,
                                 &builder.lifecycle_registry,
-                            )
-                        {
-                            if !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
-                                recover_drops.push(Instr::ValueSnapshotDrop {
-                                    value: dest,
-                                    ty: arg.ty.clone(),
-                                    plan,
-                                    boundary: crate::model::PreparedCarrierBoundary::Actor,
-                                    guard: None,
-                                });
+                            ) {
+                                if !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
+                                    recover_drops.push(Instr::ValueSnapshotDrop {
+                                        value: dest,
+                                        ty: arg.ty.clone(),
+                                        plan,
+                                        boundary: crate::model::PreparedCarrierBoundary::Actor,
+                                        guard: None,
+                                    });
+                                }
                             }
                         }
                         prepared.push(dest);
@@ -5100,17 +5413,6 @@ fn prepare_outbound_actor_payloads(
                 }
             }
 
-            let insert_at = if prepared.len() > 1 {
-                block
-                    .instructions
-                    .iter()
-                    .position(
-                        |instr| matches!(instr, Instr::RecordInit { dest, .. } if *dest == payload),
-                    )
-                    .unwrap_or(block.instructions.len())
-            } else {
-                block.instructions.len()
-            };
             if fungible_edges.is_none() {
                 for (offset, instr) in prep.iter().cloned().enumerate() {
                     let at = insert_at + offset;
@@ -5204,15 +5506,26 @@ fn prepare_outbound_actor_payloads(
                 }
             }
             if let Some((prepare_block, recover_block)) = fungible_edges {
-                edge_insertions.push((prepare_block, recover_block, prep, recover_drops));
+                edge_insertions.push(FungibleEdgeInsertion {
+                    prepare_block,
+                    live_block: block.id,
+                    live_insert_at: insert_at,
+                    recover_block,
+                    prepare: prep,
+                    live: live_edge_prep,
+                    recover: recover_drops,
+                });
             }
         }
     }
 
-    for (prepare_block, recover_block, prep, drops) in edge_insertions {
-        if let Some(block) = blocks.iter_mut().find(|block| block.id == prepare_block) {
+    for insertion in edge_insertions {
+        if let Some(block) = blocks
+            .iter_mut()
+            .find(|block| block.id == insertion.prepare_block)
+        {
             let insert_at = block.instructions.len();
-            for (offset, instr) in prep.into_iter().enumerate() {
+            for (offset, instr) in insertion.prepare.into_iter().enumerate() {
                 let at = insert_at + offset;
                 cfg_util::shift_instr_spans_on_insert(
                     &mut builder.instr_spans,
@@ -5222,9 +5535,27 @@ fn prepare_outbound_actor_payloads(
                 block.instructions.insert(at, instr);
             }
         }
-        if let Some(block) = blocks.iter_mut().find(|block| block.id == recover_block) {
+        if let Some(block) = blocks
+            .iter_mut()
+            .find(|block| block.id == insertion.live_block)
+        {
+            let insert_at = insertion.live_insert_at.min(block.instructions.len());
+            for (offset, instr) in insertion.live.into_iter().enumerate() {
+                let at = insert_at + offset;
+                cfg_util::shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(at).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(at, instr);
+            }
+        }
+        if let Some(block) = blocks
+            .iter_mut()
+            .find(|block| block.id == insertion.recover_block)
+        {
             let insert_at = block.instructions.len();
-            for (offset, instr) in drops.into_iter().enumerate() {
+            for (offset, instr) in insertion.recover.into_iter().enumerate() {
                 let at = insert_at + offset;
                 cfg_util::shift_instr_spans_on_insert(
                     &mut builder.instr_spans,
@@ -5382,10 +5713,10 @@ fn frame_owned_heap_locals(builder: &Builder) -> HashSet<u32> {
 /// The rewrite makes the transfer physical instead of inferred: after the arm's
 /// `Move`, the source slot is zeroed. Ownership is then unambiguous on every
 /// path — the join slot owns what it received, and each source owns its own
-/// value on the paths where its `Move` never ran. The source keeps its ordinary
-/// scope-exit release, which walks a nulled slot (a null-tolerant no-op) on the
-/// transferring path and frees normally everywhere else. No runtime flag, no
-/// per-exit path reconstruction: the LESSON is `raii-null-after-move`.
+/// value on the paths where its `Move` never ran. The paired branch-closure
+/// pass below then releases the unselected source and terminally hands off the
+/// selected source on each exact predecessor. No runtime flag and no
+/// path-insensitive exit cleanup are required.
 ///
 /// FAIL-CLOSED admission. A source is rewritten only when
 ///   * the transfer is CONDITIONAL — its block does not dominate every return
@@ -5400,10 +5731,9 @@ fn frame_owned_heap_locals(builder: &Builder) -> HashSet<u32> {
 ///     `frame_owned_heap_locals`); and
 ///   * the source local has NO READ on any path after the transfer site. A
 ///     read after the selection (`let out = match c { true => a, .. }; a.len()`)
-///     is accepted today as an aliasing read of the still-live source slot;
-///     nulling under it would turn a leak into a use-after-move fault. Those
-///     shapes keep the pre-existing leak posture until the surface decides the
-///     read is an error.
+///     is rejected by immutable ownership validation once the explicit
+///     relocation is present; it is never made safe by keeping the source
+///     artificially live.
 ///
 /// The paired `NeutralizePayloadSlot` carries
 /// [`NeutralizeAuthority::DivergentSelectionTransfer`], and the alias / escape /
@@ -5534,6 +5864,350 @@ fn neutralize_divergent_selection_sources(
     }
 }
 
+/// Close the unselected owners of a whole-value divergent selection on their
+/// exact incoming edges.
+///
+/// A value join such as `match c { true => a, false => b }` has one physical
+/// carrier but a different source owner on each predecessor. Exact owner-state
+/// intersection must erase those identities at the join: neither owner is live
+/// on every path. The selected arm has already relocated its owner into the
+/// common carrier, so finish that edge-local ownership program by releasing
+/// every *other participating arm owner* and terminally handing off the
+/// selected owner. The target then moves the carrier into the lexical output
+/// and mints that output after the move.
+///
+/// Admission is deliberately structural and fail closed: every predecessor
+/// must select one distinct owner into the same carrier, every participating
+/// owner must be live exactly once on every predecessor, the selected move must
+/// have an explicit whole-carrier neutralize/Relocate spine, and every losing
+/// owner must have one executable destructor recipe. Unrelated owners are not
+/// participants and remain live through the join.
+struct DivergentSelectionArmClosure {
+    block: u32,
+    selected: crate::model::OwnerId,
+    carrier: Place,
+    losers: Vec<(crate::model::OwnerId, Place, crate::model::OwnerDropRecipe)>,
+}
+
+struct DivergentSelectionClosure {
+    target: u32,
+    mint_index: usize,
+    neutralize_index: usize,
+    output_owner: crate::model::OwnerId,
+    output_place: Place,
+    output_ty: ResolvedTy,
+    arms: Vec<DivergentSelectionArmClosure>,
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "selection closure validates one complete multi-predecessor ownership ritual before mutating any edge"
+)]
+fn materialize_one_divergent_selection_arm_closure(
+    blocks: &mut [BasicBlock],
+    builder: &mut Builder,
+) -> bool {
+    use crate::model::OwnershipEvent;
+
+    let (_, exits) = drop_plan::exact_owner_states(blocks);
+    let mut predecessors = HashMap::<u32, Vec<u32>>::new();
+    for block in blocks.iter() {
+        for successor in block.successors() {
+            predecessors.entry(successor).or_default().push(block.id);
+        }
+    }
+    for incoming in predecessors.values_mut() {
+        incoming.sort_unstable();
+        incoming.dedup();
+    }
+    let definitions = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, ty }) => {
+                Some((*owner, (*place, ty.clone())))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let guarded = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Guard { owner, .. }) => Some(*owner),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+
+    let mut selected = None;
+    'targets: for target in blocks.iter() {
+        let Some(incoming) = predecessors.get(&target.id) else {
+            continue;
+        };
+        if incoming.len() < 2
+            || incoming.iter().any(|predecessor| {
+                blocks
+                    .iter()
+                    .find(|block| block.id == *predecessor)
+                    .is_none_or(|block| block.successors() != vec![target.id])
+            })
+        {
+            continue;
+        }
+        for mint_index in 0..target.instructions.len().saturating_sub(2) {
+            let Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: output_owner,
+                place: output_place,
+                ty: output_ty,
+            }) = &target.instructions[mint_index]
+            else {
+                continue;
+            };
+            let Instr::Move { dest, src: carrier } = target.instructions[mint_index + 1] else {
+                continue;
+            };
+            let Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(transferee),
+                authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+            } = target.instructions[mint_index + 2]
+            else {
+                continue;
+            };
+            if dest != *output_place || place != carrier || transferee != dest {
+                continue;
+            }
+            let output_definition_count = blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .filter(|instruction| {
+                    matches!(
+                        instruction,
+                        Instr::OwnershipEvent(OwnershipEvent::Mint { owner, .. })
+                            if *owner == *output_owner
+                    )
+                })
+                .count();
+            if output_definition_count != 1 {
+                continue;
+            }
+            let mut selected_by_arm = Vec::new();
+            for predecessor in incoming {
+                let Some(state) = exits.get(predecessor) else {
+                    continue 'targets;
+                };
+                let at_carrier = state
+                    .iter()
+                    .filter_map(|(owner, owner_place)| (*owner_place == carrier).then_some(*owner))
+                    .collect::<Vec<_>>();
+                let [owner] = at_carrier.as_slice() else {
+                    continue 'targets;
+                };
+                if *owner == *output_owner || guarded.contains(owner) {
+                    continue 'targets;
+                }
+                let Some(predecessor_block) = blocks.iter().find(|block| block.id == *predecessor)
+                else {
+                    continue 'targets;
+                };
+                let explicit_handoff =
+                    predecessor_block.instructions.iter().any(|instruction| {
+                        matches!(
+                            instruction,
+                            Instr::OwnershipEvent(OwnershipEvent::Relocate {
+                                owner: relocated,
+                                to,
+                                ..
+                            }) if relocated == owner && *to == carrier
+                        )
+                    }) && predecessor_block.instructions.iter().any(|instruction| {
+                        matches!(
+                            instruction,
+                            Instr::NeutralizePayloadSlot {
+                                transferee: Some(to),
+                                authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                                ..
+                            } if *to == carrier
+                        )
+                    });
+                if !explicit_handoff {
+                    continue 'targets;
+                }
+                selected_by_arm.push((*predecessor, *owner));
+            }
+            let participating = selected_by_arm
+                .iter()
+                .map(|(_, owner)| *owner)
+                .collect::<HashSet<_>>();
+            if participating.len() != incoming.len()
+                || participating
+                    .iter()
+                    .any(|owner| definitions.get(owner).is_none_or(|(_, ty)| ty != output_ty))
+            {
+                continue;
+            }
+            let mut arms = Vec::new();
+            for (predecessor, selected_owner) in selected_by_arm {
+                let state = &exits[&predecessor];
+                let mut losers = Vec::new();
+                for loser in participating
+                    .iter()
+                    .copied()
+                    .filter(|owner| *owner != selected_owner)
+                {
+                    let Some(loser_place) = state.get(&loser).copied() else {
+                        continue 'targets;
+                    };
+                    if loser_place == carrier {
+                        continue 'targets;
+                    }
+                    let (_, loser_ty) = &definitions[&loser];
+                    let Some(recipe) = drop_plan::owner_definition_drop_recipe(
+                        builder,
+                        loser,
+                        loser_place,
+                        loser_ty,
+                        0,
+                    ) else {
+                        continue 'targets;
+                    };
+                    if drop_plan::inline_drop_spec_for_recipe(&recipe).is_none() {
+                        continue 'targets;
+                    }
+                    losers.push((loser, loser_place, recipe));
+                }
+                if losers.len() + 1 != participating.len() || state.contains_key(output_owner) {
+                    continue 'targets;
+                }
+                arms.push(DivergentSelectionArmClosure {
+                    block: predecessor,
+                    selected: selected_owner,
+                    carrier,
+                    losers,
+                });
+            }
+            selected = Some(DivergentSelectionClosure {
+                target: target.id,
+                mint_index,
+                neutralize_index: mint_index + 2,
+                output_owner: *output_owner,
+                output_place: *output_place,
+                output_ty: output_ty.clone(),
+                arms,
+            });
+            break 'targets;
+        }
+    }
+
+    let Some(selection) = selected else {
+        return false;
+    };
+    for arm in selection.arms {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == arm.block) else {
+            continue;
+        };
+        let mut removals = block
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                        owner,
+                        target,
+                        ..
+                    }) if *target == selection.target
+                        && (*owner == arm.selected
+                            || arm.losers.iter().any(|(loser, _, _)| loser == owner))
+                )
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        removals.sort_unstable();
+        for index in removals.into_iter().rev() {
+            block.instructions.remove(index);
+            shift_instr_spans_on_remove(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+        }
+        for (loser, place, recipe) in arm.losers {
+            let insert_at = block.instructions.len();
+            let drop_fn = drop_plan::inline_drop_spec_for_recipe(&recipe);
+            block.instructions.push(Instr::Drop {
+                place,
+                ty: recipe.ty,
+                drop_fn,
+            });
+            block
+                .instructions
+                .push(Instr::OwnershipEvent(OwnershipEvent::Release {
+                    owner: loser,
+                    place,
+                }));
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(insert_at).unwrap_or(u32::MAX),
+            );
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(insert_at + 1).unwrap_or(u32::MAX),
+            );
+        }
+        let insert_at = block.instructions.len();
+        block
+            .instructions
+            .push(Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner: arm.selected,
+                from: arm.carrier,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            }));
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block.id,
+            u32::try_from(insert_at).unwrap_or(u32::MAX),
+        );
+    }
+
+    let Some(target) = blocks.iter_mut().find(|block| block.id == selection.target) else {
+        return false;
+    };
+    let mint = target.instructions.remove(selection.mint_index);
+    shift_instr_spans_on_remove(
+        &mut builder.instr_spans,
+        target.id,
+        u32::try_from(selection.mint_index).unwrap_or(u32::MAX),
+    );
+    let mint_after_move = selection.neutralize_index;
+    target.instructions.insert(mint_after_move, mint);
+    shift_instr_spans_on_insert(
+        &mut builder.instr_spans,
+        target.id,
+        u32::try_from(mint_after_move).unwrap_or(u32::MAX),
+    );
+    debug_assert!(matches!(
+        target.instructions.get(mint_after_move),
+        Some(Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner,
+            place,
+            ty,
+        })) if *owner == selection.output_owner
+            && *place == selection.output_place
+            && *ty == selection.output_ty
+    ));
+    true
+}
+
+fn materialize_divergent_selection_arm_closures(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    while materialize_one_divergent_selection_arm_closure(blocks, builder) {}
+}
+
 /// Whether the instruction directly after `(site_block, site_index)` already
 /// nulls `local` under some other neutralize authority.
 fn source_slot_already_neutralized(
@@ -5604,127 +6278,6 @@ fn local_read_after_site(
         }
     }
     false
-}
-
-/// Recover every local forwarded into persistent actor state.
-fn actor_state_ingress_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
-    let mut ingress: HashSet<u32> = blocks
-        .iter()
-        .flat_map(|block| &block.instructions)
-        .filter_map(|instruction| match instruction {
-            Instr::ActorStateFieldStore { src, .. } => base_local(*src),
-            _ => None,
-        })
-        .collect();
-    loop {
-        let mut changed = false;
-        for instruction in blocks.iter().flat_map(|block| &block.instructions) {
-            let Instr::Move { dest, src } = instruction else {
-                continue;
-            };
-            if base_local(*dest).is_some_and(|local| ingress.contains(&local)) {
-                if let Some(source) = base_local(*src) {
-                    changed |= ingress.insert(source);
-                }
-            }
-        }
-        if !changed {
-            return ingress;
-        }
-    }
-}
-
-/// Null moved-from owners only after their aggregate sink has completed.
-fn neutralize_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let candidates = builder.owned_locals_exit_candidates();
-    let transfer_bindings: HashSet<BindingId> = blocks
-        .iter()
-        .flat_map(|block| &block.statements)
-        .filter_map(|statement| match statement {
-            MirStatement::AggregateAlias { binding, .. }
-            | MirStatement::Use {
-                binding,
-                intent: IntentKind::Consume | IntentKind::Discharge,
-                ..
-            } => Some(*binding),
-            _ => None,
-        })
-        .collect();
-    let candidate_by_root: HashMap<u32, BindingId> = candidates
-        .iter()
-        .filter(|(binding, _name, ty)| {
-            transfer_bindings.contains(binding)
-                && !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
-                && !drop_plan::ty_is_owned_handle_leaf(ty)
-        })
-        .filter_map(|(binding, _name, _ty)| {
-            builder
-                .binding_locals
-                .get(binding)
-                .and_then(|place| base_local(*place))
-                .map(|local| (local, *binding))
-        })
-        .collect();
-    if candidate_by_root.is_empty() {
-        return;
-    }
-    let alias_to_root =
-        propagate_whole_value_alias_roots(blocks, candidate_by_root.keys().copied());
-    let actor_state_ingress_locals = actor_state_ingress_locals(blocks);
-
-    for block in blocks {
-        let mut index = 0;
-        while index < block.instructions.len() {
-            let sinks: Vec<(Place, Place)> = match &block.instructions[index] {
-                Instr::TupleConstruct { elements, dest } => {
-                    elements.iter().map(|source| (*source, *dest)).collect()
-                }
-                Instr::RecordInit { fields, dest, .. } => fields
-                    .iter()
-                    .map(|(_offset, source)| (*source, *dest))
-                    .collect(),
-                Instr::RecordFieldStore { record, src, .. } => vec![(*src, *record)],
-                Instr::Move {
-                    dest: Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. },
-                    src,
-                } => vec![(*src, Place::Local(*local))],
-                _ => Vec::new(),
-            };
-            index += 1;
-            let mut roots = HashSet::new();
-            for (source, destination) in sinks {
-                if base_local(destination)
-                    .is_some_and(|local| actor_state_ingress_locals.contains(&local))
-                {
-                    continue;
-                }
-                let Some(source_local) = base_local(source) else {
-                    continue;
-                };
-                let root = alias_to_root
-                    .get(&source_local)
-                    .copied()
-                    .unwrap_or(source_local);
-                if !candidate_by_root.contains_key(&root) || !roots.insert(root) {
-                    continue;
-                }
-                shift_instr_spans_on_insert(
-                    &mut builder.instr_spans,
-                    block.id,
-                    u32::try_from(index).unwrap_or(u32::MAX),
-                );
-                block.instructions.insert(
-                    index,
-                    Instr::NeutralizePayloadSlot {
-                        place: Place::Local(root),
-                        transferee: Some(destination),
-                        authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
-                    },
-                );
-                index += 1;
-            }
-        }
-    }
 }
 
 /// Release an owned element cloned from a collection after its sole borrowing read.
@@ -5854,23 +6407,32 @@ fn release_cloned_collection_result_temps(blocks: &mut [BasicBlock], builder: &m
 
     inserts.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
     for (block_id, insert_at, local, release) in inserts {
-        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
-            continue;
-        };
-        shift_instr_spans_on_insert(
-            &mut builder.instr_spans,
-            block_id,
-            u32::try_from(insert_at).unwrap_or(u32::MAX),
-        );
-        block.instructions.insert(insert_at, release);
         let bindings: Vec<BindingId> = builder
             .binding_locals
             .iter()
             .filter_map(|(binding, place)| (base_local(*place) == Some(local)).then_some(*binding))
             .collect();
-        for binding in bindings {
-            builder.set_owned_local_disposition(binding, Disposition::ScopeReleased);
+        let release_events: Vec<Instr> = bindings
+            .iter()
+            .filter_map(|binding| builder.owned_local_release_event(*binding))
+            .collect();
+        for binding in &bindings {
+            builder.set_owned_local_disposition(*binding, Disposition::ScopeReleased);
         }
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        for _ in 0..=release_events.len() {
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block_id,
+                u32::try_from(insert_at).unwrap_or(u32::MAX),
+            );
+        }
+        block.instructions.splice(
+            insert_at..insert_at,
+            std::iter::once(release).chain(release_events),
+        );
     }
 }
 
@@ -6163,17 +6725,24 @@ fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut B
                 Err(_) => continue,
             }
         };
+        let insert_at = last_index + 1;
+        let release_event = builder.owned_local_release_event(binding);
+        builder.set_owned_local_disposition(binding, Disposition::ScopeReleased);
         let Some(block) = blocks.iter_mut().find(|block| block.id == read_block) else {
             continue;
         };
-        let insert_at = last_index + 1;
-        shift_instr_spans_on_insert(
-            &mut builder.instr_spans,
-            block.id,
-            u32::try_from(insert_at).unwrap_or(u32::MAX),
+        let inserted = usize::from(release_event.is_some()) + 1;
+        for _ in 0..inserted {
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(insert_at).unwrap_or(u32::MAX),
+            );
+        }
+        block.instructions.splice(
+            insert_at..insert_at,
+            std::iter::once(release).chain(release_event),
         );
-        block.instructions.insert(insert_at, release);
-        builder.set_owned_local_disposition(binding, Disposition::ScopeReleased);
     }
 }
 
@@ -6726,16 +7295,24 @@ fn splice_body_ownership_releases(
 ) {
     if nested_fresh_temp_releases {
         // Inline string/bytes releases this body's own lowering already
-        // emitted. The retirement below pairs with the releases the nested-temp
-        // splices are about to add, so anything already present is excluded.
-        let released_before_splices = inline_string_or_bytes_release_locals(blocks);
+        // emitted. The retirement below pairs with releases added by every
+        // ownership finalizer, so anything already present is excluded.
+        // Compiler-owned temporary BindingIds occupy the exact descending
+        // range allocated by `adopt_synthetic_owned_local`. A typed borrowing
+        // call finalizes their provisional publication before this splice and
+        // deliberately removes the transient publication-site marker, but it
+        // does not turn them into lexical user bindings. Exclude that minted
+        // range from the binding-local veto; all ordinary bindings remain
+        // protected from an early full-expression drop.
+        let synthetic_binding_floor = SYNTHETIC_OWNED_TEMP_BINDING_BASE
+            .saturating_sub(builder.synthetic_owned_temp_bindings.saturating_sub(1));
         let nested_temp_binding_locals: HashMap<BindingId, Place> = builder
             .binding_locals
             .iter()
             .filter(|(binding, _)| {
-                !builder
-                    .synthetic_owner_publication_sites
-                    .contains_key(binding)
+                !(builder.synthetic_owned_temp_bindings != 0
+                    && (synthetic_binding_floor..=SYNTHETIC_OWNED_TEMP_BINDING_BASE)
+                        .contains(&binding.0))
             })
             .map(|(binding, place)| (*binding, *place))
             .collect();
@@ -6747,6 +7324,9 @@ fn splice_body_ownership_releases(
             &builder
                 .call_scrutinee_provenance
                 .owned_string_return_carrier_symbols,
+            &builder.module_fn_names,
+            &builder.module_generic_fn_names,
+            &builder.call_scrutinee_provenance.extern_table,
             &mut builder.suspend_abandon_extra_drops,
             &mut builder.instr_spans,
         );
@@ -6761,16 +7341,462 @@ fn splice_body_ownership_releases(
             &nested_temp_binding_locals,
             &mut builder.instr_spans,
         );
-        // Inline string/bytes releases consume the exact typed-publication
-        // generation for their local.  This keeps concat/f-string and bytes
-        // temporaries on the checker-owned carrier without a second scope-exit
-        // drop authority, while persistent publications remain ledger-owned.
-        builder
-            .consume_typed_publication_owners_at_inline_release(&*blocks, &released_before_splices);
     }
+    splice_opaque_extern_string_argument_handoffs(blocks, builder);
+    splice_normal_call_ownership_commits(blocks, builder);
+    splice_retained_field_aggregate_commits(blocks, builder);
     finalize_string_local_share_intents(&mut *blocks, builder);
     splice_escaped_record_sibling_field_drops(blocks, builder);
     splice_pretransfer_record_exit_drops(&mut *blocks, builder);
+}
+
+/// End caller-side `string` ownership before an extern call whose
+/// parameter contract is not audited as borrowing every heap argument.
+///
+/// Unlike a runtime `ProvenConsume` contract, this is deliberately a pre-call
+/// handoff: an opaque host may retain or release the handle before it unwinds,
+/// so neither the normal nor unwind edge may schedule the caller's release.
+/// The extern table is the sole admission authority. Audited all-borrow calls
+/// receive no event and keep the caller owner; unknown locals and types remain
+/// fail-closed rather than acquiring an inferred handoff.
+fn splice_opaque_extern_string_argument_handoffs(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    for block in blocks {
+        let Terminator::Call { callee, args, .. } = &block.terminator else {
+            continue;
+        };
+        if !builder.callee_is_arg_ownership_opaque_extern(callee) {
+            continue;
+        }
+        for argument in args {
+            let Some(local) = base_local(*argument) else {
+                continue;
+            };
+            if !builder
+                .locals
+                .get(local as usize)
+                .is_some_and(|ty| matches!(ty, ResolvedTy::String))
+            {
+                continue;
+            }
+            let Some(binding) = builder.owned_locals.iter().rev().find_map(|entry| {
+                (entry.disposition == Disposition::ScopeExit
+                    && builder.binding_locals.get(&entry.binding) == Some(argument))
+                .then_some(entry.binding)
+            }) else {
+                continue;
+            };
+            let Some(generation) = builder.owner_generations.get(&binding).copied() else {
+                continue;
+            };
+            let event = Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner: crate::model::OwnerId {
+                    binding,
+                    generation,
+                },
+                from: *argument,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            });
+            if block.instructions.contains(&event) {
+                continue;
+            }
+            let index = block.instructions.len();
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+            block.instructions.push(event);
+        }
+    }
+}
+
+/// Resolve the enum-shell owner whose sole selected payload is a declared-close
+/// resource being discharged by this call. The single-field layout check is
+/// the proof that retiring the shell cannot strand an owned sibling field.
+/// Returning `None` leaves every ambiguous, multi-field, non-resource, and
+/// ownerless shape on its existing fail-closed cleanup path.
+fn discharged_declared_release_parent(
+    block: &BasicBlock,
+    state: &HashMap<crate::model::OwnerId, Place>,
+    child_place: Place,
+    child_ty: &ResolvedTy,
+    builder: &Builder,
+) -> Option<(crate::model::OwnerId, Place)> {
+    if !matches!(
+        drop_plan::resource_drop_fn(child_ty, &builder.type_classes),
+        Some(crate::model::DropFnSpec::UserClose(_))
+    ) {
+        return None;
+    }
+    let (parent_local, variant_idx, field_idx) =
+        block
+            .instructions
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instr::NeutralizePayloadSlot {
+                    place:
+                        Place::MachineVariant {
+                            local,
+                            variant_idx,
+                            field_idx,
+                        }
+                        | Place::EnumVariant {
+                            local,
+                            variant_idx,
+                            field_idx,
+                        },
+                    transferee: Some(dest),
+                    authority: crate::model::NeutralizeAuthority::PayloadBindingTransfer,
+                } if *dest == child_place => Some((*local, *variant_idx, *field_idx)),
+                _ => None,
+            })?;
+    let ResolvedTy::Named { name, args, .. } = builder.locals.get(parent_local as usize)? else {
+        return None;
+    };
+    let layout = crate::model::find_enum_layout(name, args, &builder.enum_layouts)?;
+    if layout.is_indirect {
+        return None;
+    }
+    let variant = layout.variants.get(variant_idx as usize)?;
+    let [field_ty] = variant.field_tys.as_slice() else {
+        return None;
+    };
+    if field_idx != 0 || builder.subst_ty(field_ty) != *child_ty {
+        return None;
+    }
+    let parent_place = Place::Local(parent_local);
+    let parents = state
+        .iter()
+        .filter_map(|(owner, place)| (*place == parent_place).then_some((*owner, *place)))
+        .collect::<Vec<_>>();
+    let [parent] = parents.as_slice() else {
+        return None;
+    };
+    Some(*parent)
+}
+
+/// Materialize normal-edge ownership commits for runtime calls that adopt
+/// arguments. LLVM `invoke` gives the call two successors: before the call the
+/// caller owns every argument; only the normal successor transfers the proven
+/// consumed arguments, while the unwind successor must destroy them. Carrying
+/// the commit as a statement in `next` gives drop dataflow exactly that shape.
+#[allow(
+    clippy::too_many_lines,
+    reason = "normal-success call commits split CFG edges while preserving call-site owner and guard authority"
+)]
+fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let mut commits = Vec::new();
+    for block in blocks.iter() {
+        let Terminator::Call {
+            authority: crate::CallAuthority::Runtime(family),
+            args,
+            next,
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        for (index, argument) in args.iter().copied().enumerate().skip(1) {
+            if family.arg_consume_verdict(index)
+                != hew_types::runtime_call::ConsumeVerdict::ProvenConsume
+            {
+                continue;
+            }
+            // A yield binder entering a consuming collection call can carry a
+            // freshly retained CoW share. The runtime adopts that `+1`, while
+            // the binder's original generation remains frame-owned for its
+            // per-iteration body-end release. Lowering records this exact
+            // call/local pair when it emits the retain; never turn the
+            // consuming ABI into a terminal Transfer of the source owner.
+            // Ordinary HashMap/HashSet insertions, non-retained values, and
+            // every other consuming call remain on the commit path below.
+            if base_local(argument)
+                .is_some_and(|local| builder.yield_share_term_exempt.contains(&(block.id, local)))
+            {
+                continue;
+            }
+            let Some(entry) = builder.owned_locals.iter().rev().find(|entry| {
+                entry.disposition != Disposition::AliasOf
+                    && builder.binding_locals.get(&entry.binding) == Some(&argument)
+            }) else {
+                continue;
+            };
+            let site = builder
+                .synthetic_owner_publication_sites
+                .get(&entry.binding)
+                .copied()
+                .unwrap_or(SiteId(0));
+            let source_already_consumes = block.statements.iter().any(|statement| {
+                matches!(
+                    statement,
+                    MirStatement::Use {
+                        binding,
+                        intent: IntentKind::Consume,
+                        ..
+                    } if *binding == entry.binding
+                )
+            });
+            commits.push((
+                *next,
+                entry.binding,
+                entry.name.clone(),
+                entry.ty.clone(),
+                site,
+                source_already_consumes,
+            ));
+        }
+    }
+    for (next, binding, name, ty, site, source_already_consumes) in commits {
+        let Some(successor) = blocks.iter_mut().find(|block| block.id == next) else {
+            continue;
+        };
+        if let (Some(place), Some(generation)) = (
+            builder.binding_locals.get(&binding).copied(),
+            builder.owner_generations.get(&binding).copied(),
+        ) {
+            let event = Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner: crate::model::OwnerId {
+                    binding,
+                    generation,
+                },
+                from: place,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            });
+            if !successor.instructions.contains(&event) {
+                shift_instr_spans_on_insert(&mut builder.instr_spans, next, 0);
+                successor.instructions.insert(0, event);
+            }
+        }
+        // A source-level consuming argument already authored the checker
+        // transition in the call block.  Re-authoring it in the normal
+        // successor is a second consume, and a lexical parameter has no
+        // synthetic publication site, so the duplicate was also misreported
+        // at sentinel SiteId(0).  Keep real repeated source uses untouched in
+        // the call block; only synthesize the normal-edge transition when HIR
+        // stamped the physical adopting argument as a borrow/read.
+        if !source_already_consumes
+            && !successor.statements.iter().any(|statement| {
+                matches!(
+                    statement,
+                    MirStatement::Use {
+                        binding: existing,
+                        intent: IntentKind::Consume,
+                        ..
+                    } if *existing == binding
+                )
+            })
+        {
+            // This statement is the checker-side normal-edge ownership
+            // commit, paired with the terminal Transfer inserted at the head
+            // of the instruction stream above. It must precede every
+            // source-authored statement already in the continuation: appending
+            // it let a return/read of the adopted binding run before the
+            // consume and silently admitted post-insert use. The predecessor
+            // call block still owns unwind cleanup; only the successful edge
+            // reaches this first statement.
+            successor.statements.insert(
+                0,
+                MirStatement::Use {
+                    binding,
+                    name,
+                    site,
+                    ty,
+                    intent: IntentKind::Consume,
+                },
+            );
+        }
+        builder.set_owned_local_consumed_post_lowering(
+            binding,
+            None,
+            DischargeSite::CallArgumentTransfer,
+        );
+    }
+
+    // A consuming receiver is discharged only if its call returns normally.
+    // Lowering records the typed `Discharge` use but deliberately leaves the
+    // OwnerId and guard untouched before the invoke so the unwind plan can
+    // still destroy it. Resolve the exact live generation from MIR state at
+    // the call, then commit the close in its normal successor. This is the
+    // receiver sibling of the ProvenConsume argument protocol above.
+    let (_, owner_exits) = drop_plan::exact_owner_states(blocks);
+    let guards = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard { owner, flag, .. }) => {
+                Some((*owner, *flag))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let mut discharge_commits = Vec::new();
+    for block in blocks.iter() {
+        let Terminator::Call { args, next, .. } = &block.terminator else {
+            continue;
+        };
+        let Some(state) = owner_exits.get(&block.id) else {
+            continue;
+        };
+        for statement in &block.statements {
+            let MirStatement::Use {
+                binding,
+                ty,
+                intent: IntentKind::Discharge,
+                ..
+            } = statement
+            else {
+                continue;
+            };
+            let Some((owner, place)) = state
+                .iter()
+                .find(|(owner, place)| owner.binding == *binding && args.contains(place))
+            else {
+                continue;
+            };
+            let parent = discharged_declared_release_parent(block, state, *place, ty, builder);
+            discharge_commits.push((*next, *owner, *place, guards.get(owner).copied(), parent));
+        }
+    }
+    for (next, owner, place, guard, parent) in discharge_commits {
+        let Some(successor) = blocks.iter_mut().find(|block| block.id == next) else {
+            continue;
+        };
+        let event = Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+            owner,
+            from: place,
+            to: None,
+            to_owner: None,
+            to_ty: None,
+        });
+        if successor.instructions.contains(&event) {
+            continue;
+        }
+        let mut operations = Vec::new();
+        if let Some(flag) = guard {
+            operations.push(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
+        operations.push(Instr::NeutralizePayloadSlot {
+            place,
+            transferee: None,
+            authority: crate::model::NeutralizeAuthority::CallDischargeConsume,
+        });
+        operations.push(event);
+        if let Some((parent_owner, parent_place)) = parent {
+            operations.push(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner: parent_owner,
+                    from: parent_place,
+                    to: None,
+                    to_owner: None,
+                    to_ty: None,
+                },
+            ));
+        }
+        for (offset, operation) in operations.into_iter().enumerate() {
+            let index = offset;
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                next,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+            successor.instructions.insert(index, operation);
+        }
+        builder.set_owned_local_consumed_post_lowering(
+            owner.binding,
+            None,
+            DischargeSite::CallArgumentTransfer,
+        );
+    }
+}
+
+/// Commit independently retained string-field generations when their final use
+/// moves into a local aggregate. The matching physical neutralize is inserted
+/// by `neutralize_aggregate_member_sources`; carrying the logical event here
+/// preserves predecessor-unwind cleanup.
+fn splice_retained_field_aggregate_commits(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let retained_field_seeds: Vec<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::RecordFieldLoad { dest, .. }
+            | Instr::TupleFieldLoad { dest, .. }
+            | Instr::ClosureEnvFieldLoad { dest, .. } => base_local(*dest).filter(|local| {
+                builder
+                    .locals
+                    .get(*local as usize)
+                    .is_some_and(|ty| matches!(ty, ResolvedTy::String))
+            }),
+            _ => None,
+        })
+        .collect();
+    let retained_field_aliases: HashSet<u32> =
+        propagate_whole_value_alias_roots(blocks, retained_field_seeds)
+            .into_keys()
+            .collect();
+    let mut aggregate_commits = Vec::new();
+    for block in blocks.iter() {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let sources: Vec<Place> = match instruction {
+                Instr::RecordInit { fields, .. } => {
+                    fields.iter().map(|(_, source)| *source).collect()
+                }
+                Instr::TupleConstruct { elements, .. } => elements.clone(),
+                _ => continue,
+            };
+            for source in sources {
+                let Some(local) = base_local(source).filter(|local| {
+                    retained_field_aliases.contains(local)
+                        && !local_is_used_after(
+                            blocks,
+                            &builder.suspend_kinds,
+                            *local,
+                            block.id,
+                            index,
+                        )
+                }) else {
+                    continue;
+                };
+                let Some(entry) = builder.owned_locals.iter().rev().find(|entry| {
+                    entry.disposition != Disposition::AliasOf
+                        && builder.binding_locals.get(&entry.binding) == Some(&Place::Local(local))
+                }) else {
+                    continue;
+                };
+                let site = builder
+                    .synthetic_owner_publication_sites
+                    .get(&entry.binding)
+                    .copied()
+                    .unwrap_or(SiteId(0));
+                aggregate_commits.push((
+                    block.id,
+                    entry.binding,
+                    entry.name.clone(),
+                    entry.ty.clone(),
+                    site,
+                ));
+            }
+        }
+    }
+    for (block_id, binding, name, ty, site) in aggregate_commits {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        block.statements.push(MirStatement::Use {
+            binding,
+            name,
+            site,
+            ty,
+            intent: IntentKind::Consume,
+        });
+        builder.set_owned_local_consumed_post_lowering(binding, None, DischargeSite::BindingMoved);
+    }
 }
 
 /// Release an escaped record on exits reached before its field transfer.
@@ -6891,7 +7917,6 @@ fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut
 /// flow proves the escape's root, field, and last-use position, splice one
 /// `FieldDropInPlace` per dischargeable sibling right after the escape.
 fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
-    let owned_locals_snapshot = builder.owned_locals_snapshot();
     // #2212 — an owned record whose field escapes through a binder loses its
     // composite scope-exit drop (the sole-owner prover excludes it); the
     // record's NON-escaped owned sibling fields still need their release.
@@ -6900,6 +7925,7 @@ fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, build
     // right after the escape. Runs BEFORE `check_function` / elaboration so
     // the dataflow observes the discharges and codegen emits them.
     {
+        let owned_locals_snapshot = builder.owned_locals_snapshot();
         let mut instr_spans = std::mem::take(&mut builder.instr_spans);
         // The immediate-parent chain of every recorded byte-copy alias, so the
         // sibling-discharge emitter can walk a MULTI-HOP escape (`let mid = o.mid;
@@ -6968,7 +7994,23 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
         &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
     );
-    prepare_owned_call_carriers(&mut *blocks, builder, &projection_tainted);
+    // Seal construction-time child-to-aggregate and provisional-to-binding
+    // handoffs before any late call/send preparation queries exact owner
+    // state. The pass runs again below for the new carrier moves those stages
+    // introduce; both invocations emit immutable MIR operations and are
+    // idempotent at an already committed site.
+    neutralize_typed_produced_value_handoffs(&mut *blocks, builder);
+    materialize_explicit_move_relocations(&mut *blocks, builder);
+    canonicalize_preminted_move_adoptions(&mut *blocks);
+    materialize_explicit_projection_adoptions(&mut *blocks, builder);
+    materialize_explicit_neutralize_transfers(&mut *blocks, builder);
+    // Consumers below query exact OwnerId state. Seal the ownership phis that
+    // are already present before those queries; otherwise the intersection at
+    // a loop header intentionally erases differing predecessor generations
+    // and a later call-carrier preparation cannot publish its normal-return
+    // consume. The pass runs again after all late operations to seal any new
+    // joins they introduce.
+    materialize_exact_owner_join_transfers(&mut *blocks, builder);
     let resolved_outbound =
         resolve_outbound_actor_modes(&mut *blocks, builder, &projection_tainted);
     prepare_outbound_actor_payloads(
@@ -6977,12 +8019,4976 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
         &resolved_outbound,
         &projection_tainted,
     );
-    neutralize_aggregate_member_sources(&mut *blocks, builder);
+    // Aggregate ownership is emitted at the typed construction site through
+    // `typed_produced_value_handoffs`.  Do not run the legacy whole-function
+    // candidate/alias scan here: it treated any binding consumed anywhere as
+    // moved into every matching RecordInit (including borrowed VecIter
+    // topology), and therefore created ownership facts that never occurred.
     neutralize_returned_aggregate_member_sources(&mut *blocks, builder);
     neutralize_divergent_selection_sources(&mut *blocks, builder, &projection_tainted);
+    neutralize_typed_produced_value_handoffs(&mut *blocks, builder);
+    materialize_explicit_move_relocations(&mut *blocks, builder);
+    materialize_divergent_selection_arm_closures(&mut *blocks, builder);
+    canonicalize_preminted_move_adoptions(&mut *blocks);
+    materialize_explicit_projection_adoptions(&mut *blocks, builder);
     release_partially_transferred_return_carriers(&mut *blocks, builder);
     release_cloned_collection_result_temps(&mut *blocks, builder);
     release_last_borrowed_typed_owners(&mut *blocks, builder);
+    canonicalize_ownership_transfer_places(&mut *blocks);
+    deduplicate_ownership_spines(&mut *blocks, builder);
+    materialize_explicit_neutralize_transfers(&mut *blocks, builder);
+    deduplicate_ownership_spines(&mut *blocks, builder);
+    canonicalize_ownership_transfer_places(&mut *blocks);
+    // Whole-value moves can carry owner-bearing projections even when the
+    // aggregate root has no independent owner. Publish those relocations only
+    // after every member neutralisation has become an explicit Transfer. At
+    // this point the exact interpreter can distinguish a still-live nested
+    // owner from a child already consumed into the aggregate wrapper.
+    materialize_explicit_nested_move_relocations(&mut *blocks, builder);
+    deduplicate_ownership_spines(&mut *blocks, builder);
+    // Seal loop/join phi generations only after every call carrier and typed
+    // handoff has published its exact operation.  Inserting the phi earlier
+    // lets a downstream pass append a Relocate/Transfer that still names a
+    // predecessor generation, making the otherwise-valid SSA rename stale.
+    // The final pass sees and rewrites the complete immutable event stream.
+    materialize_exact_owner_join_transfers(&mut *blocks, builder);
+    canonicalize_join_incoming_owner_ids(&mut *blocks, builder);
+    canonicalize_terminal_transfer_owner_ids(&mut *blocks);
+    canonicalize_stale_relocation_and_reset_owner_ids(&mut *blocks);
+    deduplicate_ownership_spines(&mut *blocks, builder);
+    canonicalize_release_owner_ids(&mut *blocks);
+    materialize_opaque_projected_payload_handoffs(&mut *blocks, builder);
+    // Publish definition-site destructor recipes and materialize assignment
+    // overwrite retirement before any call-carrier query. These are ordinary
+    // Raw/Checked-MIR operations, not sealing-time side effects: a later call
+    // must see the replacement generation as the sole owner at its argument
+    // source, and codegen must receive the same physical overwrite drop that
+    // ownership validation sees.
+    drop_plan::materialize_successor_guard_authority(&mut *blocks);
+    drop_plan::materialize_definition_site_drop_recipes(&mut *blocks, builder);
+    drop_plan::materialize_exact_overwrite_releases(&mut *blocks);
+    // Call-carrier ownership is authored only after overwrite adoption, typed
+    // handoffs, and ownership-phi generations are final. Querying the earlier
+    // construction state could see both the retired and replacement
+    // generation at one argument slot and publish two cleanup authorities.
+    // This boundary now emits one pre-call Relocate from exact predecessor
+    // state and one normal-success Transfer for that same OwnerId.
+    prepare_owned_call_carriers(&mut *blocks, builder, &projection_tainted);
+    canonicalize_terminal_transfer_owner_ids(&mut *blocks);
+    canonicalize_stale_relocation_and_reset_owner_ids(&mut *blocks);
+    canonicalize_release_owner_ids(&mut *blocks);
+    deduplicate_ownership_spines(&mut *blocks, builder);
+    materialize_conditional_scope_exit_releases(blocks, builder);
+    materialize_explicit_scope_exits(&mut *blocks, builder);
+    prune_unowned_scope_exit_cleanup(&mut *blocks, builder);
+    materialize_explicit_goto_edge_carries(&mut *blocks, builder);
+    materialize_explicit_alias_ends(&mut *blocks, builder);
+    // Scope/edge sealing can expose the final aggregate wrapper only after
+    // loop generations have been renamed. Normalize that now-complete event
+    // spine once more; this is the last mutation before Raw/Checked MIR is
+    // frozen.
+    canonicalize_terminal_transfer_owner_ids(&mut *blocks);
+    canonicalize_stale_relocation_and_reset_owner_ids(&mut *blocks);
+    canonicalize_release_owner_ids(&mut *blocks);
+    deduplicate_ownership_spines(&mut *blocks, builder);
+    // The preceding late scope/call canonicalizers can re-key owner epochs on
+    // CFG predecessors after the first Join refresh. Recompute each Join's
+    // declared incoming set from the now-final edge states so Checked MIR sees
+    // the same generations its immutable replay derives. Ambiguous, ownerless,
+    // and wrong-place edges remain untouched for validation to reject.
+    canonicalize_join_incoming_owner_ids(&mut *blocks, builder);
+}
+
+/// End an extracted string payload's owner before passing its exact handle to
+/// a call whose argument contract does not prove a borrow.
+///
+/// The conservative foreign-call rule is deliberately leak-safe: once an
+/// unaudited callee can retain or release the handle, the caller may not run a
+/// later lexical destructor for the same payload. Domestic Hew bodies and
+/// audited runtime calls keep their ordinary borrowing behavior.
+fn materialize_opaque_projected_payload_handoffs(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidates: HashMap<u32, BindingId> = builder
+        .projected_payload_provenance
+        .keys()
+        .filter_map(|binding| {
+            let local = builder
+                .binding_locals
+                .get(binding)
+                .or_else(|| builder.deferred_drop_binding_locals.get(binding))
+                .copied()
+                .and_then(base_local)?;
+            matches!(builder.locals.get(local as usize), Some(ResolvedTy::String))
+                .then_some((local, *binding))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+    let (_, exits) = drop_plan::exact_owner_states(blocks);
+    for block in blocks {
+        let Terminator::Call { args, .. } = &block.terminator else {
+            continue;
+        };
+        for (&local, &binding) in &candidates {
+            if !args
+                .iter()
+                .any(|argument| base_local(*argument) == Some(local))
+                || binder_read_is_borrow_safe_terminator(
+                    &block.terminator,
+                    builder.suspend_kinds.get(&block.id),
+                    local,
+                )
+                || string_binder_read_is_user_fn_borrow(
+                    &block.terminator,
+                    builder.suspend_kinds.get(&block.id),
+                    local,
+                    builder.locals.get(local as usize),
+                    &builder.module_fn_names,
+                    &builder.module_generic_fn_names,
+                    &builder.call_scrutinee_provenance.extern_table,
+                )
+            {
+                continue;
+            }
+            let owners = exits
+                .get(&block.id)
+                .into_iter()
+                .flat_map(|state| state.iter())
+                .filter_map(|(owner, place)| {
+                    (owner.binding == binding && base_local(*place) == Some(local))
+                        .then_some((*owner, *place))
+                })
+                .collect::<Vec<_>>();
+            let [(owner, place)] = owners.as_slice() else {
+                continue;
+            };
+            let insert_at = block.instructions.len();
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(insert_at).unwrap_or(u32::MAX),
+            );
+            block.instructions.push(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner: *owner,
+                    from: *place,
+                    to: None,
+                    to_owner: None,
+                    to_ty: None,
+                },
+            ));
+        }
+    }
+}
+
+/// Move a retained string join's clone point onto its incoming edges when the
+/// source has an owner on only some of those edges.
+///
+/// A match expression can join an owned payload arm with a static string
+/// literal arm. The common `StringRetain; Move; Neutralize` correctly creates
+/// the destination binding's independent owner, but at the common block the
+/// old payload owner is only conditionally live and therefore cannot be
+/// released by one unconditional `OwnerId` event. Retain on each single-edge
+/// predecessor instead: the owned predecessor relocates its old count into a
+/// scratch slot, drops that scratch, and retires its exact generation, while
+/// leaving the retained count in the common source slot. The literal retain is
+/// a no-op. The common Move then adopts the retained/static pointer under its
+/// already-authored Mint.
+///
+/// This deliberately requires the complete typed spine, a maybe-but-not-exact
+/// source owner at the join, and a lexical `ScopeExit` on every owner-bearing
+/// predecessor. Any ambiguous topology remains unchanged for validation.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fail-closed join matcher and its mutation plan must remain auditable together"
+)]
+fn materialize_edge_local_retained_join_releases(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    struct EdgePlan {
+        block_index: usize,
+        insert_at: usize,
+        owner: Option<crate::model::OwnerId>,
+        owner_place: Option<Place>,
+        closes_owner_scope: bool,
+    }
+    struct JoinPlan {
+        block_index: usize,
+        block_id: u32,
+        retain_index: usize,
+        source: Place,
+        edges: Vec<EdgePlan>,
+    }
+
+    let (exact_entries, exact_exits) = drop_plan::exact_owner_states(blocks);
+    let predecessors = blocks
+        .iter()
+        .flat_map(|block| {
+            block
+                .successors()
+                .into_iter()
+                .map(move |successor| (successor, block.id))
+        })
+        .fold(
+            HashMap::<u32, Vec<u32>>::new(),
+            |mut map, (target, source)| {
+                map.entry(target).or_default().push(source);
+                map
+            },
+        );
+
+    let mut plans = Vec::new();
+    for (block_index, block) in blocks.iter().enumerate() {
+        for retain_index in 0..block.instructions.len().saturating_sub(2) {
+            let Instr::StringRetain {
+                value: source,
+                condition,
+            } = &block.instructions[retain_index]
+            else {
+                continue;
+            };
+            let source = *source;
+            if *condition != crate::model::StringRetainCondition::Always {
+                continue;
+            }
+            let Instr::Move { dest, src } = block.instructions[retain_index + 1] else {
+                continue;
+            };
+            if src != source
+                || !matches!(
+                    block.instructions.get(retain_index + 2),
+                    Some(Instr::NeutralizePayloadSlot {
+                        place,
+                        transferee: Some(transferee),
+                        authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                    }) if *place == source && *transferee == dest
+                )
+            {
+                continue;
+            }
+            let destination_is_fresh_string_owner =
+                block.instructions[..retain_index]
+                    .iter()
+                    .any(|instruction| {
+                        matches!(
+                            instruction,
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                                place,
+                                ty: ResolvedTy::String,
+                                ..
+                            }) if *place == dest
+                        )
+                    });
+            if !destination_is_fresh_string_owner {
+                continue;
+            }
+            let exact_has_source = exact_entries
+                .get(&block.id)
+                .is_some_and(|state| state.values().any(|place| *place == source));
+            if exact_has_source {
+                continue;
+            }
+            let Some(incoming) = predecessors.get(&block.id).filter(|ids| ids.len() >= 2) else {
+                continue;
+            };
+            let mut edges = Vec::new();
+            let mut saw_owner = false;
+            let mut saw_ownerless = false;
+            let mut source_owner_ids = HashSet::new();
+            let mut valid = true;
+            for predecessor in incoming {
+                let Some(predecessor_index) =
+                    blocks.iter().position(|item| item.id == *predecessor)
+                else {
+                    valid = false;
+                    break;
+                };
+                if blocks[predecessor_index].successors() != vec![block.id] {
+                    valid = false;
+                    break;
+                }
+                let owners = exact_exits
+                    .get(predecessor)
+                    .into_iter()
+                    .flat_map(|state| state.iter())
+                    .filter_map(|(owner, place)| (*place == source).then_some(*owner))
+                    .collect::<Vec<_>>();
+                let owner = match owners.as_slice() {
+                    [] => {
+                        saw_ownerless = true;
+                        None
+                    }
+                    [owner] => {
+                        saw_owner = true;
+                        source_owner_ids.insert(*owner);
+                        Some(*owner)
+                    }
+                    _ => {
+                        valid = false;
+                        break;
+                    }
+                };
+                let scope_exit = blocks[predecessor_index]
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, instruction)| {
+                        matches!(
+                            instruction,
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit { .. })
+                        )
+                    });
+                let (insert_at, closes_owner_scope) = if let Some(owner) = owner {
+                    let closing_scope_exit = blocks[predecessor_index]
+                        .instructions
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, instruction)| {
+                            matches!(
+                                instruction,
+                                Instr::OwnershipEvent(
+                                    crate::model::OwnershipEvent::ScopeExit { scopes, .. }
+                                ) if builder.binding_scope.get(&owner.binding)
+                                    .is_some_and(|scope| scopes.contains(scope))
+                            )
+                        });
+                    if let Some((scope_index, _)) = closing_scope_exit {
+                        (scope_index, true)
+                    } else {
+                        // A retained join may sit inside a nested expression
+                        // scope while the source binding belongs to an outer
+                        // loop/body scope.  Its exact owner is still retired on
+                        // this single-successor edge, but the unrelated inner
+                        // ScopeExit must not claim that early release.  Require
+                        // the independently-derived EdgeCarry as the insertion
+                        // witness and place the release immediately before it.
+                        let Some(edge_carry_index) = blocks[predecessor_index]
+                            .instructions
+                            .iter()
+                            .position(|instruction| {
+                                matches!(
+                                    instruction,
+                                    Instr::OwnershipEvent(
+                                        crate::model::OwnershipEvent::EdgeCarry {
+                                            owner: carried_owner,
+                                            place,
+                                            target,
+                                        }
+                                    ) if *carried_owner == owner
+                                        && *place == source
+                                        && *target == block.id
+                                )
+                            })
+                        else {
+                            valid = false;
+                            break;
+                        };
+                        (edge_carry_index, false)
+                    }
+                } else {
+                    (
+                        scope_exit.map_or(
+                            blocks[predecessor_index].instructions.len(),
+                            |(index, _)| index,
+                        ),
+                        false,
+                    )
+                };
+                edges.push(EdgePlan {
+                    block_index: predecessor_index,
+                    insert_at,
+                    owner,
+                    owner_place: owner.map(|_| source),
+                    closes_owner_scope,
+                });
+            }
+            if source_owner_ids.len() != 1 {
+                valid = false;
+            }
+            if valid {
+                let conditional_owner = *source_owner_ids
+                    .iter()
+                    .next()
+                    .expect("one source owner was just required");
+                for edge in &mut edges {
+                    if edge.owner.is_some() {
+                        continue;
+                    }
+                    let predecessor = blocks[edge.block_index].id;
+                    let Some(owner_place) = exact_exits
+                        .get(&predecessor)
+                        .and_then(|state| state.get(&conditional_owner))
+                        .copied()
+                    else {
+                        continue;
+                    };
+                    let matching_carries = blocks[edge.block_index]
+                        .instructions
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, instruction)| {
+                            matches!(
+                                instruction,
+                                Instr::OwnershipEvent(
+                                    crate::model::OwnershipEvent::EdgeCarry {
+                                        owner,
+                                        place,
+                                        target,
+                                    }
+                                ) if *owner == conditional_owner
+                                    && *place == owner_place
+                                    && *target == block.id
+                            )
+                            .then_some(index)
+                        })
+                        .collect::<Vec<_>>();
+                    let [insert_at] = matching_carries.as_slice() else {
+                        valid = false;
+                        break;
+                    };
+                    edge.insert_at = *insert_at;
+                    edge.owner = Some(conditional_owner);
+                    edge.owner_place = Some(owner_place);
+                    edge.closes_owner_scope = false;
+                }
+            }
+            if valid && saw_owner && saw_ownerless {
+                plans.push(JoinPlan {
+                    block_index,
+                    block_id: block.id,
+                    retain_index,
+                    source,
+                    edges,
+                });
+            }
+        }
+    }
+
+    for plan in plans.into_iter().rev() {
+        blocks[plan.block_index]
+            .instructions
+            .remove(plan.retain_index);
+        shift_instr_spans_on_remove(
+            &mut builder.instr_spans,
+            blocks[plan.block_index].id,
+            u32::try_from(plan.retain_index).unwrap_or(u32::MAX),
+        );
+        for edge in plan.edges {
+            let block_id = blocks[edge.block_index].id;
+            if let Some(owner) = edge.owner {
+                let owner_place = edge
+                    .owner_place
+                    .expect("owned retained-join edge must preserve its exact place");
+                if edge.closes_owner_scope {
+                    if let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+                        owners,
+                        carry_places,
+                        carried,
+                        ..
+                    })) = blocks[edge.block_index]
+                        .instructions
+                        .get_mut(edge.insert_at)
+                    {
+                        if !owners.contains(&owner) {
+                            owners.push(owner);
+                        }
+                        carried.retain(|candidate| *candidate != owner);
+                        carry_places.retain(|place| *place != owner_place);
+                    }
+                }
+                let obsolete_carries = blocks[edge.block_index]
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, instruction)| {
+                        matches!(
+                            instruction,
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
+                                owner: carried_owner,
+                                place,
+                                target,
+                            }) if *carried_owner == owner
+                                && *place == owner_place
+                                && *target == plan.block_id
+                        )
+                        .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                let removed_before_insert = obsolete_carries
+                    .iter()
+                    .filter(|index| **index < edge.insert_at)
+                    .count();
+                for index in obsolete_carries.into_iter().rev() {
+                    blocks[edge.block_index].instructions.remove(index);
+                    shift_instr_spans_on_remove(
+                        &mut builder.instr_spans,
+                        block_id,
+                        u32::try_from(index).unwrap_or(u32::MAX),
+                    );
+                }
+                let insert_at = edge.insert_at - removed_before_insert;
+                let mut inserted = vec![Instr::StringRetain {
+                    value: plan.source,
+                    condition: crate::model::StringRetainCondition::Always,
+                }];
+                // `Instr::Drop` deliberately nulls the slot it releases. Do not
+                // drop `plan.source`: that is also the physical phi slot read by
+                // the common join block, and nulling it turns the retained value
+                // into an empty string. Move the OLD count to an edge-local
+                // scratch, relocate its exact owner, and retire it there. The
+                // retained count stays in `plan.source` for the common Move.
+                let retirement = builder.alloc_local(ResolvedTy::String);
+                inserted.push(Instr::Move {
+                    dest: retirement,
+                    src: owner_place,
+                });
+                inserted.push(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Relocate {
+                        owner,
+                        from: owner_place,
+                        to: retirement,
+                    },
+                ));
+                inserted.push(Instr::Drop {
+                    place: retirement,
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+                });
+                inserted.push(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Release {
+                        owner,
+                        place: retirement,
+                    },
+                ));
+                for (offset, instruction) in inserted.into_iter().enumerate() {
+                    let index = insert_at + offset;
+                    blocks[edge.block_index]
+                        .instructions
+                        .insert(index, instruction);
+                    shift_instr_spans_on_insert(
+                        &mut builder.instr_spans,
+                        block_id,
+                        u32::try_from(index).unwrap_or(u32::MAX),
+                    );
+                }
+                continue;
+            }
+            let inserted = vec![Instr::StringRetain {
+                value: plan.source,
+                condition: crate::model::StringRetainCondition::Always,
+            }];
+            for (offset, instruction) in inserted.into_iter().enumerate() {
+                let index = edge.insert_at + offset;
+                blocks[edge.block_index]
+                    .instructions
+                    .insert(index, instruction);
+                shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block_id,
+                    u32::try_from(index).unwrap_or(u32::MAX),
+                );
+            }
+        }
+    }
+}
+
+/// Preserve both authorities created by a finalized `CoW` retain/copy spine.
+///
+/// Binding adoption is authored before string/bytes share analysis decides
+/// whether a physical `Move` is a last-use handoff or a retained copy. Once a
+/// retain is inserted, an adjacent owner `Transfer` is no longer valid: the
+/// source keeps its original count and the destination owns the newly retained
+/// count. Replace only the complete typed spine with the destination Mint;
+/// unmatched transfers remain validator-visible.
+fn canonicalize_retained_record_member_transfers(
+    block: &mut BasicBlock,
+    actor_message_string_sources: &HashSet<Place>,
+) {
+    // Record construction publishes member handoffs before the late CoW
+    // analysis decides whether a mailbox source is a retained
+    // share. Once that analysis inserts an exact retain, the record's own
+    // Mint owns the new `+1`; the source owner stays in its original slot
+    // for the sibling path or next loop iteration. Retire only a complete
+    // adjacent neutralize/transfer spine, only for an explicitly typed
+    // actor-message source, and only when the destination Record Mint
+    // corroborates the same place and type. Every mismatch remains
+    // validator-visible.
+    let mut record_index = 0;
+    while record_index < block.instructions.len() {
+        let Instr::RecordInit { ty, dest, fields } = &block.instructions[record_index] else {
+            record_index += 1;
+            continue;
+        };
+        let record_ty = ty.clone();
+        let record_dest = *dest;
+        let record_fields = fields.clone();
+        let retained_sources: HashSet<Place> = block.instructions[..record_index]
+            .iter()
+            .rev()
+            .take_while(|instruction| matches!(instruction, Instr::StringRetain { .. }))
+            .filter_map(|instruction| match instruction {
+                Instr::StringRetain { value, .. }
+                    if actor_message_string_sources.contains(value)
+                        && record_fields.iter().any(|(_, field)| field == value) =>
+                {
+                    Some(*value)
+                }
+                _ => None,
+            })
+            .collect();
+        if retained_sources.is_empty() {
+            record_index += 1;
+            continue;
+        }
+
+        let mut cursor = record_index + 1;
+        let mut removals = Vec::new();
+        while cursor + 1 < block.instructions.len() {
+            let Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(transferee),
+                authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
+            } = block.instructions[cursor]
+            else {
+                break;
+            };
+            let Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                from,
+                to: Some(to),
+                to_owner: None,
+                to_ty: None,
+                ..
+            }) = block.instructions[cursor + 1]
+            else {
+                break;
+            };
+            if transferee != record_dest || from != place || to != record_dest {
+                break;
+            }
+            if retained_sources.contains(&place) {
+                removals.extend([cursor, cursor + 1]);
+            }
+            cursor += 2;
+        }
+        let exact_record_owner = matches!(
+            block.instructions.get(cursor),
+            Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                place,
+                ty,
+                ..
+            })) if *place == record_dest && *ty == record_ty
+        );
+        if exact_record_owner {
+            for removal in removals.into_iter().rev() {
+                block.instructions.remove(removal);
+            }
+        }
+        record_index += 1;
+    }
+}
+
+fn canonicalize_retained_copy_owner_transfers(
+    blocks: &mut [BasicBlock],
+    actor_message_string_sources: &HashSet<Place>,
+) {
+    for block in blocks {
+        for index in 0..block.instructions.len().saturating_sub(2) {
+            let retained = match block.instructions[index] {
+                Instr::StringRetain {
+                    value,
+                    condition:
+                        crate::model::StringRetainCondition::Always
+                        | crate::model::StringRetainCondition::FreshShare,
+                } => Some((value, ResolvedTy::String)),
+                Instr::BytesRetain { value } => Some((value, ResolvedTy::Bytes)),
+                _ => None,
+            };
+            let Some((retained_source, retained_ty)) = retained else {
+                continue;
+            };
+            let Instr::Move { dest, src } = block.instructions[index + 1] else {
+                continue;
+            };
+            if src != retained_source {
+                continue;
+            }
+            let Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                from,
+                to: Some(to),
+                to_owner: Some(to_owner),
+                to_ty: Some(to_ty),
+                ..
+            }) = &block.instructions[index + 2]
+            else {
+                continue;
+            };
+            if *from != src || *to != dest || *to_ty != retained_ty {
+                continue;
+            }
+            block.instructions[index + 2] =
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                    owner: *to_owner,
+                    place: dest,
+                    ty: retained_ty,
+                });
+        }
+        canonicalize_retained_record_member_transfers(block, actor_message_string_sources);
+    }
+}
+
+/// Prove that a typed `bytes` handoff was authored as a consume even though
+/// the source is semantically read after the handoff's nulling point.
+///
+/// The exact local `Move`, its typed owner `Transfer`, and one metadata-only
+/// `WholeCarrierConsume` neutralization must agree. Any executable gap,
+/// missing transfer, or overwrite before the later read rejects the proof.
+/// This remains a construction-time producer check; Checked MIR still
+/// validates every unchanged later relocation/release against the source owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RetainedBytesLocalShareProof {
+    pub(super) source: Place,
+    pub(super) destination: Place,
+    pub(super) neutralize_index: usize,
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the proof keeps the exact typed spine and its overwrite-aware CFG witness in one fail-closed transaction"
+)]
+pub(super) fn prove_retained_bytes_local_share(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    block_id: u32,
+    move_index: usize,
+) -> Option<RetainedBytesLocalShareProof> {
+    let block = blocks.iter().find(|block| block.id == block_id)?;
+    let Instr::Move {
+        dest: Place::Local(destination),
+        src: Place::Local(source),
+    } = block.instructions.get(move_index)?
+    else {
+        return None;
+    };
+    if source == destination {
+        return None;
+    }
+    let source_place = Place::Local(*source);
+    let destination_place = Place::Local(*destination);
+    let mut transfer_count = 0_usize;
+    let mut neutralize_index = None;
+    for (index, instruction) in block.instructions.iter().enumerate().skip(move_index + 1) {
+        match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                from,
+                to: Some(to),
+                to_owner: Some(_),
+                to_ty: Some(ResolvedTy::Bytes),
+                ..
+            }) if *from == source_place && *to == destination_place => {
+                transfer_count += 1;
+            }
+            Instr::OwnershipEvent(_) => {}
+            Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(transferee),
+                authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+            } if *place == source_place && *transferee == destination_place => {
+                neutralize_index = Some(index);
+                break;
+            }
+            _ => return None,
+        }
+    }
+    let neutralize_index = neutralize_index.filter(|_| transfer_count == 1)?;
+
+    let mut worklist = vec![(block_id, neutralize_index + 1)];
+    let mut visited = HashSet::new();
+    while let Some((current_id, start)) = worklist.pop() {
+        if !visited.insert((current_id, start)) {
+            continue;
+        }
+        let current = blocks.iter().find(|candidate| candidate.id == current_id)?;
+        let mut overwritten = false;
+        for instruction in current.instructions.iter().skip(start) {
+            if matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot { place, .. }
+                    if base_local(*place) == Some(*source)
+            ) {
+                return None;
+            }
+            let (reads, writes, _) = dataflow::instr_reads_writes(instruction);
+            if reads
+                .iter()
+                .any(|place| base_local(*place) == Some(*source))
+            {
+                return Some(RetainedBytesLocalShareProof {
+                    source: source_place,
+                    destination: destination_place,
+                    neutralize_index,
+                });
+            }
+            if writes
+                .iter()
+                .any(|place| base_local(*place) == Some(*source))
+            {
+                overwritten = true;
+                break;
+            }
+        }
+        if overwritten {
+            continue;
+        }
+        if terminator_source_places(&current.terminator, suspend_kinds.get(&current.id))
+            .iter()
+            .any(|place| base_local(*place) == Some(*source))
+        {
+            return Some(RetainedBytesLocalShareProof {
+                source: source_place,
+                destination: destination_place,
+                neutralize_index,
+            });
+        }
+        if dataflow::terminator_write_places(&current.terminator)
+            .iter()
+            .any(|place| base_local(*place) == Some(*source))
+        {
+            continue;
+        }
+        worklist.extend(
+            current
+                .successors()
+                .into_iter()
+                .map(|successor| (successor, 0)),
+        );
+    }
+    None
+}
+
+/// Re-key a terminal transfer to the unique generation that owns its physical
+/// source at that exact program point.
+///
+/// Lower-level call-carrier neutralisation can be emitted while a produced
+/// value still has its provisional `OwnerId`. A typed adoption earlier in the
+/// same instruction stream ends that provisional generation and installs the
+/// named binding's `OwnerId`; the later physical carrier move remains valid, but
+/// its terminal event must name the successor generation. This pass replays
+/// only explicit Checked-MIR operations and changes an event only when the old
+/// identity is dead and exactly one live owner carries `from`. Zero or multiple
+/// candidates remain untouched so validation fails closed.
+fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
+    for block_index in 0..blocks.len() {
+        let (entries, _) = drop_plan::exact_owner_states(blocks);
+        let block_id = blocks[block_index].id;
+        let mut live = entries.get(&block_id).cloned().unwrap_or_default();
+        for instruction_index in 0..blocks[block_index].instructions.len() {
+            let instruction = &mut blocks[block_index].instructions[instruction_index];
+            if let Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner,
+                from,
+                to_owner: None,
+                ..
+            }) = instruction
+            {
+                if !live.contains_key(owner) {
+                    let candidates = live
+                        .iter()
+                        .filter_map(|(candidate, place)| (*place == *from).then_some(*candidate))
+                        .collect::<Vec<_>>();
+                    if let [replacement] = candidates.as_slice() {
+                        *owner = *replacement;
+                    }
+                }
+            }
+            let instruction = instruction.clone();
+            drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+        }
+    }
+}
+
+/// Re-key stale physical relocations after typed adoption, and turn a reset
+/// whose predecessor was already terminally consumed into an ordinary mint.
+///
+/// Both shapes are introduced before ownership-SSA joins are sealed. A join
+/// can replace the construction-time owner identity while leaving a later
+/// relocation or assignment publication keyed to that historical identity.
+/// Replay only the immutable exact/maybe owner streams at the operation: a
+/// relocation is re-keyed only when both lattices identify the same unique
+/// owner at its source, and a reset becomes a mint only when no path retains
+/// any generation of that binding. Ambiguous states stay untouched so the
+/// Checked-MIR validator still fails closed.
+fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) {
+    for block_index in 0..blocks.len() {
+        let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
+        let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+        let block_id = blocks[block_index].id;
+        let mut exact = exact_entries.get(&block_id).cloned().unwrap_or_default();
+        let mut maybe = maybe_entries.get(&block_id).cloned().unwrap_or_default();
+
+        for instruction_index in 0..blocks[block_index].instructions.len() {
+            let instruction = &mut blocks[block_index].instructions[instruction_index];
+            match instruction {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+                    owner,
+                    from,
+                    ..
+                }) if !maybe.iter().any(|(candidate, _)| candidate == owner) => {
+                    let exact_candidates = exact
+                        .iter()
+                        .filter_map(|(candidate, place)| (*place == *from).then_some(*candidate))
+                        .collect::<Vec<_>>();
+                    let maybe_candidates = maybe
+                        .iter()
+                        .filter_map(|(candidate, place)| (*place == *from).then_some(*candidate))
+                        .collect::<HashSet<_>>();
+                    if let [replacement] = exact_candidates.as_slice() {
+                        if maybe_candidates.len() == 1 && maybe_candidates.contains(replacement) {
+                            *owner = *replacement;
+                        }
+                    }
+                }
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Reset {
+                    previous,
+                    replacement,
+                    place,
+                    ty,
+                }) => {
+                    let previous_maybe_live =
+                        maybe.iter().any(|(candidate, _)| candidate == previous);
+                    let same_binding_maybe_live = maybe
+                        .iter()
+                        .any(|(candidate, _)| candidate.binding == previous.binding);
+                    let replacement_maybe_live =
+                        maybe.iter().any(|(candidate, _)| candidate == replacement);
+                    if !previous_maybe_live && !same_binding_maybe_live && !replacement_maybe_live {
+                        *instruction = Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                            owner: *replacement,
+                            place: *place,
+                            ty: ty.clone(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+            let operation = instruction.clone();
+            drop_plan::apply_exact_owner_ops(std::slice::from_ref(&operation), &mut exact);
+            drop_plan::apply_maybe_owner_ops(std::slice::from_ref(&operation), &mut maybe);
+        }
+    }
+}
+
+#[cfg(test)]
+mod stale_owner_canonicalization_tests;
+
+/// Publish the exact ownership state transported by every `Goto` on the
+/// source edge. Cleanup derivation must not inspect the target block for a
+/// later move or use target-entry intersection as retrospective evidence: a
+/// may-unwind instruction can precede that later operation, and a lexical
+/// `break` can otherwise launder a body-local generation across the join.
+fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let (_, exits) = drop_plan::exact_owner_states(blocks);
+    for block in blocks {
+        let Terminator::Goto { target } = block.terminator else {
+            continue;
+        };
+        let Some(exit) = exits.get(&block.id) else {
+            continue;
+        };
+        let existing = block
+            .instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
+                    owner,
+                    place,
+                    target: carried_target,
+                }) if *carried_target == target => Some((*owner, *place)),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let carries = exit
+            .iter()
+            .filter(|(owner, place)| !existing.contains(&(**owner, **place)))
+            .map(|(owner, place)| (*owner, *place))
+            .collect::<Vec<_>>();
+        for (owner, place) in carries {
+            let insert_at = block.instructions.len();
+            block.instructions.push(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::EdgeCarry {
+                    owner,
+                    place,
+                    target,
+                },
+            ));
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(insert_at).unwrap_or(u32::MAX),
+            );
+        }
+    }
+}
+
+fn adjacent_scope_release_owners(
+    block: &BasicBlock,
+    scope_index: usize,
+    scopes: &HashSet<ScopeId>,
+    binding_scopes: &HashMap<BindingId, ScopeId>,
+    call_scrutinee_carriers: &HashSet<u32>,
+) -> Vec<crate::model::OwnerId> {
+    let mut owners = Vec::new();
+    let mut cursor = scope_index;
+    while cursor >= 2 {
+        let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Release { owner, place })) =
+            block.instructions.get(cursor - 1)
+        else {
+            break;
+        };
+        let Some(Instr::Drop {
+            place: drop_place,
+            drop_fn,
+            ..
+        }) = block.instructions.get(cursor - 2)
+        else {
+            break;
+        };
+        let closes_lexical_scope = binding_scopes
+            .get(&owner.binding)
+            .is_some_and(|scope| scopes.contains(scope));
+        let closes_selected_call_carrier_arm = matches!(
+            (place, drop_fn),
+            (
+                Place::Local(local),
+                Some(crate::model::DropFnSpec::InPlace(
+                    crate::ownership::InPlaceReleaseKind::Enum,
+                )),
+            ) if call_scrutinee_carriers.contains(local)
+        );
+        if drop_place != place || !(closes_lexical_scope || closes_selected_call_carrier_arm) {
+            break;
+        }
+        owners.push(*owner);
+        cursor -= 2;
+    }
+    owners
+}
+
+/// Redirect one existing CFG edge while preserving the terminator's other
+/// successors. Returns `true` only when `old` was an actual successor.
+fn redirect_terminator_successor(terminator: &mut Terminator, old: u32, new: u32) -> bool {
+    let mut changed = false;
+    let mut replace = |target: &mut u32| {
+        if *target == old {
+            *target = new;
+            changed = true;
+        }
+    };
+    match terminator {
+        Terminator::Return
+        | Terminator::Unreachable
+        | Terminator::Trap { .. }
+        | Terminator::Call {
+            authority:
+                crate::model::CallAuthority::NoReturnDirect
+                | crate::model::CallAuthority::NoReturnExtern,
+            ..
+        } => {}
+        Terminator::Goto { target } => replace(target),
+        Terminator::Branch {
+            then_target,
+            else_target,
+            ..
+        } => {
+            replace(then_target);
+            replace(else_target);
+        }
+        Terminator::Call { next, .. }
+        | Terminator::Yield { next, .. }
+        | Terminator::MakeGenerator { next, .. }
+        | Terminator::MakeLambdaActor { next, .. }
+        | Terminator::Send { next, .. }
+        | Terminator::Ask { next, .. }
+        | Terminator::RemoteAsk { next, .. }
+        | Terminator::Join { next, .. } => replace(next),
+        Terminator::Select { arms, next } => {
+            for arm in arms {
+                replace(&mut arm.body_block);
+            }
+            replace(next);
+        }
+        Terminator::Suspend {
+            resume, cleanup, ..
+        } => {
+            replace(resume);
+            replace(cleanup);
+        }
+        Terminator::SuspendingScopeDeadline {
+            timeout_body_block,
+            resume,
+            cleanup,
+            ..
+        } => {
+            replace(timeout_body_block);
+            replace(resume);
+            replace(cleanup);
+        }
+        Terminator::SuspendingSelect {
+            arms,
+            resume,
+            cleanup,
+        } => {
+            for arm in arms {
+                replace(&mut arm.body_block);
+            }
+            replace(resume);
+            replace(cleanup);
+        }
+    }
+    changed
+}
+
+/// Turn a conditionally-live owner at a shared lexical boundary into explicit
+/// path-sensitive MIR:
+///
+/// ```text
+/// predecessors -> flag == live -> physical Drop -> flag = consumed --+
+///                    |                                          |
+///                    +---------------- skip --------------------+
+///                                                               v
+///                                  GuardedRelease; ScopeExit
+/// ```
+///
+/// Exact/intersection state intentionally omits an owner that is live on only
+/// some predecessors. The runtime guard is the missing path predicate. This
+/// pass consumes only published `Guard` and `DropRecipe` events, emits both the
+/// physical guarded drop and logical `GuardedRelease`, and records the owner on
+/// the immutable `ScopeExit`. Missing, conflicting, or ambiguous authority is
+/// left untouched so Checked-MIR validation fails closed at the subsequent
+/// same-binding Mint rather than silently ending metadata-only state.
+#[allow(
+    clippy::too_many_lines,
+    reason = "guarded scope cleanup validates authority, splits predecessor edges, and publishes one atomic CFG ritual"
+)]
+fn materialize_conditional_scope_exit_releases(
+    blocks: &mut Vec<BasicBlock>,
+    builder: &mut Builder,
+) {
+    loop {
+        let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
+        let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+        let recipes = blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| match instruction {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::DropRecipe {
+                    owner,
+                    recipe,
+                }) => Some((*owner, recipe.clone())),
+                _ => None,
+            })
+            .fold(
+                HashMap::<crate::model::OwnerId, Vec<crate::model::OwnerDropRecipe>>::new(),
+                |mut by_owner, (owner, recipe)| {
+                    by_owner.entry(owner).or_default().push(recipe);
+                    by_owner
+                },
+            );
+        let guards = blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| match instruction {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                    owner,
+                    flag,
+                    kind,
+                }) => Some((*owner, (*flag, *kind))),
+                _ => None,
+            })
+            .fold(
+                HashMap::<
+                    crate::model::OwnerId,
+                    Vec<(Place, crate::model::OwnershipGuardKind)>,
+                >::new(),
+                |mut by_owner, (owner, guard)| {
+                    by_owner.entry(owner).or_default().push(guard);
+                    by_owner
+                },
+            );
+        let mut selected = None;
+        'blocks: for (block_index, block) in blocks.iter().enumerate() {
+            if block.id == ENTRY_BLOCK_ID {
+                continue;
+            }
+            let mut exact = exact_entries.get(&block.id).cloned().unwrap_or_default();
+            let mut maybe = maybe_entries.get(&block.id).cloned().unwrap_or_default();
+            for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+                let Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+                    scopes,
+                    carry_places,
+                    ..
+                }) = instruction
+                else {
+                    drop_plan::apply_exact_owner_ops(std::slice::from_ref(instruction), &mut exact);
+                    drop_plan::apply_maybe_owner_ops(std::slice::from_ref(instruction), &mut maybe);
+                    continue;
+                };
+                let scope_set = scopes.iter().copied().collect::<HashSet<_>>();
+                let mut candidates = maybe
+                    .iter()
+                    .filter_map(|(owner, place)| {
+                        (!exact.contains_key(owner)
+                            && !carry_places.contains(place)
+                            && builder
+                                .binding_scope
+                                .get(&owner.binding)
+                                .is_some_and(|scope| scope_set.contains(scope)))
+                        .then_some((*owner, *place))
+                    })
+                    .collect::<Vec<_>>();
+                candidates.sort_by_key(|(owner, _)| {
+                    std::cmp::Reverse(
+                        recipes
+                            .get(owner)
+                            .and_then(|published| match published.as_slice() {
+                                [recipe] => Some(recipe.declaration_order),
+                                _ => None,
+                            })
+                            .unwrap_or_default(),
+                    )
+                });
+                for (owner, place) in candidates {
+                    let same_binding = maybe
+                        .iter()
+                        .filter(|(candidate, _)| candidate.binding == owner.binding)
+                        .count();
+                    let Some([recipe]) = recipes.get(&owner).map(Vec::as_slice) else {
+                        continue;
+                    };
+                    let Some([(flag, crate::model::OwnershipGuardKind::AffineRelease)]) =
+                        guards.get(&owner).map(Vec::as_slice)
+                    else {
+                        continue;
+                    };
+                    if same_binding != 1 {
+                        continue;
+                    }
+                    // This cutover is deliberately limited to affine
+                    // resources. Resolve their executable close ritual through
+                    // the same typed lifecycle authority as ordinary lexical
+                    // scope cleanup. Cow/Vec/enum/tuple/cursor kind-only
+                    // recipes must not be logically discharged by a no-op
+                    // `Instr::Drop(None)`.
+                    if resource_drop_fn(&recipe.ty, &builder.type_classes).is_none() {
+                        continue;
+                    }
+                    let Some(physical_drop_fn) = drop_plan::inline_drop_spec_for_recipe(recipe)
+                    else {
+                        continue;
+                    };
+                    selected = Some((
+                        block_index,
+                        instruction_index,
+                        owner,
+                        place,
+                        *flag,
+                        recipe.clone(),
+                        physical_drop_fn,
+                    ));
+                    break 'blocks;
+                }
+            }
+        }
+
+        let Some((block_index, scope_index, owner, place, flag, recipe, physical_drop_fn)) =
+            selected
+        else {
+            break;
+        };
+        let target = blocks[block_index].id;
+        let gate = builder.alloc_block();
+        let release = builder.alloc_block();
+        if blocks
+            .iter()
+            .any(|block| block.id == gate || block.id == release)
+        {
+            break;
+        }
+
+        let mut predecessor_count = 0;
+        for block in blocks.iter_mut() {
+            if redirect_terminator_successor(&mut block.terminator, target, gate) {
+                predecessor_count += 1;
+                for instruction in &mut block.instructions {
+                    if let Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
+                        target: carried_target,
+                        ..
+                    }) = instruction
+                    {
+                        if *carried_target == target {
+                            *carried_target = gate;
+                        }
+                    }
+                }
+            }
+        }
+        if predecessor_count == 0 {
+            break;
+        }
+
+        let zero = builder.alloc_local(ResolvedTy::I64);
+        let still_live = builder.alloc_local(ResolvedTy::Bool);
+        blocks.push(BasicBlock {
+            id: gate,
+            statements: Vec::new(),
+            instructions: vec![
+                Instr::ConstI64 {
+                    dest: zero,
+                    value: 0,
+                },
+                Instr::IntCmp {
+                    dest: still_live,
+                    pred: CmpPred::Eq,
+                    lhs: flag,
+                    rhs: zero,
+                },
+            ],
+            terminator: Terminator::Branch {
+                cond: still_live,
+                then_target: release,
+                else_target: target,
+            },
+        });
+        blocks.push(BasicBlock {
+            id: release,
+            statements: Vec::new(),
+            instructions: vec![
+                Instr::Drop {
+                    place,
+                    ty: recipe.ty,
+                    drop_fn: Some(physical_drop_fn),
+                },
+                Instr::ConstI64 {
+                    dest: flag,
+                    value: 1,
+                },
+            ],
+            terminator: Terminator::Goto { target },
+        });
+        blocks[block_index].instructions.insert(
+            scope_index,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::GuardedRelease {
+                owner,
+                place,
+                flag,
+            }),
+        );
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            target,
+            u32::try_from(scope_index).unwrap_or(u32::MAX),
+        );
+        if let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+            owners, ..
+        })) = blocks[block_index].instructions.get_mut(scope_index + 1)
+        {
+            owners.push(owner);
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "scope-exit publication derives exact releases and rewrites each affected program point atomically"
+)]
+fn materialize_explicit_scope_exits(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    // Join sealing must reason about the lexical boundary before its physical
+    // drops exist; use that same scope-aware state here to materialize those
+    // drops. Strict Checked-MIR replay remains unchanged and verifies the
+    // resulting Release/ScopeExit program independently.
+    let (entries, _, _, _) =
+        ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
+    let owner_types: HashMap<crate::model::OwnerId, ResolvedTy> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint { owner, ty, .. }) => {
+                Some((*owner, ty.clone()))
+            }
+            Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Reset {
+                    replacement, ty, ..
+                }
+                | crate::model::OwnershipEvent::Rearm {
+                    replacement, ty, ..
+                }
+                | crate::model::OwnershipEvent::Join {
+                    replacement, ty, ..
+                },
+            ) => Some((*replacement, ty.clone())),
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                to_owner: Some(owner),
+                to_ty: Some(ty),
+                ..
+            }) => Some((*owner, ty.clone())),
+            _ => None,
+        })
+        .collect();
+    let recipes = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::DropRecipe { owner, recipe }) => {
+                Some((*owner, recipe.clone()))
+            }
+            _ => None,
+        })
+        .fold(
+            HashMap::<crate::model::OwnerId, Vec<crate::model::OwnerDropRecipe>>::new(),
+            |mut by_owner, (owner, recipe)| {
+                by_owner.entry(owner).or_default().push(recipe);
+                by_owner
+            },
+        );
+    let declaration_order: HashMap<BindingId, usize> = builder
+        .owned_locals
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.binding, index))
+        .collect();
+
+    for block in blocks.iter_mut() {
+        let mut live = entries.get(&block.id).cloned().unwrap_or_default();
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let instruction = block.instructions[index].clone();
+            let Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+                scopes,
+                owners: published_owners,
+                carry_places,
+                ..
+            }) = instruction
+            else {
+                drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+                index += 1;
+                continue;
+            };
+            let scope_set = scopes.iter().copied().collect::<HashSet<_>>();
+            // Some lowerers already publish the physical Drop+Release at the
+            // lexical boundary immediately before the ScopeExit marker.  The
+            // exact interpreter has therefore retired that owner by the time
+            // it reaches the marker.  Adopt that adjacent, same-scope release
+            // into the immutable marker instead of treating it as an
+            // unclaimed legacy cleanup and pruning it below.
+            let mut closed = published_owners;
+            for owner in adjacent_scope_release_owners(
+                block,
+                index,
+                &scope_set,
+                &builder.binding_scope,
+                &builder.call_scrutinee_carrier_mint_locals,
+            ) {
+                if !closed.contains(&owner) {
+                    closed.push(owner);
+                }
+            }
+            let carried_owners = live
+                .iter()
+                .filter_map(|(owner, place)| carry_places.contains(place).then_some(*owner))
+                .collect::<Vec<_>>();
+            let mut closing = live
+                .iter()
+                .filter_map(|(owner, place)| {
+                    (!carried_owners.contains(owner)
+                        && builder
+                            .binding_scope
+                            .get(&owner.binding)
+                            .is_some_and(|scope| {
+                                lexical_scope_is_closed(*scope, &scope_set, &builder.scope_info)
+                            }))
+                    .then_some((*owner, *place))
+                })
+                .collect::<Vec<_>>();
+            closing.sort_by_key(|(owner, _)| {
+                std::cmp::Reverse(
+                    declaration_order
+                        .get(&owner.binding)
+                        .copied()
+                        .unwrap_or_default(),
+                )
+            });
+            let mut inserts = Vec::new();
+            for (owner, place) in closing {
+                let Some(ty) = owner_types.get(&owner).cloned() else {
+                    continue;
+                };
+                let published_drop_fn = match recipes.get(&owner).map(Vec::as_slice) {
+                    Some([recipe]) if recipe.ty == ty => {
+                        drop_plan::inline_drop_spec_for_recipe(recipe)
+                    }
+                    _ => None,
+                };
+                let drop_fn =
+                    published_drop_fn.or_else(|| match builder.generator_yield_drop_symbol(&ty) {
+                        ReleaseSymbolVerdict::Wired(symbol) => {
+                            Some(crate::model::DropFnSpec::Release(symbol))
+                        }
+                        ReleaseSymbolVerdict::WiredInPlace(kind) => {
+                            Some(crate::model::DropFnSpec::InPlace(kind))
+                        }
+                        ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => {
+                            resource_drop_fn(&ty, &builder.type_classes)
+                        }
+                    });
+                let Some(drop_fn) = drop_fn else {
+                    continue;
+                };
+                inserts.push(Instr::Drop {
+                    place,
+                    ty,
+                    drop_fn: Some(drop_fn),
+                });
+                inserts.push(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Release { owner, place },
+                ));
+                live.remove(&owner);
+                closed.push(owner);
+            }
+            if let Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+                owners,
+                carried,
+                ..
+            }) = &mut block.instructions[index]
+            {
+                *owners = closed;
+                *carried = carried_owners;
+            }
+            for inserted in inserts {
+                shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(index).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(index, inserted);
+                index += 1;
+            }
+            index += 1;
+        }
+    }
+}
+
+fn unowned_scope_exit_cleanup_pair(
+    block: &BasicBlock,
+    scope_index: usize,
+) -> Option<(usize, usize)> {
+    if scope_index < 2 {
+        return None;
+    }
+    let Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit { owners, .. }) =
+        block.instructions.get(scope_index)?
+    else {
+        return None;
+    };
+    let Instr::OwnershipEvent(crate::model::OwnershipEvent::Release { owner, place }) =
+        block.instructions.get(scope_index - 1)?
+    else {
+        return None;
+    };
+    let Instr::Drop {
+        place: drop_place, ..
+    } = block.instructions.get(scope_index - 2)?
+    else {
+        return None;
+    };
+    (*drop_place == *place && !owners.contains(owner)).then_some((scope_index - 2, scope_index - 1))
+}
+
+/// Remove a physical cleanup emitted by an overlapping lexical-scope path
+/// only when the immediately adjacent immutable `ScopeExit` does not claim that
+/// `OwnerId`. A real cleanup inserted by `materialize_explicit_scope_exits`
+/// records the same owner in `ScopeExit.owners`; any non-adjacent release or a
+/// release at another program point remains visible to ownership validation.
+fn prune_unowned_scope_exit_cleanup(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    for block in blocks {
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let Some((drop_index, release_index)) = unowned_scope_exit_cleanup_pair(block, index)
+            else {
+                index += 1;
+                continue;
+            };
+            block.instructions.remove(release_index);
+            shift_instr_spans_on_remove(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(release_index).unwrap_or(u32::MAX),
+            );
+            block.instructions.remove(drop_index);
+            shift_instr_spans_on_remove(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(drop_index).unwrap_or(u32::MAX),
+            );
+            index = drop_index.saturating_add(1);
+        }
+    }
+}
+
+/// End each receiver-interior alias immediately after its final MIR read when
+/// that last use is unambiguous. Multi-block/path-dependent lifetimes remain
+/// live and therefore fail closed at a receiver invalidation until edge-local
+/// kills have been emitted by their lowering surface.
+fn materialize_explicit_alias_ends(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let mut aliases = HashSet::new();
+    for block in blocks.iter() {
+        for instruction in &block.instructions {
+            match instruction {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::InteriorAlias {
+                    result,
+                    ..
+                }) => {
+                    aliases.insert(*result);
+                }
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::AliasRelocate { from, to }) => {
+                    if aliases.remove(from) {
+                        aliases.insert(*to);
+                    }
+                }
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::AliasEnd { alias }) => {
+                    aliases.remove(alias);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut insertions = Vec::new();
+    for alias in aliases {
+        let mut uses = Vec::new();
+        for (block_index, block) in blocks.iter().enumerate() {
+            for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+                if suspend_places::instr_source_places(instruction).contains(&alias) {
+                    uses.push((block_index, instruction_index));
+                }
+            }
+            if terminator_source_places(&block.terminator, None).contains(&alias) {
+                uses.push((block_index, block.instructions.len()));
+            }
+        }
+        let Some(&(block_index, instruction_index)) = uses.last() else {
+            continue;
+        };
+        if uses.iter().any(|(candidate, _)| *candidate != block_index) {
+            continue;
+        }
+        if instruction_index == blocks[block_index].instructions.len() {
+            for successor in blocks[block_index].successors() {
+                if let Some(successor_index) = blocks.iter().position(|block| block.id == successor)
+                {
+                    insertions.push((successor_index, 0, alias));
+                }
+            }
+            continue;
+        }
+        insertions.push((block_index, instruction_index + 1, alias));
+    }
+    insertions.sort_by_key(|(block, instruction, _)| std::cmp::Reverse((*block, *instruction)));
+    for (block_index, instruction_index, alias) in insertions {
+        let block_id = blocks[block_index].id;
+        blocks[block_index].instructions.insert(
+            instruction_index,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::AliasEnd { alias }),
+        );
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block_id,
+            u32::try_from(instruction_index).unwrap_or(u32::MAX),
+        );
+    }
+}
+
+/// Seal every owner-bearing whole-value `Move` as a destructive physical move
+/// plus an explicit `OwnerId` relocation.
+///
+/// Raw lowering uses `Move` for the bit copy itself.  Before Checked MIR is
+/// sealed, the may-owner interpreter identifies the unique generation at that
+/// exact source place; the source slot is then neutralised and the same owner
+/// generation is relocated to the destination.  A plain read/copy has no live
+/// owner at its source and remains untouched.  This removes the former split
+/// where ownership replay treated all `Move`s as destructive while LLVM still
+/// emitted an ordinary copy and cleanup later destroyed both bit patterns.
+fn relocate_nested_owner_place(
+    place: Place,
+    source_local: u32,
+    destination: Place,
+) -> Option<Place> {
+    let Place::Local(destination_local) = destination else {
+        return None;
+    };
+    match place {
+        Place::Local(local) if local == source_local => Some(Place::Local(destination_local)),
+        Place::DuplexHandle(local) if local == source_local => {
+            Some(Place::DuplexHandle(destination_local))
+        }
+        Place::LambdaActorHandle(local) if local == source_local => {
+            Some(Place::LambdaActorHandle(destination_local))
+        }
+        Place::ActorHandle(local) if local == source_local => {
+            Some(Place::ActorHandle(destination_local))
+        }
+        Place::SendHalf(local) if local == source_local => Some(Place::SendHalf(destination_local)),
+        Place::RecvHalf(local) if local == source_local => Some(Place::RecvHalf(destination_local)),
+        Place::MachineTag(local) if local == source_local => {
+            Some(Place::MachineTag(destination_local))
+        }
+        Place::MachineVariant {
+            local,
+            variant_idx,
+            field_idx,
+        } if local == source_local => Some(Place::MachineVariant {
+            local: destination_local,
+            variant_idx,
+            field_idx,
+        }),
+        Place::EnumTag(local) if local == source_local => Some(Place::EnumTag(destination_local)),
+        Place::EnumVariant {
+            local,
+            variant_idx,
+            field_idx,
+        } if local == source_local => Some(Place::EnumVariant {
+            local: destination_local,
+            variant_idx,
+            field_idx,
+        }),
+        _ => None,
+    }
+}
+
+#[allow(
+    clippy::match_same_arms,
+    clippy::too_many_lines,
+    reason = "whole-value move sealing handles exact, maybe, nested, and predecessor owner authority in one pass"
+)]
+fn materialize_explicit_move_relocations(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+    let (exact_entries, exact_exits) = drop_plan::exact_owner_states(blocks);
+    let mut predecessors: HashMap<u32, Vec<u32>> = HashMap::new();
+    for block in blocks.iter() {
+        for successor in block.successors() {
+            predecessors.entry(successor).or_default().push(block.id);
+        }
+    }
+    let mut edge_carries = Vec::new();
+    for block in blocks.iter_mut() {
+        let mut maybe_live = maybe_entries.get(&block.id).cloned().unwrap_or_default();
+        let mut exact_live = exact_entries.get(&block.id).cloned().unwrap_or_default();
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let instruction = block.instructions[index].clone();
+            let (source, destination) = match instruction {
+                Instr::Move { src, dest } | Instr::WitnessMove { src, dest, .. }
+                    if matches!(src, Place::Local(_)) =>
+                {
+                    (src, dest)
+                }
+                _ => {
+                    drop_plan::apply_maybe_owner_ops(
+                        std::slice::from_ref(&instruction),
+                        &mut maybe_live,
+                    );
+                    drop_plan::apply_exact_owner_ops(
+                        std::slice::from_ref(&instruction),
+                        &mut exact_live,
+                    );
+                    index += 1;
+                    continue;
+                }
+            };
+            if builder
+                .nonowning_vec_iter_copy_moves
+                .contains(&(block.id, source, destination))
+            {
+                // The typed composite-result producer proves this is a
+                // non-consuming cursor read. Its moved sidecar keeps the
+                // copied result non-owning; relocating the source owner would
+                // consume a binding that remains live and create dual places
+                // when alternate arms meet.
+                drop_plan::apply_maybe_owner_ops(
+                    std::slice::from_ref(&instruction),
+                    &mut maybe_live,
+                );
+                drop_plan::apply_exact_owner_ops(
+                    std::slice::from_ref(&instruction),
+                    &mut exact_live,
+                );
+                index += 1;
+                continue;
+            }
+            let retained_copy = index > 0
+                && match &block.instructions[index - 1] {
+                    Instr::StringRetain {
+                        value,
+                        condition:
+                            crate::model::StringRetainCondition::Always
+                            | crate::model::StringRetainCondition::FreshShare,
+                    }
+                    | Instr::BytesRetain { value } => *value == source,
+                    _ => false,
+                };
+            if retained_copy {
+                // This Move materializes an independent `+1`; it is not a
+                // relocation of the source generation. The destination Mint
+                // and adjacent retain are the complete authority, while the
+                // source owner remains at `source`. A neutralize/Relocate here
+                // would erase the live source and attach two generations to
+                // the destination slot.
+                drop_plan::apply_maybe_owner_ops(
+                    std::slice::from_ref(&instruction),
+                    &mut maybe_live,
+                );
+                drop_plan::apply_exact_owner_ops(
+                    std::slice::from_ref(&instruction),
+                    &mut exact_live,
+                );
+                index += 1;
+                continue;
+            }
+            let maybe_owners = maybe_live
+                .iter()
+                .filter_map(|(owner, place)| (*place == source).then_some(*owner))
+                .collect::<Vec<_>>();
+            let nested_owners = match source {
+                Place::Local(source_local) => {
+                    let mut owners = exact_live
+                        .iter()
+                        .filter_map(|(owner, place)| {
+                            (*place != source && base_local(*place) == Some(source_local))
+                                .then_some((*owner, *place))
+                        })
+                        .collect::<Vec<_>>();
+                    owners.sort_by_key(|(owner, _)| (owner.binding.0, owner.generation));
+                    owners
+                }
+                _ => Vec::new(),
+            };
+            let exact_owners = exact_live
+                .iter()
+                .filter_map(|(owner, place)| (*place == source).then_some(*owner))
+                .collect::<Vec<_>>();
+            drop_plan::apply_maybe_owner_ops(std::slice::from_ref(&instruction), &mut maybe_live);
+            drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut exact_live);
+            if maybe_owners.is_empty() && nested_owners.is_empty() {
+                index += 1;
+                continue;
+            }
+
+            let spine_end = (index + 4).min(block.instructions.len());
+            let spine = &block.instructions[index + 1..spine_end];
+            let has_neutralize = spine.iter().any(|candidate| {
+                matches!(
+                    candidate,
+                    Instr::NeutralizePayloadSlot {
+                        place,
+                        transferee: Some(transferee),
+                        ..
+                    } if *place == source && *transferee == destination
+                )
+            });
+            // Maybe-state proves only that some predecessor can carry an
+            // owner here; it cannot choose a canonical OwnerId generation for
+            // this physical move. Publish predecessor EdgeCarry facts first,
+            // let the explicit Join operation establish exact entry state,
+            // and emit a relocation only from that exact state on the later
+            // pass. Using the sole maybe-owner directly fabricated historical
+            // relocations at for-loop/actor-state joins.
+            let maybe_owner = match maybe_owners.as_slice() {
+                [owner] => Some(*owner),
+                _ => None,
+            };
+            let unique_owner = match exact_owners.as_slice() {
+                [owner] => Some(*owner),
+                _ => None,
+            };
+            if exact_owners.is_empty() {
+                if let Some(owner) = maybe_owner {
+                    for predecessor in predecessors.get(&block.id).into_iter().flatten() {
+                        if exact_exits
+                            .get(predecessor)
+                            .is_some_and(|state| state.get(&owner) == Some(&source))
+                        {
+                            edge_carries.push((*predecessor, owner, source, block.id));
+                        }
+                    }
+                }
+            }
+            let has_owner_operation = unique_owner.is_some_and(|owner| {
+                spine.iter().any(|candidate| {
+                    matches!(
+                        candidate,
+                        Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+                            owner: existing,
+                            from,
+                            to,
+                        }) if *existing == owner && *from == source && *to == destination
+                    ) || matches!(
+                        candidate,
+                        Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                            owner: existing,
+                            from,
+                            to: Some(to),
+                            ..
+                        }) if *existing == owner && *from == source && *to == destination
+                    )
+                })
+            });
+
+            let mut inserts = Vec::new();
+            if !has_neutralize {
+                inserts.push(Instr::NeutralizePayloadSlot {
+                    place: source,
+                    transferee: Some(destination),
+                    authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                });
+            }
+            if !has_owner_operation {
+                if let Some(owner) = unique_owner {
+                    inserts.push(Instr::OwnershipEvent(
+                        crate::model::OwnershipEvent::Relocate {
+                            owner,
+                            from: source,
+                            to: destination,
+                        },
+                    ));
+                }
+            }
+            for (offset, inserted) in inserts.into_iter().enumerate() {
+                let insert_at = index + 1 + offset;
+                shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(insert_at).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(insert_at, inserted.clone());
+                drop_plan::apply_maybe_owner_ops(std::slice::from_ref(&inserted), &mut maybe_live);
+                drop_plan::apply_exact_owner_ops(std::slice::from_ref(&inserted), &mut exact_live);
+            }
+            index += 1;
+        }
+    }
+    for (source_block, owner, place, target) in edge_carries {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == source_block) else {
+            continue;
+        };
+        if block.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
+                    owner: existing,
+                    place: existing_place,
+                    target: existing_target,
+                }) if *existing == owner && *existing_place == place && *existing_target == target
+            )
+        }) {
+            continue;
+        }
+        let insert_at = block.instructions.len();
+        block.instructions.push(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::EdgeCarry {
+                owner,
+                place,
+                target,
+            },
+        ));
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            source_block,
+            u32::try_from(insert_at).unwrap_or(u32::MAX),
+        );
+    }
+}
+
+/// Carry owner-bearing projections across a whole aggregate move.
+///
+/// This is deliberately separate from root-owner move materialisation. Member
+/// consumes are not authoritative until their adjacent physical neutralises
+/// have been converted to explicit Transfers. Replaying the final event stream
+/// here prevents an already-consumed child generation from being resurrected
+/// at a later aggregate return while preserving genuinely live machine/enum
+/// payload owners across local-to-local moves.
+fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    for block_index in 0..blocks.len() {
+        let (entries, _) = drop_plan::exact_owner_states(blocks);
+        let block_id = blocks[block_index].id;
+        let mut live = entries.get(&block_id).cloned().unwrap_or_default();
+        let mut index = 0;
+        while index < blocks[block_index].instructions.len() {
+            let instruction = blocks[block_index].instructions[index].clone();
+            let move_places = match instruction {
+                Instr::Move {
+                    src: Place::Local(source_local),
+                    dest: destination @ (Place::Local(_) | Place::ReturnSlot),
+                }
+                | Instr::WitnessMove {
+                    src: Place::Local(source_local),
+                    dest: destination @ (Place::Local(_) | Place::ReturnSlot),
+                    ..
+                } => Some((source_local, destination)),
+                _ => None,
+            };
+            let nested = move_places.map_or_else(Vec::new, |(source_local, _)| {
+                let mut owners = live
+                    .iter()
+                    .filter_map(|(owner, place)| {
+                        (*place != Place::Local(source_local)
+                            && base_local(*place) == Some(source_local))
+                        .then_some((*owner, *place))
+                    })
+                    .collect::<Vec<_>>();
+                owners.sort_by_key(|(owner, _)| (owner.binding.0, owner.generation));
+                owners
+            });
+            drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+            let Some((source_local, destination)) = move_places else {
+                index += 1;
+                continue;
+            };
+            if nested.is_empty() {
+                index += 1;
+                continue;
+            }
+
+            let spine_len = blocks[block_index].instructions[index + 1..]
+                .iter()
+                .take_while(|candidate| {
+                    matches!(
+                        candidate,
+                        Instr::NeutralizePayloadSlot { .. } | Instr::OwnershipEvent(_)
+                    )
+                })
+                .count();
+            let mut insert_at = index + 1 + spine_len;
+            for (owner, from) in nested {
+                let event = if destination == Place::ReturnSlot {
+                    crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        from,
+                        to: None,
+                        to_owner: None,
+                        to_ty: None,
+                    }
+                } else {
+                    let Some(to) = relocate_nested_owner_place(from, source_local, destination)
+                    else {
+                        continue;
+                    };
+                    crate::model::OwnershipEvent::Relocate { owner, from, to }
+                };
+                let inserted = Instr::OwnershipEvent(event);
+                if blocks[block_index].instructions[index + 1..insert_at].contains(&inserted) {
+                    continue;
+                }
+                shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block_id,
+                    u32::try_from(insert_at).unwrap_or(u32::MAX),
+                );
+                blocks[block_index]
+                    .instructions
+                    .insert(insert_at, inserted.clone());
+                drop_plan::apply_exact_owner_ops(std::slice::from_ref(&inserted), &mut live);
+                insert_at += 1;
+            }
+            index += 1;
+        }
+    }
+}
+
+/// Make a projected move into a freshly-minted owner physically disjoint from
+/// its parent carrier at the exact instruction point.
+///
+/// Pattern lowering represents `Some(x) => ...` and analogous enum/aggregate
+/// destructuring as `Move(projected payload -> binder); Mint(binder)`.  The
+/// destination owner is explicit, but without the paired projection
+/// neutralisation the still-live carrier's recursive destructor retains a
+/// second authority over the same payload.  This pass consumes only the
+/// immutable instruction stream and exact `OwnerId` state: a unique live owner
+/// at the projection root plus the adjacent destination Mint is the complete
+/// split proof.  Builder binding/projection ledgers do not participate.
+fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let (entries, _) = drop_plan::maybe_owner_states(blocks);
+    // Contextual resource binders already carry a typed, path-specific
+    // neutralization. In a guarded match arm that handoff deliberately lives
+    // in the guard's true successor; materializing the generic Move/Mint
+    // adoption at destructure time would clear the carrier before a false
+    // guard falls through to the next arm. The `(source, destination)` pair is
+    // unique to the binder local, so an exact match is sufficient authority to
+    // leave placement to the contextual handoff while unknown pairs retain the
+    // generic fail-closed treatment below.
+    let path_specific_adoptions = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(destination),
+                authority: crate::model::NeutralizeAuthority::EphemeralTempConsume,
+            } => Some((*place, *destination)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for block in blocks {
+        let mut live = entries.get(&block.id).cloned().unwrap_or_default();
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let instruction = block.instructions[index].clone();
+            let projection_adoption = match (&instruction, block.instructions.get(index + 1)) {
+                (
+                    Instr::Move { dest, src },
+                    Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                        place, ..
+                    })),
+                ) if *dest == *place && !matches!(src, Place::Local(_)) => {
+                    let root = base_local(*src);
+                    let parent_count = live
+                        .iter()
+                        .filter(|(_, owner_place)| base_local(*owner_place) == root)
+                        .count();
+                    (root.is_some() && parent_count == 1).then_some((*src, *dest))
+                }
+                _ => None,
+            };
+            drop_plan::apply_maybe_owner_ops(std::slice::from_ref(&instruction), &mut live);
+            let Some((source, destination)) = projection_adoption else {
+                index += 1;
+                continue;
+            };
+            let already_explicit = path_specific_adoptions.contains(&(source, destination))
+                || block.instructions.get(index + 2).is_some_and(|next| {
+                    matches!(
+                        next,
+                        Instr::NeutralizePayloadSlot {
+                            place,
+                            transferee: Some(transferee),
+                            authority: crate::model::NeutralizeAuthority::PayloadBindingTransfer,
+                        } if *place == source && *transferee == destination
+                    )
+                });
+            if !already_explicit {
+                let insert_at = index + 2;
+                shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(insert_at).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(
+                    insert_at,
+                    Instr::NeutralizePayloadSlot {
+                        place: source,
+                        transferee: Some(destination),
+                        authority: crate::model::NeutralizeAuthority::PayloadBindingTransfer,
+                    },
+                );
+            }
+            index += 2;
+        }
+    }
+}
+
+/// Replace `Mint(dest owner); Move(dest, source)` with one explicit
+/// source-owner adoption at the move program point.
+///
+/// Match/if-let joins can allocate the destination binding before the selected
+/// payload is moved into it.  Treating that allocation as an independent Mint
+/// creates two owners for one bit pattern; later consuming the source then
+/// appears as a stale second transfer.  The immutable MIR already carries both
+/// identities and the exact physical Move, so canonicalise them directly into
+/// `Move; Transfer(source -> destination owner)` before Checked MIR is sealed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "preminted adoption rewrites the physical move and both owner generations as one local program-point transform"
+)]
+fn canonicalize_preminted_move_adoptions(blocks: &mut [BasicBlock]) {
+    let (entries, _) = drop_plan::exact_owner_states(blocks);
+    for block in blocks {
+        let mut live = entries.get(&block.id).cloned().unwrap_or_default();
+        let mut index = 0;
+        while index + 1 < block.instructions.len() {
+            if let Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                owner: destination_owner,
+                place: destination,
+                ty,
+            }) = block.instructions[index].clone()
+            {
+                let predecessors = live
+                    .iter()
+                    .filter_map(|(owner, place)| (*place == destination).then_some(*owner))
+                    .collect::<Vec<_>>();
+                if let [predecessor] = predecessors.as_slice() {
+                    if predecessor.binding == destination_owner.binding {
+                        // Same-binding generations are published by Reset or
+                        // Join; leave a malformed duplicate Mint visible to
+                        // the validator rather than guessing that authority.
+                    } else {
+                        // Minting on bytes that already have one exact owner would
+                        // create two independent lifetimes for the same physical
+                        // carrier. This is the produced-value wrapper adopting an
+                        // existing carrier into a provisional identity, so publish
+                        // that identity change as a same-place Transfer. A later
+                        // Move/Transfer can then adopt the provisional identity
+                        // into the user binding without hidden ancestry.
+                        let adoption =
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                                owner: *predecessor,
+                                from: destination,
+                                to: Some(destination),
+                                to_owner: Some(destination_owner),
+                                to_ty: Some(ty),
+                            });
+                        block.instructions[index] = adoption.clone();
+                        drop_plan::apply_exact_owner_ops(
+                            std::slice::from_ref(&adoption),
+                            &mut live,
+                        );
+                        index += 1;
+                        continue;
+                    }
+                }
+            }
+            if index + 2 < block.instructions.len() {
+                let terminal = block.instructions[index].clone();
+                let mint = block.instructions[index + 1].clone();
+                let move_instruction = block.instructions[index + 2].clone();
+                if let (
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        owner: source_owner,
+                        from: source,
+                        to: None,
+                        to_owner: None,
+                        ..
+                    }),
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                        owner: destination_owner,
+                        place: destination,
+                        ty,
+                    }),
+                    Instr::Move { dest, src },
+                ) = (terminal, mint, move_instruction)
+                {
+                    if src == source
+                        && dest == destination
+                        && live.get(&source_owner) == Some(&source)
+                        && source_owner.binding != destination_owner.binding
+                    {
+                        let authority = block
+                            .instructions
+                            .get(index + 3)
+                            .and_then(|instruction| match instruction {
+                                Instr::NeutralizePayloadSlot {
+                                    place,
+                                    transferee: Some(transferee),
+                                    authority,
+                                } if *place == source && *transferee == dest => Some(*authority),
+                                _ => None,
+                            })
+                            .unwrap_or(crate::model::NeutralizeAuthority::WholeCarrierConsume);
+                        let physical_move = Instr::Move { dest, src };
+                        let adoption =
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                                owner: source_owner,
+                                from: source,
+                                to: Some(dest),
+                                to_owner: Some(destination_owner),
+                                to_ty: Some(ty),
+                            });
+                        let neutralize = Instr::NeutralizePayloadSlot {
+                            place: source,
+                            transferee: Some(dest),
+                            authority,
+                        };
+                        block.instructions[index] = physical_move.clone();
+                        block.instructions[index + 1] = adoption.clone();
+                        block.instructions[index + 2] = neutralize.clone();
+                        drop_plan::apply_exact_owner_ops(
+                            &[physical_move, adoption, neutralize],
+                            &mut live,
+                        );
+                        index += 3;
+                        continue;
+                    }
+                }
+            }
+            let Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                owner: destination_owner,
+                place: destination,
+                ty,
+            }) = block.instructions[index].clone()
+            else {
+                let instruction = block.instructions[index].clone();
+                drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+                index += 1;
+                continue;
+            };
+            let Instr::Move { dest, src } = block.instructions[index + 1].clone() else {
+                let instruction = block.instructions[index].clone();
+                drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+                index += 1;
+                continue;
+            };
+            let source_owners = live
+                .iter()
+                .filter_map(|(owner, place)| (*place == src).then_some(*owner))
+                .collect::<Vec<_>>();
+            let [source_owner] = source_owners.as_slice() else {
+                let instruction = block.instructions[index].clone();
+                drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+                index += 1;
+                continue;
+            };
+            if dest != destination || source_owner.binding == destination_owner.binding {
+                let instruction = block.instructions[index].clone();
+                drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+                index += 1;
+                continue;
+            }
+            let move_instruction = Instr::Move { dest, src };
+            let transfer = Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner: *source_owner,
+                from: src,
+                to: Some(dest),
+                to_owner: Some(destination_owner),
+                to_ty: Some(ty),
+            });
+            block.instructions[index] = move_instruction.clone();
+            block.instructions[index + 1] = transfer.clone();
+            drop_plan::apply_exact_owner_ops(&[move_instruction, transfer], &mut live);
+            index += 2;
+        }
+        if index < block.instructions.len() {
+            let instruction = block.instructions[index].clone();
+            drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+        }
+    }
+}
+
+/// Canonicalise repeated operations emitted by overlapping typed constructor
+/// paths at one program point.
+///
+/// A constructor can be recognized both by the typed produced-value handoff
+/// path and by the aggregate-member path.  Their physical operation is the
+/// same, and emitting it twice would terminally transfer one `OwnerId` twice.
+/// Deduplication is deliberately limited to one contiguous ownership spine;
+/// an intervening executable instruction starts a new program point, so local
+/// reuse or a later field override is never collapsed.
+fn duplicate_terminal_neutralize_transfer(block: &BasicBlock, index: usize) -> Option<usize> {
+    let Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+        owner,
+        from,
+        to: Some(destination),
+        to_owner: None,
+        ..
+    }) = block.instructions.get(index)?
+    else {
+        return None;
+    };
+    let contiguous = (0..index)
+        .rev()
+        .take_while(|candidate| {
+            matches!(
+                block.instructions[*candidate],
+                Instr::NeutralizePayloadSlot { .. }
+                    | Instr::OwnershipEvent(
+                        crate::model::OwnershipEvent::Transfer { .. }
+                            | crate::model::OwnershipEvent::Relocate { .. }
+                    )
+            )
+        })
+        .collect::<Vec<_>>();
+    let neutralized_place =
+        contiguous
+            .iter()
+            .find_map(|candidate| match block.instructions[*candidate] {
+                Instr::NeutralizePayloadSlot {
+                    place,
+                    transferee: Some(next),
+                    ..
+                } if next == *destination => Some(place),
+                _ => None,
+            })?;
+    let (prior_index, prior_from) =
+        contiguous
+            .iter()
+            .find_map(|candidate| match &block.instructions[*candidate] {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                    owner: prior_owner,
+                    from: prior_from,
+                    to: Some(prior_destination),
+                    to_owner: None,
+                    ..
+                }) if prior_owner == owner && prior_destination == destination => {
+                    Some((*candidate, *prior_from))
+                }
+                _ => None,
+            })?;
+
+    // A Move followed by one physical neutralisation can be published twice:
+    // once against the relocated carrier and once against its now-empty source
+    // slot. Keep the relocated-carrier event, which is the exact owner place
+    // after Move replay. This is not a general "already dead" suppression: an
+    // intervening executable operation, a different destination, or two
+    // unrelated terminal transfers remain visible to the validator.
+    if prior_from == *destination && *from == neutralized_place {
+        Some(index)
+    } else if *from == *destination && prior_from == neutralized_place {
+        Some(prior_index)
+    } else {
+        None
+    }
+}
+
+fn terminal_transfer_duplicates_adopted_successor(block: &BasicBlock, index: usize) -> bool {
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+        owner,
+        to: Some(destination),
+        to_owner: None,
+        ..
+    })) = block.instructions.get(index)
+    else {
+        return false;
+    };
+    (0..index)
+        .rev()
+        .take_while(|candidate| {
+            matches!(
+                block.instructions[*candidate],
+                Instr::NeutralizePayloadSlot { .. }
+                    | Instr::OwnershipEvent(
+                        crate::model::OwnershipEvent::Transfer { .. }
+                            | crate::model::OwnershipEvent::Relocate { .. }
+                    )
+            )
+        })
+        .any(|candidate| {
+            matches!(
+                &block.instructions[candidate],
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                    to: Some(prior_destination),
+                    to_owner: Some(successor),
+                    ..
+                }) if successor == owner && prior_destination == destination
+            )
+        })
+}
+
+/// A loop-carried value can retain historical lowering-ledger generations
+/// after the exact Join has already published the physical child-to-field
+/// move.  Remove the historical Relocate only when that exact relocation and
+/// its terminal handoff occur in the same ownership-only program point.
+/// Executable instructions deliberately break the proof.
+fn historical_relocation_duplicates_exact_handoff(
+    block: &BasicBlock,
+    index: usize,
+    entry: &HashMap<crate::model::OwnerId, Place>,
+) -> bool {
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate { owner, from, to })) =
+        block.instructions.get(index)
+    else {
+        return false;
+    };
+    let contiguous = (0..index)
+        .rev()
+        .take_while(|candidate| {
+            matches!(
+                block.instructions[*candidate],
+                Instr::NeutralizePayloadSlot { .. } | Instr::OwnershipEvent(_)
+            )
+        })
+        .collect::<Vec<_>>();
+    contiguous.iter().any(|candidate| {
+        let Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+            owner: exact_owner,
+            from: exact_from,
+            to: exact_to,
+        }) = &block.instructions[*candidate]
+        else {
+            return false;
+        };
+        if exact_owner.binding != owner.binding
+            || owner.generation >= exact_owner.generation
+            || exact_from != from
+            || exact_to != to
+        {
+            return false;
+        }
+        let mut live = entry.clone();
+        drop_plan::apply_exact_owner_ops(&block.instructions[..*candidate], &mut live);
+        if live.get(exact_owner) != Some(exact_from) || live.contains_key(owner) {
+            return false;
+        }
+        block.instructions[candidate + 1..]
+            .iter()
+            .take_while(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::NeutralizePayloadSlot { .. } | Instr::OwnershipEvent(_)
+                )
+            })
+            .any(|handoff| {
+                matches!(
+                    handoff,
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        owner: handoff_owner,
+                        from: handoff_from,
+                        to: Some(handoff_to),
+                        ..
+                    }) if handoff_owner == exact_owner && handoff_from == to && handoff_to == to
+                )
+            })
+    })
+}
+
+/// A nested aggregate construction can expose the same child handoff at two
+/// lowering layers: first as `child -> field`, then as `field -> aggregate`
+/// immediately before the aggregate owner is minted. The first terminal
+/// transfer already ends the child generation; the second is not another
+/// ownership action and must not retain the predecessor generation identity.
+/// Keep this deliberately exact so an unrelated stale terminal transfer stays
+/// validator-visible.
+fn terminal_transfer_rewraps_ended_aggregate_member(
+    block: &BasicBlock,
+    index: usize,
+    entry: &HashMap<crate::model::OwnerId, Place>,
+) -> bool {
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+        from,
+        to: Some(aggregate),
+        to_owner: None,
+        ..
+    })) = block.instructions.get(index)
+    else {
+        return false;
+    };
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint { place, .. })) =
+        block.instructions.get(index + 1)
+    else {
+        return false;
+    };
+    if place != aggregate {
+        return false;
+    }
+    let mut prior = index.checked_sub(1);
+    while prior.is_some_and(|candidate| {
+        historical_relocation_duplicates_exact_handoff(block, candidate, entry)
+    }) {
+        prior = prior.and_then(|candidate| candidate.checked_sub(1));
+    }
+    matches!(
+        prior.and_then(|candidate| block.instructions.get(candidate)),
+        Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+            from: prior_from,
+            to: Some(prior_destination),
+            to_owner: None,
+            ..
+        })) if prior_from == from && prior_destination == from
+    )
+}
+
+fn terminal_transfer_precedes_its_physical_carrier_move(block: &BasicBlock, index: usize) -> bool {
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+        from,
+        to_owner: None,
+        ..
+    })) = block.instructions.get(index)
+    else {
+        return false;
+    };
+    let Some(Instr::Move { dest, src }) = block.instructions.get(index + 1) else {
+        return false;
+    };
+    if src != from {
+        return false;
+    }
+    matches!(
+        (
+            block.instructions.get(index + 2),
+            block.instructions.get(index + 3),
+        ),
+        (
+            Some(Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(transferee),
+                ..
+            }),
+            Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                from: final_from,
+                to: Some(final_to),
+                to_owner: None,
+                ..
+            }))
+        ) if place == src
+            && transferee == dest
+            && (*final_from == *src || *final_from == *dest)
+            && *final_to == *dest
+    )
+}
+
+/// An actor-state store is the physical publication point for its source.
+///
+/// Assignment lowering emits the authoritative terminal transfer after the
+/// store completes, immediately before clearing the frame-local carrier. A
+/// generic consume pass can additionally publish the same terminal transfer
+/// immediately before the store. Ending the owner there is premature because
+/// the store can still unwind; retain only the exact post-store commit shape.
+fn terminal_transfer_precedes_actor_state_store_commit(block: &BasicBlock, index: usize) -> bool {
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+        owner,
+        from,
+        to: None,
+        to_owner: None,
+        ..
+    })) = block.instructions.get(index)
+    else {
+        return false;
+    };
+    matches!(
+        (
+            block.instructions.get(index + 1),
+            block.instructions.get(index + 2),
+            block.instructions.get(index + 3),
+        ),
+        (
+            Some(Instr::ActorStateFieldStore {
+                src,
+                handoff: crate::model::ActorStateStoreHandoff::ConsumeSource,
+                ..
+            }),
+            Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner: committed_owner,
+                from: committed_from,
+                to: None,
+                to_owner: None,
+                ..
+            })),
+            Some(Instr::NeutralizePayloadSlot {
+                place,
+                transferee: None,
+                authority: crate::model::NeutralizeAuthority::ActorStateStoreConsume,
+            }),
+        ) if src == from
+            && committed_owner == owner
+            && committed_from == from
+            && place == from
+    )
+}
+
+/// Move a terminal handoff to the physical move/neutralize program point when
+/// a generic relocation was appended there under a historical owner identity.
+///
+/// Return and aggregate-tail lowering can first publish `Transfer(owner,
+/// source -> destination)`, then append the actual `Move; Neutralize` and a
+/// construction-ledger `Relocate(stale, source -> destination)`. The latter is
+/// not a second action: replace it with the exact live owner's terminal
+/// transfer, after which `deduplicate_ownership_spines` removes the premature
+/// transfer. Any mismatch in source, destination, or exact owner state remains
+/// validator-visible.
+fn canonicalize_pre_move_terminal_relocations(blocks: &mut [BasicBlock]) {
+    let (entries, _) = drop_plan::exact_owner_states(blocks);
+    for block in blocks {
+        let mut live = entries.get(&block.id).cloned().unwrap_or_default();
+        for index in 0..block.instructions.len() {
+            if index + 3 < block.instructions.len() {
+                let terminal = block.instructions[index].clone();
+                let physical_move = block.instructions[index + 1].clone();
+                let neutralize = block.instructions[index + 2].clone();
+                let historical = block.instructions[index + 3].clone();
+                if let (
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        from,
+                        to: Some(destination),
+                        to_owner: None,
+                        ..
+                    }),
+                    Instr::Move { dest, src },
+                    Instr::NeutralizePayloadSlot {
+                        place,
+                        transferee: Some(transferee),
+                        ..
+                    },
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+                        owner: historical_owner,
+                        from: historical_from,
+                        to: historical_to,
+                    }),
+                ) = (terminal, physical_move, neutralize, historical)
+                {
+                    if src == from
+                        && dest == destination
+                        && place == from
+                        && transferee == destination
+                        && historical_from == from
+                        && historical_to == destination
+                        && historical_owner != owner
+                        && live.get(&owner) == Some(&from)
+                        && !live.contains_key(&historical_owner)
+                    {
+                        block.instructions[index + 3] =
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                                owner,
+                                from,
+                                to: Some(destination),
+                                to_owner: None,
+                                to_ty: None,
+                            });
+                    }
+                }
+            }
+            let operation = block.instructions[index].clone();
+            drop_plan::apply_exact_owner_ops(std::slice::from_ref(&operation), &mut live);
+        }
+    }
+}
+
+fn terminal_transfer_duplicates_prior_relocation(block: &BasicBlock, index: usize) -> bool {
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+        owner,
+        from,
+        to: Some(destination),
+        to_owner: None,
+        ..
+    })) = block.instructions.get(index)
+    else {
+        return false;
+    };
+    matches!(
+        block.instructions.get(index.wrapping_sub(1)),
+        Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+            owner: relocated_owner,
+            from: relocated_from,
+            to: relocated_to,
+        })) if relocated_owner == owner && relocated_from == from && relocated_to == destination
+    )
+}
+
+/// A dyn coercion is the physical consume point for its concrete carrier.
+///
+/// Some aggregate paths publish their generic terminal handoff immediately
+/// before `CoerceToDynTrait`, while dyn lowering publishes the same handoff
+/// after the coercion and its `NeutralizePayloadSlot`.  The former cannot be
+/// authoritative: on unwind/trap before the coercion has completed, the
+/// concrete value is still owned by the caller.  Keep the post-coercion event
+/// and remove only the immediately preceding event for the exact source.
+fn terminal_transfer_precedes_dyn_coercion(block: &BasicBlock, index: usize) -> bool {
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+        from,
+        to_owner: None,
+        ..
+    })) = block.instructions.get(index)
+    else {
+        return false;
+    };
+    matches!(
+        block.instructions.get(index + 1),
+        Some(Instr::CoerceToDynTrait { value, .. }) if value == from
+    )
+}
+
+/// Collapse the two lowerer views of one dyn coercion consume.
+///
+/// The typed operation is `CoerceToDynTrait(source, destination)` followed by
+/// one neutralization of `source`.  A generic aggregate pass can additionally
+/// append `Transfer(source, None)` after the dyn pass has already emitted
+/// `Transfer(source, Some(destination))`.  They are one physical action; keep
+/// the destination-bearing event.  The scan is deliberately confined to the
+/// contiguous post-neutralization ownership spine.
+fn duplicate_dyn_coercion_terminal_transfer(block: &BasicBlock, index: usize) -> bool {
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+        owner,
+        from,
+        to: None,
+        to_owner: None,
+        ..
+    })) = block.instructions.get(index)
+    else {
+        return false;
+    };
+    let contiguous = (0..index).rev().take_while(|candidate| {
+        matches!(
+            block.instructions[*candidate],
+            Instr::NeutralizePayloadSlot { .. }
+                | Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Transfer { .. }
+                        | crate::model::OwnershipEvent::Relocate { .. }
+                )
+        )
+    });
+    contiguous.into_iter().any(|candidate| {
+        matches!(
+            &block.instructions[candidate],
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner: prior_owner,
+                from: prior_from,
+                to: Some(_),
+                to_owner: None,
+                ..
+            }) if prior_owner == owner && prior_from == from
+        )
+    })
+}
+
+/// A typed adoption and a later legacy relocation can describe the same
+/// physical move while the ownership spine is being assembled.
+///
+/// The adoption is authoritative: it ends `owner` and publishes a successor
+/// `OwnerId` at `to`. A later relocation of the ended predecessor is therefore
+/// stale, but may be removed only when the matching adoption is at the same
+/// program point. Drop recipes, guards, and other ownership metadata do not
+/// advance execution; any physical instruction ends the search and leaves the
+/// relocation for Checked-MIR validation to reject.
+fn relocation_duplicates_prior_adoption(block: &BasicBlock, index: usize) -> bool {
+    let Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate { owner, from, to })) =
+        block.instructions.get(index)
+    else {
+        return false;
+    };
+    (0..index)
+        .rev()
+        .take_while(|candidate| {
+            matches!(
+                block.instructions[*candidate],
+                Instr::NeutralizePayloadSlot { .. } | Instr::OwnershipEvent(_)
+            )
+        })
+        .any(|candidate| {
+            matches!(
+                &block.instructions[candidate],
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                    owner: prior_owner,
+                    from: prior_from,
+                    to: Some(prior_to),
+                    to_owner: Some(_),
+                    ..
+                }) if prior_owner == owner && prior_from == from && prior_to == to
+            )
+        })
+}
+
+/// Return the immediately preceding generic neutralize when an earlier
+/// neutralize already names the same physical source/destination in this
+/// ownership-only program point.
+fn duplicate_neutralize_before_relocation(block: &BasicBlock, index: usize) -> Option<usize> {
+    let duplicate = index.checked_sub(1)?;
+    let Instr::NeutralizePayloadSlot {
+        place,
+        transferee: Some(transferee),
+        ..
+    } = block.instructions.get(duplicate)?
+    else {
+        return None;
+    };
+    (0..duplicate)
+        .rev()
+        .take_while(|candidate| {
+            matches!(
+                block.instructions[*candidate],
+                Instr::NeutralizePayloadSlot { .. } | Instr::OwnershipEvent(_)
+            )
+        })
+        .any(|candidate| {
+            matches!(
+                block.instructions[candidate],
+                Instr::NeutralizePayloadSlot {
+                    place: prior_place,
+                    transferee: Some(prior_transferee),
+                    ..
+                } if prior_place == *place && prior_transferee == *transferee
+            )
+        })
+        .then_some(duplicate)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "each bounded ownership-spine shape is an independent local falsifier-backed canonicalization rule"
+)]
+fn deduplicate_ownership_spines(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    canonicalize_pre_move_terminal_relocations(blocks);
+    let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
+    for block in blocks {
+        let exact_entry = exact_entries.get(&block.id).cloned().unwrap_or_default();
+        let mut seen = Vec::<Instr>::new();
+        let mut removals = Vec::new();
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            if relocation_duplicates_prior_adoption(block, index) {
+                removals.push(index);
+                if let Some(neutralize) = duplicate_neutralize_before_relocation(block, index) {
+                    removals.push(neutralize);
+                }
+                continue;
+            }
+            if historical_relocation_duplicates_exact_handoff(block, index, &exact_entry) {
+                removals.push(index);
+                continue;
+            }
+            if terminal_transfer_precedes_dyn_coercion(block, index) {
+                removals.push(index);
+                continue;
+            }
+            if terminal_transfer_precedes_its_physical_carrier_move(block, index) {
+                // The actor/call carrier has not moved yet. The terminal event
+                // after Move+Neutralize is the actual consume program point;
+                // ending the owner here makes that physical transfer stale.
+                removals.push(index);
+                continue;
+            }
+            if terminal_transfer_precedes_actor_state_store_commit(block, index) {
+                // The actor-state store is the physical publication point.
+                // Keep its exact post-store commit and remove the premature
+                // generic terminal event immediately before the store.
+                removals.push(index);
+                continue;
+            }
+            if terminal_transfer_duplicates_prior_relocation(block, index) {
+                // Relocate is the unwind-safe pre-call authority. A terminal
+                // consume of the same source/destination at the same program
+                // point would end the caller's owner before the call; the
+                // normal successor carries the actual terminal commit.
+                removals.push(index);
+                continue;
+            }
+            let spine_instruction = matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot { .. }
+                    | Instr::OwnershipEvent(
+                        crate::model::OwnershipEvent::Transfer { .. }
+                            | crate::model::OwnershipEvent::Relocate { .. }
+                    )
+            );
+            if !spine_instruction {
+                seen.clear();
+                continue;
+            }
+            if let Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner,
+                to: Some(destination),
+                to_owner: Some(_),
+                ..
+            }) = instruction
+            {
+                if let Some(previous) = (0..index)
+                    .rev()
+                    .take_while(|candidate| {
+                        matches!(
+                            block.instructions[*candidate],
+                            Instr::NeutralizePayloadSlot { .. }
+                                | Instr::OwnershipEvent(
+                                    crate::model::OwnershipEvent::Transfer { .. }
+                                        | crate::model::OwnershipEvent::Relocate { .. }
+                                )
+                        )
+                    })
+                    .find(|candidate| {
+                        matches!(
+                            &block.instructions[*candidate],
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                                owner: prior_owner,
+                                to: Some(prior_destination),
+                                to_owner: None,
+                                ..
+                            }) if prior_owner == owner && prior_destination == destination
+                        )
+                    })
+                {
+                    // One typed adoption ends the provisional generation and
+                    // simultaneously publishes its successor. A provisional
+                    // terminal transfer emitted by a lower-level neutralize
+                    // pass at the same contiguous program point is not a
+                    // second action; retaining both ends the source before
+                    // the adoption can execute.
+                    removals.push(previous);
+                }
+            }
+            if duplicate_dyn_coercion_terminal_transfer(block, index) {
+                removals.push(index);
+                continue;
+            }
+            if terminal_transfer_rewraps_ended_aggregate_member(block, index, &exact_entry) {
+                removals.push(index);
+                continue;
+            }
+            if let Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner,
+                to: Some(destination),
+                to_owner: None,
+                ..
+            }) = instruction
+            {
+                if terminal_transfer_duplicates_adopted_successor(block, index) {
+                    // The prior Transfer created this very owner at the same
+                    // destination. A lower-level neutralize pass also emitted
+                    // a terminal consume for the successor although no second
+                    // physical handoff occurred. Keeping it destroys the
+                    // adopted value immediately and makes its lexical Release
+                    // stale.
+                    removals.push(index);
+                    continue;
+                }
+                if let Some(duplicate) = duplicate_terminal_neutralize_transfer(block, index) {
+                    removals.push(duplicate);
+                    if duplicate == index {
+                        continue;
+                    }
+                }
+                let later_relocation = block.instructions[index + 1..]
+                    .iter()
+                    .take_while(|candidate| {
+                        matches!(
+                            candidate,
+                            Instr::NeutralizePayloadSlot { .. }
+                                | Instr::OwnershipEvent(
+                                    crate::model::OwnershipEvent::Transfer { .. }
+                                        | crate::model::OwnershipEvent::Relocate { .. }
+                                )
+                        )
+                    })
+                    .any(|candidate| {
+                        matches!(
+                            candidate,
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+                                owner: relocation_owner,
+                                to,
+                                ..
+                            }) if relocation_owner == owner && to == destination
+                        )
+                    });
+                if later_relocation {
+                    // The Relocate is the unwind-safe pre-call authority: the
+                    // caller still owns this carrier until the normal successor
+                    // commits the consume. A terminal event at the same
+                    // program point is a stale lower-level duplicate.
+                    removals.push(index);
+                    continue;
+                }
+                let prior_adoption = (0..index)
+                    .rev()
+                    .take_while(|candidate| {
+                        matches!(
+                            block.instructions[*candidate],
+                            Instr::NeutralizePayloadSlot { .. }
+                                | Instr::OwnershipEvent(
+                                    crate::model::OwnershipEvent::Transfer { .. }
+                                        | crate::model::OwnershipEvent::Relocate { .. }
+                                )
+                        )
+                    })
+                    .any(|candidate| {
+                        matches!(
+                            &block.instructions[candidate],
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                                owner: prior_owner,
+                                to: Some(prior_destination),
+                                to_owner: Some(_),
+                                ..
+                            }) if prior_owner == owner && prior_destination == destination
+                        )
+                    });
+                if prior_adoption {
+                    removals.push(index);
+                    continue;
+                }
+            }
+            if seen.contains(instruction) {
+                removals.push(index);
+                continue;
+            }
+            seen.push(instruction.clone());
+        }
+        removals.sort_unstable();
+        removals.dedup();
+        for index in removals.into_iter().rev() {
+            block.instructions.remove(index);
+            shift_instr_spans_on_remove(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+        }
+    }
+}
+
+/// Bind a physical release to the unique `OwnerId` live at that exact place.
+///
+/// Scope lowering can schedule a destructor under the lexical binder that
+/// introduced a value before a same-block typed adoption gives its bytes a new
+/// owner identity. Once the explicit Transfer is present, the old identity is
+/// historical and a later `Release(old, adopted_place)` is stale. The same
+/// applies to a `GuardedRelease` authored before an ownership-SSA `Join`: the
+/// physical flag stays valid, but its owner identity must name the joined
+/// generation. Re-key only when Checked-MIR replay proves exactly one live
+/// generation at the release place; zero or ambiguous matches remain unchanged
+/// and fail validation.
+fn unique_published_authority<T: PartialEq>(values: Option<&[T]>) -> Option<&T> {
+    let values = values?;
+    let first = values.first()?;
+    values.iter().all(|value| value == first).then_some(first)
+}
+
+fn canonicalize_release_owner_ids(blocks: &mut [BasicBlock]) {
+    use crate::model::OwnershipEvent;
+
+    let mut owner_types = HashMap::<crate::model::OwnerId, Vec<ResolvedTy>>::new();
+    let mut owner_recipes =
+        HashMap::<crate::model::OwnerId, Vec<crate::model::OwnerDropRecipe>>::new();
+    let mut owner_guards =
+        HashMap::<crate::model::OwnerId, Vec<(Place, crate::model::OwnershipGuardKind)>>::new();
+    for instruction in blocks.iter().flat_map(|block| &block.instructions) {
+        let Instr::OwnershipEvent(event) = instruction else {
+            continue;
+        };
+        match event {
+            OwnershipEvent::Mint { owner, ty, .. }
+            | OwnershipEvent::Reset {
+                replacement: owner,
+                ty,
+                ..
+            }
+            | OwnershipEvent::Rearm {
+                replacement: owner,
+                ty,
+                ..
+            }
+            | OwnershipEvent::Join {
+                replacement: owner,
+                ty,
+                ..
+            }
+            | OwnershipEvent::Transfer {
+                to_owner: Some(owner),
+                to_ty: Some(ty),
+                ..
+            } => owner_types.entry(*owner).or_default().push(ty.clone()),
+            OwnershipEvent::DropRecipe { owner, recipe } => owner_recipes
+                .entry(*owner)
+                .or_default()
+                .push(recipe.clone()),
+            OwnershipEvent::Guard { owner, flag, kind } => {
+                owner_guards.entry(*owner).or_default().push((*flag, *kind));
+            }
+            _ => {}
+        }
+    }
+    let guarded_authority_matches = |historical: crate::model::OwnerId,
+                                     current: crate::model::OwnerId,
+                                     flag: Place| {
+        historical.binding == current.binding
+            && unique_published_authority(owner_types.get(&historical).map(Vec::as_slice))
+                == unique_published_authority(owner_types.get(&current).map(Vec::as_slice))
+            && unique_published_authority(owner_types.get(&historical).map(Vec::as_slice)).is_some()
+            && unique_published_authority(owner_recipes.get(&historical).map(Vec::as_slice))
+                == unique_published_authority(owner_recipes.get(&current).map(Vec::as_slice))
+            && unique_published_authority(owner_recipes.get(&historical).map(Vec::as_slice))
+                .is_some()
+            && unique_published_authority(owner_guards.get(&historical).map(Vec::as_slice))
+                == unique_published_authority(owner_guards.get(&current).map(Vec::as_slice))
+            && unique_published_authority(owner_guards.get(&historical).map(Vec::as_slice))
+                .is_some_and(|(published_flag, _)| *published_flag == flag)
+    };
+
+    let (entries, _) = drop_plan::exact_owner_states(blocks);
+    for block in blocks {
+        let mut live = entries.get(&block.id).cloned().unwrap_or_default();
+        for instruction in &mut block.instructions {
+            match instruction {
+                Instr::OwnershipEvent(OwnershipEvent::Release { owner, place })
+                    if !live.contains_key(owner) =>
+                {
+                    let candidates = live
+                        .iter()
+                        .filter_map(|(candidate, current)| {
+                            (*current == *place).then_some(*candidate)
+                        })
+                        .collect::<Vec<_>>();
+                    if let [replacement] = candidates.as_slice() {
+                        *owner = *replacement;
+                    }
+                }
+                Instr::OwnershipEvent(OwnershipEvent::GuardedRelease { owner, place, flag })
+                    if !live.contains_key(owner) =>
+                {
+                    let historical = *owner;
+                    let candidates = live
+                        .iter()
+                        .filter_map(|(candidate, current)| {
+                            (candidate.binding == historical.binding && *current == *place)
+                                .then_some(*candidate)
+                        })
+                        .collect::<Vec<_>>();
+                    if let [replacement] = candidates.as_slice() {
+                        if guarded_authority_matches(historical, *replacement, *flag) {
+                            *owner = *replacement;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            let operation = instruction.clone();
+            drop_plan::apply_exact_owner_ops(std::slice::from_ref(&operation), &mut live);
+        }
+    }
+}
+
+/// Repair a sequential `Rearm` whose construction-time predecessor was
+/// superseded by an ownership-SSA `Join` at a dominating loop header.
+///
+/// The repair is deliberately exact and fail-closed: immutable exact and
+/// maybe-state must agree on one same-binding owner at the Rearm place, the
+/// stale successor must have this Rearm as its sole definition, and no other
+/// generation of the binding may be live. The successor receives a fresh
+/// generation and every reference to that uniquely-defined epoch (including
+/// the loop Join's incoming list) is renamed together. Ambiguous/co-live
+/// shapes remain stale so Checked-MIR validation rejects them.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exact/maybe selection and whole-event-stream rewrite are one atomic canonicalization"
+)]
+fn canonicalize_join_dominated_rearm_lineages(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    loop {
+        let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
+        let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+        let mut selected = None;
+        'blocks: for (block_index, block) in blocks.iter().enumerate() {
+            let mut exact = exact_entries.get(&block.id).cloned().unwrap_or_default();
+            let mut maybe = maybe_entries.get(&block.id).cloned().unwrap_or_default();
+            for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+                if let Instr::OwnershipEvent(crate::model::OwnershipEvent::Rearm {
+                    previous,
+                    replacement,
+                    place,
+                    ..
+                }) = instruction
+                {
+                    let exact_candidates = exact
+                        .iter()
+                        .filter_map(|(owner, current)| {
+                            (owner.binding == previous.binding).then_some((*owner, *current))
+                        })
+                        .collect::<Vec<_>>();
+                    let maybe_candidates = maybe
+                        .iter()
+                        .filter(|(owner, _)| owner.binding == previous.binding)
+                        .copied()
+                        .collect::<HashSet<_>>();
+                    let unique_definition = blocks
+                        .iter()
+                        .flat_map(|candidate_block| &candidate_block.instructions)
+                        .filter(|candidate| {
+                            matches!(
+                                candidate,
+                                Instr::OwnershipEvent(
+                                    crate::model::OwnershipEvent::Mint { owner, .. }
+                                        | crate::model::OwnershipEvent::Reset {
+                                            replacement: owner,
+                                            ..
+                                        }
+                                        | crate::model::OwnershipEvent::Rearm {
+                                            replacement: owner,
+                                            ..
+                                        }
+                                        | crate::model::OwnershipEvent::Join {
+                                            replacement: owner,
+                                            ..
+                                        }
+                                        | crate::model::OwnershipEvent::Transfer {
+                                            to_owner: Some(owner),
+                                            ..
+                                        }
+                                ) if owner == replacement
+                            )
+                        })
+                        .count()
+                        == 1;
+                    let [(predecessor, candidate_place)] = exact_candidates.as_slice() else {
+                        drop_plan::apply_exact_owner_ops(
+                            std::slice::from_ref(instruction),
+                            &mut exact,
+                        );
+                        drop_plan::apply_maybe_owner_ops(
+                            std::slice::from_ref(instruction),
+                            &mut maybe,
+                        );
+                        continue;
+                    };
+                    let Some(successor_generation) = predecessor.generation.checked_add(1) else {
+                        continue;
+                    };
+                    let successor = crate::model::OwnerId {
+                        binding: replacement.binding,
+                        generation: successor_generation,
+                    };
+                    let successor_available = successor == *replacement
+                        || blocks
+                            .iter()
+                            .flat_map(|candidate_block| &candidate_block.instructions)
+                            .filter_map(|candidate| match candidate {
+                                Instr::OwnershipEvent(event) => Some(event),
+                                _ => None,
+                            })
+                            .flat_map(ownership_event_owner_ids)
+                            .all(|owner| owner != successor);
+                    if *previous != *predecessor
+                        && *candidate_place == *place
+                        && maybe_candidates == HashSet::from([(*predecessor, *candidate_place)])
+                        && unique_definition
+                        && successor_available
+                    {
+                        selected = Some((
+                            block_index,
+                            instruction_index,
+                            *predecessor,
+                            *replacement,
+                            successor,
+                        ));
+                        break 'blocks;
+                    }
+                }
+                drop_plan::apply_exact_owner_ops(std::slice::from_ref(instruction), &mut exact);
+                drop_plan::apply_maybe_owner_ops(std::slice::from_ref(instruction), &mut maybe);
+            }
+        }
+        let Some((block_index, instruction_index, predecessor, stale, successor)) = selected else {
+            break;
+        };
+        for block in blocks.iter_mut() {
+            for instruction in &mut block.instructions {
+                let Instr::OwnershipEvent(event) = instruction else {
+                    continue;
+                };
+                rewrite_ownership_event_owner(event, stale, successor);
+            }
+        }
+        let Instr::OwnershipEvent(crate::model::OwnershipEvent::Rearm { previous, .. }) =
+            &mut blocks[block_index].instructions[instruction_index]
+        else {
+            unreachable!("selected instruction remains a Rearm")
+        };
+        *previous = predecessor;
+        builder
+            .owner_generations
+            .entry(successor.binding)
+            .and_modify(|generation| *generation = (*generation).max(successor.generation))
+            .or_insert(successor.generation);
+    }
+}
+
+/// Refresh Join incoming identities after nested joins and repaired Rearm
+/// epochs have reached their final generations. Rewrite only when every CFG
+/// predecessor carries one unambiguous owner for the binding at the declared
+/// place; ownerless, wrong-place, and co-live edges remain validator-visible.
+fn canonicalize_join_incoming_owner_ids(blocks: &mut [BasicBlock], builder: &Builder) {
+    let (_, _, maybe_exits, _) =
+        ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
+    let mut predecessors = HashMap::<u32, Vec<u32>>::new();
+    for block in blocks.iter() {
+        for successor in block.successors() {
+            predecessors.entry(successor).or_default().push(block.id);
+        }
+    }
+    for incoming_blocks in predecessors.values_mut() {
+        incoming_blocks.sort_unstable();
+        incoming_blocks.dedup();
+    }
+    for block in blocks {
+        let Some(incoming_blocks) = predecessors.get(&block.id) else {
+            continue;
+        };
+        for instruction in &mut block.instructions {
+            let Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
+                incoming,
+                replacement,
+                place,
+                ..
+            }) = instruction
+            else {
+                continue;
+            };
+            let mut refreshed = Vec::with_capacity(incoming_blocks.len());
+            let mut unambiguous = true;
+            for predecessor in incoming_blocks {
+                let candidates = maybe_exits
+                    .get(predecessor)
+                    .into_iter()
+                    .flat_map(|state| state.iter())
+                    .filter_map(|(owner, current)| {
+                        (owner.binding == replacement.binding).then_some((*owner, *current))
+                    })
+                    .collect::<Vec<_>>();
+                let [(owner, current)] = candidates.as_slice() else {
+                    unambiguous = false;
+                    break;
+                };
+                if current != place {
+                    unambiguous = false;
+                    break;
+                }
+                refreshed.push(*owner);
+            }
+            if unambiguous {
+                refreshed.sort_by_key(|owner| owner.generation);
+                refreshed.dedup();
+                *incoming = refreshed;
+            }
+        }
+    }
+}
+
+fn ownership_event_owner_ids(event: &crate::model::OwnershipEvent) -> Vec<crate::model::OwnerId> {
+    use crate::model::OwnershipEvent;
+
+    match event {
+        OwnershipEvent::Mint { owner, .. }
+        | OwnershipEvent::DropRecipe { owner, .. }
+        | OwnershipEvent::Relocate { owner, .. }
+        | OwnershipEvent::Release { owner, .. }
+        | OwnershipEvent::GuardedRelease { owner, .. }
+        | OwnershipEvent::DemoteToAlias { owner, .. }
+        | OwnershipEvent::Guard { owner, .. }
+        | OwnershipEvent::EdgeCarry { owner, .. } => vec![*owner],
+        OwnershipEvent::Transfer {
+            owner, to_owner, ..
+        } => std::iter::once(*owner)
+            .chain(to_owner.iter().copied())
+            .collect(),
+        OwnershipEvent::Reset {
+            previous,
+            replacement,
+            ..
+        }
+        | OwnershipEvent::Rearm {
+            previous,
+            replacement,
+            ..
+        } => vec![*previous, *replacement],
+        OwnershipEvent::InteriorAlias { receiver_owner, .. } => {
+            receiver_owner.iter().copied().collect()
+        }
+        OwnershipEvent::Join {
+            incoming,
+            replacement,
+            ..
+        } => incoming
+            .iter()
+            .copied()
+            .chain(std::iter::once(*replacement))
+            .collect(),
+        OwnershipEvent::ScopeExit {
+            owners, carried, ..
+        } => owners.iter().chain(carried).copied().collect(),
+        OwnershipEvent::AliasRelocate { .. } | OwnershipEvent::AliasEnd { .. } => Vec::new(),
+    }
+}
+
+fn rewrite_ownership_event_owner(
+    event: &mut crate::model::OwnershipEvent,
+    stale: crate::model::OwnerId,
+    replacement: crate::model::OwnerId,
+) {
+    use crate::model::OwnershipEvent;
+
+    for owner in ownership_event_owner_ids(event) {
+        if owner != stale {
+            continue;
+        }
+        match event {
+            OwnershipEvent::Mint { owner, .. }
+            | OwnershipEvent::DropRecipe { owner, .. }
+            | OwnershipEvent::Relocate { owner, .. }
+            | OwnershipEvent::Release { owner, .. }
+            | OwnershipEvent::GuardedRelease { owner, .. }
+            | OwnershipEvent::DemoteToAlias { owner, .. }
+            | OwnershipEvent::Guard { owner, .. }
+            | OwnershipEvent::EdgeCarry { owner, .. }
+                if *owner == stale =>
+            {
+                *owner = replacement;
+            }
+            OwnershipEvent::Transfer {
+                owner, to_owner, ..
+            } => {
+                if *owner == stale {
+                    *owner = replacement;
+                }
+                if *to_owner == Some(stale) {
+                    *to_owner = Some(replacement);
+                }
+            }
+            OwnershipEvent::Reset {
+                previous,
+                replacement: successor,
+                ..
+            }
+            | OwnershipEvent::Rearm {
+                previous,
+                replacement: successor,
+                ..
+            } => {
+                if *previous == stale {
+                    *previous = replacement;
+                }
+                if *successor == stale {
+                    *successor = replacement;
+                }
+            }
+            OwnershipEvent::InteriorAlias { receiver_owner, .. } => {
+                if *receiver_owner == Some(stale) {
+                    *receiver_owner = Some(replacement);
+                }
+            }
+            OwnershipEvent::Join {
+                incoming,
+                replacement: successor,
+                ..
+            } => {
+                for owner in incoming {
+                    if *owner == stale {
+                        *owner = replacement;
+                    }
+                }
+                if *successor == stale {
+                    *successor = replacement;
+                }
+            }
+            OwnershipEvent::ScopeExit {
+                owners, carried, ..
+            } => {
+                for owner in owners.iter_mut().chain(carried) {
+                    if *owner == stale {
+                        *owner = replacement;
+                    }
+                }
+            }
+            OwnershipEvent::AliasRelocate { .. }
+            | OwnershipEvent::AliasEnd { .. }
+            | OwnershipEvent::Mint { .. }
+            | OwnershipEvent::DropRecipe { .. }
+            | OwnershipEvent::Relocate { .. }
+            | OwnershipEvent::Release { .. }
+            | OwnershipEvent::GuardedRelease { .. }
+            | OwnershipEvent::DemoteToAlias { .. }
+            | OwnershipEvent::Guard { .. }
+            | OwnershipEvent::EdgeCarry { .. } => {}
+        }
+    }
+}
+
+/// Scope ids are opaque identities. A parent scope marker closes owners in
+/// its descendant scopes only when the explicit parent graph proves that
+/// ancestry; missing/cyclic links fail closed.
+fn lexical_scope_is_closed(
+    binding_scope: ScopeId,
+    exited_scopes: &HashSet<ScopeId>,
+    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
+) -> bool {
+    let mut current = binding_scope;
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return false;
+        }
+        if exited_scopes.contains(&current) {
+            return true;
+        }
+        let Some(entry) = scope_info.get(&current) else {
+            return false;
+        };
+        let Some(parent) = entry.parent else {
+            return false;
+        };
+        current = parent;
+    }
+}
+
+fn apply_lexical_scope_exit_to_exact_state(
+    instruction: &Instr,
+    binding_scopes: &HashMap<BindingId, ScopeId>,
+    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
+    live: &mut drop_plan::ExactOwnerState,
+) {
+    drop_plan::apply_exact_owner_ops(std::slice::from_ref(instruction), live);
+    let Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+        scopes,
+        carry_places,
+        ..
+    }) = instruction
+    else {
+        return;
+    };
+    let exited_scopes = scopes.iter().copied().collect::<HashSet<_>>();
+    live.retain(|owner, place| {
+        carry_places.contains(place)
+            || binding_scopes
+                .get(&owner.binding)
+                .is_none_or(|scope| !lexical_scope_is_closed(*scope, &exited_scopes, scope_info))
+    });
+}
+
+fn apply_lexical_scope_exit_to_maybe_state(
+    instruction: &Instr,
+    binding_scopes: &HashMap<BindingId, ScopeId>,
+    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
+    live: &mut drop_plan::MaybeOwnerState,
+) {
+    drop_plan::apply_maybe_owner_ops(std::slice::from_ref(instruction), live);
+    let Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+        scopes,
+        carry_places,
+        ..
+    }) = instruction
+    else {
+        return;
+    };
+    let exited_scopes = scopes.iter().copied().collect::<HashSet<_>>();
+    live.retain(|(owner, place)| {
+        carry_places.contains(place)
+            || binding_scopes
+                .get(&owner.binding)
+                .is_none_or(|scope| !lexical_scope_is_closed(*scope, &exited_scopes, scope_info))
+    });
+}
+
+fn apply_lexical_scope_exit_to_must_state(
+    instructions: &[Instr],
+    binding_scopes: &HashMap<BindingId, ScopeId>,
+    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
+    live: &mut drop_plan::MustBindingOwnerState,
+) {
+    for instruction in instructions {
+        match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint { owner, place, .. }) => {
+                live.insert(owner.binding, *place);
+            }
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner,
+                to,
+                to_owner,
+                ..
+            }) => {
+                live.remove(&owner.binding);
+                if let Some((next, destination)) = to_owner.zip(*to) {
+                    live.insert(next.binding, destination);
+                }
+            }
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate { owner, to, .. }) => {
+                if let Some(place) = live.get_mut(&owner.binding) {
+                    *place = *to;
+                }
+            }
+            Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Release { owner, .. }
+                | crate::model::OwnershipEvent::GuardedRelease { owner, .. }
+                | crate::model::OwnershipEvent::DemoteToAlias { owner, .. },
+            ) => {
+                live.remove(&owner.binding);
+            }
+            Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Reset {
+                    previous,
+                    replacement,
+                    place,
+                    ..
+                }
+                | crate::model::OwnershipEvent::Rearm {
+                    previous,
+                    replacement,
+                    place,
+                    ..
+                },
+            ) => {
+                live.remove(&previous.binding);
+                live.insert(replacement.binding, *place);
+            }
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
+                incoming,
+                replacement,
+                place,
+                ..
+            }) => {
+                for owner in incoming {
+                    live.remove(&owner.binding);
+                }
+                live.insert(replacement.binding, *place);
+            }
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+                scopes,
+                carry_places,
+                ..
+            }) => {
+                let exited_scopes = scopes.iter().copied().collect::<HashSet<_>>();
+                live.retain(|binding, place| {
+                    carry_places.contains(place)
+                        || binding_scopes.get(binding).is_none_or(|scope| {
+                            !lexical_scope_is_closed(*scope, &exited_scopes, scope_info)
+                        })
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Publish one exact owner generation at a CFG join whose incoming edges carry
+/// different generations of the same binding in the same physical slot.
+///
+/// Mutable loop-carried values are the canonical shape: the preheader carries
+/// the initial generation while the back edge carries the reassignment
+/// generation. Intersecting those IDs would erase ownership at the loop header;
+/// reusing either predecessor ID would make the other edge stale. Each
+/// single-successor edge therefore transfers its incoming `OwnerId` to one shared
+/// successor `OwnerId`. Checked-MIR dataflow then meets the identical generation
+/// at the header without consulting Builder generation ledgers.
+#[allow(
+    clippy::type_complexity,
+    reason = "the four returned maps are the exact/maybe/must lattices consumed together by join sealing"
+)]
+fn ownership_join_states(
+    blocks: &[BasicBlock],
+    binding_scopes: &HashMap<BindingId, ScopeId>,
+    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
+) -> (
+    HashMap<u32, drop_plan::ExactOwnerState>,
+    HashMap<u32, drop_plan::ExactOwnerState>,
+    HashMap<u32, drop_plan::MaybeOwnerState>,
+    HashMap<u32, drop_plan::MustBindingOwnerState>,
+) {
+    let mut exact_entries = HashMap::from([(ENTRY_BLOCK_ID, drop_plan::ExactOwnerState::new())]);
+    let mut exact_exits = HashMap::new();
+    let mut maybe_entries = HashMap::from([(ENTRY_BLOCK_ID, drop_plan::MaybeOwnerState::new())]);
+    let mut maybe_exits = HashMap::new();
+    let mut must_entries =
+        HashMap::from([(ENTRY_BLOCK_ID, drop_plan::MustBindingOwnerState::new())]);
+    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
+    while let Some(block_id) = queue.pop_front() {
+        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let mut exact = exact_entries.get(&block_id).cloned().unwrap_or_default();
+        let mut maybe = maybe_entries.get(&block_id).cloned().unwrap_or_default();
+        let mut must = must_entries.get(&block_id).cloned().unwrap_or_default();
+        for instruction in &block.instructions {
+            apply_lexical_scope_exit_to_exact_state(
+                instruction,
+                binding_scopes,
+                scope_info,
+                &mut exact,
+            );
+            apply_lexical_scope_exit_to_maybe_state(
+                instruction,
+                binding_scopes,
+                scope_info,
+                &mut maybe,
+            );
+        }
+        apply_lexical_scope_exit_to_must_state(
+            &block.instructions,
+            binding_scopes,
+            scope_info,
+            &mut must,
+        );
+        exact_exits.insert(block_id, exact.clone());
+        maybe_exits.insert(block_id, maybe.clone());
+        for successor in block.successors() {
+            let exact_changed = if let Some(existing) = exact_entries.get_mut(&successor) {
+                let joined = existing
+                    .iter()
+                    .filter_map(|(owner, place)| {
+                        (exact.get(owner) == Some(place)).then_some((*owner, *place))
+                    })
+                    .collect();
+                if *existing == joined {
+                    false
+                } else {
+                    *existing = joined;
+                    true
+                }
+            } else {
+                exact_entries.insert(successor, exact.clone());
+                true
+            };
+            let maybe_changed = if let Some(existing) = maybe_entries.get_mut(&successor) {
+                let before = existing.len();
+                existing.extend(maybe.iter().copied());
+                existing.len() != before
+            } else {
+                maybe_entries.insert(successor, maybe.clone());
+                true
+            };
+            let must_changed = if let Some(existing) = must_entries.get_mut(&successor) {
+                let joined = existing
+                    .iter()
+                    .filter_map(|(binding, place)| {
+                        (must.get(binding) == Some(place)).then_some((*binding, *place))
+                    })
+                    .collect();
+                if *existing == joined {
+                    false
+                } else {
+                    *existing = joined;
+                    true
+                }
+            } else {
+                must_entries.insert(successor, must.clone());
+                true
+            };
+            if exact_changed || maybe_changed || must_changed {
+                queue.push_back(successor);
+            }
+        }
+    }
+    (exact_entries, exact_exits, maybe_exits, must_entries)
+}
+
+#[cfg(test)]
+mod lexical_scope_join_tests {
+    use super::*;
+    use crate::model::{OwnerDropRecipe, OwnerId, OwnershipEvent};
+    use crate::ownership::CowHeapRelease;
+
+    fn owner(generation: u32) -> OwnerId {
+        OwnerId {
+            binding: BindingId(1),
+            generation,
+        }
+    }
+
+    fn block(id: u32, instructions: Vec<Instr>, target: u32) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: Vec::new(),
+            instructions,
+            terminator: Terminator::Goto { target },
+        }
+    }
+
+    fn scope_exit(scopes: Vec<ScopeId>, carry_places: Vec<Place>) -> Instr {
+        Instr::OwnershipEvent(OwnershipEvent::ScopeExit {
+            scopes,
+            owners: Vec::new(),
+            carry_places,
+            carried: Vec::new(),
+        })
+    }
+
+    fn loop_blocks(exit: Instr) -> Vec<BasicBlock> {
+        vec![
+            block(ENTRY_BLOCK_ID, Vec::new(), 1),
+            block(
+                1,
+                vec![
+                    Instr::OwnershipEvent(OwnershipEvent::Mint {
+                        owner: owner(0),
+                        place: Place::Local(0),
+                        ty: ResolvedTy::String,
+                    }),
+                    Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                        owner: owner(0),
+                        recipe: OwnerDropRecipe {
+                            ty: ResolvedTy::String,
+                            drop_fn: None,
+                            kind: DropKind::CowHeap {
+                                release: CowHeapRelease::String,
+                            },
+                            declaration_order: 0,
+                        },
+                    }),
+                ],
+                2,
+            ),
+            block(2, vec![exit], 1),
+        ]
+    }
+
+    fn nested_scope_builder(binding_scope: ScopeId, parent: ScopeId) -> Builder {
+        let mut builder = Builder::default();
+        builder.binding_scope.insert(BindingId(1), binding_scope);
+        builder.scope_info.insert(
+            binding_scope,
+            ScopeInfoEntry {
+                parent: Some(parent),
+                min_start: 0,
+                max_end: 1,
+            },
+        );
+        builder.scope_info.insert(
+            parent,
+            ScopeInfoEntry {
+                parent: None,
+                min_start: 0,
+                max_end: 1,
+            },
+        );
+        builder
+    }
+
+    #[test]
+    fn parent_scope_exit_releases_nested_loop_owner_before_backedge() {
+        let parent = ScopeId(10);
+        let child = ScopeId(11);
+        let mut builder = nested_scope_builder(child, parent);
+        let mut blocks = loop_blocks(scope_exit(vec![parent], Vec::new()));
+
+        materialize_explicit_scope_exits(&mut blocks, &mut builder);
+
+        assert!(matches!(
+            blocks[2].instructions.as_slice(),
+            [
+                Instr::Drop { place: Place::Local(0), .. },
+                Instr::OwnershipEvent(OwnershipEvent::Release {
+                    owner: released,
+                    place: Place::Local(0),
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. }),
+            ] if *released == owner(0) && owners == &[owner(0)]
+        ));
+        let (_, exits) = drop_plan::exact_owner_states(&blocks);
+        assert!(exits.get(&2).is_some_and(HashMap::is_empty));
+    }
+
+    #[test]
+    fn carried_nested_owner_is_not_released_at_parent_scope_marker() {
+        let parent = ScopeId(10);
+        let child = ScopeId(11);
+        let mut builder = nested_scope_builder(child, parent);
+        let mut blocks = loop_blocks(scope_exit(vec![parent], vec![Place::Local(0)]));
+
+        materialize_explicit_scope_exits(&mut blocks, &mut builder);
+
+        assert_eq!(blocks[2].instructions.len(), 1);
+        let (_, exits) = drop_plan::exact_owner_states(&blocks);
+        assert_eq!(
+            exits.get(&2).and_then(|state| state.get(&owner(0))),
+            Some(&Place::Local(0))
+        );
+    }
+
+    #[test]
+    fn child_scope_exit_does_not_release_ancestor_owner() {
+        let parent = ScopeId(10);
+        let child = ScopeId(11);
+        let mut builder = nested_scope_builder(child, parent);
+        builder.binding_scope.insert(BindingId(1), parent);
+        let mut blocks = loop_blocks(scope_exit(vec![child], Vec::new()));
+
+        materialize_explicit_scope_exits(&mut blocks, &mut builder);
+
+        assert_eq!(blocks[2].instructions.len(), 1);
+        let (_, _, maybe_exits, _) =
+            ownership_join_states(&blocks, &builder.binding_scope, &builder.scope_info);
+        assert!(maybe_exits
+            .get(&2)
+            .is_some_and(|state| state.contains(&(owner(0), Place::Local(0)))));
+    }
+
+    #[test]
+    fn fabricated_colive_generations_outside_exited_scope_remain_visible() {
+        let parent = ScopeId(10);
+        let child = ScopeId(11);
+        let mut builder = nested_scope_builder(child, parent);
+        builder.binding_scope.insert(BindingId(1), parent);
+        let mut blocks = loop_blocks(scope_exit(vec![child], Vec::new()));
+        blocks[1]
+            .instructions
+            .push(Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: owner(1),
+                place: Place::Local(0),
+                ty: ResolvedTy::String,
+            }));
+
+        let (_, _, maybe_exits, _) =
+            ownership_join_states(&blocks, &builder.binding_scope, &builder.scope_info);
+
+        assert!(maybe_exits.get(&2).is_some_and(|state| {
+            state.contains(&(owner(0), Place::Local(0)))
+                && state.contains(&(owner(1), Place::Local(0)))
+        }));
+    }
+}
+
+#[allow(
+    clippy::match_same_arms,
+    clippy::too_many_lines,
+    reason = "ownership SSA join construction validates predecessors, splits edges, and renames one generation atomically"
+)]
+fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
+    loop {
+        let (entries, exits, maybe_exits, must_entries) =
+            ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
+        let owner_types: HashMap<crate::model::OwnerId, ResolvedTy> = blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| match instruction {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint { owner, ty, .. }) => {
+                    Some((*owner, ty.clone()))
+                }
+                Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Reset {
+                        replacement, ty, ..
+                    }
+                    | crate::model::OwnershipEvent::Rearm {
+                        replacement, ty, ..
+                    },
+                ) => Some((*replacement, ty.clone())),
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                    to_owner: Some(owner),
+                    to_ty: Some(ty),
+                    ..
+                }) => Some((*owner, ty.clone())),
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
+                    replacement,
+                    ty,
+                    ..
+                }) => Some((*replacement, ty.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut predecessors: HashMap<u32, Vec<u32>> = HashMap::new();
+        for block in blocks.iter() {
+            for successor in block.successors() {
+                predecessors.entry(successor).or_default().push(block.id);
+            }
+        }
+        for incoming in predecessors.values_mut() {
+            incoming.sort_unstable();
+            incoming.dedup();
+        }
+        if std::env::var_os("HEW_DEBUG_OWNER_JOIN").is_some() {
+            for (target, incoming) in &predecessors {
+                if incoming.len() >= 2 {
+                    eprintln!(
+                        "HEW_DEBUG_OWNER_JOIN target={target} incoming={incoming:?} states={:?}",
+                        incoming
+                            .iter()
+                            .map(|block| (*block, exits.get(block)))
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+        let mut max_generation = HashMap::<BindingId, u32>::new();
+        for owner in owner_types.keys() {
+            max_generation
+                .entry(owner.binding)
+                .and_modify(|generation| *generation = (*generation).max(owner.generation))
+                .or_insert(owner.generation);
+        }
+
+        // Exact OwnerId intersection intentionally erases a binding when a
+        // cyclic join receives different generations. Generation-erased
+        // must-own replay distinguishes that valid ownership SSA shape from a
+        // path where the owner is genuinely absent. Publish a first-class Join
+        // block parameter only when every predecessor must own the same
+        // binding/place; its incoming set is the explicit set of generations
+        // that may reach those edges.
+        let mut join_parameter = None;
+        let mut join_targets = predecessors.keys().copied().collect::<Vec<_>>();
+        join_targets.sort_unstable();
+        'join_targets: for target in join_targets {
+            let incoming_blocks = &predecessors[&target];
+            if incoming_blocks.len() < 2 {
+                continue;
+            }
+            let Some(must_live) = must_entries.get(&target) else {
+                continue;
+            };
+            let Some(target_block) = blocks.iter().find(|block| block.id == target) else {
+                continue;
+            };
+            let mut bindings = must_live.iter().collect::<Vec<_>>();
+            bindings.sort_by_key(|(binding, _)| binding.0);
+            for (binding, place) in bindings {
+                if target_block.instructions.iter().any(|instruction| {
+                    matches!(
+                        instruction,
+                        Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
+                            replacement,
+                            ..
+                        }) if replacement.binding == *binding
+                    )
+                }) {
+                    continue;
+                }
+                let mut incoming_owners = HashSet::new();
+                for predecessor in incoming_blocks {
+                    let Some(state) = maybe_exits.get(predecessor) else {
+                        continue 'join_targets;
+                    };
+                    let on_edge = state
+                        .iter()
+                        .filter_map(|(owner, owner_place)| {
+                            (owner.binding == *binding && *owner_place == *place).then_some(*owner)
+                        })
+                        .collect::<Vec<_>>();
+                    if on_edge.is_empty() {
+                        continue 'join_targets;
+                    }
+                    incoming_owners.extend(on_edge);
+                }
+                let mut incoming = incoming_owners.into_iter().collect::<Vec<_>>();
+                incoming.sort_by_key(|owner| owner.generation);
+                if incoming.len() == 1
+                    && entries.get(&target).is_some_and(|state| {
+                        state
+                            .iter()
+                            .filter(|(owner, owner_place)| {
+                                owner.binding == *binding && **owner_place == *place
+                            })
+                            .count()
+                            == 1
+                            && state.contains_key(&incoming[0])
+                    })
+                {
+                    // Every edge already presents the same one exact
+                    // generation. A Join would merely rename a valid SSA
+                    // value and could cause non-termination in this sealing
+                    // loop. The important distinction is the complete
+                    // per-edge union: a common generation plus an edge-local
+                    // stale generation still requires canonicalization.
+                    continue;
+                }
+                let Some(ty) = incoming
+                    .first()
+                    .and_then(|owner| owner_types.get(owner))
+                    .cloned()
+                else {
+                    continue;
+                };
+                if incoming
+                    .iter()
+                    .any(|owner| owner_types.get(owner) != Some(&ty))
+                {
+                    continue;
+                }
+                let replacement = crate::model::OwnerId {
+                    binding: *binding,
+                    generation: max_generation
+                        .get(binding)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1),
+                };
+                join_parameter = Some((target, incoming, replacement, *place, ty));
+                break 'join_targets;
+            }
+        }
+        if let Some((target, incoming, replacement, place, ty)) = join_parameter {
+            let Some(block) = blocks.iter_mut().find(|block| block.id == target) else {
+                continue;
+            };
+            block.instructions.insert(
+                0,
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
+                    incoming,
+                    replacement,
+                    place,
+                    ty,
+                }),
+            );
+            // Freeze the Join's inherited physical guard before renaming a
+            // dominated construction-time Rearm successor. The historical
+            // incoming generation is about to become the repaired backedge
+            // epoch; retaining the already-proved Join guard keeps both
+            // sequential generations on one exact flag without consulting
+            // Builder metadata.
+            drop_plan::materialize_successor_guard_authority(blocks);
+            // A static assignment generation in this Join's dominated loop
+            // body was authored before the phi existed. Repair that exact
+            // sequential lineage now, before the next join-search iteration
+            // can mistake its stale successor for a second co-live epoch.
+            canonicalize_join_dominated_rearm_lineages(blocks, builder);
+            // Introducing a block parameter changes the exact generation
+            // seen by static overwrite/consume operations in its dominated
+            // region. Re-key those terminal operations immediately, before
+            // another join-search iteration can mistake the stale identity
+            // for a second live generation.
+            deduplicate_ownership_spines(blocks, builder);
+            canonicalize_terminal_transfer_owner_ids(blocks);
+            canonicalize_release_owner_ids(blocks);
+            continue;
+        }
+
+        let mut targets = predecessors.keys().copied().collect::<Vec<_>>();
+        targets.sort_unstable();
+        let mut selected = None;
+        'targets: for target in targets {
+            let incoming = &predecessors[&target];
+            if incoming.len() < 2
+                || incoming.iter().any(|predecessor| {
+                    blocks
+                        .iter()
+                        .find(|block| block.id == *predecessor)
+                        .is_none_or(|block| {
+                            let successors = block.successors();
+                            successors != vec![target]
+                                && !matches!(
+                                    block.terminator,
+                                    Terminator::Branch {
+                                        then_target,
+                                        else_target,
+                                        ..
+                                    } if then_target == target || else_target == target
+                                )
+                        })
+                })
+            {
+                continue;
+            }
+            let Some(first_state) = exits.get(&incoming[0]) else {
+                continue;
+            };
+            let mut bindings = first_state
+                .keys()
+                .map(|owner| owner.binding)
+                .collect::<Vec<_>>();
+            bindings.sort_by_key(|binding| binding.0);
+            bindings.dedup();
+            for binding in bindings {
+                // A first-class block Join already is the ownership-SSA
+                // parameter for this binding.  Do not stack the older
+                // edge-transfer phi on top of it: doing so creates two live
+                // generations at the block entry and makes the later static
+                // overwrite name whichever duplicate happened to be visited
+                // last.  The Join interpreter canonicalizes every incoming
+                // generation of the binding to its one replacement.
+                if blocks.iter().any(|block| {
+                    block.id == target
+                        && block.instructions.iter().any(|instruction| {
+                            matches!(
+                                instruction,
+                                Instr::OwnershipEvent(
+                                    crate::model::OwnershipEvent::Join { replacement, .. }
+                                ) if replacement.binding == binding
+                            )
+                        })
+                }) {
+                    continue;
+                }
+                let mut owners = Vec::with_capacity(incoming.len());
+                for predecessor in incoming {
+                    let Some(state) = exits.get(predecessor) else {
+                        continue 'targets;
+                    };
+                    let mut matching = state
+                        .iter()
+                        .filter_map(|(owner, place)| {
+                            (owner.binding == binding).then_some((*owner, *place))
+                        })
+                        .collect::<Vec<_>>();
+                    matching.sort_by_key(|(owner, _)| owner.generation);
+                    let Some((owner, place)) = matching.last().copied() else {
+                        owners.clear();
+                        break;
+                    };
+                    if matching
+                        .iter()
+                        .any(|(_, candidate_place)| *candidate_place != place)
+                    {
+                        owners.clear();
+                        break;
+                    }
+                    owners.push((*predecessor, owner, place));
+                }
+                if owners.len() != incoming.len()
+                    || owners.windows(2).all(|pair| pair[0].1 == pair[1].1)
+                    || owners.windows(2).any(|pair| pair[0].2 != pair[1].2)
+                {
+                    continue;
+                }
+                let Some(ty) = owners
+                    .first()
+                    .and_then(|(_, owner, _)| owner_types.get(owner))
+                    .cloned()
+                else {
+                    continue;
+                };
+                if owners
+                    .iter()
+                    .any(|(_, owner, _)| owner_types.get(owner) != Some(&ty))
+                {
+                    continue;
+                }
+                // A backedge may carry either an edge-local definition or a
+                // successor generation minted earlier in the loop after the
+                // header generation was terminally consumed. The latter is
+                // the ordinary `iter = iter.next().1` shape. Admit it only
+                // when its unique definition dominates the backedge and the
+                // exact state immediately before that definition contains no
+                // live generation of the same binding.
+                let dominators = block_dominators(blocks);
+                let backedge_owner_is_exact_successor =
+                    owners.iter().all(|(predecessor, owner, _)| {
+                        let is_back_edge = dominators
+                            .get(predecessor)
+                            .is_some_and(|set| set.contains(&target));
+                        if !is_back_edge {
+                            return true;
+                        }
+                        let definitions = blocks
+                            .iter()
+                            .flat_map(|block| {
+                                block.instructions.iter().enumerate().filter_map(
+                                    move |(instruction_index, instruction)| {
+                                        matches!(
+                                            instruction,
+                                            Instr::OwnershipEvent(
+                                                crate::model::OwnershipEvent::Mint {
+                                                    owner: definition,
+                                                    ..
+                                                }
+                                                    | crate::model::OwnershipEvent::Reset {
+                                                        replacement: definition,
+                                                        ..
+                                                    }
+                                                    | crate::model::OwnershipEvent::Rearm {
+                                                        replacement: definition,
+                                                        ..
+                                                    }
+                                                    | crate::model::OwnershipEvent::Transfer {
+                                                        to_owner: Some(definition),
+                                                        ..
+                                                    }
+                                            ) if definition == owner
+                                        )
+                                        .then_some((block.id, instruction_index))
+                                    },
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        // A generation produced by an earlier CFG phi has one
+                        // explicit Transfer definition on every incoming edge,
+                        // not one global definition. Treat those edge-local
+                        // writes as one definition when they all converge on a
+                        // common join that dominates this backedge. This keeps
+                        // nested branch/join ownership composable: the inner
+                        // phi is an ordinary exact generation at the outer loop
+                        // header, without falling back to Builder ancestry.
+                        let is_prior_join_phi = definitions.len() >= 2
+                            && blocks.iter().any(|join| {
+                                definitions.iter().all(|(definition_block, index)| {
+                                    let Some(definition) =
+                                        blocks.iter().find(|block| block.id == *definition_block)
+                                    else {
+                                        return false;
+                                    };
+                                    definition.successors().contains(&join.id)
+                                        && matches!(
+                                            definition.instructions.get(*index),
+                                            Some(Instr::OwnershipEvent(
+                                                crate::model::OwnershipEvent::Transfer {
+                                                    to_owner: Some(next),
+                                                    to: Some(_),
+                                                    ..
+                                                }
+                                            )) if *next == *owner
+                                        )
+                                }) && dominators
+                                    .get(&join.id)
+                                    .is_some_and(|set| set.contains(&target))
+                                    && dominators
+                                        .get(predecessor)
+                                        .is_some_and(|set| set.contains(&join.id))
+                            });
+                        if is_prior_join_phi {
+                            return true;
+                        }
+                        let [(definition_block, instruction_index)] = definitions.as_slice() else {
+                            return false;
+                        };
+                        if !dominators
+                            .get(definition_block)
+                            .is_some_and(|set| set.contains(&target))
+                            || !dominators
+                                .get(predecessor)
+                                .is_some_and(|set| set.contains(definition_block))
+                        {
+                            return false;
+                        }
+                        let Some(definition) =
+                            blocks.iter().find(|block| block.id == *definition_block)
+                        else {
+                            return false;
+                        };
+                        let Some(mut live_before_definition) =
+                            entries.get(definition_block).cloned()
+                        else {
+                            return false;
+                        };
+                        drop_plan::apply_exact_owner_ops(
+                            &definition.instructions[..*instruction_index],
+                            &mut live_before_definition,
+                        );
+                        !live_before_definition
+                            .keys()
+                            .any(|candidate| candidate.binding == binding)
+                    });
+                if !backedge_owner_is_exact_successor {
+                    continue;
+                }
+                let replacement = crate::model::OwnerId {
+                    binding,
+                    generation: max_generation
+                        .get(&binding)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1),
+                };
+                selected = Some((target, owners, replacement, ty));
+                break 'targets;
+            }
+        }
+        let Some((target, owners, replacement, ty)) = selected else {
+            break;
+        };
+        if std::env::var_os("HEW_DEBUG_OWNER_JOIN").is_some() {
+            eprintln!("HEW_DEBUG_OWNER_JOIN {owners:?} -> {replacement:?} {ty:?}");
+        }
+        let dominators = block_dominators(blocks);
+        let rewrite_after_join = owners
+            .iter()
+            .filter_map(|(predecessor, owner, _)| {
+                let is_back_edge = dominators
+                    .get(predecessor)
+                    .is_some_and(|set| set.contains(&target));
+                (!is_back_edge).then_some((*owner, replacement))
+            })
+            .collect::<HashMap<_, _>>();
+        for (predecessor, owner, place) in &owners {
+            let transfer = Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                owner: *owner,
+                from: *place,
+                to: Some(*place),
+                to_owner: Some(replacement),
+                to_ty: Some(ty.clone()),
+            });
+            let Some(predecessor_index) = blocks.iter().position(|block| block.id == *predecessor)
+            else {
+                continue;
+            };
+            if blocks[predecessor_index].successors() == vec![target] {
+                blocks[predecessor_index].instructions.push(transfer);
+                continue;
+            }
+
+            // Checked arithmetic and other trapping operations commonly make
+            // a loop latch a two-way Branch: one edge returns to the header,
+            // while the other traps.  The ownership phi belongs only to the
+            // header edge.  Split that edge instead of either dropping the
+            // transfer or publishing it before the Branch (which would rename
+            // ownership on the unrelated exit as well).
+            let edge_id = blocks
+                .iter()
+                .map(|block| block.id)
+                .max()
+                .unwrap_or(ENTRY_BLOCK_ID)
+                .saturating_add(1);
+            let Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } = &mut blocks[predecessor_index].terminator
+            else {
+                continue;
+            };
+            if *then_target == target {
+                *then_target = edge_id;
+            }
+            if *else_target == target {
+                *else_target = edge_id;
+            }
+            blocks.push(BasicBlock {
+                id: edge_id,
+                statements: Vec::new(),
+                instructions: vec![transfer],
+                terminator: Terminator::Goto { target },
+            });
+        }
+        // Static instructions in a loop body are shared by the first and every
+        // subsequent iteration.  Rewrite references to the non-backedge
+        // incoming identity to the phi identity throughout the join-dominated
+        // region; backedge definitions remain branch-local until their edge
+        // transfer above.  This is ordinary SSA renaming over explicit MIR
+        // owner operations, not retrospective move ancestry.
+        for block in blocks.iter_mut().filter(|block| {
+            dominators
+                .get(&block.id)
+                .is_some_and(|set| set.contains(&target))
+        }) {
+            for instruction in &mut block.instructions {
+                let Instr::OwnershipEvent(event) = instruction else {
+                    continue;
+                };
+                match event {
+                    crate::model::OwnershipEvent::Transfer {
+                        owner, to_owner, ..
+                    } => {
+                        if *to_owner != Some(replacement) {
+                            if let Some(next) = rewrite_after_join.get(owner) {
+                                *owner = *next;
+                            }
+                        }
+                    }
+                    crate::model::OwnershipEvent::Relocate { owner, .. }
+                    | crate::model::OwnershipEvent::Release { owner, .. }
+                    | crate::model::OwnershipEvent::GuardedRelease { owner, .. }
+                    | crate::model::OwnershipEvent::DemoteToAlias { owner, .. }
+                    | crate::model::OwnershipEvent::Guard { owner, .. } => {
+                        if let Some(next) = rewrite_after_join.get(owner) {
+                            *owner = *next;
+                        }
+                    }
+                    crate::model::OwnershipEvent::Reset { previous, .. }
+                    | crate::model::OwnershipEvent::Rearm { previous, .. } => {
+                        if let Some(next) = rewrite_after_join.get(previous) {
+                            *previous = *next;
+                        }
+                    }
+                    crate::model::OwnershipEvent::Mint { .. }
+                    | crate::model::OwnershipEvent::DropRecipe { .. }
+                    | crate::model::OwnershipEvent::Join { .. }
+                    | crate::model::OwnershipEvent::InteriorAlias { .. }
+                    | crate::model::OwnershipEvent::AliasRelocate { .. }
+                    | crate::model::OwnershipEvent::AliasEnd { .. }
+                    | crate::model::OwnershipEvent::EdgeCarry { .. }
+                    | crate::model::OwnershipEvent::ScopeExit { .. } => {}
+                }
+            }
+        }
+        // Installing this phi can make an overwrite's formerly provisional
+        // Release name resolvable at its exact entry state. Normalize that
+        // physical release before searching for another phi; otherwise the
+        // stale identity fails to end the incoming generation and the next
+        // iteration invents a second, spurious join generation from it.
+        deduplicate_ownership_spines(blocks, builder);
+        canonicalize_terminal_transfer_owner_ids(blocks);
+        canonicalize_release_owner_ids(blocks);
+    }
+}
+
+/// Seal every physical whole-value neutralisation as an explicit ownership
+/// transfer before Checked MIR is constructed.
+///
+/// Lowering already emits `NeutralizePayloadSlot` beside the move/aggregate
+/// write that clears the old storage.  That operation is physical transfer
+/// authority, but older paths recorded only its destination and left cleanup
+/// elaboration to rediscover an owner from Builder maps.  Replay the explicit
+/// `OwnerId` stream at this exact program point and append the missing Transfer;
+/// later phases then need neither a global ancestry scan nor a side ledger.
+#[allow(
+    clippy::too_many_lines,
+    reason = "neutralize sealing correlates the physical carrier and exact owner state at one program point"
+)]
+fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    for block_index in 0..blocks.len() {
+        let (entries, _) = drop_plan::exact_owner_states(blocks);
+        let block_id = blocks[block_index].id;
+        let mut live = entries.get(&block_id).cloned().unwrap_or_default();
+        let mut last_relocation: HashMap<Place, (Place, Vec<crate::model::OwnerId>)> =
+            HashMap::new();
+        let mut index = 0;
+        while index < blocks[block_index].instructions.len() {
+            let instruction = blocks[block_index].instructions[index].clone();
+            if let Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } = instruction {
+                let moved_owners = live
+                    .iter()
+                    .filter_map(|(owner, current)| (*current == src).then_some(*owner))
+                    .collect();
+                last_relocation.insert(src, (dest, moved_owners));
+            }
+            drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+            let Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(transferee),
+                authority,
+            } = instruction
+            else {
+                index += 1;
+                continue;
+            };
+            if !matches!(
+                authority,
+                crate::model::NeutralizeAuthority::WholeCarrierConsume
+                    | crate::model::NeutralizeAuthority::PayloadBindingTransfer
+                    | crate::model::NeutralizeAuthority::AggregateMemberConsume
+                    | crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
+                    | crate::model::NeutralizeAuthority::DivergentSelectionTransfer
+                    | crate::model::NeutralizeAuthority::SendTransferLastUse
+            ) {
+                index += 1;
+                continue;
+            }
+            let relocated = last_relocation.get(&place);
+            let owners = live
+                .iter()
+                .filter_map(|(owner, current)| {
+                    let moved_from_source = relocated.is_some_and(|(destination, moved_owners)| {
+                        *destination == *current && moved_owners.contains(owner)
+                    });
+                    (*current == place || moved_from_source).then_some((*owner, *current))
+                })
+                .collect::<Vec<_>>();
+            if std::env::var_os("HEW_DEBUG_NEUTRALIZE").is_some() && !owners.is_empty() {
+                eprintln!(
+                    "HEW_DEBUG_NEUTRALIZE bb{block_id} i{index} {place:?}->{transferee:?} owners={owners:?}"
+                );
+            }
+            for (owner, current) in owners.into_iter().rev() {
+                let destination = if current == place {
+                    transferee
+                } else {
+                    current
+                };
+                let later_transfer = blocks[block_index].instructions[index.saturating_add(1)..]
+                    .iter()
+                    .any(|candidate| {
+                        matches!(
+                            candidate,
+                            Instr::OwnershipEvent(
+                                crate::model::OwnershipEvent::Transfer {
+                                    owner: existing,
+                                    ..
+                                }
+                                    | crate::model::OwnershipEvent::Relocate {
+                                        owner: existing,
+                                        ..
+                                    }
+                            ) if *existing == owner
+                        )
+                    });
+                let normal_success_runtime_consume = match &blocks[block_index].terminator {
+                    Terminator::Call {
+                        authority: crate::CallAuthority::Runtime(family),
+                        args,
+                        ..
+                    } => args.iter().enumerate().any(|(argument_index, argument)| {
+                        *argument == destination
+                            && family.arg_consume_verdict(argument_index)
+                                == hew_types::runtime_call::ConsumeVerdict::ProvenConsume
+                    }),
+                    _ => false,
+                };
+                if later_transfer {
+                    // A typed operation later in this same ownership spine is
+                    // the terminal/adopting authority for the physical
+                    // neutralize. It will be canonicalized to the exact live
+                    // place after this pass; emitting another terminal event
+                    // here would end the generation first.
+                    index += 1;
+                    continue;
+                }
+                let is_pre_call_relocation = normal_success_runtime_consume;
+                // Idempotence is local to this neutralisation program point.
+                // A transfer for the same owner elsewhere in the block is a
+                // different generation/carrier transition and must not hide
+                // this hand-off (notably a field override after an earlier
+                // temporary-to-binding move).
+                let transfer_already_explicit = blocks[block_index]
+                    .instructions
+                    .get(index + 1)
+                    .is_some_and(|candidate| {
+                        matches!(
+                            candidate,
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                                owner: existing,
+                                from,
+                                to: Some(to),
+                                ..
+                            }) if *existing == owner && *from == current && *to == destination
+                        ) || matches!(
+                            candidate,
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+                                owner: existing,
+                                from,
+                                to,
+                            }) if *existing == owner && *from == current && *to == destination
+                        )
+                    });
+                if transfer_already_explicit || (is_pre_call_relocation && current == destination) {
+                    continue;
+                }
+                let event = if is_pre_call_relocation {
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+                        owner,
+                        from: current,
+                        to: destination,
+                    })
+                } else {
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        from: current,
+                        to: Some(destination),
+                        to_owner: None,
+                        to_ty: None,
+                    })
+                };
+                if std::env::var_os("HEW_DEBUG_NEUTRALIZE").is_some() {
+                    eprintln!(
+                        "HEW_DEBUG_NEUTRALIZE insert bb{block_id} i{} {event:?}",
+                        index + 1
+                    );
+                }
+                shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block_id,
+                    u32::try_from(index + 1).unwrap_or(u32::MAX),
+                );
+                blocks[block_index]
+                    .instructions
+                    .insert(index + 1, event.clone());
+                drop_plan::apply_exact_owner_ops(std::slice::from_ref(&event), &mut live);
+            }
+            index += 1;
+        }
+    }
+}
+
+/// Refine aggregate handoff events to the exact projected destination carried
+/// by the adjacent neutralisation operation.
+///
+/// Typed expression lowering can know the future carrier root before it knows
+/// which enum/record slot the constructor will select. By the end of the
+/// pre-sealing transfer phase, `NeutralizePayloadSlot` carries that exact slot.
+/// Canonicalise the event here, while both operations are at the same program
+/// point, so Checked MIR never has to recover projection ancestry from Builder
+/// tables or whole-function scans.
+fn canonicalize_ownership_transfer_places(blocks: &mut [BasicBlock]) {
+    for block in blocks {
+        for index in 0..block.instructions.len().saturating_sub(1) {
+            let Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(transferee),
+                ..
+            } = block.instructions[index]
+            else {
+                continue;
+            };
+            let Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                from,
+                to: Some(destination),
+                ..
+            }) = &mut block.instructions[index + 1]
+            else {
+                continue;
+            };
+            if *from == place && base_local(*destination) == base_local(transferee) {
+                *destination = transferee;
+            }
+        }
+    }
+}
+
+/// Commit every typed temporary-to-owner handoff as a physical move.
+///
+/// The destination already contains the copied bits. Zeroing the source makes
+/// its ownership interval explicit: cleanup before this instruction destroys
+/// the temporary, while cleanup after it sees an unambiguously consumed source
+/// and destroys only the destination. A function-wide "eventually escaped"
+/// exclusion cannot express that interval and leaks on calls between production
+/// and handoff.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ownership-commit pass keeps generator, actor, and ordinary typed handoff \
+              closure over the same move graph"
+)]
+fn neutralize_typed_produced_value_handoffs(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let owner_by_place: HashMap<Place, crate::model::OwnerId> = builder
+        .binding_locals
+        .iter()
+        .filter_map(|(binding, place)| {
+            builder.owner_generations.get(binding).map(|generation| {
+                (
+                    *place,
+                    crate::model::OwnerId {
+                        binding: *binding,
+                        generation: *generation,
+                    },
+                )
+            })
+        })
+        .collect();
+    if builder.typed_produced_value_handoffs.is_empty() {
+        return;
+    }
+    let mut retained_string_aggregate_handoffs = HashSet::new();
+    for block in blocks.iter() {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let (destination, sources): (Place, Vec<Place>) = match instruction {
+                Instr::RecordInit { fields, dest, .. } => {
+                    (*dest, fields.iter().map(|(_, source)| *source).collect())
+                }
+                Instr::TupleConstruct { elements, dest } => (*dest, elements.clone()),
+                _ => continue,
+            };
+            for source in sources {
+                let retained = builder
+                    .typed_produced_value_handoffs
+                    .contains(&(source, destination))
+                    && base_local(source).is_some_and(|local| {
+                        matches!(builder.locals.get(local as usize), Some(ResolvedTy::String))
+                            && local_is_used_after(
+                                blocks,
+                                &builder.suspend_kinds,
+                                local,
+                                block.id,
+                                index,
+                            )
+                    });
+                if retained {
+                    retained_string_aggregate_handoffs.insert((
+                        block.id,
+                        index,
+                        source,
+                        destination,
+                    ));
+                }
+            }
+        }
+    }
+    for block in blocks.iter_mut() {
+        let mut removals = Vec::new();
+        for &(site_block, constructor_index, source, destination) in
+            &retained_string_aggregate_handoffs
+        {
+            if site_block != block.id {
+                continue;
+            }
+            for index in constructor_index + 1..block.instructions.len() {
+                match &block.instructions[index] {
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        from,
+                        to: Some(to),
+                        to_owner: None,
+                        ..
+                    }) if *from == source && *to == destination => removals.push(index),
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer { .. }) => {}
+                    _ => break,
+                }
+            }
+        }
+        removals.sort_unstable();
+        removals.dedup();
+        for index in removals.into_iter().rev() {
+            block.instructions.remove(index);
+            shift_instr_spans_on_remove(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+        }
+    }
+    for block in blocks.iter_mut() {
+        let mut inserts = Vec::new();
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let transfers: Vec<(Place, Place, crate::model::NeutralizeAuthority)> =
+                match instruction {
+                    Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => vec![(
+                        *src,
+                        *dest,
+                        crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                    )],
+                    Instr::RecordInit { fields, dest, .. } => fields
+                        .iter()
+                        .map(|(_, src)| {
+                            (
+                                *src,
+                                *dest,
+                                crate::model::NeutralizeAuthority::AggregateMemberConsume,
+                            )
+                        })
+                        .collect(),
+                    Instr::TupleConstruct { elements, dest } => elements
+                        .iter()
+                        .map(|src| {
+                            (
+                                *src,
+                                *dest,
+                                crate::model::NeutralizeAuthority::AggregateMemberConsume,
+                            )
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+            for (src, dest, authority) in transfers {
+                if !builder.typed_produced_value_handoffs.contains(&(src, dest)) {
+                    continue;
+                }
+                if retained_string_aggregate_handoffs.contains(&(block.id, index, src, dest)) {
+                    // This constructor executes while the source generation is
+                    // still used later (including a loop-carried reuse). It is
+                    // a retained aggregate share, not a handoff; the string
+                    // finalizer mints the constructor's `+1`. Neutralizing here
+                    // would end the lexical source before that later use.
+                    continue;
+                }
+                let already_committed = block.instructions.get(index + 1).is_some_and(|next| {
+                    matches!(next, Instr::NeutralizePayloadSlot { place, .. } if *place == src)
+                });
+                if !already_committed {
+                    let owner = owner_by_place.get(&src).copied();
+                    let event_already_present = owner.is_some_and(|owner| {
+                        block.instructions.iter().any(|instruction| {
+                            matches!(
+                                instruction,
+                                Instr::OwnershipEvent(
+                                    crate::model::OwnershipEvent::Transfer {
+                                        owner: existing,
+                                        from,
+                                        to: Some(to),
+                                        ..
+                                    }
+                                ) if *existing == owner && *from == src && *to == dest
+                            )
+                        })
+                    });
+                    inserts.push((
+                        index + 1,
+                        src,
+                        dest,
+                        authority,
+                        owner.filter(|_| !event_already_present),
+                    ));
+                }
+            }
+        }
+        for (index, src, dest, authority, owner) in inserts.into_iter().rev() {
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+            block.instructions.insert(
+                index,
+                Instr::NeutralizePayloadSlot {
+                    place: src,
+                    transferee: Some(dest),
+                    authority,
+                },
+            );
+            if let Some(owner) = owner {
+                if std::env::var_os("HEW_DEBUG_NEUTRALIZE").is_some() {
+                    eprintln!(
+                        "HEW_DEBUG_NEUTRALIZE typed insert bb{} i{} owner={owner:?} {src:?}->{dest:?}",
+                        block.id,
+                        index + 1
+                    );
+                }
+                block.instructions.insert(
+                    index + 1,
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        from: src,
+                        to: Some(dest),
+                        to_owner: None,
+                        to_ty: None,
+                    }),
+                );
+            }
+        }
+    }
 }
 
 /// Release the remaining slots of an owned enum carrier after one selected
@@ -6996,16 +13002,125 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
 /// stream, using the neutralize authority itself as the transfer fact and the
 /// structural local type as the release authority. Parameters remain
 /// caller-owned and keep their separate terminal snapshot protocol.
+fn sole_exact_may_owner_at_place(
+    instructions: &[Instr],
+    through: usize,
+    exact_entry: &drop_plan::ExactOwnerState,
+    maybe_entry: &drop_plan::MaybeOwnerState,
+    place: Place,
+) -> Option<crate::model::OwnerId> {
+    let mut exact = exact_entry.clone();
+    drop_plan::apply_exact_owner_ops(&instructions[..=through], &mut exact);
+    let exact_owners = exact
+        .iter()
+        .filter_map(|(owner, owner_place)| (*owner_place == place).then_some(*owner))
+        .collect::<Vec<_>>();
+    let [owner] = exact_owners.as_slice() else {
+        return None;
+    };
+    let mut maybe = maybe_entry.clone();
+    drop_plan::apply_maybe_owner_ops(&instructions[..=through], &mut maybe);
+    let maybe_owners = maybe
+        .iter()
+        .filter_map(|(owner, owner_place)| (*owner_place == place).then_some(*owner))
+        .collect::<Vec<_>>();
+    (maybe_owners.len() == 1 && maybe_owners[0] == *owner).then_some(*owner)
+}
+
+fn release_partially_transferred_return_carrier(
+    block: &mut BasicBlock,
+    builder: &mut Builder,
+    neutralize_index: usize,
+    local: u32,
+    ty: ResolvedTy,
+    exact_entry: &drop_plan::ExactOwnerState,
+    maybe_entry: &drop_plan::MaybeOwnerState,
+) {
+    let existing_release = block.instructions[neutralize_index + 1..]
+        .iter()
+        .position(|instr| {
+            matches!(
+                instr,
+                Instr::Drop {
+                    place: Place::Local(drop_local),
+                    ..
+                } if *drop_local == local
+            ) || matches!(
+                instr,
+                Instr::ValueSnapshotDrop {
+                    value: Place::Local(drop_local),
+                    ..
+                } if *drop_local == local
+            )
+        })
+        .map(|offset| neutralize_index + 1 + offset);
+    if existing_release
+        .is_some_and(|index| matches!(block.instructions[index], Instr::ValueSnapshotDrop { .. }))
+    {
+        return;
+    }
+    let drop_index = existing_release.unwrap_or_else(|| {
+        let insert_at = block.instructions.len();
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block.id,
+            u32::try_from(insert_at).unwrap_or(u32::MAX),
+        );
+        block.instructions.push(Instr::Drop {
+            place: Place::Local(local),
+            ty,
+            drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                crate::ownership::InPlaceReleaseKind::Enum,
+            )),
+        });
+        insert_at
+    });
+    let place = Place::Local(local);
+    let Some(owner) = sole_exact_may_owner_at_place(
+        &block.instructions,
+        drop_index,
+        exact_entry,
+        maybe_entry,
+        place,
+    ) else {
+        return;
+    };
+    if block.instructions[drop_index + 1..].iter().any(|instr| {
+        matches!(
+            instr,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Release {
+                owner: released,
+                place: released_place,
+            }) if *released == owner && *released_place == place
+        )
+    }) {
+        return;
+    }
+    let insert_at = drop_index + 1;
+    shift_instr_spans_on_insert(
+        &mut builder.instr_spans,
+        block.id,
+        u32::try_from(insert_at).unwrap_or(u32::MAX),
+    );
+    block.instructions.insert(
+        insert_at,
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Release { owner, place }),
+    );
+}
+
 fn release_partially_transferred_return_carriers(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let record_layouts = outbound_record_layouts(builder);
+    let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
+    let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
     for block in blocks {
         if !matches!(block.terminator, Terminator::Return) {
             continue;
         }
-        let transferred_roots: Vec<(u32, ResolvedTy)> = block
+        let transferred_roots: Vec<(usize, u32, ResolvedTy)> = block
             .instructions
             .iter()
-            .filter_map(|instr| match instr {
+            .enumerate()
+            .filter_map(|(index, instr)| match instr {
                 Instr::NeutralizePayloadSlot {
                     place: Place::MachineVariant { local, .. },
                     ..
@@ -7034,43 +13149,23 @@ fn release_partially_transferred_return_carriers(blocks: &mut [BasicBlock], buil
                         &builder.opaque_handle_names,
                         &builder.lifecycle_registry,
                     );
-                    (owns_heap && is_enum && shell_safe).then(|| (*local, ty.clone()))
+                    (owns_heap && is_enum && shell_safe).then(|| (index, *local, ty.clone()))
                 }
                 _ => None,
             })
             .collect();
-        for (local, ty) in transferred_roots {
-            let already_released = block.instructions.iter().any(|instr| {
-                matches!(
-                    instr,
-                    Instr::Drop {
-                        place: Place::Local(drop_local),
-                        ..
-                    } if *drop_local == local
-                ) || matches!(
-                    instr,
-                    Instr::ValueSnapshotDrop {
-                        value: Place::Local(drop_local),
-                        ..
-                    } if *drop_local == local
-                )
-            });
-            if already_released {
-                continue;
-            }
-            let insert_at = block.instructions.len();
-            shift_instr_spans_on_insert(
-                &mut builder.instr_spans,
-                block.id,
-                u32::try_from(insert_at).unwrap_or(u32::MAX),
-            );
-            block.instructions.push(Instr::Drop {
-                place: Place::Local(local),
+        for (neutralize_index, local, ty) in transferred_roots.into_iter().rev() {
+            let exact_entry = exact_entries.get(&block.id).cloned().unwrap_or_default();
+            let maybe_entry = maybe_entries.get(&block.id).cloned().unwrap_or_default();
+            release_partially_transferred_return_carrier(
+                block,
+                builder,
+                neutralize_index,
+                local,
                 ty,
-                drop_fn: Some(crate::model::DropFnSpec::InPlace(
-                    crate::ownership::InPlaceReleaseKind::Enum,
-                )),
-            });
+                &exact_entry,
+                &maybe_entry,
+            );
         }
     }
 }
@@ -7226,15 +13321,28 @@ pub(in crate::lower) fn finalize_body(
             }
         }
     }
+    let releases_before_finalization = spec
+        .nested_fresh_temp_releases
+        .then(|| inline_string_or_bytes_release_locals(&blocks));
     splice_body_ownership_releases(&mut blocks, builder, spec.nested_fresh_temp_releases);
-    let thir_statements: Vec<MirStatement> = blocks
-        .iter()
-        .flat_map(|b| b.statements.iter().cloned())
-        .collect();
+    if let Some(releases_before_finalization) = releases_before_finalization.as_ref() {
+        // Publish the exact generation ended by each newly-spliced physical
+        // release before transfer/scope materialization replays the stream.
+        // Otherwise a later ScopeExit still sees the temporary as live and
+        // schedules a second destructor for the same bytes.
+        builder.consume_typed_publication_owners_at_inline_release(
+            &mut blocks,
+            releases_before_finalization,
+        );
+    }
     // Name the `let`-bound locals from the emitted `Bind` stream before the
     // blocks are moved into the raw function — params were already named in
     // `lower_params`. Feeds the `-g` variable DIEs.
     prepare_body_transfers(&mut blocks, builder);
+    let thir_statements: Vec<MirStatement> = blocks
+        .iter()
+        .flat_map(|b| b.statements.iter().cloned())
+        .collect();
     FinalizedBody {
         blocks,
         thir_statements,
@@ -7398,11 +13506,6 @@ pub(crate) fn lower_function(
         return_ty: return_ty.clone(),
         statements: thir_statements,
     };
-    // Re-read the scope-exit-live owned-locals view after the splice pipeline:
-    // the carrier and outbound preparation inside `finalize_body` can retire a
-    // binding from the ledger, so the double-free gate below must see the
-    // post-pipeline ledger rather than a snapshot taken ahead of it.
-    let owned_locals_snapshot = builder.owned_locals_snapshot();
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"
@@ -7535,56 +13638,127 @@ pub(crate) fn lower_function(
 
     collect_unknown_type_diagnostics(func, &builder, &mut diagnostics);
 
+    let actor_message_string_sources: HashSet<Place> = builder
+        .actor_message_string_owner_bindings
+        .iter()
+        .filter_map(|binding| builder.binding_locals.get(binding).copied())
+        .collect();
     let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+    canonicalize_retained_copy_owner_transfers(&mut raw.blocks, &actor_message_string_sources);
+    materialize_edge_local_retained_join_releases(&mut raw.blocks, &mut builder);
+    // Edge-local retirement may allocate scratch storage after Raw MIR first
+    // snapshots the Builder tables. Keep the backend's local-type and debug
+    // metadata arrays exactly synchronized before sealing/codegen consumes the
+    // newly inserted Move/Drop places.
+    raw.locals.clone_from(&builder.locals);
+    raw.local_names.clone_from(&builder.local_names);
+    raw.local_scopes = builder
+        .local_scopes
+        .iter()
+        .map(|scope| scope.map(|scope| scope.0))
+        .collect();
+    raw.local_decl_bytes.clone_from(&builder.local_decl_bytes);
+    raw.instr_spans.clone_from(&builder.instr_spans);
     let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+    canonicalize_retained_copy_owner_transfers(&mut raw.blocks, &actor_message_string_sources);
     let deferred_drop_binding_locals = std::mem::take(&mut builder.deferred_drop_binding_locals);
     builder.binding_locals.extend(deferred_drop_binding_locals);
+
+    // Construction-only aggregate legality gates. These consume mutable
+    // lowering topology before Checked MIR is sealed; no post-seal verifier is
+    // permitted to consult Builder ledgers or layout side tables.
+    let opaque_resource_names: HashSet<String> = builder
+        .lifecycle_registry
+        .opaque_resources()
+        .map(|lifecycle| lifecycle.resource_declaration.full_path().to_string())
+        .collect();
+    for check in detect_opaque_resource_field_misuse(
+        &raw.blocks,
+        &builder.locals,
+        &builder.binding_locals,
+        &opaque_resource_names,
+    )
+    .into_iter()
+    .chain(detect_builtin_handle_record_field_overwrite(
+        &raw.blocks,
+        &builder.locals,
+        &builder.binding_locals,
+        &builder.record_field_orders,
+    )) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
+    if let Some(layout) = current_actor_name.and_then(|name| actor_layouts.get(name)) {
+        if let Some(kinds) = layout.state_field_clone_kinds.as_deref() {
+            for check in detect_actor_state_resource_overwrite(
+                &raw.blocks,
+                kinds,
+                &layout.state_field_names,
+                &layout.state_field_tys,
+            )
+            .into_iter()
+            .chain(detect_actor_state_handle_consume(
+                &raw.blocks,
+                kinds,
+                &layout.state_field_names,
+                &layout.state_field_tys,
+            )) {
+                if let Some(diag) = check_to_diagnostic(&check) {
+                    diagnostics.push(diag);
+                }
+            }
+        }
+    }
 
     // Compute cooperate-check sites from the CFG. Empty for leaf functions
     // (< 10 MIR statements, no calls, no loops). Codegen reads
     // `cooperate_sites` to inject `call @hew_actor_cooperate()`.
     let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
 
-    let checked = CheckedMirFunction {
-        name: emit_name,
-        return_ty: return_ty.clone(),
-        blocks: raw.blocks.clone(),
-        decisions: builder.decisions.clone(),
-        checks: dataflow_result.checks.clone(),
+    let (checked, elaboration_diagnostics) = seal_checked(
+        emit_name,
+        return_ty.clone(),
+        raw.blocks.clone(),
+        &raw,
+        builder.decisions.clone(),
+        dataflow_result.checks.clone(),
         cooperate_sites,
-    };
-    diagnostics.extend(vec_iter_yield_abandonment_diagnostics(
-        &checked,
-        &builder,
-        &dataflow_result,
-    ));
-    // Drop-elaboration pass. Consumes the CheckedMirFunction we just
-    // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
-    // are the authoritative description of what fires on every exit.
-    //
-    // `owned_locals` is the per-function ownership ledger. Every binding
-    // whose type obliges a scope-exit drop (`binding_seeds_drop_elaboration`
-    // — `string`, `Vec<E>`, records, collection handles, generators, closure
-    // pairs, resource fields) is registered once at its defining write
-    // through `Builder::register_owned_local`, carrying its classified
-    // `ValueOwnership`, any interior-alias `ValueProvenance`, and a
-    // `Disposition`. The elaborator reads the scope-exit-live view of that
-    // ledger (a consumed / body-end-released binding carries a
-    // non-`ScopeExit` disposition rather than being physically removed), and
-    // the carried provenance keeps a byte-copy field alias from being
-    // mistaken for an independent owner. The pass runs on every function
-    // body and is exercised end-to-end by the compiled leak-oracle
-    // fixtures — real programs whose native binaries are proven leak- and
-    // double-free-clean under `leaks --atExit` and the poisoned allocator —
-    // as well as by hew-mir's hand-constructed CheckedMirFunction unit inputs.
-    let (elaborated, elaboration_diagnostics) = elaborate(
-        &checked,
         &builder,
         &thir.statements,
         &dataflow_result,
         Some(&string_derivation.allowed),
         Some(&bytes_derivation.allowed),
     );
+    diagnostics.extend(vec_iter_yield_abandonment_diagnostics(
+        &checked,
+        &builder.vec_iter_yield_exit_drops,
+        &dataflow_result,
+    ));
+    if std::env::var("HEW_DEBUG_CHECKED_FUNCTION")
+        .is_ok_and(|filter| checked.name.contains(&filter))
+    {
+        eprintln!("HEW_DEBUG_CHECKED {checked:#?}");
+        let (entries, exits) = drop_plan::exact_owner_states(&checked.blocks);
+        eprintln!("HEW_DEBUG_OWNER_STATES entries={entries:#?} exits={exits:#?}");
+    }
+    for check in validate_ownership_events(&checked) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
+    // Drop-elaboration pass. Consumes the CheckedMirFunction we just
+    // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
+    // are the authoritative description of what fires on every exit.
+    //
+    // Each owner definition in Checked MIR carries its immutable destructor
+    // recipe beside the Mint/Reset/Transfer/Join that creates the generation.
+    // The elaborator replays those events, their guards, and exact CFG state;
+    // Builder ownership ledgers and legacy LIFO templates cannot admit or
+    // select a cleanup after sealing. This runs for every function body and is
+    // exercised both by direct replay/falsifier tests and compiled leak/poison
+    // oracles.
+    let elaborated = elaborate(&checked);
     diagnostics.extend(elaboration_diagnostics);
 
     // Fail-closed validation of the elaborated drop plan. Surfaces a
@@ -7599,280 +13773,23 @@ pub(crate) fn lower_function(
             diagnostics.push(diag);
         }
     }
-    // S1 obligation-balance gate: every heap-owning owned local must be
-    // released exactly once on every reachable Return path. The discharge
-    // set is re-derived from the primitive Instr stream + CFG (never from
-    // the Disposition ledger — the ledger is the component under test).
-    //
-    // SEVERITY SPLIT (close-by-construction, no forgeable allowlist):
-    // - Over-release (double-free) is memory-unsafe — an unconditional HARD
-    //   error with no escape.
-    // - An unverifiable fixpoint (ObligationBalanceUnverified) fails CLOSED as
-    //   a HARD error.
-    // - Under-release (leak) is surfaced as an ADVISORY diagnostic
-    //   (`MirDiagnosticKind::is_advisory`) — a compile-time warning that does
-    //   NOT fail the build. The lite MIR tier has no un-forgeable defining-
-    //   module provenance at this gate, so it cannot SOUNDLY suppress a leak: a
-    //   per-function allowlist keyed on the mangled symbol is forgeable (the
-    //   compiler mangles a user module `base64`'s `decode` to the same
-    //   `base64$decode` a stdlib entry would use, silently swallowing a genuine
-    //   user leak). Rather than hard-gate leaks behind that forgeable key, the
-    //   gate warns on EVERY under-release — nothing to forge, tracked stdlib
-    //   holes warn honestly. Promoting under-release to a sound hard gate is the
-    //   OWN-V1 follow-up (frontend module provenance threaded into this gate).
-    //
-    // All three route through `check_to_diagnostic` unconditionally; the
-    // advisory-vs-blocking severity is a property of the diagnostic kind, read
-    // by the CLI at render time (LESSONS boundary-fail-closed).
-    for check in validate_obligation_balance(&elaborated, &raw, &builder) {
+    // Ownership-SSA exceptional-edge gate: every call must have one normal
+    // successor and one cleanup successor before the backend may lower it to
+    // LLVM `invoke`. Missing or duplicated cleanup is a compiler error.
+    for check in validate_unwind_cleanup_coverage(&elaborated, &raw) {
         if let Some(diag) = check_to_diagnostic(&check) {
             diagnostics.push(diag);
         }
     }
-    // Discharge-authority carriage gates (A / D159): (1) the fail-closed
-    // backstop — a NeutralizePayloadSlot whose authority owns a destination must
-    // carry its transferee; (2) the corroboration pin — the carried transferee
-    // fact must agree with the independently re-derived routing. S1 above does
-    // NOT read these facts (independence preserved); the corroboration is a
-    // separate third pass comparing the two carriers (LESSONS boundary-fail-closed,
-    // duplicated-boundary-fact-needs-a-pin-test).
-    for check in validate_discharge_authority(&elaborated, &raw)
-        .into_iter()
-        .chain(validate_discharge_authority_corroboration(
-            &elaborated,
-            &raw,
-        ))
-    {
+    // Physical neutralization is codegen mechanics, not ownership authority.
+    // Keep only the local fail-closed shape check: every ownership-moving
+    // neutralize operation must name its destination. Exact OwnerId state and
+    // cleanup admission are validated from the Checked-MIR event stream above.
+    for check in validate_discharge_authority(&elaborated, &raw) {
         if let Some(diag) = check_to_diagnostic(&check) {
             diagnostics.push(diag);
         }
     }
-    // Fail-closed legality rules for the field-addressed in-place drop op:
-    // the op's `ty` must be a shape the shared classifier (or the `string`
-    // reroute) admits, its base must be a record/tuple local matching the
-    // field address, and an inline-composite field release requires the
-    // base's composite drop to be suppressed (exactly-once pairing — see
-    // `validate_field_drop_in_place`).
-    let field_drop_admissible = |ty: &ResolvedTy| builder.field_drop_in_place_admissible(ty);
-    for check in validate_field_drop_in_place(
-        &raw.blocks,
-        &elaborated,
-        &builder.locals,
-        &builder.enum_layouts,
-        &field_drop_admissible,
-    ) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
-    // Cross-block stale-handle detection. Walks the backend Instr
-    // stream across the function's CFG and rejects drop plans that
-    // fire `Place::DuplexHandle(N)` on a block whose reaching paths
-    // have already moved the unified handle into a `SendHalf` /
-    // `RecvHalf` split. Catches the case the slice-3 structural
-    // checker cannot — a same-direction close emitted by codegen on
-    // a handle whose previous owner has been moved out. LESSONS:
-    // cleanup-all-exits, raii-null-after-move,
-    // boundary-fail-closed.
-    for check in validate_cross_block_split_consume(&raw.blocks, &elaborated) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
-    // W3.053 catch-all fail-closed gate: refuse any owned handle that would
-    // reach codegen with more than one live free path for the same runtime
-    // context (the combinatorial aggregate-extraction double-free class). The
-    // gate reconstructs the per-context free-site count the elaborator + codegen
-    // will emit from the same drop-eligibility derivations `elaborate` uses:
-    //   - `source_excluded` = the source-binding drops `elaborate` REMOVES
-    //     (returned-aggregate handoff + consumed-local extraction); a source
-    //     binding NOT in this set still fires its own standalone LIFO drop.
-    //   - `composite_drop_allowed` = the owned-aggregate bindings whose in-place
-    //     member drop `elaborate` KEEPS (tuple + owned-record). When such a
-    //     member drop AND the source's own drop both free one context, that is
-    //     the double-free this gate refuses.
-    let returned_aggregate_members = derive_returned_aggregate_member_bindings(
-        &raw.blocks,
-        &owned_locals_snapshot,
-        &builder.binding_locals,
-    );
-    let consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
-        &raw.blocks,
-        &owned_locals_snapshot,
-        &builder.binding_locals,
-        &builder.locals,
-        &builder.record_field_orders,
-        &builder.enum_layouts,
-        builder.type_classes.lifecycle_registry(),
-    );
-    // Owned handle-leaf bindings moved into an actor initial-state record
-    // consumed by `SpawnActor`: the actor's `state_drop_fn` is the single free
-    // site, so the source binding's standalone drop is removed. Mirrors the
-    // `build_lifo_drops` skip in `elaborate` so the gate's free-count model
-    // matches the drops the elaborator actually emits.
-    let spawn_consumed_handle_members = derive_spawn_consumed_handle_bindings(
-        &raw.blocks,
-        &owned_locals_snapshot,
-        &builder.binding_locals,
-        &builder.locals,
-    );
-    let alias_field_binders = builder.alias_owner_field_binders();
-    let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
-        &raw.blocks,
-        &raw.suspend_kinds,
-        &owned_locals_snapshot,
-        &builder.binding_locals,
-        &builder.locals,
-        &builder.record_field_orders,
-        &builder.enum_layouts,
-        builder.type_classes.lifecycle_registry(),
-        &alias_field_binders,
-        &builder.proven_borrow_call_args,
-    );
-    let mut source_excluded = returned_aggregate_members;
-    source_excluded.extend(consumed_local_aggregate_members);
-    source_excluded.extend(spawn_consumed_handle_members);
-    // A no-retain payload/field projection of a builtin handle is a borrow of
-    // the still-live aggregate owner, not a fresh close authority. The same
-    // typed set suppresses its affine drop during elaboration. A real move-out
-    // carries `NeutralizePayloadSlot`, which removes projection taint and keeps
-    // the destination as the sole owner instead.
-    let projection_alias_tainted = compute_projection_alias_taint(
-        &raw.blocks,
-        &builder.match_project_consumed_binder_locals,
-        &builder.fresh_variant_payload_binder_locals,
-        &builder.locals,
-    );
-    let mut borrowed_builtin_handle_projection_aliases =
-        derive_borrowed_builtin_handle_projection_alias_bindings(
-            &builder.binding_locals,
-            &builder.locals,
-            &projection_alias_tainted,
-        );
-    let owned_tuple_handle_projections = derive_owned_tuple_handle_projection_bindings(
-        &raw.blocks,
-        &owned_locals_snapshot,
-        &builder.binding_locals,
-        &builder.locals,
-        &tuple_composite_drop_allowed,
-    );
-    borrowed_builtin_handle_projection_aliases
-        .retain(|binding| !owned_tuple_handle_projections.contains(binding));
-    source_excluded.extend(borrowed_builtin_handle_projection_aliases);
-    let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
-    let record_field_store_preserves_owner = |record, field_offset| {
-        builder.record_field_store_preserves_record_owner(record, field_offset)
-    };
-    let owned_record_drop_allowed = derive_owned_record_drop_allowed(
-        &raw.blocks,
-        &raw.suspend_kinds,
-        &owned_locals_snapshot,
-        &builder.binding_locals,
-        &builder.locals,
-        &is_owned_record,
-        &record_field_store_preserves_owner,
-        &builder.record_field_orders,
-        &builder.enum_layouts,
-        builder.type_classes.lifecycle_registry(),
-        &alias_field_binders,
-        &builder.proven_borrow_call_args,
-        &builder.vec_iter_projection_borrow_inits,
-    );
-    let mut composite_drop_allowed = tuple_composite_drop_allowed;
-    composite_drop_allowed.extend(owned_record_drop_allowed);
-    for check in detect_unproven_aggregate_handle_double_free(
-        &raw.blocks,
-        &raw.suspend_kinds,
-        &owned_locals_snapshot,
-        &builder.binding_locals,
-        &builder.locals,
-        &builder.record_field_orders,
-        &builder.enum_layouts,
-        &source_excluded,
-        &composite_drop_allowed,
-    ) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
-    // RAII-1 fail-closed gate: refuse the two unsupported aggregate operations on
-    // a `#[resource] #[opaque]` field — projecting it OUT of the record
-    // (`let d = h.dq`, `h.dq.close()`, `f(h.dq)`) and OVERWRITING it in place
-    // (`h.dq = src`). The recursive `__hew_record_drop_inplace_<R>` thunk frees
-    // the field's runtime context exactly once on every exit path; an extraction
-    // byte-copies the pointer-width handle with NO null-after-move so the thunk
-    // AND the extracted consumer both free it (double-free), and an overwrite
-    // raw-stores over the slot so the OLD handle leaks (no `close`) while `src`
-    // becomes a second owner. Until overwrite-release + source-slot
-    // null-after-move land (RAII-2), the compiler refuses both rather than emit
-    // the leak / double-free (LESSONS boundary-fail-closed, raii-null-after-move).
-    let opaque_resource_names: HashSet<String> = builder
-        .lifecycle_registry
-        .opaque_resources()
-        .map(|lifecycle| lifecycle.resource_declaration.full_path().to_string())
-        .collect();
-    for check in detect_opaque_resource_field_misuse(
-        &raw.blocks,
-        &builder.locals,
-        &builder.binding_locals,
-        &opaque_resource_names,
-    ) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
-    // Builtin Stream/Sink/Generator/CancellationToken record fields have the
-    // same overwrite hazard as opaque resources.  Their drop direction is
-    // wired, but the replacement store has no source-slot neutralisation, so a
-    // release-before-store alone would merely trade the old-value leak for a
-    // double-close of the new handle. Refuse until a move/null protocol exists.
-    for check in detect_builtin_handle_record_field_overwrite(
-        &raw.blocks,
-        &builder.locals,
-        &builder.binding_locals,
-        &builder.record_field_orders,
-    ) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
-    // #2654 fail-closed gate: the actor-state sibling of the record overwrite arm
-    // above. An `ActorStateFieldStore` (`self.dq = src`) over a field whose drop
-    // runs a real close (`Resource`, or a leaking `IoHandle`) has no
-    // release-before-store in codegen, so the old handle leaks and the actor's
-    // shutdown drop double-owns the new one. Reuse the actor's authoritative
-    // per-field classification (`state_field_clone_kinds`) so the refusal fences
-    // exactly the kinds whose drop it names. Runs for actor-handler builds only
-    // (the sole functions with a `current_actor_name` + populated layout).
-    if let Some(layout) = current_actor_name.and_then(|name| actor_layouts.get(name)) {
-        if let Some(kinds) = layout.state_field_clone_kinds.as_deref() {
-            for check in detect_actor_state_resource_overwrite(
-                &raw.blocks,
-                kinds,
-                &layout.state_field_names,
-                &layout.state_field_tys,
-            ) {
-                if let Some(diag) = check_to_diagnostic(&check) {
-                    diagnostics.push(diag);
-                }
-            }
-            // CAP-08 consume/extraction sibling: refuse an explicit close of a
-            // handle held in actor state (the double-free the new state-held
-            // Stream/Sink surface would otherwise reach). The state_drop_fn is
-            // the single owner.
-            for check in detect_actor_state_handle_consume(
-                &raw.blocks,
-                kinds,
-                &layout.state_field_names,
-                &layout.state_field_tys,
-            ) {
-                if let Some(diag) = check_to_diagnostic(&check) {
-                    diagnostics.push(diag);
-                }
-            }
-        }
-    }
-
     LoweredFunction {
         thir,
         raw,
@@ -7902,15 +13819,6 @@ struct LoopFrame {
     continue_target: u32,
     exit_target: u32,
     scope_depth: usize,
-    /// Body scope of the loop — the scope id `let opt = recv()` style
-    /// per-iteration bindings live in. Captured so a `continue` lowering
-    /// can register its terminator block in `loop_back_edge_blocks` with
-    /// the same scope filter the fall-through back-edge uses, releasing
-    /// body-scope heap-owning bindings before jumping to the loop header
-    /// (otherwise `let opt = rx.try_recv(); ... continue;` would leak the
-    /// live `Option<string>` every iteration that took the `continue`
-    /// arm — the body-end Drop sits past the `continue` and is skipped).
-    body_scope: ScopeId,
 }
 
 #[derive(Debug, Clone)]
@@ -7925,7 +13833,6 @@ struct ActiveIterationOwner {
 #[derive(Debug, Clone)]
 struct VecIterYieldExitDrop {
     binding: BindingId,
-    place: Place,
     ty: ResolvedTy,
     kind: DropKind,
     body_start_block: u32,
@@ -7994,6 +13901,14 @@ enum DischargeSite {
     /// into a longer-lived owner). This is the only production origin today; the
     /// destination owner is not a nameable `Place` at this seam.
     BindingMoved,
+    /// A concrete MIR `Drop` terminates the generation in its owning basic
+    /// block. Unlike a global `ScopeReleased` retraction, this remains a
+    /// cleanup candidate on predecessor unwind edges; the block-local consume
+    /// event suppresses cleanup only after control reaches the release block.
+    InlineRelease,
+    /// A call adopts an argument only on its normal successor. The unwind edge
+    /// retains the caller's generation and therefore receives its cleanup.
+    CallArgumentTransfer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8402,6 +14317,15 @@ impl Builder {
                 self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed)
             };
             if param_is_vec_iter_cursor && !self.vec_iter_drop_flags.contains_key(&param.id) {
+                if !self.owner_generations.contains_key(&param.id) {
+                    let warrant = self.owner_warrant_for_owned_parameter(param.id, &owned_ty);
+                    self.register_owned_local(
+                        param.id,
+                        param.name.clone(),
+                        owned_ty.clone(),
+                        warrant,
+                    );
+                }
                 let flag = self.alloc_local(ResolvedTy::I64);
                 self.vec_iter_drop_flags.insert(param.id, flag);
                 self.vec_iter_scope_owner_ledger
@@ -8416,6 +14340,15 @@ impl Builder {
                     dest: flag,
                     value: 0,
                 });
+                assert!(
+                    self.publish_current_owner_guard(
+                        param.id,
+                        flag,
+                        crate::model::OwnershipGuardKind::VecIter,
+                    ),
+                    "VecIter parameter guard flag for {:?} has no explicit owner generation",
+                    param.id
+                );
             }
             if matches!(owned_ty, ResolvedTy::TraitObject { .. }) {
                 // Every dyn value that crosses the function ABI owns persistent
@@ -8872,6 +14805,64 @@ impl Builder {
         if self.reject_capture_env_owned_move_instr(&instr) {
             return;
         }
+        let instr = match instr {
+            Instr::CallRuntimeAbi(call) => {
+                // Runtime FFI is an unwind-capable boundary. Keep it on the same
+                // CFG primitive as source/direct calls so ownership dataflow has a
+                // distinct normal successor and an exceptional cleanup edge. A
+                // mid-block runtime instruction cannot express the owner set at
+                // its program point and is therefore never admitted by production
+                // lowering.
+                let next = self.alloc_block();
+                let interior_mutations =
+                    crate::dataflow::runtime_call_interior_write_places(call.family(), call.args());
+                self.finish_current_block(Terminator::Call {
+                    callee: call.symbol().to_string(),
+                    authority: crate::CallAuthority::Runtime(call.family()),
+                    args: call.args().to_vec(),
+                    dest: call.dest(),
+                    next,
+                });
+                self.start_block(next);
+                for place in interior_mutations {
+                    self.instructions
+                        .push(Instr::InteriorMutationCommit { place });
+                }
+                return;
+            }
+            Instr::GeneratorNext {
+                dest,
+                ctx,
+                ctx_owner,
+                yield_ty,
+            } => {
+                let mut owners = self.binding_locals.iter().filter_map(|(binding, place)| {
+                    (*place == ctx).then(|| {
+                        self.owner_generations
+                            .get(binding)
+                            .copied()
+                            .map(|generation| crate::model::OwnerId {
+                                binding: *binding,
+                                generation,
+                            })
+                    })?
+                });
+                let ctx_owner =
+                    ctx_owner.or_else(|| owners.next().filter(|_| owners.next().is_none()));
+                Instr::GeneratorNext {
+                    dest,
+                    ctx,
+                    ctx_owner,
+                    yield_ty,
+                }
+            }
+            other => other,
+        };
+        // A generator resume crosses the same C-unwind continuation boundary
+        // as an ordinary call. Keep it last in its MIR block so the block id is
+        // a unique program-point authority for the unwind drop plan; ownership
+        // events for the successfully produced `Option` are emitted in `next`.
+        let closes_with_generator_resume = matches!(&instr, Instr::GeneratorNext { .. });
         if let Instr::Move { dest, src } = &instr {
             if self.prepared_owned_call_sources.remove(src) {
                 self.prepared_owned_call_sources.insert(*dest);
@@ -8883,6 +14874,11 @@ impl Builder {
             self.note_scope_span(span);
         }
         self.instructions.push(instr);
+        if closes_with_generator_resume {
+            let next = self.alloc_block();
+            self.finish_current_block(Terminator::Goto { target: next });
+            self.start_block(next);
+        }
     }
 
     fn reject_capture_env_owned_move_instr(&mut self, instr: &Instr) -> bool {

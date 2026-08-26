@@ -226,6 +226,18 @@ pub const HEW_CTX_OFFSET_REPLY_CHANNEL: usize = offset_of!(HewExecutionContext, 
 /// scheduler after dispatch to decide whether to publish a fallback reply.
 pub const HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED: u32 = 1 << 0;
 
+/// `flags` bit proving that the current native execution stack is enclosed by
+/// a runtime-owned `catch_unwind` boundary.
+///
+/// An actor pointer alone is not this proof: synchronous lifecycle hooks install
+/// an actor context so `hew_actor_self()` and arena routing work, but they run on
+/// the spawning stack and have no scheduler recovery frame beneath them. Starting
+/// a Rust unwind there crosses the generated entry frame and aborts the process
+/// before Hew can preserve its documented exit status. Scheduler dispatch,
+/// continuation resume, and terminate callbacks set this bit only on contexts
+/// whose user-code call is immediately enclosed by `catch_unwind`.
+pub const HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED: u32 = 1 << 1;
+
 /// Canonical per-dispatch carrier installed in worker-local TLS.
 ///
 /// [`HewTraceContext`] is embedded by value and is 40 bytes on all targets
@@ -307,6 +319,19 @@ pub fn set_current_context(ctx: *mut HewExecutionContext) -> *mut HewExecutionCo
 #[must_use]
 pub fn current_context() -> *mut HewExecutionContext {
     CURRENT_EXECUTION_CONTEXT.with(Cell::get)
+}
+
+/// Whether the currently installed execution context is backed by a live
+/// runtime-owned unwind boundary on this stack.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub(crate) fn current_context_can_unwind() -> bool {
+    let ctx = current_context();
+    if ctx.is_null() {
+        return false;
+    }
+    // SAFETY: a non-null current context is live until its matching restore.
+    unsafe { ((*ctx).flags & HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED) != 0 }
 }
 
 #[must_use]
@@ -477,15 +502,14 @@ pub extern "C" fn hew_context_reply_channel_swap_pop() {
 
 /// Unwind ALL open reply-channel swaps on the trap/cancel/unwind edge.
 ///
-/// A child closure that traps/longjmps OR Rust-unwinds mid-call bypasses the
+/// A child closure that logically unwinds mid-call bypasses the
 /// codegen swap-pop and the driver-channel teardown, leaving the outer context
 /// pointing at the driver channel and the driver channel's refs live. Both
 /// sibling scheduler exit edges call this BEFORE they read the dispatch reply
 /// channel, so the outer reply routing is restored and the driver channels are
 /// torn down exactly once:
-/// * the native signal/`siglongjmp` crash-recovery frame (mirroring
-///   `hew_actor_state_lock_release_after_panic`), and
-/// * the `catch_unwind` `Err` edge when the generated handler Rust-unwound.
+/// * the fresh-dispatch `catch_unwind` recovery edge, and
+/// * the resumed-dispatch `catch_unwind` recovery edge.
 ///
 /// The child never deposited (it trapped/unwound), so both the retained sender
 /// ref and the creator ref are released, matching the codegen abandon path.
@@ -1077,7 +1101,7 @@ mod tests {
         let _ = set_current_context(prev);
     }
 
-    /// SEC-2 regression: a child closure that traps/longjmps mid-call bypasses
+    /// SEC-2 regression: a child closure that unwinds mid-call bypasses
     /// the codegen swap-pop and driver-channel teardown. The scheduler crash-
     /// recovery edge must unwind every open swap BEFORE it reads the dispatch
     /// reply channel, so the outer reply routing is restored AND the driver-

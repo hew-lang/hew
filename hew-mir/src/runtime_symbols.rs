@@ -338,21 +338,19 @@ pub(crate) const fn vec_getter_ownership_contract(
     let RuntimeCallFamily::VecGet(elem) = family else {
         return None;
     };
-    let result = match elem {
-        VecGetElem::Str => ResultOwnership::FreshOwnedString,
-        VecGetElem::Owned | VecGetElem::Ptr => ResultOwnership::Borrowed,
-        VecGetElem::Bool
-        | VecGetElem::Clone
-        | VecGetElem::Take
-        | VecGetElem::F32
-        | VecGetElem::F64
-        | VecGetElem::I8
-        | VecGetElem::I16
-        | VecGetElem::I32
-        | VecGetElem::I64
-        | VecGetElem::Layout
-        | VecGetElem::U8
-        | VecGetElem::U16 => ResultOwnership::IndependentValue,
+    let result = match family.result_authority() {
+        hew_types::runtime_call::RuntimeResultAuthority::IndependentOwned => match elem {
+            VecGetElem::Str => ResultOwnership::FreshOwnedString,
+            VecGetElem::Clone | VecGetElem::Take => ResultOwnership::IndependentValue,
+            _ => return None,
+        },
+        hew_types::runtime_call::RuntimeResultAuthority::InteriorAliasOfReceiver => {
+            ResultOwnership::InteriorAliasOfReceiver
+        }
+        hew_types::runtime_call::RuntimeResultAuthority::IndependentBitCopy => {
+            ResultOwnership::IndependentValue
+        }
+        hew_types::runtime_call::RuntimeResultAuthority::FailClosed => ResultOwnership::Untracked,
     };
     Some(CalleeOwnershipContract::new(
         ReceiverOwnership::BorrowsReceiver {
@@ -796,7 +794,11 @@ const TOML_RESULT_CONSISTENCY: &[(&str, &str, ResultOwnership)] = &[
         "fresh",
         ResultOwnership::IndependentValue,
     ),
-    ("hew_vec_get_owned", "borrowed", ResultOwnership::Borrowed),
+    (
+        "hew_vec_get_owned",
+        "borrowed",
+        ResultOwnership::InteriorAliasOfReceiver,
+    ),
     (
         "hew_vec_get_str",
         "retained",

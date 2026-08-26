@@ -2,7 +2,7 @@
 //! task/scope ABI symbols added in Phase 2 (inventory rows 2/3/4).
 //!
 //! Each test drives `emit_module` with a hand-built `IrPipeline` containing
-//! a `Instr::CallRuntimeAbi` for one of the new symbols and asserts the
+//! a typed terminal runtime call for one of the new symbols and asserts the
 //! emitted LLVM IR contains the expected `declare` signature. Passing
 //! `native: false, wasm: false` keeps these focused on textual IR only.
 //!
@@ -14,14 +14,14 @@
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
-    BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, RecordLayout,
-    RuntimeCall, SpawnEnvFieldOwnership, Terminator,
+    BasicBlock, BlockKind, CallAuthority, CheckedMirFunction, DropPlan, ElabBlock,
+    ElaboratedMirFunction, ExitPath, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction,
+    RecordLayout, SpawnEnvFieldOwnership, Terminator,
 };
 use hew_types::ResolvedTy;
 
-/// Build a minimal `IrPipeline` containing one function with a single
-/// `Instr::CallRuntimeAbi`. Mirrors the shape `lower_hir_module` produces.
+/// Build a minimal `IrPipeline` containing one function with a single typed
+/// terminal runtime call. Mirrors the shape `lower_hir_module` produces.
 ///
 /// `symbol` — the C-ABI symbol to call.
 /// `args` — Place arguments to pass.
@@ -36,15 +36,28 @@ fn pipeline_with_task_abi_call(
     let mut locals = vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))];
     locals.extend(extra_locals);
 
-    let raw_blocks = vec![BasicBlock {
-        id: 0,
-        statements: vec![],
-        instructions: vec![Instr::CallRuntimeAbi(
-            RuntimeCall::new(symbol, args, dest)
-                .unwrap_or_else(|e| panic!("symbol {symbol} not on allowlist: {e}")),
-        )],
-        terminator: Terminator::Return,
-    }];
+    let family = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(symbol)
+        .unwrap_or_else(|| panic!("symbol {symbol} not in runtime catalogue"));
+    let raw_blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Call {
+                callee: symbol.to_owned(),
+                authority: CallAuthority::Runtime(family),
+                args,
+                dest,
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
 
     IrPipeline {
         thir: vec![],
@@ -76,19 +89,28 @@ fn pipeline_with_task_abi_call(
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![ElabBlock {
-                id: 0,
-                kind: BlockKind::Normal,
-                drops: vec![],
-                successor: None,
-            }],
-            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            blocks: vec![
+                ElabBlock {
+                    id: 0,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: Some(1),
+                },
+                ElabBlock {
+                    id: 1,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+            ],
+            drop_plans: vec![(ExitPath::Return { block: 1 }, DropPlan::default())],
             coroutine: None,
             lambda_captures: vec![],
         }],
@@ -199,6 +221,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 decisions: vec![],
                 checks: vec![],
                 cooperate_sites: vec![],
+                ownership_elaboration: None,
             },
             CheckedMirFunction {
                 name: "long_op".to_string(),
@@ -207,6 +230,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 decisions: vec![],
                 checks: vec![],
                 cooperate_sites: vec![],
+                ownership_elaboration: None,
             },
         ],
         elaborated_mir: vec![],
@@ -308,6 +332,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 decisions: vec![],
                 checks: vec![],
                 cooperate_sites: vec![],
+                ownership_elaboration: None,
             },
             CheckedMirFunction {
                 name: "long_op".to_string(),
@@ -316,6 +341,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 decisions: vec![],
                 checks: vec![],
                 cooperate_sites: vec![],
+                ownership_elaboration: None,
             },
         ],
         elaborated_mir: vec![],
@@ -442,6 +468,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 decisions: vec![],
                 checks: vec![],
                 cooperate_sites: vec![],
+                ownership_elaboration: None,
             },
             CheckedMirFunction {
                 name: "__hew_closure_invoke_main_0".to_string(),
@@ -450,6 +477,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 decisions: vec![],
                 checks: vec![],
                 cooperate_sites: vec![],
+                ownership_elaboration: None,
             },
         ],
         elaborated_mir: vec![],
@@ -600,28 +628,45 @@ fn task_abi_emission_task_free_declare() {
 /// `@hew_scope_spawn` is removed and must not appear.
 #[test]
 fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
-    // Build a pipeline with TWO CallRuntimeAbi instructions in sequence,
+    // Build a pipeline with two terminal runtime calls in sequence,
     // mirroring lower_spawned_fn_task: hew_task_new(dest=task) then
     // hew_task_scope_spawn(scope, task).
-    let raw_blocks = vec![BasicBlock {
-        id: 0,
-        statements: vec![],
-        instructions: vec![
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new("hew_task_new", vec![], Some(Place::DuplexHandle(0)))
-                    .expect("hew_task_new must be on allowlist"),
-            ),
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new(
-                    "hew_task_scope_spawn",
-                    vec![Place::DuplexHandle(0), Place::DuplexHandle(0)],
-                    None,
-                )
-                .expect("hew_task_scope_spawn must be on allowlist"),
-            ),
-        ],
-        terminator: Terminator::Return,
-    }];
+    let raw_blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Call {
+                callee: "hew_task_new".to_owned(),
+                authority: CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::TaskNew,
+                ),
+                args: vec![],
+                dest: Some(Place::DuplexHandle(0)),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Call {
+                callee: "hew_task_scope_spawn".to_owned(),
+                authority: CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::TaskScopeSpawn,
+                ),
+                args: vec![Place::DuplexHandle(0), Place::DuplexHandle(0)],
+                dest: None,
+                next: 2,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
     let locals = vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))];
     let pipeline = IrPipeline {
         thir: vec![],
@@ -653,19 +698,22 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![ElabBlock {
-                id: 0,
-                kind: BlockKind::Normal,
-                drops: vec![],
-                successor: None,
-            }],
-            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            blocks: (0..=2)
+                .map(|id| ElabBlock {
+                    id,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: (id < 2).then_some(id + 1),
+                })
+                .collect(),
+            drop_plans: vec![(ExitPath::Return { block: 2 }, DropPlan::default())],
             coroutine: None,
             lambda_captures: vec![],
         }],
@@ -721,11 +769,11 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
     // *call* instructions (not the declarations, which may be re-ordered
     // by LLVM module pretty-printing).
     let task_new_call_pos = ir
-        .find("call ptr @hew_task_new")
-        .expect("emitted IR must contain `call ptr @hew_task_new`");
+        .find("invoke ptr @hew_task_new")
+        .expect("terminal task construction must emit `invoke ptr @hew_task_new`");
     let task_scope_spawn_call_pos = ir
-        .find("call void @hew_task_scope_spawn")
-        .expect("emitted IR must contain `call void @hew_task_scope_spawn`");
+        .find("invoke void @hew_task_scope_spawn")
+        .expect("terminal scope spawn must emit `invoke void @hew_task_scope_spawn`");
     assert!(
         task_new_call_pos < task_scope_spawn_call_pos,
         "hew_task_new call must precede hew_task_scope_spawn call \

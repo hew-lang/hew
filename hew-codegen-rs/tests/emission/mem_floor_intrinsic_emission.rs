@@ -78,6 +78,7 @@ fn floor_pipeline(
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: name.to_string(),

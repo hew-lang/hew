@@ -58,6 +58,17 @@ Use `:help` inside the REPL to see the command list. Common commands include
 `hew init` scaffolds a manifest-first project: `hew.toml`, a starter
 `main.hew`, and a merged `.gitignore`.
 
+For a reusable package, `hew init --lib local_dep` creates
+`local_dep/local_dep.hew`. The filename matches the package name, so after a
+consumer adds and installs the dependency, its root is imported directly with
+`import local_dep;`.
+
+Package names are module paths. A dotted library such as `hew.selfqualtype`
+uses every segment for its installed directory and the final segment for its
+root file: `hew/selfqualtype/selfqualtype.hew`, imported with
+`import hew.selfqualtype;`. The generated manifest records
+`main = "selfqualtype.hew"`.
+
 See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
 
 ### Learning Paths

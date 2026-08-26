@@ -16,8 +16,9 @@
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
-    BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator, TrapKind,
+    BasicBlock, BlockKind, CallAuthority, CheckedMirFunction, CmpPred, DropPlan, ElabBlock,
+    ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place, RawMirFunction, Terminator,
+    TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -92,23 +93,29 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
     let after_c1_bb = BasicBlock {
         id: 2,
         statements: vec![],
-        instructions: vec![
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
-                    .expect("hew_vec_len is allowlisted"),
-            ),
-            // bad2 = end > len ?
-            Instr::IntCmp {
-                dest: bad2,
-                pred: CmpPred::SignedGreater,
-                lhs: end_place,
-                rhs: len_place,
-            },
-        ],
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "hew_vec_len".to_owned(),
+            authority: CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecLen),
+            args: vec![vec_place],
+            dest: Some(len_place),
+            next: 3,
+        },
+    };
+
+    let after_len_bb = BasicBlock {
+        id: 3,
+        statements: vec![],
+        instructions: vec![Instr::IntCmp {
+            dest: bad2,
+            pred: CmpPred::SignedGreater,
+            lhs: end_place,
+            rhs: len_place,
+        }],
         terminator: Terminator::Branch {
             cond: bad2,
             then_target: 1, // shared oob trap
-            else_target: 3, // after_c2
+            else_target: 4, // after_c2
         },
     };
 
@@ -120,29 +127,43 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
     // integer-returning subset.
     let ret_len = Place::Local(7);
     let after_c2_bb = BasicBlock {
-        id: 3,
+        id: 4,
         statements: vec![],
-        instructions: vec![
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new(
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "hew_vec_slice_range_i64".to_owned(),
+            authority: CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                     "hew_vec_slice_range_i64",
-                    vec![vec_place, start_place, end_place],
-                    Some(result_place),
                 )
-                .expect("hew_vec_slice_range_i64 is allowlisted"),
+                .expect("hew_vec_slice_range_i64 is catalogued"),
             ),
-            // Read the length of the produced slice into an i64 we can
-            // return — keeps Cluster-1's integer-return restriction
-            // satisfied while exercising the slice-range lowering.
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new("hew_vec_len", vec![result_place], Some(ret_len))
-                    .expect("hew_vec_len is allowlisted"),
-            ),
-            Instr::Move {
-                dest: Place::ReturnSlot,
-                src: ret_len,
-            },
-        ],
+            args: vec![vec_place, start_place, end_place],
+            dest: Some(result_place),
+            next: 5,
+        },
+    };
+
+    let result_len_bb = BasicBlock {
+        id: 5,
+        statements: vec![],
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "hew_vec_len".to_owned(),
+            authority: CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecLen),
+            args: vec![result_place],
+            dest: Some(ret_len),
+            next: 6,
+        },
+    };
+
+    let return_bb = BasicBlock {
+        id: 6,
+        statements: vec![],
+        instructions: vec![Instr::Move {
+            dest: Place::ReturnSlot,
+            src: ret_len,
+        }],
         terminator: Terminator::Return,
     };
 
@@ -150,7 +171,10 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
         entry_bb.clone(),
         oob_trap_bb.clone(),
         after_c1_bb.clone(),
+        after_len_bb.clone(),
         after_c2_bb.clone(),
+        result_len_bb.clone(),
+        return_bb.clone(),
     ];
 
     IrPipeline {
@@ -192,40 +216,23 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![
-                ElabBlock {
-                    id: 0,
+            blocks: (0..=6)
+                .map(|id| ElabBlock {
+                    id,
                     kind: BlockKind::Normal,
                     drops: vec![],
                     successor: None,
-                },
-                ElabBlock {
-                    id: 1,
-                    kind: BlockKind::Normal,
-                    drops: vec![],
-                    successor: None,
-                },
-                ElabBlock {
-                    id: 2,
-                    kind: BlockKind::Normal,
-                    drops: vec![],
-                    successor: None,
-                },
-                ElabBlock {
-                    id: 3,
-                    kind: BlockKind::Normal,
-                    drops: vec![],
-                    successor: None,
-                },
-            ],
+                })
+                .collect(),
             drop_plans: vec![
-                (ExitPath::Return { block: 3 }, DropPlan::default()),
+                (ExitPath::Return { block: 6 }, DropPlan::default()),
                 (ExitPath::Panic { block: 1 }, DropPlan::default()),
             ],
             coroutine: None,
@@ -318,7 +325,7 @@ fn trap_path_emits_llvm_trap_then_unreachable() {
 fn continuation_calls_slice_range_i64() {
     let ll = emit_ll("slice_call");
     assert!(
-        ll.contains("call ptr @hew_vec_slice_range_i64("),
+        ll.contains("invoke ptr @hew_vec_slice_range_i64("),
         "continuation must call hew_vec_slice_range_i64; got:\n{ll}"
     );
 }
@@ -329,7 +336,7 @@ fn entry_calls_hew_vec_len_for_end_check() {
     // bounds check is start > end and needs no runtime probe.
     let ll = emit_ll("slice_len_call");
     assert!(
-        ll.contains("call i64 @hew_vec_len("),
+        ll.contains("invoke i64 @hew_vec_len("),
         "after-check1 block must call hew_vec_len; got:\n{ll}"
     );
 }

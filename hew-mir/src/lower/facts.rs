@@ -1665,6 +1665,7 @@ mod param_boundary_effect_tests {
             decisions: raw.decisions.clone(),
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }
     }
 

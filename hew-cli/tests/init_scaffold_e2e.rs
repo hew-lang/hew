@@ -248,7 +248,7 @@ fn init_merges_existing_gitignore() {
 }
 
 #[test]
-fn init_lib_scaffolds_lib_hew() {
+fn init_lib_scaffolds_canonical_package_module() {
     let tmp = support::tempdir();
     let out = run_hew(tmp.path(), &["init", "mylib", "--lib"]);
 
@@ -259,12 +259,17 @@ fn init_lib_scaffolds_lib_hew() {
     );
     let project_dir = tmp.path().join("mylib");
     assert!(
-        project_dir.join("lib.hew").exists(),
-        "lib.hew was not created"
+        project_dir.join("mylib.hew").exists(),
+        "canonical package module mylib.hew was not created"
     );
     assert!(
         !project_dir.join("main.hew").exists(),
         "a library scaffold must not create main.hew"
+    );
+    let manifest = fs::read_to_string(project_dir.join("hew.toml")).unwrap();
+    assert!(
+        manifest.contains("main = \"mylib.hew\""),
+        "library manifest must name the same canonical module root; got:\n{manifest}"
     );
 }
 

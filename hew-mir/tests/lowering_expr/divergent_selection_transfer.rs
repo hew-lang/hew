@@ -11,30 +11,45 @@
 //! losing arm's value leaked, once per call.
 //!
 //! The rewrite makes the transfer physical: the arm's `Move` is followed by a
-//! `NeutralizePayloadSlot` carrying
-//! `NeutralizeAuthority::DivergentSelectionTransfer`, which zeroes the source
-//! slot. Ownership is then unambiguous per path — the source keeps its ordinary
-//! scope-exit release, which walks a nulled slot (null-tolerant no-op) where it
-//! transferred and frees where it did not.
+//! `NeutralizePayloadSlot` carrying `NeutralizeAuthority::WholeCarrierConsume`,
+//! then an exact `OwnershipEvent::Relocate` moves the definition owner to that
+//! carrier. Each arm then releases the opposite owner and terminally hands off
+//! the selected owner before the shared block mints the lexical output.
+//! Ownership is therefore explicit on every path rather than inferred from a
+//! legacy divergent-selection marker or deferred to path-insensitive null-slot
+//! drops at Return.
 //!
 //! These assertions are platform-independent and run on every host: the
 //! ownership invariant is stated as "which instruction is emitted where" and as
-//! "which drops the return exit plans", neither of which needs an allocator
+//! "which owner remains in the return exit plan", neither of which needs an allocator
 //! inspector. The macOS leak-slope oracle in
 //! `hew-cli/tests/divergent_selection_arm_ownership_oracle.rs` measures the
 //! same shapes empirically.
 //!
 //! The NEGATIVE CONTROLS are load-bearing. A rewrite that fired on every
 //! whole-local `Move` would neutralize ordinary straight-line rebinds (changing
-//! the `#2418` conditional-move machinery underneath it) and would null a
-//! source that is still READ after the selection, turning a leak into a
-//! use-after-move fault. Both must stay untouched.
+//! the `#2418` conditional-move machinery underneath it). A source read after
+//! a selected-arm move must instead be rejected by immutable ownership
+//! validation, while an explicit clone remains valid.
 
-use hew_mir::{lower_hir_module, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place};
+use hew_mir::{
+    lower_hir_module, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirStatement,
+    OwnershipEvent, Place,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
 fn pipeline(source: &str) -> IrPipeline {
+    let pl = pipeline_with_diagnostics(source);
+    assert!(
+        pl.diagnostics.is_empty(),
+        "MIR diagnostics: {:?}",
+        pl.diagnostics
+    );
+    pl
+}
+
+fn pipeline_with_diagnostics(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -49,13 +64,7 @@ fn pipeline(source: &str) -> IrPipeline {
         &hew_hir::ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
-    let pl = lower_hir_module(&output.module);
-    assert!(
-        pl.diagnostics.is_empty(),
-        "MIR diagnostics: {:?}",
-        pl.diagnostics
-    );
-    pl
+    lower_hir_module(&output.module)
 }
 
 const MAKE_VEC: &str = "fn make() -> Vec<i64> {\n\
@@ -65,12 +74,68 @@ const MAKE_VEC: &str = "fn make() -> Vec<i64> {\n\
      \x20   return v;\n\
      }\n\n";
 
-/// Every `(source_local, transferee_local)` pair neutralized under the
-/// divergent-selection authority in `fn_name`, each verified to sit directly
-/// after the whole-local `Move` it pays for. A neutralize that is NOT paired
-/// with its move is not counted: the alias, escape, hand-off and returned-flow
-/// scans all key on that adjacency, so an unpaired site would be invisible to
-/// them.
+/// Every `(definition_local, first_carrier_local)` pair moved under canonical
+/// whole-carrier authority in `fn_name`.
+///
+/// The hard-cutover representation publishes three adjacent facts: the
+/// physical `Move`, its `WholeCarrierConsume` neutralization, and an exact
+/// `Relocate` of the owner minted at the source definition. Restricting the
+/// scan to that owner's definition place excludes later arm-temp -> join-slot
+/// carrier hops while still covering direct `match` and two-hop `if` lowering.
+fn paired_selection_owner_relocations(pl: &IrPipeline, fn_name: &str) -> Vec<(u32, u32)> {
+    let func = pl
+        .raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("no MIR function named `{fn_name}`"));
+    let definition_places = func
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Mint { owner, place, .. }) => {
+                Some((*owner, *place))
+            }
+            _ => None,
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut pairs = Vec::new();
+    for block in &func.blocks {
+        for (index, instr) in block.instructions.iter().enumerate() {
+            let Instr::Move {
+                dest: Place::Local(transferee),
+                src: Place::Local(source),
+            } = instr
+            else {
+                continue;
+            };
+            let Some(Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(neutralized_to),
+                authority: hew_mir::NeutralizeAuthority::WholeCarrierConsume,
+            }) = block.instructions.get(index + 1)
+            else {
+                continue;
+            };
+            let Some(Instr::OwnershipEvent(hew_mir::OwnershipEvent::Relocate { owner, from, to })) =
+                block.instructions.get(index + 2)
+            else {
+                continue;
+            };
+            if *place != Place::Local(*source)
+                || *neutralized_to != Place::Local(*transferee)
+                || *from != Place::Local(*source)
+                || *to != Place::Local(*transferee)
+                || definition_places.get(owner) != Some(from)
+            {
+                continue;
+            }
+            pairs.push((*source, *transferee));
+        }
+    }
+    pairs
+}
+
 fn paired_selection_transfers(pl: &IrPipeline, fn_name: &str) -> Vec<(u32, u32)> {
     let func = pl
         .raw_mir
@@ -135,6 +200,76 @@ fn return_exit_drop_places(pl: &IrPipeline, fn_name: &str) -> Vec<Place> {
     places
 }
 
+/// `(released losers, selected carrier)` for each branch-exact selection arm.
+fn selection_arm_closures(pl: &IrPipeline, fn_name: &str) -> Vec<(Vec<Place>, Place)> {
+    let func = pl
+        .raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("no MIR function named `{fn_name}`"));
+    let mut closures = Vec::new();
+    for block in &func.blocks {
+        let selected = block
+            .instructions
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                    from,
+                    to: None,
+                    to_owner: None,
+                    ..
+                }) => Some(*from),
+                _ => None,
+            });
+        let Some(selected) = selected else {
+            continue;
+        };
+        let released = block
+            .instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instr::OwnershipEvent(OwnershipEvent::Release { place, .. }) => Some(*place),
+                _ => None,
+            })
+            .collect();
+        closures.push((released, selected));
+    }
+    closures
+}
+
+fn binding_owner_place(pl: &IrPipeline, fn_name: &str, name: &str) -> (hew_mir::OwnerId, Place) {
+    let func = pl
+        .raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("no MIR function named `{fn_name}`"));
+    let binding = func
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find_map(|statement| match statement {
+            MirStatement::Bind {
+                binding,
+                name: binding_name,
+                ..
+            } if binding_name == name => Some(*binding),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no binding named `{name}` in `{fn_name}`"));
+    func.blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, .. })
+                if owner.binding == binding =>
+            {
+                Some((*owner, *place))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no owner definition for `{name}` in `{fn_name}`"))
+}
+
 /// ADMIT: the two-arm `match` selection neutralizes BOTH arm sources.
 ///
 /// This is the regression pin for the reported defect: 96 leaks / 6912 bytes
@@ -150,12 +285,12 @@ fn match_arm_selection_neutralizes_every_arm_source() {
          }}\n\n\
          fn main() -> i64 {{ probe(true) }}\n"
     ));
-    let transfers = paired_selection_transfers(&pl, "probe");
+    let transfers = paired_selection_owner_relocations(&pl, "probe");
     assert_eq!(
         transfers.len(),
         2,
         "each arm of a two-arm value selection transfers one owned local into the join slot, so \
-         both sources must be neutralized; got {transfers:?}"
+         both source owners must relocate into their physical carriers; got {transfers:?}"
     );
     let join_slots: Vec<u32> = transfers.iter().map(|(_, dest)| *dest).collect();
     assert!(
@@ -170,13 +305,9 @@ fn match_arm_selection_neutralizes_every_arm_source() {
     );
 }
 
-/// ADMIT: with both arm sources neutralized, the return exit plans a release
-/// for each of them AND for the join binding — three owners, three releases,
-/// each exactly-once at runtime because two of them walk a nulled slot on the
-/// path that transferred.
-///
-/// Pre-fix this exit planned exactly ONE drop (the join binding), which is the
-/// leak stated structurally.
+/// ADMIT: each arm releases its one losing owner and terminally transfers its
+/// selected owner before the shared output is minted. The return therefore
+/// owns only the output; no path-insensitive pair of null-slot drops is needed.
 #[test]
 fn match_arm_selection_plans_a_release_for_every_owner() {
     let pl = pipeline(&format!(
@@ -188,20 +319,79 @@ fn match_arm_selection_plans_a_release_for_every_owner() {
          }}\n\n\
          fn main() -> i64 {{ probe(true) }}\n"
     ));
+    let arm_closures = selection_arm_closures(&pl, "probe");
+    assert_eq!(
+        arm_closures.len(),
+        2,
+        "both executable selection arms must publish one exact owner closure: {arm_closures:?}"
+    );
+    assert!(
+        arm_closures.iter().all(|(losers, _)| losers.len() == 1),
+        "each arm must release exactly its one unselected owner: {arm_closures:?}"
+    );
+    assert_ne!(
+        arm_closures[0].0, arm_closures[1].0,
+        "the mutually-exclusive arms must release opposite owners: {arm_closures:?}"
+    );
+    assert_eq!(
+        arm_closures[0].1, arm_closures[1].1,
+        "both selected owners must hand off through the same join carrier: {arm_closures:?}"
+    );
     let dropped = return_exit_drop_places(&pl, "probe");
     assert_eq!(
         dropped.len(),
-        3,
-        "`a`, `b` and `out` are three separately-minted Vec owners; the return exit must plan a \
-         release for each or whichever arm lost the selection leaks its allocation; got \
-         {dropped:?}"
+        1,
+        "the branch closures retire both source-owner identities, leaving only the lexical \
+         output live at Return; got {dropped:?}"
+    );
+}
+
+/// NEGATIVE CONTROL: an unrelated owner that is read after the selection is
+/// not an arm participant. It must survive both branch closures and retain its
+/// ordinary Return cleanup.
+#[test]
+fn match_arm_selection_does_not_close_an_unrelated_outer_owner() {
+    let pl = pipeline(&format!(
+        "{MAKE_VEC}fn probe(c: bool) -> i64 {{\n\
+         \x20   let keep = make();\n\
+         \x20   let a = make();\n\
+         \x20   let b = make();\n\
+         \x20   let out = match c {{ true => a, false => b }};\n\
+         \x20   out.len() + keep.len()\n\
+         }}\n\n\
+         fn main() -> i64 {{ probe(false) }}\n"
+    ));
+    let (keep_owner, keep_place) = binding_owner_place(&pl, "probe", "keep");
+    let func = pl.raw_mir.iter().find(|f| f.name == "probe").unwrap();
+    assert!(func.blocks.iter().all(|block| {
+        !block.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instr::OwnershipEvent(OwnershipEvent::Release { owner, .. })
+                    if *owner == keep_owner
+            )
+        })
+    }));
+    let dropped = return_exit_drop_places(&pl, "probe");
+    assert!(
+        dropped.contains(&keep_place),
+        "the non-participating `keep` owner must survive to Return: {dropped:?}"
+    );
+    assert_eq!(
+        selection_arm_closures(&pl, "probe")
+            .iter()
+            .map(|(losers, _)| losers.len())
+            .collect::<Vec<_>>(),
+        vec![1, 1],
+        "each arm must close only the opposite selection source"
     );
 }
 
 /// ADMIT: the `if`/`else` value form. Its lowering copies each arm's value
-/// through a per-arm temp before the join slot, so the join slot's direct
-/// sources are temps — the rewrite has to walk back through that single-writer
-/// copy chain to the owned local, or the shape stays leaking.
+/// through a per-arm temp before the join slot. Each definition owner first
+/// relocates into its own arm temp, then that owner follows the later temp ->
+/// join carrier hop. The definition-site scan must therefore still find both
+/// initial owner relocations.
 #[test]
 fn if_else_selection_neutralizes_through_the_arm_temp() {
     let pl = pipeline(&format!(
@@ -213,17 +403,12 @@ fn if_else_selection_neutralizes_through_the_arm_temp() {
          }}\n\n\
          fn main() -> i64 {{ probe(true) }}\n"
     ));
-    let transfers = paired_selection_transfers(&pl, "probe");
+    let transfers = paired_selection_owner_relocations(&pl, "probe");
     assert_eq!(
         transfers.len(),
         2,
         "the `if`/`else` value form selects between two owned locals exactly as `match` does; \
          got {transfers:?}"
-    );
-    assert_eq!(
-        return_exit_drop_places(&pl, "probe").len(),
-        3,
-        "same three owners as the `match` form"
     );
 }
 
@@ -245,7 +430,7 @@ fn selection_with_a_diverging_arm_releases_on_the_early_exit() {
          }}\n\n\
          fn main() -> i64 {{ probe(true) }}\n"
     ));
-    let transfers = paired_selection_transfers(&pl, "probe");
+    let transfers = paired_selection_owner_relocations(&pl, "probe");
     assert_eq!(
         transfers.len(),
         1,
@@ -296,8 +481,8 @@ fn unconditional_rebind_is_not_neutralized() {
 /// a leak into a use-after-move fault, so the shape holds its pre-existing
 /// posture until the surface decides the read is an error.
 #[test]
-fn source_read_after_the_selection_is_not_neutralized() {
-    let pl = pipeline(&format!(
+fn source_read_after_move_semantics_selection_is_rejected_without_an_explicit_clone() {
+    let pl = pipeline_with_diagnostics(&format!(
         "{MAKE_VEC}fn probe(c: bool) -> i64 {{\n\
          \x20   let a = make();\n\
          \x20   let b = make();\n\
@@ -306,29 +491,37 @@ fn source_read_after_the_selection_is_not_neutralized() {
          }}\n\n\
          fn main() -> i64 {{ probe(true) }}\n"
     ));
-    let a_local = binding_local(&pl, "probe", "a");
-    let neutralized: Vec<u32> = paired_selection_transfers(&pl, "probe")
-        .into_iter()
-        .map(|(source, _)| source)
-        .collect();
     assert!(
-        !neutralized.contains(&a_local),
-        "`a` is read after the selection, so its slot must keep its bits; neutralized {neutralized:?} \
-         includes _{a_local}"
+        pl.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            hew_mir::MirDiagnosticKind::UseAfterConsume { .. }
+        )),
+        "a move-semantics collection cannot be selected into a second owner and then read again \
+         without an explicit clone; diagnostics: {:?}",
+        pl.diagnostics
     );
 }
 
-/// The MIR local backing a named binding of `fn_name`.
-fn binding_local(pl: &IrPipeline, fn_name: &str, binding: &str) -> u32 {
-    let func = pl
-        .raw_mir
-        .iter()
-        .find(|f| f.name == fn_name)
-        .unwrap_or_else(|| panic!("no MIR function named `{fn_name}`"));
-    let index = func
-        .local_names
-        .iter()
-        .position(|name| name.as_deref() == Some(binding))
-        .unwrap_or_else(|| panic!("no local named `{binding}` in `{fn_name}`"));
-    u32::try_from(index).expect("local index fits u32")
+/// NEGATIVE: an explicit clone leaves the source owner at its definition
+/// place, so a read after the selection remains valid even though the cloned
+/// result follows the same branch/join topology.
+#[test]
+fn source_read_after_cloned_selection_remains_valid() {
+    let pl = pipeline_with_diagnostics(&format!(
+        "{MAKE_VEC}fn probe(c: bool) -> i64 {{\n\
+         \x20   let a = make();\n\
+         \x20   let b = make();\n\
+         \x20   let out = match c {{ true => a.clone(), false => b.clone() }};\n\
+         \x20   out.len() + a.len()\n\
+         }}\n\n\
+         fn main() -> i64 {{ probe(true) }}\n"
+    ));
+    assert!(
+        pl.diagnostics.iter().all(|diagnostic| !matches!(
+            diagnostic.kind,
+            hew_mir::MirDiagnosticKind::UseAfterConsume { .. }
+        )),
+        "cloning into the selection must not consume the later-read source: {:?}",
+        pl.diagnostics
+    );
 }

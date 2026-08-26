@@ -14,7 +14,8 @@
 //! - Admit (positive): the conditionally-moved source earns its scope-exit
 //!   drop on the Return exit WITH `guard: Some(..)` — skipped at runtime on
 //!   the moved path, fired on the not-moved path. The move's destination
-//!   keeps its own (unguarded) release on its arm's scope-close edge.
+//!   adopts the source generation and closes inline before its arm's lexical
+//!   `ScopeExit`.
 //! - Common case unchanged: a never-consumed local's drop carries
 //!   `guard: None` — byte-identical to the pre-fix plan.
 //! - Unconditional move: the source is `Consumed` at the Return exit, so the
@@ -29,7 +30,10 @@
 //! exclusion would pass even if the gate admitted everything (the
 //! double-free this fix must never introduce).
 
-use hew_mir::{DropKind, ElabDrop, ExitPath, IrPipeline};
+use hew_mir::{
+    CheckedMirFunction, DropKind, ElabDrop, ExitPath, Instr, IrPipeline, MirStatement, OwnerId,
+    OwnershipEvent, Place,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -59,16 +63,10 @@ fn return_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
     drops_matching(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. }))
 }
 
-/// Every `ElabDrop` on the named function's forward `Goto` (scope-close)
-/// exits, in plan order.
-fn goto_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
-    drops_matching(p, fn_name, |exit| matches!(exit, ExitPath::Goto { .. }))
-}
-
 /// Every `ElabDrop` across EVERY exit of the named function (used by the
 /// negative controls: an escaped handle must not be dropped on ANY path).
 fn all_exit_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
-    drops_matching(p, fn_name, |_| true)
+    drops_matching(p, fn_name, |exit| !matches!(exit, ExitPath::Unwind { .. }))
 }
 
 fn drops_matching(
@@ -97,6 +95,190 @@ fn frees<'d>(drops: &'d [ElabDrop], symbol: &str) -> Vec<&'d ElabDrop> {
         .iter()
         .filter(|d| is_cow_heap_free(d, symbol))
         .collect()
+}
+
+/// Resolve the one typed source-to-destination owner transfer for a binding.
+fn destination_transfer(function: &CheckedMirFunction, binding_name: &str) -> (OwnerId, Place) {
+    let binding = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find_map(|statement| match statement {
+            MirStatement::Bind { binding, name, .. } if name == binding_name => Some(*binding),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "binding {binding_name} must be present in {}",
+                function.name
+            )
+        });
+    let transfers: Vec<(OwnerId, Place, OwnerId, Place)> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from,
+                to: Some(to),
+                to_owner: Some(successor),
+                ..
+            }) if successor.binding == binding => Some((*owner, *from, *successor, *to)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        transfers.len(),
+        1,
+        "{binding_name} must adopt exactly one source generation: {transfers:?}"
+    );
+    let (source_owner, source_place, owner, place) = transfers[0];
+    assert!(
+        source_owner != owner && source_place != place,
+        "{binding_name} must adopt a distinct source owner and place: {transfers:?}"
+    );
+    (owner, place)
+}
+
+fn assert_vec_plain_recipe(function: &CheckedMirFunction, owner: OwnerId, binding_name: &str) {
+    let recipes: Vec<&DropKind> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                owner: candidate,
+                recipe,
+            }) if *candidate == owner => Some(&recipe.kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        recipes,
+        vec![&DropKind::CowHeap {
+            release: hew_mir::CowHeapRelease::VecPlain,
+        }],
+        "{binding_name} must publish one exact Vec cleanup recipe"
+    );
+}
+
+/// Assert the canonical lifecycle for a scope-local destination that adopts a
+/// conditionally moved `Vec`. The arm owns the only executable cleanup: the
+/// source generation transfers to the named binding, which publishes one
+/// `VecPlain` recipe and is retired by an inline Drop/Release before its
+/// lexical `ScopeExit`. Exit-plan elaboration must not add a competing release.
+fn inline_vec_destination_lifecycle(p: &IrPipeline, fn_name: &str, binding_name: &str) -> u32 {
+    let function = p
+        .checked_mir
+        .iter()
+        .find(|function| function.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in checked_mir"));
+    let (owner, place) = destination_transfer(function, binding_name);
+    assert_vec_plain_recipe(function, owner, binding_name);
+
+    let release_blocks: Vec<u32> = function
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let releases: Vec<usize> = block
+                .instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, instruction)| {
+                    matches!(
+                        instruction,
+                        Instr::OwnershipEvent(OwnershipEvent::Release {
+                            owner: candidate,
+                            place: candidate_place,
+                        }) if *candidate == owner && *candidate_place == place
+                    )
+                    .then_some(index)
+                })
+                .collect();
+            if releases.is_empty() {
+                return None;
+            }
+            assert_eq!(
+                releases.len(),
+                1,
+                "{binding_name} must release at most once in block {}",
+                block.id
+            );
+            let release = releases[0];
+            let drops: Vec<usize> = block
+                .instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, instruction)| {
+                    matches!(
+                        instruction,
+                        Instr::Drop {
+                            place: candidate,
+                            drop_fn: Some(hew_mir::DropFnSpec::Release(symbol)),
+                            ..
+                        } if *candidate == place && *symbol == "hew_vec_free"
+                    )
+                    .then_some(index)
+                })
+                .collect();
+            let scope_exits: Vec<usize> = block
+                .instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, instruction)| {
+                    matches!(
+                        instruction,
+                        Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. })
+                            if owners.iter().filter(|candidate| **candidate == owner).count() == 1
+                    )
+                    .then_some(index)
+                })
+                .collect();
+            assert!(
+                matches!((drops.as_slice(), scope_exits.as_slice()), ([drop], [scope_exit]) if *drop < release && release < *scope_exit),
+                "{binding_name} must have one ordered Drop -> Release -> ScopeExit in block {}: {:#?}",
+                block.id,
+                block.instructions
+            );
+            Some(block.id)
+        })
+        .collect();
+    assert_eq!(
+        release_blocks.len(),
+        1,
+        "{binding_name} must release inline on exactly one arm: {release_blocks:?}"
+    );
+
+    let exit_drops = all_exit_drops(p, fn_name);
+    assert!(
+        exit_drops
+            .iter()
+            .all(|drop| drop.place != place || !is_cow_heap_free(drop, "hew_vec_free")),
+        "{binding_name}'s inline release must be sole cleanup authority; got {exit_drops:?}"
+    );
+    release_blocks[0]
+}
+
+fn block_reaches(function: &CheckedMirFunction, from: u32, target: u32) -> bool {
+    let mut pending = function
+        .blocks
+        .iter()
+        .find(|block| block.id == from)
+        .map_or_else(Vec::new, hew_mir::BasicBlock::successors);
+    let mut visited = std::collections::HashSet::new();
+    while let Some(block_id) = pending.pop() {
+        if block_id == target {
+            return true;
+        }
+        if !visited.insert(block_id) {
+            continue;
+        }
+        if let Some(block) = function.blocks.iter().find(|block| block.id == block_id) {
+            pending.extend(block.successors());
+        }
+    }
+    false
 }
 
 const CONDITIONAL_MOVE: &str = r"
@@ -147,25 +329,13 @@ fn conditional_move_source_gets_guarded_return_drop() {
     );
 }
 
-/// The move's destination (`ys`, bound on one arm only) keeps its own
-/// UNGUARDED release on the arm's scope-close edge — it is the sole owner
-/// exactly where the arm executed.
+/// The move's destination (`ys`, bound on one arm only) keeps its own inline
+/// release immediately before the arm's lexical `ScopeExit` — it is the sole
+/// owner exactly where the arm executed.
 #[test]
 fn conditional_move_destination_keeps_arm_scope_close_drop() {
     let pipeline = pipeline_with_tc(CONDITIONAL_MOVE);
-    let drops = goto_drops(&pipeline, "probe");
-    let vec_frees = frees(&drops, "hew_vec_free");
-    assert_eq!(
-        vec_frees.len(),
-        1,
-        "the move destination must keep exactly one scope-close hew_vec_free \
-         on its arm's closing goto; got {drops:?}"
-    );
-    assert!(
-        vec_frees[0].guard.is_none(),
-        "the destination's arm-edge drop needs no guard — the edge only \
-         exists on the path where the move executed; got {vec_frees:?}"
-    );
+    inline_vec_destination_lifecycle(&pipeline, "probe", "ys");
 }
 
 /// An `if let` resource payload can outlive its carrier's drop admission. The
@@ -382,7 +552,7 @@ const DOUBLE_DESTINATION: &str = r"
 
 /// `if a { let y = xs; } else if b { let z = xs; }` — the source keeps
 /// exactly one GUARDED Return-exit release; the two destinations keep one
-/// unguarded release each on their own (mutually-exclusive) arm edges. The
+/// inline release each on their own (mutually-exclusive) arm edges. The
 /// fan-out collapse must not conflate exclusive branch destinations with a
 /// parallel fan-out.
 #[test]
@@ -401,18 +571,19 @@ fn exclusive_double_destination_keeps_all_three_releases() {
         "the double-destination source's Return-exit release must be \
          guarded; got {ret_frees:?}"
     );
-    let gotos = goto_drops(&pipeline, "probe");
-    let goto_frees = frees(&gotos, "hew_vec_free");
-    assert_eq!(
-        goto_frees.len(),
-        2,
-        "each exclusive destination keeps one release on its own arm's \
-         scope-close edge; got {gotos:?}"
-    );
+    let y_release = inline_vec_destination_lifecycle(&pipeline, "probe", "y");
+    let z_release = inline_vec_destination_lifecycle(&pipeline, "probe", "z");
+    let function = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "probe")
+        .expect("probe checked MIR");
     assert!(
-        goto_frees.iter().all(|d| d.guard.is_none()),
-        "destination releases need no guard — each edge exists only on the \
-         path where its move executed; got {goto_frees:?}"
+        y_release != z_release
+            && !block_reaches(function, y_release, z_release)
+            && !block_reaches(function, z_release, y_release),
+        "destination releases must remain on mutually-exclusive arms: y=bb{y_release}, \
+         z=bb{z_release}"
     );
 }
 
@@ -466,19 +637,73 @@ fn both_arm_destinations_each_release_once() {
         "no guarded release survives — the source is consumed on every \
          path, so its drop is statically excluded per-exit; got {drops:?}"
     );
+    let probe = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "probe")
+        .expect("probe must be present in raw MIR");
+    let guarded_sources = probe
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::Guard {
+                owner,
+                kind: hew_mir::OwnershipGuardKind::Collection,
+                ..
+            }) => Some(*owner),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let rebound_destinations = probe
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                owner,
+                to_owner: Some(successor),
+                ..
+            }) if guarded_sources.contains(owner) && successor.binding != owner.binding => {
+                Some(*successor)
+            }
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        rebound_destinations.len(),
+        2,
+        "fixture must expose one destination owner on each arm"
+    );
+    let destination_guards = probe
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::Guard {
+                    owner,
+                    kind: hew_mir::OwnershipGuardKind::Collection,
+                    ..
+                }) if rebound_destinations.contains(owner)
+            )
+        })
+        .count();
+    assert_eq!(
+        destination_guards, 0,
+        "a destination must not inherit the source collection's already-consumed physical flag"
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Mixed rebind + aggregate-ingress arms — base-parity fallback.
 // ---------------------------------------------------------------------------
 
-/// A rebind on one arm and a record-literal ingress on the other: the
-/// aggregate ingress is an owning-sink escape, so the source falls back to
-/// the legacy posture (excluded — its flag never engages a release), while
-/// the rebind destination keeps its own release exactly as the
-/// retract-at-consume compiler admitted it. Pins the base-parity fallback:
-/// a flagged binding the escape scan cannot admit must not drag its move
-/// destination down with it.
+/// A rebind on one arm and a record-literal ingress on another: the source's
+/// runtime flag suppresses its destructor on both transfer paths and lets it
+/// release on the third path where it remains locally owned. The rebind
+/// destination keeps its own inline release.
 #[test]
 fn mixed_rebind_and_record_ingress_keeps_destination_release() {
     let pipeline = pipeline_with_tc(
@@ -514,25 +739,18 @@ fn mixed_rebind_and_record_ingress_keeps_destination_release() {
         }
         ",
     );
-    let drops = all_exit_drops(&pipeline, "probe");
+    let drops = return_drops(&pipeline, "probe");
     let vec_frees = frees(&drops, "hew_vec_free");
-    // One binding's release may appear on several exit PLANS (arm goto plus
-    // cancel cleanups) — count distinct released PLACES. Exactly one place
-    // (the rebind destination) earns a bare-vec release; the escaped source
-    // is excluded on every exit (its handle is the record's on the ingress
-    // arm and leaks fail-closed on the others).
-    let free_places: std::collections::HashSet<_> = vec_frees.iter().map(|d| d.place).collect();
     assert_eq!(
-        free_places.len(),
+        vec_frees.len(),
         1,
-        "only the rebind destination keeps a bare-vec release (the escaped \
-         source is excluded, fail-closed); got {drops:?}"
+        "the conditionally transferred source keeps one Return authority; got {drops:?}"
     );
     assert!(
-        vec_frees.iter().all(|d| d.guard.is_none()),
-        "the destination's release is unguarded and the excluded source \
-         contributes no guarded release; got {vec_frees:?}"
+        vec_frees[0].guard.is_some(),
+        "the source Return release must remain path-guarded; got {vec_frees:?}"
     );
+    inline_vec_destination_lifecycle(&pipeline, "probe", "y");
 }
 
 // ---------------------------------------------------------------------------
@@ -578,10 +796,10 @@ fn conditional_borrowing_value_call_drops_on_both_exits() {
     );
 }
 
-/// A vec RETURNED on one arm stays excluded on every path — the caller owns
-/// the returned handle; the not-returned path keeps today's posture.
+/// A vec returned on one arm belongs to the caller there, but remains locally
+/// owned and must be released on the sibling path.
 #[test]
-fn conditional_return_stays_excluded() {
+fn conditional_return_drops_only_the_nonreturn_path() {
     let pipeline = pipeline_with_tc(
         r"
         fn make_vec() -> Vec<i64> {
@@ -606,12 +824,12 @@ fn conditional_return_stays_excluded() {
         ",
     );
     let drops = all_exit_drops(&pipeline, "probe");
-    // `other` (the not-taken arm's fresh vec) legitimately drops nowhere in
-    // `probe` either — it is returned. No hew_vec_free may target `xs`.
+    // `other` is returned on the not-taken arm. The sole local release targets
+    // `xs` only on the sibling path where it was not returned.
     assert_eq!(
         frees(&drops, "hew_vec_free").len(),
-        0,
-        "a conditionally-returned vec must keep its fail-closed exclusion \
-         on every exit; got {drops:?}"
+        1,
+        "a conditionally returned vec must release on the sibling path and never on the \
+         successful handoff path; got {drops:?}"
     );
 }

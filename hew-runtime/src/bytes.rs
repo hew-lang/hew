@@ -406,7 +406,7 @@ pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
 ///
 /// Always aborts — safe to call from any context.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_abort_empty_pop() -> ! {
+pub unsafe extern "C-unwind" fn hew_bytes_abort_empty_pop() -> ! {
     // SAFETY: this is the terminal empty-pop path.
     unsafe { bytes_bounds_trap("PANIC: bytes.pop() on an empty buffer\n") }
 }
@@ -424,7 +424,7 @@ pub unsafe extern "C" fn hew_bytes_abort_empty_pop() -> ! {
 /// `triple` must point to a valid `BytesTriple`. If its `len > 0`,
 /// `ptr + offset` must be valid for `len` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_pop(triple: &mut BytesTriple) -> i64 {
+pub unsafe extern "C-unwind" fn hew_bytes_pop(triple: &mut BytesTriple) -> i64 {
     if triple.len == 0 || triple.ptr.is_null() {
         // SAFETY: abort is always safe; it does not return.
         unsafe { hew_bytes_abort_empty_pop() };
@@ -459,7 +459,7 @@ pub unsafe extern "C" fn hew_bytes_pop(triple: &mut BytesTriple) -> i64 {
 /// `triple` must point to a valid `BytesTriple`. If its `len > 0`,
 /// `ptr + offset` must be valid for `len` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_set(triple: &mut BytesTriple, index: i64, byte: u8) {
+pub unsafe extern "C-unwind" fn hew_bytes_set(triple: &mut BytesTriple, index: i64, byte: u8) {
     if index < 0 || index >= i64::from(triple.len) || triple.ptr.is_null() {
         // SAFETY: this is the terminal set bounds path.
         unsafe {
@@ -927,7 +927,7 @@ pub unsafe extern "C" fn hew_bytes_len(triple: *const BytesTriple) -> i64 {
 ///
 /// Always aborts — safe to call from any context.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_abort_index_oob() -> ! {
+pub unsafe extern "C-unwind" fn hew_bytes_abort_index_oob() -> ! {
     // SAFETY: this exported fallback has no operand context.
     unsafe { bytes_bounds_trap("PANIC: bytes index/slice out of bounds\n") }
 }
@@ -977,7 +977,7 @@ unsafe fn bytes_slice_oob_trap(start: i64, end: i64, len: u32) -> ! {
 ///
 /// Always aborts — safe to call from any context.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_abort_offset_overflow() -> ! {
+pub unsafe extern "C-unwind" fn hew_bytes_abort_offset_overflow() -> ! {
     // SAFETY: this exported fallback has no operation context.
     unsafe { bytes_offset_overflow_trap("bytes slice/index") }
 }
@@ -1015,7 +1015,12 @@ unsafe fn bytes_offset_overflow_trap(operation: &str) -> ! {
     reason = "index is bounds-checked < len (u32) before cast"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_index(ptr: *mut u8, offset: u32, len: u32, index: i64) -> u8 {
+pub unsafe extern "C-unwind" fn hew_bytes_index(
+    ptr: *mut u8,
+    offset: u32,
+    len: u32,
+    index: i64,
+) -> u8 {
     if index < 0 || index >= i64::from(len) || ptr.is_null() {
         // SAFETY: this is the terminal index bounds path.
         unsafe { bytes_index_oob_trap("bytes[i]", index, len) };
@@ -1063,7 +1068,7 @@ pub unsafe extern "C" fn hew_bytes_index(ptr: *mut u8, offset: u32, len: u32, in
     reason = "start and end are bounds-checked <= len (u32) before cast"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_slice(
+pub unsafe extern "C-unwind" fn hew_bytes_slice(
     ptr: *mut u8,
     offset: u32,
     len: u32,

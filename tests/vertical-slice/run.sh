@@ -262,7 +262,11 @@ expect_check_fail_contains() {
     echo "expected ${label} to fail closed under hew check" >&2
     exit 1
   fi
-  grep -qF -- "${expected_substr}" "${reject_output}"
+  if ! grep -qF -- "${expected_substr}" "${reject_output}"; then
+    echo "expected ${label} diagnostic to contain: ${expected_substr}" >&2
+    cat "${reject_output}" >&2
+    exit 1
+  fi
 }
 
 # Like expect_check_fail_contains, but also asserts a substring is ABSENT from
@@ -3822,12 +3826,21 @@ expect_check_fail_error_count \
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/hashmap_keys_bytes.hew" \
-  'HashMap<bytes, i64>.keys()` is not yet supported: projecting key type `bytes` into an owned `Vec` is not lowered' \
+  '`bytes` cannot be used as a HashMap key yet: duplicate-key insertion cannot release the caller-owned bytes key' \
   "hashmap_keys_bytes"
 expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/hashmap_keys_bytes.hew" \
   1 \
   "hashmap_keys_bytes"
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashset_bytes_element.hew" \
+  '`bytes` cannot be used as a HashSet element yet: duplicate insertion cannot release the caller-owned bytes value' \
+  "hashset_bytes_element"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/hashset_bytes_element.hew" \
+  1 \
+  "hashset_bytes_element"
 
 # shellcheck disable=SC2016  # backtick-containing diagnostic string; not shell expansion.
 expect_check_fail_contains \
@@ -5608,6 +5621,12 @@ run_accept_expect_status "wire_json_nested_roundtrip" 42
 run_accept_expect_status "wire_json_enum_unit_roundtrip" 42
 run_accept_expect_status "wire_json_enum_payload_roundtrip" 42
 run_accept_expect_status "wire_json_vec_option_roundtrip" 42
+run_accept_expect_status "wire_json_hash_collections_roundtrip" 42
+run_accept_expect_status "wire_generic_hashmap_formats_roundtrip" 42
+run_accept_expect_status "wire_json_hashmap_duplicate_key_is_err" 42
+run_accept_expect_status "wire_json_hashmap_duplicate_string_key_is_err" 42
+run_accept_expect_status "wire_yaml_hashmap_duplicate_string_key_is_err" 42
+run_accept_expect_status "wire_json_hashset_duplicate_is_err" 42
 # An unnamed fresh string concat result into from_json: the transient-string
 # drop pass must not free the operand before the WireCodec parse reads it.
 run_accept_expect_status "wire_json_fresh_concat_operand" 42
@@ -5638,6 +5657,14 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_nested_rejected.hew" \
     "outside the supported wire-body floor" \
     "wire_cbor_vec_nested_rejected"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/wire_hashmap_bytes_key_rejected.hew" \
+    'duplicate-key insertion cannot release the caller-owned bytes key' \
+    "wire_hashmap_bytes_key_rejected"
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/wire_hashmap_bytes_key_rejected.hew" \
+    1 \
+    "wire_hashmap_bytes_key_rejected"
 
 # ---------------------------------------------------------------------------
 # Reserved-name shadowing.

@@ -15,6 +15,7 @@
 //! hew wire check file.hew --against baseline.hew
 //!                                  # Validate wire compatibility
 //! hew fmt file.hew                 # Format source file in-place
+//! hew fmt .                        # Format a project recursively
 //! hew fmt --stdin < file.hew       # Format source from stdin to stdout
 //! hew fmt --check file.hew         # Check formatting (CI mode)
 //! hew init [name] [--lib|--actor]  # Scaffold a manifest-first project (hew.toml + source)
@@ -56,12 +57,17 @@ use std::path::{Path, PathBuf};
 
 use args::Cli;
 
+/// Stack budget for threads that run the in-process compiler pipeline.
+///
+/// Compilation is recursive in several phases, so the platform thread default
+/// is not sufficient for larger programs. Keep every compiler entry point on
+/// the same explicit budget.
+const COMPILER_STACK_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
+
 fn main() {
     // Spawn the real entry point on a thread with a large stack so deeply
     // nested ASTs (e.g. thousands of chained binary operators) don't cause
     // a stack overflow in the parser, type checker, or serializer.
-    const STACK_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
-
     // A closed output pipe must not be able to abort the compiler. Rust
     // installs SIG_IGN for SIGPIPE before `main`, so a write to a pipe whose
     // reader has gone away returns EPIPE and the print macros panic on it —
@@ -78,7 +84,7 @@ fn main() {
 
     let builder = std::thread::Builder::new()
         .name("hew-main".into())
-        .stack_size(STACK_SIZE);
+        .stack_size(COMPILER_STACK_SIZE);
     let handler = builder
         .spawn(hew_main)
         .expect("failed to spawn main thread");
@@ -151,10 +157,8 @@ fn resolve_compile_emit_target(requested: Option<&str>) -> Result<CompileEmitTar
 ///
 /// Shared by every native-lowering entry point so a MIR gate failure is
 /// reported identically (and never as a raw `MirDiagnostic { .. }` Debug
-/// payload) regardless of the command. Returns `true` when a BLOCKING
-/// (hard-error) diagnostic was emitted and the caller should fail. Advisory
-/// diagnostics (obligation under-release leaks — `MirDiagnosticKind::is_advisory`)
-/// render as compile-time warnings and never cause failure.
+/// payload) regardless of the command. Any MIR diagnostic is a blocking
+/// verifier error; LLVM emission never sees an ownership-invalid function.
 fn render_pipeline_mir_diagnostics(
     program: &hew_parser::ast::Program,
     source: &str,
@@ -168,11 +172,7 @@ fn render_pipeline_mir_diagnostics(
     let module_source_map = diagnostic::build_module_source_map(program);
     let site_spans = hew_hir::collect_site_spans(module);
     diagnostic::render_mir_diagnostics(source, label, &module_source_map, &site_spans, diagnostics);
-    // Advisory diagnostics (obligation under-release leaks) render as warnings
-    // and NEVER fail the build; only a blocking (hard-error) diagnostic does.
-    // Severity is owned by the diagnostic kind (`is_advisory`) so a missed
-    // consumer fails closed (over-strict), never silently ships a real error.
-    diagnostics.iter().any(|d| !d.kind.is_advisory())
+    true
 }
 
 /// Surface the MIR-stage lint warnings recorded on `pipeline`, applying the
@@ -744,7 +744,7 @@ fn build_explain_cow_pipeline(
     pipeline.attach_lowering_facts(tco);
     // Advisory diagnostics (obligation under-release leaks) are non-blocking; the
     // explain-cow view is still valid, so proceed unless a hard error is present.
-    (!pipeline.diagnostics.iter().any(|d| !d.kind.is_advisory())).then_some(pipeline)
+    pipeline.diagnostics.is_empty().then_some(pipeline)
 }
 
 fn emit_module(
@@ -2196,7 +2196,7 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
         Ok(result) => result,
         Err(failure) => {
             compile::render_frontend_diagnostics(&failure.diagnostics);
-            if !json {
+            if !json && failure.diagnostics.is_empty() {
                 eprintln!("{}", failure.message);
             }
             return 1;
@@ -2381,21 +2381,16 @@ fn cmd_fmt(a: &args::FmtArgs) {
     }
 
     if a.files.is_empty() && !a.migrate {
-        eprintln!("Usage: hew fmt [--check] (--stdin | <file.hew>...)");
+        eprintln!("Usage: hew fmt [--check] (--stdin | <path>...)");
         std::process::exit(1);
     }
 
-    let files = if a.migrate && a.files.is_empty() {
-        let root = a.root.clone().unwrap_or_else(|| PathBuf::from("."));
-        match migration_files(&root) {
-            Ok(files) => files,
-            Err(error) => {
-                eprintln!("Error: {error}");
-                std::process::exit(1);
-            }
+    let files = match resolve_format_files(a) {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
         }
-    } else {
-        a.files.clone()
     };
 
     if checked_migration_in_snapshot(a, &files) {
@@ -2462,6 +2457,115 @@ fn cmd_fmt(a: &args::FmtArgs) {
     if had_errors || needs_formatting {
         std::process::exit(1);
     }
+}
+
+fn resolve_format_files(a: &args::FmtArgs) -> Result<Vec<PathBuf>, String> {
+    if a.migrate && a.files.is_empty() {
+        let root = a.root.clone().unwrap_or_else(|| PathBuf::from("."));
+        migration_files(&root)
+    } else if a.migrate {
+        for input in &a.files {
+            if input.is_dir() {
+                return Err(format!(
+                    "directory migration input `{}` requires `--root`; run `hew fmt --migrate --root {}`",
+                    input.display(),
+                    input.display()
+                ));
+            }
+        }
+        Ok(a.files.clone())
+    } else {
+        format_input_files(&a.files)
+    }
+}
+
+/// Expand explicit formatter inputs into a stable source list.
+///
+/// A directory is a project input: every regular `.hew` file below it is
+/// included except package metadata/build directories. Explicit files remain
+/// under the caller's control even when they live below an excluded directory.
+fn format_input_files(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut files_by_identity = std::collections::BTreeMap::new();
+
+    for input in inputs {
+        let metadata = std::fs::metadata(input).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                format!("format input `{}` does not exist", input.display())
+            } else {
+                format!("cannot inspect format input `{}`: {error}", input.display())
+            }
+        })?;
+
+        if metadata.is_file() {
+            insert_format_file(&mut files_by_identity, input.clone())?;
+            continue;
+        }
+        if !metadata.is_dir() {
+            return Err(format!(
+                "format input `{}` is not a regular file or directory",
+                input.display()
+            ));
+        }
+
+        let mut discovered = Vec::new();
+        collect_format_directory(input, &mut discovered)?;
+        if discovered.is_empty() {
+            return Err(format!(
+                "format directory `{}` contains no .hew source files",
+                input.display()
+            ));
+        }
+        for path in discovered {
+            insert_format_file(&mut files_by_identity, path)?;
+        }
+    }
+
+    let mut files: Vec<_> = files_by_identity.into_values().collect();
+    files.sort();
+    Ok(files)
+}
+
+fn insert_format_file(
+    files_by_identity: &mut std::collections::BTreeMap<PathBuf, PathBuf>,
+    path: PathBuf,
+) -> Result<(), String> {
+    let identity = std::fs::canonicalize(&path)
+        .map_err(|error| format!("cannot resolve format path `{}`: {error}", path.display()))?;
+    files_by_identity.entry(identity).or_insert(path);
+    Ok(())
+}
+
+fn collect_format_directory(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|error| format!("cannot read format directory `{}`: {error}", dir.display()))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "cannot read an entry in format directory `{}`: {error}",
+                dir.display()
+            )
+        })?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("cannot inspect format path `{}`: {error}", path.display()))?;
+
+        if file_type.is_dir() {
+            if !matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(".git" | "target" | ".hew")
+            ) {
+                collect_format_directory(&path, files)?;
+            }
+        } else if file_type.is_file()
+            && path.extension().is_some_and(|extension| extension == "hew")
+        {
+            files.push(path);
+        }
+    }
+
+    Ok(())
 }
 
 fn checked_migration_in_snapshot(a: &args::FmtArgs, files: &[PathBuf]) -> bool {

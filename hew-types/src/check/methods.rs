@@ -3093,12 +3093,113 @@ impl Checker {
         if !self.registry.implements_marker(ty, MarkerTrait::Decode) {
             missing.push("Decode");
         }
-        if missing.is_empty() {
-            "it is outside the current Serializable subset (scalars, string, bytes, \
-             tuples/arrays, records/enums, or wire-marked types whose members are Serializable)"
+        if missing.is_empty() && self.contains_bytes_collection_key(ty, &mut HashSet::new()) {
+            "an owned `bytes` map key or set element has no complete insertion ownership \
+             protocol yet: duplicate insertion cannot release the caller-owned value; use \
+             `string` or a supported fixed-width key"
+                .to_string()
+        } else if missing.is_empty() {
+            "it is outside the current Serializable codec subset (including only \
+             collection key/element layouts with a complete encode, decode, clone, and drop path)"
                 .to_string()
         } else {
             format!("missing required marker trait(s): {}", missing.join(" + "))
+        }
+    }
+
+    pub(super) fn record_generic_wire_codec_rewrite(
+        &mut self,
+        canonical_owner: &str,
+        method: &str,
+        params: &[Ty],
+        return_type: &Ty,
+        span: &Span,
+    ) -> bool {
+        if canonical_owner != "std.encoding.wire" {
+            return false;
+        }
+        let direction = match method {
+            "encode" => WireCodecDirection::Encode,
+            "decode" => WireCodecDirection::Decode,
+            "to_json" => WireCodecDirection::ToJson,
+            "from_json" => WireCodecDirection::FromJson,
+            "to_yaml" => WireCodecDirection::ToYaml,
+            "from_yaml" => WireCodecDirection::FromYaml,
+            _ => return false,
+        };
+        let value_source = if direction.is_serialize() {
+            params.first().cloned()
+        } else if direction == WireCodecDirection::Decode {
+            Some(return_type.clone())
+        } else {
+            result_ok_payload(return_type)
+        };
+        if let Some(value_source) = value_source.map(|ty| self.subst.resolve(&ty)) {
+            if let Ok(value_ty) = ResolvedTy::from_ty(&value_source) {
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::GenericWireCodec {
+                        direction,
+                        value_ty,
+                    },
+                );
+            }
+        }
+        true
+    }
+
+    fn contains_bytes_collection_key(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        match ty {
+            Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
+                args,
+                ..
+            } => {
+                matches!(args.first(), Some(Ty::Bytes))
+                    || args
+                        .iter()
+                        .any(|arg| self.contains_bytes_collection_key(arg, visiting))
+            }
+            Ty::Named {
+                builtin: Some(BuiltinType::HashSet),
+                args,
+                ..
+            } => {
+                matches!(args.first(), Some(Ty::Bytes))
+                    || args
+                        .iter()
+                        .any(|arg| self.contains_bytes_collection_key(arg, visiting))
+            }
+            Ty::Named {
+                builtin: Some(_),
+                args,
+                ..
+            } => args
+                .iter()
+                .any(|arg| self.contains_bytes_collection_key(arg, visiting)),
+            Ty::Named {
+                name,
+                builtin: None,
+                ..
+            } => {
+                if !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let found = self.registry.member_types(name).is_some_and(|members| {
+                    members
+                        .iter()
+                        .any(|member| self.contains_bytes_collection_key(member, visiting))
+                });
+                visiting.remove(name);
+                found
+            }
+            Ty::Tuple(items) => items
+                .iter()
+                .any(|item| self.contains_bytes_collection_key(item, visiting)),
+            Ty::Array(item, _) | Ty::Slice(item) => {
+                self.contains_bytes_collection_key(item, visiting)
+            }
+            _ => false,
         }
     }
 
@@ -3763,34 +3864,41 @@ impl Checker {
         }
     }
 
-    /// Look through an opaque carrier's type arguments for an affine payload.
-    ///
-    /// Only `Affine` blockers are propagated: a `Missing`/`Opaque` result from
-    /// inside an opaque carrier says nothing new (the carrier itself is already
-    /// unclonable), whereas an affine payload changes both the reason and the
-    /// advice given to the programmer.
-    fn affine_blocker_in_type_args(
-        &self,
-        args: &[Ty],
-        path: &str,
-        visiting: &mut std::collections::HashSet<String>,
-    ) -> Option<CloneCapabilityBlocker> {
-        args.iter().enumerate().find_map(|(index, arg)| {
-            let label = if args.len() == 1 {
-                "element".to_string()
-            } else {
-                index.to_string()
-            };
-            let member = Self::clone_member_path(path, &label);
-            match self.structural_clone_blocker_inner(arg, &member, false, visiting) {
-                Some(blocker @ CloneCapabilityBlocker::Affine { .. }) => Some(blocker),
-                _ => None,
-            }
-        })
-    }
-
     fn structural_clone_blocker(&self, ty: &Ty) -> Option<CloneCapabilityBlocker> {
         self.structural_clone_blocker_inner(ty, "", false, &mut std::collections::HashSet::new())
+    }
+
+    /// Validate the exceptional element types that cannot use `Vec`'s
+    /// borrow-only index path.
+    ///
+    /// Ordinary `#[resource]` / `#[linear]` elements are deliberately admitted:
+    /// MIR lowers `values[i]` through the owned-layout getter as an interior
+    /// borrow and its escape/consume/rebind checks keep that borrow inside the
+    /// collection's release authority. A `Receiver`, however, is an opaque
+    /// single-consumer endpoint with no readable borrowed-value surface, so it
+    /// remains rejected regardless of its payload type.
+    pub(super) fn validate_vec_index_borrow_surface(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if matches!(
+            resolved,
+            Ty::Named {
+                builtin: Some(BuiltinType::Receiver),
+                ..
+            }
+        ) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "cannot index `Vec<{}>` by value: `Receiver` is a non-cloneable, \
+                     single-consumer endpoint; use `pop`, `remove`, or consuming iteration \
+                     to move the endpoint out",
+                    resolved.user_facing()
+                ),
+            );
+            return false;
+        }
+        true
     }
 
     #[expect(
@@ -3883,16 +3991,9 @@ impl Checker {
                 if self.canonical_owned_handle_type_name(name).is_some()
                     || self.user_opaque_type_names.contains(name.as_str())
                 {
-                    // An opaque carrier can still transport an affine payload
-                    // (`channel.Receiver<Token>` where `Token` is `#[resource]`).
-                    // Affine is the stronger, more actionable refusal and is the
-                    // one the builtin-clone gate keeps, so look through the
-                    // carrier's arguments for it before short-circuiting on
-                    // opacity. Returning `Opaque` first here downgraded the
-                    // diagnostic all the way to a MIR `E_NOT_YET_IMPLEMENTED`.
-                    if let Some(affine) = self.affine_blocker_in_type_args(args, path, visiting) {
-                        return Some(affine);
-                    }
+                    // The carrier's own capability is canonical. In particular,
+                    // Receiver<T> is one non-cloneable endpoint regardless of T;
+                    // walking T first made diagnostics and semantics payload-dependent.
                     return Some(CloneCapabilityBlocker::Opaque {
                         type_name: name.clone(),
                         member: member.to_string(),
@@ -5524,6 +5625,15 @@ impl Checker {
         out_ty: &Ty,
         span: &Span,
     ) {
+        // A place receiver must remain usable after the eager pipeline.
+        // Pre-author the zero-width clone call that HIR inserts to give its
+        // eval-once source binding an independent Vec owner. This is the same
+        // element-aware clone authority used by `Vec.iter()`; non-place
+        // receivers do not consume the unused side-table row.
+        let clone_span = span.start..span.start;
+        let vec_ty = self.make_vec_type(elem_ty.clone(), &clone_span);
+        self.record_type(&clone_span, &vec_ty);
+        self.record_resolved_vec_call("clone", elem_ty, &clone_span);
         let elem = ResolvedTy::from_ty(&elem_ty.clone().materialize_literal_defaults());
         let out = ResolvedTy::from_ty(&out_ty.clone().materialize_literal_defaults());
         if let (Ok(elem_ty), Ok(out_ty)) = (elem, out) {
@@ -7809,7 +7919,8 @@ impl Checker {
                     MethodCallRewrite::BuiltinVecIntoIter { .. }
                     | MethodCallRewrite::BuiltinVecIter { .. }
                     | MethodCallRewrite::BuiltinHashMapIntoIter { .. }
-                    | MethodCallRewrite::WireCodec { .. },
+                    | MethodCallRewrite::WireCodec { .. }
+                    | MethodCallRewrite::GenericWireCodec { .. },
                 ) => Ownership::owned(Acquisition::Fresh),
                 Some(
                     MethodCallRewrite::BuiltinVecIterNext { .. }
@@ -8232,6 +8343,15 @@ impl Checker {
                         true,
                         Some(GenericCallee::Function { key: &key }),
                     );
+                    if self.record_generic_wire_codec_rewrite(
+                        &canonical_owner,
+                        method,
+                        &applied_sig.params,
+                        &applied_sig.return_type,
+                        span,
+                    ) {
+                        return applied_sig.return_type;
+                    }
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
                     // linked through unification.

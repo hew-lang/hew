@@ -623,16 +623,14 @@ impl StateFieldCloneKind {
 
     /// True when this kind is, or transitively contains, a [`Resource`].
     ///
-    /// Fail-closed scoping authority for RAII-1: a `#[resource]` handle is
-    /// admitted to the owned-aggregate drop spine ONLY as a direct or
-    /// nested-record field, where the owning record's `__hew_record_drop_
-    /// inplace_<R>` thunk runs its close exactly once. The container
-    /// classifiers (Tuple / Array, and — via `supports_value_class_drop_spine`
-    /// — `Vec` / `HashMap` / `HashSet`) and the enum classifier consult this to
-    /// REJECT a resource carried directly in a tuple/array/collection element
-    /// or enum payload, where the exactly-once close contract is not yet wired
-    /// (a managed/tag-aware clone would shallow-copy the handle and double-close
-    /// at the two owners' drops). Mirrors [`contains_closure_pair`].
+    /// Fail-closed scoping authority for RAII-1. A `#[resource]` handle is
+    /// admitted only where an owning aggregate has an authoritative drop
+    /// ritual. Record fields and active enum payloads route through the shared
+    /// in-place drop spine, which calls the typed close exactly once; clone
+    /// synthesis independently refuses the affine leaf instead of aliasing it.
+    /// Collection classifiers consult this predicate where their element
+    /// descriptor cannot carry the same close authority. Mirrors
+    /// [`contains_closure_pair`].
     ///
     /// Like the sibling predicates, the `UserRecord` / `Enum` arms return
     /// `false` here: they carry only a registry key, and a nested resource is
@@ -2340,7 +2338,7 @@ fn is_indirect_boundary_marker(name: &str) -> bool {
 
 /// Eagerly validate every variant payload field of an enum is classifiable. The
 /// classification result is discarded — codegen re-runs it against the same
-/// `EnumLayout` — but an unsupported / function-valued / `#[resource]` payload
+/// `EnumLayout` — but an unsupported / function-valued payload
 /// surfaces here as a fail-closed `ClassificationError` (with the recursion
 /// stack preserved) rather than later in codegen. Shared by the inline and
 /// indirect `classify_enum` arms so the two cannot diverge on which payloads
@@ -2384,27 +2382,14 @@ fn validate_enum_variant_payloads(
                     ),
                 });
             }
-            // `#[resource]` enum payloads stay fail-closed (RAII-1 scope): the
-            // exactly-once close spine is wired for record fields only. A
-            // resource carried DIRECTLY in an enum payload would need the
-            // tag-aware enum drop to run its close on exactly the active
-            // variant — not yet proven — and the enum clone would shallow-copy
-            // the handle (double-close at the two owners' drops). Reject here
-            // so an `Option<Pattern>`-shaped enum never reaches codegen with a
-            // payload the drop/clone walk cannot handle safely. (A resource
-            // nested inside a RECORD payload is admitted: the kind is
-            // `UserRecord`, whose own drop thunk runs the close — that is the
-            // intended RAII-1 record spine, not a direct enum payload.)
-            if matches!(kind, StateFieldCloneKind::Resource { .. }) {
-                return Err(ClassificationError::Unsupported {
-                    rendered: format!(
-                        "enum `{}` variant `{}` carries a `#[resource]` payload field \
-                         ({field_ty:?}); a resource handle directly in an enum payload \
-                         is not yet supported — wrap it in a record",
-                        layout.name, variant.name
-                    ),
-                });
-            }
+            // A direct `Resource` payload is supported by the already-shared
+            // enum lifecycle ritual: tag-aware drop dispatch reaches only the
+            // active payload and `emit_field_drop_step(Resource)` calls its
+            // typed close then nulls the slot. The paired clone walk routes the
+            // same kind to rollback/failure, so admitting it cannot shallow-copy
+            // an affine handle. Keep the classification call above as the sole
+            // close-authority gate; a missing/ambiguous lifecycle remains an
+            // `OpaqueHandle` and never acquires resource teardown by spelling.
         }
     }
     Ok(())
@@ -3671,6 +3656,54 @@ mod tests {
             classify_state_field_with_enum_layouts(&ty, &no_records(), &layouts, &mut v).unwrap();
         assert_eq!(result, StateFieldCloneKind::Enum { name });
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn result_resource_payload_uses_tagged_drop_and_refuses_clone() {
+        let resource = named_opaque("std.encoding.json.Value", vec![]);
+        let name = hew_hir::mangle("Result", &[resource.clone(), ResolvedTy::String]);
+        let layouts = vec![EnumLayout {
+            name: name.clone(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Ok".to_string(),
+                    field_tys: vec![resource.clone()],
+                    field_names: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Err".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let ty = named("Result", vec![resource, ResolvedTy::String]);
+        let lifecycle = registry(&[("std.encoding.json.Value", "std.encoding.json.Value::close")]);
+
+        let plan = classify_value_snapshot_plan_with_lifecycle_registry(
+            &ty,
+            &no_records(),
+            &layouts,
+            &["std.encoding.json.Value".to_string()],
+            &lifecycle,
+        )
+        .expect("the tag-aware enum drop spine supports a direct resource payload");
+
+        assert_eq!(plan.root(), &StateFieldCloneKind::Enum { name });
+        assert!(plan.root().supports_value_class_drop_spine());
+        assert!(
+            !plan
+                .is_clone_total(
+                    &no_records(),
+                    &layouts,
+                    &["std.encoding.json.Value".to_string()],
+                    &lifecycle,
+                )
+                .expect("clone-totality must resolve the same lifecycle registry"),
+            "an affine resource enum is drop-capable but must remain uncloneable",
+        );
     }
 
     #[test]

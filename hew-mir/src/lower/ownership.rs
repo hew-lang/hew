@@ -10,12 +10,12 @@ use super::{
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
     FieldOffset, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
     HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, OwnedLocalEntry, OwnerMintWarrant, OwnershipCtx,
-    OwnershipDecision, Place, PlaceProvenance, ProducedValueOwnership, Projection, ResolvedRef,
-    ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass, ValueOwnership,
-    ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME, SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
-    SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
-    SYNTHETIC_WHILE_LET_ITERATION_NAME,
+    MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedLocalEntry,
+    OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
+    ProducedValueOwnership, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
+    Terminator, ValueClass, ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
+    SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
+    SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,13 @@ enum WholeParamEmbedClass {
     None,
     IndependentlyOwnedOnly,
     UnsupportedBorrowAlias,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OwnedAliasInheritance {
+    NotAlias,
+    Exact(ValueProvenance),
+    Ambiguous,
 }
 
 impl WholeParamEmbedClass {
@@ -146,6 +153,137 @@ pub(super) fn returned_aggregate_consumes_source(
 }
 
 impl Builder {
+    pub(crate) fn emit_scope_exit_marker<I>(&mut self, scopes: I)
+    where
+        I: IntoIterator<Item = hew_hir::ScopeId>,
+    {
+        self.emit_scope_exit_marker_with_carries(scopes, std::iter::empty());
+    }
+
+    pub(crate) fn emit_scope_exit_marker_with_carries<I, P>(&mut self, scopes: I, carries: P)
+    where
+        I: IntoIterator<Item = hew_hir::ScopeId>,
+        P: IntoIterator<Item = Place>,
+    {
+        let mut scopes = scopes.into_iter().collect::<Vec<_>>();
+        scopes.sort_by_key(|scope| scope.0);
+        scopes.dedup();
+        if scopes.is_empty() {
+            return;
+        }
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::ScopeExit {
+                scopes,
+                owners: Vec::new(),
+                carry_places: carries.into_iter().collect(),
+                carried: Vec::new(),
+            },
+        ));
+    }
+
+    /// Resolve the unique currently-published owner identity for a lexical
+    /// place while Raw MIR is still being constructed. The returned identity
+    /// is copied into an explicit Checked-MIR fact; consumers never consult
+    /// this lowering cursor after sealing.
+    pub(crate) fn current_owner_id_at_place(&self, place: Place) -> Option<crate::model::OwnerId> {
+        let mut owners = self.owned_locals.iter().filter_map(|entry| {
+            (entry.disposition != Disposition::AliasOf
+                && self.binding_locals.get(&entry.binding) == Some(&place))
+            .then(|| {
+                self.owner_generations
+                    .get(&entry.binding)
+                    .copied()
+                    .map(|generation| crate::model::OwnerId {
+                        binding: entry.binding,
+                        generation,
+                    })
+            })
+            .flatten()
+        });
+        let owner = owners.next()?;
+        owners.next().is_none().then_some(owner)
+    }
+
+    /// Publish the physical runtime bit for the binding's current owner
+    /// generation into semantic MIR. Physical flag registries are lowering
+    /// cursors only; a cleanup cannot use a flag after Checked MIR sealing
+    /// unless this event exists at the flag's defining program point.
+    pub(crate) fn publish_current_owner_guard(
+        &mut self,
+        binding: BindingId,
+        flag: Place,
+        kind: crate::model::OwnershipGuardKind,
+    ) -> bool {
+        let Some(generation) = self.owner_generations.get(&binding).copied() else {
+            return false;
+        };
+        self.push_instr(Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+            owner: crate::model::OwnerId {
+                binding,
+                generation,
+            },
+            flag,
+            kind,
+        }));
+        true
+    }
+
+    /// Republish an already-allocated physical flag for a freshly minted
+    /// generation. A guard belongs to an `OwnerId`, not merely a source
+    /// binding: after a reset, retaining only the generation-zero event would
+    /// make cleanup for the replacement owner unverifiable (and could let a
+    /// stale flag authorize the wrong value).
+    fn publish_existing_physical_guard(
+        &mut self,
+        binding: BindingId,
+        owner: crate::model::OwnerId,
+    ) {
+        let guards = [
+            self.affine_release_flags
+                .get(&binding)
+                .copied()
+                .map(|flag| (flag, crate::model::OwnershipGuardKind::AffineRelease)),
+            self.overwrite_guard_flags
+                .get(&binding)
+                .copied()
+                .map(|flag| (flag, crate::model::OwnershipGuardKind::Overwrite)),
+            self.collection_drop_flags
+                .get(&binding)
+                .copied()
+                .map(|flag| (flag, crate::model::OwnershipGuardKind::Collection)),
+            self.actor_message_cow_drop_flags
+                .get(&binding)
+                .copied()
+                .map(|flag| (flag, crate::model::OwnershipGuardKind::ActorMessageCow)),
+            self.conditional_record_drop_flags
+                .get(&binding)
+                .copied()
+                .map(|flag| (flag, crate::model::OwnershipGuardKind::ConditionalRecord)),
+            self.projected_payload_overwrite_flags
+                .get(&binding)
+                .copied()
+                .map(|flag| (flag, crate::model::OwnershipGuardKind::ProjectedPayload)),
+            self.vec_iter_drop_flags
+                .get(&binding)
+                .copied()
+                .map(|flag| (flag, crate::model::OwnershipGuardKind::VecIter)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        assert!(
+            guards.len() <= 1,
+            "owner {owner:?} has conflicting physical cleanup guards: {guards:?}"
+        );
+        if let Some((flag, kind)) = guards.into_iter().next() {
+            self.push_instr(Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                owner,
+                flag,
+                kind,
+            }));
+        }
+    }
+
     /// Emit the handoff immediately. Correct wherever the destructure itself
     /// only runs on the path that selected the pattern (`if let` / `while let`
     /// / `let else`). A match arm destructures before its guard decides, so it
@@ -335,13 +473,12 @@ impl Builder {
     /// ONCE at this defining write and recorded on the entry; the drop passes
     /// read the written-down fact rather than re-deriving it per pass.
     ///
-    /// The binding's backing place drives classify's handle-vs-type dispatch. It
-    /// is resolved from `binding_locals` when the slot is already wired (the
-    /// `let` / param / dyn-trait seams insert it first); a match binder registers
-    /// before its `Place` insert, but a match binder always stores into a plain
-    /// local, so the type-driven arm is the correct one and the exact local id is
-    /// immaterial (the fallback local only feeds the never-firing handle
-    /// dispatch). Provenance stays `None` at this stage — it is recorded only
+    /// The binding's backing place drives classify's handle-vs-type dispatch and
+    /// is also written into the authoritative ownership event. Every caller must
+    /// therefore allocate and publish the real destination before registration;
+    /// fabricating a placeholder would make Checked MIR disagree with the value
+    /// that codegen actually moves and drops. Provenance stays `None` at this
+    /// stage — it is recorded only
     /// where a later stage can trivially prove it at the defining write. Every
     /// entry is minted `Disposition::ScopeExit`; a retraction seam later
     /// dispositions it off the scope-exit set via
@@ -358,6 +495,10 @@ impl Builder {
     /// alone: the signature will not let it. When the warrant answers foreign
     /// the mint is WITHHELD — the value keeps no caller-side release, which is
     /// the leak-not-double-free direction.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "owner minting publishes the complete definition, recipe, guard, and compatibility metadata atomically"
+    )]
     pub(crate) fn register_owned_local(
         &mut self,
         binding: BindingId,
@@ -365,24 +506,97 @@ impl Builder {
         ty: ResolvedTy,
         warrant: OwnerMintWarrant,
     ) {
-        if warrant.withholds_mint() {
+        if warrant.withholds_mint() || super::drop_plan::ty_is_nonowning_handle_leaf(&ty) {
             return;
         }
         if matches!(ty, ResolvedTy::TraitObject { .. }) {
             self.dyn_trait_storage
                 .insert(binding, crate::TraitObjectStorage::HeapBoxed);
         }
-        let bound_place = self.binding_locals.get(&binding).copied();
-        let place = bound_place.unwrap_or(Place::Local(0));
+        let place = *self.binding_locals.get(&binding).unwrap_or_else(|| {
+            panic!("owned binding {binding:?} must publish its real MIR destination before mint")
+        });
+        // Closure pairs have a structural drop shape, but only a HeapBox env
+        // owns storage that the pair destructor may free. Keep them out of the
+        // generic structural admission so the provenance-sensitive gate below
+        // remains authoritative: admitting a Stack env here would make its
+        // frame alloca look like a heap allocation at scope exit.
+        let carries_structural_cleanup = matches!(ty, ResolvedTy::TraitObject { .. })
+            || (!ty_is_closure_pair(&ty)
+                && crate::model::ty_carries_drop_obligation_mir(
+                    &ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                    self.type_classes.lifecycle_registry(),
+                ));
+        // Some compiler-owned substrate handles carry their release protocol
+        // in the MIR Place rather than in the surface type.  In particular,
+        // an actor literal is surface-typed as `Duplex<Msg, Reply>` but its
+        // `LambdaActorHandle` destination must select
+        // `hew_lambda_actor_release`, while `DuplexHandle` and the split-half
+        // places select their corresponding close rituals.  These values are
+        // constructed by typed terminal producers, so the let registration in
+        // the producer's normal continuation is their definition-site owner
+        // publication.  Do not make the type-only structural query erase that
+        // Mint: the exceptional call edge never reaches this continuation and
+        // therefore never observes an owner for an uninitialised out-place.
+        let carries_place_typed_substrate_cleanup = matches!(
+            place,
+            Place::DuplexHandle(_)
+                | Place::LambdaActorHandle(_)
+                | Place::SendHalf(_)
+                | Place::RecvHalf(_)
+        );
+        let carries_vec_iter_cleanup = self.vec_iter_cursor_release_symbol(&ty).is_some();
+        let carries_heap_closure_cleanup =
+            matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+                && (self.closure_pair_owned.contains(&binding)
+                    || self.instructions.iter().any(|instruction| {
+                        matches!(
+                            instruction,
+                            Instr::MakeClosure {
+                                        dest,
+                                        env_mode: crate::model::ClosureEnvMode::HeapBox,
+                                        ..
+                            } if *dest == place
+                        )
+                    }));
+        // A scalar user `#[resource]` record can have no heap-bearing fields,
+        // so the generic structural query above is false even though its
+        // non-idempotent user `close` ritual is a real cleanup obligation.
+        // Admit it through the same exact predicate that allocates the affine
+        // flag later in let lowering. Registration therefore publishes Mint
+        // before `maybe_alloc_affine_release_flag` publishes Guard; an
+        // interior-alias runtime result never reaches this registrar and
+        // remains ownerless.
+        let carries_affine_cleanup = affine_release_needs_drop_flag(place, &ty, &self.type_classes);
+        if !carries_structural_cleanup
+            && !carries_place_typed_substrate_cleanup
+            && !carries_vec_iter_cleanup
+            && !carries_heap_closure_cleanup
+            && !carries_affine_cleanup
+        {
+            // The move checker may still classify this value as affine or
+            // non-BitCopy, but it has no destructor obligation. OwnerId is
+            // the cleanup authority stream, so publishing a generation here
+            // would require a destructor that cannot exist (for example
+            // Option<f64>, a plain enum, or a null/stack closure pair).
+            return;
+        }
         let ownership = ValueOwnership::classify(&ty, place, &self.ownership_ctx());
-        if let Some(index) = bound_place.and_then(|bound_place| {
-            self.owned_locals.iter().position(|entry| {
-                entry.binding != binding
-                    && self.binding_locals.get(&entry.binding) == Some(&bound_place)
-                    && self
-                        .synthetic_owner_publication_sites
-                        .contains_key(&entry.binding)
-            })
+        let previous_generation = self.owner_generations.get(&binding).copied();
+        let generation = previous_generation.map_or(0, |value| value.saturating_add(1));
+        self.owner_generations.insert(binding, generation);
+        let owner = crate::model::OwnerId {
+            binding,
+            generation,
+        };
+        if let Some(index) = self.owned_locals.iter().position(|entry| {
+            entry.binding != binding
+                && self.binding_locals.get(&entry.binding) == Some(&place)
+                && self
+                    .synthetic_owner_publication_sites
+                    .contains_key(&entry.binding)
         }) {
             // A named binding is adopting the provisional publication owner;
             // replace the ledger identity in place so there is still exactly
@@ -390,6 +604,7 @@ impl Builder {
             let prior = self.owned_locals[index].binding;
             self.synthetic_owner_publication_sites.remove(&prior);
             self.typed_produced_value_owner_bindings.remove(&prior);
+            let successor_ty = ty.clone();
             self.owned_locals[index] = OwnedLocalEntry {
                 binding,
                 name,
@@ -398,8 +613,43 @@ impl Builder {
                 provenance: None,
                 disposition: Disposition::ScopeExit,
             };
+            let prior_generation = self.owner_generations.remove(&prior).unwrap_or(0);
+            self.push_instr(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner: crate::model::OwnerId {
+                        binding: prior,
+                        generation: prior_generation,
+                    },
+                    from: place,
+                    to: Some(place),
+                    to_owner: Some(owner),
+                    to_ty: Some(successor_ty),
+                },
+            ));
+            self.publish_existing_physical_guard(binding, owner);
             return;
         }
+        let previous_is_live = self
+            .owned_locals
+            .iter()
+            .any(|entry| entry.binding == binding && entry.disposition == Disposition::ScopeExit);
+        let event = if let Some(previous) = previous_generation.filter(|_| previous_is_live) {
+            crate::model::OwnershipEvent::Reset {
+                previous: crate::model::OwnerId {
+                    binding,
+                    generation: previous,
+                },
+                replacement: owner,
+                place,
+                ty: ty.clone(),
+            }
+        } else {
+            crate::model::OwnershipEvent::Mint {
+                owner,
+                place,
+                ty: ty.clone(),
+            }
+        };
         self.owned_locals.push(OwnedLocalEntry {
             binding,
             name,
@@ -408,7 +658,122 @@ impl Builder {
             provenance: None,
             disposition: Disposition::ScopeExit,
         });
+        self.push_instr(Instr::OwnershipEvent(event));
+        self.publish_existing_physical_guard(binding, owner);
     }
+
+    /// Publish a newly bound cleanup owner by transferring the exact source
+    /// generation after the physical whole-value Move has executed.
+    ///
+    /// `VecIter` rebinds carry a separate runtime field-release flag, so their
+    /// flag setup used to sit between the destination Mint and the physical
+    /// Move. The generic adjacent-move canonicalizer could not see through
+    /// that setup and both source and destination generations survived at one
+    /// slot. This registrar makes the ownership operation explicit at the
+    /// actual program point and never creates a parallel mint.
+    pub(crate) fn register_owned_local_transfer_from(
+        &mut self,
+        binding: BindingId,
+        name: String,
+        ty: ResolvedTy,
+        source_binding: BindingId,
+        handoff: (Place, Place),
+        warrant: OwnerMintWarrant,
+    ) -> bool {
+        if warrant.withholds_mint()
+            || super::drop_plan::ty_is_nonowning_handle_leaf(&ty)
+            || binding == source_binding
+            || self.owner_generations.contains_key(&binding)
+        {
+            return false;
+        }
+        let Some(source_generation) = self.owner_generations.get(&source_binding).copied() else {
+            return false;
+        };
+        let source_owner = crate::model::OwnerId {
+            binding: source_binding,
+            generation: source_generation,
+        };
+        let owner = crate::model::OwnerId {
+            binding,
+            generation: 0,
+        };
+        let (source_place, destination) = handoff;
+        self.owner_generations.insert(binding, 0);
+        let ownership = ValueOwnership::classify(&ty, destination, &self.ownership_ctx());
+        self.owned_locals.push(OwnedLocalEntry {
+            binding,
+            name,
+            ty: ty.clone(),
+            ownership,
+            provenance: None,
+            disposition: Disposition::ScopeExit,
+        });
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Transfer {
+                owner: source_owner,
+                from: source_place,
+                to: Some(destination),
+                to_owner: Some(owner),
+                to_ty: Some(ty),
+            },
+        ));
+        true
+    }
+
+    /// Publish the exact owner handoff for a whole-value `VecIter` assignment.
+    ///
+    /// The RHS binding's runtime flag is disarmed before the physical Move and
+    /// the destination flag is restored from the saved value. Ownership MIR
+    /// must perform the matching transition at that same program point: end the
+    /// source generation and publish the next destination generation. Leaving
+    /// the source as a mere `Relocate` makes its later flag-gated lexical drop
+    /// name the moved-from slot even though Checked MIR records that generation
+    /// at the destination.
+    pub(crate) fn transfer_vec_iter_assignment_owner(
+        &mut self,
+        destination_binding: BindingId,
+        source_binding: BindingId,
+        source: Place,
+        destination: Place,
+        ty: &ResolvedTy,
+    ) -> bool {
+        if destination_binding == source_binding
+            || !self.vec_iter_drop_flags.contains_key(&destination_binding)
+            || !self.vec_iter_drop_flags.contains_key(&source_binding)
+        {
+            return false;
+        }
+        let Some(source_generation) = self.owner_generations.get(&source_binding).copied() else {
+            return false;
+        };
+        let Some(previous_generation) = self.owner_generations.get(&destination_binding).copied()
+        else {
+            return false;
+        };
+        let replacement = crate::model::OwnerId {
+            binding: destination_binding,
+            generation: previous_generation.saturating_add(1),
+        };
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Transfer {
+                owner: crate::model::OwnerId {
+                    binding: source_binding,
+                    generation: source_generation,
+                },
+                from: source,
+                to: Some(destination),
+                to_owner: Some(replacement),
+                to_ty: Some(self.subst_ty(ty)),
+            },
+        ));
+        self.owner_generations
+            .insert(destination_binding, replacement.generation);
+        self.publish_existing_physical_guard(destination_binding, replacement);
+        self.set_owned_local_disposition(destination_binding, Disposition::ScopeExit);
+        true
+    }
+
     /// Central generation-aware synthetic-owner adoption. A MIR local is never
     /// allocated twice within one function; if an old sink reaches a result
     /// already adopted at publication, it receives that same owner rather than
@@ -483,6 +848,10 @@ impl Builder {
     /// boundary, retire that provisional source owner once the ordinary binder
     /// owner has its destination.  The binder's existing ledger entry remains
     /// the sole `ElabDrop` authority; this only removes the moved-from temporary.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "let adoption retires the provisional ledger and publishes its exact transfer as one invariant"
+    )]
     pub(crate) fn retire_provisional_owner_for_bound_value(
         &mut self,
         binding: BindingId,
@@ -499,6 +868,12 @@ impl Builder {
             return;
         };
         let provisional = self.owned_locals[index].binding;
+        let provisional_ty = self.owned_locals[index].ty.clone();
+        let handoff_site = self
+            .synthetic_owner_publication_sites
+            .get(&provisional)
+            .copied()
+            .unwrap_or(SiteId(0));
         if let (Some(source_local), Some(destination_local)) = (
             base_local(source),
             self.binding_locals
@@ -530,24 +905,105 @@ impl Builder {
             .iter()
             .any(|entry| entry.binding == binding)
         {
+            let destination = self.binding_locals.get(&binding).copied();
+            let named_owner = self
+                .owner_generations
+                .get(&binding)
+                .copied()
+                .map(|generation| crate::model::OwnerId {
+                    binding,
+                    generation,
+                });
+            let provisional_owner =
+                self.owner_generations
+                    .get(&provisional)
+                    .copied()
+                    .map(|generation| crate::model::OwnerId {
+                        binding: provisional,
+                        generation,
+                    });
+            // Registration happens after the destination slot is allocated but
+            // before the physical initializer Move.  Replace that provisional
+            // destination Mint with the one exact handoff operation beside the
+            // Move: the source generation ends and the named generation begins.
+            // Keeping both events would publish two owners for the same bytes.
+            if let Some(named_owner) = named_owner {
+                self.instructions.retain(|instruction| {
+                    !matches!(
+                        instruction,
+                        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                            owner,
+                            ..
+                        }) if *owner == named_owner
+                    )
+                });
+            }
+            if let (Some(owner), Some(destination), Some(to_owner)) =
+                (provisional_owner, destination, named_owner)
+            {
+                self.push_instr(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        from: source,
+                        to: Some(destination),
+                        to_owner: Some(to_owner),
+                        to_ty: Some(provisional_ty.clone()),
+                    },
+                ));
+            }
             // The ordinary `let` registrar already owns the destination slot.
-            // Its ledger entry is the one the exit planner must use; discard
-            // only the moved-from publication generation.
-            self.owned_locals.remove(index);
+            // Its ledger entry is the normal-successor authority. Keep the
+            // moved-from publication generation as a consumed cleanup
+            // candidate: an earlier `invoke` unwind still reaches that live
+            // source slot, while the physical handoff neutralises it before
+            // any later unwind can observe the destination owner.
+            self.set_owned_local_consumed_post_lowering(
+                provisional,
+                self.binding_locals.get(&binding).copied(),
+                DischargeSite::BindingMoved,
+            );
+            self.statements.push(MirStatement::Use {
+                binding: provisional,
+                name: "__hew_produced_value".to_string(),
+                site: handoff_site,
+                ty: provisional_ty,
+                intent: IntentKind::Consume,
+            });
             return;
         }
 
         // Some typed producers (notably `Weak<T>`) have a concrete ownership
         // fact even though the legacy `let` classifier does not mint a second
-        // ordinary entry for their surface type.  The initializer's Move is the
-        // exact transfer into this named slot, so preserve the one typed owner
-        // by rekeying it to the binder instead of leaving a stale source-local
-        // generation.  This keeps return transfer and suspend-abandon planning
-        // on the real owner without creating another cleanup authority.
-        self.binding_locals.remove(&provisional);
-        let entry = &mut self.owned_locals[index];
-        entry.binding = binding;
-        entry.name = name.to_string();
+        // ordinary entry for their surface type. The physical initializer Move
+        // is still an exact same-frame rebind. Publish that source generation ->
+        // named generation transition through the warranted registrar at this
+        // program point; never clone a compatibility-ledger row into existence.
+        let Some(destination) = self.binding_locals.get(&binding).copied() else {
+            return;
+        };
+        let warrant = self.owner_warrant_for_rebind(binding, provisional, &provisional_ty);
+        if !self.register_owned_local_transfer_from(
+            binding,
+            name.to_string(),
+            provisional_ty.clone(),
+            provisional,
+            (source, destination),
+            warrant,
+        ) {
+            return;
+        }
+        self.set_owned_local_consumed_post_lowering(
+            provisional,
+            Some(destination),
+            DischargeSite::BindingMoved,
+        );
+        self.statements.push(MirStatement::Use {
+            binding: provisional,
+            name: "__hew_produced_value".to_string(),
+            site: handoff_site,
+            ty: provisional_ty,
+            intent: IntentKind::Consume,
+        });
     }
 
     /// Retire a typed-publication temporary after an assignment has emitted an
@@ -556,6 +1012,10 @@ impl Builder {
     /// derivation has admitted the destination binding to `owned_locals`; the
     /// move itself is the transfer proof, so destination-ledger membership is
     /// deliberately not a prerequisite.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "assignment adoption keeps ledger retirement and exact generation transfer synchronized"
+    )]
     pub(crate) fn retire_provisional_owner_after_assignment_move(
         &mut self,
         binding: BindingId,
@@ -580,9 +1040,91 @@ impl Builder {
                     .synthetic_owner_publication_sites
                     .contains_key(&entry.binding)
         }) else {
+            // Some indirect-call results do not carry an independently minted
+            // provisional owner, but assignment is still a language-level
+            // definition of the destination. Publish that new generation at
+            // the physical store instead of leaving the prior generation dead
+            // for every later loop iteration.
+            let carries_cleanup = crate::model::ty_carries_drop_obligation_mir(
+                &target_ty,
+                &self.record_field_orders,
+                &self.enum_layouts,
+                self.type_classes.lifecycle_registry(),
+            ) || self.vec_iter_cursor_release_symbol(&target_ty).is_some();
+            if !carries_cleanup {
+                return;
+            }
+            let previous_generation = self.owner_generations.get(&binding).copied();
+            let previous_owner = previous_generation.map(|generation| crate::model::OwnerId {
+                binding,
+                generation,
+            });
+            let previous_ended = previous_owner.is_some_and(|owner| {
+                self.instructions.iter().rev().any(|instruction| {
+                    matches!(
+                        instruction,
+                        Instr::OwnershipEvent(
+                            crate::model::OwnershipEvent::Release { owner: ended, .. }
+                                | crate::model::OwnershipEvent::GuardedRelease {
+                                    owner: ended,
+                                    ..
+                                }
+                                | crate::model::OwnershipEvent::Transfer {
+                                    owner: ended,
+                                    ..
+                                }
+                                | crate::model::OwnershipEvent::DemoteToAlias {
+                                    owner: ended,
+                                    ..
+                                }
+                        ) if *ended == owner
+                    )
+                })
+            });
+            let replacement = crate::model::OwnerId {
+                binding,
+                generation: previous_generation
+                    .map_or(0, |generation| generation.saturating_add(1)),
+            };
+            self.owner_generations
+                .insert(binding, replacement.generation);
+            let event = if let Some(previous) = previous_owner.filter(|_| !previous_ended) {
+                if self.affine_release_flags.contains_key(&binding)
+                    || self.overwrite_guard_flags.contains_key(&binding)
+                {
+                    crate::model::OwnershipEvent::Rearm {
+                        previous,
+                        replacement,
+                        place: dest,
+                        ty: target_ty,
+                    }
+                } else {
+                    crate::model::OwnershipEvent::Reset {
+                        previous,
+                        replacement,
+                        place: dest,
+                        ty: target_ty,
+                    }
+                }
+            } else {
+                crate::model::OwnershipEvent::Mint {
+                    owner: replacement,
+                    place: dest,
+                    ty: target_ty,
+                }
+            };
+            self.push_instr(Instr::OwnershipEvent(event));
+            self.publish_existing_physical_guard(binding, replacement);
+            self.set_owned_local_disposition(binding, Disposition::ScopeExit);
             return;
         };
-        let provisional = self.owned_locals.remove(index).binding;
+        let provisional = self.owned_locals[index].binding;
+        let provisional_ty = self.owned_locals[index].ty.clone();
+        let handoff_site = self
+            .synthetic_owner_publication_sites
+            .get(&provisional)
+            .copied()
+            .unwrap_or(SiteId(0));
         if let (Some(source_local), Some(destination_local)) =
             (base_local(source), base_local(dest))
         {
@@ -608,6 +1150,42 @@ impl Builder {
         if typed_owner {
             self.typed_produced_value_owner_bindings.insert(binding);
         }
+        let previous_generation = self.owner_generations.get(&binding).copied();
+        let replacement_generation =
+            previous_generation.map_or(0, |generation| generation.saturating_add(1));
+        let replacement = crate::model::OwnerId {
+            binding,
+            generation: replacement_generation,
+        };
+        self.owner_generations
+            .insert(binding, replacement_generation);
+        if let Some(provisional_generation) = self.owner_generations.get(&provisional).copied() {
+            self.push_instr(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner: crate::model::OwnerId {
+                        binding: provisional,
+                        generation: provisional_generation,
+                    },
+                    from: source,
+                    to: Some(dest),
+                    to_owner: Some(replacement),
+                    to_ty: Some(target_ty.clone()),
+                },
+            ));
+            self.publish_existing_physical_guard(binding, replacement);
+        }
+        self.set_owned_local_consumed_post_lowering(
+            provisional,
+            Some(dest),
+            DischargeSite::BindingMoved,
+        );
+        self.statements.push(MirStatement::Use {
+            binding: provisional,
+            name: "__hew_produced_value".to_string(),
+            site: handoff_site,
+            ty: provisional_ty,
+            intent: IntentKind::Consume,
+        });
     }
 
     pub(crate) fn transfer_typed_produced_value_owner(
@@ -616,6 +1194,23 @@ impl Builder {
         source: Place,
         destination: Place,
     ) {
+        for instruction in self.take_typed_produced_value_owner_transfer(site, source, destination)
+        {
+            self.push_instr(instruction);
+        }
+    }
+
+    /// Commit a typed produced-value handoff and return the exact MIR
+    /// operations that carry its runtime/discharge authority. Post-sealing CFG
+    /// rewrites must insert these operations beside the transfer they describe;
+    /// appending through `push_instr` would attach the event to whichever block
+    /// the lowering cursor happened to retain.
+    pub(crate) fn take_typed_produced_value_owner_transfer(
+        &mut self,
+        site: SiteId,
+        source: Place,
+        destination: Place,
+    ) -> Vec<Instr> {
         let owners: Vec<_> = self
             .owned_locals
             .iter()
@@ -628,10 +1223,161 @@ impl Builder {
             })
             .map(|entry| entry.binding)
             .collect();
+        let mut operations = Vec::new();
         for binding in owners {
-            self.set_owned_local_consumed(binding, Some(destination), DischargeSite::BindingMoved);
+            if let Some(flag) = self.affine_release_flags.get(&binding).copied() {
+                operations.push(Instr::ConstI64 {
+                    dest: flag,
+                    value: 1,
+                });
+            }
+            if let Some(generation) = self.owner_generations.get(&binding).copied() {
+                operations.push(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Transfer {
+                        owner: crate::model::OwnerId {
+                            binding,
+                            generation,
+                        },
+                        from: source,
+                        to: Some(destination),
+                        to_owner: None,
+                        to_ty: None,
+                    },
+                ));
+            }
+            self.set_owned_local_consumed_post_lowering(
+                binding,
+                Some(destination),
+                DischargeSite::BindingMoved,
+            );
             self.typed_produced_value_handoffs
                 .insert((source, destination));
+        }
+        operations
+    }
+
+    /// Move a freshly published owner into actor-state storage, which is
+    /// outside the MIR `Place` domain.
+    ///
+    /// The typed publication site selects the exact provisional `OwnerId`. The
+    /// terminal event is emitted beside the physical state store, so unwind
+    /// before the store retains frame cleanup while normal continuation ends
+    /// the local generation. Returning whether an owner was found lets the
+    /// caller null only a source that actually transferred; borrowed and
+    /// bit-copy publications remain untouched.
+    pub(crate) fn consume_typed_produced_value_owner_into_actor_state(
+        &mut self,
+        site: SiteId,
+        source: Place,
+    ) -> bool {
+        let owners: Vec<_> = self
+            .owned_locals
+            .iter()
+            .filter(|entry| {
+                self.binding_locals.get(&entry.binding) == Some(&source)
+                    && self.synthetic_owner_publication_sites.get(&entry.binding) == Some(&site)
+                    && self
+                        .typed_produced_value_owner_bindings
+                        .contains(&entry.binding)
+            })
+            .map(|entry| entry.binding)
+            .collect();
+        for binding in &owners {
+            if let Some(flag) = self.affine_release_flags.get(binding).copied() {
+                self.push_instr(Instr::ConstI64 {
+                    dest: flag,
+                    value: 1,
+                });
+            }
+            if let Some(generation) = self.owner_generations.get(binding).copied() {
+                self.push_instr(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Transfer {
+                        owner: crate::model::OwnerId {
+                            binding: *binding,
+                            generation,
+                        },
+                        from: source,
+                        to: None,
+                        to_owner: None,
+                        to_ty: None,
+                    },
+                ));
+            }
+            self.set_owned_local_consumed_post_lowering(
+                *binding,
+                None,
+                DischargeSite::BindingMoved,
+            );
+        }
+        !owners.is_empty()
+    }
+
+    /// End the supplied live owner generations as whole-value transfers to
+    /// `destination`. The caller derives these identities and their current
+    /// places by replaying the explicit MIR owner stream to the insertion
+    /// point; the Builder ledger is used only to retire lowering cursors, never
+    /// to rediscover which generation occupies `source`.
+    pub(crate) fn take_exact_owner_transfers(
+        &mut self,
+        owners: &[(crate::model::OwnerId, Place)],
+        destination: Place,
+    ) -> Vec<Instr> {
+        let mut operations = Vec::with_capacity(owners.len());
+        for (owner, source) in owners {
+            operations.push(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner: *owner,
+                    from: *source,
+                    to: Some(destination),
+                    to_owner: None,
+                    to_ty: None,
+                },
+            ));
+            self.set_owned_local_consumed_post_lowering(
+                owner.binding,
+                Some(destination),
+                DischargeSite::BindingMoved,
+            );
+            self.typed_produced_value_handoffs
+                .insert((*source, destination));
+        }
+        operations
+    }
+
+    /// Emit the typed move of a fresh Vec snapshot into an owning `VecIter`'s
+    /// field-0 authority. Borrowing iterators deliberately emit no transfer.
+    fn transfer_vec_iter_snapshot_owner(&mut self, value: &HirExpr, cursor: Place) {
+        if !self.vec_iter_value_is_owned(value) {
+            return;
+        }
+        let Some(source) = super::vec_iter_init_vec_source_expr(value) else {
+            return;
+        };
+        let Some(source_place) = self.published_value_places.get(&source.site).copied() else {
+            return;
+        };
+        let owners: Vec<_> = self
+            .owned_locals
+            .iter()
+            .filter(|entry| {
+                self.binding_locals.get(&entry.binding) == Some(&source_place)
+                    && self.synthetic_owner_publication_sites.get(&entry.binding)
+                        == Some(&source.site)
+                    && self
+                        .typed_produced_value_owner_bindings
+                        .contains(&entry.binding)
+            })
+            .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
+            .collect();
+        for (binding, name, ty) in owners {
+            self.set_owned_local_consumed(binding, Some(cursor), DischargeSite::BindingMoved);
+            self.statements.push(MirStatement::Use {
+                binding,
+                name,
+                site: source.site,
+                ty,
+                intent: IntentKind::Consume,
+            });
         }
     }
 
@@ -644,6 +1390,13 @@ impl Builder {
     )]
     pub(crate) fn adopt_typed_produced_value_owner(&mut self, expr: &HirExpr, place: Place) {
         let expected_ty = self.subst_ty(&expr.ty);
+        if self.borrowed_runtime_result_places.contains(&place) {
+            // The typed runtime call in MIR is the immutable authority: this
+            // result aliases receiver-owned storage and therefore cannot mint
+            // an independent destructor obligation, regardless of the HIR
+            // produced-value approximation for an index expression.
+            return;
+        }
         if self
             .vec_iter_cursor_release_protocol(&expected_ty)
             .is_some()
@@ -654,6 +1407,7 @@ impl Builder {
             // RecordInPlace owner to normal exits while abandonment exits use
             // VecIterCursor, yielding two incompatible teardown rituals for
             // the same local.
+            self.transfer_vec_iter_snapshot_owner(expr, place);
             return;
         }
         if matches!(
@@ -704,6 +1458,9 @@ impl Builder {
         else {
             return;
         };
+        if matches!(fact.ownership, ProducedValueOwnership::Owned { .. }) {
+            self.publish_unique_active_yield_forwarding_consume(expr, place);
+        }
         let call_carrier_mint = matches!(
             fact.producer,
             HirProducedValueProducer::Call
@@ -735,10 +1492,23 @@ impl Builder {
                 // the checker-authoritative Owned verdict licenses the owner
                 // transfer. Borrowed / NoOwner / Unknown identities preserve
                 // their existing source authority (or lack of one).
-                if matches!(fact.ownership, ProducedValueOwnership::Owned { .. }) {
-                    self.transfer_identity_owner(expr.site, Some(*source), place);
+                if matches!(expr.kind, HirExprKind::CoerceToDynTrait { .. }) {
+                    // A dyn coercion is not storage identity even though the
+                    // produced-value graph records value continuity with its
+                    // concrete input. Codegen boxes the concrete bytes and
+                    // constructs a new fat-pointer carrier at `place`; that
+                    // carrier needs its own HeapBoxed OwnerId so a borrowing
+                    // call keeps caller cleanup authority and a named binding
+                    // can adopt it. Continue to the ordinary Owned
+                    // publication below. The adjacent
+                    // NeutralizePayloadSlot independently ends the concrete
+                    // source generation at the physical boxing point.
+                } else {
+                    if matches!(fact.ownership, ProducedValueOwnership::Owned { .. }) {
+                        self.transfer_identity_owner(expr.site, Some(*source), place);
+                    }
+                    return;
                 }
-                return;
             }
             HirProducedValueRelation::Join(_) => {
                 if let HirProducedValueRelation::Join(sources) = &fact.relation {
@@ -768,14 +1538,41 @@ impl Builder {
             | HirProducedValueRelation::Subsumes(_)
             | HirProducedValueRelation::MoveOut(_) => {}
         }
-        let ProducedValueOwnership::Owned { .. } = fact.ownership else {
+        // Aggregate constructors themselves commonly carry a
+        // `StructInit / Unknown` produced-value verdict: their lexical binder
+        // is the parent owner authority. Their payloads still carry their own
+        // exact ownership facts, though, and the normal-success constructor
+        // must retire any child owner physically moved into the aggregate.
+        // Admit only constructor shapes handled by the payload handoff below;
+        // captured/borrowed children remain excluded there, while a call that
+        // fails before construction keeps its source owner for unwind cleanup.
+        let is_aggregate_init = matches!(
+            expr.kind,
+            HirExprKind::TupleLiteral { .. }
+                | HirExprKind::StructInit { .. }
+                | HirExprKind::MachineVariantCtor { .. }
+        );
+        if !matches!(fact.ownership, ProducedValueOwnership::Owned { .. }) && !is_aggregate_init {
             return;
-        };
+        }
         if ValueClass::of_ty(&expected_ty, &self.type_classes) == ValueClass::BitCopy {
             // Generic clone bodies retain their abstract owned publication
             // after monomorphisation. A concrete scalar clone deliberately
             // reuses the parameter slot because the value has no release
             // obligation and therefore cannot mint a local owner.
+            return;
+        }
+        if self.owned_locals.iter().any(|entry| {
+            self.binding_locals.get(&entry.binding) == Some(&place)
+                && self.synthetic_owner_publication_sites.get(&entry.binding) == Some(&expr.site)
+                && self
+                    .typed_produced_value_owner_bindings
+                    .contains(&entry.binding)
+        }) {
+            // A multi-call producer may need to publish ownership at an
+            // intermediate normal successor before its final HIR expression
+            // returns to generic lowering. That early exact-site Mint is the
+            // authority; the generic publication pass must not mint it again.
             return;
         }
         let aggregate_payloads: Vec<&HirExpr> = match &expr.kind {
@@ -791,25 +1588,115 @@ impl Builder {
             _ => Vec::new(),
         };
         for payload in aggregate_payloads {
+            // Capture-intent aggregate fields are borrowed topology, not an
+            // ownership hand-off.  The canonical example is `for x in v`:
+            // the synthetic VecIter stores a descriptor view of `v`, while
+            // `v` remains the sole owner and is usable after the loop.  Only a
+            // MoveOut/consume payload may publish a child-to-aggregate
+            // Transfer; treating a capture as one ended the Vec owner at the
+            // RecordInit and poisoned both source move dataflow and cleanup.
+            if payload.intent == IntentKind::Capture {
+                continue;
+            }
             let Some(payload_place) = self.published_value_places.get(&payload.site).copied()
             else {
                 continue;
             };
+            let current_place = self
+                .instructions
+                .iter()
+                .rev()
+                .find_map(|instruction| match instruction {
+                    Instr::Move { dest, src }
+                        if *src == payload_place && base_local(*dest) == base_local(place) =>
+                    {
+                        Some(*dest)
+                    }
+                    _ => None,
+                })
+                .unwrap_or(payload_place);
+            // Replay the current block's explicit owner operations for every
+            // lexical owner of the payload slot. This admits named binders as
+            // well as synthetic producers, but only when the physical
+            // aggregate-field Move actually carried that exact generation to
+            // `current_place`. A retained copy has a compensating Relocate
+            // back to its source and therefore does not satisfy this proof.
+            //
+            // Do not filter this row through `OwnedLocal::disposition`.
+            // Disposition is a lowering cursor, not path state: an early-return
+            // constructor may already have marked the same lexical binding
+            // consumed on its branch while a later constructor consumes it on
+            // the disjoint fallthrough branch.  Each constructor must publish
+            // its own terminal Transfer; Checked-MIR replay decides which one
+            // is reachable on a particular path.
             let payload_owners: Vec<_> = self
                 .owned_locals
                 .iter()
-                .filter(|entry| {
-                    self.binding_locals.get(&entry.binding) == Some(&payload_place)
-                        && self.synthetic_owner_publication_sites.get(&entry.binding)
-                            == Some(&payload.site)
-                        && self
-                            .typed_produced_value_owner_bindings
-                            .contains(&entry.binding)
+                .filter(|entry| self.binding_locals.get(&entry.binding) == Some(&payload_place))
+                .filter_map(|entry| {
+                    let owner = crate::model::OwnerId {
+                        binding: entry.binding,
+                        generation: *self.owner_generations.get(&entry.binding)?,
+                    };
+                    let mut actual = Some(payload_place);
+                    for instruction in &self.instructions {
+                        match instruction {
+                            Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. }
+                                if actual == Some(*src) =>
+                            {
+                                actual = Some(*dest);
+                            }
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                                owner: event_owner,
+                                place,
+                                ..
+                            }) if *event_owner == owner => actual = Some(*place),
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+                                owner: event_owner,
+                                to,
+                                ..
+                            }) if *event_owner == owner => actual = Some(*to),
+                            Instr::OwnershipEvent(
+                                crate::model::OwnershipEvent::Transfer {
+                                    owner: event_owner, ..
+                                }
+                                | crate::model::OwnershipEvent::Release {
+                                    owner: event_owner, ..
+                                }
+                                | crate::model::OwnershipEvent::GuardedRelease {
+                                    owner: event_owner,
+                                    ..
+                                }
+                                | crate::model::OwnershipEvent::DemoteToAlias {
+                                    owner: event_owner,
+                                    ..
+                                },
+                            ) if *event_owner == owner => actual = None,
+                            Instr::OwnershipEvent(
+                                crate::model::OwnershipEvent::Reset { previous, .. }
+                                | crate::model::OwnershipEvent::Rearm { previous, .. },
+                            ) if *previous == owner => actual = None,
+                            Instr::OwnershipEvent(
+                                crate::model::OwnershipEvent::Reset {
+                                    replacement, place, ..
+                                }
+                                | crate::model::OwnershipEvent::Rearm {
+                                    replacement, place, ..
+                                },
+                            ) if *replacement == owner => actual = Some(*place),
+                            _ => {}
+                        }
+                    }
+                    (actual == Some(current_place)).then_some(entry.binding)
                 })
-                .map(|entry| entry.binding)
                 .collect();
             for binding in payload_owners {
-                self.set_owned_local_consumed(binding, Some(place), DischargeSite::BindingMoved);
+                self.set_owned_local_consumed_from(
+                    binding,
+                    current_place,
+                    Some(place),
+                    DischargeSite::BindingMoved,
+                );
                 self.typed_produced_value_handoffs
                     .insert((payload_place, place));
             }
@@ -867,6 +1754,84 @@ impl Builder {
         if warrant.withholds_mint() {
             return;
         }
+        // An owned publication may secure an already-owned child into this
+        // result local with one adjacent Move (array/block/aggregate result
+        // forwarding). Commit that exact, type-congruent source generation
+        // here while the lowerer still has the typed ownership verdict and the
+        // concrete operation; post-Checked global Move ancestry is neither
+        // needed nor permitted. A read/copy publication has no Owned verdict
+        // and never enters this transfer path.
+        let adjacent_source = self
+            .instructions
+            .last()
+            .and_then(|instruction| match instruction {
+                Instr::Move { dest, src } if *dest == place => Some(*src),
+                _ => None,
+            });
+        if let Some(source) = adjacent_source {
+            let mut owners = self.owned_locals.iter().filter(|entry| {
+                entry.ty == ty
+                    && entry.disposition == Disposition::ScopeExit
+                    && self.binding_locals.get(&entry.binding) == Some(&source)
+            });
+            if let Some(owner) = owners.next().cloned().filter(|_| owners.next().is_none()) {
+                self.push_instr(Instr::NeutralizePayloadSlot {
+                    place: source,
+                    transferee: Some(place),
+                    authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                });
+                self.set_owned_local_consumed(
+                    owner.binding,
+                    Some(place),
+                    DischargeSite::BindingMoved,
+                );
+                self.statements.push(MirStatement::Use {
+                    binding: owner.binding,
+                    name: owner.name,
+                    site: expr.site,
+                    ty: owner.ty,
+                    intent: IntentKind::Consume,
+                });
+                self.typed_produced_value_handoffs.insert((source, place));
+            }
+        }
+        // A scoped block result puts its immutable `ScopeExit` marker between
+        // the physical tail Move and this typed publication.  The marker is
+        // bookkeeping, not another value-producing instruction: when its
+        // carried destination is this exact place, the unique live typed owner
+        // of the Move source remains the sole generation after the handoff.
+        // Array literals are HIR-desugared to precisely this shape. Minting an
+        // anonymous owner here would overlap the relocated `__hew_array_N`
+        // generation at the destination.
+        let mut crossed_scope_exit = false;
+        let mut scoped_tail_source = None;
+        for instruction in self.instructions.iter().rev() {
+            match instruction {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
+                    carry_places,
+                    ..
+                }) if carry_places.contains(&place) => crossed_scope_exit = true,
+                Instr::Move { dest, src } if crossed_scope_exit && *dest == place => {
+                    scoped_tail_source = Some(*src);
+                    break;
+                }
+                _ => break,
+            }
+        }
+        if let Some(source) = scoped_tail_source {
+            let mut owners = self.owned_locals.iter().filter(|entry| {
+                entry.ty.is_storage_congruent_with(&ty)
+                    && entry.disposition == Disposition::ScopeExit
+                    && self.binding_locals.get(&entry.binding) == Some(&source)
+                    && self
+                        .typed_produced_value_owner_bindings
+                        .contains(&entry.binding)
+            });
+            if owners.next().is_some() && owners.next().is_none() {
+                self.typed_produced_value_handoffs.insert((source, place));
+                return;
+            }
+        }
         let binding = self.adopt_synthetic_owned_local(
             "__hew_produced_value",
             expr.site,
@@ -884,6 +1849,120 @@ impl Builder {
         }
     }
 
+    /// End an active yield binder on the normal successor of a direct call
+    /// whose result may alias exactly that binder and no other heap argument.
+    ///
+    /// A break/continue scope marker is lowered after the call. Without this
+    /// path-local consume, that marker sees the binder's lexical owner still
+    /// live and materialises a drop even though the unverified callee may have
+    /// forwarded the same buffer into its result. The result's typed producer
+    /// independently publishes the caller's destination owner below; this
+    /// event closes only the argument generation on the successful call edge.
+    ///
+    /// The proof is deliberately narrower than `ParamsOnly`: the summary says
+    /// "some parameter", not which one. Therefore exactly one non-scalar heap
+    /// argument must exist, it must be a `string` active-yield binder, its place
+    /// must have one unique lexical owner, and the just-sealed call must name
+    /// that exact argument/result/continuation tuple. Zero, multiple, indirect,
+    /// opaque, or mismatched cases publish nothing and remain fail-closed.
+    fn publish_unique_active_yield_forwarding_consume(
+        &mut self,
+        expr: &HirExpr,
+        result_place: Place,
+    ) {
+        if !matches!(self.subst_ty(&expr.ty), ResolvedTy::String) {
+            return;
+        }
+        let HirExprKind::Call { callee, args, .. } = &expr.kind else {
+            return;
+        };
+        let HirExprKind::BindingRef {
+            name: callee_name,
+            resolved: ResolvedRef::Item(callee_id),
+        } = &callee.kind
+        else {
+            return;
+        };
+        if !self
+            .call_scrutinee_provenance
+            .provenance
+            .get(callee_id)
+            .is_some_and(|bits| bits.is_params_only())
+        {
+            return;
+        }
+        let heap_args: Vec<_> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| {
+                !crate::return_provenance::ty_is_scalar_non_heap(&self.subst_ty(&arg.ty))
+            })
+            .collect();
+        let [(arg_index, arg)] = heap_args.as_slice() else {
+            return;
+        };
+        if !matches!(self.subst_ty(&arg.ty), ResolvedTy::String) {
+            return;
+        }
+        let Some(binding) = binding_ref_target(arg) else {
+            return;
+        };
+        let Some(source_place) = self.binding_locals.get(&binding).copied() else {
+            return;
+        };
+        if !self.active_yield_binder_place(source_place) {
+            return;
+        }
+        let Some(owner) = self
+            .current_owner_id_at_place(source_place)
+            .filter(|owner| owner.binding == binding)
+        else {
+            return;
+        };
+        let exact_call = self.pending_blocks.iter().filter(|block| {
+            matches!(
+                &block.terminator,
+                Terminator::Call {
+                    callee,
+                    args,
+                    dest: Some(dest),
+                    next,
+                    ..
+                } if callee == callee_name
+                    && *dest == result_place
+                    && *next == self.current_block_id
+                    && args.get(*arg_index) == Some(&source_place)
+            )
+        });
+        if exact_call.count() != 1 {
+            return;
+        }
+        let name = self
+            .owned_locals
+            .iter()
+            .find(|entry| entry.binding == binding)
+            .map_or_else(
+                || "__hew_forwarded_yield".to_string(),
+                |entry| entry.name.clone(),
+            );
+        self.statements.push(MirStatement::Use {
+            binding,
+            name,
+            site: expr.site,
+            ty: ResolvedTy::String,
+            intent: IntentKind::Consume,
+        });
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Transfer {
+                owner,
+                from: source_place,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            },
+        ));
+    }
+
     /// Consume typed-publication generations whose release was materialised
     /// by the established inline string/bytes temporary spine.  The release
     /// instruction and the synthetic binding name the same MIR local; this is
@@ -891,44 +1970,62 @@ impl Builder {
     /// receive no inline release and remain scope-exit owned.
     ///
     /// `released_before_splices` is the inline-release set as it stood BEFORE
-    /// the nested-temp splices ran, and it is excluded here. Retirement is
-    /// paired with the splices that placed the release — it is emphatically NOT
-    /// "this local has an inline release somewhere, so drop its ledger entry".
-    /// A body whose own lowering already emitted inline string/bytes drops (the
-    /// lambda-actor handler's message and reply teardown) would otherwise have
-    /// every publication owner retired against a release that discharges a
-    /// different generation, withdrawing scope-exit releases it still owes:
-    /// measured at every `__hew_lambda_body_*` in the example corpus losing its
-    /// full release count the moment that ramp began running this pass.
+    /// the ownership finalizers ran, and it is excluded here. Retirement is
+    /// paired with the finalizers that placed the release — it is emphatically
+    /// NOT "this local has an inline release somewhere, so drop its ledger
+    /// entry". A body whose own lowering already emitted inline string/bytes
+    /// drops (the lambda-actor handler's message and reply teardown) would
+    /// otherwise have every publication owner retired against a release that
+    /// discharges a different generation.
     pub(crate) fn consume_typed_publication_owners_at_inline_release(
         &mut self,
-        blocks: &[BasicBlock],
+        blocks: &mut [BasicBlock],
         released_before_splices: &HashSet<u32>,
     ) {
-        let released: HashSet<u32> = blocks
-            .iter()
-            .flat_map(|block| {
-                block
-                    .instructions
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, instruction)| match instruction {
-                        Instr::Drop {
-                            place: Place::Local(local),
-                            drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
-                            ..
-                        } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop")
-                            && !released_before_splices.contains(local)
-                            && !local_is_rewritten_after_current_iteration(
-                                blocks, *local, block.id, index,
-                            ) =>
-                        {
-                            Some(*local)
+        let (entries, _) = super::drop_plan::exact_owner_states(blocks);
+        let mut release_sites = Vec::new();
+        for block in blocks.iter() {
+            let mut live = entries.get(&block.id).cloned().unwrap_or_default();
+            for (index, instruction) in block.instructions.iter().enumerate() {
+                if let Instr::Drop {
+                    place: Place::Local(local),
+                    drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                    ..
+                } = instruction
+                {
+                    if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop")
+                        && !released_before_splices.contains(local)
+                        && !local_is_rewritten_after_current_iteration(
+                            blocks, *local, block.id, index,
+                        )
+                    {
+                        let owners = live
+                            .iter()
+                            .filter_map(|(owner, place)| {
+                                (*place == Place::Local(*local)).then_some(*owner)
+                            })
+                            .collect::<Vec<_>>();
+                        if let [owner] = owners.as_slice() {
+                            release_sites.push((block.id, index + 1, *owner, Place::Local(*local)));
                         }
-                        _ => None,
-                    })
-            })
-            .collect();
+                    }
+                }
+                super::drop_plan::apply_exact_owner_ops(
+                    std::slice::from_ref(instruction),
+                    &mut live,
+                );
+            }
+        }
+        let released: HashMap<u32, Vec<u32>> =
+            release_sites
+                .iter()
+                .fold(HashMap::new(), |mut by_local, (block, _, _, place)| {
+                    let Place::Local(local) = place else {
+                        return by_local;
+                    };
+                    by_local.entry(*local).or_default().push(*block);
+                    by_local
+                });
         let consumed: Vec<_> = self
             .owned_locals
             .iter()
@@ -938,19 +2035,48 @@ impl Builder {
                     .then(|| self.binding_locals.get(&entry.binding).copied())
                     .flatten()
                     .and_then(|place| match place {
-                        Place::Local(local) if released.contains(&local) => Some(entry.binding),
+                        Place::Local(local) => released.get(&local).map(|release_blocks| {
+                            (
+                                entry.binding,
+                                entry.name.clone(),
+                                entry.ty.clone(),
+                                release_blocks.clone(),
+                            )
+                        }),
                         _ => None,
                     })
             })
             .collect();
-        for binding in consumed {
-            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
+        for (block_id, index, owner, place) in release_sites.into_iter().rev() {
+            let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+                continue;
+            };
+            block.instructions.insert(
+                index,
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Release { owner, place }),
+            );
+            super::shift_instr_spans_on_insert(
+                &mut self.instr_spans,
+                block_id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+        }
+        for (binding, _name, _ty, _release_blocks) in consumed {
+            self.set_owned_local_consumed_post_lowering(
+                binding,
+                None,
+                DischargeSite::InlineRelease,
+            );
         }
     }
 
     /// Move (not clone) an existing receiver owner to a receiver-identity
     /// result. Both ends are SiteId/Place identities; no method spelling or
     /// display-name recovery participates in the transfer.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "identity-return transfer validates and publishes the full receiver authority tuple atomically"
+    )]
     fn transfer_identity_owner(
         &mut self,
         result_site: SiteId,
@@ -1008,7 +2134,114 @@ impl Builder {
             });
             return;
         }
-        for (binding, _) in owners {
+        let call_predecessor = self.pending_blocks.iter().any(|block| {
+            matches!(
+                &block.terminator,
+                Terminator::Call {
+                    args,
+                    dest: Some(dest),
+                    next,
+                    ..
+                } if *dest == result_place
+                    && *next == self.current_block_id
+                    && args.contains(&receiver_place)
+            )
+        });
+        for (binding, owner_ty) in owners {
+            let generation = self.owner_generations.get(&binding).copied().unwrap_or(0);
+            let owner = crate::model::OwnerId {
+                binding,
+                generation,
+            };
+            if call_predecessor {
+                let replacement = crate::model::OwnerId {
+                    binding,
+                    generation: generation.saturating_add(1),
+                };
+                self.owner_generations
+                    .insert(binding, replacement.generation);
+                self.push_bind_statement(
+                    binding,
+                    "__hew_produced_value".to_string(),
+                    result_site,
+                    owner_ty.clone(),
+                );
+                if let Some(entry) = self
+                    .owned_locals
+                    .iter_mut()
+                    .find(|entry| entry.binding == binding)
+                {
+                    entry.disposition = Disposition::ScopeExit;
+                }
+                // The caller retains cleanup authority if the call unwinds.
+                // Only the normal successor commits receiver consumption and
+                // publishes the returned identity as the next generation.
+                self.push_instr(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        from: receiver_place,
+                        to: Some(result_place),
+                        to_owner: Some(replacement),
+                        to_ty: Some(owner_ty),
+                    },
+                ));
+            } else if receiver_place != result_place {
+                // `lower_value_for_move` conservatively records a consuming
+                // binding reference before the typed produced-value fact is
+                // available.  A ReceiverIdentity result is not a terminal
+                // consume: the same generation continues in the result slot.
+                // Canonicalise the exact adjacent `Transfer; Move` spine into
+                // `Move; Relocate` at this program point.  Leaving both events
+                // made the Relocate name a generation the Transfer had already
+                // ended (the for-loop Option/VecIter carrier class).
+                let terminal_move =
+                    self.instructions
+                        .windows(2)
+                        .enumerate()
+                        .rev()
+                        .find_map(|(index, pair)| {
+                            let matches_pair = matches!(
+                                &pair[0],
+                                Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                                    owner: event_owner,
+                                    from,
+                                    to: None,
+                                    to_owner: None,
+                                    ..
+                                }) if *event_owner == owner && *from == receiver_place
+                            ) && matches!(
+                                pair[1],
+                                Instr::Move { dest, src }
+                                    if dest == result_place && src == receiver_place
+                            );
+                            let metadata_only_tail = self.instructions[index + 2..]
+                                .iter()
+                                .all(|instruction| matches!(instruction, Instr::OwnershipEvent(_)));
+                            (matches_pair && metadata_only_tail).then_some(index)
+                        });
+                let relocation = Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate {
+                    owner,
+                    from: receiver_place,
+                    to: result_place,
+                });
+                if let Some(transfer_index) = terminal_move {
+                    // ScopeExit/EdgeCarry are immutable ownership metadata,
+                    // not executable program points. Typed identity may be
+                    // finalized after they are published, but the physical
+                    // operation remains the adjacent `Transfer; Move` pair.
+                    // Rewrite that pair in place so source spans stay aligned;
+                    // any executable instruction in the tail prevents this
+                    // canonicalization and leaves the stale event visible to
+                    // Checked-MIR validation.
+                    self.instructions.swap(transfer_index, transfer_index + 1);
+                    self.instructions[transfer_index + 1] = relocation;
+                } else {
+                    // Identity forwarding within one block keeps the same live
+                    // generation but changes its physical carrier. Checked
+                    // MIR, not the lowering ledger, records that relocation.
+                    self.push_instr(relocation);
+                }
+            }
             self.binding_locals.insert(binding, result_place);
             if let Some(current_scope) = self.active_scopes.last().copied() {
                 let scope = self
@@ -1102,7 +2335,13 @@ impl Builder {
             let Some(source) = self.binding_locals.get(&predecessor).copied() else {
                 continue;
             };
-            self.set_owned_local_consumed(
+            // The source generation is live only on its producing predecessor.
+            // Record the staging disposition here, then let the finalized-CFG
+            // handoff pass place the Transfer beside that predecessor's exact
+            // physical Move. Emitting through the current builder cursor would
+            // put a second transfer in the join block, where paths that never
+            // minted this generation can reach it.
+            self.set_owned_local_consumed_post_lowering(
                 predecessor,
                 Some(result_place),
                 DischargeSite::BindingMoved,
@@ -1138,7 +2377,33 @@ impl Builder {
         if !matches!(object.kind, HirExprKind::Index { .. }) {
             return;
         }
-        self.finalize_typed_produced_value_owner("__hew_produced_value", object.site, record_place);
+        let owners = self.finalize_typed_produced_value_owners(
+            "__hew_produced_value",
+            object.site,
+            record_place,
+        );
+        self.seed_exact_vec_clone_projection_root(record_place, &owners);
+    }
+
+    /// Publish destructive projection-transfer authority only for one exact
+    /// synthetic clone owner.
+    ///
+    /// A fresh `Vec<T>` clone used directly as a record projection has no
+    /// source binding through which the ordinary carrier path can discover its
+    /// root. Once the typed produced-value publication resolves uniquely, the
+    /// root is safe to neutralize field-by-field when a nested functional
+    /// update consumes a projection. Borrowed projections resolve no owner;
+    /// duplicate publications are ambiguous. Both remain fail-closed.
+    fn seed_exact_vec_clone_projection_root(
+        &mut self,
+        record_place: Place,
+        finalized_owners: &[(BindingId, ResolvedTy)],
+    ) {
+        if finalized_owners.len() == 1 {
+            self.owned_carrier_neutralize
+                .entry(record_place)
+                .or_insert(OwnedCarrierNeutralizeTarget::Whole(record_place));
+        }
     }
     /// Register a `let`-bound field projection whose result is a byte-copy
     /// interior ALIAS of the still-live owner named by `provenance` — the
@@ -1177,6 +2442,37 @@ impl Builder {
             provenance: Some(provenance),
             disposition: Disposition::AliasOf,
         });
+    }
+
+    /// Return the unique byte-copy alias provenance currently recorded for a
+    /// binding. A direct rebind of such an alias (`let tmp = alias`) must stay
+    /// an alias: the whole-value `Move` copies the same parent-owned aggregate
+    /// storage and does not recursively retain its heap leaves.
+    ///
+    /// Multiple ledger rows or a type mismatch report `Ambiguous` so the caller
+    /// can reject the mint fail-closed. The source may already be `ConsumedAt`:
+    /// lowering the consuming `BindingRef` ends that lexical generation before
+    /// this successor is registered, but it does not turn the copied storage
+    /// into an independent owner.
+    pub(crate) fn exact_owned_local_alias_provenance(
+        &self,
+        binding: BindingId,
+        ty: &ResolvedTy,
+    ) -> OwnedAliasInheritance {
+        let mut entries = self
+            .owned_locals
+            .iter()
+            .filter(|entry| entry.binding == binding);
+        let Some(entry) = entries.next() else {
+            return OwnedAliasInheritance::NotAlias;
+        };
+        if entries.next().is_some() || entry.ty != *ty {
+            return OwnedAliasInheritance::Ambiguous;
+        }
+        entry.provenance.clone().map_or(
+            OwnedAliasInheritance::NotAlias,
+            OwnedAliasInheritance::Exact,
+        )
     }
     /// #2743 — the owned type of a fresh composite/string argument TEMPORARY that
     /// earns a caller-side scope-exit drop when passed to a proven-BORROW
@@ -1535,6 +2831,31 @@ impl Builder {
         false
     }
 
+    /// Recover the unique typed owner carried into `place` by an exact handoff.
+    /// The producer records the source/destination relation while both Places
+    /// are concrete; a borrowing sink can then keep that same generation even
+    /// though its lexical binding still names the pre-Move source slot.
+    fn exact_handoff_publication_owner(&self, place: Place) -> Option<(BindingId, ResolvedTy)> {
+        let mut owners = self
+            .typed_produced_value_handoffs
+            .iter()
+            .filter_map(|(source, destination)| (*destination == place).then_some(*source))
+            .flat_map(|source| {
+                self.owned_locals.iter().filter(move |entry| {
+                    entry.disposition == Disposition::ScopeExit
+                        && self.binding_locals.get(&entry.binding) == Some(&source)
+                        && self
+                            .typed_produced_value_owner_bindings
+                            .contains(&entry.binding)
+                })
+            });
+        let owner = owners.next()?;
+        owners
+            .next()
+            .is_none()
+            .then(|| (owner.binding, owner.ty.clone()))
+    }
+
     /// Complete a provisional publication generation when a structural sink
     /// takes responsibility for its cleanup shape. The site and exact MIR
     /// place must both match the typed publication; neither type nor display
@@ -1568,6 +2889,11 @@ impl Builder {
             })
             .map(|entry| (entry.binding, entry.ty.clone()))
             .collect();
+        if owners.is_empty() {
+            if let Some(owner) = self.exact_handoff_publication_owner(place) {
+                return vec![owner];
+            }
+        }
         for (binding, _) in &owners {
             if let Some(entry) = self
                 .owned_locals
@@ -1758,6 +3084,21 @@ impl Builder {
             ty: ty.clone(),
             intent: IntentKind::Consume,
         });
+        let Some(generation) = self.owner_generations.get(&binding).copied() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "owned discarded result without owner generation".to_string(),
+                    site: expr.site,
+                },
+                note: "the exact typed discarded-result owner resolved, but no generation was published; refusing an untracked inline release"
+                    .to_string(),
+            });
+            return;
+        };
+        let owner = crate::model::OwnerId {
+            binding,
+            generation,
+        };
         let before = self.instructions.len();
         if enum_in_place {
             self.push_instr(Instr::Drop {
@@ -1768,7 +3109,7 @@ impl Builder {
                 )),
             });
         } else {
-            self.emit_local_overwrite_release(place, &ty);
+            self.emit_local_overwrite_release(binding, place, &ty, None);
         }
         if self.instructions.len() == before {
             self.diagnostics.push(MirDiagnostic {
@@ -1783,6 +3124,9 @@ impl Builder {
             });
             return;
         }
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Release { owner, place },
+        ));
         self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
     }
     pub(crate) fn record_iteration_owner_drop(
@@ -1792,11 +3136,25 @@ impl Builder {
         site: SiteId,
         ty: &ResolvedTy,
     ) {
-        let drops = self
-            .iteration_owner_drop_blocks
-            .entry(self.current_block_id)
-            .or_default();
-        if drops.contains(&binding) {
+        let Some(generation) = self.owner_generations.get(&binding).copied() else {
+            return;
+        };
+        let Some(place) = self.binding_locals.get(&binding).copied() else {
+            return;
+        };
+        let owner = crate::model::OwnerId {
+            binding,
+            generation,
+        };
+        if self.instructions.iter().any(|instr| {
+            matches!(
+                instr,
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Release {
+                    owner: released,
+                    place: released_place,
+                }) if *released == owner && *released_place == place
+            )
+        }) {
             return;
         }
         self.statements.push(MirStatement::Use {
@@ -1806,7 +3164,16 @@ impl Builder {
             ty: ty.clone(),
             intent: IntentKind::Consume,
         });
-        drops.push(binding);
+        self.push_instr(Instr::Drop {
+            place,
+            ty: ty.clone(),
+            drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                crate::ownership::InPlaceReleaseKind::Enum,
+            )),
+        });
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Release { owner, place },
+        ));
     }
     pub(crate) fn record_active_iteration_owner_drops_for_exit_edge(
         &mut self,
@@ -2058,33 +3425,23 @@ impl Builder {
     /// The owned locals that may still own a value on a path to an exit —
     /// either scope-exit-live (`ScopeExit`) or retracted only by a consume that
     /// transfers the value out (`ConsumedAt`). A binding in this view is a
-    /// candidate for the path-sensitive returned-member re-admission in
-    /// `elaborate`: a value returned/handed-off on SOME paths (so it is either an
-    /// aggregate member the return handoff removes, or a whole-value return that
-    /// retracts it to `ConsumedAt`) can still be the live sole owner on a guard
-    /// early-return, where its scope-exit drop must be restored. `BodyEndReleased`
-    /// / `ScopeReleased` (already released mid-body) and `AliasOf` (a non-owning
-    /// interior alias — never its own drop) are excluded, so the re-admission
-    /// never resurrects a drop those dispositions deliberately elide.
+    /// candidate for path-sensitive cleanup, including compiler-generated
+    /// produced-value bindings that are the source of a recorded typed handoff.
+    /// Such a synthetic result is a real owner from successful publication until
+    /// its later move into a source binding or aggregate; excluding it leaves the
+    /// producer-to-handoff interval uncovered on an unwind edge. A typed result
+    /// that is already the terminal/canonical owner is not added a second time.
+    /// CFG liveness suppresses the source drop after the handoff.
+    /// A normal-path `BodyEndReleased` / `ScopeReleased` disposition does not
+    /// erase the owner's earlier lifetime: a call before that release can still
+    /// unwind while the generation is live. Keep those entries in the template
+    /// and let the per-program-point MIR dataflow suppress them after their
+    /// explicit consume/release event. Only `AliasOf` is never an owner.
     pub(crate) fn owned_locals_exit_candidates(&self) -> Vec<(BindingId, String, ResolvedTy)> {
         let mut seen = HashSet::new();
         self.owned_locals
             .iter()
-            .filter(|entry| {
-                matches!(
-                    entry.disposition,
-                    Disposition::ScopeExit | Disposition::ConsumedAt { .. }
-                ) && (!self
-                    .synthetic_owner_publication_sites
-                    .contains_key(&entry.binding)
-                    || self
-                        .iteration_owner_drop_blocks
-                        .values()
-                        .any(|bindings| bindings.contains(&entry.binding))
-                    || self
-                        .synthetic_borrowed_temp_drop_bindings
-                        .contains(&entry.binding))
-            })
+            .filter(|entry| entry.disposition != Disposition::AliasOf)
             .filter(|entry| seen.insert(entry.binding))
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
@@ -2124,11 +3481,120 @@ impl Builder {
         binding: BindingId,
         disposition: Disposition,
     ) {
+        let demotes_live_owner = disposition == Disposition::AliasOf
+            && self
+                .owned_locals
+                .iter()
+                .any(|entry| entry.binding == binding && entry.disposition != Disposition::AliasOf);
+        if demotes_live_owner {
+            // Pattern lowering may initially mint a payload binder before the
+            // selected carrier topology proves that it is only an interior
+            // alias. End that provisional generation at this exact MIR point;
+            // post-Checked elaboration must not consult the mutable ledger to
+            // rediscover the demotion.
+            if let (Some(generation), Some(place)) = (
+                self.owner_generations.get(&binding).copied(),
+                self.binding_locals.get(&binding).copied(),
+            ) {
+                self.push_instr(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::DemoteToAlias {
+                        owner: crate::model::OwnerId {
+                            binding,
+                            generation,
+                        },
+                        place,
+                    },
+                ));
+            }
+        }
         for entry in &mut self.owned_locals {
             if entry.binding == binding {
                 entry.disposition = disposition;
             }
         }
+    }
+
+    /// Build the explicit end-of-generation operation for an inline release.
+    /// This is usable by post-sealing rewrites, which must insert the operation
+    /// into the rewritten block rather than append through the builder cursor.
+    pub(crate) fn owned_local_release_event(&self, binding: BindingId) -> Option<Instr> {
+        Some(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Release {
+                owner: crate::model::OwnerId {
+                    binding,
+                    generation: *self.owner_generations.get(&binding)?,
+                },
+                place: *self.binding_locals.get(&binding)?,
+            },
+        ))
+    }
+
+    /// End one owner generation at the exact current MIR program point.
+    pub(crate) fn release_owned_local(&mut self, binding: BindingId, disposition: Disposition) {
+        if let Some(event) = self.owned_local_release_event(binding) {
+            self.push_instr(event);
+        }
+        self.set_owned_local_disposition(binding, disposition);
+    }
+
+    /// End one generation at the exact physical place selected by a
+    /// path-sensitive body-end handoff. The lexical binding table may still
+    /// name the original slot, but Checked MIR must pair the destructor with
+    /// the terminal carrier that actually holds the value.
+    pub(crate) fn release_owned_local_from(
+        &mut self,
+        binding: BindingId,
+        place: Place,
+        disposition: Disposition,
+    ) {
+        if let Some(generation) = self.owner_generations.get(&binding).copied() {
+            self.push_instr(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Release {
+                    owner: crate::model::OwnerId {
+                        binding,
+                        generation,
+                    },
+                    place,
+                },
+            ));
+        }
+        self.set_owned_local_disposition(binding, disposition);
+    }
+
+    /// Preserve the source generation across an explicit retain + bit-copy.
+    /// Generic MIR `Move` relocates a sole owner, but after a retain the copied
+    /// destination is a distinct share and the original owner remains in its
+    /// source slot. Publish that exact post-copy location in MIR so cleanup
+    /// derivation does not mistake the original generation for the returned
+    /// share.
+    pub(crate) fn restore_owner_after_retained_share(&mut self, source: Place, copied_to: Place) {
+        let mut owners = self.owned_locals.iter().filter_map(|entry| {
+            (entry.disposition != Disposition::AliasOf
+                && self.binding_locals.get(&entry.binding) == Some(&source))
+            .then(|| {
+                self.owner_generations
+                    .get(&entry.binding)
+                    .copied()
+                    .map(|generation| crate::model::OwnerId {
+                        binding: entry.binding,
+                        generation,
+                    })
+            })
+            .flatten()
+        });
+        let Some(owner) = owners.next() else {
+            return;
+        };
+        if owners.next().is_some() {
+            return;
+        }
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Relocate {
+                owner,
+                from: copied_to,
+                to: source,
+            },
+        ));
     }
     /// Retract a binding to [`Disposition::ConsumedAt`], REQUIRING its discharge
     /// authority (`transferee` + `site`) by signature — the close-by-construction
@@ -2169,6 +3635,57 @@ impl Builder {
                 dest: flag,
                 value: 1,
             });
+        }
+        if let (Some(place), Some(generation)) = (
+            self.binding_locals.get(&binding).copied(),
+            self.owner_generations.get(&binding).copied(),
+        ) {
+            self.push_instr(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner: crate::model::OwnerId {
+                        binding,
+                        generation,
+                    },
+                    from: place,
+                    to: transferee,
+                    to_owner: None,
+                    to_ty: None,
+                },
+            ));
+        }
+        self.set_owned_local_consumed_post_lowering(binding, transferee, site);
+    }
+
+    /// Consume an owner from the explicit instruction-position place rather
+    /// than its original lexical slot. Aggregate construction moves a child
+    /// into a projected field before the parent owner is minted; the event
+    /// must therefore name that field, not the stale Builder binding place.
+    fn set_owned_local_consumed_from(
+        &mut self,
+        binding: BindingId,
+        from: Place,
+        transferee: Option<Place>,
+        site: DischargeSite,
+    ) {
+        if let Some(flag) = self.affine_release_flags.get(&binding).copied() {
+            self.instructions.push(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
+        if let Some(generation) = self.owner_generations.get(&binding).copied() {
+            self.push_instr(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner: crate::model::OwnerId {
+                        binding,
+                        generation,
+                    },
+                    from,
+                    to: transferee,
+                    to_owner: None,
+                    to_ty: None,
+                },
+            ));
         }
         self.set_owned_local_consumed_post_lowering(binding, transferee, site);
     }
@@ -3216,6 +4733,14 @@ impl Builder {
             value: 0,
         });
         self.affine_release_flags.insert(binding_id, flag);
+        assert!(
+            self.publish_current_owner_guard(
+                binding_id,
+                flag,
+                crate::model::OwnershipGuardKind::AffineRelease,
+            ),
+            "affine release flag for {binding_id:?} has no explicit owner generation"
+        );
     }
     /// #2301 -- allocate a zero-init path-sensitive overwrite-release drop-flag
     /// for an owned `var`-local that the pre-pass saw both genuinely consumed
@@ -3230,6 +4755,13 @@ impl Builder {
     /// source order but follows it around a back-edge).
     pub(crate) fn maybe_alloc_overwrite_guard_flag(&mut self, binding: &HirBinding) {
         if !binding.mutable {
+            return;
+        }
+        // Affine resources already use their release flag for both move-out
+        // suppression and reassignment generation reset. A second overwrite
+        // bit would publish two competing cleanup authorities for one OwnerId,
+        // while `ElabDrop` deliberately carries exactly one guard.
+        if self.affine_release_flags.contains_key(&binding.id) {
             return;
         }
         if !self.prepass_consumed_bindings.contains(&binding.id) {
@@ -3254,6 +4786,15 @@ impl Builder {
             value: 0,
         });
         self.overwrite_guard_flags.insert(binding.id, flag);
+        assert!(
+            self.publish_current_owner_guard(
+                binding.id,
+                flag,
+                crate::model::OwnershipGuardKind::Overwrite,
+            ),
+            "overwrite guard flag for {:?} has no explicit owner generation",
+            binding.id
+        );
     }
     /// #2418 -- allocate a zero-init path-sensitive scope-exit drop-flag for an
     /// owned collection local (owned-element `Vec`, plain `Vec`,
@@ -3317,6 +4858,15 @@ impl Builder {
             value: 0,
         });
         self.collection_drop_flags.insert(binding.id, flag);
+        assert!(
+            self.publish_current_owner_guard(
+                binding.id,
+                flag,
+                crate::model::OwnershipGuardKind::Collection,
+            ),
+            "collection drop flag for {:?} has no explicit owner generation",
+            binding.id
+        );
     }
 
     /// Allocate the path-sensitive scope-exit flag for a mailbox-owned `CoW`
@@ -3339,6 +4889,13 @@ impl Builder {
         // the same path-sensitive guard without creating a second drop class.
         let is_actor_message_cow_leaf =
             super::cow_value_leaf_drop_symbol(ty).is_some() || matches!(ty, ResolvedTy::Bytes);
+        let is_registered_owner = self
+            .owned_locals
+            .iter()
+            .any(|entry| entry.binding == binding && entry.disposition == Disposition::ScopeExit);
+        if super::cow_value_leaf_drop_symbol(ty).is_some() && is_registered_owner {
+            self.actor_message_string_owner_bindings.insert(binding);
+        }
         let may_transfer = self.prepass_consumed_bindings.contains(&binding)
             || (matches!(ty, ResolvedTy::Bytes)
                 && self
@@ -3346,9 +4903,7 @@ impl Builder {
                     .contains(&binding));
         if !may_transfer
             || !is_actor_message_cow_leaf
-            || !self.owned_locals.iter().any(|entry| {
-                entry.binding == binding && entry.disposition == Disposition::ScopeExit
-            })
+            || !is_registered_owner
             || self.actor_message_cow_drop_flags.contains_key(&binding)
         {
             return;
@@ -3359,6 +4914,14 @@ impl Builder {
             value: 0,
         });
         self.actor_message_cow_drop_flags.insert(binding, flag);
+        assert!(
+            self.publish_current_owner_guard(
+                binding,
+                flag,
+                crate::model::OwnershipGuardKind::ActorMessageCow,
+            ),
+            "actor-message CoW flag for {binding:?} has no explicit owner generation"
+        );
     }
 
     /// Allocate the path-sensitive scope-exit flag for a freshly constructed
@@ -3406,6 +4969,15 @@ impl Builder {
             value: 0,
         });
         self.conditional_record_drop_flags.insert(binding.id, flag);
+        assert!(
+            self.publish_current_owner_guard(
+                binding.id,
+                flag,
+                crate::model::OwnershipGuardKind::ConditionalRecord,
+            ),
+            "conditional record flag for {:?} has no explicit owner generation",
+            binding.id
+        );
     }
 
     /// #2301 -- emit `if flag == 0 { <release old value of `dest`> }` as a CFG
@@ -3444,18 +5016,25 @@ impl Builder {
             else_target: cont_bb,
         });
         self.start_block(release_bb);
-        self.emit_local_overwrite_release(dest, target_ty);
-        self.emit_enum_overwrite_release(binding, dest, target_ty, value);
+        self.emit_local_overwrite_release(binding, dest, target_ty, Some(flag));
+        self.emit_enum_overwrite_release(binding, dest, target_ty, value, Some(flag));
         self.finish_current_block(Terminator::Goto { target: cont_bb });
         self.start_block(cont_bb);
     }
-    pub(crate) fn mark_returned_binding_moved(&mut self, expr: &HirExpr) {
+    fn mark_anonymous_typed_producer_moved(&mut self, expr: &HirExpr, transferee: Option<Place>) {
         if let HirExprKind::BindingRef {
-            resolved: ResolvedRef::Binding(id),
+            resolved: ResolvedRef::Binding(_),
             ..
         } = expr.kind
         {
-            self.mark_binding_moved(id);
+            // `lower_value_for_move` has already lowered this binding under
+            // its Consume intent and ended the live OwnerId generation at the
+            // exact source-read program point.  A second logical consume here
+            // used to append a duplicate Transfer later in the return block
+            // (`result_dest -> binder -> ReturnSlot` for value-task awaits),
+            // which correctly failed generation validation.  This hook only
+            // has additional work for anonymous typed producer results whose
+            // owner is not represented by a BindingRef use.
             return;
         }
         let Some(place) = self.published_value_places.get(&expr.site).copied() else {
@@ -3472,15 +5051,35 @@ impl Builder {
                         .typed_produced_value_owner_bindings
                         .contains(&entry.binding)
             })
-            .map(|entry| entry.binding)
+            .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect();
-        for binding in owners {
-            self.set_owned_local_consumed(
+        for (binding, name, ty) in owners {
+            // Returning or yielding is a consuming ownership event even when
+            // lexical cleanup or a coroutine suspend inserts successor blocks
+            // after the handoff. Carry it through the CFG authority instead of
+            // asking a later block to rediscover an earlier physical move.
+            self.statements.push(MirStatement::Use {
                 binding,
-                Some(Place::ReturnSlot),
-                DischargeSite::BindingMoved,
-            );
+                name,
+                site: expr.site,
+                ty,
+                intent: IntentKind::Consume,
+            });
+            self.set_owned_local_consumed(binding, transferee, DischargeSite::BindingMoved);
         }
+    }
+
+    pub(crate) fn mark_returned_binding_moved(&mut self, expr: &HirExpr) {
+        self.mark_anonymous_typed_producer_moved(expr, Some(Place::ReturnSlot));
+    }
+
+    /// End an anonymous produced-value generation at the generator output
+    /// handoff. The companion output slot owns the yielded value from this
+    /// point; retaining the producer's lexical drop would release it again on
+    /// normal resume (and the output-drop thunk would release it a third time
+    /// when an unconsumed generator is destroyed).
+    pub(crate) fn mark_yielded_binding_moved(&mut self, expr: &HirExpr) {
+        self.mark_anonymous_typed_producer_moved(expr, None);
     }
     pub(crate) fn mark_binding_moved(&mut self, id: BindingId) {
         // A parent overwrite can transfer an inline enum's old string payload
@@ -3532,6 +5131,14 @@ impl Builder {
         ty: &ResolvedTy,
         visited_enum_layouts: &mut HashSet<String>,
     ) -> bool {
+        // Actor PIDs are copyable scheduler identities, not affine runtime
+        // owners. Their historical Resource-shaped marker must never turn a
+        // record/actor-state copy into a destructive move. Keep this canonical
+        // type rule ahead of the generic ValueClass axis so payload type args
+        // cannot change LocalPid's ownership classification.
+        if super::drop_plan::ty_is_nonowning_handle_leaf(ty) {
+            return false;
+        }
         if matches!(
             ValueClass::of_ty(ty, &self.type_classes),
             ValueClass::AffineResource | ValueClass::Linear
@@ -4810,38 +6417,37 @@ impl Builder {
 
     pub(crate) fn consume_moved_builtin_method_arg(&mut self, operand: &HirExpr) {
         let HirExprKind::BindingRef {
-            name,
             resolved: ResolvedRef::Binding(id),
+            ..
         } = &operand.kind
         else {
             return;
         };
+        if self.binding_ref_use_intent(operand) == IntentKind::Consume {
+            return;
+        }
         let ty = self.subst_ty(&operand.ty);
         if !self.aggregate_ingress_moves_binding_ty(&ty) {
             return;
         }
-        self.statements.push(MirStatement::Use {
-            binding: *id,
-            name: name.clone(),
-            site: operand.site,
-            ty,
-            intent: IntentKind::Consume,
-        });
+        // The physical transfer commits in the runtime call's normal successor
+        // (see `splice_normal_call_ownership_commits`); retire only the mutable
+        // lowering ledger here so no pre-call event can suppress unwind cleanup.
+        self.set_owned_local_consumed_post_lowering(*id, None, DischargeSite::CallArgumentTransfer);
     }
 
     /// Commit a directly bound array-literal element to the Vec owned-move ABI.
     ///
     /// `hew_vec_push_owned_move` transfers the element bytes into the
     /// descriptor-owned slot without a clone. This is unlike an ordinary
-    /// array-literal aggregate alias: its source must become truly consumed so
-    /// the Vec's element drop thunk is the sole close authority. The caller has
-    /// already proven the synthetic array receiver, exact known move symbol,
-    /// and concrete owned-element receiver; this helper only records the
-    /// matching checker consume fact and removes the source's scope-exit owner.
+    /// array-literal aggregate alias: its source becomes consumed only in the
+    /// call's normal successor, where the Vec's element drop thunk becomes the
+    /// sole close authority. The caller has already proven the synthetic array
+    /// receiver, exact known move symbol, and concrete owned-element receiver.
     pub(crate) fn consume_owned_vec_move_array_element(&mut self, operand: &HirExpr) {
         let HirExprKind::BindingRef {
-            name,
             resolved: ResolvedRef::Binding(id),
+            ..
         } = &operand.kind
         else {
             return;
@@ -4850,14 +6456,12 @@ impl Builder {
         if !self.aggregate_ingress_moves_binding_ty(&ty) {
             return;
         }
-        self.statements.push(MirStatement::Use {
-            binding: *id,
-            name: name.clone(),
-            site: operand.site,
-            ty,
-            intent: IntentKind::Consume,
-        });
-        self.mark_binding_moved(*id);
+        // The runtime adopts the element only on the call's normal edge.
+        // Retire the lowering ledger now, but leave the explicit OwnerId live
+        // before the terminator so its unwind cleanup still owns the source;
+        // `splice_normal_call_ownership_commits` emits the terminal Transfer
+        // in the unique normal successor.
+        self.set_owned_local_consumed_post_lowering(*id, None, DischargeSite::CallArgumentTransfer);
     }
     /// True when a `Let` RHS produces a named-function pair whose `env_ptr`
     /// is null by construction: a direct `Item`-resolved fn reference
@@ -5113,9 +6717,12 @@ impl Builder {
 mod typed_produced_owner_tests {
     use std::rc::Rc;
 
-    use super::{BindingId, Builder, Place, ResolvedTy, SiteId};
+    use super::{
+        BindingId, Builder, OwnedAliasInheritance, OwnedCarrierNeutralizeTarget, OwnerMintWarrant,
+        Place, PlaceProvenance, Projection, ResolvedTy, SiteId, ValueProvenance,
+    };
     use crate::lower::ParamOwnershipFacts;
-    use crate::{BasicBlock, DropFnSpec, Instr, Terminator};
+    use crate::{BasicBlock, DropFnSpec, Instr, MirStatement, Terminator};
     use hew_hir::{
         HirExpr, HirExprKind, HirLiteral, HirNodeId, HirProducedValueFact,
         HirProducedValueProducer, IntentKind, ScopeId, ValueClass,
@@ -5126,17 +6733,161 @@ mod typed_produced_owner_tests {
         HirExpr {
             node: HirNodeId(site.0),
             site,
-            ty: ResolvedTy::Named {
-                name: "Token".to_string(),
-                args: Vec::new(),
-                builtin: None,
-                is_opaque: false,
-            },
-            value_class: ValueClass::Unknown,
+            // These tests exercise owner-generation transitions. Use a real
+            // destructor-bearing type: an unregistered `Token` nominal has no
+            // DropRecipe and therefore must not mint an OwnerId.
+            ty: ResolvedTy::String,
+            value_class: ValueClass::CowValue,
             intent: IntentKind::Read,
             kind: HirExprKind::Literal(HirLiteral::Unit),
             span: 0..0,
         }
+    }
+
+    #[test]
+    fn alias_inheritance_is_exact_and_ambiguity_fails_closed() {
+        let mut builder = Builder::default();
+        let binding = BindingId(41);
+        let ty = ResolvedTy::Tuple(vec![ResolvedTy::Bytes, ResolvedTy::I64]);
+        let provenance = ValueProvenance::projection(
+            PlaceProvenance::from(Place::Local(3)),
+            vec![Projection::Field(0)],
+        );
+        builder.binding_locals.insert(binding, Place::Local(4));
+        builder.register_owned_local_alias(
+            binding,
+            "alias".to_string(),
+            ty.clone(),
+            provenance.clone(),
+            OwnerMintWarrant::granting_for_tests(),
+        );
+        builder.set_owned_local_disposition(
+            binding,
+            super::Disposition::ConsumedAt {
+                transferee: None,
+                site: super::DischargeSite::BindingMoved,
+            },
+        );
+
+        assert_eq!(
+            builder.exact_owned_local_alias_provenance(binding, &ty),
+            OwnedAliasInheritance::Exact(provenance.clone()),
+            "a consumed lexical alias still transfers alias provenance to its direct successor"
+        );
+        assert_eq!(
+            builder.exact_owned_local_alias_provenance(BindingId(42), &ty),
+            OwnedAliasInheritance::NotAlias
+        );
+
+        builder.register_owned_local_alias(
+            binding,
+            "ambiguous".to_string(),
+            ty.clone(),
+            provenance,
+            OwnerMintWarrant::granting_for_tests(),
+        );
+        assert_eq!(
+            builder.exact_owned_local_alias_provenance(binding, &ty),
+            OwnedAliasInheritance::Ambiguous,
+            "multiple ledger rows must never collapse into one alias lineage"
+        );
+    }
+
+    #[test]
+    fn scalar_user_resource_mints_before_its_affine_guard() {
+        let binding = BindingId(699);
+        let place = Place::Local(8);
+        let ty = ResolvedTy::named_user("Handle", vec![]);
+        let mut builder = Builder::default();
+        builder.type_classes.insert(
+            "Handle".to_owned(),
+            (hew_hir::ResourceMarker::Resource, Some("close".to_owned())),
+        );
+        builder.binding_locals.insert(binding, place);
+        builder.register_owned_local(
+            binding,
+            "handle".to_owned(),
+            ty.clone(),
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+        builder.maybe_alloc_affine_release_flag(binding, &ty);
+
+        let owner = crate::model::OwnerId {
+            binding,
+            generation: 0,
+        };
+        let mint = builder.instructions.iter().position(|instruction| {
+            matches!(
+                instruction,
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                    owner: event_owner,
+                    place: event_place,
+                    ..
+                }) if *event_owner == owner && *event_place == place
+            )
+        });
+        let guard = builder.instructions.iter().position(|instruction| {
+            matches!(
+                instruction,
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                    owner: event_owner,
+                    kind: crate::model::OwnershipGuardKind::AffineRelease,
+                    ..
+                }) if *event_owner == owner
+            )
+        });
+        assert!(
+            mint.zip(guard)
+                .is_some_and(|(mint_index, guard_index)| mint_index < guard_index),
+            "scalar resource must publish its owner before its affine guard: {:#?}",
+            builder.instructions
+        );
+    }
+
+    #[test]
+    fn borrowed_runtime_resource_remains_ownerless_and_unguarded() {
+        let site = SiteId(698);
+        let place = Place::Local(7);
+        let ty = ResolvedTy::named_user("Handle", vec![]);
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Call,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            ..Builder::default()
+        };
+        builder.type_classes.insert(
+            "Handle".to_owned(),
+            (hew_hir::ResourceMarker::Resource, Some("close".to_owned())),
+        );
+        builder.borrowed_runtime_result_places.insert(place);
+        let expr = HirExpr {
+            site,
+            ty,
+            ..owned_resource(site)
+        };
+
+        builder.adopt_typed_produced_value_owner(&expr, place);
+
+        assert!(builder.owned_locals_ledger().is_empty());
+        assert!(builder.owner_generations.is_empty());
+        assert!(builder.affine_release_flags.is_empty());
+        assert!(!builder.instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Mint { .. }
+                    | crate::model::OwnershipEvent::Guard { .. }
+            )
+        )));
     }
 
     #[test]
@@ -5373,15 +7124,17 @@ mod typed_produced_owner_tests {
             )),
         );
         builder.typed_produced_value_owner_bindings.insert(binding);
-        let blocks = vec![
+        let mut owner_definition = builder.instructions.clone();
+        owner_definition.push(Instr::Drop {
+            place: Place::Local(15),
+            ty: ResolvedTy::String,
+            drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+        });
+        let mut blocks = vec![
             BasicBlock {
                 id: 0,
                 statements: Vec::new(),
-                instructions: vec![Instr::Drop {
-                    place: Place::Local(15),
-                    ty: ResolvedTy::String,
-                    drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
-                }],
+                instructions: owner_definition,
                 terminator: Terminator::Goto { target: 1 },
             },
             BasicBlock {
@@ -5396,11 +7149,59 @@ mod typed_produced_owner_tests {
         ];
 
         builder.consume_typed_publication_owners_at_inline_release(
-            &blocks,
+            &mut blocks,
             &crate::lower::HashSet::new(),
         );
 
         assert_eq!(builder.owned_locals_snapshot().len(), 1);
+    }
+
+    #[test]
+    fn preexisting_release_on_reused_local_cannot_retire_new_publication_generation() {
+        let mut builder = Builder::default();
+        let binding = builder.adopt_synthetic_owned_local(
+            "__test_reused_release",
+            SiteId(712),
+            15,
+            ResolvedTy::String,
+            Builder::owner_warrant_for_typed_produced_value(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh,
+            )),
+        );
+        builder.typed_produced_value_owner_bindings.insert(binding);
+        let mut blocks = vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![
+                Instr::Move {
+                    dest: Place::Local(15),
+                    src: Place::Local(16),
+                },
+                Instr::Drop {
+                    place: Place::Local(15),
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        builder.consume_typed_publication_owners_at_inline_release(
+            &mut blocks,
+            &crate::lower::HashSet::from([15]),
+        );
+
+        assert_eq!(builder.owned_locals_snapshot().len(), 1);
+        assert!(!blocks[0].statements.iter().any(|statement| {
+            matches!(
+                statement,
+                MirStatement::Use {
+                    binding: consumed,
+                    intent: IntentKind::Consume,
+                    ..
+                } if *consumed == binding
+            )
+        }));
     }
 
     #[test]
@@ -5416,15 +7217,17 @@ mod typed_produced_owner_tests {
             )),
         );
         builder.typed_produced_value_owner_bindings.insert(binding);
-        let blocks = vec![
+        let mut owner_definition = builder.instructions.clone();
+        owner_definition.push(Instr::Drop {
+            place: Place::Local(15),
+            ty: ResolvedTy::String,
+            drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+        });
+        let mut blocks = vec![
             BasicBlock {
                 id: 0,
                 statements: Vec::new(),
-                instructions: vec![Instr::Drop {
-                    place: Place::Local(15),
-                    ty: ResolvedTy::String,
-                    drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
-                }],
+                instructions: owner_definition,
                 terminator: Terminator::Goto { target: 1 },
             },
             BasicBlock {
@@ -5442,7 +7245,7 @@ mod typed_produced_owner_tests {
             !crate::lower::cfg_util::local_is_rewritten_after_current_iteration(&blocks, 15, 0, 0,)
         );
         builder.consume_typed_publication_owners_at_inline_release(
-            &blocks,
+            &mut blocks,
             &crate::lower::HashSet::new(),
         );
 
@@ -5481,14 +7284,9 @@ mod typed_produced_owner_tests {
         assert_eq!(builder.binding_scope[&binding], outer_scope);
 
         builder.active_scopes.push(loop_scope);
-        builder.loop_back_edge_blocks.insert(7, loop_scope);
         builder.transfer_identity_owner(receiver_site, Some(receiver_site), Place::Local(17));
 
         assert_eq!(builder.binding_scope[&binding], outer_scope);
-        assert_ne!(
-            builder.binding_scope[&binding], builder.loop_back_edge_blocks[&7],
-            "the loop back-edge must not select an outer owner for per-iteration release"
-        );
     }
 
     #[test]
@@ -5576,6 +7374,187 @@ mod typed_produced_owner_tests {
     }
 
     #[test]
+    fn synthetic_adoption_publishes_the_named_owners_existing_physical_guard() {
+        let provisional = BindingId(790);
+        let named = BindingId(791);
+        let place = Place::Local(9);
+        let flag = Place::Local(10);
+        let mut builder = Builder::default();
+        builder.binding_locals.insert(provisional, place);
+        builder.register_owned_local(
+            provisional,
+            "__hew_produced_value".to_string(),
+            ResolvedTy::String,
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+        builder
+            .synthetic_owner_publication_sites
+            .insert(provisional, SiteId(790));
+        builder.binding_locals.insert(named, place);
+        builder.overwrite_guard_flags.insert(named, flag);
+
+        builder.register_owned_local(
+            named,
+            "value".to_string(),
+            ResolvedTy::String,
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+
+        assert!(builder.instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                owner: crate::model::OwnerId {
+                    binding,
+                    generation: 0,
+                },
+                flag: published,
+                kind: crate::model::OwnershipGuardKind::Overwrite,
+            }) if *binding == named && *published == flag
+        )));
+    }
+
+    #[test]
+    fn synthetic_adoption_without_a_physical_guard_does_not_fabricate_one() {
+        let provisional = BindingId(792);
+        let named = BindingId(793);
+        let place = Place::Local(9);
+        let mut builder = Builder::default();
+        builder.binding_locals.insert(provisional, place);
+        builder.register_owned_local(
+            provisional,
+            "__hew_produced_value".to_string(),
+            ResolvedTy::String,
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+        builder
+            .synthetic_owner_publication_sites
+            .insert(provisional, SiteId(792));
+        builder.binding_locals.insert(named, place);
+
+        builder.register_owned_local(
+            named,
+            "value".to_string(),
+            ResolvedTy::String,
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+
+        assert!(builder.instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                to_owner: Some(crate::model::OwnerId {
+                    binding,
+                    generation: 0,
+                }),
+                ..
+            }) if *binding == named
+        )));
+        assert!(!builder.instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                owner: crate::model::OwnerId { binding, .. },
+                ..
+            }) if *binding == named
+        )));
+    }
+
+    #[test]
+    fn assignment_adoption_republishes_the_destination_guard() {
+        let site = SiteId(794);
+        let expr = owned_resource(site);
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        let source = Place::Local(9);
+        let dest = Place::Local(10);
+        let flag = Place::Local(11);
+        let binding = BindingId(794);
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            ..Builder::default()
+        };
+        builder.adopt_typed_produced_value_owner(&expr, source);
+        builder.binding_locals.insert(binding, dest);
+        builder.overwrite_guard_flags.insert(binding, flag);
+
+        builder.retire_provisional_owner_after_assignment_move(
+            binding, dest, &expr.ty, source, &expr.ty,
+        );
+
+        assert!(builder.instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                owner: crate::model::OwnerId {
+                    binding: owner_binding,
+                    generation: 0,
+                },
+                flag: published,
+                kind: crate::model::OwnershipGuardKind::Overwrite,
+            }) if *owner_binding == binding && *published == flag
+        )));
+    }
+
+    #[test]
+    fn assignment_adoption_without_a_physical_guard_stays_unguarded() {
+        let site = SiteId(795);
+        let expr = owned_resource(site);
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        let source = Place::Local(9);
+        let dest = Place::Local(10);
+        let binding = BindingId(795);
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            ..Builder::default()
+        };
+        builder.adopt_typed_produced_value_owner(&expr, source);
+        builder.binding_locals.insert(binding, dest);
+
+        builder.retire_provisional_owner_after_assignment_move(
+            binding, dest, &expr.ty, source, &expr.ty,
+        );
+
+        assert!(builder.instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                to_owner: Some(crate::model::OwnerId {
+                    binding: owner_binding,
+                    generation: 0,
+                }),
+                ..
+            }) if *owner_binding == binding
+        )));
+        assert!(!builder.instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                owner: crate::model::OwnerId {
+                    binding: owner_binding,
+                    ..
+                },
+                ..
+            }) if *owner_binding == binding
+        )));
+    }
+
+    #[test]
     fn assignment_move_retires_only_exact_type_congruent_synthetic_source() {
         let site = SiteId(711);
         let expr = owned_resource(site);
@@ -5645,7 +7624,14 @@ mod typed_produced_owner_tests {
         builder.retire_provisional_owner_after_assignment_move(
             target, dest, &expr.ty, source, &expr.ty,
         );
-        assert!(builder.owned_locals.is_empty());
+        assert_eq!(builder.owned_locals.len(), 1);
+        assert!(matches!(
+            builder.owned_locals[0].disposition,
+            super::Disposition::ConsumedAt {
+                transferee: Some(place),
+                site: super::DischargeSite::BindingMoved,
+            } if place == dest
+        ));
     }
 
     #[test]
@@ -5675,20 +7661,65 @@ mod typed_produced_owner_tests {
 
         builder.retire_provisional_owner_for_bound_value(binding, "weak", source);
 
-        assert_eq!(builder.owned_locals.len(), 1);
-        assert_eq!(builder.owned_locals[0].binding, binding);
-        assert_eq!(builder.owned_locals[0].name, "weak");
+        assert_eq!(builder.owned_locals.len(), 2);
+        let destination = builder
+            .owned_locals
+            .iter()
+            .find(|entry| entry.binding == binding)
+            .expect("named destination owner remains in the ledger");
+        assert_eq!(destination.name, "weak");
+        assert_eq!(destination.disposition, super::Disposition::ScopeExit);
+        let source_entry = builder
+            .owned_locals
+            .iter()
+            .find(|entry| entry.binding == provisional)
+            .expect("moved-from source generation remains as unwind history");
+        assert!(matches!(
+            source_entry.disposition,
+            super::Disposition::ConsumedAt {
+                transferee: Some(Place::Local(10)),
+                site: super::DischargeSite::BindingMoved,
+            }
+        ));
         assert_eq!(builder.binding_locals[&binding], Place::Local(10));
         assert!(builder
             .typed_produced_value_handoffs
             .contains(&(source, Place::Local(10))));
-        assert!(!builder.binding_locals.contains_key(&provisional));
+        assert_eq!(builder.binding_locals[&provisional], Place::Local(9));
         assert!(!builder
             .synthetic_owner_publication_sites
             .contains_key(&provisional));
         assert_eq!(
             builder.owned_locals_exit_candidates(),
-            vec![(binding, "weak".to_string(), expr.ty)]
+            vec![
+                (
+                    provisional,
+                    "__hew_produced_value".to_string(),
+                    expr.ty.clone(),
+                ),
+                (binding, "weak".to_string(), expr.ty),
+            ]
         );
+    }
+
+    #[test]
+    fn vec_clone_projection_root_requires_one_exact_typed_owner() {
+        let root = Place::Local(9);
+        let owner = (BindingId(1), ResolvedTy::named_user("Holder", vec![]));
+
+        let mut exact = Builder::default();
+        exact.seed_exact_vec_clone_projection_root(root, std::slice::from_ref(&owner));
+        assert!(matches!(
+            exact.owned_carrier_neutralize.get(&root),
+            Some(OwnedCarrierNeutralizeTarget::Whole(place)) if *place == root
+        ));
+
+        let mut borrowed = Builder::default();
+        borrowed.seed_exact_vec_clone_projection_root(root, &[]);
+        assert!(borrowed.owned_carrier_neutralize.is_empty());
+
+        let mut ambiguous = Builder::default();
+        ambiguous.seed_exact_vec_clone_projection_root(root, &[owner.clone(), owner]);
+        assert!(ambiguous.owned_carrier_neutralize.is_empty());
     }
 }

@@ -354,6 +354,9 @@ stable = [
   "hew_hashmap_get_clone_layout",
   "hew_hashmap_get_layout",
   "hew_hashmap_insert_layout",
+  "hew_hashmap_iter_free_layout",
+  "hew_hashmap_iter_new_layout",
+  "hew_hashmap_iter_next_layout",
   "hew_hashmap_keys_layout",
   "hew_hashmap_entries_layout",
   "hew_hashmap_len_layout",
@@ -367,6 +370,9 @@ stable = [
   "hew_hashset_free_layout",
   "hew_hashset_insert_layout",
   "hew_hashset_is_empty_layout",
+  "hew_hashset_iter_free_layout",
+  "hew_hashset_iter_new_layout",
+  "hew_hashset_iter_next_layout",
   "hew_hashset_len_layout",
   "hew_hashset_new_with_layout",
   "hew_hashset_remove_layout",
@@ -1322,10 +1328,12 @@ codegen-stable = [
   "hew_cbor_de_char",
   "hew_cbor_de_enter_array",
   "hew_cbor_de_enter_map",
+  "hew_cbor_de_enter_map_iter",
   "hew_cbor_de_enum_begin",
   "hew_cbor_de_enum_end",
   "hew_cbor_de_exit_array",
   "hew_cbor_de_exit_map",
+  "hew_cbor_de_exit_map_iter",
   "hew_cbor_de_f64",
   "hew_cbor_de_fail",
   "hew_cbor_de_failed",
@@ -1333,6 +1341,8 @@ codegen-stable = [
   "hew_cbor_de_i64",
   "hew_cbor_de_int_checked",
   "hew_cbor_de_is_null",
+  "hew_cbor_de_map_next",
+  "hew_cbor_de_map_value",
   "hew_cbor_de_new",
   "hew_cbor_de_select_key",
   "hew_cbor_de_skip",
@@ -1340,7 +1350,9 @@ codegen-stable = [
   "hew_cbor_de_u64",
   "hew_cbor_ser_abort",
   "hew_cbor_ser_begin_array",
+  "hew_cbor_ser_begin_key",
   "hew_cbor_ser_begin_map",
+  "hew_cbor_ser_begin_set",
   "hew_cbor_ser_bool",
   "hew_cbor_ser_bytes",
   "hew_cbor_ser_end_array",
@@ -2205,6 +2217,100 @@ result = "fresh"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = "hew_vec_free_owned"
 discharge-depth = "deep"
+
+# Layout-backed collection cursors. The map cursor is a sole-owned Box that
+# only borrows its source map. The set cursor is also sole-owned, but its free
+# path recursively frees the nested map cursor. Neither next operation retains
+# its cursor or out-pointers; the produced element pointers remain borrowed
+# from the collection rather than becoming ABI results.
+[[ownership.contracts]]
+symbol = "hew_hashmap_iter_free_layout"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_hashmap_iter_new_layout"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_hashmap_iter_free_layout"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_hashmap_iter_next_layout"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_hashset_iter_free_layout"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_hashset_iter_new_layout"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_hashset_iter_free_layout"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_hashset_iter_next_layout"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# Collection CBOR framing mutates a caller-owned serializer/reader in place.
+# Every handle remains with its caller, all return values are scalars, and no
+# operation creates, retains, or consumes an allocation across this ABI edge.
+[[ownership.contracts]]
+symbol = "hew_cbor_de_enter_map_iter"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cbor_de_exit_map_iter"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cbor_de_map_next"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cbor_de_map_value"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cbor_ser_begin_key"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cbor_ser_begin_set"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
 
 # hew-runtime/src/vec.rs:2320-2341 allocates a plain generic vector.
 [[ownership.contracts]]

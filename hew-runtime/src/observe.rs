@@ -218,7 +218,7 @@ fn shard_reset(shards: &[AtomicU64; SHARD_COUNT]) {
 // allocator (`profiler::allocator`), which only exists under the `profiler`
 // feature. The shards themselves stay unconditional so the always-present
 // `hot_counters_snapshot` reader returns 0 in non-profiler builds.
-#[cfg(feature = "profiler")]
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 pub(crate) fn record_heap_alloc(size: u64) {
     if observe_hot_tier_enabled() {
         shard_add(&HEAP_ALLOCATIONS_TOTAL, 1);
@@ -226,7 +226,7 @@ pub(crate) fn record_heap_alloc(size: u64) {
     }
 }
 
-#[cfg(feature = "profiler")]
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 pub(crate) fn record_heap_free(size: u64) {
     if observe_hot_tier_enabled() {
         shard_add(&HEAP_FREES_TOTAL, 1);

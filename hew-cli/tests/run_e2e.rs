@@ -585,8 +585,8 @@ fn run_generic_vec_into_iter_static_dispatch_outputs_first_value() {
             I: Iterator<Item = i64>,
         {
             match it.next() {
-                Some(x) => x,
-                None => 0,
+                .Some(x) => x,
+                .None => 0,
             }
         }
 
@@ -864,11 +864,11 @@ fn run_generic_vec_for_in_count_across_element_abis() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// A generic Vec iteration body is admitted before its `T` is known, then the
-/// concrete monomorphisation must discharge clone totality.  A resource handle
-/// has an inverse drop but no semantic clone, so `count<Handle>` fails at the
-/// MIR boundary instead of sending a shallow handle copy to
-/// `hew_vec_get_clone`.
+/// A generic Vec iteration body is admitted before its `T` is known, then each
+/// concrete resource-bearing instantiation must fail closed before a shallow
+/// element copy can acquire a second owner. The diagnostic may come from the
+/// generic `get` boundary or a later clone-totality boundary, but it must retain
+/// the canonical no-semantic-clone/second-owner explanation.
 #[test]
 fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
     require_codegen();
@@ -898,26 +898,15 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let rejected_instantiations = combined.matches("MIR kind: NotYetImplemented").count();
     assert!(
-        combined.contains("VecIter<Handle>")
-            && combined.contains("resource `Handle` has an affine close contract"),
-        "expected the direct resource-record clone-totality diagnostic; got: {combined}"
-    );
-    assert!(
-        combined.contains("VecIter<Wrapper>")
-            && combined.contains("resource `Handle` has an affine close contract"),
-        "expected the nested resource-record clone-totality diagnostic; got: {combined}"
-    );
-    assert!(
-        combined.contains("VecIter<PositionalWrapper>")
-            && combined.contains("resource `Handle` has an affine close contract"),
-        "expected the positional resource-record clone-totality diagnostic; got: {combined}"
-    );
-    assert!(
-        combined.contains("VecIter<std.link_monitor.MonitorRef>")
-            && combined
-                .contains("resource `std.link_monitor.MonitorRef` has an affine close contract"),
-        "expected the canonical builtin resource-record clone-totality diagnostic; got: {combined}"
+        combined.contains("E_NOT_YET_IMPLEMENTED")
+            && combined.contains("drop-only `Vec` element operation `get`")
+            && combined.contains("no semantic clone")
+            && combined.contains("would create a second owner")
+            && rejected_instantiations >= 4,
+        "expected every resource-bearing Vec instantiation to fail closed before a shallow clone; \
+         got {rejected_instantiations} canonical rejection(s): {combined}"
     );
 }
 
@@ -1217,8 +1206,8 @@ fn main() {
     var it = words.into_iter();
     let _first = it.next();
     match it.next() {
-        Some(v2) => { println(v2); },
-        None => { println("none"); },
+        .Some(v2) => { println(v2); },
+        .None => { println("none"); },
     }
 }
 "#,
@@ -1427,8 +1416,8 @@ fn var_self_generic_static_dispatch_second_next_observes_mutated_receiver() {
 fn second_or_zero<I>(var it: I) -> i64 where I: Iterator<Item = i64> {
     let _first = it.next();
     match it.next() {
-        Some(x) => x,
-        None => 0,
+        .Some(x) => x,
+        .None => 0,
     }
 }
 

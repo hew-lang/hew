@@ -1,4 +1,4 @@
-//! Codegen-side fail-closed coverage for `Instr::CallRuntimeAbi`.
+//! Codegen-side fail-closed coverage for typed terminal runtime calls.
 //!
 //! E4 wires real `LLVMBuildCall` emission for `hew_duplex_pair` and
 //! `hew_duplex_send` (and the close ritual for `hew_duplex_close`
@@ -19,13 +19,13 @@
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
-    BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, Instr, IrPipeline, Place, RawMirFunction, Terminator,
+    BasicBlock, BlockKind, CallAuthority, CheckedMirFunction, DropPlan, ElabBlock,
+    ElaboratedMirFunction, ExitPath, IrPipeline, Place, RawMirFunction, Terminator,
 };
 use hew_types::{BuiltinType, ResolvedTy};
 
 /// Build a minimal `IrPipeline` containing one function with a
-/// single `Instr::CallRuntimeAbi` in its instruction stream. The
+/// single `Terminator::Call` with catalogued runtime authority. The
 /// helper mirrors the shape `lower_hir_module` produces: ladder
 /// stages all present, drop plans empty, decisions empty.
 fn pipeline_with_call_runtime_abi(symbol: &str) -> IrPipeline {
@@ -43,15 +43,28 @@ fn pipeline_with_call_runtime_abi_parts(
     dest: Option<Place>,
     locals: Vec<ResolvedTy>,
 ) -> IrPipeline {
-    let raw_blocks = vec![BasicBlock {
-        id: 0,
-        statements: vec![],
-        instructions: vec![Instr::CallRuntimeAbi(
-            hew_mir::RuntimeCall::new(symbol, args, dest)
-                .expect("test helper called with known runtime symbol"),
-        )],
-        terminator: Terminator::Return,
-    }];
+    let family = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(symbol)
+        .expect("test helper called with known runtime symbol");
+    let raw_blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Call {
+                callee: symbol.to_owned(),
+                authority: CallAuthority::Runtime(family),
+                args,
+                dest,
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
@@ -82,19 +95,28 @@ fn pipeline_with_call_runtime_abi_parts(
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![ElabBlock {
-                id: 0,
-                kind: BlockKind::Normal,
-                drops: vec![],
-                successor: None,
-            }],
-            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            blocks: vec![
+                ElabBlock {
+                    id: 0,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: Some(1),
+                },
+                ElabBlock {
+                    id: 1,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+            ],
+            drop_plans: vec![(ExitPath::Return { block: 1 }, DropPlan::default())],
             coroutine: None,
             lambda_captures: vec![],
         }],

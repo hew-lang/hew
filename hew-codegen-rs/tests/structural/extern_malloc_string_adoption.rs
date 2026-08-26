@@ -74,6 +74,7 @@ fn pipeline_adopt_extern(malloc_string_return: bool) -> IrPipeline {
         decisions: vec![],
         checks: vec![],
         cooperate_sites: vec![],
+        ownership_elaboration: None,
     };
     let elab = ElaboratedMirFunction {
         name: "probe".to_string(),

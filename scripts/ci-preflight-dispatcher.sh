@@ -126,8 +126,8 @@ command_timeout_floor() {
         # cache and host-load headroom while retaining a finite stuck ceiling.
         "make test-hew-ratchet") echo 1500 ;;
         "make test-core-matrix") echo 600 ;;
-        "make test-obligation-advisory-corpus") echo 120 ;;
-        "make test-obligation-advisory-runner-selftest") echo 30 ;;
+        "make test-ownership-balance-corpus") echo 120 ;;
+        "make test-ownership-balance-runner-selftest") echo 30 ;;
         "make test-o2-differential") echo 2700 ;;
         "make o2-differential-selftest") echo 30 ;;
         "make doc-ratchet-selftest") echo 45 ;;
@@ -231,7 +231,7 @@ command_shard_group() {
             echo "group:checked-mir" ;;
         "make test-doc-examples"|"make doc-ratchet-selftest")
             echo "group:doc-ratchet" ;;
-        "make test-obligation-advisory-corpus"|"make test-obligation-advisory-runner-selftest")
+        "make test-ownership-balance-corpus"|"make test-ownership-balance-runner-selftest")
             echo "group:obligation-corpus" ;;
         "make stdlib"|"scripts/check-libhew-fresh.sh")
             echo "group:libhew" ;;

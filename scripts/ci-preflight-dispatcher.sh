@@ -259,23 +259,36 @@ load_command_weights() {
              "every command takes its timeout floor or the ${PREFLIGHT_DEFAULT_COMMAND_WEIGHT}s default." >&2
         return 0
     fi
-    local seconds cmd extra line=0
-    while IFS=$'\t' read -r seconds cmd extra; do
+    local raw seconds cmd without_tabs tab_count line=0
+    while IFS= read -r raw; do
         line=$(( line + 1 ))
         # Comments and blank lines are not rows and say nothing.
-        [[ "$seconds" == \#* ]] && continue
-        [[ -z "${seconds//[[:space:]]/}" && -z "${cmd//[[:space:]]/}" && -z "$extra" ]] && continue
-        # A row that is not <positive integer><TAB><command> -- exactly two
-        # fields -- is REPORTED, not silently skipped: a corrupt row is a
-        # measurement somebody meant to supply, and reading it as an absent
-        # one hides the typo behind a plausible default. A third field folded
-        # a stray tab's tail onto the command instead of naming a distinct
-        # row, which is its own kind of wrong answer. The command still falls
-        # back safely -- the partition stays exhaustive and disjoint whatever
-        # the weights say.
-        if [[ -z "$cmd" || -n "$extra" || ! "$seconds" =~ ^[0-9]+$ ]] || (( seconds <= 0 )); then
+        [[ "$raw" == \#* ]] && continue
+        [[ -z "${raw//[[:space:]]/}" ]] && continue
+        # The raw line is validated BEFORE it is split. `read -r seconds cmd`
+        # cannot tell a genuine two-field row from a row with a trailing
+        # EMPTY third field (a stray tab at end of line): both leave a third
+        # read variable at "", so splitting first made the two cases
+        # indistinguishable. Counting tabs on the UNSPLIT line catches what
+        # splitting hides -- a row is <seconds><TAB><command>, exactly one
+        # tab, or it is REPORTED, not silently folded or skipped. A corrupt
+        # row is a measurement somebody meant to supply, and reading it as an
+        # absent one hides the typo behind a plausible default. The command
+        # still falls back safely -- the partition stays exhaustive and
+        # disjoint whatever the weights say.
+        without_tabs="${raw//$'\t'/}"
+        tab_count=$(( ${#raw} - ${#without_tabs} ))
+        if (( tab_count != 1 )); then
             echo "warning: $PREFLIGHT_COMMAND_WEIGHTS_FILE:$line is not" \
-                 "<seconds><TAB><command>: '$seconds${cmd:+	$cmd}${extra:+	$extra}'." \
+                 "<seconds><TAB><command> -- exactly one tab: '$raw'." \
+                 "That command falls back to its timeout floor or the" \
+                 "${PREFLIGHT_DEFAULT_COMMAND_WEIGHT}s default." >&2
+            continue
+        fi
+        IFS=$'\t' read -r seconds cmd <<< "$raw"
+        if [[ -z "$cmd" || ! "$seconds" =~ ^[0-9]+$ ]] || (( seconds <= 0 )); then
+            echo "warning: $PREFLIGHT_COMMAND_WEIGHTS_FILE:$line is not" \
+                 "<seconds><TAB><command>: '$raw'." \
                  "That command falls back to its timeout floor or the" \
                  "${PREFLIGHT_DEFAULT_COMMAND_WEIGHT}s default." >&2
             continue

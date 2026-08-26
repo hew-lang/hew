@@ -1379,10 +1379,14 @@ fn has_cycle_from(
         states.insert(block_id, VisitState::Visited);
         return false;
     };
-    for edge in block.terminator.successors() {
-        if has_cycle_from(edge.target, by_id, states) {
-            return true;
+    let mut has_cycle = false;
+    block.terminator.visit_successors(|edge| {
+        if !has_cycle && has_cycle_from(edge.target, by_id, states) {
+            has_cycle = true;
         }
+    });
+    if has_cycle {
+        return true;
     }
     states.insert(block_id, VisitState::Visited);
     false
@@ -1868,14 +1872,15 @@ impl<'a> RawLowerer<'a> {
     fn lower_terminator(&mut self, terminator: &SemTerminator) -> Result<(), SirMirLoweringError> {
         match terminator {
             SemTerminator::Return { value: Some(value) } => {
-                if self.value_type(*value)? != &self.function.return_ty {
+                Self::require_read(value, "SIR return value")?;
+                if self.value_type(value.value)? != &self.function.return_ty {
                     return Err(SirMirLoweringError::unsupported(
                         "SIR return value type does not match function return type",
                     ));
                 }
                 self.push(Instr::Move {
                     dest: Place::ReturnSlot,
-                    src: self.value_place(*value)?,
+                    src: self.value_place(value.value)?,
                 });
                 self.terminate(Terminator::Return)
             }
@@ -1898,7 +1903,8 @@ impl<'a> RawLowerer<'a> {
                 then_target,
                 else_target,
             } => {
-                if self.value_type(*condition)? != &ResolvedTy::Bool {
+                Self::require_read(condition, "SIR branch condition")?;
+                if self.value_type(condition.value)? != &ResolvedTy::Bool {
                     return Err(SirMirLoweringError::unsupported(
                         "SIR branch condition must have bool type",
                     ));
@@ -1908,7 +1914,7 @@ impl<'a> RawLowerer<'a> {
                 let else_target = self.materialize_edge(else_target)?;
                 self.current = source;
                 self.terminate(Terminator::Branch {
-                    cond: self.value_place(*condition)?,
+                    cond: self.value_place(condition.value)?,
                     then_target,
                     else_target,
                 })
@@ -1943,7 +1949,8 @@ impl<'a> RawLowerer<'a> {
         self.current = forwarding;
         let mut copies = Vec::with_capacity(edge.args.len());
         for (source, target) in edge.args.iter().zip(&target_args) {
-            let source_ty = self.value_type(*source)?;
+            Self::require_read(source, "SIR edge argument")?;
+            let source_ty = self.value_type(source.value)?;
             if source_ty != &target.ty {
                 return Err(SirMirLoweringError::unsupported(
                     "SIR edge argument type does not match target block argument",
@@ -1952,7 +1959,7 @@ impl<'a> RawLowerer<'a> {
             let scratch = self.fresh_local(source_ty.clone())?;
             self.push(Instr::Move {
                 dest: scratch,
-                src: self.value_place(*source)?,
+                src: self.value_place(source.value)?,
             });
             copies.push((scratch, self.value_place(target.value)?));
         }
@@ -2245,7 +2252,7 @@ mod tests {
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(ValueId(0)),
+                    value: Some(operand(0)),
                 },
             }],
         }
@@ -2284,7 +2291,7 @@ mod tests {
                     },
                 )],
                 terminator: SemTerminator::Return {
-                    value: Some(ValueId(2)),
+                    value: Some(operand(2)),
                 },
             }],
         }
@@ -2405,14 +2412,14 @@ mod tests {
                         ),
                     ],
                     terminator: SemTerminator::Branch {
-                        condition: ValueId(3),
+                        condition: operand(3),
                         then_target: Edge {
                             target: BlockId(1),
-                            args: vec![ValueId(1)],
+                            args: vec![operand(1)],
                         },
                         else_target: Edge {
                             target: BlockId(2),
-                            args: vec![ValueId(1)],
+                            args: vec![operand(1)],
                         },
                     },
                 },
@@ -2436,7 +2443,7 @@ mod tests {
                     ],
                     terminator: SemTerminator::Goto(Edge {
                         target: BlockId(3),
-                        args: vec![ValueId(6)],
+                        args: vec![operand(6)],
                     }),
                 },
                 SemBlock {
@@ -2459,7 +2466,7 @@ mod tests {
                     ],
                     terminator: SemTerminator::Goto(Edge {
                         target: BlockId(3),
-                        args: vec![ValueId(9)],
+                        args: vec![operand(9)],
                     }),
                 },
                 SemBlock {
@@ -2481,7 +2488,7 @@ mod tests {
                         ),
                     ],
                     terminator: SemTerminator::Return {
-                        value: Some(ValueId(12)),
+                        value: Some(operand(12)),
                     },
                 },
             ],
@@ -2550,7 +2557,7 @@ mod tests {
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(ValueId(0)),
+                    value: Some(operand(0)),
                 },
             }],
         };
@@ -2595,7 +2602,7 @@ mod tests {
                         SemOpKind::ConstI64(1),
                     )],
                     terminator: SemTerminator::Return {
-                        value: Some(ValueId(0)),
+                        value: Some(operand(0)),
                     },
                 },
             ],
@@ -2645,14 +2652,14 @@ mod tests {
                     args: Vec::new(),
                     ops: Vec::new(),
                     terminator: SemTerminator::Branch {
-                        condition: ValueId(2),
+                        condition: operand(2),
                         then_target: Edge {
                             target: BlockId(1),
-                            args: vec![ValueId(1), ValueId(0)],
+                            args: vec![operand(1), operand(0)],
                         },
                         else_target: Edge {
                             target: BlockId(1),
-                            args: vec![ValueId(0), ValueId(1)],
+                            args: vec![operand(0), operand(1)],
                         },
                     },
                 },
@@ -2670,7 +2677,7 @@ mod tests {
                     ],
                     ops: Vec::new(),
                     terminator: SemTerminator::Return {
-                        value: Some(ValueId(3)),
+                        value: Some(operand(3)),
                     },
                 },
             ],
@@ -2760,7 +2767,7 @@ mod tests {
                     ),
                 ],
                 terminator: SemTerminator::Return {
-                    value: Some(ValueId(2)),
+                    value: Some(operand(2)),
                 },
             }],
         };
@@ -2802,7 +2809,7 @@ mod tests {
                     ),
                 ],
                 terminator: SemTerminator::Return {
-                    value: Some(ValueId(3)),
+                    value: Some(operand(3)),
                 },
             }],
         };
@@ -2993,7 +3000,7 @@ mod tests {
                     },
                 )],
                 terminator: SemTerminator::Return {
-                    value: Some(ValueId(0)),
+                    value: Some(operand(0)),
                 },
             }],
         };
@@ -3042,7 +3049,7 @@ mod tests {
                     SemOpKind::ConstI64(42),
                 )],
                 terminator: SemTerminator::Return {
-                    value: Some(ValueId(0)),
+                    value: Some(operand(0)),
                 },
             }],
         };
@@ -3107,7 +3114,7 @@ mod tests {
                     SemOpKind::ConstI64(42),
                 )],
                 terminator: SemTerminator::Return {
-                    value: Some(ValueId(0)),
+                    value: Some(operand(0)),
                 },
             }],
         };

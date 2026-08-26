@@ -1,51 +1,77 @@
 # Hew v0.5 IR Ladder — Internal Reference
 
 This document is the canonical internal reference for the Hew v0.5 compiler
-IR ladder and value model.  It describes the compilation pipeline from source
+IR ladder and value model. It describes the compilation pipeline from source
 to machine code, the contract each layer owns, and the user-visible value
-semantics the ladder is built to support.
+semantics the ladder is built to support. There is no additional
+general-purpose IR between the layers defined here.
 
 The verifier rules and deletion milestones are detailed in the separate
 implementation plan for this work.
 
 ### Migration status
 
-The intended steady-state ladder includes SIR between typed HIR and Raw MIR.
-The first value/CFG proof uses a bounded legacy-MIR differential bridge, while
-the first strict direct-call slice already produces fresh Raw/Checked MIR from
-SIR. The bridge is deliberately disposable: it is not a second release
-compiler configuration or a compatibility contract. The cutover contract in
-§1.2 defines exactly what must be removed before SIR becomes the normal path.
+The intended steady-state ladder inserts SIR between normalized HIR and Raw
+MIR. The initial value/CFG proof uses a bounded legacy-MIR differential bridge,
+while the strict direct-call slice already produces fresh Raw/Checked MIR from
+SIR. That bridge is deliberately disposable: it is neither a second release
+compiler configuration nor a compatibility contract. The cutover contract in
+§1.2 defines what must be removed before SIR becomes the normal path.
 
 ---
 
 ## 1. The IR ladder
 
-Hew v0.5 compiles through an explicit sequence of intermediate representations.
-Each layer has a distinct owner, a verifier or diagnostic class, and a
-deterministic text dump (`hew dump-<layer>`).
+Hew v0.5 compiles through an explicit sequence of representations. Each layer
+has a distinct owner, verifier or diagnostic class, and an eventual
+deterministic text dump. Today the CLI exposes `hew compile --dump-sir` and
+`hew compile --dump-mir raw|checked|elab`; AST/HIR dumps are planned cutover
+tooling, not current commands.
+
+**Status convention:** this document defines the required final architecture.
+`[current]` names behavior implemented today, `[transitional]` names bounded
+migration scaffolding that must be deleted, and `[planned]` names a required
+target-state facility that must not be mistaken for present implementation.
 
 ```
-source.hew
-  └→ AST              (hew-parser)                syntactic only; no resolution
-  └→ Resolved HIR     (hew-hir, name-resolved)    names, scopes, imports, capabilities
-  └→ THIR             (hew-hir, fully typed)       monomorphised types; ValueClass per type
-  └→ SIR              (hew-sir, semantic SSA)      semantic values, block-argument CFG, optimization
-  └→ Raw MIR          (hew-mir, CFG)               SSA/places; value-model ops chosen; not yet proven
-  └→ Checked MIR      (hew-mir)                    ownership proven; diagnostics emitted; FAIL-CLOSED gate
-  └→ Elaborated MIR   (hew-mir)                    explicit Drop edges; DecisionMap; cleanup CFG
-  └→ LLVM IR          (hew-codegen-rs/Inkwell)     direct emission from proven MIR facts
-  └→ Native/WASM obj  (LLVM TargetMachine/wasm-ld) target-specific; no Hew decisions remain
+source / package graph
+  └→ AST                         (hew-parser)      source syntax and provenance
+  └→ Resolved + Typed HIR         (hew-hir)         authoritative Hew meaning
+  └→ Normalized HIR invariant     (hew-hir)         canonical structured Hew form
+  └→ SIR — Hew Semantic SSA       (hew-sir)         semantic values, effects, CFG, optimization
+  └→ Raw MIR                      (hew-mir)         representation and ownership realization begins
+  └→ Checked MIR                  (hew-mir)         ownership/concurrency legality proven
+  └→ Elaborated MIR               (hew-mir)         drops, cleanup, and lifetime realization
+  └→ LLVM IR                      (hew-codegen-rs)  low-level computation
+  └→ LLVM backend / Machine IR    (LLVM)            target legalization and machine realization
+  └→ native / Wasm / embedded artifact, or ORC JIT execution
 ```
+
+The design question at every boundary is deliberately narrow:
+
+| Layer | Question it answers |
+| --- | --- |
+| AST | What did the programmer write? |
+| HIR | What does it mean in Hew? |
+| Normalized HIR | What is its canonical structured Hew form? |
+| SIR | What semantic values, effects, and control flow exist? |
+| MIR | How are those values represented, owned, transported, and destroyed? |
+| LLVM IR | What low-level computation should execute? |
+| LLVM backend | How does this target machine execute it? |
+
+`Normalized HIR` is primarily an invariant/state of HIR, not a requirement for
+a second, giant Rust type hierarchy. It remains recognizable as Hew; ordinary
+`let` bindings and other useful structured concepts do not disappear merely
+because they are structured.
 
 ### Why this ladder, not a single IR
 
-- **Ownership belongs in CFG MIR.** Every successful precedent (Rust MIR,
+- **Ownership realization belongs in CFG MIR.** Every successful precedent (Rust MIR,
   Swift SIL/OSSA, Flang FIR) decides ownership in a CFG IR with explicit
   `Place`s.  Doing it on a typed AST means reinventing CFG analysis on a tree.
-- **THIR exists to retire `Ty::Var`.** The fail-closed gate ("no `Ty::Var`
-  survives into codegen") becomes a structural verifier between THIR and
-  Raw MIR, not a post-hoc sweep.
+- **Typed HIR retires `Ty::Var`.** The fail-closed gate ("no `Ty::Var`
+  survives into codegen") is a structural verifier before SIR, not a post-hoc
+  sweep.
 - **SIR retains semantic values until ownership/layout realization.** It uses
   SSA values and block arguments from inception, so normal CFG and value
   simplification happen before allocation, storage, drop, ABI, and runtime
@@ -63,21 +89,55 @@ source.hew
   work now widens the Rust HIR/MIR/codegen-rs path instead of adding dialect
   conversion passes.
 
+### 1.1 One convergent compiler driver
+
+All artifact-producing commands share the same final body-lowering path:
+
+```
+compile / run / build / debug / test / watch --run / eval
+  └→ parse → resolved + typed HIR → normalize → SIR → MIR → LLVM IR → backend
+```
+
+Target choice begins no earlier than the MIR/LLVM boundary. Native, Wasm, and
+embedded builds are target outputs; ORC JIT is an execution mode over the same
+verified LLVM IR, not a second middle end. Inspection modes may intentionally
+stop after a layer. [current] `hew compile --dump-sir` and `--dump-mir
+raw|checked|elab` do so today; AST/HIR inspection exits are planned. No
+execution mode may skip, duplicate, or substitute semantic lowering.
+
 ### 1.2 SIR hard-cutover contract
 
 The current SIR bridge is bounded migration evidence, not a permanent dual
 pipeline. `--sir-shadow` is a temporary differential oracle, and `--sir-lower`
 is a temporary selector for the migrated SIR domain. Neither is a release-mode
-compatibility promise.
+compatibility promise. Unsupported SIR surface is an implementation gap, not a
+reason for a permanent hidden legacy fallback.
 
 The first strict domain is already template-free: a closed reachable graph of
-ordinary, non-generic, default-convention direct calls with scalar `ReadOnly`
-parameters and scalar or `Unit` returns. SIR owns each callable's stable
-identity, emitted symbol, signature, source origin, effect summary, and
-parameter facts; SIR → Raw/Checked MIR independently legalizes call
-continuations and creates fresh boundary/scheduling facts. A reachable feature
-outside that domain fails explicitly. An unrelated unsupported body neither
-blocks the selected component nor becomes a hidden legacy callee.
+ordinary, non-generic direct calls with scalar read-only parameters and scalar
+or `Unit` returns. SIR owns each callable's stable identity, semantic signature,
+source origin, resolved effect summary, and parameter-use facts; SIR →
+Raw/Checked MIR independently legalizes call continuations and creates fresh
+boundary/scheduling facts. The migration callable table temporarily also carries
+an emitted symbol and default convention so the first strict component can
+reach the unchanged backend. Final linkage names and concrete
+ABI/calling-convention realization move to the MIR declaration/header boundary.
+A reachable feature outside that domain fails explicitly. An unrelated
+unsupported body neither blocks the selected component nor becomes a hidden
+legacy callee.
+
+#### Transitional callable/linkage bridge
+
+Today, the strict bridge carries HIR's selected body spelling in
+`SemCallable::symbol` so it can fill the current `RawMirFunction.name` header.
+That symbol/default-convention carrier is transitional bridge metadata, not
+SIR's permanent ABI or linkage authority: SIR calls are resolved by `CallableId`
+and semantic declaration identity, never by rejoining bodies on a string
+spelling. At cutover, a SIR-derived Raw MIR module/header — metadata within the
+existing MIR layer, not a new IR — records target linkage names and concrete
+ABI/calling-convention choices from the semantic callable table and target
+layout. LLVM lowering consumes that header; SIR retains only the semantic
+callable relation.
 
 The temporary shadow adapter remains a scalar CFG differential probe and does
 not realize direct SIR calls through its legacy Raw-MIR template. Shadow
@@ -90,10 +150,16 @@ The following scaffolding is a deletion target: raw-function name matching,
 and scheduler facts, per-function legacy fallback, SIR mode flags, and the
 shadow corpus harness. The normal CLI flips only after all of these gates hold:
 
-1. SIR owns verified callable identity, symbol, signature, calling convention,
-   effect summary, and parameter-passing facts.
-2. SIR → MIR independently creates Raw/Checked facts and scheduling decisions;
-   it copies no legacy function body, ABI decision, or drop plan.
+1. SIR owns verified callable identity, semantic signature, source provenance,
+   effect summary, and semantic parameter-use facts. The transitional
+   symbol/default-convention carrier is replaced by a SIR-derived MIR module
+   header; Raw MIR/LLVM independently realize linkage and concrete
+   ABI/calling-convention details.
+2. SIR → MIR independently creates and verifies Raw, Checked, and Elaborated
+   MIR facts and scheduling decisions—including an explicit zero-drop
+   elaboration when appropriate. Each Raw body has exactly one Checked and one
+   Elaborated finalization; it copies no legacy function body, ABI decision, or
+   drop plan.
 3. Each migrated language surface is a closed reachable lowering domain. Its
    old HIR → Raw-MIR branch is deleted when SIR owns it rather than retained as
    a mixed-artifact fallback.
@@ -102,11 +168,25 @@ shadow corpus harness. The normal CLI flips only after all of these gates hold:
 5. The default path is changed to SIR and all bridge flags, template code, and
    legacy body-lowering branches are removed.
 
-The direct-call slice has replaced the immediate template dependency; the next
-semantic domains are abstract aggregates/projections, explicit ownership use
-modes, closures, async/suspension, actors, and machines. Each must enter as a
-closed reachable SIR lowering domain and delete its replaced HIR → Raw-MIR
-branch rather than accumulating a mixed artifact fallback.
+The direct-call slice has replaced the immediate template dependency. The next
+work first proves SIR infrastructure and simple optimization, then adds semantic
+domains in closed reachable increments: abstract aggregates/projections,
+closures, ownership-aware uses, machines, actors, and async/suspension. Each
+increment deletes its replaced HIR → Raw-MIR branch rather than accumulating a
+mixed-artifact fallback.
+
+### 1.3 Incremental acceptance gates
+
+| Milestone | Acceptance criterion |
+| --- | --- |
+| SIR foundation | A scalar function with a conditional lowers to typed SSA blocks and block arguments, verifies definition/dominance, edge arity and types, lowers mechanically to Raw MIR, and preserves behavior across the existing suite. |
+| SIR infrastructure | A pass can inspect and replace uses, erase an operation, rewrite an edge, and add/remove a block argument; every pass supports verify/dump before and after, timing, and pass bisection. |
+| Basic optimization | CFG simplification, SCCP, DCE, copy propagation, and local GVN operate on SIR rather than asking LLVM to recover the semantic CFG. |
+| Generic instances | A single normalized-HIR instance service deduplicates concrete function/type instances and selected implementation evidence, including recursive instances; the resulting concrete SIR bodies contain no layout or ABI facts. |
+| Value semantics | Tuples, records, and variants remain abstract values: an unused construction can disappear before MIR and no SIR operation observes a byte offset, physical tag, or payload layout. |
+| Closures | `closure.make` plus `closure.call` can eliminate a non-escaping closure allocation before it reaches MIR. |
+| Machines, actors, and async | Known machine transitions can specialize; actor messages remain typed semantic values; every suspension is an explicit SIR CFG terminator before runtime/coroutine lowering. |
+| Full cutover | Normal compilation has exactly `HIR → normalized HIR → SIR → Raw MIR → Checked MIR → Elaborated MIR → LLVM`; bridge flags, templates, shadow harnesses, and legacy body-lowering branches are deleted. |
 
 ### Design axioms
 
@@ -158,124 +238,265 @@ built to preserve.
 
 **Verifier / diagnostics:** parser diagnostics only (syntax).
 
-**Dump:** `hew dump-ast` (S-expression / pretty-print).
+**Dump:** [planned] deterministic AST S-expression / pretty-print.
 
 ---
 
-### 2.2 Resolved HIR (`hew-hir::resolved`)
+### 2.2 Resolved + Typed HIR (`hew-hir`)
 
-**Owns:** name resolution, scope/imports, module graph, capability declarations,
-sugar desugaring (canonical form), `Place` introduction for bindings, hygiene,
-and inferred intent per site (read / modify / consume / capture / yield) from
-value expressions and receiver shape.
+HIR is the authoritative representation of Hew language meaning, not a second
+copy of source syntax. It owns stable `ItemId`/`BindingId`/`SiteId` identities,
+resolved names and overloads, lexical scopes, imports, capability declarations,
+`ResolvedTy` on every semantic expression, generic parameters and resolved
+generic-instance facts, trait and method selection, pattern semantics,
+closure-capture facts, and actor,
+machine, state, event, and method identities. It also retains source-semantic
+ownership intent and diagnostic provenance. **ValueClass** is a resolved type
+fact (see §3), not a layout decision.
 
-No `&` / `&mut` / lifetime syntax in Hew's surface; the HIR infers intent
-without it.
+No `&` / `&mut` / lifetime syntax appears in Hew's surface; HIR resolves the
+language's semantic intent without inventing surface borrow syntax.
 
-**Must not own:** types beyond name resolution, ownership proof, surface borrow
-syntax.
+**Must not own:** CFG blocks, SSA values, `Place`, storage/lifetime realization,
+target offsets, runtime carriers, LLVM concepts, or ownership proof.
 
 **Verifier / diagnostics:** unresolved names, capability not in scope,
-shadowing; `var` declared but never modified (note); `mutating`/`consume`
-callee contract violated.
+shadowing, type errors, trait/coherence and generic-constraint failures, and
+callee-contract violations. `Ty::Var` must be eliminated before SIR lowering.
 
-**Dump:** `hew dump-hir`.
+**Dump:** [planned] resolved HIR with type and ValueClass annotations.
 
 ---
 
-### 2.3 THIR (`hew-hir::typed`)
+### 2.3 Normalized HIR (an invariant of `hew-hir`)
 
-**Owns:** fully resolved types on every expression; monomorphised generics;
-trait dispatch resolved; method dispatch chosen; `StructInit.type_args` carried
-structurally; `ResolvedTy` final here; **ValueClass per type** (see §3).
+Normalization reduces the number of semantically equivalent structured forms
+that SIR lowering must understand. It establishes canonical bindings and
+pattern/control semantics; expands surface/operator/call/try sugar; makes
+implicit returns explicit; and canonicalizes closure captures and
+actor/machine references. It deliberately preserves useful Hew structure such
+as ordinary `let` bindings rather than treating every structured construct as
+junk to erase.
 
-**Must not own:** ownership proof, drop elaboration, CFG, site-level cost
-decisions (those land in Raw / Checked MIR).
+**Must not own:** CFG, SSA, layout, allocation, ABI, or target facts.
 
-**Verifier / diagnostics:** type errors, trait selection failures, coherence,
-generic constraint failures; `Ty::Var` must be eliminated here.
+**Done means:** HIR → SIR lowering is mechanical and does not need a separate
+case for every spelling of the same semantic operation.
 
-**Dump:** `hew dump-thir` (indented with type + ValueClass annotations).
+#### [planned] Generic-instance service at the Normalized-HIR → SIR boundary
+
+Genericity is semantic; concrete layout is representational. A normalized HIR
+generic body remains a canonical template, for example `identity<T>(T) -> T`.
+When SIR lowering encounters a resolved use such as `identity<i64>`, it asks a
+single module-level instance service for the concrete semantic instance rather
+than letting each lowering subsystem invent a monomorphization path:
+
+```text
+InstanceKey {
+    item: ItemId,
+    type_args: GenericArgs,
+    selected_impls: ResolvedImplArgs,
+}
+```
+
+The exact selected-implementation component is omitted when it is a pure,
+deterministic consequence of the fully substituted types; it is included when
+Hew permits two semantically distinct selected implementations for the same
+type arguments. The service owns canonicalization, deterministic discovery
+order/naming, caching, recursion/SCC handling, and the diagnostic chain that
+led to an instance.
+
+The same service owns one semantic instance graph: concrete function instances,
+semantic type instances, and selected implementation evidence. A
+`TypeInstanceKey { template, type_args }` deduplicates substituted nominal
+shapes such as `Cache<String, i64>` and `HashMap<String, i64>` without naming a
+layout. Raw MIR later consumes a semantic type instance together with target
+layout to select representation.
+
+It lowers a `GenericBodyTemplate + SubstitutionEnvironment` to a concrete SIR
+function without permanently cloning a second HIR tree. Its instance graph has
+separate semantic function identity from the generic HIR declaration: one HIR
+`ItemId` can produce many concrete SIR function/callable instances. SIR calls
+therefore name a concrete callable instance, never an unresolved generic item
+plus ad-hoc substitutions.
+
+Instantiation recursively resolves semantic types and selected implementations
+(`Cache<String, i64>`, `HashMap<String, i64>`, `Hash<String>`, and `Eq<String>`
+in one example), but it does **not** compute size, alignment, field offsets,
+storage class, parameter ABI, runtime carrier, or destruction strategy. SIR
+can consequently inline or simplify a concrete `HashMap<String, i64>` semantic
+operation before any map object, pointer, bucket layout, or drop glue exists.
+Those questions begin only at Raw MIR's target-parameterized representation
+boundary.
+
+**Done means:** generic function/type specialization is a canonical compiler
+service used by every SIR-producing path; no MIR body lowerer re-specializes a
+generic HIR body, and no concrete layout fact is embedded in `ResolvedTy` or
+SIR instance identity.
 
 ---
 
 ### 2.4 SIR (`hew-sir`)
 
-**Steady-state owns:** resolved semantic values, basic blocks, block arguments,
-explicit control-flow and suspension terminators, derived operation effects,
-and source provenance. Language concepts stay semantic here: abstract
-aggregates, typed closures, actor messages, machine dispatch/transitions, and
-coroutine suspension are retained until a later feature-specific lowering makes
-their representation necessary. The current implementation begins with scalar
-values and ordinary CFG; later slices add those semantic operation families.
+**Owns:** typed SSA `ValueId`s, `BlockId`s, basic blocks, block arguments,
+semantic CFG edges, def-use relationships, dominance, semantic operations,
+and optional/multi-origin source provenance. It is both the semantic CFG and
+the canonical SSA optimization IR; there is no general non-SSA CFG before it.
+
+Operands retain source-semantic ownership use modes:
+`Read`, `BorrowShared`, `BorrowMut`, `Move`, and `Consume`. These facts make
+rewriting legal or illegal, but SIR does not decide whether a consuming use
+becomes a copy, clone, retain/release, move-out, or drop. That physical
+realization belongs to MIR.
+
+Effects are normally derived from an operation's kind and resolved callee
+metadata, rather than stored as a mutable second source of truth. The current
+initial subset exposes `pure`, `may trap`, and conservative unknown-call
+barrier effects. Memory access, allocation, message, suspend, I/O, and
+ownership-sensitive classes are introduced only with their first semantic
+operations; effect-token SSA remains deferred until a concrete ordering
+optimization requires it.
+
+Language concepts stay semantic here until a feature-specific lowering needs
+their representation: abstract aggregates; `variant.make`, `variant.test`, and
+`variant.project` (never representation-implying `tag`/`payload` operations);
+typed closures; typed actor handles and messages; and machine dispatch versus a
+known transition. `actor.spawn` and `actor.send` may be ordinary effecting
+operations; an ask can produce a future, while waiting belongs to suspension.
+
+Potential suspension is always a terminator, not an ordinary operation:
+
+```
+Suspend {
+    kind: SuspendKind,
+    inputs: Vec<Operand>,
+    resumes: Vec<ResumeEdge>,
+    cancel: Option<Edge>,
+}
+```
+
+An await has one normal resume edge; select, receive, timeout, cancellation,
+and generator operations may have several. This is the semantic model; it does
+not expose an LLVM coroutine representation.
+
+`Unreachable` is likewise a semantic terminator, never a temporary marker for
+an unfinished SIR builder block. Builders use a separate private completion
+state. Before CFG simplification or DCE may create an unreachable block, Raw
+MIR must have a verified unreachable legalization so every verifier-accepted
+SIR terminator has a mechanical representation-lowering path.
 
 **Must not own:** addressable `Place`s, stack/heap allocation, concrete
-aggregate layout, ABI carriers, drop scheduling, ownership proof, or target
-instruction selection.
+aggregate layout, byte offsets, discriminant encoding, ABI carriers, drop
+scheduling, ownership proof, LLVM intrinsics, or target instruction selection.
 
-**Verifier:** module identity, operation/result types and arity, SSA
-definition/dominance, block-argument edge arity/types, entry parameter
-initialization, and operation-specific semantic constraints. The module SIR →
-MIR pipeline verifies at module scope before it can construct storage.
+**Verifier:** module identity; operation/result type and arity; use-mode and
+semantic-op constraints; SSA definition/dominance; block-argument edge
+arity/types; entry parameter initialization; and operation-specific semantic
+invariants. The module SIR → MIR pipeline verifies at module scope before it
+can construct representation or storage.
 
 **Dump:** `hew compile --dump-sir`.
 
 ### 2.5 Raw MIR (`hew-mir::raw`)
 
-**Owns:** CFG of basic blocks, `Place`s and `Operand`s,
-`Statement` / `Terminator`, drop scopes (lexical), explicit value-model
-operations at every use (`borrow_read`, `move`, `cow_share`, `ensure_unique`,
-`materialize`, `consume_call`, `drop`, `freeze`), coroutine `suspend` / `resume`
-terminators.
+**Owns:** a backend-independent but target-parameterized CFG realization of
+SIR values. It introduces virtual MIR values/temporaries and `Place`s where
+addressable storage is actually needed, representation/layout choices using an
+explicit target-layout contract, and physical value-model operations
+(`borrow_read`, `move`, `cow_share`, `ensure_unique`, `materialize`,
+`consume_call`, and `freeze`). It also owns runtime transport/carrier and
+coroutine-frame decisions once their semantic concepts have been lowered.
 
-The operations are chosen by the value-model classifier from THIR's ValueClass
-facts.  They have not yet been *proven* correct by analysis.
+**Current transitional adapter:** today's `RawLowerer` materializes every SIR
+`ValueId` as `Place::Local` because the current Raw MIR body format expects
+places. That bridge is useful compatibility evidence, but it is not the final
+SIR → MIR contract.
 
-**Must not own:** proof of uniqueness/aliasing, LLVM emission concerns.
+#### [planned] Virtual-value / `Place` seam (required before general SIR → MIR)
+
+Raw MIR gains an explicit virtual-value versus addressable-`Place` distinction
+before this bridge becomes the general lowering path:
+
+```text
+RawValueId  = typed virtual operation result or Raw block argument
+LocalId     = storage declaration identity
+Place       = LocalId plus storage projections; never a virtual value
+RawEdge     = target block plus typed RawValueId arguments
+```
+
+`Place::Value(RawValueId)` is forbidden. A virtual value becomes storage only
+through an explicit `Materialize { value, local, reason }`, where `reason` is
+one of `AddressTaken`, `MutablePlace`, `ByRefAbi`, `CaptureOrEscape`,
+`Transport`, `CoroutineFrame`, `OwnershipDrop`, or `ExplicitStorage`.
+Aggregate layout alone is never a materialization reason: representation-level
+`Pack`/`Extract` keep an inline aggregate virtual until an addressable or
+by-reference observation actually requires storage. This makes every loss of
+value form auditable and revisable rather than an accidental property of a
+lowerer.
+
+Raw blocks use typed `RawValueId` arguments and every `Goto`/`Branch`/resume
+edge carries a matching ordered value list. Ordinary mutable locals therefore
+flow through SIR/Raw SSA and block arguments until a listed materialization
+reason applies. A virtual value is not a stack slot, address, or `alloca`; SIR
+scalar SSA must not be needlessly destroyed into memory for LLVM to reconstruct.
+There is no generic `Cell<T>` escape hatch: add a cell/place only when an
+address-taken or otherwise genuinely location-semantic feature requires it.
+
+The first virtual domain is deliberately no-drop: scalar `BitCopy` values,
+structural inline aggregates, and their CFG/call flow only. Values with
+destruction, borrow, mutation/addressability, capture, transport, or suspension
+obligations remain outside that domain until their materialization and
+elaboration rules are implemented.
+
+`RawMirModuleHeader` owns the target-parameterized `TargetLayout` and logical
+linkage declarations used by Raw bodies. It is MIR metadata, not another IR and
+not LLVM metadata: no LLVM type, calling-convention ID, intrinsic, or address
+space appears there.
+
+#### Mandatory stage finalization
+
+Every Raw MIR function produced from SIR must finalize 1:1 into exactly one
+Checked MIR function and exactly one Elaborated MIR function with the same
+callable/function identity. Codegen never consumes Raw or header-only Checked
+MIR. The no-drop virtual domain still produces a verified explicit zero-drop
+Elaborated MIR body; it is not allowed to skip a stage.
+
+Raw MIR consumes resolved HIR type/value-class facts and SIR use modes. Its
+physical operations have not yet been *proven* correct by ownership/concurrency
+analysis.
+
+**Must not own:** `LLVMTypeRef`, LLVM calling-convention or attribute IDs,
+LLVM intrinsics, LLVM coroutine objects, LLVM address-space assumptions, or
+proof of uniqueness/aliasing. It may be target-parameterized by pointer width,
+endianness, alignment rules, and ABI integer widths, but remains independent of
+an LLVM-specific backend.
 
 **Verifier:** structural only — every block ends in a terminator, every place
 is dominated by its definition, every site has a chosen value-model operation
 (no "unclassified").
 
-**Dump:** `hew dump-mir=raw`.
+**Dump:** [current] `hew compile --dump-mir raw`.
 
-#### Stackless suspend carrier (`Terminator::Suspend`) — live substrate, dormant producer
+#### Current raw coroutine substrate
 
-`Terminator::Suspend { resume, cleanup, is_final }` is the carrier for a
-`coro.suspend` in a switched-resume LLVM coroutine (R326/R327, W6.007). It rides
-in the block terminator — the carrier the `RawMirFunction` → `lower_function`
-codegen path actually reads — NOT the `ElaboratedMirFunction.coroutine`
-descriptor (keying emission off that field, which the raw-MIR codegen path never
-consults, is a silent no-op). Codegen lowers any function whose CFG contains this
-terminator as a `presplitcoroutine`: the coro prologue (`coro.id`/`coro.alloc`/
-`coro.begin`) wraps the body, each `Suspend` emits `coro.suspend` + its 3-way
-switch (default = return-to-executor, `0` = resume, `1` = cleanup), and a shared
-epilogue runs `coro.free` → `hew_cont_frame_free` + `coro.end`. The runtime
-drives the resulting frame through the `HewCont` C ABI (`hew_cont_resume` /
-`hew_cont_done` / `hew_cont_destroy`), and the scheduler parks/resumes the
-continuation (the dispatch trampoline returns a nullable handle — D-A.2 — which
-`park_suspended_activation` parks; `enqueue_resume` wakes it; the free path
-destroys an abandoned frame exactly once — C1).
-
-**The substrate is production-capable but DORMANT: no source construct produces a
-`Terminator::Suspend` yet.** `await` / blocking `.recv()` / `scope`-join still
-thread-park on the condvar exactly as before, and the HIR / type-checker /
-codegen-scan gates (including the wasm `StructuredConcurrency` /
-`BlockingChannelRecv` exclusions in `docs/wasm-capability-matrix.md`) stay CLOSED
-— a relaxed gate with no readiness waker would be fail-OPEN. The source-to-suspend
-flip lands paired with the readiness waker (NEW-3): only then does a real `await`
-emit a `Terminator::Suspend`, the executor's park/resume cycle fire from a real
-program, and the gates relax per-construct. Until then the edge is validated
-synthetically (a test-only MIR builder + the `coro_emission_exec` round-trip).
+The existing `RawMirFunction::Terminator::Suspend { resume, cleanup, is_final }`
+is a backend-facing switched-resume coroutine carrier. It is not the source
+semantic model for async: SIR owns the general `Suspend` terminator above, then
+later lowers it to an appropriate Raw MIR/runtime representation. In particular,
+LLVM coroutine intrinsics and the `HewCont` runtime ABI must not surface in
+HIR or SIR. No source construct currently produces this raw terminator; its
+synthetic test coverage is infrastructure evidence, not a reason to relax the
+source async gates before a real readiness/waker path exists.
 
 ---
 
 ### 2.6 Checked MIR (`hew-mir::checked`)
 
-**Owns:** proven uniqueness, aliasing analysis (read-shared XOR mutate-unique
-at every program point), init / use-after-move, generator-borrow-across-yield
-analysis, actor-send escape analysis, Copy/COW/Materialize dispatch per
-operand.
+**Owns:** proofs and legality: uniqueness and aliasing (read-shared XOR
+mutate-unique at every program point), initialization/use-after-move,
+borrow/suspension legality, actor-send escape/concurrency safety, and
+cooperation requirements. It validates the physical strategy selected in Raw
+MIR; it does not own generic ABI or representation policy.
 
 **The fail-closed boundary for value semantics.**  Diagnostics fire here in
 value-cost language (see §4.3).
@@ -286,7 +507,7 @@ value-cost language (see §4.3).
 at <span> but read at <span>", "two mutations alias the same value", "affine
 resource `c` would be shared across an actor send — consume or materialize".
 
-**Dump:** `hew dump-mir=checked` (annotation overlay: `// read-share`,
+**Dump:** [current] `hew compile --dump-mir checked` (annotation overlay: `// read-share`,
 `// move (last use)`, `// ensure-unique → mutate`, `// materialize`, etc.).
 
 ---
@@ -294,15 +515,17 @@ resource `c` would be shared across an actor send — consume or materialize".
 ### 2.7 Elaborated MIR (`hew-mir::elab`)
 
 **Owns:** explicit `Drop(place)` statements on every exit path, explicit
-cleanup basic blocks, panic-edge CFG, coroutine state struct layout (proven
-from `CoroutineSchema`), actor-shutdown cleanup blocks, `DropPlan` per scope,
-storage classes materialised on every place, and the **DecisionMap**.
+cleanup basic blocks, panic-edge CFG, cancellation and actor-shutdown cleanup,
+`DropPlan` per scope, and the **DecisionMap**. Raw MIR chooses a coroutine
+frame, layout, and materialized place where representation requires one;
+Elaborated MIR adds lifetime and cleanup obligations over those already chosen
+places. It does not select storage classes or coroutine representation.
 
 The `DecisionMap` is a deterministic table of
 `DecisionFact { site_id, kind, chosen_strategy, why, cost_class }` keyed by
-stable `SiteId`.  It is attached as a top-level region attribute on each
-elaborated function and is emitted into IR dumps.  `SiteId` is derived from
-the THIR/MIR structure (function id + canonical CFG path to the operation),
+stable `SiteId`. It is attached as top-level function metadata on each
+elaborated function and is emitted into IR dumps. `SiteId` is derived from the
+typed-HIR/SIR/MIR structure (function id + canonical CFG path to the operation),
 not from a source span — the table is stable across whitespace and reformat.
 
 **Must not own:** re-running ownership analysis, LLVM values, span-keyed side
@@ -312,24 +535,27 @@ tables.
 no `Drop` of a moved-out place; cleanup-block dominance; coroutine frame-slot
 type matches yield value-class; DecisionMap is total and SiteIds are stable.
 
-**Dump:** `hew dump-mir=elab` (includes explicit drop / cleanup-block section
+**Dump:** [current] `hew compile --dump-mir elab` (includes explicit drop / cleanup-block section
 and DecisionMap).
 
 ---
 
-### 2.8 LLVM IR emission (`hew-codegen-rs`)
+### 2.8 LLVM IR lowering (`hew-codegen-rs`)
 
-**Owns:** direct LLVM IR construction from `Elaborated MIR` using Inkwell,
-including function declarations, stack slots for MIR places, value loads and
-stores, arithmetic/control-flow lowering, runtime-symbol references, and
-module verification.
+**Owns:** direct LLVM IR construction from Elaborated MIR using Inkwell,
+including function declarations, storage only for MIR places that require it,
+value loads/stores, arithmetic/control-flow lowering, runtime-symbol
+references, and LLVM module verification. This is the boundary at which Hew
+semantics become low-level LLVM computation; LLVM IR optimization may then run
+over that computation.
 
 DecisionFacts stay attached to MIR inputs. Codegen may carry them into debug
 metadata or comments in dumps, but it must not reinterpret them or synthesize a
 replacement side table.
 
 **Must not own:** re-deriving any value-model fact; inventing ABI shape from
-LLVM value layout; ownership/drop decisions; source-level diagnostics.
+LLVM value layout; ownership/drop decisions; source-level diagnostics; target
+legalization; instruction selection; or machine policy.
 
 **Verifier:** `Module::verify()` after emission; fail-closed errors for
 unsupported MIR constructs, missing locals, unresolved runtime symbols, and
@@ -340,12 +566,17 @@ LLVM verifier failures.
 
 ---
 
-### 2.9 Native and WASM object emission
+### 2.9 LLVM backend and execution modes
 
-**Owns:** target-specific object emission from verified LLVM IR. Native builds
-write a relocatable object and then link it with `libhew.a`; WASM builds write
-a wasm object and link it into a standalone module with `wasm-ld` or
-`rust-lld`.
+**Owns:** LLVM's target-specific work below LLVM IR: target legalization,
+instruction selection, Machine IR, register allocation, scheduling, and object
+or module emission. Native builds write a relocatable object and then link it
+with `libhew.a`; Wasm builds write a Wasm object and link it into a standalone
+module with `wasm-ld` or `rust-lld`; embedded targets produce their appropriate
+object or image.
+
+ORC JIT is an execution mode over the same verified LLVM IR. It is not a Hew
+target and must not introduce a JIT-only frontend, SIR, or MIR path.
 
 **Must not own:** Hew-level semantics, ownership/drop decisions, or checker
 diagnostics. Unsupported target substrates must report a named fail-closed
@@ -400,12 +631,18 @@ The v0.5 surface is Swift/Kotlin-shaped, not Rust-shaped:
   side effect) or `@resource` (single-owner, has a drop side effect — file
   handle, socket, capability).
 
-### 3.3 Internal MIR operations (compiler vocabulary)
+### 3.3 Semantic use modes and physical MIR operations
 
-The value-model classifier emits exactly one of these at each value-use site.
-Users never type these; the diagnostics and Ownership Plan Report use them
-as implementation terms, and inlay hints / hovers surface them to compiler
-engineers.
+HIR establishes source intent and SIR carries it on each operand as one of
+`Read`, `BorrowShared`, `BorrowMut`, `Move`, or `Consume`. This is semantic
+information: an optimizer must not duplicate or reorder a move/consume as
+though it were an ordinary read. It does not prescribe a refcount, copy,
+allocation, or storage mechanism.
+
+Raw MIR realizes that semantic use through one physical operation or strategy.
+Checked MIR proves the selected realization legal. Users never type these
+operation names; diagnostics and the Ownership Plan Report may expose their
+cost in user-facing terms.
 
 | Operation         | When chosen | Cost class |
 |-------------------|-------------|------------|
@@ -420,8 +657,9 @@ engineers.
 
 ### 3.4 Actor / concurrency rules
 
-Actor isolation is the central concurrency boundary.  Send-path classification
-(computed in Checked MIR, attributed on `hew.actor_send` in the dialect):
+Actor isolation is the central concurrency boundary. Send-path classification
+is validated in Checked MIR after SIR has retained the typed actor handle,
+resolved `ActorMethodId`, and typed semantic message:
 
 - **Transfer mode:** last-use of an owned value; sender loses access, receiver
   gains it.  Cheapest path.  For AffineResource, the only valid send mode.
@@ -543,10 +781,10 @@ DecisionFact {
 }
 ```
 
-`SiteId` is derived from the THIR/MIR structure (function id + canonical path
-through the elaborated CFG), not from a source span.  `DecisionFact`s travel
-inside the IR (as region attributes on Elaborated MIR functions and as
-`hew.site_id` / `hew.value_decision` op attributes in the dialect).
+`SiteId` is derived from typed-HIR/SIR/MIR structure (function id + canonical
+path through the elaborated CFG), not from a source span. `DecisionFact`s travel
+with Elaborated MIR and its deterministic dump/JSON metadata; they do not
+require a dialect attribute system.
 
 ### 4.3 Hidden-copy budget
 
@@ -584,8 +822,8 @@ conventions.
 
 The checker and lowering work should be introduced as cohesive compiler changes
 against the v0.5 value model, progressing through each layer of the IR ladder
-(Resolved HIR → THIR → Raw MIR → Checked MIR → Elaborated MIR → LLVM IR →
-native/WASM emission).  The corpus fixtures in
+(resolved + typed HIR → normalized HIR → SIR → Raw MIR → Checked MIR →
+Elaborated MIR → LLVM IR → LLVM backend). The corpus fixtures in
 `tests/corpus/v05-value-model/` serve as the byte-level acceptance targets for
 the Checked MIR and Elaborated MIR stages.
 
@@ -593,8 +831,9 @@ the Checked MIR and Elaborated MIR stages.
 
 ## 7. Building the v0.5 spine
 
-`hew compile` runs the v0.5 Rust HIR/MIR/codegen-rs path. The backend is a
-normal Cargo dependency of `hew`; no retired C++ backend build step is involved:
+At hard cutover, `hew compile` runs the v0.5 Rust
+HIR/SIR/MIR/codegen-rs path. The backend is a normal Cargo dependency of `hew`;
+no retired C++ backend build step is involved:
 
 ```
 make hew          # debug: builds hew

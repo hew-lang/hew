@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{BlockId, SemFunction, ValueId};
+use crate::{BlockId, OpId, SemFunction, UseSite, ValueId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dominators {
@@ -22,9 +22,9 @@ pub fn compute_dominators(function: &SemFunction) -> Dominators {
         .collect::<BTreeSet<_>>();
     let mut predecessors: BTreeMap<BlockId, Vec<BlockId>> = BTreeMap::new();
     for block in &function.blocks {
-        for edge in block.terminator.successors() {
-            predecessors.entry(edge.target).or_default().push(block.id);
-        }
+        block
+            .terminator
+            .visit_successors(|edge| predecessors.entry(edge.target).or_default().push(block.id));
     }
     let mut sets = function
         .blocks
@@ -67,12 +67,39 @@ pub fn compute_dominators(function: &SemFunction) -> Dominators {
     Dominators { sets }
 }
 
+/// Def-use facts for one SIR function.
+///
+/// Both maps are ordered by stable SIR identity. A use is not merely a count:
+/// it names the exact operation or terminator slot where a rewrite can act.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DefUseIndex {
-    pub definitions: HashMap<ValueId, BlockId>,
-    pub uses: HashMap<ValueId, usize>,
+    pub definitions: BTreeMap<ValueId, BlockId>,
+    pub uses: BTreeMap<ValueId, Vec<UseSite>>,
 }
 
+impl DefUseIndex {
+    /// Return deterministic concrete use sites for `value`.
+    #[must_use]
+    pub fn uses_of(&self, value: ValueId) -> &[UseSite] {
+        self.uses.get(&value).map_or(&[], Vec::as_slice)
+    }
+
+    /// Convenience count for clients that do not need the individual sites.
+    #[must_use]
+    pub fn use_count(&self, value: ValueId) -> usize {
+        self.uses_of(value).len()
+    }
+}
+
+/// Build the deterministic concrete def-use index for one semantic SSA
+/// function. The verifier remains authoritative for duplicate definitions and
+/// malformed CFGs; this index deliberately stays total to support diagnostics
+/// on malformed intermediate states.
+///
+/// Transformations using [`replace_use`] or [`replace_all_uses`] require a
+/// verifier-clean function with unique operation and block identities. A
+/// def-use index over malformed SIR is useful for diagnostics, but is not a
+/// repair authority for ambiguous identities.
 #[must_use]
 pub fn build_def_use(function: &SemFunction) -> DefUseIndex {
     let mut index = DefUseIndex::default();
@@ -87,42 +114,138 @@ pub fn build_def_use(function: &SemFunction) -> DefUseIndex {
             for result in &op.results {
                 index.definitions.insert(result.id, block.id);
             }
-            for value in op_uses(op) {
-                *index.uses.entry(value).or_default() += 1;
-            }
+            op.visit_operands(|operand, use_| {
+                index
+                    .uses
+                    .entry(use_.value)
+                    .or_default()
+                    .push(UseSite::Operation {
+                        op: op.id,
+                        operand,
+                        value: use_.value,
+                        mode: use_.mode,
+                    });
+            });
         }
-        for value in terminator_uses(&block.terminator) {
-            *index.uses.entry(value).or_default() += 1;
-        }
+        block.terminator.visit_operands(|operand, use_| {
+            index
+                .uses
+                .entry(use_.value)
+                .or_default()
+                .push(UseSite::Terminator {
+                    block: block.id,
+                    operand,
+                    value: use_.value,
+                    mode: use_.mode,
+                });
+        });
+    }
+    for uses in index.uses.values_mut() {
+        uses.sort_unstable();
     }
     index
 }
 
-fn op_uses(op: &crate::SemOp) -> Vec<ValueId> {
-    use crate::SemOpKind;
-    match &op.kind {
-        SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => Vec::new(),
-        SemOpKind::Unary { value, .. } | SemOpKind::Cast { value, .. } => vec![value.value],
-        SemOpKind::Binary { lhs, rhs, .. } => vec![lhs.value, rhs.value],
-        SemOpKind::Call { args, .. } => args.iter().map(|arg| arg.value).collect(),
+/// Failure to apply an indexed rewrite site to the current mutable function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewriteError {
+    UnknownOperation(OpId),
+    UnknownBlock(BlockId),
+    StaleUseSite(UseSite),
+}
+
+/// Rewrite one indexed semantic use to `replacement`.
+///
+/// The caller normally obtains `site` from [`build_def_use`]. If an earlier
+/// rewrite changed its ownership mode or removed the referenced operation or
+/// block, this returns a precise stale-site error rather than writing through
+/// an incidental vector index.
+///
+/// # Errors
+///
+/// Returns [`RewriteError::UnknownOperation`] or
+/// [`RewriteError::UnknownBlock`] when the indexed identity no longer exists,
+/// and [`RewriteError::StaleUseSite`] when its operand value or mode no longer
+/// agrees with the current function.
+pub fn replace_use(
+    function: &mut SemFunction,
+    site: UseSite,
+    replacement: ValueId,
+) -> Result<(), RewriteError> {
+    let replaced = match site {
+        UseSite::Operation {
+            op,
+            operand,
+            value,
+            mode,
+        } => {
+            let Some(operation) = function
+                .blocks
+                .iter_mut()
+                .flat_map(|block| block.ops.iter_mut())
+                .find(|operation| operation.id == op)
+            else {
+                return Err(RewriteError::UnknownOperation(op));
+            };
+            operation.replace_operand_at(operand, value, mode, replacement)
+        }
+        UseSite::Terminator {
+            block,
+            operand,
+            value,
+            mode,
+        } => {
+            let Some(block) = function
+                .blocks
+                .iter_mut()
+                .find(|candidate| candidate.id == block)
+            else {
+                return Err(RewriteError::UnknownBlock(block));
+            };
+            block
+                .terminator
+                .replace_operand_at(operand, value, mode, replacement)
+        }
+    };
+    if replaced {
+        Ok(())
+    } else {
+        Err(RewriteError::StaleUseSite(site))
     }
 }
 
-fn terminator_uses(terminator: &crate::SemTerminator) -> Vec<ValueId> {
-    use crate::SemTerminator;
-    match terminator {
-        SemTerminator::Return { value } => value.iter().copied().collect(),
-        SemTerminator::Goto(edge) => edge.args.clone(),
-        SemTerminator::Branch {
-            condition,
-            then_target,
-            else_target,
-        } => {
-            let mut values = vec![*condition];
-            values.extend(then_target.args.iter().copied());
-            values.extend(else_target.args.iter().copied());
-            values
-        }
-        SemTerminator::Unreachable => Vec::new(),
+/// Replace every current semantic use of `from` with `replacement`.
+///
+/// Definitions are intentionally untouched. The fresh index gives this a
+/// deterministic snapshot of all use sites; rewriting values cannot change
+/// operand slots, so every site stays valid for the duration of this operation.
+///
+/// The caller must verify that `function` has unique operation and block IDs
+/// before rewriting. See [`build_def_use`] for the malformed-SIR diagnostic
+/// contract.
+///
+/// # Errors
+///
+/// Returns the first [`RewriteError`] instead of silently applying a partial
+/// rewrite. The snapshot remains valid while this function changes only its
+/// operand values; a failure therefore signals malformed or concurrently
+/// mutated SIR that a pass must not treat as a completed rewrite.
+pub fn replace_all_uses(
+    function: &mut SemFunction,
+    from: ValueId,
+    replacement: ValueId,
+) -> Result<usize, RewriteError> {
+    let sites = build_def_use(function).uses_of(from).to_vec();
+    // Rewrite a clone first so malformed identities cannot leave a caller with
+    // a partially rewritten semantic graph. Normal pass execution verifies
+    // unique identities before this point; this guard makes the public helper
+    // fail closed even when it is used during diagnostics or development.
+    let mut rewritten = function.clone();
+    let mut replaced = 0;
+    for site in sites {
+        replace_use(&mut rewritten, site, replacement)?;
+        replaced += 1;
     }
+    *function = rewritten;
+    Ok(replaced)
 }

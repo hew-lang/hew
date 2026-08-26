@@ -243,11 +243,166 @@ fn is_initial_scalar_return(ty: &hew_types::ResolvedTy) -> bool {
     matches!(ty, hew_types::ResolvedTy::Unit) || is_initial_scalar(ty)
 }
 
+/// Translate HIR's authoritative source-semantic intent into the SIR operand
+/// vocabulary exactly once.
+///
+/// This deliberately does *not* normalize an ownership intent to `Read` just
+/// because the first scalar SIR slice cannot realize it yet. Callers use the
+/// returned mode to reject unsupported ownership semantics at the HIR → SIR
+/// boundary, preserving a precise implementation gap for later domains.
+fn use_mode_from_hir_intent(intent: IntentKind) -> Result<UseMode, String> {
+    match intent {
+        IntentKind::Read => Ok(UseMode::Read),
+        IntentKind::Modify => Ok(UseMode::BorrowMut),
+        // HIR's `Consume` is an ownership transfer to a receiving semantic
+        // operation/callee, whereas `Discharge` releases an obligation with
+        // no receiver. SIR preserves that distinction as Move vs Consume.
+        IntentKind::Consume => Ok(UseMode::Move),
+        IntentKind::Discharge => Ok(UseMode::Consume),
+        IntentKind::Capture => Err(
+            "HIR Capture intent requires closure/COW capture semantics that the initial scalar SIR slice does not model"
+                .to_string(),
+        ),
+        IntentKind::Yield => Err(
+            "HIR Yield intent requires explicit SIR suspension semantics that the initial scalar slice does not model"
+                .to_string(),
+        ),
+        IntentKind::Unknown => Err(
+            "HIR Unknown intent is not a legal input to semantic SIR lowering".to_string(),
+        ),
+    }
+}
+
+fn initial_scalar_use_mode(intent: IntentKind) -> Result<UseMode, String> {
+    let mode = use_mode_from_hir_intent(intent)?;
+    if mode != UseMode::Read {
+        return Err(format!(
+            "HIR {intent:?} intent maps to SIR {mode:?}; initial scalar SIR admits only Read operands"
+        ));
+    }
+    Ok(mode)
+}
+
+/// Lower a value flowing into a binding or function return in the initial
+/// no-drop scalar domain.
+///
+/// HIR intentionally marks these positions `Consume`: their result transfers
+/// to a new binding or the caller. For `i*`/`u*`/`bool`, that semantic transfer
+/// has no exclusive ownership obligation, so SIR keeps the same virtual value
+/// and represents the receiving flow as `Read`. This is a narrow value-class
+/// rule, not a general weakening of `Move`: actual operand positions remain
+/// read-only in this slice, and every non-scalar transfer fails closed until
+/// ownership/layout MIR can realize it.
+fn initial_scalar_transfer_mode(
+    intent: IntentKind,
+    ty: &hew_types::ResolvedTy,
+    context: &str,
+) -> Result<(), String> {
+    let mode = use_mode_from_hir_intent(intent).map_err(|reason| format!("{context}: {reason}"))?;
+    match mode {
+        UseMode::Read | UseMode::Move if is_initial_scalar(ty) => Ok(()),
+        UseMode::Read | UseMode::Move => Err(format!(
+            "{context}: HIR intent maps to SIR {mode:?} for non-scalar `{}`; initial SIR only aliases BitCopy scalar binding/return flow",
+            ty.user_facing()
+        )),
+        other => Err(format!(
+            "{context}: HIR intent maps to SIR {other:?}; initial scalar binding/return flow admits only Read or BitCopy Move"
+        )),
+    }
+}
+
+fn lower_initial_scalar_transfer_value(
+    builder: &mut Builder<'_>,
+    expr: &HirExpr,
+    context: &str,
+) -> Result<ValueId, String> {
+    initial_scalar_transfer_mode(expr.intent, &expr.ty, context)?;
+    builder.lower_expr(expr)
+}
+
+/// Lower a unit expression transferred by an explicit `return`.
+///
+/// This is intentionally narrower than [`Builder::lower_discarded_expr`]. A
+/// standalone discarded expression is an ordinary effect position and stays
+/// read-only in the initial slice. A unit expression in `return` instead
+/// transfers control to the caller; HIR marks that transfer `Consume`, which
+/// is harmless for `Unit` but must not be rechecked as an ordinary operand use.
+fn lower_initial_unit_return(builder: &mut Builder<'_>, expr: &HirExpr) -> Result<(), String> {
+    let mode = use_mode_from_hir_intent(expr.intent)
+        .map_err(|reason| format!("unit return value: {reason}"))?;
+    if !matches!(mode, UseMode::Read | UseMode::Move) || expr.ty != hew_types::ResolvedTy::Unit {
+        return Err(format!(
+            "unit return value: HIR intent maps to SIR {mode:?} for `{}`; initial SIR admits only Read or Unit Move return transfer",
+            expr.ty.user_facing()
+        ));
+    }
+    if !matches!(expr.kind, HirExprKind::Call { .. }) {
+        return Err(
+            "unit return values are initially supported only for a resolved direct call"
+                .to_string(),
+        );
+    }
+    builder.lower_direct_call(expr, false).map(|_| ())
+}
+
+/// Builder-only block state.
+///
+/// `None` means lowering has not filled the block yet. It is deliberately
+/// distinct from `Some(SemTerminator::Unreachable)`: the latter is a completed
+/// semantic CFG endpoint and must never be overwritten by later builder work.
+struct PendingBlock {
+    id: BlockId,
+    args: Vec<BlockArg>,
+    ops: Vec<SemOp>,
+    terminator: Option<SemTerminator>,
+}
+
+impl PendingBlock {
+    fn new(id: BlockId, args: Vec<BlockArg>) -> Self {
+        Self {
+            id,
+            args,
+            ops: Vec::new(),
+            terminator: None,
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        self.terminator.is_none()
+    }
+
+    fn append_op(&mut self, op: SemOp) -> Result<(), String> {
+        if self.terminator.is_some() {
+            return Err(format!(
+                "SIR builder attempted to append an operation after completed block bb{}",
+                self.id.0
+            ));
+        }
+        self.ops.push(op);
+        Ok(())
+    }
+
+    fn into_sem_block(self) -> Result<SemBlock, String> {
+        let terminator = self.terminator.ok_or_else(|| {
+            format!(
+                "SIR builder left block bb{} without a semantic terminator",
+                self.id.0
+            )
+        })?;
+        Ok(SemBlock {
+            id: self.id,
+            args: self.args,
+            ops: self.ops,
+            terminator,
+        })
+    }
+}
+
 struct Builder<'a> {
     function: &'a HirFn,
     callables: &'a CallableTable,
     callable: CallableId,
-    blocks: Vec<SemBlock>,
+    blocks: Vec<PendingBlock>,
     current: BlockId,
     values: u32,
     ops: u32,
@@ -283,12 +438,7 @@ impl<'a> Builder<'a> {
             function,
             callables,
             callable,
-            blocks: vec![SemBlock {
-                id: entry,
-                args: Vec::new(),
-                ops: Vec::new(),
-                terminator: SemTerminator::Unreachable,
-            }],
+            blocks: vec![PendingBlock::new(entry, Vec::new())],
             current: entry,
             values,
             ops: 0,
@@ -326,8 +476,12 @@ impl<'a> Builder<'a> {
         }
         let result = self.lower_block(&self.function.body)?;
         if self.is_open() {
-            self.set_terminator(SemTerminator::Return { value: result });
+            self.set_terminator(SemTerminator::Return { value: result })?;
         }
+        let blocks = std::mem::take(&mut self.blocks)
+            .into_iter()
+            .map(PendingBlock::into_sem_block)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(SemFunction {
             id: self.function.id,
             callable: self.callable,
@@ -338,11 +492,26 @@ impl<'a> Builder<'a> {
             params: self.params,
             return_ty: self.function.return_ty.clone(),
             entry: BlockId(0),
-            blocks: self.blocks,
+            blocks,
         })
     }
 
-    fn lower_block(&mut self, block: &HirBlock) -> Result<Option<ValueId>, String> {
+    /// Lower one HIR expression in a semantic operand position.
+    ///
+    /// The initial scalar SIR domain admits only read uses, but it still
+    /// translates every HIR intent before rejecting a non-read mode. This
+    /// prevents a source move/borrow/discharge from being silently weakened
+    /// into a reusable SIR value during the migration.
+    fn lower_read_operand(&mut self, expr: &HirExpr, context: &str) -> Result<Operand, String> {
+        let mode = initial_scalar_use_mode(expr.intent)
+            .map_err(|reason| format!("{context}: {reason}"))?;
+        Ok(Operand {
+            value: self.lower_expr(expr)?,
+            mode,
+        })
+    }
+
+    fn lower_block(&mut self, block: &HirBlock) -> Result<Option<Operand>, String> {
         for statement in &block.statements {
             if !self.is_open() {
                 break;
@@ -354,7 +523,9 @@ impl<'a> Builder<'a> {
                     }
                     let value = value
                         .as_ref()
-                        .map(|expr| self.lower_expr(expr))
+                        .map(|expr| {
+                            lower_initial_scalar_transfer_value(self, expr, "binding initializer")
+                        })
                         .transpose()?
                         .ok_or_else(|| {
                             "uninitialised bindings are not in the initial SIR subset".to_string()
@@ -367,13 +538,16 @@ impl<'a> Builder<'a> {
                 HirStmtKind::Return(value) => {
                     let value = match value {
                         Some(expr) if expr.ty == hew_types::ResolvedTy::Unit => {
-                            self.lower_discarded_expr(expr)?;
+                            lower_initial_unit_return(self, expr)?;
                             None
                         }
-                        Some(expr) => Some(self.lower_expr(expr)?),
+                        Some(expr) => Some(Operand {
+                            value: lower_initial_scalar_transfer_value(self, expr, "return value")?,
+                            mode: UseMode::Read,
+                        }),
                         None => None,
                     };
-                    self.set_terminator(SemTerminator::Return { value });
+                    self.set_terminator(SemTerminator::Return { value })?;
                 }
                 HirStmtKind::Assign { .. } => {
                     return Err(
@@ -395,7 +569,7 @@ impl<'a> Builder<'a> {
                     self.lower_discarded_expr(expr)?;
                     Ok(None)
                 }
-                Some(expr) => Ok(Some(self.lower_expr(expr)?)),
+                Some(expr) => Ok(Some(self.lower_read_operand(expr, "block tail value")?)),
                 None => Ok(None),
             }
         } else {
@@ -410,6 +584,8 @@ impl<'a> Builder<'a> {
     /// no semantic value to define, but the call itself must remain in SIR so
     /// later lowering can realize its call/continuation CFG edge.
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
+        initial_scalar_use_mode(expr.intent)
+            .map_err(|reason| format!("discarded expression: {reason}"))?;
         if matches!(expr.kind, HirExprKind::Call { .. }) {
             self.lower_direct_call(expr, false)?;
             return Ok(());
@@ -430,7 +606,7 @@ impl<'a> Builder<'a> {
                         expr.ty.user_facing()
                     ));
                 }
-                Ok(self.emit(expr, SemOpKind::ConstI64(*value)))
+                self.emit(expr, SemOpKind::ConstI64(*value))
             }
             HirExprKind::Literal(HirLiteral::Bool(value)) => {
                 if expr.ty != hew_types::ResolvedTy::Bool {
@@ -439,7 +615,7 @@ impl<'a> Builder<'a> {
                         expr.ty.user_facing()
                     ));
                 }
-                Ok(self.emit(expr, SemOpKind::ConstBool(*value)))
+                self.emit(expr, SemOpKind::ConstBool(*value))
             }
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(binding),
@@ -448,17 +624,8 @@ impl<'a> Builder<'a> {
                 format!("binding `{binding}` is not available in the SIR environment")
             }),
             HirExprKind::Unary { op, operand, .. } => {
-                let value = self.lower_expr(operand)?;
-                Ok(self.emit(
-                    expr,
-                    SemOpKind::Unary {
-                        op: *op,
-                        value: Operand {
-                            value,
-                            mode: UseMode::Read,
-                        },
-                    },
-                ))
+                let value = self.lower_read_operand(operand, "unary operand")?;
+                self.emit(expr, SemOpKind::Unary { op: *op, value })
             }
             HirExprKind::Binary {
                 op: hew_parser::ast::BinaryOp::And,
@@ -471,35 +638,19 @@ impl<'a> Builder<'a> {
                 right,
             } => self.lower_logical_or(expr, left, right),
             HirExprKind::Binary { op, left, right } => {
-                let lhs = self.lower_expr(left)?;
-                let rhs = self.lower_expr(right)?;
-                Ok(self.emit(
-                    expr,
-                    SemOpKind::Binary {
-                        op: *op,
-                        lhs: Operand {
-                            value: lhs,
-                            mode: UseMode::Read,
-                        },
-                        rhs: Operand {
-                            value: rhs,
-                            mode: UseMode::Read,
-                        },
-                    },
-                ))
+                let lhs = self.lower_read_operand(left, "binary left operand")?;
+                let rhs = self.lower_read_operand(right, "binary right operand")?;
+                self.emit(expr, SemOpKind::Binary { op: *op, lhs, rhs })
             }
             HirExprKind::NumericCast { value, to_ty, .. } => {
-                let value = self.lower_expr(value)?;
-                Ok(self.emit(
+                let value = self.lower_read_operand(value, "cast operand")?;
+                self.emit(
                     expr,
                     SemOpKind::Cast {
-                        value: Operand {
-                            value,
-                            mode: UseMode::Read,
-                        },
+                        value,
                         to: to_ty.clone(),
                     },
-                ))
+                )
             }
             HirExprKind::Call { .. } => self.lower_direct_call(expr, true)?.ok_or_else(|| {
                 "unit-valued direct calls are valid only in a discarded or unit-return context"
@@ -507,6 +658,7 @@ impl<'a> Builder<'a> {
             }),
             HirExprKind::Block(block) => self
                 .lower_block(block)?
+                .map(|value| value.value)
                 .ok_or_else(|| "a divergent block cannot produce a SIR value".to_string()),
             HirExprKind::If {
                 condition,
@@ -616,13 +768,6 @@ impl<'a> Builder<'a> {
                     callee_declaration.full_path()
                 ));
             }
-            if arg.intent != IntentKind::Read {
-                return Err(format!(
-                    "direct call argument {index} to `{}` has {:?} intent; initial SIR calls require Read",
-                    callee_declaration.full_path(),
-                    arg.intent
-                ));
-            }
             if arg.ty != expected.ty {
                 return Err(format!(
                     "direct call argument {index} to `{}` has `{}`, expected `{}`",
@@ -631,10 +776,13 @@ impl<'a> Builder<'a> {
                     expected.ty.user_facing()
                 ));
             }
-            lowered_args.push(Operand {
-                value: self.lower_expr(arg)?,
-                mode: UseMode::Read,
-            });
+            lowered_args.push(self.lower_read_operand(
+                arg,
+                &format!(
+                    "direct call argument {index} to `{}`",
+                    callee_declaration.full_path()
+                ),
+            )?);
         }
         let kind = SemOpKind::Call {
             callee,
@@ -647,10 +795,10 @@ impl<'a> Builder<'a> {
                     callee_declaration.full_path()
                 ));
             }
-            self.emit_without_result(expr, kind);
+            self.emit_without_result(expr, kind)?;
             Ok(None)
         } else {
-            Ok(Some(self.emit(expr, kind)))
+            Ok(Some(self.emit(expr, kind)?))
         }
     }
 
@@ -661,7 +809,7 @@ impl<'a> Builder<'a> {
         then_expr: &HirExpr,
         else_expr: &HirExpr,
     ) -> Result<ValueId, String> {
-        let condition = self.lower_expr(condition)?;
+        let condition = self.lower_read_operand(condition, "if condition")?;
         let then_block = self.new_block(Vec::new());
         let else_block = self.new_block(Vec::new());
         let join_value = self.fresh_value();
@@ -679,25 +827,25 @@ impl<'a> Builder<'a> {
                 target: else_block,
                 args: Vec::new(),
             },
-        });
+        })?;
         let before = self.bindings.clone();
         self.current = then_block;
         self.bindings = before.clone();
-        let then_value = self.lower_expr(then_expr)?;
+        let then_value = self.lower_read_operand(then_expr, "if then value")?;
         if self.is_open() {
             self.set_terminator(SemTerminator::Goto(Edge {
                 target: join_block,
                 args: vec![then_value],
-            }));
+            }))?;
         }
         self.current = else_block;
         self.bindings = before;
-        let else_value = self.lower_expr(else_expr)?;
+        let else_value = self.lower_read_operand(else_expr, "if else value")?;
         if self.is_open() {
             self.set_terminator(SemTerminator::Goto(Edge {
                 target: join_block,
                 args: vec![else_value],
-            }));
+            }))?;
         }
         self.current = join_block;
         Ok(join_value)
@@ -737,7 +885,7 @@ impl<'a> Builder<'a> {
         if whole.ty != hew_types::ResolvedTy::Bool {
             return Err("short-circuit logical expressions must have bool type in SIR".to_string());
         }
-        let condition = self.lower_expr(left)?;
+        let condition = self.lower_read_operand(left, "logical condition")?;
         let evaluate_right = self.new_block(Vec::new());
         let short_circuit = self.new_block(Vec::new());
         let result = self.fresh_value();
@@ -760,32 +908,35 @@ impl<'a> Builder<'a> {
                 target: else_target,
                 args: Vec::new(),
             },
-        });
+        })?;
 
         let before = self.bindings.clone();
         self.current = evaluate_right;
         self.bindings = before.clone();
-        let right_value = self.lower_expr(right)?;
+        let right_value = self.lower_read_operand(right, "logical right value")?;
         if self.is_open() {
             self.set_terminator(SemTerminator::Goto(Edge {
                 target: join,
                 args: vec![right_value],
-            }));
+            }))?;
         }
 
         self.current = short_circuit;
         self.bindings = before;
-        let constant = self.emit(whole, SemOpKind::ConstBool(short_circuit_value));
+        let constant = self.emit(whole, SemOpKind::ConstBool(short_circuit_value))?;
         self.set_terminator(SemTerminator::Goto(Edge {
             target: join,
-            args: vec![constant],
-        }));
+            args: vec![Operand {
+                value: constant,
+                mode: UseMode::Read,
+            }],
+        }))?;
 
         self.current = join;
         Ok(result)
     }
 
-    fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> ValueId {
+    fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<ValueId, String> {
         let value = self.fresh_value();
         let op = SemOp {
             id: OpId(self.ops),
@@ -796,20 +947,21 @@ impl<'a> Builder<'a> {
             kind,
             provenance: Provenance::Site(expr.site),
         };
+        self.current_block_mut().append_op(op)?;
         self.ops += 1;
-        self.current_block_mut().ops.push(op);
-        value
+        Ok(value)
     }
 
-    fn emit_without_result(&mut self, expr: &HirExpr, kind: SemOpKind) {
+    fn emit_without_result(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<(), String> {
         let op = SemOp {
             id: OpId(self.ops),
             results: Vec::new(),
             kind,
             provenance: Provenance::Site(expr.site),
         };
+        self.current_block_mut().append_op(op)?;
         self.ops += 1;
-        self.current_block_mut().ops.push(op);
+        Ok(())
     }
 
     fn fresh_value(&mut self) -> ValueId {
@@ -819,24 +971,138 @@ impl<'a> Builder<'a> {
     }
     fn new_block(&mut self, args: Vec<BlockArg>) -> BlockId {
         let id = BlockId(u32::try_from(self.blocks.len()).expect("SIR block count exceeds u32"));
-        self.blocks.push(SemBlock {
-            id,
-            args,
-            ops: Vec::new(),
-            terminator: SemTerminator::Unreachable,
-        });
+        self.blocks.push(PendingBlock::new(id, args));
         id
     }
-    fn current_block_mut(&mut self) -> &mut SemBlock {
+    fn current_block(&self) -> &PendingBlock {
+        &self.blocks[self.current.0 as usize]
+    }
+    fn current_block_mut(&mut self) -> &mut PendingBlock {
         &mut self.blocks[self.current.0 as usize]
     }
     fn is_open(&self) -> bool {
-        matches!(
-            self.blocks[self.current.0 as usize].terminator,
-            SemTerminator::Unreachable
-        )
+        self.current_block().is_open()
     }
-    fn set_terminator(&mut self, term: SemTerminator) {
-        self.current_block_mut().terminator = term;
+    fn set_terminator(&mut self, term: SemTerminator) -> Result<(), String> {
+        let block = self.current_block_mut();
+        if block.terminator.is_some() {
+            return Err(format!(
+                "SIR builder attempted to overwrite completed block bb{}",
+                block.id.0
+            ));
+        }
+        block.terminator = Some(term);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        initial_scalar_transfer_mode, initial_scalar_use_mode, use_mode_from_hir_intent,
+        PendingBlock,
+    };
+    use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemTerminator, UseMode};
+    use hew_hir::IntentKind;
+    use hew_types::ResolvedTy;
+
+    #[test]
+    fn hir_intents_map_once_and_initial_scalar_sir_fails_closed() {
+        assert_eq!(
+            use_mode_from_hir_intent(IntentKind::Read),
+            Ok(UseMode::Read)
+        );
+        assert_eq!(
+            use_mode_from_hir_intent(IntentKind::Modify),
+            Ok(UseMode::BorrowMut)
+        );
+        assert_eq!(
+            use_mode_from_hir_intent(IntentKind::Consume),
+            Ok(UseMode::Move)
+        );
+        assert_eq!(
+            use_mode_from_hir_intent(IntentKind::Discharge),
+            Ok(UseMode::Consume)
+        );
+
+        for intent in [
+            IntentKind::Modify,
+            IntentKind::Consume,
+            IntentKind::Discharge,
+            IntentKind::Capture,
+            IntentKind::Yield,
+            IntentKind::Unknown,
+        ] {
+            let reason = initial_scalar_use_mode(intent)
+                .expect_err("non-Read or unresolved HIR intent must not become a scalar SIR Read");
+            assert!(
+                reason.contains("initial scalar SIR")
+                    || reason.contains("requires")
+                    || reason.contains("not a legal"),
+                "the failure must explain why {intent:?} is outside the current SIR ownership domain: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn scalar_binding_and_return_transfers_admit_only_bitcopy_move() {
+        assert!(
+            initial_scalar_transfer_mode(IntentKind::Consume, &ResolvedTy::I64, "test").is_ok()
+        );
+        assert!(initial_scalar_transfer_mode(IntentKind::Read, &ResolvedTy::Bool, "test").is_ok());
+        for intent in [IntentKind::Read, IntentKind::Consume] {
+            let error = initial_scalar_transfer_mode(intent, &ResolvedTy::String, "test")
+                .expect_err("a non-BitCopy transfer must stay outside the scalar SIR subset");
+            assert!(
+                error.contains("non-scalar") && error.contains("only aliases BitCopy scalar"),
+                "the transfer diagnostic must explain that this would erase ownership: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_blocks_do_not_conflate_open_with_semantic_unreachable() {
+        let open = PendingBlock::new(BlockId(0), Vec::new());
+        assert!(open.is_open());
+        assert!(open
+            .into_sem_block()
+            .expect_err("an unfilled builder block must fail finalization")
+            .contains("without a semantic terminator"));
+
+        let mut completed = PendingBlock::new(BlockId(1), Vec::new());
+        completed.terminator = Some(SemTerminator::Unreachable);
+        assert!(!completed.is_open());
+        let error = completed
+            .append_op(SemOp {
+                id: OpId(0),
+                results: Vec::new(),
+                kind: SemOpKind::ConstI64(0),
+                provenance: Provenance::Synthesized,
+            })
+            .expect_err("semantic unreachable must close the builder block");
+        assert!(error.contains("after completed block bb1"));
+        assert!(matches!(
+            completed
+                .into_sem_block()
+                .expect("semantic unreachable is a completed block")
+                .terminator,
+            SemTerminator::Unreachable
+        ));
+    }
+
+    #[test]
+    fn pending_blocks_reject_operations_after_a_semantic_terminator() {
+        let mut completed = PendingBlock::new(BlockId(0), Vec::new());
+        completed.terminator = Some(SemTerminator::Return { value: None });
+        let error = completed
+            .append_op(SemOp {
+                id: OpId(0),
+                results: Vec::new(),
+                kind: SemOpKind::ConstI64(0),
+                provenance: Provenance::Synthesized,
+            })
+            .expect_err("completed blocks must reject late operations");
+        assert!(error.contains("after completed block bb0"));
+        assert!(completed.ops.is_empty());
     }
 }

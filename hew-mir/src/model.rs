@@ -3473,7 +3473,7 @@ impl BasicBlock {
     #[must_use]
     pub fn successors(&self) -> Vec<u32> {
         match &self.terminator {
-            Terminator::Return | Terminator::Trap { .. } => Vec::new(),
+            Terminator::Return | Terminator::Unreachable | Terminator::Trap { .. } => Vec::new(),
             Terminator::Goto { target } => vec![*target],
             Terminator::Branch {
                 then_target,
@@ -3796,6 +3796,15 @@ pub enum Terminator {
     /// Return whatever has been written into `Place::ReturnSlot`. The
     /// emitter loads the slot and emits `ret`.
     Return,
+    /// A compiler-proven semantic CFG endpoint.
+    ///
+    /// This is deliberately distinct from [`Self::Trap`]: it carries no
+    /// language-visible failure, performs no runtime action, and owns no
+    /// cleanup edge. LLVM lowers it directly to its `unreachable` terminator.
+    /// SIR uses this form for an impossible semantic path; later CFG
+    /// canonicalization may create more such paths without manufacturing a
+    /// trap or an `ExitPath` drop plan.
+    Unreachable,
     /// Unconditional branch to another block in the same function.
     Goto { target: u32 },
     /// Two-way branch on an i1/i8/i32/i64 local treated as a boolean.

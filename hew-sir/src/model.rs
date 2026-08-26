@@ -576,10 +576,9 @@ pub enum SemTerminator {
     },
     /// A semantically unreachable CFG endpoint.
     ///
-    /// SIR can represent this before Raw MIR has a matching terminator. The
-    /// SIR → Raw MIR bridge deliberately rejects it today; an explicit Raw-MIR
-    /// legalization is a prerequisite for CFG simplification/DCE to create or
-    /// preserve semantic unreachable blocks.
+    /// Raw MIR preserves this as its own semantic endpoint, and LLVM lowers it
+    /// directly to `unreachable`. It is not a language-visible trap and owns no
+    /// cleanup path.
     Unreachable,
 }
 

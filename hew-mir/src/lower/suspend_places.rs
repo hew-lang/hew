@@ -307,7 +307,10 @@ pub fn terminator_source_places(
     suspend_kind: Option<&SuspendKind>,
 ) -> Vec<Place> {
     match term {
-        Terminator::Return | Terminator::Goto { .. } | Terminator::Trap { .. } => Vec::new(),
+        Terminator::Return
+        | Terminator::Unreachable
+        | Terminator::Goto { .. }
+        | Terminator::Trap { .. } => Vec::new(),
         Terminator::Branch { cond, .. } => vec![*cond],
         Terminator::Call { args, .. } => args.clone(),
         Terminator::Yield { value, .. } => vec![*value],
@@ -704,6 +707,7 @@ pub(super) fn generator_yield_terminator_escapes(
         ),
         Terminator::Goto { .. }
         | Terminator::Branch { .. }
+        | Terminator::Unreachable
         | Terminator::Trap { .. }
         | Terminator::MakeGenerator { .. } => false,
         // A bare `Suspend` escapes a yielded `local` exactly when its collapsed
@@ -1048,6 +1052,7 @@ pub(super) fn terminator_escape_places(
             suspend_kind.map_or_else(Vec::new, suspend_kind_escape_places)
         }
         Terminator::Return
+        | Terminator::Unreachable
         | Terminator::Goto { .. }
         | Terminator::Branch { .. }
         | Terminator::Trap { .. } => Vec::new(),

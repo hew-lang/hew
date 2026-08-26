@@ -21,19 +21,25 @@ use hew_types::DefId;
 use hew_types::ResolvedTy;
 
 use crate::{
-    dataflow, BasicBlock, CheckedMirFunction, FunctionCallConv, Instr, IntArithOp, IntSignedness,
+    dataflow, BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock,
+    ElaboratedMirFunction, ExitPath, FunctionCallConv, Instr, IntArithOp, IntSignedness,
     IrPipeline, ModuleCapabilities, ParamBoundaryFact, ParamBoundaryMode, Place, RawMirFunction,
     Strategy, Terminator, TrapKind,
 };
 
-/// The result of lowering one SIR function into the existing raw/checked MIR
-/// boundary.  No elaborated MIR is produced for this slice: it accepts only
-/// scalar, non-owning values, and the code generator deliberately accepts a
-/// missing elaborated entry as an empty drop-plan set.
+/// The result of lowering one SIR function through the complete existing MIR
+/// ladder.
+///
+/// The first executable SIR slice admits only scalar, non-owning values, so
+/// its elaborated body has zero drop plans. It is nevertheless explicit: SIR
+/// must never rely on codegen's legacy "missing elaboration means no drops"
+/// compatibility behavior. In particular, a semantic `Unreachable` block is
+/// represented by a normal zero-drop elaborated block with no `ExitPath`.
 #[derive(Debug, Clone, PartialEq)]
 struct SirMirLowered {
     raw: RawMirFunction,
     checked: CheckedMirFunction,
+    elaborated: ElaboratedMirFunction,
 }
 
 /// A closed, self-contained scalar SIR call-graph realization.
@@ -50,6 +56,7 @@ pub struct SirMirComponent {
     callables: Vec<CallableId>,
     raw_mir: Vec<RawMirFunction>,
     checked_mir: Vec<CheckedMirFunction>,
+    elaborated_mir: Vec<ElaboratedMirFunction>,
 }
 
 impl SirMirComponent {
@@ -70,6 +77,7 @@ impl SirMirComponent {
         let mut pipeline = IrPipeline {
             raw_mir: self.raw_mir,
             checked_mir: self.checked_mir,
+            elaborated_mir: self.elaborated_mir,
             ..IrPipeline::default()
         };
         pipeline.capabilities =
@@ -207,6 +215,7 @@ pub fn lower_closed_scalar_component(
 
     let mut raw_mir = Vec::with_capacity(selected.len());
     let mut checked_mir = Vec::with_capacity(selected.len());
+    let mut elaborated_mir = Vec::with_capacity(selected.len());
     for callable_id in &selected {
         let function = unique_function_for_callable(module, *callable_id).ok_or_else(|| {
             SirMirLoweringError::unsupported(format!(
@@ -217,12 +226,14 @@ pub fn lower_closed_scalar_component(
         let lowered = lower_verified_sir_function(module, function)?;
         raw_mir.push(lowered.raw);
         checked_mir.push(lowered.checked);
+        elaborated_mir.push(lowered.elaborated);
     }
 
     Ok(SirMirComponent {
         callables: selected.into_iter().collect(),
         raw_mir,
         checked_mir,
+        elaborated_mir,
     })
 }
 
@@ -312,7 +323,12 @@ fn lower_verified_sir_function(
         cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
     };
     verify_strict_sir_raw_checked(module, callable, &raw, &checked)?;
-    Ok(SirMirLowered { raw, checked })
+    let elaborated = zero_drop_elaboration(&raw, &checked)?;
+    Ok(SirMirLowered {
+        raw,
+        checked,
+        elaborated,
+    })
 }
 
 /// Verify the small, deliberately storage-free SIR → raw/checked-MIR contract.
@@ -684,6 +700,7 @@ fn verify_strict_sir_terminator(
             }
         }
         Terminator::Goto { .. }
+        | Terminator::Unreachable
         | Terminator::Trap {
             kind: TrapKind::IntegerOverflow,
         } => {}
@@ -1017,9 +1034,9 @@ fn format_callable_path(module: &SemModule, path: &[CallableId]) -> String {
 /// adapter replaces only independently lowerable scalar/CFG functions,
 /// preserves every module-level layout/runtime fact, and keeps the established
 /// raw/checked MIR for all other functions while the cutover is in progress.
-/// Replaced functions deliberately lose their prior elaborated entry:
-/// retaining a drop plan authored for a different CFG would be unsound, while
-/// this value-only slice requires no drops.
+/// A replacement receives a fresh, explicit zero-drop elaborated body. Retaining
+/// a plan authored for a different CFG would be unsound, but omitting
+/// elaborated MIR would perpetuate a legacy codegen compatibility shortcut.
 #[allow(
     clippy::too_many_lines,
     reason = "the temporary bridge keeps module verification, per-function eligibility, and atomic pipeline replacement together so a partial candidate cannot obscure the transition boundary"
@@ -1124,13 +1141,36 @@ pub fn apply_sir_to_pipeline(
                     ));
                     continue;
                 }
-                pipeline.raw_mir[*raw_index] = lowered.raw;
+                // The scheduler bridge can replace the candidate's structural
+                // cooperation facts with the established legacy facts. Build
+                // elaboration only after that reconciliation so every
+                // injected cancellation exit has the same plan in Checked and
+                // Elaborated MIR.
+                match zero_drop_elaboration(&lowered.raw, &lowered.checked) {
+                    Ok(elaborated) => lowered.elaborated = elaborated,
+                    Err(error) => {
+                        report.statuses.push((
+                            function.name.clone(),
+                            SirMirLoweringStatus::Unsupported {
+                                reason: error.reason,
+                            },
+                        ));
+                        continue;
+                    }
+                }
+                let SirMirLowered {
+                    raw,
+                    checked,
+                    elaborated,
+                } = lowered;
+                pipeline.raw_mir[*raw_index] = raw;
                 if let Some(&checked_index) = matching_checked.first() {
-                    pipeline.checked_mir[checked_index] = lowered.checked;
+                    pipeline.checked_mir[checked_index] = checked;
                 }
                 pipeline
                     .elaborated_mir
                     .retain(|elaborated| elaborated.name != function.name);
+                pipeline.elaborated_mir.push(elaborated);
                 report
                     .statuses
                     .push((function.name.clone(), SirMirLoweringStatus::Lowered));
@@ -1243,7 +1283,136 @@ fn lower_sir_function_with_template(
         // scheduling itself must remain structural.
         cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
     };
-    Ok(SirMirLowered { raw, checked })
+    let elaborated = zero_drop_elaboration(&raw, &checked)?;
+    Ok(SirMirLowered {
+        raw,
+        checked,
+        elaborated,
+    })
+}
+
+/// Build the explicit elaborated artifact for the initial SIR value-only
+/// subset.
+///
+/// This is intentionally not a second drop-elaboration algorithm. The subset
+/// rejects ownership-bearing values before Raw MIR, so it has no possible drop
+/// obligations. It nevertheless retains every Raw block as a normal `ElabBlock`
+/// and records an empty `DropPlan` for every runtime-reachable exit. Only a
+/// semantic `Unreachable` carries no `ExitPath` plan; that makes the Raw →
+/// Checked → Elaborated ladder total for SIR bodies without treating an
+/// impossible path as a trap or cleanup edge.
+fn zero_drop_elaboration(
+    raw: &RawMirFunction,
+    checked: &CheckedMirFunction,
+) -> Result<ElaboratedMirFunction, SirMirLoweringError> {
+    debug_assert_eq!(raw.name, checked.name);
+    debug_assert_eq!(raw.return_ty, checked.return_ty);
+    debug_assert_eq!(raw.blocks, checked.blocks);
+    let mut blocks = raw
+        .blocks
+        .iter()
+        .map(|block| ElabBlock {
+            id: block.id,
+            kind: BlockKind::Normal,
+            drops: Vec::new(),
+            successor: None,
+        })
+        .collect::<Vec<_>>();
+    let mut next_cleanup_id = raw
+        .blocks
+        .iter()
+        .map(|block| block.id)
+        .max()
+        .map_or(0, |id| id.saturating_add(1));
+    // Codegen injects a cancellation branch at every cooperation site. That
+    // branch is an executable exit just as much as a terminator edge, so it
+    // must retain an explicit (empty in this subset) plan. Canonicalize by
+    // block id because distinct site kinds could otherwise name the same
+    // injected cancellation edge.
+    let cancellation_blocks = checked
+        .cooperate_sites
+        .iter()
+        .map(|site| site.bb_id)
+        .collect::<BTreeSet<_>>();
+    for block_id in &cancellation_blocks {
+        let Some(block) = raw.blocks.iter().find(|block| block.id == *block_id) else {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR zero-drop elaboration found a cooperate site for missing raw block bb{block_id}"
+            )));
+        };
+        // Codegen injects the cooperation/cancellation branch before the
+        // block's terminator. A semantic Unreachable must remain a bare,
+        // plan-free endpoint, so a stale scheduler fact naming it is invalid
+        // rather than something elaboration can silently skip.
+        if matches!(block.terminator, Terminator::Unreachable) {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR zero-drop elaboration found a cooperate site for semantic unreachable bb{block_id}"
+            )));
+        }
+    }
+    let mut drop_plans = Vec::new();
+    for block in &raw.blocks {
+        let exit = match &block.terminator {
+            // A semantic unreachable is not a language-visible exit. It has no
+            // cleanup edge or drop plan even in the explicit Elaborated body.
+            Terminator::Unreachable => None,
+            Terminator::Return => Some(ExitPath::Return { block: block.id }),
+            Terminator::Goto { target } => Some(ExitPath::Goto {
+                block: block.id,
+                target: *target,
+            }),
+            Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => Some(ExitPath::Branch {
+                block: block.id,
+                then_target: *then_target,
+                else_target: *else_target,
+            }),
+            Terminator::Call { callee, next, .. } => Some(ExitPath::Call {
+                block: block.id,
+                callee: callee.clone(),
+                next: *next,
+            }),
+            Terminator::Trap { .. } => {
+                // A trap is an executable panic path, unlike semantic
+                // `Unreachable`. Even the no-drop SIR subset must preserve its
+                // exit identity and cleanup shape for codegen and future
+                // ownership elaboration.
+                blocks.push(ElabBlock {
+                    id: next_cleanup_id,
+                    kind: BlockKind::Cleanup,
+                    drops: Vec::new(),
+                    successor: None,
+                });
+                next_cleanup_id = next_cleanup_id.saturating_add(1);
+                Some(ExitPath::Panic { block: block.id })
+            }
+            other => {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR zero-drop elaboration encountered unsupported raw terminator in bb{}: {other:?}",
+                    block.id
+                )));
+            }
+        };
+        if let Some(exit) = exit {
+            drop_plans.push((exit, DropPlan::default()));
+        }
+        if cancellation_blocks.contains(&block.id) {
+            drop_plans.push((ExitPath::Cancel { block: block.id }, DropPlan::default()));
+        }
+    }
+    Ok(ElaboratedMirFunction {
+        name: raw.name.clone(),
+        return_ty: raw.return_ty.clone(),
+        statements: Vec::new(),
+        decisions: checked.decisions.clone(),
+        blocks,
+        drop_plans,
+        coroutine: None,
+        lambda_captures: Vec::new(),
+    })
 }
 
 fn raw_source_origin(origin: &FunctionSourceOrigin) -> crate::SourceOrigin {
@@ -1919,9 +2088,7 @@ impl<'a> RawLowerer<'a> {
                     else_target,
                 })
             }
-            SemTerminator::Unreachable => Err(SirMirLoweringError::unsupported(
-                "SIR unreachable terminators remain deferred until raw MIR has a semantic unreachable terminator",
-            )),
+            SemTerminator::Unreachable => self.terminate(Terminator::Unreachable),
         }
     }
 
@@ -2258,6 +2425,26 @@ mod tests {
         }
     }
 
+    fn strict_unreachable_function() -> SemFunction {
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("semantic_unreachable"),
+            name: "semantic_unreachable".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Unreachable,
+            }],
+        }
+    }
+
     fn strict_boolean_equality_function() -> SemFunction {
         SemFunction {
             id: ItemId(0),
@@ -2345,6 +2532,88 @@ mod tests {
             verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
                 .expect_err("a raw target outside the canonical CFG must fail at the SIR boundary");
         assert!(error.reason.contains("targets missing bb1"));
+    }
+
+    #[test]
+    fn realizes_semantic_unreachable_through_the_explicit_zero_drop_ladder() {
+        let function = strict_unreachable_function();
+        let pipeline =
+            lower_closed_scalar_component(&test_module(vec![function]), &[CallableId(0)])
+                .expect("a semantic unreachable is a legal strict SIR endpoint")
+                .into_pipeline();
+
+        let raw = pipeline
+            .raw_mir
+            .first()
+            .expect("the component must contain one raw-MIR body");
+        assert!(matches!(raw.blocks[0].terminator, Terminator::Unreachable));
+        assert!(raw.blocks[0].successors().is_empty());
+
+        let checked = pipeline
+            .checked_mir
+            .first()
+            .expect("the component must contain one checked-MIR body");
+        assert_eq!(checked.blocks, raw.blocks);
+        assert!(checked.checks.is_empty());
+        assert!(checked.cooperate_sites.is_empty());
+
+        let elaborated = pipeline
+            .elaborated_mir
+            .first()
+            .expect("SIR bodies must carry an explicit elaborated artifact");
+        assert_eq!(elaborated.name, raw.name);
+        assert!(elaborated.drop_plans.is_empty());
+        assert_eq!(elaborated.blocks.len(), 1);
+        let block = &elaborated.blocks[0];
+        assert_eq!(block.id, 0);
+        assert_eq!(block.kind, BlockKind::Normal);
+        assert!(block.drops.is_empty());
+        assert_eq!(block.successor, None);
+    }
+
+    #[test]
+    fn shadow_bridge_rejects_a_scheduler_site_for_semantic_unreachable_atomically() {
+        let function = strict_unreachable_function();
+        let raw = template("semantic_unreachable", Vec::new(), ResolvedTy::Unit);
+        let checked = CheckedMirFunction {
+            name: "semantic_unreachable".to_string(),
+            return_ty: ResolvedTy::Unit,
+            blocks: Vec::new(),
+            decisions: Vec::new(),
+            checks: Vec::new(),
+            cooperate_sites: vec![crate::CooperateSite {
+                bb_id: 0,
+                kind: crate::CooperateKind::FunctionEntry,
+            }],
+        };
+        let elaborated = ElaboratedMirFunction {
+            name: "semantic_unreachable".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: Vec::new(),
+            decisions: Vec::new(),
+            blocks: Vec::new(),
+            drop_plans: Vec::new(),
+            coroutine: None,
+            lambda_captures: Vec::new(),
+        };
+        let mut pipeline = IrPipeline {
+            raw_mir: vec![raw.clone()],
+            checked_mir: vec![checked.clone()],
+            elaborated_mir: vec![elaborated.clone()],
+            ..IrPipeline::default()
+        };
+
+        let report = apply_sir_to_pipeline(&test_module(vec![function]), &mut pipeline);
+
+        assert_eq!(report.lowered_count(), 0, "{report:#?}");
+        assert_eq!(pipeline.raw_mir, vec![raw]);
+        assert_eq!(pipeline.checked_mir, vec![checked]);
+        assert_eq!(pipeline.elaborated_mir, vec![elaborated]);
+        assert!(report.statuses.iter().all(|(_, status)| matches!(
+            status,
+            SirMirLoweringStatus::Unsupported { reason }
+                if reason.contains("cooperate site for semantic unreachable bb0")
+        )));
     }
 
     #[test]
@@ -2535,6 +2804,70 @@ mod tests {
                 })
         }));
         assert!(lowered.checked.checks.is_empty());
+        let cancellation_blocks = lowered
+            .checked
+            .cooperate_sites
+            .iter()
+            .filter_map(|site| {
+                lowered
+                    .raw
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == site.bb_id)
+                    .filter(|block| !matches!(block.terminator, Terminator::Unreachable))
+                    .map(|_| site.bb_id)
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            lowered.elaborated.drop_plans.len(),
+            lowered
+                .raw
+                .blocks
+                .iter()
+                .filter(|block| !matches!(block.terminator, Terminator::Unreachable))
+                .count()
+                + cancellation_blocks.len(),
+            "every strict SIR runtime or injected cancellation exit needs an explicit zero-drop plan"
+        );
+        assert!(lowered
+            .elaborated
+            .drop_plans
+            .iter()
+            .all(|(_, plan)| plan.drops.is_empty()));
+        assert!(lowered
+            .elaborated
+            .drop_plans
+            .iter()
+            .any(|(exit, _)| { matches!(exit, ExitPath::Branch { block: 0, .. }) }));
+        let trap_block = lowered
+            .raw
+            .blocks
+            .iter()
+            .find(|block| {
+                matches!(
+                    block.terminator,
+                    Terminator::Trap {
+                        kind: TrapKind::IntegerOverflow
+                    }
+                )
+            })
+            .expect("checked arithmetic must preserve an overflow trap block")
+            .id;
+        assert!(lowered.elaborated.drop_plans.iter().any(|(exit, plan)| {
+            matches!(exit, ExitPath::Panic { block } if *block == trap_block)
+                && plan.drops.is_empty()
+        }));
+        assert!(lowered
+            .elaborated
+            .blocks
+            .iter()
+            .any(|block| block.kind == BlockKind::Cleanup && block.drops.is_empty()));
+        for block in cancellation_blocks {
+            assert!(lowered.elaborated.drop_plans.iter().any(|(exit, plan)| {
+                matches!(exit, ExitPath::Cancel { block: cancel_block } if *cancel_block == block)
+                    && plan.drops.is_empty()
+            }));
+        }
     }
 
     #[test]
@@ -2838,10 +3171,11 @@ mod tests {
             other => panic!("expected SIR call to lower as raw terminator, got {other:?}"),
         };
         assert!(matches!(destination, Place::Local(_)));
+        let call_next = continuation;
         let continuation = caller_raw
             .blocks
             .iter()
-            .find(|block| block.id == continuation)
+            .find(|block| block.id == call_next)
             .expect("raw call continuation must exist");
         assert!(continuation
             .instructions
@@ -2873,15 +3207,81 @@ mod tests {
                 ..
             }]
         ));
-        assert!(component
+        let main_cooperate_blocks = component
             .checked_mir
             .iter()
             .find(|checked| checked.name == "main")
-            .is_some_and(|checked| !checked.cooperate_sites.is_empty()));
+            .expect("caller must receive freshly-derived checked MIR")
+            .cooperate_sites
+            .iter()
+            .map(|site| site.bb_id)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !main_cooperate_blocks.is_empty(),
+            "the direct caller must retain a scheduler cooperation site"
+        );
         let pipeline = component.into_pipeline();
         assert_eq!(pipeline.raw_mir.len(), 2);
         assert_eq!(pipeline.checked_mir.len(), 2);
-        assert!(pipeline.elaborated_mir.is_empty());
+        assert_eq!(pipeline.elaborated_mir.len(), 2);
+        let main_elaborated = pipeline
+            .elaborated_mir
+            .iter()
+            .find(|elaborated| elaborated.name == "main")
+            .expect("selected caller must retain explicit elaboration");
+        assert!(main_elaborated.drop_plans.iter().any(|(exit, plan)| {
+            matches!(
+                exit,
+                ExitPath::Call {
+                    block: 0,
+                    callee,
+                    next,
+                } if callee == "add_one" && *next == call_next
+            ) && plan.drops.is_empty()
+        }));
+        for block in main_cooperate_blocks {
+            assert!(main_elaborated.drop_plans.iter().any(|(exit, plan)| {
+                matches!(exit, ExitPath::Cancel { block: cancel_block } if *cancel_block == block)
+                    && plan.drops.is_empty()
+            }));
+        }
+        for ((raw, checked), elaborated) in pipeline
+            .raw_mir
+            .iter()
+            .zip(&pipeline.checked_mir)
+            .zip(&pipeline.elaborated_mir)
+        {
+            let cancellation_blocks = checked
+                .cooperate_sites
+                .iter()
+                .filter_map(|site| {
+                    raw.blocks
+                        .iter()
+                        .find(|block| block.id == site.bb_id)
+                        .filter(|block| !matches!(block.terminator, Terminator::Unreachable))
+                        .map(|_| site.bb_id)
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                elaborated.drop_plans.len(),
+                raw.blocks
+                    .iter()
+                    .filter(|block| !matches!(block.terminator, Terminator::Unreachable))
+                    .count()
+                    + cancellation_blocks.len(),
+                "every strict SIR runtime or injected cancellation exit must retain its zero-drop elaboration plan"
+            );
+            assert!(elaborated
+                .drop_plans
+                .iter()
+                .all(|(_, plan)| plan.drops.is_empty()));
+            for block in cancellation_blocks {
+                assert!(elaborated.drop_plans.iter().any(|(exit, plan)| {
+                    matches!(exit, ExitPath::Cancel { block: cancel_block } if *cancel_block == block)
+                        && plan.drops.is_empty()
+                }));
+            }
+        }
     }
 
     #[test]
@@ -3060,7 +3460,14 @@ mod tests {
             blocks: Vec::new(),
             decisions: Vec::new(),
             checks: Vec::new(),
-            cooperate_sites: Vec::new(),
+            // The candidate's structural analysis has no site for this
+            // trivial constant return, while the temporary shadow bridge
+            // preserves this established entry site. Its elaboration must be
+            // rebuilt after that scheduler reconciliation.
+            cooperate_sites: vec![crate::CooperateSite {
+                bb_id: 0,
+                kind: crate::CooperateKind::FunctionEntry,
+            }],
         };
         let mut pipeline = IrPipeline {
             raw_mir: vec![raw],
@@ -3080,7 +3487,23 @@ mod tests {
 
         let report = apply_sir_to_pipeline(&test_module(vec![function]), &mut pipeline);
         assert_eq!(report.lowered_count(), 1, "{report:#?}");
-        assert!(pipeline.elaborated_mir.is_empty());
+        assert_eq!(pipeline.elaborated_mir.len(), 1);
+        assert_eq!(pipeline.elaborated_mir[0].name, "constant");
+        assert!(matches!(
+            pipeline.elaborated_mir[0].drop_plans.as_slice(),
+            [
+                (ExitPath::Return { block: 0 }, return_plan),
+                (ExitPath::Cancel { block: 0 }, cancel_plan),
+            ] if return_plan.drops.is_empty() && cancel_plan.drops.is_empty()
+        ));
+        assert!(matches!(
+            pipeline.checked_mir[0].cooperate_sites.as_slice(),
+            [crate::CooperateSite {
+                bb_id: 0,
+                kind: crate::CooperateKind::FunctionEntry,
+            }]
+        ));
+        assert_eq!(pipeline.elaborated_mir[0].blocks.len(), 1);
         assert!(matches!(
             pipeline.raw_mir[0].blocks[0].instructions.as_slice(),
             [

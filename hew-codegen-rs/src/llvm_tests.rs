@@ -1,8 +1,8 @@
 use super::*;
 use hew_hir::IntentKind;
 use hew_mir::{
-    BasicBlock, CallAuthority, CollectionLayoutProbeKind, CompilerCallKind, DecisionFact,
-    IrPipeline, MirStatement,
+    BasicBlock, BlockKind, CallAuthority, CollectionLayoutProbeKind, CompilerCallKind,
+    DecisionFact, ElabBlock, ElaboratedMirFunction, IrPipeline, MirStatement,
 };
 use inkwell::values::AnyValue;
 
@@ -451,6 +451,63 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
+}
+
+#[test]
+fn semantic_unreachable_emits_bare_llvm_unreachable_without_trap_or_drop_plan() {
+    let mut pipeline = empty_pipeline_with_const_42();
+    let (name, return_ty, blocks) = {
+        let raw = pipeline
+            .raw_mir
+            .first_mut()
+            .expect("fixture must contain its raw-MIR main body");
+        raw.blocks[0].instructions.clear();
+        raw.blocks[0].terminator = Terminator::Unreachable;
+        (raw.name.clone(), raw.return_ty.clone(), raw.blocks.clone())
+    };
+    pipeline.checked_mir = vec![CheckedMirFunction {
+        name: name.clone(),
+        return_ty: return_ty.clone(),
+        blocks,
+        decisions: Vec::new(),
+        checks: Vec::new(),
+        cooperate_sites: Vec::new(),
+    }];
+    pipeline.elaborated_mir = vec![ElaboratedMirFunction {
+        name,
+        return_ty,
+        statements: Vec::new(),
+        decisions: Vec::new(),
+        blocks: vec![ElabBlock {
+            id: 0,
+            kind: BlockKind::Normal,
+            drops: Vec::new(),
+            successor: None,
+        }],
+        drop_plans: Vec::new(),
+        coroutine: None,
+        lambda_captures: Vec::new(),
+    }];
+
+    let ctx = Context::create();
+    let module = build_module(&ctx, &pipeline, "semantic_unreachable")
+        .expect("semantic unreachable must lower through LLVM");
+    module
+        .verify()
+        .expect("bare LLVM unreachable must leave a valid module");
+    let main = module
+        .get_function("main")
+        .expect("fixture must emit its main function")
+        .print_to_string()
+        .to_string();
+    assert!(
+        main.contains("unreachable"),
+        "expected LLVM unreachable:\n{main}"
+    );
+    assert!(
+        !main.contains("hew_trap_with_code") && !main.contains("llvm.trap"),
+        "semantic unreachable must not become a runtime trap:\n{main}"
+    );
 }
 
 #[test]

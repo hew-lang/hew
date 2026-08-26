@@ -959,6 +959,7 @@ pub(crate) fn write_place_local(place: Place) -> Option<u32> {
 pub fn terminator_write_places(term: &Terminator) -> Vec<Place> {
     match term {
         Terminator::Return
+        | Terminator::Unreachable
         | Terminator::Goto { .. }
         | Terminator::Trap { .. }
         | Terminator::Branch { .. }

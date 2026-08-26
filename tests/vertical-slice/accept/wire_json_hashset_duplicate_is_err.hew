@@ -1,0 +1,13 @@
+// Validation (FAIL CLOSED + OWNERSHIP): duplicate set elements are rejected.
+// String elements exercise the owned-key cleanup path.
+#[wire]
+type DuplicateSet {
+    values: HashSet<string> @1,
+}
+
+fn main() -> i64 {
+    match DuplicateSet.from_json("{\"values\":[\"same\",\"same\"]}") {
+        .Err(_) => 42,
+        .Ok(_) => 1,
+    }
+}

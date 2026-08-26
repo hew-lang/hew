@@ -453,7 +453,7 @@ NO_BASELINE_FILES: tuple[tuple[str, str], ...] = (
         "index of intent, not derived output",
     ),
     (
-        "tests/obligation-advisory/baseline.tsv",
+        "tests/ownership-balance/baseline.tsv",
         "exact per-fixture ownership-diagnostic expectations plus the runtime mode "
         "each fixture is executed under (`clean` must report zero leaks, `leaks` "
         "must report one). Re-recording it from observed output would make the "

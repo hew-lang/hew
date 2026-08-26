@@ -6,8 +6,9 @@
 //! reference rather than a snapshotted, trap-on-not-live handle.
 //!
 //! Coverage:
-//! - Static child access lowers to `CallRuntimeAbi("hew_supervisor_child_get")`
-//!   to seed the handle alloca, then a `RecordFieldLoad` of the handle field.
+//! - Static child access lowers to a typed `Terminator::Call` for
+//!   `hew_supervisor_child_get` to seed the handle alloca, then a
+//!   `RecordFieldLoad` of the handle field.
 //! - The destination Place is typed `LocalPid<ChildActor>` (`ActorHandle`).
 //! - The accessor does NOT trap on a not-live slot: liveness is re-resolved at
 //!   each send/ask (the fungible model), so the accessor emits no
@@ -22,7 +23,33 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
     lower_hir_module, FieldOffset, Instr, MirDiagnosticKind, Place, Terminator, TrapKind,
 };
-use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker};
+use hew_types::{
+    module_registry::ModuleRegistry, runtime_call::RuntimeCallFamily, BuiltinType, Checker,
+};
+
+/// Runtime calls are unwind-capable CFG boundaries, so production lowering
+/// carries them as typed `Terminator::Call` values rather than mid-block
+/// instructions. Match the closed runtime family as the semantic authority and
+/// the symbol as its linker-facing invariant.
+fn runtime_terminator_calls(
+    func: &hew_mir::RawMirFunction,
+    family: RuntimeCallFamily,
+) -> impl Iterator<Item = (&[Place], Option<Place>)> + '_ {
+    func.blocks.iter().filter_map(move |block| {
+        let Terminator::Call {
+            callee,
+            authority,
+            args,
+            dest,
+            ..
+        } = &block.terminator
+        else {
+            return None;
+        };
+        (authority.runtime_family() == Some(family) && callee == family.c_symbol())
+            .then_some((args.as_slice(), *dest))
+    })
+}
 
 /// Lower a Hew source program to MIR, asserting no parse, HIR, or
 /// unintended MIR diagnostics.
@@ -96,17 +123,9 @@ fn static_child_access_emits_supervisor_child_get_call() {
         .find(|f| f.name == "get_worker")
         .expect("get_worker function lowered");
 
-    // Confirm a `CallRuntimeAbi` with symbol `hew_supervisor_child_get` is present.
-    let has_child_get = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.instructions.iter())
-        .any(|i| {
-            matches!(i,
-                Instr::CallRuntimeAbi(call)
-                if call.symbol() == "hew_supervisor_child_get"
-            )
-        });
+    let has_child_get = runtime_terminator_calls(func, RuntimeCallFamily::SupervisorChildGet)
+        .next()
+        .is_some();
     assert!(
         has_child_get,
         "static child access must emit hew_supervisor_child_get"
@@ -123,39 +142,27 @@ fn static_child_access_call_has_sup_place_and_slot_index_args() {
         .find(|f| f.name == "get_worker")
         .expect("get_worker function lowered");
 
-    let call = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.instructions.iter())
-        .find_map(|i| match i {
-            Instr::CallRuntimeAbi(call) if call.symbol() == "hew_supervisor_child_get" => {
-                Some(call)
-            }
-            _ => None,
-        })
+    let (args, dest) = runtime_terminator_calls(func, RuntimeCallFamily::SupervisorChildGet)
+        .next()
         .expect("hew_supervisor_child_get call found");
 
     // args[0] = sup_place, args[1] = slot_index_const (i64 0 for first child).
-    assert_eq!(
-        call.args().len(),
-        2,
-        "call takes exactly sup_place + slot_index"
-    );
+    assert_eq!(args.len(), 2, "call takes exactly sup_place + slot_index");
     // args[0] should be a Place::Local (the lowered supervisor PID parameter).
     assert!(
-        matches!(call.args()[0], Place::Local(_)),
+        matches!(args[0], Place::Local(_)),
         "first arg must be the supervisor PID place; got {:?}",
-        call.args()[0]
+        args[0]
     );
     // args[1] should also be a Place::Local (the ConstI64 slot index).
     assert!(
-        matches!(call.args()[1], Place::Local(_)),
+        matches!(args[1], Place::Local(_)),
         "second arg must be the slot-index constant place; got {:?}",
-        call.args()[1]
+        args[1]
     );
     // dest must be present (the struct return value place).
     assert!(
-        call.dest().is_some(),
+        dest.is_some(),
         "hew_supervisor_child_get must have a dest (struct return place)"
     );
 }
@@ -302,17 +309,8 @@ fn fungible_send_reresolves_child_at_send_site() {
         .find(|f| f.name == "poke")
         .expect("poke function lowered");
 
-    let child_get_count = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.instructions.iter())
-        .filter(|i| {
-            matches!(i,
-                Instr::CallRuntimeAbi(call)
-                if call.symbol() == "hew_supervisor_child_get"
-            )
-        })
-        .count();
+    let child_get_count =
+        runtime_terminator_calls(func, RuntimeCallFamily::SupervisorChildGet).count();
 
     assert_eq!(
         child_get_count, 2,
@@ -351,7 +349,7 @@ fn fungible_send_has_no_program_killing_trap() {
 }
 
 /// Collect the `ConstI64` slot-index value feeding `args[1]` of every
-/// `hew_supervisor_child_get` call in `func`, in instruction order.
+/// `hew_supervisor_child_get` call in `func`, in CFG block order.
 fn child_get_slot_constants(func: &hew_mir::RawMirFunction) -> Vec<i64> {
     // Map each local to the last ConstI64 written into it before the call
     // (accessor lowering emits the const immediately before its child_get, and
@@ -360,19 +358,21 @@ fn child_get_slot_constants(func: &hew_mir::RawMirFunction) -> Vec<i64> {
     let mut slots = Vec::new();
     for block in &func.blocks {
         for instr in &block.instructions {
-            match instr {
-                Instr::ConstI64 { dest, value } => {
-                    const_values.insert(*dest, *value);
-                }
-                Instr::CallRuntimeAbi(call) if call.symbol() == "hew_supervisor_child_get" => {
-                    let idx_place = call.args()[1];
-                    slots.push(
-                        *const_values
-                            .get(&idx_place)
-                            .expect("child_get slot arg must be a ConstI64-seeded local"),
-                    );
-                }
-                _ => {}
+            if let Instr::ConstI64 { dest, value } = instr {
+                const_values.insert(*dest, *value);
+            }
+        }
+        if let Terminator::Call {
+            authority, args, ..
+        } = &block.terminator
+        {
+            if authority.runtime_family() == Some(RuntimeCallFamily::SupervisorChildGet) {
+                let idx_place = args[1];
+                slots.push(
+                    *const_values
+                        .get(&idx_place)
+                        .expect("child_get slot arg must be a ConstI64-seeded local"),
+                );
             }
         }
     }
@@ -536,17 +536,9 @@ fn pool_child_field_and_get_lower_end_to_end() {
         has_pool_view,
         "pool field must construct SupervisorPool view"
     );
-    let has_pool_lookup = func
-        .blocks
-        .iter()
-        .flat_map(|block| &block.instructions)
-        .any(|instr| {
-            matches!(
-                instr,
-                Instr::CallRuntimeAbi(call)
-                    if call.symbol() == "hew_supervisor_pool_child_get"
-            )
-        });
+    let has_pool_lookup = runtime_terminator_calls(func, RuntimeCallFamily::SupervisorPoolChildGet)
+        .next()
+        .is_some();
     assert!(
         has_pool_lookup,
         "pool.get must emit hew_supervisor_pool_child_get"

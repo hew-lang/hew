@@ -364,6 +364,14 @@ fn transfer_block<S: std::hash::BuildHasher>(
         }
     }
 
+    // Source move checking and cleanup ownership are deliberately separate
+    // lattices. `MirStatement::{Bind,Use}` above is the complete authority for
+    // source-language use-after-consume diagnostics. Generation-aware
+    // `OwnershipEvent`s are replayed once by the Checked-MIR owner-state
+    // interpreter; folding them back into this binding lattice loses program
+    // order (all statements precede all instructions in a block) and made a
+    // valid owner adoption look like a source binding consumed at SiteId(0).
+
     // Tail expressions lower their physical hand-off directly into the return
     // slot.  Unlike an explicit consuming use, that move has no corresponding
     // `MirStatement::Use { intent: Consume }`, so mirror the exact machine
@@ -522,30 +530,10 @@ pub(crate) fn reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
     visited
 }
 
-/// Runtime C-ABI symbols whose Hew-level return type is `Never` — the
-/// `panic()` / `exit()` shims. Derived from the stdlib catalog's
-/// `BuiltinTy::Never` rows so this set cannot drift from the checker's own
-/// divergence authority: a new never-returning shim added to the catalog is
-/// picked up here without a second registration site.
-fn diverging_runtime_symbols() -> &'static HashSet<&'static str> {
-    use std::sync::OnceLock;
-    static SYMBOLS: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SYMBOLS.get_or_init(|| {
-        hew_hir::stdlib_catalog::entries()
-            .iter()
-            .filter(|entry| matches!(entry.return_ty, hew_hir::stdlib_catalog::BuiltinTy::Never))
-            .filter_map(|entry| match entry.linkage {
-                hew_hir::stdlib_catalog::BuiltinLinkage::RuntimeFfiShim { symbol } => Some(symbol),
-                _ => None,
-            })
-            .collect()
-    })
-}
-
 /// Block IDs that can actually EXECUTE at runtime: reachable from the entry
 /// block along terminator edges, never crossing the continuation edge of a
-/// call whose callee diverges (`hew_panic_msg` / `hew_exit`, the catalog's
-/// `Never`-typed runtime shims — see [`diverging_runtime_symbols`]).
+/// checker-proven `Never`-typed call. The no-return property is carried by
+/// [`CallAuthority`](crate::CallAuthority), never rediscovered from a symbol.
 ///
 /// A `Terminator::Call` structurally requires a `next` block, so lowering a
 /// `Never`-typed call still emits a continuation (opened as a dead cursor,
@@ -579,8 +567,8 @@ pub(crate) fn execution_reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u
     }
     while let Some(cur) = stack.pop() {
         if let Some(block) = by_id.get(&cur) {
-            if let Terminator::Call { callee, .. } = &block.terminator {
-                if diverging_runtime_symbols().contains(callee.as_str()) {
+            if let Terminator::Call { authority, .. } = &block.terminator {
+                if authority.is_no_return() {
                     // The call never returns; its continuation edge is dead.
                     continue;
                 }
@@ -669,9 +657,11 @@ impl ContextFlowState {
 )]
 pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>, Vec<Place>) {
     match instr {
-        Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => {
-            (vec![], vec![], vec![])
-        }
+        Instr::OwnershipEvent(_)
+        | Instr::EnterContext
+        | Instr::ExitContext
+        | Instr::CheckCancellation => (vec![], vec![], vec![]),
+        Instr::InteriorMutationCommit { place } => (vec![*place], vec![], vec![*place]),
         Instr::ContextField { dest, .. }
         | Instr::ConstI64 { dest, .. }
         | Instr::StringLit { dest, .. }
@@ -758,16 +748,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>, Vec<
             // cleanup stores a byte Snapshot and must refresh that escrow
             // around the call. Other runtime handles mutate their pointees;
             // their MIR slot bytes do not change.
-            let interior = match call.family() {
-                hew_types::runtime_call::RuntimeCallFamily::BytesAppend
-                | hew_types::runtime_call::RuntimeCallFamily::BytesClear
-                | hew_types::runtime_call::RuntimeCallFamily::BytesPop
-                | hew_types::runtime_call::RuntimeCallFamily::BytesPush
-                | hew_types::runtime_call::RuntimeCallFamily::BytesSet => {
-                    call.args().first().copied().into_iter().collect()
-                }
-                _ => vec![],
-            };
+            let interior = runtime_call_interior_write_places(call.family(), call.args());
             (reads, writes, interior)
         }
         Instr::AutoLockAcquire { lock } | Instr::AutoLockRelease { lock } => {
@@ -799,6 +780,9 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>, Vec<
             .collect();
             (vec![*place], vec![], interior)
         }
+        Instr::AggregateOverwriteRelease {
+            old, replacement, ..
+        } => (vec![*old, *replacement], vec![], vec![*old]),
         Instr::WitnessSizeOf { dest, .. } | Instr::WitnessAlignOf { dest, .. } => {
             (vec![], vec![*dest], vec![])
         }
@@ -892,6 +876,27 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>, Vec<
         Instr::MachineEmitTake {
             event_tag, dest, ..
         } => (vec![*event_tag], vec![*dest], vec![]),
+    }
+}
+
+/// Stack-resident roots mutated in place by one typed runtime ABI family.
+/// Shared by the legacy instruction classifier and the terminator
+/// canonicalizer so moving a may-unwind call onto a CFG edge cannot lose its
+/// normal-edge snapshot refresh authority.
+#[must_use]
+pub fn runtime_call_interior_write_places(
+    family: hew_types::runtime_call::RuntimeCallFamily,
+    args: &[Place],
+) -> Vec<Place> {
+    match family {
+        hew_types::runtime_call::RuntimeCallFamily::BytesAppend
+        | hew_types::runtime_call::RuntimeCallFamily::BytesClear
+        | hew_types::runtime_call::RuntimeCallFamily::BytesPop
+        | hew_types::runtime_call::RuntimeCallFamily::BytesPush
+        | hew_types::runtime_call::RuntimeCallFamily::BytesSet => {
+            args.first().copied().into_iter().collect()
+        }
+        _ => vec![],
     }
 }
 
@@ -1909,6 +1914,13 @@ mod tests {
         };
         let cases = [
             (
+                "normal-edge interior mutation commit",
+                Instr::InteriorMutationCommit {
+                    place: Place::Local(0),
+                },
+                vec![Place::Local(0)],
+            ),
+            (
                 "prepared snapshot drop",
                 Instr::ValueSnapshotDrop {
                     value: Place::Local(1),
@@ -2362,7 +2374,11 @@ mod tests {
     /// Build the two-arm join CFG both diverging-continuation tests share:
     /// bb0 branches to an ok arm (bb1, binds `b`, goto join) and a failing
     /// arm (bb2, calls `callee` whose continuation bb4 gotos the join bb3).
-    fn panic_join_blocks(binding: BindingId, callee: &str) -> Vec<BasicBlock> {
+    fn panic_join_blocks(
+        binding: BindingId,
+        callee: &str,
+        authority: CallAuthority,
+    ) -> Vec<BasicBlock> {
         vec![
             bb(
                 0,
@@ -2387,7 +2403,7 @@ mod tests {
                 2,
                 Terminator::Call {
                     callee: callee.to_string(),
-                    authority: CallAuthority::Direct,
+                    authority,
                     args: vec![],
                     dest: None,
                     next: 4,
@@ -2408,7 +2424,7 @@ mod tests {
         // the function exit to the arm edge, freeing the record before the
         // join's field loads read it (the net.connect_timeout double-free).
         let b = BindingId(40);
-        let blocks = panic_join_blocks(b, "hew_panic_msg");
+        let blocks = panic_join_blocks(b, "hew_panic_msg", CallAuthority::NoReturnExtern);
         let result = analyze(&blocks, &TypeClassTable::default(), &[]);
         assert_eq!(
             result.entry_states.get(&3).and_then(|m| m.get(&b)).copied(),
@@ -2431,7 +2447,7 @@ mod tests {
                 0,
                 Terminator::Call {
                     callee: "hew_panic_msg".to_string(),
-                    authority: CallAuthority::Direct,
+                    authority: CallAuthority::NoReturnExtern,
                     args: vec![],
                     dest: None,
                     next: 1,
@@ -2469,7 +2485,7 @@ mod tests {
         // must stay Uninit — dropping it at the join would read a slot the
         // other path never initialised.
         let b = BindingId(41);
-        let blocks = panic_join_blocks(b, "hew_string_concat");
+        let blocks = panic_join_blocks(b, "hew_string_concat", CallAuthority::Direct);
         let result = analyze(&blocks, &TypeClassTable::default(), &[]);
         assert_eq!(
             result.entry_states.get(&3).and_then(|m| m.get(&b)).copied(),

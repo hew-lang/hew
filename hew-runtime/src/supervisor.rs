@@ -415,42 +415,30 @@ pub use crate::internal::types::{
     HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
 };
 
-/// C-ABI trap entry-point invoked by codegen-emitted IR before the
-/// `llvm.trap` terminator on a `Terminator::Trap { kind }` block.
-///
-/// Inside an actor-dispatch context, this records `code` as the actor's
-/// crash reason and longjmps back to the scheduler's recovery frame —
-/// matching the `HEW_TRAP_HEAP_EXCEEDED` precedent. Outside a dispatch
-/// context (top-level `main`, `hew eval` REPL, JIT preview) there is no
-/// recovery context; `try_direct_longjmp_with_code` is a no-op and this
-/// function returns, then emits a diagnostic naming the trap kind before
-/// the caller's `llvm.trap` terminates the process.
+/// C-unwind trap entry point invoked by generated code for a logical Hew
+/// failure. It stamps the actor's typed exit reason and unwinds through LLVM
+/// cleanup landing pads. This path is deliberately separate from hardware
+/// signals, which are process-fatal.
 ///
 /// # Safety
 ///
-/// Must be called from a worker thread that may or may not be in a
-/// dispatch context; the underlying `try_direct_longjmp_with_code` is
-/// safe to call in either case (it checks the thread-local recovery
-/// context). Codegen always pairs the call with `llvm.trap` +
-/// `unreachable` to keep the LLVM basic block terminated when the
-/// longjmp path is inactive.
+/// May be called in or out of actor dispatch. An uncaught top-level payload
+/// reaches Rust's process panic boundary; actor dispatch catches it.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_trap_with_code(code: i32) {
     crate::cont::abort_if_crash_cleanup_finalizer_trap(trap_kind_name(code));
-    // SAFETY: `try_direct_longjmp_with_code` checks the per-thread
-    // recovery context internally; it is a no-op when none is active.
-    unsafe {
-        crate::signal::try_direct_longjmp_with_code(code);
+    let actor_stamped = crate::trap_code::stamp_current_actor_error_code(code);
+    if actor_stamped && crate::execution_context::current_context_can_unwind() {
+        std::panic::panic_any(crate::actor::HewPanic { code });
     }
-    // If we reach here, there is no actor recovery context — this trap
-    // occurred in main/free-fn context. Emit a diagnostic before the
-    // caller's `llvm.trap` terminates the process so the crash is never
-    // silent (F1.3 / fail-closed-with-diagnostic requirement).
-    //
-    // eprintln! is safe here: hew_trap_with_code is called from generated
-    // code, not from a signal handler, so the stderr lock is available.
-    let kind = trap_kind_name(code);
-    eprintln!("hew: trap in main context: {kind}");
+    if !actor_stamped {
+        eprintln!("hew: trap in main context: {}", trap_kind_name(code));
+    }
+    // No runtime-owned catch boundary exists below this call. Generated trap
+    // sites follow this bridge with their target trap instruction, which owns
+    // process termination without asking Rust's unwinder to cross foreign or
+    // process-entry frames. Synchronous lifecycle contexts arrive here with an
+    // actor stamped but intentionally return for that same generated fallback.
 }
 
 /// Map a trap code to a human-readable trap kind name.

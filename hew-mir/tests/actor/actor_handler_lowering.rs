@@ -10,7 +10,10 @@ use hew_mir::{
     lower_hir_module, ActorHandlerKind, FunctionCallConv, Instr, MirDiagnosticKind, MirStatement,
     SourceOrigin, Terminator,
 };
-use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, BuiltinType, ResolvedTy};
+use hew_types::{
+    runtime_call::RuntimeCallFamily, ActorHandlerSpec, ActorProtocolDescriptor, BuiltinType,
+    ResolvedTy,
+};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
@@ -699,9 +702,17 @@ fn value_position_actor_self_preserves_concrete_local_pid_type() {
     let self_dest = handler
         .blocks
         .iter()
-        .flat_map(|block| &block.instructions)
-        .find_map(|instruction| match instruction {
-            Instr::CallRuntimeAbi(call) if call.symbol() == "hew_actor_self" => call.dest(),
+        .find_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee,
+                authority,
+                dest,
+                ..
+            } if callee == "hew_actor_self"
+                && authority.runtime_family() == Some(RuntimeCallFamily::ActorSelf) =>
+            {
+                *dest
+            }
             _ => None,
         })
         .expect("value-position `this` must call hew_actor_self with a destination");
@@ -1241,6 +1252,31 @@ fn suspend_plan_inplace_drop_kinds(
         .collect()
 }
 
+/// All composite in-place plan drops, independent of exit kind. Comparing
+/// this with `suspend_plan_inplace_drop_kinds` pins that the abandon twin was
+/// not duplicated onto a normal return/goto/cancel cleanup path.
+fn all_plan_inplace_drop_kinds(
+    pipeline: &hew_mir::IrPipeline,
+    func_name: &str,
+) -> Vec<hew_mir::DropKind> {
+    let elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == func_name)
+        .unwrap_or_else(|| panic!("elaborated function `{func_name}` must exist"));
+    elab.drop_plans
+        .iter()
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|drop| {
+            matches!(
+                drop.kind,
+                hew_mir::DropKind::RecordInPlace | hew_mir::DropKind::EnumInPlace
+            )
+        })
+        .map(|drop| drop.kind)
+        .collect()
+}
+
 /// An owned-record yield carries the inline `InPlace(Record)` release on the
 /// pump's resume edge AND the `RecordInPlace` plan drop on the stream-send
 /// suspend's abandon edge (mutually exclusive edges — exactly-once), and the
@@ -1281,6 +1317,12 @@ fn generator_pump_releases_record_yield_value_in_place() {
         vec![hew_mir::DropKind::RecordInPlace],
         "the in-flight record yield value must carry exactly one RecordInPlace \
          drop on the stream-send suspend's abandon plan"
+    );
+    assert_eq!(
+        all_plan_inplace_drop_kinds(&record_pipeline, "Maker__recv__items"),
+        vec![hew_mir::DropKind::RecordInPlace],
+        "the mutually-exclusive resume-edge inline drop must not gain a second \
+         aggregate cleanup on any normal exit plan"
     );
     let record_main = record_pipeline
         .raw_mir
@@ -1332,6 +1374,12 @@ fn generator_pump_releases_enum_yield_value_in_place() {
         "the in-flight enum yield value must carry exactly one EnumInPlace drop \
          on the stream-send suspend's abandon plan"
     );
+    assert_eq!(
+        all_plan_inplace_drop_kinds(&enum_pipeline, "Maker__recv__notes"),
+        vec![hew_mir::DropKind::EnumInPlace],
+        "the enum abandon twin must remain suspend-only rather than acquiring \
+         duplicate normal cleanup"
+    );
 }
 
 /// Admission boundary (`elem_is_owned_abi_releasable`): a `BitCopy` record
@@ -1373,8 +1421,8 @@ fn generator_pump_skips_bitcopy_record_yield_release() {
         "a BitCopy record yield must not acquire a cow-heap release either"
     );
     assert!(
-        suspend_plan_inplace_drop_kinds(&bitcopy_pipeline, "Shaper__recv__points").is_empty(),
-        "a BitCopy record yield must not add abandon-edge plan drops"
+        all_plan_inplace_drop_kinds(&bitcopy_pipeline, "Shaper__recv__points").is_empty(),
+        "a BitCopy record yield must not acquire aggregate cleanup on any plan"
     );
 }
 

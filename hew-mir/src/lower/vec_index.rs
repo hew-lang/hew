@@ -76,6 +76,10 @@ impl Builder {
     ///
     /// Unsupported element types emit `MirDiagnostic::NotYetImplemented`
     /// and return `None` (tracked gap, not silent shim).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "typed Vec indexing selects one ABI and publishes its complete result authority at the call site"
+    )]
     pub(super) fn lower_vec_index(
         &mut self,
         container: &HirExpr,
@@ -176,6 +180,11 @@ impl Builder {
         let get_symbol = get_family.c_symbol();
 
         let result_place = self.alloc_local(elem_ty.clone());
+        let interior_alias = crate::runtime_symbols::callee_ownership_contract(get_symbol)
+            .returns_receiver_interior_alias();
+        if interior_alias {
+            self.borrowed_runtime_result_places.insert(result_place);
+        }
         if clone_owned_value {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
@@ -198,6 +207,17 @@ impl Builder {
                     Some(result_place),
                 )
                 .expect("hew_vec_get_T is an allowlisted runtime symbol"),
+            ));
+        }
+        if interior_alias {
+            let receiver_owner = self.current_owner_id_at_place(vec_place);
+            self.push_instr(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::InteriorAlias {
+                    result: result_place,
+                    receiver: vec_place,
+                    receiver_owner,
+                    domain: crate::model::AliasInvalidationDomain::CollectionElements,
+                },
             ));
         }
 

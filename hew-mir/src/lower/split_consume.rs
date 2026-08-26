@@ -7,9 +7,9 @@
 use super::*;
 #[cfg(not(test))]
 use super::{
-    exit_block_id, ty_is_indirect_enum, BTreeMap, BasicBlock, BindingId, BlockKind, ElabDrop,
-    ElaboratedMirFunction, FieldBinderProvenance, HashMap, HashSet, HirExpr, HirExprKind, Instr,
-    MatchBoundHopAliasFacts, MirCheck, Place, ResolvedRef, ResolvedTy, Terminator,
+    ty_is_indirect_enum, BTreeMap, BasicBlock, BindingId, ElabDrop, FieldBinderProvenance, HashMap,
+    HashSet, HirExpr, HirExprKind, Instr, MatchBoundHopAliasFacts, MirCheck, Place, ResolvedRef,
+    ResolvedTy,
 };
 
 /// Parent-local id for a Duplex-family Place. `DuplexHandle(N)`,
@@ -171,6 +171,7 @@ pub(super) fn check_duplex_split_state(
 /// (fail-closed for ambiguous shapes per the M2 substrate's
 /// `boundary-fail-closed` discipline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 enum DuplexSplitState {
     /// No `.send_half()` / `.recv_half()` consume of the unified
     /// handle has been observed on any reaching path.
@@ -183,6 +184,7 @@ enum DuplexSplitState {
     /// Carries the earliest split-emitting block id.
     MaybeConsumed(u32),
 }
+#[cfg(test)]
 impl DuplexSplitState {
     /// Lattice meet over the three-state space. Commutative,
     /// associative, idempotent — pinned by tests below.
@@ -242,6 +244,7 @@ impl DuplexSplitState {
     clippy::too_many_lines,
     reason = "single fixpoint + drop-list-walk; splitting would obscure the dataflow"
 )]
+#[cfg(test)]
 pub(super) fn validate_cross_block_split_consume(
     blocks: &[BasicBlock],
     elab: &ElaboratedMirFunction,
@@ -385,6 +388,7 @@ pub(super) fn validate_cross_block_split_consume(
 
     findings
 }
+#[cfg(test)]
 fn meet_predecessors_split(
     preds: &[u32],
     exit_states: &std::collections::HashMap<u32, std::collections::BTreeMap<u32, DuplexSplitState>>,
@@ -411,6 +415,7 @@ fn meet_predecessors_split(
     }
     entry
 }
+#[cfg(test)]
 fn transfer_block_split(
     entry: std::collections::BTreeMap<u32, DuplexSplitState>,
     block: &BasicBlock,
@@ -445,9 +450,14 @@ fn transfer_block_split(
               re-split when codegen needs per-op dispatch. The match must remain exhaustive \
               across the full Instr surface, so line count grows with every new variant"
 )]
+#[cfg(test)]
 fn instr_places(instr: &Instr) -> Vec<Place> {
     match instr {
-        Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => Vec::new(),
+        Instr::OwnershipEvent(_)
+        | Instr::EnterContext
+        | Instr::ExitContext
+        | Instr::CheckCancellation => Vec::new(),
+        Instr::InteriorMutationCommit { place } => vec![*place],
         Instr::ContextField { dest, .. } => vec![*dest],
         // Const-like producers write only their dest place.
         Instr::ConstI64 { dest, .. }
@@ -513,6 +523,9 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             vec![*dest, *src]
         }
         Instr::Drop { place, .. } => vec![*place],
+        Instr::AggregateOverwriteRelease {
+            old, replacement, ..
+        } => vec![*old, *replacement],
         Instr::WitnessSizeOf { dest, .. } | Instr::WitnessAlignOf { dest, .. } => vec![*dest],
         Instr::WitnessDropGlue { place, .. } => vec![*place],
         Instr::WitnessMove { dest, src, .. } => vec![*dest, *src],
@@ -583,6 +596,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             args,
             ret_ty: _,
             dest,
+            ..
         } => {
             let mut places: Vec<Place> = vec![*callee];
             places.extend(args.iter().copied());
@@ -2507,12 +2521,58 @@ mod slice3_narrowing_proptests {
         ResolvedTy::named_user("Duplex", vec![ResolvedTy::I64, ResolvedTy::I64])
     }
 
+    /// Publish the exact Checked-MIR ownership definitions consumed by exit
+    /// planning. `BindingState` remains diagnostic input; it is not cleanup
+    /// authority. Every live synthetic handle therefore has an `OwnerId` and
+    /// definition-site `DropRecipe`, and a moved-out handle has an explicit
+    /// terminal Transfer.
+    fn build_owner_events(n: u32, moved_out: &[u32]) -> Vec<Instr> {
+        let mut events = Vec::new();
+        for i in 0..n {
+            let owner = crate::model::OwnerId {
+                binding: BindingId(i),
+                generation: 0,
+            };
+            events.push(Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+                owner,
+                place: Place::DuplexHandle(i),
+                ty: duplex_ty(),
+            }));
+            events.push(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::DropRecipe {
+                    owner,
+                    recipe: crate::model::OwnerDropRecipe {
+                        ty: duplex_ty(),
+                        drop_fn: None,
+                        kind: DropKind::DuplexClose,
+                        declaration_order: i,
+                    },
+                },
+            ));
+        }
+        for &i in moved_out {
+            events.push(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Transfer {
+                    owner: crate::model::OwnerId {
+                        binding: BindingId(i),
+                        generation: 0,
+                    },
+                    from: Place::DuplexHandle(i),
+                    to: None,
+                    to_owner: None,
+                    to_ty: None,
+                },
+            ));
+        }
+        events
+    }
+
     /// Build a single-block `BasicBlock` with a `Return` terminator.
-    fn single_return_block(block_id: u32) -> BasicBlock {
+    fn single_return_block(block_id: u32, n: u32, moved_out: &[u32]) -> BasicBlock {
         BasicBlock {
             id: block_id,
             statements: vec![],
-            instructions: vec![],
+            instructions: build_owner_events(n, moved_out),
             terminator: Terminator::Return,
         }
     }
@@ -2582,12 +2642,12 @@ mod slice3_narrowing_proptests {
                 .filter(|i| (moved_out_mask >> i) & 1 == 1)
                 .collect();
 
-            let blocks = vec![single_return_block(0)];
+            let blocks = vec![single_return_block(0, n, &moved_out)];
             let lifo = build_lifo(n);
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashSet::new(), &HashMap::new());
 
             // Exactly one Return plan for the single block.
             prop_assert_eq!(plans.len(), 1);
@@ -2638,11 +2698,14 @@ mod slice3_narrowing_proptests {
             let mut exit_states = HashMap::new();
             exit_states.insert(0u32, per_binding);
 
-            let blocks = vec![single_return_block(0)];
+            let moved_out = (0..n)
+                .filter(|i| (consumed_mask >> i) & 1 == 1)
+                .collect::<Vec<_>>();
+            let blocks = vec![single_return_block(0, n, &moved_out)];
             let lifo = build_lifo(n);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashSet::new(), &HashMap::new());
             let (_, plan) = &plans[0];
 
             // Expected: every binding NOT Consumed survives in the drop
@@ -2676,13 +2739,13 @@ mod slice3_narrowing_proptests {
             let moved_out: Vec<u32> = (0..n)
                 .filter(|i| (moved_out_mask >> i) & 1 == 1)
                 .collect();
-            let blocks = vec![single_return_block(0)];
+            let blocks = vec![single_return_block(0, n, &moved_out)];
             let lifo = build_lifo(n);
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
-            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashSet::new(), &HashMap::new());
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashSet::new(), &HashMap::new());
 
             prop_assert_eq!(b1.len(), b2.len());
             prop_assert_eq!(p1.len(), p2.len());
@@ -2703,12 +2766,12 @@ mod slice3_narrowing_proptests {
             let moved_out: Vec<u32> = (0..n)
                 .filter(|i| (moved_out_mask >> i) & 1 == 1)
                 .collect();
-            let blocks = vec![single_return_block(0)];
+            let blocks = vec![single_return_block(0, n, &moved_out)];
             let lifo = build_lifo(n);
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashSet::new(), &HashMap::new());
             let (_, plan) = &plans[0];
 
             for d in &plan.drops {
@@ -2726,11 +2789,11 @@ mod slice3_narrowing_proptests {
     // destroy-while-parked abandon edge), and exclude a moved-out (Consumed)
     // binding so a value moved across the suspend is never double-freed.
 
-    fn single_suspend_block(id: u32) -> BasicBlock {
+    fn single_suspend_block(id: u32, n: u32, moved_out: &[u32]) -> BasicBlock {
         BasicBlock {
             id,
             statements: vec![],
-            instructions: vec![],
+            instructions: build_owner_events(n, moved_out),
             // resume/cleanup alias to a resume target as the collapsed carriers do;
             // the plan keys off the suspend terminator's own block id.
             terminator: Terminator::Suspend {
@@ -2741,11 +2804,11 @@ mod slice3_narrowing_proptests {
         }
     }
 
-    fn single_yield_block(id: u32) -> BasicBlock {
+    fn single_yield_block(id: u32, n: u32, moved_out: &[u32]) -> BasicBlock {
         BasicBlock {
             id,
             statements: vec![],
-            instructions: vec![],
+            instructions: build_owner_events(n, moved_out),
             terminator: Terminator::Yield {
                 value: Place::Local(99),
                 next: id + 1,
@@ -2755,7 +2818,7 @@ mod slice3_narrowing_proptests {
 
     #[test]
     fn suspend_exit_plan_carries_live_owned_local_drop() {
-        let blocks = vec![single_suspend_block(0)];
+        let blocks = vec![single_suspend_block(0, 1, &[])];
         let lifo = build_lifo(1);
         let exit_states = build_exit_states(1, &[]);
         let binding_locals = build_binding_locals(1);
@@ -2766,9 +2829,8 @@ mod slice3_narrowing_proptests {
             &HashMap::new(),
             &binding_locals,
             &HashSet::new(),
-            &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
+            &HashMap::new(),
         );
         let (exit, plan) = &plans[0];
         assert!(matches!(exit, ExitPath::Suspend { block: 0, .. }));
@@ -2781,7 +2843,7 @@ mod slice3_narrowing_proptests {
 
     #[test]
     fn suspend_exit_plan_excludes_moved_out_local() {
-        let blocks = vec![single_suspend_block(0)];
+        let blocks = vec![single_suspend_block(0, 1, &[0])];
         let lifo = build_lifo(1);
         // BindingId(0) is Consumed (moved out across the suspend).
         let exit_states = build_exit_states(1, &[0]);
@@ -2793,9 +2855,8 @@ mod slice3_narrowing_proptests {
             &HashMap::new(),
             &binding_locals,
             &HashSet::new(),
-            &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
+            &HashMap::new(),
         );
         let (_, plan) = &plans[0];
         assert!(
@@ -2809,7 +2870,7 @@ mod slice3_narrowing_proptests {
     #[test]
     fn yield_exit_plan_carries_live_drop_and_excludes_consumed() {
         // Live binding: dropped on the yield abandon (destroy-while-parked-at-yield) edge.
-        let blocks = vec![single_yield_block(0)];
+        let blocks = vec![single_yield_block(0, 1, &[])];
         let lifo = build_lifo(1);
         let live = build_exit_states(1, &[]);
         let binding_locals = build_binding_locals(1);
@@ -2820,9 +2881,8 @@ mod slice3_narrowing_proptests {
             &HashMap::new(),
             &binding_locals,
             &HashSet::new(),
-            &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
+            &HashMap::new(),
         );
         let (exit, plan) = &plans[0];
         assert!(matches!(exit, ExitPath::Yield { block: 0, .. }));
@@ -2834,17 +2894,17 @@ mod slice3_narrowing_proptests {
         // The just-yielded value is a MOVE into the companion out-slot, so its
         // binding is Consumed at the yield exit and is excluded — its sole owner
         // is hew_gen_coro_destroy's out_drop_thunk (no second dropper).
+        let consumed_blocks = vec![single_yield_block(0, 1, &[0])];
         let consumed = build_exit_states(1, &[0]);
         let (_, plans) = enumerate_exits(
-            &blocks,
+            &consumed_blocks,
             &lifo,
             &consumed,
             &HashMap::new(),
             &binding_locals,
             &HashSet::new(),
-            &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
+            &HashMap::new(),
         );
         assert!(
             plans[0].1.drops.is_empty(),

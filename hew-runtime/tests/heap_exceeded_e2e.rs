@@ -5,9 +5,9 @@
 //!
 //! 1. An actor spawned with a per-dispatch arena cap has that cap enforced
 //!    when a message causes allocations that exceed the cap.
-//! 2. The over-cap allocation triggers `try_direct_longjmp_with_code(200)` in
-//!    `hew_arena_malloc` (arena.rs), routing through the per-worker longjmp
-//!    crash seam with `HEW_TRAP_HEAP_EXCEEDED` (200) as the error code.
+//! 2. The over-cap allocation triggers `hew_trap_with_code(200)` in
+//!    `hew_arena_malloc` (arena.rs), unwinding through generated cleanup pads
+//!    to the worker's actor boundary with `HEW_TRAP_HEAP_EXCEEDED` (200).
 //! 3. The crash log records signal=200 for that crash (distinct from any POSIX
 //!    signal number — the highest is typically 31 on Linux, 31 on macOS).
 //! 4. `ExitReason::from_error_code(200)` maps to `ExitReason::HeapExceeded`.
@@ -21,8 +21,8 @@
 //! path applies it to every restarted actor. This test verifies both the
 //! initial cap and that the cap is preserved across the restart cycle.
 //!
-//! WASM: `try_direct_longjmp_with_code` is a no-op on WASM; the signal-based
-//! crash recovery seam is absent. This test is gated on
+//! WASM: portable exception handling and native actor recovery are absent.
+//! This test is gated on
 //! `#[cfg(not(target_arch = "wasm32"))]`. The WASM heap-exceeded path is tracked
 //! as WASM-TODO(actor-heap-limits): implement a non-signal WASM crash path.
 
@@ -148,8 +148,8 @@ const ALLOC_OVER_CAP_BYTES: usize = 1024;
 /// `MSG_ALLOC_OVER_CAP` → allocates `ALLOC_OVER_CAP_BYTES` from the actor's
 /// arena. When the arena cap has been set to `ARENA_CAP_BYTES`, this call to
 /// `hew_arena_malloc` returns null AND triggers
-/// `try_direct_longjmp_with_code(HEW_TRAP_HEAP_EXCEEDED)`, unwinding through
-/// the scheduler's sigsetjmp frame back to the supervisor seam.
+/// `hew_trap_with_code(HEW_TRAP_HEAP_EXCEEDED)`, unwinding through generated
+/// cleanup pads to the scheduler's actor boundary.
 unsafe extern "C-unwind" fn capped_dispatch(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
@@ -165,7 +165,7 @@ unsafe extern "C-unwind" fn capped_dispatch(
         }
         MSG_ALLOC_OVER_CAP => {
             // Allocate over the cap. When cap is set, hew_arena_malloc triggers
-            // try_direct_longjmp_with_code(200) and does NOT return here.
+            // hew_trap_with_code(200) and does NOT return here.
             // SAFETY: called from a scheduler-dispatched actor context; the
             // arena is installed as the current thread-local arena.
             let _p = unsafe { hew_runtime::arena::hew_arena_malloc(ALLOC_OVER_CAP_BYTES) };
@@ -189,8 +189,8 @@ unsafe extern "C-unwind" fn capped_dispatch(
 /// 2. Verify the initial actor's arena cap equals `ARENA_CAP_BYTES`.
 /// 3. A normal message confirms the actor is live.
 /// 4. A trigger message allocates `ALLOC_OVER_CAP_BYTES` > cap — the arena
-///    invokes `try_direct_longjmp_with_code(200)`, unwinding through the
-///    scheduler's sigsetjmp frame.
+///    invokes `hew_trap_with_code(200)`, unwinding through generated cleanup
+///    pads to the scheduler boundary.
 /// 5. Crash log records `signal == HEW_TRAP_HEAP_EXCEEDED (200)`.
 /// 6. `ExitReason::from_error_code(200)` maps to `ExitReason::HeapExceeded`.
 /// 7. Supervisor completes a restart cycle (restart count ≥ 1).

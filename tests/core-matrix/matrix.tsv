@@ -11,7 +11,7 @@ actor__move	PASS
 actor__mutate	PASS
 actor__pass_fn	PASS
 actor__read_back	PASS
-actor__return_fn	NYI-INTERNAL	error: E_MIR_CHECK: obligation balance in `make`: owned value `m` is released more than once on an exit path (double-free): owned local `m` accumulates 2 definite discharges for at most 1 owner mint(s) on a single path r
+actor__return_fn	PASS
 actor__store_map_value	PASS
 actor__store_vec	PASS
 bool__across_suspend	PASS
@@ -223,7 +223,7 @@ opaque__drop_panic	PASS
 opaque__drop_scope	PASS
 opaque__equality	NYI-INTERNAL	tests/core-matrix/cells/opaque__equality.hew:28:5: error: fail-closed: eq_thunk: type `Named { name: "DqH", args: [], builtin: None, is_opaque: true }` has no structural equality path
 opaque__format	NYI-CLEAN	tests/core-matrix/cells/opaque__format.hew:26:18: error: type `Dq` does not implement `Display` (f-string interpolation requires `impl Display for Dq`)
-opaque__index	CRASH	PANIC: Vec owned element clone failed
+opaque__index	NYI-CLEAN	tests/core-matrix/cells/opaque__index.hew:30:13: error: cannot index `Vec<Dq>` by value: indexing clones the stored element into an independent owner, but `Dq` is `#[resource]`; use `pop`, `remove`, or consuming iteration
 opaque__iterate	NYI-CLEAN	tests/core-matrix/cells/opaque__iterate.hew:30:14: error: `VecIter<Dq>` is not supported: `VecIter::next()` clones each element into an independent owner, but resource/linear value `Dq` has no semantic clone/retain opera
 opaque__map_key	NYI-CLEAN	tests/core-matrix/cells/opaque__map_key.hew:28:11: error: HashMap key type `Dq` must be a `record`-keyword type to use the layout key ABI; found a type which is not guaranteed Copy value-semantic
 opaque__move	PASS
@@ -232,7 +232,7 @@ opaque__pass_fn	PASS
 opaque__read_back	NYI-INTERNAL	tests/core-matrix/cells/opaque__read_back.hew:28:11: error: E_NOT_YET_IMPLEMENTED: MIR lowering for `VecIter<Dq>` clone-out is not implemented yet
 opaque__return_fn	PASS
 opaque__store_map_value	NYI-CLEAN	tests/core-matrix/cells/opaque__store_map_value.hew:26:12: error: `HashMap<_, Dq>` is not supported: `HashMap::get()` returns an owned `Option<V>`, but value type `Dq` contains `DqH` which has no map value clone_fn; use
-opaque__store_vec	CRASH	PANIC: Vec owned element clone failed
+opaque__store_vec	PASS
 option__across_suspend	PASS
 option__actor_send	PASS
 option__clone	PASS
@@ -280,7 +280,7 @@ resource__drop_panic	PASS
 resource__drop_scope	PASS
 resource__equality	PASS
 resource__format	NYI-CLEAN	tests/core-matrix/cells/resource__format.hew:14:18: error: type `Tok` does not implement `Display` (f-string interpolation requires `impl Display for Tok`)
-resource__index	PASS
+resource__index	NYI-CLEAN	tests/core-matrix/cells/resource__index.hew:18:13: error: cannot index `Vec<Tok>` by value: indexing clones the stored element into an independent owner, but `Tok` is `#[resource]`; use `pop`, `remove`, or consuming iteration
 resource__iterate	NYI-CLEAN	tests/core-matrix/cells/resource__iterate.hew:18:14: error: `VecIter<Tok>` is not supported: `VecIter::next()` clones each element into an independent owner, but resource/linear value `Tok` has no semantic clone/retain o
 resource__map_key	NYI-CLEAN	tests/core-matrix/cells/resource__map_key.hew:16:11: error: HashMap key type `Tok` must be a `record`-keyword type to use the layout key ABI; found a type which is not guaranteed Copy value-semantic
 resource__move	PASS

@@ -150,8 +150,15 @@ fn has_state_store(function: &hew_mir::RawMirFunction) -> bool {
 }
 
 fn vec_release_calls(body: &str) -> usize {
+    vec_local_release_calls(body) + vec_owned_release_calls(body)
+}
+
+fn vec_local_release_calls(body: &str) -> usize {
     body.matches("call void @hew_vec_free(").count()
-        + body.matches("call void @hew_vec_free_owned(").count()
+}
+
+fn vec_owned_release_calls(body: &str) -> usize {
+    body.matches("call void @hew_vec_free_owned(").count()
 }
 
 #[test]
@@ -201,9 +208,14 @@ fn lifecycle_ir_skips_only_state_transaction_hooks_and_keeps_exact_releases() {
             "{symbol} must not address an absent or foreign scheduler state domain\n{body}"
         );
         assert_eq!(
-            vec_release_calls(body),
+            vec_local_release_calls(body),
             1,
-            "{symbol} must retain exactly one old-value Vec release\n{body}"
+            "{symbol} must release its uncommitted replacement exactly once on unwind\n{body}"
+        );
+        assert_eq!(
+            vec_owned_release_calls(body),
+            1,
+            "{symbol} must release the prior state-field Vec exactly once on the normal replacement path\n{body}"
         );
     }
 
@@ -230,7 +242,7 @@ fn lifecycle_ir_skips_only_state_transaction_hooks_and_keeps_exact_releases() {
             .find("@hew_dispatch_state_cleanup_begin_replace(")
             .expect("begin replace call");
         let release = body
-            .find("call void @hew_vec_free")
+            .find("call void @hew_vec_free_owned(")
             .expect("old Vec release");
         let prepare = body
             .find("@hew_dispatch_state_cleanup_prepare_transfer(")
@@ -244,9 +256,14 @@ fn lifecycle_ir_skips_only_state_transaction_hooks_and_keeps_exact_releases() {
             "required ordering is fatal begin < old release < replacement prepare < live store\n{body}"
         );
         assert_eq!(
-            vec_release_calls(body),
+            vec_local_release_calls(body),
             1,
-            "required receive/system overwrite must release the prior Vec exactly once\n{body}"
+            "required receive/system overwrite must release its uncommitted replacement exactly once on unwind\n{body}"
+        );
+        assert_eq!(
+            vec_owned_release_calls(body),
+            1,
+            "required receive/system overwrite must release the prior Vec exactly once on the committed path\n{body}"
         );
     }
 

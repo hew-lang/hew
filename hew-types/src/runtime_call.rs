@@ -183,6 +183,22 @@ pub enum RuntimeResultOwnership {
     FreshOwnedBytes,
 }
 
+/// Receiver-relative authority of a runtime result. This is deliberately
+/// orthogonal to the concrete retain/allocation ritual above: consumers that
+/// decide whether a result can outlive or be released independently from its
+/// receiver must use this closed four-way classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeResultAuthority {
+    /// The call returns or moves out one independently-owned value.
+    IndependentOwned,
+    /// The result points into storage owned by argument zero.
+    InteriorAliasOfReceiver,
+    /// The returned bits contain no receiver-owned storage.
+    IndependentBitCopy,
+    /// No positive authority is published; ownership-sensitive uses reject.
+    FailClosed,
+}
+
 impl ConsumeVerdict {
     /// `true` iff the verdict directs the callee to own/drop the argument —
     /// the projection back onto the historical `bool` (both consume flavours
@@ -2077,6 +2093,24 @@ impl RuntimeCallFamily {
             };
         }
         match self {
+            // Layout insert takes ownership of both heap-owning key/value
+            // arguments on its normal return. The receiver stays borrowed;
+            // contains/get/remove keys remain borrowed lookup probes.
+            Self::HashMapInsertLayout if matches!(index, 1 | 2) => {
+                ConsumeVerdict::ProvenConsume
+            }
+            // Set insertion likewise adopts its element on success. The
+            // owned-move Vec ABI copies the element bytes into
+            // descriptor-owned storage and adopts every nested allocation on
+            // normal return.  The caller retains cleanup only on the unwind
+            // edge; MIR publishes the Transfer in the call's normal
+            // successor.  Keep this fact here, beside the typed family, so
+            // lowering and balance validation cannot disagree through a
+            // second symbol-name table.
+            Self::HashSetInsertLayout | Self::VecPushOwnedMove if index == 1 => {
+                ConsumeVerdict::ProvenConsume
+            }
+            Self::VecSetOwnedMove if index == 2 => ConsumeVerdict::ProvenConsume,
             // Scalar values have no ownership transfer. For `Str`, the
             // runtime reads the input string during push/set and never adopts
             // it. Pop/remove ownership is a result fact, not an argument fact.
@@ -2111,6 +2145,83 @@ impl RuntimeCallFamily {
             Self::BytesNew => RuntimeResultOwnership::FreshOwnedBytes,
             _ => RuntimeResultOwnership::Untracked,
         }
+    }
+
+    /// Classify whether the returned value is independent of argument zero.
+    /// Getter families are exhaustive here so adding an ABI variant cannot
+    /// silently inherit owner or borrow semantics from its C spelling.
+    #[must_use]
+    pub const fn result_authority(self) -> RuntimeResultAuthority {
+        match self {
+            Self::VecGet(VecGetElem::Str | VecGetElem::Clone | VecGetElem::Take)
+            | Self::VecClone
+            | Self::VecNew
+            | Self::VecJoinStr
+            | Self::BytesNew
+            | Self::VecScalar {
+                op: VecScalarOp::Pop | VecScalarOp::RemoveAt,
+                ..
+            } => RuntimeResultAuthority::IndependentOwned,
+            Self::VecGet(VecGetElem::Owned | VecGetElem::Ptr) | Self::HashMapGetLayout => {
+                RuntimeResultAuthority::InteriorAliasOfReceiver
+            }
+            Self::VecGet(
+                VecGetElem::Bool
+                | VecGetElem::F32
+                | VecGetElem::F64
+                | VecGetElem::I8
+                | VecGetElem::I16
+                | VecGetElem::I32
+                | VecGetElem::I64
+                | VecGetElem::Layout
+                | VecGetElem::U8
+                | VecGetElem::U16,
+            ) => RuntimeResultAuthority::IndependentBitCopy,
+            _ => RuntimeResultAuthority::FailClosed,
+        }
+    }
+
+    /// Whether a successful call can invalidate a pointer into argument
+    /// zero's element storage. The answer is intentionally broader than
+    /// reallocation: clear/set/remove and whole-receiver teardown invalidate
+    /// an alias even when the backing allocation address happens not to move.
+    #[must_use]
+    pub const fn invalidates_collection_element_aliases(self) -> bool {
+        matches!(
+            self,
+            Self::VecAppend
+                | Self::VecClear
+                | Self::VecTakeAll
+                | Self::VecPopBool
+                | Self::VecPopLayout
+                | Self::VecPopOwned
+                | Self::VecPushBool
+                | Self::VecPushLayout
+                | Self::VecPushOwned
+                | Self::VecPushOwnedMove
+                | Self::VecScalar {
+                    op: VecScalarOp::Push
+                        | VecScalarOp::Pop
+                        | VecScalarOp::Set
+                        | VecScalarOp::RemoveAt,
+                    ..
+                }
+                | Self::VecRemoveAtBool
+                | Self::VecRemoveAtLayout
+                | Self::VecRemoveAtOwned
+                | Self::VecSetBool
+                | Self::VecSetLayout
+                | Self::VecSetOwned
+                | Self::VecSetOwnedMove
+                | Self::HashMapClearLayout
+                | Self::HashMapFreeLayout
+                | Self::HashMapInsertLayout
+                | Self::HashMapRemoveLayout
+                | Self::HashSetClearLayout
+                | Self::HashSetFreeLayout
+                | Self::HashSetInsertLayout
+                | Self::HashSetRemoveLayout
+        )
     }
 
     /// Classify the family's async-suspending behaviour, if any.
@@ -3018,22 +3129,31 @@ mod tests {
             );
             // Every consuming verdict projects to the historical `true`.
             assert_eq!(receiver.is_consume(), family.consumes_receiver());
-            // The closed Vec ABI families carry exact borrowed payload facts;
-            // all other non-receiver arguments retain the fail-closed default.
+            // The closed Vec ABI families carry exact borrowed or consuming
+            // payload facts; all other non-receiver arguments retain the
+            // fail-closed default.
             for index in 1..=3 {
-                let expected = if matches!(
-                    family,
+                let expected = match family {
+                    RuntimeCallFamily::HashMapInsertLayout if matches!(index, 1 | 2) => {
+                        ConsumeVerdict::ProvenConsume
+                    }
+                    RuntimeCallFamily::HashSetInsertLayout
+                    | RuntimeCallFamily::VecPushOwnedMove
+                        if index == 1 =>
+                    {
+                        ConsumeVerdict::ProvenConsume
+                    }
+                    RuntimeCallFamily::VecSetOwnedMove if index == 2 => {
+                        ConsumeVerdict::ProvenConsume
+                    }
                     RuntimeCallFamily::VecScalar { .. }
-                        | RuntimeCallFamily::VecContainsScalar(_)
-                        | RuntimeCallFamily::VecAppend
-                        | RuntimeCallFamily::VecClear
-                        | RuntimeCallFamily::VecClone
-                        | RuntimeCallFamily::VecIsEmpty
-                        | RuntimeCallFamily::VecJoinStr
-                ) {
-                    ConsumeVerdict::ProvenBorrow
-                } else {
-                    ConsumeVerdict::ConservativeConsume
+                    | RuntimeCallFamily::VecContainsScalar(_)
+                    | RuntimeCallFamily::VecAppend
+                    | RuntimeCallFamily::VecClear
+                    | RuntimeCallFamily::VecClone
+                    | RuntimeCallFamily::VecIsEmpty
+                    | RuntimeCallFamily::VecJoinStr => ConsumeVerdict::ProvenBorrow,
+                    _ => ConsumeVerdict::ConservativeConsume,
                 };
                 assert_eq!(
                     family.arg_consume_verdict(index),

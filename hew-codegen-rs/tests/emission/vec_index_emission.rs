@@ -23,8 +23,9 @@
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
-    BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator, TrapKind,
+    BasicBlock, BlockKind, CallAuthority, CheckedMirFunction, CmpPred, DropPlan, ElabBlock,
+    ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place, RawMirFunction, Terminator,
+    TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -59,18 +60,25 @@ fn vec_index_i64_pipeline() -> IrPipeline {
     let entry_bb = BasicBlock {
         id: 0,
         statements: vec![],
+        instructions: vec![Instr::ConstI64 {
+            dest: index_place,
+            value: 0,
+        }],
+        terminator: Terminator::Call {
+            callee: "hew_vec_len".to_owned(),
+            authority: CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecLen),
+            args: vec![vec_place],
+            dest: Some(len_place),
+            next: 1,
+        },
+    };
+
+    let bounds_bb = BasicBlock {
+        id: 1,
+        statements: vec![],
         instructions: vec![
             // Seed index with a known value for the test (would come from a
             // function parameter in real lowering; hand-set here).
-            Instr::ConstI64 {
-                dest: index_place,
-                value: 0,
-            },
-            // Call hew_vec_len to get the length.
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
-                    .expect("hew_vec_len is allowlisted"),
-            ),
             // UnsignedGreaterEq: oob_flag = (index uge len)
             Instr::IntCmp {
                 dest: oob_flag,
@@ -81,13 +89,13 @@ fn vec_index_i64_pipeline() -> IrPipeline {
         ],
         terminator: Terminator::Branch {
             cond: oob_flag,
-            then_target: 1,
-            else_target: 2,
+            then_target: 2,
+            else_target: 3,
         },
     };
 
     let trap_bb = BasicBlock {
-        id: 1,
+        id: 2,
         statements: vec![],
         instructions: vec![],
         terminator: Terminator::Trap {
@@ -96,26 +104,38 @@ fn vec_index_i64_pipeline() -> IrPipeline {
     };
 
     let cont_bb = BasicBlock {
-        id: 2,
+        id: 3,
         statements: vec![],
-        instructions: vec![
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new(
-                    "hew_vec_get_i64",
-                    vec![vec_place, index_place],
-                    Some(result_place),
-                )
-                .expect("hew_vec_get_i64 is allowlisted"),
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "hew_vec_get_i64".to_owned(),
+            authority: CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("hew_vec_get_i64")
+                    .expect("hew_vec_get_i64 is catalogued"),
             ),
-            Instr::Move {
-                dest: Place::ReturnSlot,
-                src: result_place,
-            },
-        ],
+            args: vec![vec_place, index_place],
+            dest: Some(result_place),
+            next: 4,
+        },
+    };
+
+    let return_bb = BasicBlock {
+        id: 4,
+        statements: vec![],
+        instructions: vec![Instr::Move {
+            dest: Place::ReturnSlot,
+            src: result_place,
+        }],
         terminator: Terminator::Return,
     };
 
-    let raw_blocks = vec![entry_bb.clone(), trap_bb.clone(), cont_bb.clone()];
+    let raw_blocks = vec![
+        entry_bb.clone(),
+        bounds_bb.clone(),
+        trap_bb.clone(),
+        cont_bb.clone(),
+        return_bb.clone(),
+    ];
 
     IrPipeline {
         thir: vec![],
@@ -153,35 +173,24 @@ fn vec_index_i64_pipeline() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![
-                ElabBlock {
-                    id: 0,
+            blocks: (0..=4)
+                .map(|id| ElabBlock {
+                    id,
                     kind: BlockKind::Normal,
                     drops: vec![],
                     successor: None,
-                },
-                ElabBlock {
-                    id: 1,
-                    kind: BlockKind::Normal,
-                    drops: vec![],
-                    successor: None,
-                },
-                ElabBlock {
-                    id: 2,
-                    kind: BlockKind::Normal,
-                    drops: vec![],
-                    successor: None,
-                },
-            ],
+                })
+                .collect(),
             drop_plans: vec![
-                (ExitPath::Return { block: 2 }, DropPlan::default()),
-                (ExitPath::Panic { block: 1 }, DropPlan::default()),
+                (ExitPath::Return { block: 4 }, DropPlan::default()),
+                (ExitPath::Panic { block: 2 }, DropPlan::default()),
             ],
             coroutine: None,
             lambda_captures: vec![],
@@ -225,31 +234,37 @@ fn vec_index_bool_pipeline() -> IrPipeline {
     let entry_bb = BasicBlock {
         id: 0,
         statements: vec![],
-        instructions: vec![
-            Instr::ConstI64 {
-                dest: index_place,
-                value: 0,
-            },
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
-                    .expect("hew_vec_len is allowlisted"),
-            ),
-            Instr::IntCmp {
-                dest: oob_flag,
-                pred: CmpPred::UnsignedGreaterEq,
-                lhs: index_place,
-                rhs: len_place,
-            },
-        ],
+        instructions: vec![Instr::ConstI64 {
+            dest: index_place,
+            value: 0,
+        }],
+        terminator: Terminator::Call {
+            callee: "hew_vec_len".to_owned(),
+            authority: CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecLen),
+            args: vec![vec_place],
+            dest: Some(len_place),
+            next: 1,
+        },
+    };
+
+    let bounds_bb = BasicBlock {
+        id: 1,
+        statements: vec![],
+        instructions: vec![Instr::IntCmp {
+            dest: oob_flag,
+            pred: CmpPred::UnsignedGreaterEq,
+            lhs: index_place,
+            rhs: len_place,
+        }],
         terminator: Terminator::Branch {
             cond: oob_flag,
-            then_target: 1,
-            else_target: 2,
+            then_target: 2,
+            else_target: 3,
         },
     };
 
     let trap_bb = BasicBlock {
-        id: 1,
+        id: 2,
         statements: vec![],
         instructions: vec![],
         terminator: Terminator::Trap {
@@ -258,26 +273,32 @@ fn vec_index_bool_pipeline() -> IrPipeline {
     };
 
     let cont_bb = BasicBlock {
-        id: 2,
+        id: 3,
         statements: vec![],
-        instructions: vec![
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new(
-                    "hew_vec_get_bool",
-                    vec![vec_place, index_place],
-                    Some(result_place),
-                )
-                .expect("hew_vec_get_bool is allowlisted"),
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "hew_vec_get_bool".to_owned(),
+            authority: CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("hew_vec_get_bool")
+                    .expect("hew_vec_get_bool is catalogued"),
             ),
-            Instr::Move {
-                dest: Place::ReturnSlot,
-                src: result_place,
-            },
-        ],
+            args: vec![vec_place, index_place],
+            dest: Some(result_place),
+            next: 4,
+        },
+    };
+
+    let return_bb = BasicBlock {
+        id: 4,
+        statements: vec![],
+        instructions: vec![Instr::Move {
+            dest: Place::ReturnSlot,
+            src: result_place,
+        }],
         terminator: Terminator::Return,
     };
 
-    let raw_blocks = vec![entry_bb.clone(), trap_bb.clone(), cont_bb.clone()];
+    let raw_blocks = vec![entry_bb, bounds_bb, trap_bb, cont_bb, return_bb];
 
     IrPipeline {
         thir: vec![],
@@ -315,35 +336,24 @@ fn vec_index_bool_pipeline() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::Bool,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![
-                ElabBlock {
-                    id: 0,
+            blocks: (0..=4)
+                .map(|id| ElabBlock {
+                    id,
                     kind: BlockKind::Normal,
                     drops: vec![],
                     successor: None,
-                },
-                ElabBlock {
-                    id: 1,
-                    kind: BlockKind::Normal,
-                    drops: vec![],
-                    successor: None,
-                },
-                ElabBlock {
-                    id: 2,
-                    kind: BlockKind::Normal,
-                    drops: vec![],
-                    successor: None,
-                },
-            ],
+                })
+                .collect(),
             drop_plans: vec![
-                (ExitPath::Return { block: 2 }, DropPlan::default()),
-                (ExitPath::Panic { block: 1 }, DropPlan::default()),
+                (ExitPath::Return { block: 4 }, DropPlan::default()),
+                (ExitPath::Panic { block: 2 }, DropPlan::default()),
             ],
             coroutine: None,
             lambda_captures: vec![],
@@ -387,31 +397,37 @@ fn vec_index_char_pipeline() -> IrPipeline {
     let entry_bb = BasicBlock {
         id: 0,
         statements: vec![],
-        instructions: vec![
-            Instr::ConstI64 {
-                dest: index_place,
-                value: 0,
-            },
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
-                    .expect("hew_vec_len is allowlisted"),
-            ),
-            Instr::IntCmp {
-                dest: oob_flag,
-                pred: CmpPred::UnsignedGreaterEq,
-                lhs: index_place,
-                rhs: len_place,
-            },
-        ],
+        instructions: vec![Instr::ConstI64 {
+            dest: index_place,
+            value: 0,
+        }],
+        terminator: Terminator::Call {
+            callee: "hew_vec_len".to_owned(),
+            authority: CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecLen),
+            args: vec![vec_place],
+            dest: Some(len_place),
+            next: 1,
+        },
+    };
+
+    let bounds_bb = BasicBlock {
+        id: 1,
+        statements: vec![],
+        instructions: vec![Instr::IntCmp {
+            dest: oob_flag,
+            pred: CmpPred::UnsignedGreaterEq,
+            lhs: index_place,
+            rhs: len_place,
+        }],
         terminator: Terminator::Branch {
             cond: oob_flag,
-            then_target: 1,
-            else_target: 2,
+            then_target: 2,
+            else_target: 3,
         },
     };
 
     let trap_bb = BasicBlock {
-        id: 1,
+        id: 2,
         statements: vec![],
         instructions: vec![],
         terminator: Terminator::Trap {
@@ -420,26 +436,32 @@ fn vec_index_char_pipeline() -> IrPipeline {
     };
 
     let cont_bb = BasicBlock {
-        id: 2,
+        id: 3,
         statements: vec![],
-        instructions: vec![
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new(
-                    "hew_vec_get_i32",
-                    vec![vec_place, index_place],
-                    Some(result_place),
-                )
-                .expect("hew_vec_get_i32 is allowlisted"),
+        instructions: vec![],
+        terminator: Terminator::Call {
+            callee: "hew_vec_get_i32".to_owned(),
+            authority: CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("hew_vec_get_i32")
+                    .expect("hew_vec_get_i32 is catalogued"),
             ),
-            Instr::Move {
-                dest: Place::ReturnSlot,
-                src: result_place,
-            },
-        ],
+            args: vec![vec_place, index_place],
+            dest: Some(result_place),
+            next: 4,
+        },
+    };
+
+    let return_bb = BasicBlock {
+        id: 4,
+        statements: vec![],
+        instructions: vec![Instr::Move {
+            dest: Place::ReturnSlot,
+            src: result_place,
+        }],
         terminator: Terminator::Return,
     };
 
-    let raw_blocks = vec![entry_bb.clone(), trap_bb.clone(), cont_bb.clone()];
+    let raw_blocks = vec![entry_bb, bounds_bb, trap_bb, cont_bb, return_bb];
 
     IrPipeline {
         thir: vec![],
@@ -477,35 +499,24 @@ fn vec_index_char_pipeline() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::Char,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![
-                ElabBlock {
-                    id: 0,
+            blocks: (0..=4)
+                .map(|id| ElabBlock {
+                    id,
                     kind: BlockKind::Normal,
                     drops: vec![],
                     successor: None,
-                },
-                ElabBlock {
-                    id: 1,
-                    kind: BlockKind::Normal,
-                    drops: vec![],
-                    successor: None,
-                },
-                ElabBlock {
-                    id: 2,
-                    kind: BlockKind::Normal,
-                    drops: vec![],
-                    successor: None,
-                },
-            ],
+                })
+                .collect(),
             drop_plans: vec![
-                (ExitPath::Return { block: 2 }, DropPlan::default()),
-                (ExitPath::Panic { block: 1 }, DropPlan::default()),
+                (ExitPath::Return { block: 4 }, DropPlan::default()),
+                (ExitPath::Panic { block: 2 }, DropPlan::default()),
             ],
             coroutine: None,
             lambda_captures: vec![],
@@ -693,7 +704,7 @@ fn continuation_path_calls_hew_vec_get_i64() {
     // The continuation block (success path) must call `hew_vec_get_i64`.
     let ll = emit_ll("vec_get_call");
     assert!(
-        ll.contains("call i64 @hew_vec_get_i64("),
+        ll.contains("invoke i64 @hew_vec_get_i64("),
         "continuation path must call hew_vec_get_i64; got:\n{ll}"
     );
 }
@@ -703,7 +714,7 @@ fn entry_block_calls_hew_vec_len() {
     // The entry block must call `hew_vec_len` before any branch.
     let ll = emit_ll("vec_len_call");
     assert!(
-        ll.contains("call i64 @hew_vec_len("),
+        ll.contains("invoke i64 @hew_vec_len("),
         "entry block must call hew_vec_len; got:\n{ll}"
     );
 }

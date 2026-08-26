@@ -33,14 +33,14 @@ type CArena {
     free: Vec<i64>;
 }
 
-fn cnew() -> CArena {
+fn _cnew() -> CArena {
     CArena { slots: Vec.new(), free: Vec.new() }
 }
 
 #[test]
-fn constructs_record_with_unexercised_nested_option_field() {
+fn _constructs_record_with_unexercised_nested_option_field() {
     // Construct the outer record but NEVER build or match the nested Option.
-    let a: CArena = cnew();
+    let a: CArena = _cnew();
     // Assert exact structural values without touching the Option field, so the
     // present-but-unexercised trigger is preserved.
     testing.assert_eq(a.slots.len(), 0);
@@ -57,13 +57,13 @@ type RBox {
     slots: Vec<RSlot>;
 }
 
-fn rnew() -> RBox {
+fn _rnew() -> RBox {
     RBox { slots: Vec.new() }
 }
 
 #[test]
-fn constructs_record_with_unexercised_nested_result_field() {
-    let b: RBox = rnew();
+fn _constructs_record_with_unexercised_nested_result_field() {
+    let b: RBox = _rnew();
     testing.assert_eq(b.slots.len(), 0);
 }
 
@@ -83,13 +83,13 @@ type Canvas {
     pixels: Vec<Pixel>;
 }
 
-fn canvas_new() -> Canvas {
+fn _canvas_new() -> Canvas {
     Canvas { pixels: Vec.new() }
 }
 
 #[test]
-fn constructs_record_with_unexercised_nested_generic_enum_field() {
-    let c: Canvas = canvas_new();
+fn _constructs_record_with_unexercised_nested_generic_enum_field() {
+    let c: Canvas = _canvas_new();
     testing.assert_eq(c.pixels.len(), 0);
 }
 
@@ -103,13 +103,13 @@ type XArena {
     slots: Vec<XSlot>;
 }
 
-fn xnew() -> XArena {
+fn _xnew() -> XArena {
     XArena { slots: Vec.new() }
 }
 
 #[test]
-fn exercised_nested_option_field_roundtrips_value() {
-    let a: XArena = xnew();
+fn _exercised_nested_option_field_roundtrips_value() {
+    let a: XArena = _xnew();
     a.slots.push(XSlot { generation: 0, value: Some("hello") });
     let got = match a.slots.get(0) {
         .Some(slot) => match slot.value {

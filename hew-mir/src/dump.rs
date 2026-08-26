@@ -578,6 +578,10 @@ fn render_terminator(term: &Terminator) -> String {
 )]
 fn render_instr(instr: &Instr) -> String {
     match instr {
+        Instr::OwnershipEvent(event) => format!("ownership {event:?}"),
+        Instr::InteriorMutationCommit { place } => {
+            format!("interior_mutation.commit {}", render_place(place))
+        }
         // Context markers
         Instr::EnterContext => "enter_context".to_string(),
         Instr::ExitContext => "exit_context".to_string(),
@@ -823,9 +827,10 @@ fn render_instr(instr: &Instr) -> String {
         Instr::GeneratorNext {
             dest,
             ctx,
+            ctx_owner,
             yield_ty,
         } => format!(
-            "{} = gen_next {} yield_ty={}",
+            "{} = gen_next {} owner={ctx_owner:?} yield_ty={}",
             render_place(dest),
             render_place(ctx),
             yield_ty.user_facing()
@@ -1117,6 +1122,7 @@ fn render_instr(instr: &Instr) -> String {
             )
         }
         Instr::CallClosure {
+            call_site,
             callee,
             args,
             ret_ty,
@@ -1128,7 +1134,7 @@ fn render_instr(instr: &Instr) -> String {
                 .map(|p| format!("{} = ", render_place(p)))
                 .unwrap_or_default();
             format!(
-                "{dest_str}call_closure {}({arg_str}) ret_ty={}",
+                "{dest_str}call_closure[{call_site}] {}({arg_str}) ret_ty={}",
                 render_place(callee),
                 ret_ty.user_facing()
             )
@@ -1170,6 +1176,16 @@ fn render_instr(instr: &Instr) -> String {
                 ty.user_facing()
             )
         }
+        Instr::AggregateOverwriteRelease {
+            old,
+            replacement,
+            ty,
+        } => format!(
+            "overwrite_release {} with {} ty={}",
+            render_place(old),
+            render_place(replacement),
+            ty.user_facing()
+        ),
 
         // Witness ops
         Instr::WitnessSizeOf { dest, ty } => {
@@ -1585,12 +1601,11 @@ fn render_mir_check(check: &MirCheck) -> String {
             site,
             name,
             mint_provenance,
-            hard,
             reason,
             ..
         } => format!(
             "ObligationUnderReleased {function} blocks={blocks:?} site={site:?} \
-             {name} mint={mint_provenance:?} hard={hard} {reason:?}"
+             {name} mint={mint_provenance:?} {reason:?}"
         ),
         MirCheck::ObligationOverReleased {
             function,
@@ -1662,7 +1677,7 @@ fn dump_elab_drop(out: &mut String, drop: &ElabDrop, indent: usize) {
     let guard = drop
         .guard
         .as_ref()
-        .map(|p| format!(" guard={}", render_place(p)))
+        .map(|guard| format!(" guard={:?}@{}", guard.owner, render_place(&guard.flag)))
         .unwrap_or_default();
     writeln!(
         out,
@@ -1694,6 +1709,7 @@ fn render_exit_path(ep: &ExitPath) -> String {
         } => {
             format!("call[bb{block} {callee} -> bb{next}]")
         }
+        ExitPath::Unwind { block, callee } => format!("unwind[bb{block} {callee}]"),
         ExitPath::Panic { block } => format!("panic[bb{block}]"),
         ExitPath::Cancel { block } => format!("cancel[bb{block}]"),
         ExitPath::Yield { block, next } => format!("yield[bb{block}->bb{next}]"),
@@ -1815,11 +1831,10 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             blocks,
             site,
             name,
-            hard,
             reason,
             ..
         } => format!(
-            "ObligationUnderReleased {function} blocks={blocks:?} site={site:?} {name} hard={hard} {reason:?}"
+            "ObligationUnderReleased {function} blocks={blocks:?} site={site:?} {name} {reason:?}"
         ),
         MirDiagnosticKind::ObligationOverReleased {
             function,
@@ -2292,6 +2307,7 @@ mod tests {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         };
         let pipeline = IrPipeline {
             checked_mir: vec![checked],
@@ -2327,6 +2343,7 @@ mod tests {
             }],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         };
         let pipeline = IrPipeline {
             checked_mir: vec![checked],
@@ -2365,6 +2382,7 @@ mod tests {
             }],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         };
         let pipeline = IrPipeline {
             checked_mir: vec![checked],

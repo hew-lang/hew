@@ -90,7 +90,7 @@ fn main() {
     let port = parse_port(url);
     let path = parse_path(url);
     // Default output file from host
-    if outfile.len() == 0 {
+    if outfile.is_empty() {
         outfile = f"{host}.html";
     }
     println(f"  URL:    {url}");

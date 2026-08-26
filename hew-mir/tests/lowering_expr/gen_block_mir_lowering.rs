@@ -787,17 +787,28 @@ fn actor_receive_gen_owned_record_param_relinquishes_shell_drop() {
         .find(|function| function.name == "Streamer__recv__emit")
         .expect("elaborated receive-generator shell must exist");
     assert!(
-        elaborated
-            .drop_plans
+        raw.blocks
             .iter()
-            .flat_map(|(_, plan)| &plan.drops)
-            .all(|drop| {
-                !(matches!(&drop.ty, hew_types::ResolvedTy::Named { name, .. } if name == "Payload")
-                    && matches!(drop.kind, DropKind::RecordInPlace))
-            }),
-        "the environment owns the moved record; the shell must not retain a \
-         competing RecordInPlace drop: {:?}",
-        elaborated.drop_plans
+            .any(|block| block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::NeutralizePayloadSlot {
+                        place: hew_mir::Place::Local(0),
+                        authority: hew_mir::NeutralizeAuthority::AggregateMemberConsume,
+                        ..
+                    }
+                )
+            })),
+        "the successful MakeGenerator edge must null the shell's moved record slot"
+    );
+    assert!(
+        elaborated.drop_plans.iter().any(|(exit, plan)| {
+            matches!(exit, ExitPath::Cancel { block: 0 }) && plan.drops.iter().any(|drop| {
+                matches!(&drop.ty, hew_types::ResolvedTy::Named { name, .. } if name == "Payload")
+                    && matches!(drop.kind, DropKind::RecordInPlace)
+            })
+        }),
+        "cancellation before MakeGenerator commits must still release the shell-owned record"
     );
 }
 
@@ -854,17 +865,29 @@ fn actor_receive_gen_indirect_enum_param_relinquishes_shell_drop() {
         .find(|function| function.name == "Streamer__recv__emit")
         .expect("elaborated receive-generator shell must exist");
     assert!(
-        elaborated
-            .drop_plans
+        raw.blocks
             .iter()
-            .flat_map(|(_, plan)| &plan.drops)
-            .all(|drop| {
-                !(matches!(&drop.ty, hew_types::ResolvedTy::Named { name, .. } if name == "Tree")
-                    && matches!(drop.kind, DropKind::IndirectEnum))
-            }),
-        "the environment owns the moved indirect enum; the shell must not retain \
-         a competing drop: {:?}",
-        elaborated.drop_plans
+            .any(|block| block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::NeutralizePayloadSlot {
+                        place: hew_mir::Place::Local(0),
+                        authority: hew_mir::NeutralizeAuthority::AggregateMemberConsume,
+                        ..
+                    }
+                )
+            })),
+        "the successful MakeGenerator edge must null the shell's moved indirect-enum slot"
+    );
+    assert!(
+        elaborated.drop_plans.iter().any(|(exit, plan)| {
+            matches!(exit, ExitPath::Cancel { block: 0 })
+                && plan.drops.iter().any(|drop| {
+                    matches!(&drop.ty, hew_types::ResolvedTy::Named { name, .. } if name == "Tree")
+                        && matches!(drop.kind, DropKind::IndirectEnum)
+                })
+        }),
+        "cancellation before MakeGenerator commits must still release the shell-owned enum"
     );
 }
 

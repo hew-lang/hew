@@ -130,7 +130,7 @@ unsafe fn abort_oob(operation: &str, index: usize, len: usize) -> ! {
 ///
 /// Always aborts — safe to call from any context.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_abort_oob(index: i64, len: i64) -> ! {
+pub unsafe extern "C-unwind" fn hew_vec_abort_oob(index: i64, len: i64) -> ! {
     // SAFETY: abort_oob writes to stderr and traps; always safe to call.
     unsafe { abort_oob("Vec index", index as usize, len as usize) }
 }
@@ -151,7 +151,7 @@ unsafe fn abort_pop_empty() -> ! {
 ///
 /// Always aborts — safe to call from any context.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_abort_pop_empty() -> ! {
+pub unsafe extern "C-unwind" fn hew_vec_abort_pop_empty() -> ! {
     // SAFETY: abort_pop_empty writes to stderr and traps; always safe to call.
     unsafe { abort_pop_empty() }
 }
@@ -816,7 +816,7 @@ macro_rules! vec_get_primitive {
         ///
         /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
         #[no_mangle]
-        pub unsafe extern "C" fn $name(v: *mut HewVec, index: i64) -> $ty {
+        pub unsafe extern "C-unwind" fn $name(v: *mut HewVec, index: i64) -> $ty {
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
                 let index = index as usize;
@@ -848,7 +848,7 @@ vec_get_primitive!(hew_vec_get_i64, i64);
 ///
 /// `v` must be a valid string `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char {
+pub unsafe extern "C-unwind" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let index = index as usize;
@@ -894,7 +894,7 @@ unsafe fn abort_ptr_stride_mismatch(elem_size: usize) -> ! {
 /// `v` must be a valid `HewVec` pointer whose elements are pointer-sized
 /// opaque handles.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void {
+pub unsafe extern "C-unwind" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let expected = core::mem::size_of::<*mut c_void>();
@@ -959,7 +959,7 @@ unsafe fn check_slice_bounds(v: *mut HewVec, start: i64, end: i64) -> (usize, us
 /// `v` must be a valid i32 `HewVec` pointer. The returned pointer must be
 /// freed via [`hew_vec_free`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_slice_range_i32(
+pub unsafe extern "C-unwind" fn hew_vec_slice_range_i32(
     v: *mut HewVec,
     start: i64,
     end: i64,
@@ -988,7 +988,7 @@ pub unsafe extern "C" fn hew_vec_slice_range_i32(
 /// `v` must be a valid i64 `HewVec` pointer. The returned pointer must be
 /// freed via [`hew_vec_free`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_slice_range_i64(
+pub unsafe extern "C-unwind" fn hew_vec_slice_range_i64(
     v: *mut HewVec,
     start: i64,
     end: i64,
@@ -1017,7 +1017,7 @@ pub unsafe extern "C" fn hew_vec_slice_range_i64(
 /// `v` must be a valid f64 `HewVec` pointer. The returned pointer must be
 /// freed via [`hew_vec_free`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_slice_range_f64(
+pub unsafe extern "C-unwind" fn hew_vec_slice_range_f64(
     v: *mut HewVec,
     start: i64,
     end: i64,
@@ -1048,7 +1048,7 @@ pub unsafe extern "C" fn hew_vec_slice_range_f64(
 /// `v` must be a valid plain `HewVec` pointer. The returned pointer must be
 /// freed via [`hew_vec_free`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_slice_range_bytesize(
+pub unsafe extern "C-unwind" fn hew_vec_slice_range_bytesize(
     v: *mut HewVec,
     start: i64,
     end: i64,
@@ -1096,7 +1096,7 @@ pub unsafe extern "C" fn hew_vec_slice_range_bytesize(
 /// `v` must be a valid pointer `HewVec`. The returned pointer must be freed
 /// via [`hew_vec_free`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_slice_range_ptr(
+pub unsafe extern "C-unwind" fn hew_vec_slice_range_ptr(
     v: *mut HewVec,
     start: i64,
     end: i64,
@@ -1128,7 +1128,7 @@ pub unsafe extern "C" fn hew_vec_slice_range_ptr(
 /// `v` must be a valid string `HewVec` (`elem_kind == String`). The
 /// returned pointer must be freed via [`hew_vec_free`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_slice_range_str(
+pub unsafe extern "C-unwind" fn hew_vec_slice_range_str(
     v: *mut HewVec,
     start: i64,
     end: i64,
@@ -1165,7 +1165,7 @@ pub unsafe extern "C" fn hew_vec_slice_range_str(
 /// - `layout` must match the layout descriptor stamped into `v`.
 /// - The returned pointer must be freed via [`hew_vec_free`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_slice_range_layout(
+pub unsafe extern "C-unwind" fn hew_vec_slice_range_layout(
     v: *mut HewVec,
     start: i64,
     end: i64,
@@ -1213,7 +1213,7 @@ pub unsafe extern "C" fn hew_vec_slice_range_layout(
 /// `v` must be an owned-element `HewVec`. The returned pointer must be freed
 /// via [`hew_vec_free_owned`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_slice_range_owned(
+pub unsafe extern "C-unwind" fn hew_vec_slice_range_owned(
     v: *mut HewVec,
     start: i64,
     end: i64,
@@ -1265,7 +1265,7 @@ pub unsafe extern "C" fn hew_vec_slice_range_owned(
 ///
 /// `v` must be a valid i32 `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_i32(v: *mut HewVec, index: i64, val: i32) {
+pub unsafe extern "C-unwind" fn hew_vec_set_i32(v: *mut HewVec, index: i64, val: i32) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let index = index as usize;
@@ -1282,7 +1282,7 @@ pub unsafe extern "C" fn hew_vec_set_i32(v: *mut HewVec, index: i64, val: i32) {
 ///
 /// `v` must be a valid bool `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_bool(v: *mut HewVec, index: i64, val: bool) {
+pub unsafe extern "C-unwind" fn hew_vec_set_bool(v: *mut HewVec, index: i64, val: bool) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let index = index as usize;
@@ -1301,7 +1301,7 @@ macro_rules! vec_set_primitive {
         ///
         /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
         #[no_mangle]
-        pub unsafe extern "C" fn $name(v: *mut HewVec, index: i64, val: $ty) {
+        pub unsafe extern "C-unwind" fn $name(v: *mut HewVec, index: i64, val: $ty) {
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
                 let index = index as usize;
@@ -1325,7 +1325,7 @@ vec_set_primitive!(hew_vec_set_u16, u16);
 ///
 /// `v` must be a valid i64 `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_i64(v: *mut HewVec, index: i64, val: i64) {
+pub unsafe extern "C-unwind" fn hew_vec_set_i64(v: *mut HewVec, index: i64, val: i64) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let index = index as usize;
@@ -1345,7 +1345,7 @@ pub unsafe extern "C" fn hew_vec_set_i64(v: *mut HewVec, index: i64, val: i64) {
 /// `v` must be a valid string `HewVec` pointer. `val` must be null or a valid
 /// NUL-terminated C string (of any provenance).
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const c_char) {
+pub unsafe extern "C-unwind" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const c_char) {
     // SAFETY: caller guarantees `v` and `val` are valid.
     unsafe {
         let index = index as usize;
@@ -1369,7 +1369,7 @@ pub unsafe extern "C" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const
 ///
 /// `v` must be a valid f64 `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64) {
+pub unsafe extern "C-unwind" fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let index = index as usize;
@@ -1394,7 +1394,7 @@ macro_rules! vec_pop_primitive {
         ///
         /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
         #[no_mangle]
-        pub unsafe extern "C" fn $name(v: *mut HewVec) -> $ty {
+        pub unsafe extern "C-unwind" fn $name(v: *mut HewVec) -> $ty {
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
                 if (*v).len == 0 {
@@ -1412,7 +1412,7 @@ macro_rules! vec_pop_primitive {
         ///
         /// Non-null `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
         #[no_mangle]
-        pub unsafe extern "C" fn $name(v: *mut HewVec) -> $ty {
+        pub unsafe extern "C-unwind" fn $name(v: *mut HewVec) -> $ty {
             cabi_guard!(v.is_null(), $null_ret);
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
@@ -1441,7 +1441,7 @@ vec_pop_primitive!(hew_vec_pop_i64, i64);
 ///
 /// `v` must be a valid string `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_pop_str(v: *mut HewVec) -> *const c_char {
+pub unsafe extern "C-unwind" fn hew_vec_pop_str(v: *mut HewVec) -> *const c_char {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         if (*v).len == 0 {
@@ -1960,7 +1960,7 @@ vec_remove_primitive!(hew_vec_remove_ptr, *mut c_void);
 /// wasm32 therefore carries 32-bit descriptor fields and native 64-bit targets
 /// carry 64-bit fields without a host-width assumption in this ABI.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_remove_at_layout(
+pub unsafe extern "C-unwind" fn hew_vec_remove_at_layout(
     v: *mut HewVec,
     index: i64,
     out: *mut core::ffi::c_void,
@@ -2024,7 +2024,7 @@ macro_rules! vec_remove_at_primitive {
         /// Non-null `v` must be a valid `HewVec` pointer whose element storage
         /// matches this symbol's type.
         #[no_mangle]
-        pub unsafe extern "C" fn $name(v: *mut HewVec, index: i64) -> $ty {
+        pub unsafe extern "C-unwind" fn $name(v: *mut HewVec, index: i64) -> $ty {
             // SAFETY: caller guarantees `v` is a valid HewVec for `$ty`.
             unsafe {
                 abort_if_layout_aware(v);
@@ -2063,7 +2063,7 @@ vec_remove_at_primitive!(hew_vec_remove_at_f64, f64);
 ///
 /// `v` must be a valid string `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_remove_at_str(v: *mut HewVec, index: i64) -> *const c_char {
+pub unsafe extern "C-unwind" fn hew_vec_remove_at_str(v: *mut HewVec, index: i64) -> *const c_char {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -2088,7 +2088,7 @@ pub unsafe extern "C" fn hew_vec_remove_at_str(v: *mut HewVec, index: i64) -> *c
 ///
 /// Non-null `v` must be a valid pointer-element `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_remove_at_ptr(v: *mut HewVec, index: i64) -> *mut c_void {
+pub unsafe extern "C-unwind" fn hew_vec_remove_at_ptr(v: *mut HewVec, index: i64) -> *mut c_void {
     cabi_guard!(v.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
@@ -2127,7 +2127,7 @@ pub unsafe extern "C" fn hew_vec_remove_at_ptr(v: *mut HewVec, index: i64) -> *m
 /// `v` must be an owned-element `HewVec`. `out` must point to at least
 /// `descriptor.size` writable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_remove_at_owned(
+pub unsafe extern "C-unwind" fn hew_vec_remove_at_owned(
     v: *mut HewVec,
     index: i64,
     out: *mut core::ffi::c_void,
@@ -2163,7 +2163,7 @@ pub unsafe extern "C" fn hew_vec_remove_at_owned(
 ///
 /// `v` must be a valid pointer `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val: *mut c_void) {
+pub unsafe extern "C-unwind" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val: *mut c_void) {
     cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
@@ -2214,7 +2214,7 @@ pub unsafe extern "C" fn hew_vec_contains_str(v: *const HewVec, val: *const c_ch
 ///
 /// `v` must be a valid `HewVec` pointer (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
+pub unsafe extern "C-unwind" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
     cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
@@ -2353,7 +2353,7 @@ pub unsafe extern "C" fn hew_vec_push_layout(
 /// `v` must be a valid `HewVec` pointer. The returned pointer is valid only
 /// while the vec is not reallocated.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_generic(
+pub unsafe extern "C-unwind" fn hew_vec_get_generic(
     v: *const HewVec,
     index: i64,
 ) -> *const core::ffi::c_void {
@@ -2376,7 +2376,7 @@ pub unsafe extern "C" fn hew_vec_get_generic(
 /// plain ownership layout. The returned pointer is valid only while the vec is
 /// not reallocated.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_layout(
+pub unsafe extern "C-unwind" fn hew_vec_get_layout(
     v: *const HewVec,
     index: i64,
     layout: *const HewTypeLayout,
@@ -2401,7 +2401,7 @@ pub unsafe extern "C" fn hew_vec_get_layout(
 /// `v` must be a valid `HewVec` pointer. `data` must point to at least
 /// `elem_size` readable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_generic(
+pub unsafe extern "C-unwind" fn hew_vec_set_generic(
     v: *mut HewVec,
     index: i64,
     data: *const core::ffi::c_void,
@@ -2427,7 +2427,7 @@ pub unsafe extern "C" fn hew_vec_set_generic(
 /// plain ownership layout. `data` must point to at least `layout.size`
 /// readable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_layout(
+pub unsafe extern "C-unwind" fn hew_vec_set_layout(
     v: *mut HewVec,
     index: i64,
     data: *const core::ffi::c_void,
@@ -2708,7 +2708,7 @@ pub unsafe extern "C" fn hew_vec_push_owned_move(v: *mut HewVec, data: *const co
 /// `v` must be an owned-element `HewVec`. The returned pointer is valid only
 /// while the vec is not reallocated.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_get_owned(
+pub unsafe extern "C-unwind" fn hew_vec_get_owned(
     v: *const HewVec,
     index: i64,
 ) -> *const core::ffi::c_void {
@@ -2837,7 +2837,7 @@ pub unsafe extern "C" fn hew_vec_take_owned(
 /// `v` must be an owned-element `HewVec`. `data` must point to at least
 /// `descriptor.size` readable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_owned(
+pub unsafe extern "C-unwind" fn hew_vec_set_owned(
     v: *mut HewVec,
     index: i64,
     data: *const core::ffi::c_void,
@@ -2889,7 +2889,7 @@ pub unsafe extern "C" fn hew_vec_set_owned(
 /// [`hew_vec_new_with_elem_layout`]). `data` must point to at least
 /// `descriptor.size` readable bytes whose ownership is transferred to the Vec.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_owned_move(
+pub unsafe extern "C-unwind" fn hew_vec_set_owned_move(
     v: *mut HewVec,
     index: i64,
     data: *const core::ffi::c_void,
@@ -3447,10 +3447,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
-    )]
     fn test_vec_push_get_str() {
         // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
         unsafe {
@@ -3520,10 +3516,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
-    )]
     fn test_vec_pop_str() {
         // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
         unsafe {
@@ -4383,10 +4375,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
-    )]
     fn slice_range_str_retains_each_element_so_drops_are_refcount_independent() {
         // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
         unsafe {
@@ -4473,10 +4461,6 @@ mod tests {
     /// second vec releases the last owner. The refcount ladder (1→2→1→…→0) is
     /// asserted directly, and `ASan` confirms exactly-once frees with no UAF.
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
-    )]
     fn vec_string_element_survives_until_last_owner_freed() {
         // SAFETY: FFI calls use a valid string HewVec and header-aware strings.
         unsafe {
@@ -4533,10 +4517,6 @@ mod tests {
     /// retains the new one, leaving the original vec's slot intact and readable.
     /// This is the element-level copy-on-write the migration delivers.
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
-    )]
     fn vec_set_str_is_element_cow_against_a_clone() {
         // SAFETY: FFI calls use valid string HewVecs and header-aware strings.
         unsafe {
@@ -4594,10 +4574,6 @@ mod tests {
     /// releasing the remaining element must each free exactly once — no
     /// double-free (`ASan`).
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
-    )]
     fn vec_pop_str_transfers_owner_without_double_free() {
         // SAFETY: FFI calls use a valid string HewVec and header-aware strings.
         unsafe {
@@ -4635,10 +4611,6 @@ mod tests {
     /// surviving prefix is untouched and readable. `ASan` confirms no
     /// double-free or UAF, and free-at-zero when the clone is freed.
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
-    )]
     fn vec_truncate_releases_dropped_string_elements() {
         // SAFETY: FFI calls use a valid string HewVec and header-aware strings.
         unsafe {
@@ -4851,10 +4823,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
-    )]
     fn vec_clone_owned_string_elements_are_independent() {
         // SAFETY: FFI calls use a valid string HewVec and header-aware C strings.
         unsafe {

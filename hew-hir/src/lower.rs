@@ -59,6 +59,22 @@ use crate::node::{
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
 
+/// A compiler-generated value wrapper may reuse an existing owner only when
+/// the checker proves that the wrapper owns the value and its generated CFG
+/// has one exact value-producing source. Zero sources have no owner to carry;
+/// multiple sources require a real join owner rather than an arbitrary
+/// identity choice.
+fn generated_single_source_identity_relation(
+    ownership: hew_types::ProducedValueOwnership,
+    sources: &[SiteId],
+) -> Option<HirProducedValueRelation> {
+    let [source] = sources else {
+        return None;
+    };
+    matches!(ownership, hew_types::ProducedValueOwnership::Owned { .. })
+        .then_some(HirProducedValueRelation::Identity(*source))
+}
+
 /// Target architecture for compilation. Subset of the full `TargetSpec`
 /// from `hew-cli/src/target.rs`, exposed at the HIR boundary so target gates
 /// can reject unsupported constructs before codegen. Kept minimal to avoid
@@ -12025,14 +12041,32 @@ impl LowerCtx {
                     }
                 }
                 StringPart::Expr((expr, expr_span)) => {
-                    let value =
+                    let authored =
                         self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
+                    let producer = HirProducedValueProducer::classify(&authored.kind);
+                    let anchor_site = self.ids.site();
+                    let value = self.subsumed_value(
+                        anchor_site,
+                        expr_span,
+                        IntentKind::Read,
+                        authored,
+                        producer,
+                    );
                     let rendered = self.lower_display_dispatch(value, expr_span.clone());
                     segments.push(rendered);
                 }
                 StringPart::StructuralExpr((expr, expr_span)) => {
-                    let value =
+                    let authored =
                         self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
+                    let producer = HirProducedValueProducer::classify(&authored.kind);
+                    let anchor_site = self.ids.site();
+                    let value = self.subsumed_value(
+                        anchor_site,
+                        expr_span,
+                        IntentKind::Read,
+                        authored,
+                        producer,
+                    );
                     let dispatch_ty = self
                         .interpolation_display_types
                         .get(&self.mk_key(expr_span))
@@ -18345,6 +18379,23 @@ impl LowerCtx {
             Expr::Unary { op, operand } => self.lower_unary_expr(*op, operand, &span),
             Expr::Call { function, args, .. } => {
                 let rewrite_key = self.mk_key(&span);
+                if let Some(MethodCallRewrite::GenericWireCodec {
+                    direction,
+                    value_ty,
+                }) = self.method_call_rewrites.get(&rewrite_key).cloned()
+                {
+                    let (kind, ty) =
+                        self.lower_generic_wire_codec(args, direction, value_ty, span.clone());
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
+                }
                 if let Some(MethodCallRewrite::RcIntrinsic {
                     op: RcIntrinsicOp::New,
                     payload_ty,
@@ -20648,6 +20699,10 @@ impl LowerCtx {
     /// with `SelectArmTypeMismatch`. Empty selects and multiple-after
     /// arms are rejected with `SelectNoArms` and
     /// `SelectMultipleAfterArms` respectively.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "sealed select lowering keeps arm scope publication, binding, and result-type checks in one auditable pass"
+    )]
     fn lower_select(
         &mut self,
         arms: &[SelectArm],
@@ -20702,6 +20757,9 @@ impl LowerCtx {
             // resolves to an unbound `Place` and falls back to
             // `MirDiagnosticKind::UnresolvedPlace`.
             self.push_scope();
+            let arm_scope = binding_name.as_ref().map(|_| self.ids.scope());
+            let previous_scope_id =
+                arm_scope.map(|scope| std::mem::replace(&mut self.current_scope_id, scope));
             let binding_id = if let Some(ref name) = binding_name {
                 self.select_arm_binding_ty(&kind, &arm.source.1)
                     .map(|binding_ty| {
@@ -20712,6 +20770,9 @@ impl LowerCtx {
                 None
             };
             let body = self.lower_expr(&arm.body, IntentKind::Read);
+            if let Some(previous) = previous_scope_id {
+                self.current_scope_id = previous;
+            }
             self.pop_scope();
             if let Some(expected) = expected_ty.as_ref() {
                 if &body.ty != expected {
@@ -20729,6 +20790,7 @@ impl LowerCtx {
                 expected_ty = Some(body.ty.clone());
             }
             hir_arms.push(HirSelectArm {
+                scope: arm_scope,
                 kind,
                 binding_name,
                 binding_id,
@@ -20762,6 +20824,7 @@ impl LowerCtx {
                 expected_ty = Some(body.ty.clone());
             }
             hir_arms.push(HirSelectArm {
+                scope: None,
                 kind: HirSelectArmKind::AfterTimer {
                     duration: Box::new(duration),
                 },
@@ -22776,8 +22839,25 @@ impl LowerCtx {
         self.push_scope();
         let mut statements: Vec<HirStmt> = Vec::new();
 
-        // Bind the receiver once.
-        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+        // Bind the receiver once. A place receiver must remain usable after
+        // this eager pipeline, but `Vec` is a single-owner handle with no
+        // refcount. Give the synthetic source binding an independent snapshot
+        // through the checker-preauthored element-aware clone. A non-place
+        // producer has no surviving source and moves directly into the binding.
+        let lowered_receiver = if Self::for_in_iterable_is_place(&receiver.0) {
+            let clone_span = span.start..span.start;
+            let clone_call = (
+                Expr::MethodCall {
+                    receiver: Box::new((receiver.0.clone(), clone_span.clone())),
+                    method: "clone".to_string(),
+                    args: Vec::new(),
+                },
+                clone_span,
+            );
+            self.lower_synthetic_checker_root(&clone_call, IntentKind::Consume)
+        } else {
+            self.lower_expr(receiver, IntentKind::Consume)
+        };
         let src_name = format!("__hew_pipe_src_{}", self.ids.binding().0);
         let src_binding = self.bind(src_name.clone(), src_vec_ty.clone(), false, span.clone());
         let src_id = src_binding.id;
@@ -26155,6 +26235,36 @@ impl LowerCtx {
         )
     }
 
+    fn lower_generic_wire_codec(
+        &mut self,
+        args: &[hew_parser::ast::CallArg],
+        direction: WireCodecDirection,
+        value_ty: ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        if args.len() != 1 {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "generic wire codec function".to_string(),
+                    reason: format!("expected exactly one argument, found {}", args.len()),
+                },
+                span.clone(),
+                "generic wire codec lowering takes exactly one argument",
+            ));
+            return (
+                HirExprKind::Unsupported(
+                    "generic wire codec function has invalid arity".to_string(),
+                ),
+                ResolvedTy::Unit,
+            );
+        }
+        if direction.is_serialize() {
+            self.lower_wire_codec(args[0].expr(), &[], direction, value_ty, span)
+        } else {
+            self.lower_wire_codec(args[0].expr(), args, direction, value_ty, span)
+        }
+    }
+
     /// Peel a `(a..b).rev()` / `.step_by(k)` adapter chain off a for-loop
     /// iterable down to its base range literal.
     ///
@@ -27823,8 +27933,12 @@ impl LowerCtx {
                 direction,
                 value_ty,
             }) => self.lower_wire_codec(receiver, args, direction, value_ty, span),
+            Some(MethodCallRewrite::GenericWireCodec {
+                direction,
+                value_ty,
+            }) => self.lower_generic_wire_codec(args, direction, value_ty, span),
             Some(MethodCallRewrite::BuiltinOptionResult { method }) => {
-                self.lower_builtin_option_result_method(method, receiver, args, span)
+                self.lower_builtin_option_result_method(method, receiver, args, span, site)
             }
             Some(MethodCallRewrite::RemoteActorAsk) => {
                 self.try_register_enum_instantiation(&span);
@@ -28852,6 +28966,7 @@ impl LowerCtx {
         receiver: &Spanned<Expr>,
         args: &[hew_parser::ast::CallArg],
         span: Span,
+        result_site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         let expected_args = Self::option_result_method_arity(method);
         if args.len() != expected_args {
@@ -28911,6 +29026,7 @@ impl LowerCtx {
                 .map(|(predicate, _)| predicate)
         };
 
+        let mut identity_source = None;
         let arms = match method {
             OptionResultMethod::OptionIsSome => {
                 let Some(some) = variant(self, BuiltinType::Option, "Some") else {
@@ -29075,6 +29191,13 @@ impl LowerCtx {
                 );
                 let panic_call =
                     self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
+                let payload = self.synthetic_binding_ref(
+                    binding_name,
+                    payload_binding,
+                    ret_ty.clone(),
+                    &span,
+                );
+                identity_source = Some(payload.site);
                 vec![
                     HirMatchArm {
                         scope: Some(self.ids.scope()),
@@ -29088,12 +29211,7 @@ impl LowerCtx {
                         payload_predicates: Vec::new(),
                         payload_variant_predicates: Vec::new(),
                         guard: None,
-                        body: self.synthetic_binding_ref(
-                            binding_name,
-                            payload_binding,
-                            ret_ty.clone(),
-                            &span,
-                        ),
+                        body: payload,
                         span: span.clone(),
                     },
                     HirMatchArm {
@@ -29170,6 +29288,49 @@ impl LowerCtx {
                 ]
             }
         };
+
+        if let Some(source) = identity_source {
+            let key = self.mk_key(&span);
+            if let Some(authority) = self.produced_value_ownership.get(&key).cloned() {
+                if let Some(relation) =
+                    generated_single_source_identity_relation(authority.ownership, &[source])
+                {
+                    let source_previous = self.generated_produced_value_facts.insert(
+                        source,
+                        HirProducedValueFact {
+                            producer: HirProducedValueProducer::BindingRef,
+                            // The generated binding reference is only the
+                            // identity anchor. The enclosing owned Match row
+                            // performs the one physical owner handoff.
+                            ownership: hew_types::ProducedValueOwnership::Borrowed,
+                            relation: HirProducedValueRelation::Leaf,
+                            receiver: None,
+                            receiver_boundary: None,
+                            arguments: Vec::new(),
+                        },
+                    );
+                    assert!(
+                        source_previous.is_none(),
+                        "generated unwrap payload site published twice"
+                    );
+                    let result_previous = self.generated_produced_value_facts.insert(
+                        result_site,
+                        HirProducedValueFact {
+                            producer: HirProducedValueProducer::Match,
+                            ownership: authority.ownership,
+                            relation,
+                            receiver: None,
+                            receiver_boundary: authority.receiver_boundary,
+                            arguments: authority.arguments,
+                        },
+                    );
+                    assert!(
+                        result_previous.is_none(),
+                        "generated unwrap result site published twice"
+                    );
+                }
+            }
+        }
 
         (
             HirExprKind::Match {
@@ -36207,6 +36368,44 @@ mod tests {
     use super::*;
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
+
+    #[test]
+    fn generated_owned_single_source_reuses_its_exact_identity() {
+        let source = SiteId(41);
+        assert_eq!(
+            generated_single_source_identity_relation(
+                hew_types::ProducedValueOwnership::owned(
+                    hew_types::ProducedValueAcquisition::MoveOut,
+                ),
+                &[source],
+            ),
+            Some(HirProducedValueRelation::Identity(source))
+        );
+    }
+
+    #[test]
+    fn generated_owned_ambiguous_sources_do_not_choose_an_identity() {
+        assert_eq!(
+            generated_single_source_identity_relation(
+                hew_types::ProducedValueOwnership::owned(
+                    hew_types::ProducedValueAcquisition::MoveOut,
+                ),
+                &[SiteId(41), SiteId(42)],
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn generated_unknown_source_does_not_fabricate_an_identity() {
+        assert_eq!(
+            generated_single_source_identity_relation(
+                hew_types::ProducedValueOwnership::Unknown,
+                &[SiteId(41)],
+            ),
+            None
+        );
+    }
 
     #[test]
     fn builtin_receiver_signature_mismatch_is_a_diagnostic_not_a_panic() {

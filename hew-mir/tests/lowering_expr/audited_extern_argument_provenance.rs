@@ -42,9 +42,9 @@
 //! express — fails as a DOUBLE RELEASE, and nothing in the front end yet
 //! requires an author to have considered ownership at a heap-typed extern
 //! parameter, so an omitted `consume` is not evidence of a decision. The
-//! refusals below pin that the unaudited case did not move.
+//! refusals below pin that the unaudited case still withholds caller cleanup.
 
-use hew_mir::IrPipeline;
+use hew_mir::{Instr, IrPipeline, OwnershipEvent, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -85,6 +85,42 @@ fn releases_in(p: &IrPipeline, function: &str) -> usize {
         .sum()
 }
 
+/// Pre-call owner handoffs into one named callee. These are distinct from the
+/// runtime ABI's normal-success commits: an opaque extern may adopt the handle
+/// before unwinding, so its caller owner must end in the call block itself.
+fn pre_call_handoffs_into(p: &IrPipeline, function: &str, callee: &str) -> usize {
+    let function = p
+        .checked_mir
+        .iter()
+        .find(|f| f.name == function)
+        .unwrap_or_else(|| panic!("`{function}` must lower"));
+    function
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee: target,
+                args,
+                ..
+            } if target == callee => Some((&block.instructions, args)),
+            _ => None,
+        })
+        .flat_map(|(instructions, args)| {
+            instructions.iter().filter(move |instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                        from,
+                        to: None,
+                        to_owner: None,
+                        ..
+                    }) if args.contains(from)
+                )
+            })
+        })
+        .count()
+}
+
 /// The reproducer, parameterised by the extern declaration and the call.
 fn caller_of(decl: &str, call: &str) -> IrPipeline {
     pipeline_with_tc(&format!(
@@ -111,6 +147,11 @@ fn a_root_declared_audited_borrow_extern_leaves_the_caller_its_release() {
          caller keeps the sole release. Zero here is the leak that cost \
          `std/net/net.hew::connect_timeout` thirteen releases."
     );
+    assert_eq!(
+        pre_call_handoffs_into(&p, "pick", "hew_tcp_connect_timeout"),
+        0,
+        "an audited all-borrow extern must not take the caller owner"
+    );
 }
 
 /// The same question asked of a callee with no audited row at all. This is the
@@ -130,6 +171,11 @@ fn an_unaudited_host_extern_still_withholds_the_callers_release() {
         "an extern with no audited argument contract may have taken the handle; \
          keeping a caller-side release on top of that is a double free"
     );
+    assert_eq!(
+        pre_call_handoffs_into(&p, "pick", "a_host_symbol_the_runtime_does_not_classify"),
+        1,
+        "the opaque boundary must end the exact caller owner before invocation"
+    );
 }
 
 /// A `Consume` position anywhere in the audited signature refuses the whole
@@ -145,6 +191,11 @@ fn an_audited_consuming_extern_still_withholds_the_callers_release() {
         0,
         "`hew_string_drop` is audited `params = [consume]`; a caller-side \
          release on top of it frees the buffer twice"
+    );
+    assert_eq!(
+        pre_call_handoffs_into(&p, "pick", "hew_string_drop"),
+        1,
+        "the audited consuming extern must receive the exact caller owner"
     );
 }
 
@@ -162,5 +213,10 @@ fn an_audited_name_declared_at_the_wrong_arity_withholds_the_callers_release() {
         0,
         "arity disagreement means this is not a declaration of the audited \
          callee, so the row must not be claimed by name"
+    );
+    assert_eq!(
+        pre_call_handoffs_into(&p, "pick", "hew_tcp_connect_timeout"),
+        1,
+        "a mismatched declaration must not acquire the audited borrow capability"
     );
 }

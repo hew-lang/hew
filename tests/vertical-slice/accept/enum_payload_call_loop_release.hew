@@ -36,10 +36,10 @@ fn bytes_loop() -> i64 {
     var i = 0;
     while i < 5 {
         match ok_bytes(i) {
-            Ok(b) => {
+            .Ok(b) => {
                 total = total + b.len();
             },
-            Err(e) => {
+            .Err(e) => {
                 total = total - e.len();
             },
         }
@@ -54,10 +54,10 @@ fn mixed_arms_loop() -> i64 {
     var i = 0;
     while i < 6 {
         match mixed(i) {
-            Ok(s) => {
+            .Ok(s) => {
                 oks = oks + s.len();
             },
-            Err(e) => {
+            .Err(e) => {
                 errs = errs + e.len();
             },
         }
@@ -71,10 +71,10 @@ fn composite_loop() -> i64 {
     var i = 0;
     while i < 4 {
         match ok_row(i) {
-            Ok(r) => {
+            .Ok(r) => {
                 total = total + r.id;
             },
-            Err(e) => {},
+            .Err(e) => {},
         }
         i = i + 1;
     }
@@ -87,7 +87,7 @@ fn break_continue_loop() -> i64 {
     while i < 10 {
         i = i + 1;
         match ok_bytes(i) {
-            Ok(b) => {
+            .Ok(b) => {
                 if b.len() == 7 && i == 3 {
                     continue;
                 }
@@ -96,7 +96,7 @@ fn break_continue_loop() -> i64 {
                 }
                 seen = seen + 1;
             },
-            Err(e) => {},
+            .Err(e) => {},
         }
     }
     seen

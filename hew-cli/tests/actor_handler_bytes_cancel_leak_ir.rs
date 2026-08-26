@@ -27,6 +27,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
 
+use support::leak_slope::{
+    compile_to_native_with_ir, measure_leaks_exact, run_under_malloc_scribble,
+};
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 /// Forwarding handler shaped exactly like Opus's counterexample: a `println`
@@ -62,6 +65,17 @@ actor Forwarder {
     receive fn forward(data: bytes) { recipient.take(data); }
 }
 fn main() -> i64 { 0 }
+"#;
+
+const STRING_GET_UNWIND_SOURCE: &str = r#"
+fn string_get_probe(s: string) -> i64 {
+    let keep = "kept";
+    let _c = s.get(0);
+    println(keep);
+    return 0;
+}
+
+fn main() -> i64 { return string_get_probe("x"); }
 "#;
 
 /// Compile `source` and read the emitted `<name>.ll` LLVM IR text.
@@ -374,4 +388,70 @@ fn immediate_forward_emits_no_cancel_exit_block() {
          itself) must suppress the function-entry cooperate checkpoint \
          entirely — nothing to assert a cancel-path drop against:\n{body}"
     );
+}
+
+#[test]
+fn specialized_string_get_uses_the_terminator_unwind_plan() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("string-get-owned-unwind-")
+        .tempdir()
+        .expect("tempdir");
+    let ll = compile_and_read_ll(STRING_GET_UNWIND_SOURCE, dir.path(), "string_get_unwind");
+    let body = fn_body(&ll, "@string_get_probe").expect("missing string_get_probe definition");
+    assert!(
+        body.contains("invoke i32 @hew_string_index")
+            && body.contains("landingpad { ptr, i32 }")
+            && body.contains("call void @hew_string_drop"),
+        "the specialized StringGet lowerer must inherit its MIR call-site invoke and cleanup:\n{body}"
+    );
+    assert!(
+        !body.lines().any(|line| {
+            line.trim_start()
+                .starts_with("%string_get_codepoint = call i32 @hew_string_index")
+        }),
+        "hew_string_index must never remain a plain call inside StringGet:\n{body}"
+    );
+}
+
+/// A trap-capable runtime ABI call is a real CFG split. The normal successor
+/// commits ownership; the unwind edge destroys the pre-call bytes generation.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "exact leak proof needs macOS leaks(1); structural invoke proof remains covered on every host"
+)]
+#[test]
+fn bytes_set_oob_runtime_call_invokes_owned_unwind_cleanup() {
+    require_codegen();
+    let source = include_str!("../../tests/vertical-slice/accept/bytes_set_oob_actor_isolated.hew");
+    let dir = tempfile::Builder::new()
+        .prefix("bytes-set-owned-unwind-")
+        .tempdir()
+        .expect("tempdir");
+    let (bin, ll_path) =
+        compile_to_native_with_ir(source, dir.path(), "bytes_set_oob_owned_unwind");
+    let ll = std::fs::read_to_string(ll_path).expect("read bytes.set LLVM IR");
+    let body = fn_body(&ll, "@BytesSetCrasher__recv__boom")
+        .expect("missing BytesSetCrasher receive function");
+    assert!(
+        body.contains("invoke void @hew_bytes_set")
+            && body.contains("landingpad { ptr, i32 }")
+            && body.contains("call void @hew_bytes_drop"),
+        "trap-capable CallRuntimeAbi must lower through invoke plus lexical cleanup:\n{body}"
+    );
+
+    let poisoned = run_under_malloc_scribble(&bin);
+    assert_eq!(
+        poisoned.status.code(),
+        Some(1),
+        "the actor fault is unrecovered but must not abort or double-free:\n{}",
+        describe_output(&poisoned)
+    );
+    assert!(
+        String::from_utf8_lossy(&poisoned.stderr)
+            .contains("PANIC: bytes.set() index 99 out of bounds"),
+        "the exact trap must execute:\n{}",
+        describe_output(&poisoned)
+    );
+    assert_eq!(measure_leaks_exact(&bin), (0, 0));
 }

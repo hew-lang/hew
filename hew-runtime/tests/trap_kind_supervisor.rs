@@ -3,7 +3,7 @@
 //!
 //! This is the inverse of the codegen-side change in
 //! `hew-codegen-rs/src/llvm.rs` (`Terminator::Trap`): codegen emits
-//! `hew_trap_with_code(<code>)` per `TrapKind`; the longjmp seam
+//! `hew_trap_with_code(<code>)` per `TrapKind`; the caught-unwind seam
 //! records `code` as the actor's `error_code`; `ExitReason::from_error_code`
 //! converts the raw i32 into the named variant the supervisor reports.
 //!

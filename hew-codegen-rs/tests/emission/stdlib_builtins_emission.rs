@@ -102,8 +102,8 @@ fn builtins_assert_family_declares_runtime_symbols() {
         "assert_ne(i64, i64) must declare hew_assert_ne_i64:\n{ll}"
     );
     assert!(
-        ll.contains("call void @hew_assert(i8 "),
-        "assert(true) must call hew_assert through the i8 bool ABI:\n{ll}"
+        ll.contains("invoke void @hew_assert(i8 "),
+        "assert(true) must invoke hew_assert through the unwind-capable i8 bool ABI:\n{ll}"
     );
 }
 
@@ -146,8 +146,8 @@ fn builtins_sleep_declares_duration_runtime_symbol() {
         "sleep(duration) must declare hew_sleep_ns with the catalog ABI:\n{ll}"
     );
     assert!(
-        ll.contains("call void @hew_sleep_ns(i64 "),
-        "sleep(0ns) must call hew_sleep_ns:\n{ll}"
+        ll.contains("invoke void @hew_sleep_ns(i64 "),
+        "sleep(0ns) must invoke hew_sleep_ns through the unwind-capable terminal-call ABI:\n{ll}"
     );
 }
 
@@ -169,8 +169,8 @@ fn builtins_sleep_until_declares_instant_runtime_symbol() {
         "sleep_until(instant) must declare hew_sleep_until_ns with the catalog ABI:\n{ll}"
     );
     assert!(
-        ll.contains("call void @hew_sleep_until_ns(i64 "),
-        "sleep_until(t) must call hew_sleep_until_ns:\n{ll}"
+        ll.contains("invoke void @hew_sleep_until_ns(i64 "),
+        "sleep_until(t) must invoke hew_sleep_until_ns through the unwind-capable terminal-call ABI:\n{ll}"
     );
 }
 

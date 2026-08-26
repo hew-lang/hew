@@ -392,20 +392,15 @@ pub unsafe extern "C-unwind" fn hew_arena_malloc(size: usize) -> *mut c_void {
         // (which would let dispatch keep running with a dangling pointer)
         // or a generic abort.
         //
-        // - Native: longjmp seam unwinds to the sigsetjmp frame in the
-        //   scheduler without returning here.
-        // - WASM: longjmp is unavailable; stamp the trap code and panic. The
+        // - Native: typed Rust unwind reaches the scheduler's catch boundary.
+        // - WASM: stamp the trap code and panic. The
         //   production panic=abort artifact terminates the module rather than
         //   pretending it can contain and restart this actor.
         #[cfg(not(target_arch = "wasm32"))]
         if ptr.is_null() && arena.cap > 0 {
-            // SAFETY: must be called from an actor dispatch context on a
-            // worker thread.
-            unsafe {
-                crate::signal::try_direct_longjmp_with_code(
-                    crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
-                );
-            }
+            let code = crate::internal::types::HEW_TRAP_HEAP_EXCEEDED;
+            let _ = crate::trap_code::stamp_current_actor_error_code(code);
+            std::panic::panic_any(crate::actor::HewPanic { code });
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -869,10 +864,18 @@ mod tests {
         let p2 = unsafe { hew_arena_malloc(64) };
         assert!(!p2.is_null(), "malloc exactly at cap must succeed");
 
-        // Over cap.
-        // SAFETY: arena is installed; malloc must return null when cap exhausted.
-        let p3 = unsafe { hew_arena_malloc(1) };
-        assert!(p3.is_null(), "malloc over cap must return null");
+        // Host parity uses the same typed unwind the native scheduler catches.
+        let exhausted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: arena is installed; malloc unwinds when the cap is exhausted.
+            let _ = unsafe { hew_arena_malloc(1) };
+        }))
+        .expect_err("malloc over cap must unwind");
+        assert_eq!(
+            exhausted
+                .downcast_ref::<crate::actor::HewPanic>()
+                .map(|panic| panic.code),
+            Some(crate::internal::types::HEW_TRAP_HEAP_EXCEEDED)
+        );
 
         // SAFETY: null is always safe.
         unsafe { hew_arena_set_current(ptr::null_mut()) };

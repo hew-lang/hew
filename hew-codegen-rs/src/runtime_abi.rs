@@ -2,7 +2,7 @@
 //!
 //! Pure relocation (R4 god-module carve) of the runtime-call lowering edge out
 //! of llvm.rs: [`lower_call_runtime_abi`] — the single dispatch that lowers
-//! every `Instr::CallRuntimeAbi` to its C-ABI extern declaration and call,
+//! every typed MIR runtime call to its C-ABI extern declaration and call,
 //! covering the entire `RuntimeCallFamily` surface. Every `bytes` parameter
 //! crosses the C-ABI boundary as a plain `ptr` (the caller's BytesTriple alloca
 //! address); the declaration edges and the call edge apply that one rule with
@@ -332,10 +332,12 @@ pub(crate) fn store_classified_bytes_return<'ctx>(
 ) -> CodegenResult<()> {
     match return_abi {
         crate::abi_class::AggregateReturnAbi::RegisterPair { carrier } => {
-            let call_site = fn_ctx
-                .builder
-                .build_call(fv, non_sret_args, &format!("{symbol}_call"))
-                .llvm_ctx("classified bytes-return call")?;
+            let call_site = fn_ctx.call_runtime_declared(
+                fv,
+                non_sret_args,
+                &format!("{symbol}_call"),
+                "classified bytes-return call",
+            )?;
             let pair = call_site.try_as_basic_value().basic().ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "{symbol} returned void unexpectedly (register-pair class)"
@@ -355,10 +357,12 @@ pub(crate) fn store_classified_bytes_return<'ctx>(
                 Vec::with_capacity(non_sret_args.len() + 1);
             sret_args.push(dest_ptr.into());
             sret_args.extend_from_slice(non_sret_args);
-            fn_ctx
-                .builder
-                .build_call(fv, &sret_args, &format!("{symbol}_sret_call"))
-                .llvm_ctx("classified bytes-return (sret) call")?;
+            fn_ctx.call_runtime_declared(
+                fv,
+                &sret_args,
+                &format!("{symbol}_sret_call"),
+                "classified bytes-return (sret) call",
+            )?;
             // The runtime wrote the triple through the sret pointer; no store.
             Ok(())
         }
@@ -1027,14 +1031,12 @@ pub(crate) fn lower_call_runtime_abi(
                     &mut fn_ctx.runtime_decls.borrow_mut(),
                     "hew_reply_payload_free",
                 )?;
-                fn_ctx
-                    .builder
-                    .build_call(
-                        free_fn,
-                        &[reply_ptr_val.into(), reply_len_val.into()],
-                        "hew_reply_payload_free_call",
-                    )
-                    .llvm_ctx("hew_reply_payload_free call")?;
+                fn_ctx.call_runtime_declared(
+                    free_fn,
+                    &[reply_ptr_val.into(), reply_len_val.into()],
+                    "hew_reply_payload_free_call",
+                    "hew_reply_payload_free call",
+                )?;
                 fn_ctx
                     .builder
                     .build_unconditional_branch(merge_bb)
@@ -1056,14 +1058,12 @@ pub(crate) fn lower_call_runtime_abi(
                 //              len=0 — see runtime
                 //              `reply_channel.rs:426-440`). ──
                 fn_ctx.builder.position_at_end(payload_invalid_bb);
-                fn_ctx
-                    .builder
-                    .build_call(
-                        free_fn,
-                        &[reply_ptr_val.into(), reply_len_val.into()],
-                        "hew_reply_payload_free_invalid_call",
-                    )
-                    .llvm_ctx("hew_reply_payload_free invalid-path call")?;
+                fn_ctx.call_runtime_declared(
+                    free_fn,
+                    &[reply_ptr_val.into(), reply_len_val.into()],
+                    "hew_reply_payload_free_invalid_call",
+                    "hew_reply_payload_free invalid-path call",
+                )?;
                 // AskError::PayloadSizeMismatch = 7 (see Err-branch
                 // discriminant catalog comment below).
                 const ASKERR_PAYLOAD_SIZE_MISMATCH: u64 = 7;
@@ -2277,14 +2277,12 @@ pub(crate) fn lower_call_runtime_abi(
                 &mut fn_ctx.runtime_decls.borrow_mut(),
                 symbol,
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[vec_ptr.into(), index_val.into()],
-                    &format!("{symbol}_call"),
-                )
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
+            let call = fn_ctx.call_runtime_declared(
+                fv,
+                &[vec_ptr.into(), index_val.into()],
+                &format!("{symbol}_call"),
+                "vec get runtime call",
+            )?;
             let result_val = call
                 .try_as_basic_value()
                 .basic()
@@ -2353,14 +2351,12 @@ pub(crate) fn lower_call_runtime_abi(
                 fn_ctx.llvm_mod,
                 "hew_vec_get_layout",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[vec_ptr.into(), index_val.into(), layout_ptr.into()],
-                    "hew_vec_get_layout_call",
-                )
-                .llvm_ctx("hew_vec_get_layout call")?;
+            let call = fn_ctx.call_runtime_declared(
+                fv,
+                &[vec_ptr.into(), index_val.into(), layout_ptr.into()],
+                "hew_vec_get_layout_call",
+                "hew_vec_get_layout call",
+            )?;
             let raw_ptr = call
                 .try_as_basic_value()
                 .basic()
@@ -2402,14 +2398,12 @@ pub(crate) fn lower_call_runtime_abi(
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
             let fv =
                 get_or_declare_owned_vec_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, "hew_vec_get_owned")?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[vec_ptr.into(), index_val.into()],
-                    "hew_vec_get_owned_call",
-                )
-                .llvm_ctx("hew_vec_get_owned call")?;
+            let call = fn_ctx.call_runtime_declared(
+                fv,
+                &[vec_ptr.into(), index_val.into()],
+                "hew_vec_get_owned_call",
+                "hew_vec_get_owned call",
+            )?;
             let raw_ptr = call
                 .try_as_basic_value()
                 .basic()
@@ -2478,14 +2472,12 @@ pub(crate) fn lower_call_runtime_abi(
                 &mut fn_ctx.runtime_decls.borrow_mut(),
                 symbol,
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &llvm_args,
-                    &format!("{symbol}_call"),
-                )
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
+            let call = fn_ctx.call_runtime_declared(
+                fv,
+                &llvm_args,
+                &format!("{symbol}_call"),
+                "vec slice runtime call",
+            )?;
             let result_val = call
                 .try_as_basic_value()
                 .basic()
@@ -2563,23 +2555,24 @@ pub(crate) fn lower_call_runtime_abi(
                 "hew_string_builder_new",
             )?;
             let builder = fn_ctx
-                .builder
-                .build_call(builder_new, &[], "structural_builder_new")
-                .llvm_ctx("structural builder new")?
+                .call_runtime_declared(
+                    builder_new,
+                    &[],
+                    "structural_builder_new",
+                    "structural builder new",
+                )?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
                     CodegenError::FailClosed("hew_string_builder_new returned void".into())
                 })?
                 .into_pointer_value();
-            fn_ctx
-                .builder
-                .build_call(
-                    formatter,
-                    &[builder.into(), value_ptr.into()],
-                    "structural_format_call",
-                )
-                .llvm_ctx("structural format call")?;
+            fn_ctx.call_runtime_declared(
+                formatter,
+                &[builder.into(), value_ptr.into()],
+                "structural_format_call",
+                "structural format call",
+            )?;
             let finish = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -2587,9 +2580,12 @@ pub(crate) fn lower_call_runtime_abi(
                 "hew_string_builder_finish",
             )?;
             let rendered = fn_ctx
-                .builder
-                .build_call(finish, &[builder.into()], "structural_builder_finish")
-                .llvm_ctx("structural builder finish")?
+                .call_runtime_declared(
+                    finish,
+                    &[builder.into()],
+                    "structural_builder_finish",
+                    "structural builder finish",
+                )?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
@@ -2805,10 +2801,12 @@ pub(crate) fn lower_call_runtime_abi(
                 &mut fn_ctx.runtime_decls.borrow_mut(),
                 symbol,
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[duration.into()], &format!("{symbol}_call"))
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
+            let call = fn_ctx.call_runtime_declared(
+                fv,
+                &[duration.into()],
+                &format!("{symbol}_call"),
+                "duration runtime call",
+            )?;
             if let Some(dest_place) = dest {
                 let result = call.try_as_basic_value().basic().ok_or_else(|| {
                     CodegenError::FailClosed(format!("{symbol} returned void"))
@@ -2867,10 +2865,12 @@ pub(crate) fn lower_call_runtime_abi(
                 &mut fn_ctx.runtime_decls.borrow_mut(),
                 symbol,
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &call_args, &format!("{symbol}_call"))
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
+            let call = fn_ctx.call_runtime_declared(
+                fv,
+                &call_args,
+                &format!("{symbol}_call"),
+                "instant runtime call",
+            )?;
             if let Some(dest_place) = dest {
                 let result = call.try_as_basic_value().basic().ok_or_else(|| {
                     CodegenError::FailClosed(format!("{symbol} returned void"))
@@ -3033,10 +3033,12 @@ pub(crate) fn lower_call_runtime_abi(
                 &mut fn_ctx.runtime_decls.borrow_mut(),
                 symbol,
             )?;
-            fn_ctx
-                .builder
-                .build_call(fv, &[scope_ptr.into()], &format!("{symbol}_call"))
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
+            fn_ctx.call_runtime_declared(
+                fv,
+                &[scope_ptr.into()],
+                &format!("{symbol}_call"),
+                "task scope runtime call",
+            )?;
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
                     "{symbol} returns void; producer must not supply dest={d:?}"
@@ -3217,9 +3219,12 @@ pub(crate) fn lower_call_runtime_abi(
                 symbol,
             )?;
             let token = fn_ctx
-                .builder
-                .build_call(fv, &[sup_ptr.into()], "hew_supervisor_direct_id_call")
-                .llvm_ctx("hew_supervisor_direct_id call")?
+                .call_runtime_declared(
+                    fv,
+                    &[sup_ptr.into()],
+                    "hew_supervisor_direct_id_call",
+                    "hew_supervisor_direct_id call",
+                )?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
@@ -3396,10 +3401,12 @@ pub(crate) fn lower_call_runtime_abi(
             };
             let (tag_i64, handle_i64) = match return_abi {
                 crate::abi_class::AggregateReturnAbi::RegisterPair { carrier } => {
-                    let call_site = fn_ctx
-                        .builder
-                        .build_call(fv, &call_args, "hew_supervisor_child_get_call")
-                        .llvm_ctx("hew_supervisor_child_get call")?;
+                    let call_site = fn_ctx.call_runtime_declared(
+                        fv,
+                        &call_args,
+                        "hew_supervisor_child_get_call",
+                        "hew_supervisor_child_get call",
+                    )?;
                     let pair = call_site
                         .try_as_basic_value()
                         .basic()
@@ -3466,10 +3473,12 @@ pub(crate) fn lower_call_runtime_abi(
                                 vec![result_slot.into(), first_arg, key_i32.into()]
                             }
                         };
-                    fn_ctx
-                        .builder
-                        .build_call(fv, &sret_args, "hew_supervisor_child_get_sret_call")
-                        .llvm_ctx("hew_supervisor_child_get (sret) call")?;
+                    fn_ctx.call_runtime_declared(
+                        fv,
+                        &sret_args,
+                        "hew_supervisor_child_get_sret_call",
+                        "hew_supervisor_child_get (sret) call",
+                    )?;
                     let tag_field = fn_ctx
                         .builder
                         .build_struct_gep(child_result_ty, result_slot, 0, "child_sret_tag_gep")
@@ -3810,9 +3819,12 @@ pub(crate) fn lower_call_runtime_abi(
                 )
             })?;
             let cloned = fn_ctx
-                .builder
-                .build_call(clone_fn, &[handle.into()], "regex_literal_clone")
-                .llvm_ctx("hew_regex_handle clone")?
+                .call_runtime_declared(
+                    clone_fn,
+                    &[handle.into()],
+                    "regex_literal_clone",
+                    "hew_regex_handle clone",
+                )?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
@@ -5754,6 +5766,25 @@ pub(crate) fn intern_runtime_decl<'ctx>(
 }
 
 impl<'a, 'ctx> FnCtx<'a, 'ctx> {
+    /// Emit a call to an already-declared runtime/callback function. While a
+    /// MIR runtime terminator is active this shares its exact exceptional edge
+    /// and lexical drop plan; helper calls outside that lowering context retain
+    /// their existing non-EH behaviour.
+    pub(crate) fn call_runtime_declared(
+        &self,
+        callee: FunctionValue<'ctx>,
+        args: &[BasicMetadataValueEnum<'ctx>],
+        name: &str,
+        err_ctx: &'static str,
+    ) -> CodegenResult<CallSiteValue<'ctx>> {
+        if let Some(block_id) = self.runtime_unwind_block.get() {
+            return build_owned_invoke(self, callee, args, block_id, name);
+        }
+        self.builder
+            .build_call(callee, args, name)
+            .llvm_ctx(err_ctx)
+    }
+
     /// Borrow the three module-wide registries the owned-Vec-element thunk-key
     /// resolver / descriptor builder need, as an [`OwnedElemRegistries`]. Lets a
     /// per-function `FnCtx` caller hand the same authority the wire codec reaches
@@ -5792,9 +5823,7 @@ impl<'a, 'ctx> FnCtx<'a, 'ctx> {
             &mut self.runtime_decls.borrow_mut(),
             sym,
         )?;
-        self.builder
-            .build_call(callee, args, name)
-            .llvm_ctx(err_ctx)
+        self.call_runtime_declared(callee, args, name, err_ctx)
     }
 
     /// Declare-then-call a void-returning runtime symbol, discarding the result.

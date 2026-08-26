@@ -1,9 +1,9 @@
-//! Contract tests for the HIR→MIR producer for `Instr::CallRuntimeAbi`.
+//! Contract tests for the HIR→MIR producer for terminal runtime calls.
 //!
 //! Slice E2-B wires the producer side: `HirExprKind::Call` with a
 //! `BindingRef { name: "hew_duplex_pair" | "hew_duplex_send", resolved:
 //! Unresolved }` callee routes to `lower_runtime_call`, which emits
-//! `Instr::CallRuntimeAbi` and registers `DuplexHandle` Places in
+//! `Terminator::Call` with typed runtime authority and registers `DuplexHandle` Places in
 //! `tuple_decomp` / `binding_locals`.
 //!
 //! These tests run the full pipeline:
@@ -18,7 +18,10 @@
 //! with the E2E test suite.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{container_ingress_is_copy_in, lower_hir_module, Instr, IrPipeline, Place};
+use hew_mir::{
+    container_ingress_is_copy_in, lower_hir_module, CallAuthority, Instr, IrPipeline, Place,
+    Terminator,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -54,13 +57,54 @@ fn main_raw(p: &IrPipeline) -> &hew_mir::RawMirFunction {
         .expect("main must be present in raw_mir")
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TerminalRuntimeCall<'a> {
+    symbol: &'a str,
+    args: &'a [Place],
+    dest: Option<Place>,
+}
+
+impl<'a> TerminalRuntimeCall<'a> {
+    fn symbol(self) -> &'a str {
+        self.symbol
+    }
+
+    fn args(self) -> &'a [Place] {
+        self.args
+    }
+
+    fn dest(self) -> Option<Place> {
+        self.dest
+    }
+}
+
+fn calls_for<'a>(raw: &'a hew_mir::RawMirFunction, symbol: &str) -> Vec<TerminalRuntimeCall<'a>> {
+    raw.blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee,
+                authority: CallAuthority::Runtime(family),
+                args,
+                dest,
+                ..
+            } if callee == symbol && family.c_symbol() == symbol => Some(TerminalRuntimeCall {
+                symbol: callee,
+                args,
+                dest: *dest,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
-// duplex_pair lowering — CallRuntimeAbi structural shape
+// duplex_pair lowering — typed terminal-call structural shape
 // ---------------------------------------------------------------------------
 
 /// `let (a, b) = duplex_pair<i64, i64>(16);` must produce exactly one
-/// `Instr::CallRuntimeAbi { symbol: "hew_duplex_pair", .. }` in the
-/// instruction stream with four args: `cap`, `r_cap` (same `Place` in the
+/// `Terminator::Call { authority: Runtime(DuplexPair), .. }` with four args:
+/// `cap`, `r_cap` (same `Place` in the
 /// one-arg form), `dh0`, `dh1`.
 ///
 /// The one-arg E1 form (capacity: i64) duplicates the single capacity
@@ -78,16 +122,9 @@ fn duplex_pair_emits_call_runtime_abi_with_four_args() {
     let pipeline = pipeline_with_tc(source);
     let raw = main_raw(&pipeline);
 
-    let instr = raw
-        .blocks
-        .iter()
-        .flat_map(|b| b.instructions.iter())
-        .find(|i| matches!(i, Instr::CallRuntimeAbi(c) if c.symbol() == "hew_duplex_pair"))
-        .expect("must find exactly one CallRuntimeAbi for hew_duplex_pair");
-
-    let Instr::CallRuntimeAbi(call) = instr else {
-        unreachable!("already matched above");
-    };
+    let calls = calls_for(raw, "hew_duplex_pair");
+    assert_eq!(calls.len(), 1, "must find exactly one typed terminal call");
+    let call = calls[0];
 
     assert_eq!(call.symbol(), "hew_duplex_pair");
     let args = call.args();
@@ -179,17 +216,11 @@ fn duplex_pair_locals_carry_duplex_type_at_handle_indices() {
     let pipeline = pipeline_with_tc(source);
     let raw = main_raw(&pipeline);
 
-    // Locate the two DuplexHandle args from the CallRuntimeAbi instruction.
-    let pair_instr = raw
-        .blocks
-        .iter()
-        .flat_map(|b| b.instructions.iter())
-        .find(|i| matches!(i, hew_mir::Instr::CallRuntimeAbi(c) if c.symbol() == "hew_duplex_pair"))
-        .expect("hew_duplex_pair CallRuntimeAbi must be present");
-
-    let hew_mir::Instr::CallRuntimeAbi(ref pair_call) = pair_instr else {
-        unreachable!()
-    };
+    // Locate the two DuplexHandle args from the typed terminal call.
+    let pair_calls = calls_for(raw, "hew_duplex_pair");
+    let pair_call = *pair_calls
+        .first()
+        .expect("hew_duplex_pair typed terminal call must be present");
     let args = pair_call.args();
     let Place::DuplexHandle(n0) = args[2] else {
         panic!("args[2] must be DuplexHandle; got {:?}", args[2])
@@ -312,17 +343,6 @@ fn link_monitor_source(body: &str) -> String {
     )
 }
 
-fn calls_for<'a>(raw: &'a hew_mir::RawMirFunction, symbol: &str) -> Vec<&'a hew_mir::RuntimeCall> {
-    raw.blocks
-        .iter()
-        .flat_map(|b| b.instructions.iter())
-        .filter_map(|instr| match instr {
-            Instr::CallRuntimeAbi(call) if call.symbol() == symbol => Some(call),
-            _ => None,
-        })
-        .collect()
-}
-
 #[test]
 fn discarded_link_and_monitor_emit_call_runtime_abi_without_dest() {
     // 1-arg user surface: `link(target)` / `monitor(target)`. The producer
@@ -365,7 +385,7 @@ fn discarded_link_and_monitor_emit_call_runtime_abi_without_dest() {
         assert_eq!(
             calls.len(),
             1,
-            "expected exactly one CallRuntimeAbi for {symbol}, got {calls:?}"
+            "expected exactly one typed terminal call for {symbol}, got {calls:?}"
         );
         let call = calls[0];
         assert_eq!(
@@ -428,7 +448,7 @@ fn value_needed_link_emits_call_runtime_abi_with_result_dest() {
     assert_eq!(
         calls.len(),
         1,
-        "expected exactly one hew_actor_link CallRuntimeAbi; got {calls:?}"
+        "expected exactly one typed terminal hew_actor_link call; got {calls:?}"
     );
     let call = calls[0];
     assert_eq!(
@@ -478,7 +498,7 @@ fn value_needed_monitor_emits_call_runtime_abi_with_result_dest() {
     assert_eq!(
         calls.len(),
         1,
-        "expected exactly one hew_actor_monitor CallRuntimeAbi; got {calls:?}"
+        "expected exactly one typed terminal hew_actor_monitor call; got {calls:?}"
     );
     let call = calls[0];
     assert_eq!(
@@ -643,7 +663,7 @@ fn discarded_unlink_emits_call_runtime_abi_without_dest() {
     assert_eq!(
         unlink_calls.len(),
         1,
-        "expected exactly one CallRuntimeAbi for hew_actor_unlink; got {unlink_calls:?}"
+        "expected exactly one typed terminal hew_actor_unlink call; got {unlink_calls:?}"
     );
     let call = unlink_calls[0];
     assert_eq!(

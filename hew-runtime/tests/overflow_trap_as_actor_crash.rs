@@ -1,19 +1,19 @@
-//! Integration test: overflow trap surfaces as actor crash via supervisor.
+//! Integration test: a hardware overflow trap is process-fatal under RAII.
 //!
-//! Verifies slice C of the v0.5 failure-philosophy invariants (§5.17):
-//! when actor code executes a hardware trap instruction (the same `llvm.trap`
-//! that the B-2 overflow lowering emits for `+`/`-`/`*` overflow), the trap
-//! is caught by the per-worker signal handler and routed through the
-//! supervisor crash seam — NOT delivered as a process-wide `SIGABRT`.
+//! Typed Hew failures unwind through generated cleanup edges and the scheduler
+//! catch boundary. A synchronous hardware fault can interrupt an arbitrary
+//! ownership operation, so the unwind-safe runtime deliberately handles it
+//! with async-signal-safe diagnostic output and `_exit`; it never resumes the
+//! interrupted worker or longjmps across live Rust frames.
 //!
 //! Platform notes:
 //! - x86-64 (Linux + macOS): `llvm.trap` → `ud2` → SIGILL (signal 4).
-//! - aarch64 macOS: `llvm.trap` → `brk #1` → SIGILL (signal 4).
-//! - aarch64 Linux: `llvm.trap` → `brk #1` → SIGTRAP (signal 5).
+//! - aarch64: `llvm.trap` → `brk #1` → SIGILL or SIGTRAP (signals 4/5),
+//!   according to the host kernel/debug environment.
 //!
-//! SIGTRAP is registered alongside SIGILL in `signal.rs::init_crash_handling`
-//! precisely for the Linux aarch64 case. This test exercises whichever signal
-//! is actually delivered by the OS.
+//! SIGTRAP is registered alongside SIGILL in `signal.rs::init_crash_handling`.
+//! This death test exercises whichever signal the platform delivers and proves
+//! the fatal boundary without terminating the Cargo test process.
 //!
 //! WASM: signal-based crash recovery is not available. The test is gated on
 //! `any(unix, windows)`. A full WASM-side overflow-trap path is tracked as
@@ -136,31 +136,29 @@ unsafe extern "C-unwind" fn counting_dispatch(
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Core assertion: an overflow trap (real hardware trap instruction) surfaces
-/// as an actor crash routed through the supervisor, NOT a process-wide abort.
+/// Core assertion: a real hardware trap terminates its subprocess through the
+/// async-signal-safe fatal boundary.
 ///
 /// Steps:
 /// 1. Supervisor spawns a child actor.
 /// 2. A normal message is delivered to confirm the actor is live.
 /// 3. A trap message triggers `trapping_dispatch` — the actor executes a
-///    real hardware trap, which the signal handler catches and routes through
-///    the supervisor crash seam.
-/// 4. Supervisor detects the crash and restarts the child.
-/// 5. The restarted child processes further messages (process is alive).
-/// 6. The crashed actor's `ExitReason` is `Signal(SIGILL)` or `Signal(SIGTRAP)`
-///    depending on platform — either way, it is not `Normal` or `HeapExceeded`.
-// WINDOWS-TODO: hardware trap -> actor crash requires VEH (Vectored Exception Handling) on
-// Windows: a per-worker VEH handler must catch STATUS_ILLEGAL_INSTRUCTION and route it
-// through the supervisor crash seam via RtlRestoreContext, equivalent to the Unix
-// SIGILL/SIGTRAP per-worker signal handler. Until that is implemented, the trap aborts
-// the process instead of being caught. Track with the Windows exception-recovery gap.
+///    real hardware trap, which the signal handler terminates with `_exit`.
+///
+/// The child continues through the historical restart assertions only if the
+/// process-fatal handler fails to terminate it; that counterfactual exits zero,
+/// which the parent rejects just as strongly as an unexpected signal/status.
+// WINDOWS-TODO: install a VEH fatal boundary that emits the same stable
+// diagnostic/status contract as the Unix async-signal-safe handler; until then
+// the platform-default termination cannot satisfy this exact death-test oracle.
 #[cfg_attr(windows, ignore)]
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "end-to-end trap→crash→restart→resume cycle; each step is load-bearing"
+    reason = "the death test retains the old recovery path as counterfactual teeth"
 )]
-fn overflow_trap_surfaces_as_actor_crash_not_process_abort() {
+fn overflow_hardware_trap_is_process_fatal_under_unwind_safe_raii() {
+    const CHILD_MARKER: &str = "HEW_OVERFLOW_HARDWARE_TRAP_CHILD";
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
@@ -206,6 +204,36 @@ fn overflow_trap_surfaces_as_actor_crash_not_process_abort() {
         }
 
         std::ptr::null_mut()
+    }
+
+    if std::env::var_os(CHILD_MARKER).is_none() {
+        let executable = std::env::current_exe().expect("current test executable resolves");
+        let output = std::process::Command::new(executable)
+            .args([
+                "overflow_hardware_trap_is_process_fatal_under_unwind_safe_raii",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(CHILD_MARKER, "1")
+            .output()
+            .expect("hardware-trap child launches");
+        assert!(
+            matches!(output.status.code(), Some(132 | 133)),
+            "hardware trap must exit as 128+SIGILL/SIGTRAP, got {:?}; stdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("hew: fatal synchronous hardware fault"),
+            "fatal signal handler must publish its async-signal-safe diagnostic: {stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked at"),
+            "hardware faults must not be misrouted through the typed panic hook: {stderr}"
+        );
+        return;
     }
 
     let _guard = TEST_LOCK
@@ -356,7 +384,7 @@ fn overflow_trap_surfaces_as_actor_crash_not_process_abort() {
 ///
 /// This mirrors `supervised_actor_crash_and_restart` from `supervision_lifecycle.rs`
 /// but runs here to confirm there is no interaction between SIGTRAP registration
-/// and the existing longjmp-based fault injection.
+/// and the existing caught-unwind fault injection.
 #[test]
 fn fault_inject_crash_still_works_after_sigtrap_registration() {
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
@@ -416,7 +444,7 @@ fn fault_inject_crash_still_works_after_sigtrap_registration() {
             "initial dispatch must fire"
         );
 
-        // Fault injection — exercises the longjmp path, not the signal path.
+        // Fault injection — exercises the language-unwind path, not the signal path.
         hew_runtime::deterministic::hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
 

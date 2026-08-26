@@ -75,11 +75,11 @@ use hew_hir::stdlib_catalog::PrintKind;
 use hew_hir::{mangle_dotted_name, ItemId};
 use hew_mir::{
     instr_source_places, is_string_const_ty, terminator_source_places, validate_context_markers,
-    ActorHandlerKind, ActorLayout, ActorStateLoadMode, CheckedMirFunction, CmpPred, CooperateKind,
-    CooperateSite, DropFnSpec, DropKind, DynVtableInstance, ElabDrop, ElaboratedMirFunction,
-    EnumLayout, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp,
-    IntSignedness, IoHandleKind, IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout, MirConst,
-    MirConstValue, MirScope, ParamBoundaryMode, ParamLoanStorage, Place, RawMirFunction,
+    ActorHandlerKind, ActorLayout, ActorStateLoadMode, CallAuthority, CheckedMirFunction, CmpPred,
+    CooperateKind, CooperateSite, DropFnSpec, DropKind, DynVtableInstance, ElabDrop,
+    ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr,
+    IntArithOp, IntSignedness, IoHandleKind, IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout,
+    MirConst, MirConstValue, MirScope, ParamBoundaryMode, ParamLoanStorage, Place, RawMirFunction,
     RecordLayout, RegexLiteral, ResourceCloseAuthority, RuntimeCall, SourceOrigin,
     StateFieldCloneKind, Strategy, StringRetainCondition, SupervisorChildLayout, SuspendKind,
     Terminator, TrapKind,
@@ -126,8 +126,8 @@ use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, StructType,
 };
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue,
-    PointerValue, StructValue,
+    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FloatValue, FunctionValue, GlobalValue,
+    IntValue, PointerValue, StructValue,
 };
 use inkwell::AddressSpace;
 use inkwell::{FloatPredicate, IntPredicate};
@@ -987,7 +987,9 @@ impl PartialEq<&str> for WasmExclusion {
 /// linker error.
 ///
 /// The scan covers:
-/// - `Instr::CallRuntimeAbi` with an excluded symbol.
+/// - `Instr::CallRuntimeAbi` with an excluded typed family (legacy hand-built
+///   MIR only).
+/// - canonical `Terminator::Call` with an excluded typed runtime authority.
 /// - `Instr::Drop { drop_fn: Some(fn_name), .. }` in raw_mir where `fn_name`
 ///   starts with `"hew_duplex_"` (e.g. `hew_duplex_close`).
 /// - `ElabDrop { drop_fn: Some(name), .. }` in `elaborated_mir.drop_plans`
@@ -1033,6 +1035,15 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<WasmExc
                 if let Some(sym) = excluded {
                     return Some(sym);
                 }
+            }
+            // Production lowering canonicalises every runtime ABI call into a
+            // terminal call so its normal and unwind ownership states are
+            // distinct.  Classify that canonical carrier from its typed
+            // Runtime authority.  A Direct call with the same display spelling
+            // is user/open-set code and must not acquire a native-only runtime
+            // capability by name coincidence.
+            if let Some(excluded) = wasm_excluded_terminal_call(&block.terminator) {
+                return Some(excluded);
             }
             if let Terminator::Select { arms, .. } = &block.terminator {
                 if arms
@@ -1163,6 +1174,25 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<WasmExc
         }
     }
     None
+}
+
+/// Classify the canonical terminal runtime-call carrier for wasm32.
+///
+/// The typed [`CallAuthority::Runtime`] family is the sole identity. The
+/// terminal's open-set `callee` spelling is deliberately ignored: MIR
+/// validation owns family/symbol congruence, while this scan owns capability
+/// exclusion and must neither miss a renamed runtime spelling nor reject a
+/// same-spelling direct user call.
+fn wasm_excluded_terminal_call(terminator: &Terminator) -> Option<WasmExclusion> {
+    let Terminator::Call {
+        authority: CallAuthority::Runtime(family),
+        ..
+    } = terminator
+    else {
+        return None;
+    };
+    wasm_excluded_call_family(*family)
+        .map(|capability| WasmExclusion::new(family.c_symbol(), capability))
 }
 
 /// The native-only runtime symbol a collapsed suspension carrier references on
@@ -1917,6 +1947,11 @@ enum ActorStateStoreTransaction {
 pub(crate) struct FnCtx<'a, 'ctx> {
     pub(crate) ctx: &'ctx Context,
     pub(crate) llvm_mod: &'a LlvmModule<'ctx>,
+    /// Native Itanium-EH targets lower potentially panicking Hew calls as
+    /// `invoke` with MIR-authored cleanup landing pads. WASM and Windows MSVC
+    /// use their target-specific process/status boundary until LLVM exposes
+    /// the corresponding funclet builders through Inkwell.
+    pub(crate) unwind_enabled: bool,
     /// Emit `hew_shutdown_initiate_implicit(0)` + `hew_shutdown_wait()` before the
     /// `Terminator::Return` in the native program entry point of an
     /// actor-using program — the implicit actor-drain floor.
@@ -2055,6 +2090,11 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// borrows `FnCtx` immutably) can register new declarations lazily
     /// from inside `Instr::CallRuntimeAbi` and `Instr::Drop` arms.
     pub(crate) runtime_decls: RefCell<RuntimeDeclMap<'ctx>>,
+    /// MIR block whose runtime terminator is currently being lowered. Runtime
+    /// ABI helpers consult this exact CFG identity to emit `invoke` into the
+    /// block's MIR-authored unwind cleanup; `None` is permitted only on targets
+    /// where native LLVM EH is disabled or for non-call helper emission.
+    pub(crate) runtime_unwind_block: std::cell::Cell<Option<u32>>,
     /// Module-wide record layouts (A-7). Keyed by record name; values are
     /// the LLVM named struct types registered up front in `build_module`
     /// via `register_record_layouts`. `Instr::RecordInit` /
@@ -2202,6 +2242,10 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// plus a generated active-state bit; coroutine-frame owners use the
     /// separate DIRECT_FRAME path and never enter this map.
     helper_crash_cleanup_owners: HashMap<Place, HelperCrashCleanupOwner<'ctx>>,
+    /// Validated sequential owner epochs that deliberately reuse one physical
+    /// crash-cleanup slot. Unrelated generations remain conflicting even when
+    /// their destructor rituals happen to be identical.
+    helper_crash_cleanup_lineages: HashSet<(hew_mir::OwnerId, hew_mir::OwnerId)>,
     /// The MIR block id of the suspend terminator currently being lowered.
     /// `lower_terminator` sets this before dispatching, so `emit_suspend_point`
     /// (reached deep inside a per-kind emitter, without the block id in scope)
@@ -2232,6 +2276,41 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// checker-resolved argument type and LLVM declaration shape. Extern/runtime
     /// symbols are absent from this map and therefore use the typed FFI branch.
     param_boundary_modes: &'a HashMap<String, Vec<Option<ParamBoundaryMode>>>,
+}
+
+/// Lexically installs the MIR call-site whose cleanup plan every nested
+/// runtime call must use. Specialized ABI lowerers often emit more than one
+/// LLVM call and may return early; restoring through `Drop` prevents a later
+/// MIR block from accidentally inheriting the previous call's unwind edge.
+struct RuntimeUnwindBlockGuard<'a> {
+    slot: &'a std::cell::Cell<Option<u32>>,
+    previous: Option<u32>,
+}
+
+impl<'a> RuntimeUnwindBlockGuard<'a> {
+    fn enter(slot: &'a std::cell::Cell<Option<u32>>, block: u32) -> Self {
+        Self {
+            slot,
+            previous: slot.replace(Some(block)),
+        }
+    }
+
+    /// Cleanup emission is already on the exceptional edge. Runtime release
+    /// primitives used by destructors must not recursively reuse the original
+    /// call site's cleanup plan; a second panic during unwinding follows the
+    /// platform's terminate policy rather than minting another landing pad.
+    fn suspend(slot: &'a std::cell::Cell<Option<u32>>) -> Self {
+        Self {
+            slot,
+            previous: slot.replace(None),
+        }
+    }
+}
+
+impl Drop for RuntimeUnwindBlockGuard<'_> {
+    fn drop(&mut self) {
+        self.slot.set(self.previous);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3163,12 +3242,11 @@ pub(crate) fn mangle_with_shortened_args(name: &str, args: &[ResolvedTy]) -> Str
 /// but it is a single `ValueClass::CowValue` leaf (exactly like `string`, which
 /// lowers to a flat `ptr` and is admitted because it never reaches that arm).
 /// A `bytes` return is a flat struct copy into the caller's slot with no
-/// per-field tag-aware drop required: the leaf has no scope-exit drop on either
-/// side of the boundary (`hew-mir`'s `cow_value_leaf_drop_symbol` returns `None`
-/// for `bytes`, so neither callee nor caller ever frees it — it leaks-as-before
-/// until the retain-on-share spine lands, the documented `CowValue`-leaf
-/// posture, and can never double-free). Admitting it here restores parity with
-/// `string`: a plain top-level heap-owning leaf return compiles.
+/// per-field tag-aware drop required. Bytes is intentionally absent from
+/// `cow_value_leaf_drop_symbol`: its dedicated bytes ownership derivation emits
+/// `CowHeapRelease::Bytes` and `hew_bytes_drop` at the caller's eventual exit.
+/// Return lowering moves the triple to the caller and suppresses the callee's
+/// escaped slot, so there is exactly one owner throughout the handoff.
 ///
 /// Deliberately NOT extended to arrays carrying heap — those still fail closed.
 /// Tuples and records carrying owned heap are admitted via the dedicated
@@ -12383,6 +12461,7 @@ fn lower_instruction_with_cancel_drops(
     })?;
 
     match instr {
+        Instr::OwnershipEvent(_) | Instr::InteriorMutationCommit { .. } => {}
         Instr::EnterContext | Instr::ExitContext => {
             if fn_ctx.execution_context.is_none() {
                 return Err(CodegenError::FailClosed(
@@ -12474,8 +12553,11 @@ fn lower_instruction_with_cancel_drops(
         Instr::GeneratorNext {
             dest,
             ctx,
+            ctx_owner: _,
             yield_ty,
         } => {
+            let _resume_unwind_guard =
+                RuntimeUnwindBlockGuard::enter(&fn_ctx.runtime_unwind_block, block_id);
             // Generator consumption on the `llvm.coro.*` continuation substrate.
             // The `Generator<Y, R>` slot points at the heap companion
             // `{ ptr handle, ptr env, ptr env_drop_thunk, ptr out_drop_thunk,
@@ -12636,10 +12718,12 @@ fn lower_instruction_with_cancel_drops(
                 &mut fn_ctx.runtime_decls.borrow_mut(),
                 "hew_cont_resume",
             )?;
-            fn_ctx
-                .builder
-                .build_call(resume_fn, &[handle.into()], "hew_cont_resume_call")
-                .llvm_ctx("hew_cont_resume call")?;
+            fn_ctx.call_runtime_declared(
+                resume_fn,
+                &[handle.into()],
+                "hew_cont_resume_call",
+                "hew_cont_resume call",
+            )?;
             fn_ctx
                 .builder
                 .build_unconditional_branch(check_done_bb)
@@ -12654,9 +12738,12 @@ fn lower_instruction_with_cancel_drops(
                 "hew_cont_done",
             )?;
             let done = fn_ctx
-                .builder
-                .build_call(done_fn, &[handle.into()], "hew_cont_done_call")
-                .llvm_ctx("hew_cont_done call")?
+                .call_runtime_declared(
+                    done_fn,
+                    &[handle.into()],
+                    "hew_cont_done_call",
+                    "hew_cont_done call",
+                )?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| CodegenError::FailClosed("hew_cont_done returned void".into()))?
@@ -14281,6 +14368,13 @@ fn lower_instruction_with_cancel_drops(
             // remain fail-closed below — `parity-or-tracked-gap`.
             // LESSONS: boundary-fail-closed, exhaustive-coverage,
             // checker-output-boundary, dedup-semantic-boundary.
+            if fn_ctx.unwind_enabled {
+                return Err(CodegenError::FailClosed(format!(
+                    "runtime call `{}` remained a mid-block instruction on an EH target; \
+                     production lowering must canonicalize it to Terminator::Call",
+                    call.symbol()
+                )));
+            }
             crate::runtime_abi::lower_call_runtime_abi(fn_ctx, call)?;
         }
         Instr::AutoLockAcquire { lock } => {
@@ -14298,6 +14392,14 @@ fn lower_instruction_with_cancel_drops(
             // (if any) sits OUTSIDE this bracket so async tasks
             // never park on a held lock.
             lower_auto_mutex_bracket(fn_ctx, *lock, /* acquire = */ false)?;
+        }
+        Instr::AggregateOverwriteRelease {
+            old,
+            replacement,
+            ty,
+        } => {
+            lower_aggregate_overwrite_release(fn_ctx, *old, *replacement, ty)?;
+            let _ = ctx;
         }
         Instr::Drop { place, ty, drop_fn } => {
             // Drop ritual. `drop_fn: None` is a legitimate no-op for
@@ -14403,8 +14505,8 @@ fn lower_instruction_with_cancel_drops(
             // The `dest` local must have been allocated with `ResolvedTy::String`,
             // which `primitive_to_llvm` maps to an opaque `ptr`. The pointer to the
             // global is the `String` value at the ABI boundary (`*const c_char`).
-            // `hew_string_drop` skips freeing static-segment pointers via its
-            // `is_static_string` guard, so no clone or heap allocation is needed.
+            // The pointer is absent from the managed-string provenance registry,
+            // so `hew_string_drop` treats it as borrowed; no allocation is needed.
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
                 return Err(CodegenError::FailClosed(format!(
@@ -14878,12 +14980,21 @@ fn lower_instruction_with_cancel_drops(
             let _ = ctx;
         }
         Instr::CallClosure {
+            call_site,
             callee,
             args,
             ret_ty,
             dest,
         } => {
-            lower_call_closure(fn_ctx, *callee, args, ret_ty, *dest)?;
+            lower_call_closure(
+                fn_ctx,
+                Some(*call_site),
+                *callee,
+                args,
+                ret_ty,
+                *dest,
+                block_id,
+            )?;
             let _ = ctx;
         }
         Instr::SpawnTaskDirect {
@@ -17912,7 +18023,7 @@ fn lower_actor_state_field_store(
     //   - `BitCopy` / `OpaqueHandle`: no owned heap / user-managed; nothing
     //     to release.
     // Enter a process-fatal state-finalizer phase and neutralize the old escrow
-    // before old-value release. A signal cannot actor-longjmp out of a partially
+    // before old-value release. A signal cannot recover out of a partially
     // executed non-idempotent finalizer. Intentional Hew panic/trap is fatal in
     // the same interval; neither failure class may raw-abandon indeterminate old
     // authority. After release, prepare the replacement in escrow and leave it
@@ -18550,8 +18661,8 @@ fn lower_wire_text_deserialize<'ctx>(
     // Decode-error arm: the CBOR bytes were well-formed JSON/YAML but did not
     // match the type's shape/range (the binary decode walk's own fail-closed
     // gate). Build Err with a fixed diagnostic. The message is a STATIC string
-    // global — a valid Hew `string` the Result's string-drop skips via the
-    // `is_static_string` guard (no allocation needed).
+    // global — a valid borrowed Hew `string` absent from the exact managed
+    // provenance registry (no allocation needed).
     builder.position_at_end(decode_err_bb);
     let msg = "wire value does not match the target type";
     let msg_ptr = build_const_string_ptr(
@@ -20183,10 +20294,12 @@ pub(crate) fn metadata_value_from_basic<'ctx>(
 
 fn lower_call_closure(
     fn_ctx: &FnCtx<'_, '_>,
+    call_site: Option<hew_hir::SiteId>,
     callee: Place,
     args: &[Place],
     ret_ty: &ResolvedTy,
     dest: Option<Place>,
+    block_id: u32,
 ) -> CodegenResult<()> {
     let ctx_ptr = crate::thunks::closure_call_context(fn_ctx)?;
     let (callee_ptr, callee_ty) = place_pointer(fn_ctx, callee)?;
@@ -20239,10 +20352,15 @@ fn lower_call_closure(
         fn_ctx.record_layouts,
     )?;
     let fn_ty = fn_type_for_return(fn_ctx.ctx, Some(ret_llvm), &param_tys);
-    let call = fn_ctx
-        .builder
-        .build_indirect_call(fn_ty, fn_ptr, &arg_vals, "closure_call_result")
-        .llvm_ctx("CallClosure indirect call")?;
+    let call = build_owned_indirect_suspend_invoke(
+        fn_ctx,
+        fn_ty,
+        fn_ptr,
+        &arg_vals,
+        block_id,
+        call_site,
+        "closure_call_result",
+    )?;
     if let Some(dest_place) = dest {
         let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
         if dest_ty != ret_llvm {
@@ -21048,6 +21166,53 @@ pub(crate) fn lower_drop(
         DropDispatch::RuntimeSymbol(symbol) => lower_drop_runtime(fn_ctx, place, symbol),
         DropDispatch::UserFn { value, symbol } => lower_drop_user_fn(fn_ctx, place, value, &symbol),
     }
+}
+
+fn lower_aggregate_overwrite_release(
+    fn_ctx: &FnCtx<'_, '_>,
+    old: Place,
+    replacement: Place,
+    ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    let ResolvedTy::Named {
+        name,
+        builtin: None,
+        ..
+    } = ty
+    else {
+        return Err(CodegenError::FailClosed(format!(
+            "aggregate overwrite release requires a named record/enum type, got {ty:?}"
+        )));
+    };
+    let (old_ptr, old_ty) = place_pointer(fn_ctx, old)?;
+    let (replacement_ptr, replacement_ty) = place_pointer(fn_ctx, replacement)?;
+    if old_ty != replacement_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "aggregate overwrite release for `{name}` has mismatched slots: old={old_ty:?}, replacement={replacement_ty:?}"
+        )));
+    }
+    let helper = if fn_ctx
+        .enum_layouts
+        .iter()
+        .any(|layout| layout.name == *name)
+    {
+        get_or_declare_enum_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name)
+    } else if fn_ctx.record_layouts.contains_key(name) {
+        get_or_declare_record_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name)
+    } else {
+        return Err(CodegenError::FailClosed(format!(
+            "aggregate overwrite release has no registered layout for `{name}`"
+        )));
+    };
+    fn_ctx
+        .builder
+        .build_call(
+            helper,
+            &[old_ptr.into(), replacement_ptr.into()],
+            "aggregate_overwrite_release",
+        )
+        .llvm_ctx("aggregate overwrite release call")?;
+    Ok(())
 }
 
 fn lower_inline_drop(
@@ -22131,6 +22296,7 @@ pub(crate) fn emit_elab_drops(
             | ExitPath::Goto { block, .. }
             | ExitPath::Branch { block, .. }
             | ExitPath::Call { block, .. }
+            | ExitPath::Unwind { block, .. }
             | ExitPath::Panic { block }
             | ExitPath::Cancel { block }
             | ExitPath::Yield { block, .. }
@@ -22151,6 +22317,249 @@ pub(crate) fn emit_elab_drops(
         emit_one_elab_drop(fn_ctx, drop)?;
     }
     Ok(())
+}
+
+/// Emit a native potentially-unwinding call using LLVM's structured EH edge.
+///
+/// The exceptional successor begins with a cleanup landing pad, runs the
+/// path-sensitive `ExitPath::Unwind` LIFO plan authored by MIR, then resumes
+/// the original Rust panic payload. The scheduler's outer `catch_unwind`
+/// remains the sole recovery boundary; this function only guarantees that all
+/// intervening Hew owners are destroyed while the stack is still valid.
+pub(crate) fn build_owned_invoke<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    callee: FunctionValue<'ctx>,
+    args: &[BasicMetadataValueEnum<'ctx>],
+    block_id: u32,
+    name: &str,
+) -> CodegenResult<CallSiteValue<'ctx>> {
+    let drops = fn_ctx
+        .drop_plans
+        .iter()
+        .find_map(|(exit, plan)| {
+            matches!(exit, ExitPath::Unwind { block, .. } if *block == block_id)
+                .then(|| plan.drops.clone())
+        })
+        .unwrap_or_default();
+    build_owned_invoke_with_drops(fn_ctx, callee, args, &drops, name)
+}
+
+/// Emit an invoke from a suspend carrier whose child-continuation resume may
+/// unwind before the parent reaches `coro.suspend`. The MIR-authored suspend
+/// plan is also the lexical owner set at that program point, so it is the
+/// cleanup authority for both abandoning the parked frame and a synchronous
+/// panic while driving the child.
+pub(crate) fn build_owned_suspend_invoke<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    callee: FunctionValue<'ctx>,
+    args: &[BasicMetadataValueEnum<'ctx>],
+    block_id: u32,
+    name: &str,
+) -> CodegenResult<CallSiteValue<'ctx>> {
+    let drops = fn_ctx
+        .drop_plans
+        .iter()
+        .find_map(|(exit, plan)| {
+            matches!(exit, ExitPath::Suspend { block, .. } if *block == block_id)
+                .then(|| plan.drops.clone())
+        })
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "suspending continuation resume in bb{block_id} has no MIR-authored cleanup plan"
+            ))
+        })?;
+    build_owned_invoke_with_drops(fn_ctx, callee, args, &drops, name)
+}
+
+/// Indirect-call twin of [`build_owned_suspend_invoke`] for both suspendable
+/// closure ramps and ordinary `Instr::CallClosure` program points. Either may
+/// panic before returning, so both consume their MIR-authored exceptional drop
+/// plan through LLVM `invoke`.
+pub(crate) fn build_owned_indirect_suspend_invoke<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    function_type: FunctionType<'ctx>,
+    function_pointer: PointerValue<'ctx>,
+    args: &[BasicMetadataValueEnum<'ctx>],
+    block_id: u32,
+    call_site: Option<hew_hir::SiteId>,
+    name: &str,
+) -> CodegenResult<CallSiteValue<'ctx>> {
+    if !fn_ctx.unwind_enabled {
+        return fn_ctx
+            .builder
+            .build_indirect_call(function_type, function_pointer, args, name)
+            .llvm_ctx("build non-EH indirect suspend call");
+    }
+    let closure_key = call_site.map(hew_mir::indirect_closure_callee);
+    let drops = fn_ctx
+        .drop_plans
+        .iter()
+        .find_map(|(exit, plan)| {
+            let is_required_exit = if let Some(closure_key) = closure_key.as_ref() {
+                matches!(
+                    exit,
+                    ExitPath::Unwind { block, callee }
+                        if *block == block_id && callee == closure_key
+                )
+            } else {
+                matches!(exit, ExitPath::Suspend { block, .. } if *block == block_id)
+            };
+            is_required_exit.then(|| plan.drops.clone())
+        })
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "indirect closure call in bb{block_id} has no MIR-authored {} cleanup plan",
+                if call_site.is_some() {
+                    "call-site unwind"
+                } else {
+                    "suspend"
+                }
+            ))
+        })?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("indirect invoke block has no parent function".into()))?;
+    let normal = fn_ctx.ctx.append_basic_block(parent, "invoke.cont");
+    let unwind = fn_ctx.ctx.append_basic_block(parent, "invoke.cleanup");
+    let personality = fn_ctx
+        .llvm_mod
+        .get_function("rust_eh_personality")
+        .unwrap_or_else(|| {
+            fn_ctx.llvm_mod.add_function(
+                "rust_eh_personality",
+                fn_ctx.ctx.i32_type().fn_type(&[], true),
+                Some(Linkage::External),
+            )
+        });
+    parent.set_personality_function(personality);
+    let invoke_args: Vec<BasicValueEnum<'ctx>> = args
+        .iter()
+        .copied()
+        .map(|arg| match arg {
+            BasicMetadataValueEnum::ArrayValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::IntValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::FloatValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::PointerValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::StructValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::VectorValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::ScalableVectorValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::MetadataValue(_) => Err(CodegenError::FailClosed(
+                "ownership-aware indirect invoke cannot pass LLVM metadata as an argument".into(),
+            )),
+        })
+        .collect::<CodegenResult<_>>()?;
+    let call = fn_ctx
+        .builder
+        .build_indirect_invoke(
+            function_type,
+            function_pointer,
+            &invoke_args,
+            normal,
+            unwind,
+            name,
+        )
+        .llvm_ctx("build ownership-aware indirect invoke")?;
+    fn_ctx.builder.position_at_end(unwind);
+    let exception_ty = fn_ctx.ctx.struct_type(
+        &[
+            fn_ctx.ctx.ptr_type(AddressSpace::default()).into(),
+            fn_ctx.ctx.i32_type().into(),
+        ],
+        false,
+    );
+    let exception = fn_ctx
+        .builder
+        .build_landing_pad(exception_ty, personality, &[], true, "hew.exception")
+        .llvm_ctx("build indirect ownership cleanup landingpad")?;
+    let _cleanup_runtime_guard = RuntimeUnwindBlockGuard::suspend(&fn_ctx.runtime_unwind_block);
+    for drop in &drops {
+        emit_one_elab_drop(fn_ctx, drop)?;
+    }
+    fn_ctx
+        .builder
+        .build_resume(exception)
+        .llvm_ctx("resume after indirect ownership cleanup")?;
+    fn_ctx.builder.position_at_end(normal);
+    Ok(call)
+}
+
+fn build_owned_invoke_with_drops<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    callee: FunctionValue<'ctx>,
+    args: &[BasicMetadataValueEnum<'ctx>],
+    drops: &[hew_mir::ElabDrop],
+    name: &str,
+) -> CodegenResult<CallSiteValue<'ctx>> {
+    if !fn_ctx.unwind_enabled {
+        return fn_ctx
+            .builder
+            .build_call(callee, args, name)
+            .llvm_ctx("build non-EH target call");
+    }
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("invoke block has no parent function".into()))?;
+    let normal = fn_ctx.ctx.append_basic_block(parent, "invoke.cont");
+    let unwind = fn_ctx.ctx.append_basic_block(parent, "invoke.cleanup");
+    let personality = fn_ctx
+        .llvm_mod
+        .get_function("rust_eh_personality")
+        .unwrap_or_else(|| {
+            fn_ctx.llvm_mod.add_function(
+                "rust_eh_personality",
+                fn_ctx.ctx.i32_type().fn_type(&[], true),
+                Some(Linkage::External),
+            )
+        });
+    parent.set_personality_function(personality);
+    let invoke_args: Vec<BasicValueEnum<'ctx>> = args
+        .iter()
+        .copied()
+        .map(|arg| match arg {
+            BasicMetadataValueEnum::ArrayValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::IntValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::FloatValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::PointerValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::StructValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::VectorValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::ScalableVectorValue(value) => Ok(value.into()),
+            BasicMetadataValueEnum::MetadataValue(_) => Err(CodegenError::FailClosed(
+                "ownership-aware invoke cannot pass LLVM metadata as a runtime argument".into(),
+            )),
+        })
+        .collect::<CodegenResult<_>>()?;
+    let call = fn_ctx
+        .builder
+        .build_invoke(callee, &invoke_args, normal, unwind, name)
+        .llvm_ctx("build ownership-aware invoke")?;
+
+    fn_ctx.builder.position_at_end(unwind);
+    let exception_ty = fn_ctx.ctx.struct_type(
+        &[
+            fn_ctx.ctx.ptr_type(AddressSpace::default()).into(),
+            fn_ctx.ctx.i32_type().into(),
+        ],
+        false,
+    );
+    let exception = fn_ctx
+        .builder
+        .build_landing_pad(exception_ty, personality, &[], true, "hew.exception")
+        .llvm_ctx("build ownership cleanup landingpad")?;
+    let _cleanup_runtime_guard = RuntimeUnwindBlockGuard::suspend(&fn_ctx.runtime_unwind_block);
+    for drop in drops {
+        emit_one_elab_drop(fn_ctx, drop)?;
+    }
+    fn_ctx
+        .builder
+        .build_resume(exception)
+        .llvm_ctx("resume after ownership cleanup")?;
+    fn_ctx.builder.position_at_end(normal);
+    Ok(call)
 }
 
 /// Emit a single `ElabDrop` from `elaborated_mir.drop_plans`.
@@ -22190,8 +22599,8 @@ fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<
     // fires exactly once on the still-live path and is skipped where the
     // value was already moved into a consumer. Every idempotent / refcounted
     // / null-after-free drop carries `guard == None` and is unaffected.
-    if let Some(flag) = drop.guard {
-        return emit_flag_gated_elab_drop(fn_ctx, flag, drop);
+    if let Some(guard) = drop.guard {
+        return emit_flag_gated_elab_drop(fn_ctx, guard.flag, drop);
     }
     emit_helper_crash_cleanup_retire_before_drop(fn_ctx, drop)?;
     emit_one_elab_drop_borrow_aware(fn_ctx, drop)
@@ -22438,6 +22847,139 @@ fn helper_crash_cleanup_same_ritual(left: &ElabDrop, right: &ElabDrop) -> bool {
     left == right
 }
 
+fn helper_crash_cleanup_owner_lineages(
+    checked: &CheckedMirFunction,
+) -> HashSet<(hew_mir::OwnerId, hew_mir::OwnerId)> {
+    use hew_mir::OwnershipEvent;
+
+    let mut definitions = HashMap::new();
+    let mut definition_conflicts = HashSet::new();
+    let mut guards = HashMap::new();
+    let mut guard_conflicts = HashSet::new();
+    let mut recipes = HashMap::new();
+    let mut recipe_conflicts = HashSet::new();
+    let mut candidates = Vec::new();
+    for instruction in checked.blocks.iter().flat_map(|block| &block.instructions) {
+        let Instr::OwnershipEvent(event) = instruction else {
+            continue;
+        };
+        let definition = match event {
+            OwnershipEvent::Mint { owner, place, ty } => Some((*owner, *place, ty)),
+            OwnershipEvent::Reset {
+                replacement,
+                place,
+                ty,
+                ..
+            }
+            | OwnershipEvent::Rearm {
+                replacement,
+                place,
+                ty,
+                ..
+            }
+            | OwnershipEvent::Join {
+                replacement,
+                place,
+                ty,
+                ..
+            } => Some((*replacement, *place, ty)),
+            OwnershipEvent::Transfer {
+                to: Some(place),
+                to_owner: Some(owner),
+                to_ty: Some(ty),
+                ..
+            } => Some((*owner, *place, ty)),
+            _ => None,
+        };
+        if let Some((owner, place, ty)) = definition {
+            if definitions.insert(owner, (place, ty.clone())).is_some() {
+                definition_conflicts.insert(owner);
+            }
+        }
+        match event {
+            OwnershipEvent::DropRecipe { owner, recipe } => {
+                if recipes.insert(*owner, recipe.clone()).is_some() {
+                    recipe_conflicts.insert(*owner);
+                }
+            }
+            OwnershipEvent::Guard {
+                owner, flag, kind, ..
+            } => {
+                if guards
+                    .insert(*owner, (*flag, *kind))
+                    .is_some_and(|prior| prior != (*flag, *kind))
+                {
+                    guard_conflicts.insert(*owner);
+                }
+            }
+            OwnershipEvent::Rearm {
+                previous,
+                replacement,
+                place,
+                ty,
+            } => candidates.push((*previous, *replacement, *place, ty.clone())),
+            OwnershipEvent::Join {
+                incoming,
+                replacement,
+                place,
+                ty,
+            } => candidates.extend(
+                incoming
+                    .iter()
+                    .map(|owner| (*owner, *replacement, *place, ty.clone())),
+            ),
+            _ => {}
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(previous, replacement, place, ty)| {
+            let exact_metadata = previous.binding == replacement.binding
+                && !definition_conflicts.contains(&previous)
+                && !definition_conflicts.contains(&replacement)
+                && !guard_conflicts.contains(&previous)
+                && !guard_conflicts.contains(&replacement)
+                && !recipe_conflicts.contains(&previous)
+                && !recipe_conflicts.contains(&replacement)
+                && definitions.get(&previous) == Some(&(place, ty.clone()))
+                && definitions.get(&replacement) == Some(&(place, ty))
+                && guards.get(&previous) == guards.get(&replacement)
+                && recipes.contains_key(&previous)
+                && recipes.get(&previous) == recipes.get(&replacement);
+            exact_metadata.then_some((previous, replacement))
+        })
+        .collect()
+}
+
+fn helper_crash_cleanup_guards_share_lineage(
+    lineages: &HashSet<(hew_mir::OwnerId, hew_mir::OwnerId)>,
+    left: hew_mir::ElabDropGuard,
+    right: hew_mir::ElabDropGuard,
+) -> bool {
+    if left.flag != right.flag {
+        return false;
+    }
+    let mut reachable = vec![left.owner];
+    let mut visited = HashSet::new();
+    while let Some(owner) = reachable.pop() {
+        if owner == right.owner {
+            return true;
+        }
+        if !visited.insert(owner) {
+            continue;
+        }
+        for (from, to) in lineages {
+            if *from == owner {
+                reachable.push(*to);
+            }
+            if *to == owner {
+                reachable.push(*from);
+            }
+        }
+    }
+    false
+}
+
 /// Prove that a MIR ownership sidecar can never select its live (`0`) edge.
 ///
 /// This deliberately understands only constant writes and whole-value moves
@@ -22474,6 +23016,52 @@ fn helper_crash_cleanup_guard_is_always_consumed(func: &RawMirFunction, guard: P
     prove(func, guard, &mut HashSet::new())
 }
 
+/// Whether a typed runtime family is intercepted before the shared
+/// `lower_call_runtime_abi` producer tail.
+fn runtime_family_preempts_runtime_abi_tail(
+    family: hew_types::runtime_call::RuntimeCallFamily,
+) -> bool {
+    use hew_types::runtime_call::{RuntimeCallAbiShape as Shape, RuntimeCallFamily as F};
+
+    matches!(
+        family,
+        F::NodeLookup
+            | F::RemotePidSend
+            | F::TcpAttachLocal
+            | F::TlsAttachLocal
+            | F::WebSocketAttachLocal
+            | F::StreamNextLayout
+            | F::StreamTryNextLayout
+            | F::ChannelRecvLayout
+            | F::ChannelTryRecvLayout
+            | F::ChannelSendLayout
+            | F::StreamSendLayout
+            | F::MathIntrinsic(_)
+            | F::BytesGet
+            | F::StringGet
+            | F::StringFind
+            | F::StringCharAt
+            | F::StringCharAtUtf8
+    ) || matches!(
+        family.abi_shape(),
+        Shape::VecBool
+            | Shape::VecConstructor
+            | Shape::VecLayout
+            | Shape::VecOwned
+            | Shape::VecI32GetSet
+            | Shape::HashCollectionLayoutOp
+            | Shape::HashMapLayoutGet
+            | Shape::HashCollectionConstructor
+            | Shape::BytesConstructor
+    )
+}
+
+fn runtime_family_uses_runtime_abi_tail(
+    family: hew_types::runtime_call::RuntimeCallFamily,
+) -> bool {
+    family.is_mir_emitter_family() && !runtime_family_preempts_runtime_abi_tail(family)
+}
+
 /// Whether a specialised `Terminator::Call` emitter brackets its destination
 /// publication with the same deactivate/arm lifecycle as the generic call
 /// tail.
@@ -22489,16 +23077,18 @@ fn call_destination_has_specialized_crash_cleanup_lifecycle(
 
     match authority {
         hew_mir::CallAuthority::Runtime(family) => {
-            matches!(
-                family,
-                Family::VecGet(hew_types::runtime_call::VecGetElem::Clone)
-                    | Family::VecClone
-                    | Family::VecCloneLayout
-                    | Family::VecCloneOwned
-            ) || matches!(
-                family.abi_shape(),
-                Shape::HashCollectionLayoutOp | Shape::HashMapLayoutGet
-            )
+            runtime_family_uses_runtime_abi_tail(family)
+                || matches!(
+                    family,
+                    Family::VecGet(hew_types::runtime_call::VecGetElem::Clone)
+                        | Family::VecClone
+                        | Family::VecCloneLayout
+                        | Family::VecCloneOwned
+                )
+                || matches!(
+                    family.abi_shape(),
+                    Shape::VecConstructor | Shape::HashCollectionLayoutOp | Shape::HashMapLayoutGet
+                )
         }
         hew_mir::CallAuthority::Compiler(
             hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
@@ -22507,6 +23097,8 @@ fn call_destination_has_specialized_crash_cleanup_lifecycle(
         ) => true,
         hew_mir::CallAuthority::Direct
         | hew_mir::CallAuthority::Extern
+        | hew_mir::CallAuthority::NoReturnDirect
+        | hew_mir::CallAuthority::NoReturnExtern
         | hew_mir::CallAuthority::Compiler(_) => false,
     }
 }
@@ -22519,12 +23111,21 @@ fn collect_helper_crash_cleanup_descriptors(
     func: &RawMirFunction,
     elab: Option<&ElaboratedMirFunction>,
     has_suspend: bool,
+    include_unwind_plans: bool,
     record_field_tys: &HashMap<String, Vec<ResolvedTy>>,
     enum_layouts: &[EnumLayout],
     fn_symbols: &FnSymbolMap<'_>,
     back_edge_blocks: &HashSet<u32>,
     representation_loan_params: &HashMap<String, Vec<u32>>,
+    helper_crash_cleanup_lineages: &HashSet<(hew_mir::OwnerId, hew_mir::OwnerId)>,
 ) -> CodegenResult<Vec<HelperCrashCleanupDescriptor>> {
+    // The hard-cutover MIR carries `ExitPath::Unwind` plans for native LLVM EH.
+    // WASM cannot enter those landing pads: an intentional trap terminates the
+    // instance, while cancellation follows its explicit `Cancel` edge. Feeding
+    // native-only unwind owners into the legacy WASM snapshot registry invents
+    // stale escrows and can reject a producer that no reachable WASM cleanup
+    // path ever needs. MSVC, which still relies on the registry while Rust may
+    // unwind through a scheduler boundary, keeps these plans.
     // Places whose ENTIRE drop-plan footprint is the loop back-edge Goto and
     // nothing else are reassigned-`while let` scrutinee snapshots: a byte-copy
     // alias of the still-live loop variable that the MIR drop-elaboration
@@ -22550,6 +23151,9 @@ fn collect_helper_crash_cleanup_descriptors(
     let mut off_back_edge: HashSet<Place> = HashSet::new();
     if let Some(elab) = elab {
         for (exit, plan) in &elab.drop_plans {
+            if !include_unwind_plans && matches!(exit, ExitPath::Unwind { .. }) {
+                continue;
+            }
             let is_back_edge = matches!(
                 exit,
                 ExitPath::Goto { block, .. } if back_edge_blocks.contains(block)
@@ -22611,10 +23215,8 @@ fn collect_helper_crash_cleanup_descriptors(
         match &block.terminator {
             Terminator::Call {
                 callee, authority, ..
-            } if (matches!(
-                authority,
-                hew_mir::CallAuthority::Direct | hew_mir::CallAuthority::Extern
-            ) && matches!(fn_symbols.get(callee), Some(FnSymbol::Real { .. })))
+            } if (matches!(fn_symbols.get(callee), Some(FnSymbol::Real { .. }))
+                && !call_bypasses_crash_cleanup_common_tail(*authority)?)
                 || call_destination_has_specialized_crash_cleanup_lifecycle(*authority) =>
             {
                 supported_producers.extend(terminator_writes);
@@ -22650,6 +23252,9 @@ fn collect_helper_crash_cleanup_descriptors(
     let mut entry_cancel_unguarded = HashSet::<Place>::new();
     let entry_block_id = func.blocks.first().map(|block| block.id);
     for (exit, plan) in elab.into_iter().flat_map(|elab| elab.drop_plans.iter()) {
+        if !include_unwind_plans && matches!(exit, ExitPath::Unwind { .. }) {
+            continue;
+        }
         let is_entry_cancel =
             matches!(exit, ExitPath::Cancel { block } if Some(*block) == entry_block_id);
         for drop in &plan.drops {
@@ -22659,10 +23264,9 @@ fn collect_helper_crash_cleanup_descriptors(
             if !crash_cleanup_drop_requires_registration(drop)? {
                 continue;
             }
-            if drop
-                .guard
-                .is_some_and(|guard| helper_crash_cleanup_guard_is_always_consumed(func, guard))
-            {
+            if drop.guard.is_some_and(|guard| {
+                helper_crash_cleanup_guard_is_always_consumed(func, guard.flag)
+            }) {
                 continue;
             }
             if !supported_producers.contains(&drop.place) {
@@ -22672,7 +23276,7 @@ fn collect_helper_crash_cleanup_descriptors(
                      whole-slot instruction writes, completed enum/machine \
                      aggregate construction, collapsed-suspend ready \
                      destinations, select/join bindings, compiler-owned handle \
-                     constructors, ask results, generic Real-call destinations, \
+                     constructors, ask results, common-tail Real-call destinations, \
                      and lifecycle-instrumented collection destinations",
                     drop.place, drop.ty
                 )));
@@ -22723,6 +23327,12 @@ fn collect_helper_crash_cleanup_descriptors(
                         entry_cancel_unguarded.remove(&drop.place);
                     }
                     (Some(_), None) if current_is_entry_cancel => {}
+                    (Some(existing_guard), Some(next_guard))
+                        if helper_crash_cleanup_guards_share_lineage(
+                            helper_crash_cleanup_lineages,
+                            existing_guard,
+                            next_guard,
+                        ) => {}
                     _ => {
                         return Err(CodegenError::FailClosed(format!(
                             "ordinary helper crash snapshot for {:?} has conflicting \
@@ -23043,7 +23653,7 @@ fn initialize_helper_crash_cleanup_guards(
                 "helper crash-cleanup owner guard belongs to a projected place".into(),
             ));
         };
-        let (guard_slot, guard_ty) = place_pointer(fn_ctx, guard)?;
+        let (guard_slot, guard_ty) = place_pointer(fn_ctx, guard.flag)?;
         let BasicTypeEnum::IntType(guard_ty) = guard_ty else {
             return Err(CodegenError::FailClosed(format!(
                 "helper crash-cleanup guard {guard:?} is not integer-typed"
@@ -23519,7 +24129,7 @@ fn emit_helper_crash_cleanup_deactivate_consumed_owners(
         let Some(guard) = owner.descriptor.guard else {
             continue;
         };
-        let (guard_slot, guard_ty) = place_pointer(fn_ctx, guard)?;
+        let (guard_slot, guard_ty) = place_pointer(fn_ctx, guard.flag)?;
         let BasicTypeEnum::IntType(guard_ty) = guard_ty else {
             return Err(CodegenError::FailClosed(format!(
                 "crash-cleanup consume guard {guard:?} for {place:?} is not integer-shaped"
@@ -23579,6 +24189,12 @@ fn representation_loan_argument_owners(
     callee: &str,
     args: &[Place],
 ) -> CodegenResult<Vec<Place>> {
+    if fn_ctx.unwind_enabled {
+        // The caller's MIR unwind plan owns cleanup for the complete call
+        // duration. No out-of-band token handoff is needed while LLVM keeps
+        // the caller frame and its current representation live.
+        return Ok(Vec::new());
+    }
     let Some(param_indices) = fn_ctx.representation_loan_params.get(callee) else {
         return Ok(Vec::new());
     };
@@ -23636,7 +24252,7 @@ pub(crate) fn emit_helper_crash_cleanup_arm_after_write(
     };
     let mut should_arm = None;
     if let Some(guard) = owner.descriptor.guard {
-        let (guard_slot, guard_ty) = place_pointer(fn_ctx, guard)?;
+        let (guard_slot, guard_ty) = place_pointer(fn_ctx, guard.flag)?;
         let BasicTypeEnum::IntType(guard_ty) = guard_ty else {
             return Err(CodegenError::FailClosed(format!(
                 "crash-cleanup arm guard {guard:?} for {place:?} is not integer-shaped"
@@ -23754,7 +24370,18 @@ fn emit_helper_crash_cleanup_retire_before_drop(
         return Ok(());
     };
     let guard_is_compatible = owner.descriptor.guard == drop.guard
-        || (owner.descriptor.guard.is_some() && drop.guard.is_none());
+        || (owner.descriptor.guard.is_some() && drop.guard.is_none())
+        || owner
+            .descriptor
+            .guard
+            .zip(drop.guard)
+            .is_some_and(|(registered, current)| {
+                helper_crash_cleanup_guards_share_lineage(
+                    &fn_ctx.helper_crash_cleanup_lineages,
+                    registered,
+                    current,
+                )
+            });
     if !guard_is_compatible || !helper_crash_cleanup_same_ritual(&owner.descriptor, drop) {
         return Err(CodegenError::FailClosed(format!(
             "ordinary helper cleanup descriptor drift at {:?}",
@@ -29158,6 +29785,7 @@ fn dispatch_collapsed_suspend<'ctx>(
                 args: args.clone(),
                 ret_ty,
                 result_dest: *result_dest,
+                unwind_block: block_id,
                 resume,
                 cleanup,
             },
@@ -29236,18 +29864,25 @@ fn dispatch_collapsed_suspend<'ctx>(
     }
 }
 
-/// A terminator that parks the coroutine on an `llvm.coro.suspend`: its
-/// frame-owned local drops belong on the case-1 (destroy-while-parked) abandon
-/// edge, NOT in the normal block flow (they would drop values before the park).
-/// The block loop suppresses its normal-flow `emit_elab_drops` for these; the
-/// abandon-edge emission is in `emit_suspend_point` / the `Yield` arm (#2395).
-fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
+/// Whether a terminator's only drop plan belongs to an exceptional edge.
+///
+/// Suspend carriers keep frame owners for their case-1 abandon edge. A
+/// no-return call has no normal successor, so its `ExitPath::Unwind` plan must
+/// run from the invoke landing pad after the callee has observed its arguments.
+/// Emitting either plan before the terminator parks/fires would respectively
+/// free resumed state or destroy a panic-message argument before it is printed.
+fn terminator_owns_exceptional_only_drop_plan(term: &Terminator) -> bool {
     matches!(
         term,
         Terminator::Suspend { .. }
             | Terminator::SuspendingScopeDeadline { .. }
             | Terminator::SuspendingSelect { .. }
             | Terminator::Yield { .. }
+            | Terminator::Call {
+                authority: hew_mir::CallAuthority::NoReturnDirect
+                    | hew_mir::CallAuthority::NoReturnExtern,
+                ..
+            }
     )
 }
 
@@ -29263,29 +29898,11 @@ fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
 fn call_bypasses_crash_cleanup_common_tail(
     authority: hew_mir::CallAuthority,
 ) -> CodegenResult<bool> {
-    use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
-
     // `Direct` is an open linkage class.  It must never inherit a structural
     // intercept merely because its spelling collides with an internal helper.
     let builtin = authority.runtime_family();
 
-    let family_intercept = matches!(
-        builtin,
-        Some(
-            RtFamily::NodeLookup
-                | RtFamily::RemotePidSend
-                | RtFamily::TcpAttachLocal
-                | RtFamily::TlsAttachLocal
-                | RtFamily::WebSocketAttachLocal
-                | RtFamily::StreamNextLayout
-                | RtFamily::StreamTryNextLayout
-                | RtFamily::ChannelRecvLayout
-                | RtFamily::ChannelTryRecvLayout
-                | RtFamily::ChannelSendLayout
-                | RtFamily::StreamSendLayout
-                | RtFamily::MathIntrinsic(_)
-        )
-    );
+    let family_intercept = builtin.is_some_and(runtime_family_preempts_runtime_abi_tail);
     let compiler_intercept = matches!(
         authority,
         hew_mir::CallAuthority::Compiler(kind)
@@ -29296,27 +29913,11 @@ fn call_bypasses_crash_cleanup_common_tail(
                     | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout
             )
     );
-    let collection_intercept = builtin.is_some_and(|family| {
-        use hew_types::runtime_call::{RuntimeCallAbiShape as Shape, RuntimeCallFamily as F};
-
-        matches!(
-            family.abi_shape(),
-            Shape::VecBool
-                | Shape::VecConstructor
-                | Shape::VecLayout
-                | Shape::VecOwned
-                | Shape::VecI32GetSet
-                | Shape::HashCollectionLayoutOp
-                | Shape::HashMapLayoutGet
-                | Shape::HashCollectionConstructor
-                | Shape::BytesConstructor
-        ) || matches!(
-            family,
-            F::BytesGet | F::StringGet | F::StringFind | F::StringCharAt | F::StringCharAtUtf8
-        )
-    });
-
-    Ok(family_intercept || compiler_intercept || collection_intercept)
+    // Catalog-backed MIR-emitter families return immediately after the shared
+    // `runtime_abi` dispatcher below, before the generic `FnSymbol::Real` tail.
+    // Their dispatcher return path owns the post-write cleanup rearm.
+    let runtime_abi_intercept = builtin.is_some_and(runtime_family_uses_runtime_abi_tail);
+    Ok(family_intercept || compiler_intercept || runtime_abi_intercept)
 }
 
 fn lower_terminator<'ctx>(
@@ -29873,8 +30474,18 @@ fn lower_terminator<'ctx>(
         } => {
             use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
             let builtin = authority.runtime_family();
+            // Install the unwind authority before dispatching any specialized
+            // runtime ABI shape. Those lowerers may emit guards and payload
+            // calls before branching to `next`; every potentially-unwinding
+            // nested call must therefore share this terminator's lexical
+            // cleanup edge, including early-return intercepts.
+            let _runtime_unwind_guard = builtin
+                .map(|_| RuntimeUnwindBlockGuard::enter(&fn_ctx.runtime_unwind_block, block_id));
             match authority {
-                hew_mir::CallAuthority::Direct | hew_mir::CallAuthority::Extern => {}
+                hew_mir::CallAuthority::Direct
+                | hew_mir::CallAuthority::Extern
+                | hew_mir::CallAuthority::NoReturnDirect
+                | hew_mir::CallAuthority::NoReturnExtern => {}
                 hew_mir::CallAuthority::Runtime(family) => {
                     if family.c_symbol() != callee {
                         return Err(CodegenError::FailClosed(format!(
@@ -30314,6 +30925,13 @@ fn lower_terminator<'ctx>(
                     },
                 )?;
                 crate::runtime_abi::lower_call_runtime_abi(fn_ctx, &runtime_call)?;
+                // MIR-emitter families return before the generic Real-call
+                // tail. Rearm the now-complete destination here, at the actual
+                // producer boundary, so WASM/MSVC cancellation or a later
+                // logical crash retains cleanup authority for the new value.
+                if let Some(dest) = dest {
+                    emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest)?;
+                }
                 let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
                     CodegenError::FailClosed(format!("{callee} next bb{next} missing"))
                 })?;
@@ -30392,7 +31010,7 @@ fn lower_terminator<'ctx>(
                         // values correct for signed operands; unsigned operands
                         // must zero-extend at this boundary.
                         let declared_param_tys = value.get_type().get_param_types();
-                        let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+                        let mut arg_vals: Vec<BasicValueEnum<'ctx>> =
                             Vec::with_capacity(args.len());
                         for (idx, arg) in args.iter().enumerate() {
                             let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
@@ -30418,7 +31036,7 @@ fn lower_terminator<'ctx>(
                                 idx,
                             )? == TypedCallArgPass::StorageAddress
                             {
-                                arg_vals.push(metadata_value_from_basic(arg_ptr.into()));
+                                arg_vals.push(arg_ptr.into());
                                 continue;
                             }
                             let loaded = fn_ctx
@@ -30435,12 +31053,17 @@ fn lower_terminator<'ctx>(
                                 )?,
                                 _ => loaded,
                             };
-                            arg_vals.push(metadata_value_from_basic(reconciled));
+                            arg_vals.push(reconciled);
                         }
-                        let call_site = fn_ctx
-                            .builder
-                            .build_call(value, &arg_vals, "call_result")
-                            .llvm_ctx("build_call")?;
+                        let invoke_args: Vec<BasicMetadataValueEnum<'ctx>> =
+                            arg_vals.iter().copied().map(Into::into).collect();
+                        let call_site = build_owned_invoke(
+                            fn_ctx,
+                            value,
+                            &invoke_args,
+                            block_id,
+                            "call_result",
+                        )?;
                         emit_representation_loan_handoff_after_call(fn_ctx, &loan_arg_owners)?;
                         if let Some(dest_place) = dest {
                             if returns_unit {
@@ -34996,28 +35619,74 @@ fn lower_function<'ctx>(
                 .collect()
         })
         .unwrap_or_default();
-    let helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
-        ctx,
-        &builder,
-        collect_helper_crash_cleanup_descriptors(
-            func,
-            elab,
-            has_suspend,
-            record_field_resolved_tys,
-            enum_layouts,
-            fn_symbols,
-            &back_edge_blocks,
-            representation_loan_params_by_function,
-        )?,
-        if has_suspend {
-            CrashCleanupStorage::DirectFrame
-        } else {
-            CrashCleanupStorage::Snapshot
-        },
+    let unwind_enabled = !emit_wasm_entry_alias
+        && !llvm_mod
+            .get_triple()
+            .as_str()
+            .to_string_lossy()
+            .contains("windows-msvc");
+    // Native LLVM-EH destroys every ordinary live local in its `invoke`
+    // cleanup, so it normally needs no out-of-band owner registry. One edge is
+    // not an invoke: FunctionEntry cooperate cancellation is synthesized here,
+    // after ABI parameters are stored but before the first MIR instruction.
+    // Keep a dispatch snapshot only for an owned Bytes parameter named by that
+    // exact cancel plan. Its Move hook deactivates the snapshot before mailbox
+    // publication; the cancel drop retires it before releasing the buffer.
+    // Every other native descriptor remains under LLVM-EH alone.
+    let native_entry_cancel_snapshot_places = drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Cancel { block } if *block == entry_block.id))
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter_map(|drop| match (drop.place, &drop.ty) {
+            (place @ Place::Local(local), ResolvedTy::Bytes)
+                if usize::try_from(local).is_ok_and(|local| local < func.params.len()) =>
+            {
+                Some(place)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    // Production Checked MIR reaches this point only after the ownership-event
+    // validator has accepted every Join/Rearm. Re-derive physical equivalence
+    // from that immutable event stream, and keep hand-built Raw-only pipelines
+    // fail-closed with no lineage admission.
+    let helper_crash_cleanup_lineages = checked
+        .map(helper_crash_cleanup_owner_lineages)
+        .unwrap_or_default();
+    let mut helper_crash_cleanup_descriptors = collect_helper_crash_cleanup_descriptors(
+        func,
+        elab,
+        has_suspend,
+        !emit_wasm_entry_alias,
+        record_field_resolved_tys,
+        enum_layouts,
+        fn_symbols,
+        &back_edge_blocks,
+        representation_loan_params_by_function,
+        &helper_crash_cleanup_lineages,
     )?;
+    if unwind_enabled {
+        helper_crash_cleanup_descriptors
+            .retain(|entry| native_entry_cancel_snapshot_places.contains(&entry.descriptor.place));
+    }
+    let helper_crash_cleanup_owners = if helper_crash_cleanup_descriptors.is_empty() {
+        HashMap::new()
+    } else {
+        allocate_helper_crash_cleanup_owners(
+            ctx,
+            &builder,
+            helper_crash_cleanup_descriptors,
+            if has_suspend {
+                CrashCleanupStorage::DirectFrame
+            } else {
+                CrashCleanupStorage::Snapshot
+            },
+        )?
+    };
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
+        unwind_enabled,
         emit_drain_epilogue,
         emit_immediate_shutdown_epilogue,
         emit_runtime_cleanup_epilogue,
@@ -35044,6 +35713,7 @@ fn lower_function<'ctx>(
         local_tys,
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),
+        runtime_unwind_block: std::cell::Cell::new(None),
         record_layouts,
         fn_symbols,
         frame_cleanup_thunks,
@@ -35067,6 +35737,7 @@ fn lower_function<'ctx>(
         },
         drop_plans,
         helper_crash_cleanup_owners,
+        helper_crash_cleanup_lineages,
         suspend_abandon_block: std::cell::Cell::new(0),
         elab_drop_slot_override: std::cell::Cell::new(None),
     };
@@ -35083,12 +35754,11 @@ fn lower_function<'ctx>(
     // a `BytesTriple` struct, so it reaches this `StructType` arm, but it is one
     // `CowValue` leaf — the struct-by-value return path copies it flat into the
     // caller's slot with no interior owner needing a per-field drop. The leaf
-    // has no scope-exit drop on either side (`cow_value_leaf_drop_symbol` is
-    // `None` for `bytes`), so it leaks-as-before rather than double-freeing, the
-    // same posture as every other `bytes`/aggregate `CowValue` leaf today. This
-    // restores parity with `string`, which lowers to a flat `ptr` and is already
-    // admitted because it never reaches the `StructType` arm. (`std::fs` import
-    // was blocked solely because `fs.read_bytes -> bytes` was force-codegen'd.)
+    // is released by the bytes-specific ownership authority: MIR suppresses the
+    // escaped callee slot, the caller assumes the moved triple, and its
+    // `CowHeapRelease::Bytes` exit drop calls `hew_bytes_drop` exactly once.
+    // This restores parity with `string`, which lowers to a flat `ptr` and is
+    // already admitted because it never reaches the `StructType` arm.
     // `VecIter<T>` is likewise admitted through its dedicated cursor-transfer
     // spine: MIR suppresses the callee's escaped cursor drop and registers the
     // caller's returned cursor as the unique owner of its cloned Vec buffer.
@@ -35350,8 +36020,8 @@ fn lower_function<'ctx>(
                         .get(place)
                         .and_then(|owner| owner.descriptor.guard)
                         .is_some_and(|guard| {
-                            written_places.contains(&guard)
-                                || next_instruction_writes.contains(&guard)
+                            written_places.contains(&guard.flag)
+                                || next_instruction_writes.contains(&guard.flag)
                         })
                 })
                 .collect();
@@ -35362,7 +36032,7 @@ fn lower_function<'ctx>(
                     owner
                         .descriptor
                         .guard
-                        .filter(|guard| written_places.contains(guard))
+                        .filter(|guard| written_places.contains(&guard.flag))
                         .map(|_| *place)
                 })
                 .collect();
@@ -35445,15 +36115,10 @@ fn lower_function<'ctx>(
         // terminator so the alloca null-stores precede the ret/br.
         // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
         //
-        // EXCEPT for a suspend carrier (`Suspend`/`SuspendingScopeDeadline`/
-        // `SuspendingSelect`/`Yield`): its `ExitPath::Suspend`/`Yield` plan holds
-        // the frame-owned locals live across the park, which must fire ONLY on
-        // the case-1 (destroy-while-parked) abandon edge — NOT here in the
-        // normal flow, where they would drop the values BEFORE the suspend and
-        // leave the resumed body reading freed memory (#2395). The abandon-edge
-        // emission lives in `emit_suspend_point` (all 13 collapsed emitters) and
-        // in the `Terminator::Yield` arm's interposed abandon block.
-        if !terminator_is_suspend_carrier(&block.terminator) {
+        // EXCEPT for exceptional-only plans: suspend carriers run theirs on the
+        // destroy-while-parked edge; no-return calls run theirs from the invoke
+        // landing pad, after the callee has consumed/observed its arguments.
+        if !terminator_owns_exceptional_only_drop_plan(&block.terminator) {
             emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
         }
         // Stage 2 (gdb `-g`): a call / branch / return lowers to a TERMINATOR,

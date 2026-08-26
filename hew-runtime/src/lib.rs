@@ -836,10 +836,10 @@ pub mod shutdown;
 // native shutdown path, not just the implicit actor-drain one.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod exit_status;
-// `signal` owns native signal recovery and also provides the target-neutral
-// crash-recovery ABI stubs used by continuation state-cleanup on WASI.  Keep
-// the module available on wasm32: its internal platform layer selects no-op
-// implementations there, while `cont` remains shared between native and WASI.
+// `signal` owns native signal recovery and the target-neutral state-field
+// finalizer depth guard used by continuation cleanup on every target. The
+// native signal hooks and crash-cleanup drain publication are cfg-scoped out
+// on wasm32, while the shared finalizer guard keeps this module available.
 pub mod signal;
 
 pub mod actor;

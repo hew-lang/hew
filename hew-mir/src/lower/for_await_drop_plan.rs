@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use hew_hir::BindingId;
 use hew_types::ResolvedTy;
 
-use crate::model::{BasicBlock, CheckedMirFunction, DropPlan, ElabDrop, ExitPath, Instr, Place};
+use crate::model::{BasicBlock, DropPlan, ElabDrop, ExitPath, Instr, Place};
 
 use super::{
     dataflow,
@@ -24,7 +24,7 @@ use super::{
 /// terminal exits, then merge those closes into the existing plans in
 /// declaration-LIFO order.
 pub(super) fn admit_terminal_handoff_drops(
-    checked: &CheckedMirFunction,
+    blocks: &[BasicBlock],
     builder: &Builder,
     dataflow_result: &dataflow::DataflowResult,
     returned_member_candidates: &[(BindingId, String, ResolvedTy)],
@@ -38,7 +38,7 @@ pub(super) fn admit_terminal_handoff_drops(
         drop_plans,
         &mut pending,
     );
-    admit_cursor_abandonment_drops(checked, builder, dataflow_result, drop_plans, &mut pending);
+    admit_cursor_abandonment_drops(blocks, builder, dataflow_result, drop_plans, &mut pending);
     merge_declaration_ranked_drops(builder, drop_plans, pending);
 }
 
@@ -80,6 +80,7 @@ fn admit_source_terminal_drops(
                 ExitPath::Return { block }
                 | ExitPath::Cancel { block }
                 | ExitPath::Panic { block }
+                | ExitPath::Unwind { block, .. }
                 | ExitPath::Yield { block, .. }
                 | ExitPath::Suspend { block, .. } => *block,
                 ExitPath::Goto { .. }
@@ -120,7 +121,7 @@ fn admit_source_terminal_drops(
 /// Admit the cursor close only on abandonment paths after hand-off and before
 /// its inline lexical close.
 fn admit_cursor_abandonment_drops(
-    checked: &CheckedMirFunction,
+    blocks: &[BasicBlock],
     builder: &Builder,
     dataflow_result: &dataflow::DataflowResult,
     drop_plans: &[(ExitPath, DropPlan)],
@@ -138,7 +139,7 @@ fn admit_cursor_abandonment_drops(
             continue;
         };
         let abandonment_region =
-            cursor_abandonment_region(&checked.blocks, handoff.handoff_block, place, descriptor);
+            cursor_abandonment_region(blocks, handoff.handoff_block, place, descriptor);
         let deferred_drop = ElabDrop {
             place,
             ty: handoff.ty.clone(),
@@ -149,6 +150,7 @@ fn admit_cursor_abandonment_drops(
         for (plan_index, (exit, plan)) in drop_plans.iter().enumerate() {
             let block = match exit {
                 ExitPath::Cancel { block }
+                | ExitPath::Unwind { block, .. }
                 | ExitPath::Panic { block }
                 | ExitPath::Yield { block, .. }
                 | ExitPath::Suspend { block, .. } => *block,

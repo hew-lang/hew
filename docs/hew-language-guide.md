@@ -3069,10 +3069,39 @@ bare element type, not `Option<T>` — see
 for that form.
 
 `e.to_json()` and `TypeName.from_json(text)` round-trip a wire type through
-JSON; the latter is a call on the type name itself rather than a source spelling. The runtime envelope
-used for actor-to-actor message transport is CBOR; the `std.encoding` modules
-surface (JSON, MessagePack, ...) is for cross-service and file I/O. Use `hew
-wire check <file.hew> --against <baseline.hew>` to check schema
+JSON; the latter is a call on the type name itself rather than a source
+spelling. Bare values that implement `Serializable`, including admitted
+`HashMap` and `HashSet` shapes, use the generic `std.encoding.wire` facade:
+
+```hew
+import std.encoding.wire;
+
+#[wire]
+type Feature {
+    enabled: bool @1,
+}
+
+fn main() {
+    let features: HashMap<string, Feature> = HashMap.new();
+    features.insert("preview", Feature { enabled: true });
+
+    let json = wire.to_json(features);
+    let parsed = wire.from_json<HashMap<string, Feature>>(json);
+    let cbor = wire.encode(features);
+    let decoded = wire.decode<HashMap<string, Feature>>(cbor);
+}
+```
+
+`wire.to_yaml` and `wire.from_yaml<T>` provide the equivalent YAML surface.
+These functions use the same typed codec descriptor and compiler-emitted
+thunks as `#[wire]` methods and actor transport; collections do not need
+format-specific methods or a wrapper record. Text parsing returns
+`Result<T, string>`. Binary `decode<T>` retains the trusted-input,
+trap-on-malformed-data contract of `TypeName.decode(bytes)`.
+
+The runtime envelope used for actor-to-actor message transport is CBOR; the
+text surfaces are for cross-service and file I/O. Use `hew wire check
+<file.hew> --against <baseline.hew>` to check schema
 compatibility between two versions of a wire type.
 
 Full example: [`examples/playground/types/wire_types.hew`](../examples/playground/types/wire_types.hew). Spec: HEW-SPEC-2026.md §7.

@@ -4,9 +4,11 @@
 //! and C types in `#[no_mangle] extern "C"` functions: allocating
 //! `malloc`-backed C strings, converting `*const c_char` to `&str`, etc.
 
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// Allocate a NUL-terminated, **header-aware** C string, copying `len` bytes
 /// from `src`. Returns null on allocation failure.
@@ -178,22 +180,15 @@ pub unsafe fn cstr_to_string_lossy(ptr: *const c_char) -> String {
 // lives at `data - CSTRING_HEADER_SIZE`. `data` is suitable for use as a
 // NUL-terminated `*mut c_char` exactly like the legacy `malloc_cstring` result.
 //
-// ## What the sentinel does — and does NOT — do
+// ## Provenance and integrity
 //
-// The magic is a **best-effort integrity check on a pointer the caller already
-// knows came from [`alloc_cstring`]**. It catches *corruption of a
-// header-allocated pointer* and (best-effort) a *double-free*. It is NOT a way
-// to classify arbitrary or foreign pointers: [`free_cstring`] must compute
-// `base = data - CSTRING_HEADER_SIZE` and read the header BEFORE it can inspect
-// the magic, and for a pointer that did not come from [`alloc_cstring`] (e.g. a
-// plain `strdup`/`malloc` C string sitting at the start of its own allocation)
-// that read is out-of-bounds / invalid-provenance UB. The sentinel therefore
-// cannot safely detect a still-headerless or otherwise mis-provenanced pointer.
-//
-// Correctness of the eventual wiring comes from **migrating every site that can
-// reach [`free_cstring`] together** (out-of-band provenance), so that only
-// header-allocated pointers ever reach it — NOT from runtime probing of unknown
-// pointers.
+// The allocation registry classifies the exact exposed data address before any
+// pointer arithmetic or header access. Unknown, literal, foreign, and retired
+// addresses are therefore rejected without forming an invalid `data - 16`
+// pointer. Once provenance is established, the magic detects corruption of the
+// registered allocation's header. The two checks have deliberately separate
+// jobs: registry membership proves where the allocation starts; the sentinel
+// proves that the known header is intact.
 //
 // ## Header sizing and alignment
 //
@@ -222,12 +217,69 @@ const CSTRING_POISON: u64 = 0xDEAD_BEEF_DEAD_BEEF;
 /// Header preceding the data region of a header-aware C string.
 ///
 /// `repr(C)` pins the field order so the magic always lives at offset 0 (where
-/// the integrity check reads it). `rc` is **inert** (always 1).
+/// the integrity check reads it). `rc` is the live atomic owner count.
 #[repr(C)]
 struct CStringHeader {
     magic: u64,
     rc: AtomicU32,
     _reserved: u32,
+}
+
+/// Live Hew-string allocations keyed by the exact C data pointer exposed at
+/// the ABI boundary.  Looking up provenance in this registry happens before
+/// any header dereference or pointer subtraction, so a literal, stack pointer,
+/// foreign C string, or already-freed pointer can never make the runtime form
+/// an out-of-bounds `data - header_size` pointer.
+///
+/// The registry is allocation provenance, not ownership: the header's atomic
+/// refcount remains the sole owner count.  Entries live from allocation until
+/// the final release and therefore also make a second release fail closed
+/// without reading freed storage.
+fn cstring_allocations() -> &'static Mutex<HashMap<usize, usize>> {
+    static ALLOCATIONS: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+    ALLOCATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_cstring_allocations() -> std::sync::MutexGuard<'static, HashMap<usize, usize>> {
+    cstring_allocations()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn register_cstring_allocation(data: *mut c_char, base: *mut u8) {
+    let previous = lock_cstring_allocations().insert(data as usize, base as usize);
+    if previous.is_some() {
+        eprintln!("hew-cabi: duplicate live C-string allocation address {data:p}");
+        std::process::abort();
+    }
+}
+
+fn unregister_cstring_allocation(data: *mut c_char, expected_base: *mut u8) -> bool {
+    let mut allocations = lock_cstring_allocations();
+    match allocations.get(&(data as usize)).copied() {
+        Some(base) if base == expected_base as usize => {
+            allocations.remove(&(data as usize));
+            true
+        }
+        _ => false,
+    }
+}
+
+fn cstring_allocation_base(data: *mut c_char) -> Option<*mut u8> {
+    lock_cstring_allocations()
+        .get(&(data as usize))
+        .copied()
+        .map(|base| base as *mut u8)
+}
+
+/// Whether `data` is the exact data pointer of a live Hew-managed string.
+///
+/// This query performs no pointer dereference. Runtime string retain/drop uses
+/// it to distinguish managed owners from immortal literals and borrowed FFI
+/// views without platform image-range heuristics.
+#[must_use]
+pub fn is_managed_cstring(data: *const c_char) -> bool {
+    !data.is_null() && cstring_allocation_base(data.cast_mut()).is_some()
 }
 
 /// Allocate a NUL-terminated, header-aware C string via `libc::malloc`, copying
@@ -317,7 +369,9 @@ pub fn alloc_cstring_data(data_len: usize) -> *mut c_char {
         );
     }
     // SAFETY: data region begins at base + HEADER_SIZE, valid for data_len bytes.
-    unsafe { base.add(CSTRING_HEADER_SIZE).cast::<c_char>() }
+    let data = unsafe { base.add(CSTRING_HEADER_SIZE).cast::<c_char>() };
+    register_cstring_allocation(data, base);
+    data
 }
 
 /// Copy a Rust `&str` into a header-aware, NUL-terminated C string.
@@ -328,9 +382,9 @@ pub fn alloc_cstring_from_str(s: &str) -> *mut c_char {
     unsafe { alloc_cstring(s.as_ptr(), s.len()) }
 }
 
-/// Recover the allocation base from a header-aware `data` pointer and verify the
-/// magic sentinel. Returns `Some(base)` if the magic is intact, `None` if it is
-/// absent (the header was clobbered).
+/// Recover the allocation base from a registered `data` pointer and verify the
+/// magic sentinel. Registry lookup establishes provenance before the header is
+/// read. Returns `Some(base)` only while the allocation is live and intact.
 ///
 /// Note: when [`free_cstring`] poisons the magic just before releasing the
 /// allocation, a *subsequent* call on the same pointer may observe the poison
@@ -340,22 +394,12 @@ pub fn alloc_cstring_from_str(s: &str) -> *mut c_char {
 ///
 /// # Safety
 ///
-/// `data` MUST be a pointer previously returned by [`alloc_cstring`] (non-null)
-/// **whose allocation is still live — i.e. not already freed through
-/// [`free_cstring`]** (matching `free_cstring`'s "not already freed"
-/// precondition). This is a hard precondition: the function reads
-/// `data - CSTRING_HEADER_SIZE`, which is only a valid, in-bounds read for a
-/// real, still-live `alloc_cstring` allocation. Passing any other pointer (a
-/// plain `strdup`/`malloc` C string, a stack pointer, a foreign pointer) is
-/// out-of-bounds / invalid-provenance UB, and passing a freed pointer is
-/// use-after-free UB — the magic check cannot rescue either, because the
-/// offending read happens first. This function does NOT classify unknown or
-/// freed pointers; provenance and liveness are the caller's responsibility.
+/// `data` may be any non-null pointer value. Unknown or retired addresses are
+/// rejected from the integer-keyed provenance registry without dereferencing
+/// them.
 #[must_use]
 unsafe fn validate_cstring_header(data: *mut c_char) -> Option<*mut u8> {
-    // SAFETY: per precondition, data came from alloc_cstring, so data - HEADER
-    // is the in-bounds start of that allocation.
-    let base = unsafe { data.cast::<u8>().sub(CSTRING_HEADER_SIZE) };
+    let base = cstring_allocation_base(data)?;
     #[expect(
         clippy::cast_ptr_alignment,
         reason = "base is libc::malloc-aligned, satisfying CStringHeader's 8-byte alignment"
@@ -377,12 +421,9 @@ unsafe fn validate_cstring_header(data: *mut c_char) -> Option<*mut u8> {
 ///
 /// # Safety
 ///
-/// `data` MUST be a pointer previously returned by [`alloc_cstring`] /
-/// [`alloc_cstring_from_str`] (non-null, still live, header intact). Reading
-/// `data - CSTRING_HEADER_SIZE` is only valid for such a pointer — see
-/// [`validate_cstring_header`] for the full provenance/liveness contract.
-/// Static-string literals (no header) MUST be filtered out by the caller
-/// (`hew_string_drop` / `hew_string_clone` skip them via `is_static_string`).
+/// `data` MUST be a live registered pointer returned by [`alloc_cstring`] /
+/// [`alloc_cstring_from_str`]. The registry supplies the allocation base; this
+/// function never derives it from an untrusted pointer.
 #[inline]
 #[expect(
     clippy::cast_ptr_alignment,
@@ -390,9 +431,10 @@ unsafe fn validate_cstring_header(data: *mut c_char) -> Option<*mut u8> {
               CStringHeader's 8-byte alignment; rc (AtomicU32) needs 4"
 )]
 unsafe fn cstring_rc<'a>(data: *mut c_char) -> &'a AtomicU32 {
-    // SAFETY: per precondition, data came from alloc_cstring, so data - HEADER
-    // is the in-bounds start of that allocation and the header is initialized.
-    let base = unsafe { data.cast::<u8>().sub(CSTRING_HEADER_SIZE) };
+    let Some(base) = cstring_allocation_base(data) else {
+        eprintln!("hew-cabi: C-string ownership operation on unmanaged pointer {data:p}");
+        std::process::abort();
+    };
     let header = base.cast::<CStringHeader>();
     // SAFETY: base is the allocation start; rc is initialized by alloc_cstring.
     unsafe { &(*header).rc }
@@ -431,9 +473,8 @@ fn cstring_rc_would_overflow(old: u32) -> bool {
 /// # Safety
 ///
 /// `data` must be null or a still-live pointer returned by [`alloc_cstring`] /
-/// [`alloc_cstring_from_str`]. Static-string literals (no header) MUST be
-/// filtered out by the caller (`hew_string_clone` skips them via
-/// `is_static_string` before reaching here).
+/// [`alloc_cstring_from_str`]. Unmanaged pointers must be filtered out by the
+/// caller with [`is_managed_cstring`].
 pub unsafe fn cstring_retain(data: *mut c_char) {
     if data.is_null() {
         return;
@@ -464,8 +505,8 @@ pub unsafe fn cstring_retain(data: *mut c_char) {
 /// # Safety
 ///
 /// `data` must be null or a still-live header-aware pointer from
-/// [`alloc_cstring`]. Static-string literals (no header) MUST be filtered out
-/// by the caller before reaching here.
+/// [`alloc_cstring`]. Unmanaged pointers must be filtered out by the caller
+/// with [`is_managed_cstring`].
 #[must_use]
 pub unsafe fn cstring_ensure_unique(data: *mut c_char) -> *mut c_char {
     if data.is_null() {
@@ -500,8 +541,8 @@ pub unsafe fn cstring_ensure_unique(data: *mut c_char) -> *mut c_char {
 /// Free a header-aware C string produced by [`alloc_cstring`] /
 /// [`alloc_cstring_from_str`].
 ///
-/// Computes `base = data - CSTRING_HEADER_SIZE`, verifies the magic sentinel,
-/// then **releases one owner**: decrements the refcount and frees `base` only
+/// Resolves `base` through the live-allocation registry, verifies the magic
+/// sentinel, then **releases one owner**: decrements the refcount and frees `base` only
 /// when the count reaches zero. As of P2a the refcount is LIVE — a retained
 /// (`rc > 1`) string is not freed until every owner has released it. A string
 /// that was never shared starts at `rc == 1`, so a single release frees it,
@@ -511,33 +552,27 @@ pub unsafe fn cstring_ensure_unique(data: *mut c_char) -> *mut c_char {
 /// `fetch_sub(Release)` then, on the final release, `fence(Acquire)` before
 /// `libc::free`.
 ///
-/// **Integrity check (best-effort, CLAUDE §1):** the magic guards against a
-/// *corrupted header* on a header-allocated pointer; if it is absent, this
-/// aborts rather than freeing a bad base. It does **not** detect a
-/// mis-provenanced (e.g. still-headerless `strdup`/`malloc`) pointer — see the
-/// safety precondition: such a pointer is UB before the check runs. The wiring's
-/// safety comes from migrating every reaching site in lockstep so only
-/// header-allocated pointers ever reach here, not from this probe.
+/// Registry lookup rejects a mis-provenanced or already-retired address before
+/// dereference. The magic then guards against corruption of a registered live
+/// header. Both failures abort rather than risking a bad free.
 ///
 /// Null is accepted (no-op).
 ///
 /// # Safety
 ///
-/// `data` must be null or a pointer previously returned by [`alloc_cstring`],
-/// and not already released to zero. Passing any other non-null pointer is UB.
+/// `data` must be null or a pointer previously returned by [`alloc_cstring`].
+/// Unknown or already-retired pointers are rejected fail-closed.
 pub unsafe fn free_cstring(data: *mut c_char) {
     if data.is_null() {
         return;
     }
     // SAFETY: data is a real alloc_cstring result per the precondition.
     let Some(base) = (unsafe { validate_cstring_header(data) }) else {
-        // The magic is absent on a pointer the caller asserted came from
-        // alloc_cstring — the header is corrupted, or this is a double-free of a
-        // pointer whose magic we poisoned. Either way, freeing `base` could
-        // corrupt the heap: abort, never proceed.
+        // The address is unmanaged/retired or its registered header is
+        // corrupted. Either way there is no safe allocation base to free.
         eprintln!(
-            "hew-cabi: free_cstring: C-string header sentinel missing at {data:p} \
-             (corrupted header or double-free). Aborting to avoid heap corruption."
+            "hew-cabi: free_cstring: unmanaged, retired, or corrupted C-string at {data:p}; \
+             aborting to avoid heap corruption."
         );
         // SAFETY: abort is always safe to call; it does not return.
         unsafe { libc::abort() };
@@ -551,15 +586,16 @@ pub unsafe fn free_cstring(data: *mut c_char) {
         // Other owners remain; do not poison and do not free.
         return;
     }
-    // Last owner — synchronize with all prior releases before reclaiming.
+    // Last owner — retire provenance before reclaiming. A second release now
+    // fails by registry lookup and never touches freed storage.
     std::sync::atomic::fence(Ordering::Acquire);
-    // Best-effort double-free aid: stamp the magic with a poison so an immediate
-    // re-free through this path is more likely to trip the check above. This is
-    // NOT a reliable double-free guard — the write is immediately followed by
-    // `libc::free`, so a later free reads freed memory (use-after-free, which
-    // may fault or, if the block was reused, read arbitrary bytes). With correct
-    // retain/release pairing the count only reaches zero once; the poison is a
-    // debugging convenience.
+    if !unregister_cstring_allocation(data, base) {
+        eprintln!("hew-cabi: C-string provenance disappeared during final release {data:p}");
+        std::process::abort();
+    }
+    // Stamp poison while storage is still live. Double releases are rejected by
+    // the already-removed registry entry and never read this freed header; the
+    // poison remains useful to memory debuggers inspecting the final write.
     #[expect(
         clippy::cast_ptr_alignment,
         reason = "base is libc::malloc-aligned, satisfying CStringHeader's 8-byte alignment"
@@ -980,6 +1016,7 @@ mod tests {
             );
             // Free the real base directly (free_cstring would abort on the bad
             // magic, which is the point — see the subprocess abort test).
+            assert!(unregister_cstring_allocation(data, base));
             libc::free(base.cast()); // ALLOCATOR-PAIRING: libc
         }
     }

@@ -172,8 +172,9 @@ fn supervisor_child_get_call_emitted_in_function_body() {
         "the removed _raw twin must NOT be called;\ngot:\n{ir}"
     );
     assert!(
-        ir.contains("call [2 x i64] @hew_supervisor_child_get("),
-        "expected a register-pair call to @hew_supervisor_child_get;\ngot:\n{ir}"
+        ir.contains("invoke [2 x i64] @hew_supervisor_child_get("),
+        "expected an unwind-capable register-pair invocation of \
+         @hew_supervisor_child_get;\ngot:\n{ir}"
     );
 }
 
@@ -319,8 +320,8 @@ fn supervisor_pool_get_materialises_option_and_bound_pool_view() {
         .expect("emit_module must populate ll_path");
     let ir = std::fs::read_to_string(ll_path).expect("read emitted .ll");
     assert!(
-        ir.contains("call [2 x i64] @hew_supervisor_pool_child_get("),
-        "pool get must call the canonical aggregate-return runtime ABI:\n{ir}"
+        ir.contains("invoke [2 x i64] @hew_supervisor_pool_child_get("),
+        "pool get must invoke the canonical aggregate-return runtime ABI:\n{ir}"
     );
     assert!(
         ir.contains("pool_get_some") && ir.contains("pool_get_none"),

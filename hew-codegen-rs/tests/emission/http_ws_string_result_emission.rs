@@ -123,22 +123,86 @@ fn function_ir<'a>(ll: &'a str, name: &str) -> &'a str {
     &body[..end + 2]
 }
 
+fn block_ir<'a>(function_ir: &'a str, label: &str) -> &'a str {
+    let marker = format!("\n{label}:");
+    let start = function_ir
+        .find(&marker)
+        .unwrap_or_else(|| panic!("LLVM function must contain block `{label}`:\n{function_ir}"))
+        + 1;
+    let body = &function_ir[start..];
+    let end = body.find("\n\n").unwrap_or(body.len());
+    &body[..end]
+}
+
+fn assert_consumed_string_result_cleanup(ir: &str, caller: &str, producer: &str) {
+    assert!(
+        ir.contains(&format!("invoke ptr @{producer}(")),
+        "{caller}: must invoke the canonical string producer `{producer}`:\n{ir}"
+    );
+    let release_blocks = ir
+        .split("\n\n")
+        .filter(|block| block.contains("call void @hew_string_drop("))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        release_blocks.len(),
+        2,
+        "{caller}: must have one normal and one mutually-exclusive unwind release block:\n{ir}"
+    );
+    assert_eq!(
+        release_blocks
+            .iter()
+            .filter(|block| block.contains("ret i64 "))
+            .count(),
+        1,
+        "{caller}: exactly one release block must be the normal return path:\n{ir}"
+    );
+    assert_eq!(
+        release_blocks
+            .iter()
+            .filter(|block| block.contains("resume "))
+            .count(),
+        1,
+        "{caller}: exactly one release block must be the unwind path:\n{ir}"
+    );
+    for block in release_blocks {
+        assert_eq!(
+            block.matches("call void @hew_string_drop(").count(),
+            1,
+            "{caller}: an executable cleanup path must release exactly once:\n{block}"
+        );
+        assert!(
+            block.contains("store ptr null"),
+            "{caller}: each release path must neutralize the temporary slot:\n{block}"
+        );
+    }
+    let producer_unwind = block_ir(ir, "invoke.cleanup");
+    assert_eq!(
+        producer_unwind
+            .matches("call void @hew_string_drop(")
+            .count(),
+        0,
+        "{caller}: producer unwind precedes result materialization and must not release:\n\
+         {producer_unwind}"
+    );
+}
+
 #[test]
 fn measured_http_ws_results_emit_exactly_one_release_through_forwarders() {
     let source = source();
     let ll = emit_ll(&source);
     for (symbol, _) in MEASURED {
         let suffix = symbol.strip_prefix("hew_").unwrap();
-        for caller in [format!("direct_{suffix}"), format!("forwarded_{suffix}")] {
-            let ir = function_ir(&ll, &caller);
-            assert_eq!(
-                ir.matches("call void @hew_string_drop(").count(),
-                1,
-                "{caller}: `{symbol}` must reach exactly one LLVM release:\n{ir}"
-            );
-        }
+        let direct = format!("direct_{suffix}");
+        assert_consumed_string_result_cleanup(function_ir(&ll, &direct), &direct, symbol);
         let wrapper = format!("wrap_{suffix}");
+        let forwarded = format!("forwarded_{suffix}");
+        assert_consumed_string_result_cleanup(function_ir(&ll, &forwarded), &forwarded, &wrapper);
+
         let ir = function_ir(&ll, &wrapper);
+        assert!(
+            ir.contains(&format!("invoke ptr @{symbol}(")),
+            "{wrapper}: must invoke the canonical runtime producer `{symbol}`:\n{ir}"
+        );
         assert_eq!(
             ir.matches("call void @hew_string_drop(").count(),
             0,

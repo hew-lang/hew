@@ -1,0 +1,4 @@
+fn main() {
+    let values: HashSet<bytes> = HashSet.new();
+    values.insert(b"key");
+}

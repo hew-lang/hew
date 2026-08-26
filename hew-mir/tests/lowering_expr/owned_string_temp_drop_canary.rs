@@ -114,6 +114,42 @@ fn return_exit_string_drops(pl: &IrPipeline, fn_name: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// String drops on the unwind edge of one borrowing call. The normal edge
+/// closes the temp inline; this plan preserves the same owner if the borrow
+/// itself unwinds before reaching that continuation.
+fn unwind_string_drops(pl: &IrPipeline, fn_name: &str, callee: &str) -> usize {
+    let f = pl
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .expect("function must be present in elaborated_mir");
+    f.drop_plans
+        .iter()
+        .filter(|(exit, _)| {
+            matches!(
+                exit,
+                ExitPath::Unwind {
+                    callee: unwind_callee,
+                    ..
+                } if unwind_callee == callee
+            )
+        })
+        .map(|(_, plan)| {
+            plan.drops
+                .iter()
+                .filter(|drop| {
+                    matches!(
+                        &drop.kind,
+                        DropKind::CowHeap { release }
+                            if release.release_symbol() == "hew_string_drop"
+                    )
+                })
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Total `hew_string_drop` obligations a single normal-return execution incurs:
 /// the inline (nested/discard) drops plus the per-Return-path scope-exit drops.
 fn total_string_drops(pl: &IrPipeline, fn_name: &str) -> usize {
@@ -335,22 +371,26 @@ fn canary4b_string_call_temp_arg_releases_once() {
          fn arg_fstring(n: i64) -> i64 {\n    borrow_len(f\"n={n}\")\n}\n",
     );
     assert_no_nyi(&pl);
-    // The by-value temp arg has no binding, so the release is the caller-side
-    // synthetic-owner scope-exit drop (never an inline nested drop): exactly one
-    // per producer. `arg_fstring` additionally carries one inline drop for its
-    // `to_string_i64` intermediate (a nested fresh temp borrowed by the concat),
-    // which is orthogonal to the arg-temp mint under test here.
+    // The by-value temp arg has a synthetic owner. Its normal edge now closes
+    // inline immediately after the borrowing call, while the call's unwind plan
+    // carries the same one cleanup obligation. It must never also reach Return.
     for f in ["arg_concat", "arg_upper", "arg_fstring"] {
         assert_eq!(
-            return_exit_string_drops(&pl, f),
+            unwind_string_drops(&pl, f, "borrow_len"),
             1,
-            "{f}: the fresh string temp arg to a borrowing fn must earn exactly one scope-exit drop"
+            "{f}: the borrowing call's unwind edge must preserve exactly one temp cleanup"
+        );
+        assert_eq!(
+            return_exit_string_drops(&pl, f),
+            0,
+            "{f}: the normal continuation closes the temp before Return"
         );
     }
-    // The concat baseline and the string-call producer have no intermediate, so
-    // their ONLY string drop is the arg-temp scope-exit release.
+    // The concat baseline and the string-call producer have no intermediate,
+    // so their only normal-path string drop is the post-borrow inline release.
     assert_eq!(total_string_drops(&pl, "arg_concat"), 1);
     assert_eq!(total_string_drops(&pl, "arg_upper"), 1);
+    assert_eq!(total_string_drops(&pl, "arg_fstring"), 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,8 +401,8 @@ fn canary4b_string_call_temp_arg_releases_once() {
 // caller exactly one independently releasable share even though the returned
 // pointer can alias input storage. A direct borrowing consumer gives each
 // checker-owned anonymous carrier one caller-side release. The generic identity
-// call is checker-authored `Borrowed`, so it must keep the parameter's existing
-// owner instead of letting HIR closure mint another one.
+// parameter is checker-authored `Borrowed`, but its return executes the same
+// explicit `StringRetain`; the caller must release that independent `+1`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -451,28 +491,36 @@ fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
         "return_join_twice_call",
     ] {
         assert_eq!(
-            return_exit_string_drops(&pl, caller),
+            total_string_drops(&pl, caller),
             1,
             "{caller}: the anonymous returned carrier borrowed by the consumer \
-             must have one caller-side scope-exit release"
+             must have one caller-side release"
         );
         assert_eq!(
-            inline_string_drops(&pl, caller),
+            return_exit_string_drops(&pl, caller),
             0,
-            "{caller}: the carrier is owned by the synthetic binding path, not \
-             by the nested runtime-temp path"
+            "{caller}: the exact owner closes in the normal continuation, not again at Return"
+        );
+        assert_eq!(
+            unwind_string_drops(&pl, caller, "borrow_len"),
+            1,
+            "{caller}: the borrowing consumer's unwind edge must retain the same cleanup"
         );
     }
     assert_eq!(
         return_exit_string_drops(&pl, "generic_call"),
         0,
-        "generic_call: a concrete Borrowed checker verdict must keep the parameter owner \
-         instead of minting a caller-side release"
+        "generic_call: the retained return share closes before Return"
     );
     assert_eq!(
         inline_string_drops(&pl, "generic_call"),
-        0,
-        "generic_call: borrowing the identity result needs no independent temp release"
+        1,
+        "generic_call: the identity result's explicit +1 must release after the borrowing use"
+    );
+    assert_eq!(
+        string_retains(&pl, "identity$$string"),
+        1,
+        "the generic identity borrows its parameter but retains one independently owned return share"
     );
     assert_eq!(
         total_string_drops(&pl, "return_again"),
@@ -580,15 +628,14 @@ fn closure_invoke_string_carriers_release_once_without_widening_opaque_externs()
     );
     assert_eq!(
         inline_string_drops(&pl, "parameter"),
-        1,
-        "the fresh argument share must be released immediately after the \
-         borrowing CallClosure"
+        2,
+        "the fresh argument share and the independently retained closure result must each \
+         release once in their normal continuations"
     );
     assert_eq!(
         return_exit_string_drops(&pl, "parameter"),
-        1,
-        "the closure result retains a distinct share balanced by the existing \
-         caller-side result owner"
+        0,
+        "both exact shares close before Return; no path-insensitive duplicate is permitted"
     );
     for caller in ["nested_runtime", "discarded"] {
         assert_eq!(
@@ -1233,5 +1280,67 @@ fn work() -> i64 {
         return_exit_string_drops(&pl, "work"),
         1,
         "the binding keeps its single scope-exit drop for the current value"
+    );
+}
+
+/// Returning an owner from a lexical block commits the transfer only on the
+/// successful return edge. Calls before the producer see an uninitialized
+/// slot; calls after it must destroy the still-local owner if they unwind.
+/// This is the source-level counterpart of LLVM `invoke` result semantics.
+#[test]
+fn lexical_block_returned_string_has_path_local_unwind_cleanup() {
+    let pl = pipeline_with_tc(
+        r#"
+fn produce() -> string {
+    {
+        let contents = "payload".to_upper();
+        let _length = contents.len();
+        contents
+    }
+}
+"#,
+    );
+    assert!(
+        pl.diagnostics.is_empty(),
+        "path-local return cleanup must pass the hard balance gate: {:#?}",
+        pl.diagnostics
+    );
+    let function = pl
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "produce")
+        .expect("produce must be elaborated");
+    let string_drops_on_unwind = |callee: &str| {
+        function
+            .drop_plans
+            .iter()
+            .filter(
+                |(exit, _)| matches!(exit, ExitPath::Unwind { callee: name, .. } if name == callee),
+            )
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| {
+                matches!(
+                    drop.kind,
+                    DropKind::CowHeap { release }
+                        if release.release_symbol() == "hew_string_drop"
+                )
+            })
+            .count()
+    };
+    assert_eq!(
+        string_drops_on_unwind("hew_string_to_uppercase"),
+        0,
+        "an unwinding producer never initialized its result owner"
+    );
+    assert_eq!(
+        string_drops_on_unwind("hew_string_length"),
+        1,
+        "a later borrowing call must release the initialized owner when it unwinds"
+    );
+    assert_eq!(
+        return_exit_string_drops(&pl, "produce"),
+        0,
+        "the successful return transfers the owner to the caller: {:#?}",
+        function.drop_plans
     );
 }

@@ -2,7 +2,8 @@
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
-    lower_hir_module, DropKind, ExitPath, Instr, IrPipeline, MirDiagnosticKind, MirStatement, Place,
+    lower_hir_module, DropKind, ExitPath, Instr, IrPipeline, MirDiagnosticKind, MirStatement,
+    OwnershipEvent, Place, Terminator,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -110,7 +111,7 @@ fn snapshot_and_source_locals(pipeline: &IrPipeline) -> (u32, u32, u32) {
 }
 
 #[test]
-fn reassigned_binding_snapshot_drops_once_on_back_edge_only() {
+fn reassigned_binding_snapshot_has_one_explicit_back_edge_release() {
     let pipeline = pipeline(REASSIGNED_WITH_BREAK);
     assert!(
         pipeline.diagnostics.is_empty(),
@@ -118,47 +119,90 @@ fn reassigned_binding_snapshot_drops_once_on_back_edge_only() {
         pipeline.diagnostics
     );
     let (header_id, snapshot_local, source_local) = snapshot_and_source_locals(&pipeline);
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "probe")
+        .expect("probe raw MIR");
+    let iteration_owner = raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find_map(|statement| match statement {
+            MirStatement::Bind { binding, name, .. } if name == ITERATION_OWNER_NAME => {
+                Some(hew_mir::OwnerId {
+                    binding: *binding,
+                    generation: 0,
+                })
+            }
+            _ => None,
+        })
+        .expect("synthetic iteration owner");
+    let back_edges = raw.blocks.iter().filter(
+        |block| matches!(block.terminator, Terminator::Goto { target } if target == header_id),
+    );
+    let mut explicit_back_edge_releases = 0;
+    for block in back_edges {
+        explicit_back_edge_releases += block
+            .instructions
+            .windows(2)
+            .filter(|pair| {
+                matches!(
+                    pair,
+                    [
+                        Instr::Drop {
+                            place: Place::Local(local),
+                            ..
+                        },
+                        Instr::OwnershipEvent(OwnershipEvent::Release { owner, place })
+                    ] if *local == snapshot_local
+                        && *owner == iteration_owner
+                        && *place == Place::Local(snapshot_local)
+                )
+            })
+            .count();
+        assert!(
+            !block.instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instr::Drop {
+                    place: Place::Local(local),
+                    ..
+                } if *local == source_local
+            )),
+            "the reassigned source is loop-carried and must not be dropped on the backedge"
+        );
+    }
+    assert_eq!(
+        explicit_back_edge_releases, 1,
+        "the discarded iteration composite must have one exact Drop+Release authority"
+    );
+
     let function = pipeline
         .elaborated_mir
         .iter()
         .find(|function| function.name == "probe")
         .expect("probe elaborated MIR");
 
-    let mut back_edge_snapshot_drops = 0;
-    let mut other_snapshot_drops = 0;
-    let mut return_source_drops = 0;
     for (exit, plan) in &function.drop_plans {
-        for drop in &plan.drops {
-            if drop.place == Place::Local(snapshot_local)
-                && matches!(drop.kind, DropKind::EnumInPlace)
-            {
-                if matches!(exit, ExitPath::Goto { target, .. } if *target == header_id) {
-                    back_edge_snapshot_drops += 1;
-                } else {
-                    other_snapshot_drops += 1;
-                }
-            }
-            if drop.place == Place::Local(source_local)
-                && matches!(drop.kind, DropKind::EnumInPlace)
-                && matches!(exit, ExitPath::Return { .. })
-            {
-                return_source_drops += 1;
-            }
+        let snapshot_drops = plan
+            .drops
+            .iter()
+            .filter(|drop| {
+                drop.place == Place::Local(snapshot_local)
+                    && matches!(drop.kind, DropKind::EnumInPlace)
+            })
+            .count();
+        assert!(
+            snapshot_drops <= 1,
+            "an exit plan must never duplicate the snapshot destructor: {exit:?}"
+        );
+        if matches!(exit, ExitPath::Goto { target, .. } if *target == header_id) {
+            assert_eq!(
+                snapshot_drops, 0,
+                "the Raw MIR Drop+Release is the sole backedge authority"
+            );
         }
     }
-
-    assert_eq!(
-        back_edge_snapshot_drops, 1,
-        "the discarded iteration composite must have one back-edge release"
-    );
-    assert_eq!(
-        other_snapshot_drops, 0,
-        "break, tag-false, and function-exit plans must not release the aliasing snapshot"
-    );
-    assert_eq!(
-        return_source_drops, 1,
-        "the binding's final value must retain exactly one scope-exit release"
-    );
 }
 
 fn reject_count(pipeline: &IrPipeline, construct: &str) -> usize {

@@ -786,6 +786,7 @@ fn nested_owned_record_vec_element_not_rejected_without_harvested_key() {
 #[test]
 fn unsupported_vec_element_diagnostics_rejects_unwired_owned_local() {
     let mut builder = builder_with_indirect_enum();
+    builder.binding_locals.insert(BindingId(7), Place::Local(7));
     builder.register_owned_local(
         BindingId(7),
         "nodes".to_string(),
@@ -811,6 +812,7 @@ fn unsupported_vec_element_diagnostics_rejects_unwired_owned_local() {
     // A releasable owned `Vec<string>` local emits nothing — behaviour
     // preserved for every constructible, releasable shape.
     let mut ok = builder_with_indirect_enum();
+    ok.binding_locals.insert(BindingId(8), Place::Local(8));
     ok.register_owned_local(
         BindingId(8),
         "names".to_string(),
@@ -834,6 +836,7 @@ fn register_owned_local_records_classified_ownership_and_scope_exit() {
     use crate::ownership::{DropClass, HeapLeaf};
 
     let mut builder = builder_with_indirect_enum();
+    builder.binding_locals.insert(BindingId(3), Place::Local(3));
     builder.register_owned_local(
         BindingId(3),
         "s".to_string(),
@@ -984,6 +987,10 @@ fn byte_copy_alias_registers_aliasof_and_leaves_the_live_view() {
 #[test]
 fn dispositioned_binding_leaves_live_view_but_survives_whole_ledger() {
     let mut builder = builder_with_indirect_enum();
+    builder.binding_locals.extend([
+        (BindingId(3), Place::Local(3)),
+        (BindingId(4), Place::Local(4)),
+    ]);
     builder.register_owned_local(
         BindingId(3),
         "kept".to_string(),

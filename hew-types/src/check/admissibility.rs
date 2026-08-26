@@ -1012,7 +1012,10 @@ impl Checker {
         // `where K: Hash + Eq` bound is the sole admission contract.
         // Unsatisfied bounds (e.g. `f64: Hash` failing) surface as a
         // `BoundsNotSatisfied` diagnostic from `record_resolved_hashmap_call`.
-        self.registry.implements_marker(ty, MarkerTrait::Hash)
+        matches!(
+            crate::hash_eligibility::collection_key_ownership_capability(ty),
+            crate::hash_eligibility::CollectionKeyOwnershipCapability::Complete
+        ) && self.registry.implements_marker(ty, MarkerTrait::Hash)
             && self.registry.implements_marker(ty, MarkerTrait::Eq)
     }
 
@@ -1758,6 +1761,23 @@ impl Checker {
             return false;
         }
 
+        if matches!(
+            crate::hash_eligibility::collection_key_ownership_capability(&resolved_key),
+            crate::hash_eligibility::CollectionKeyOwnershipCapability::MissingOverwriteRelease
+        ) {
+            if !self.has_collection_key_ownership_error("HashMap key") {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`bytes` cannot be used as a HashMap key yet: duplicate-key insertion cannot \
+                     release the caller-owned bytes key on the overwrite path; use `string` or a \
+                     supported fixed-width key"
+                        .to_string(),
+                );
+            }
+            return false;
+        }
+
         // Ty::Var: inference is still in-flight at this call site.  Defer the
         // admission check until finalize_hashmap_admission() runs after all
         // inference has settled, mirroring the HashSet lowering-fact pattern.
@@ -1936,6 +1956,23 @@ impl Checker {
             return false;
         }
 
+        if matches!(
+            crate::hash_eligibility::collection_key_ownership_capability(&resolved),
+            crate::hash_eligibility::CollectionKeyOwnershipCapability::MissingOverwriteRelease
+        ) {
+            if !self.has_collection_key_ownership_error("HashSet element") {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`bytes` cannot be used as a HashSet element yet: duplicate insertion cannot \
+                     release the caller-owned bytes value; use `string` or a supported fixed-width \
+                     element"
+                        .to_string(),
+                );
+            }
+            return false;
+        }
+
         // Ty::Var: inference is still in-flight at this call site.  Defer the
         // admission check until finalize_hashset_admission() runs after all
         // inference has settled, mirroring the HashMap deferred-admission pattern.
@@ -2019,6 +2056,14 @@ impl Checker {
         self.errors.iter().any(|e| {
             matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)
                 && SpanKey::in_module(&e.span, self.current_module_idx) == key
+        })
+    }
+
+    fn has_collection_key_ownership_error(&self, collection_role: &str) -> bool {
+        self.errors.iter().any(|error| {
+            matches!(error.kind, TypeErrorKind::InvalidOperation)
+                && error.message.contains("`bytes` cannot be used as a")
+                && error.message.contains(collection_role)
         })
     }
 

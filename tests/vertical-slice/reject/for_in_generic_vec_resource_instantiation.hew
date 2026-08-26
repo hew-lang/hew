@@ -2,7 +2,7 @@ import std.link_monitor.{MonitorRef};
 
 #[resource]
 type Handle {
-    name: string
+    name: string;
 }
 
 impl Handle {
@@ -10,12 +10,12 @@ impl Handle {
 }
 
 type Wrapper {
-    handle: Handle
+    handle: Handle;
 }
 
 record PositionalWrapper(Handle);
 
-fn count<T>(items: Vec<T>) -> i64 {
+fn _count<T>(items: Vec<T>) -> i64 {
     var count = 0;
     for _item in items {
         count = count + 1;
@@ -23,27 +23,27 @@ fn count<T>(items: Vec<T>) -> i64 {
     count
 }
 
-// The parameter is enough to instantiate count<Handle>; no Handle
+// The parameter is enough to instantiate _count<Handle>; no Handle
 // constructor or unsafe value fabrication is needed for the fail-closed proof.
-fn count_handles(items: Vec<Handle>) -> i64 {
-    count(items)
+fn _count_handles(items: Vec<Handle>) -> i64 {
+    _count(items)
 }
 
 // An unmarked outer record must not hide the nested resource marker.
-fn count_wrappers(items: Vec<Wrapper>) -> i64 {
-    count(items)
+fn _count_wrappers(items: Vec<Wrapper>) -> i64 {
+    _count(items)
 }
 
 // Positional payloads are stored fields even though `.0` access is not exposed.
 // Their resource marker must participate in the concrete MIR clone proof.
-fn count_positional_wrappers(items: Vec<PositionalWrapper>) -> i64 {
-    count(items)
+fn _count_positional_wrappers(items: Vec<PositionalWrapper>) -> i64 {
+    _count(items)
 }
 
 // MonitorRef is a builtin field-bearing resource record. Its u64 field is
 // structurally cloneable, but the monitor registration itself is not.
-fn count_monitor_refs(items: Vec<MonitorRef>) -> i64 {
-    count(items)
+fn _count_monitor_refs(items: Vec<MonitorRef>) -> i64 {
+    _count(items)
 }
 
 fn main() {}

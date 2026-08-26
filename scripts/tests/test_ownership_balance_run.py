@@ -10,8 +10,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUN_PATH = ROOT / "tests" / "obligation-advisory" / "run.py"
-SPEC = importlib.util.spec_from_file_location("obligation_advisory_run", RUN_PATH)
+RUN_PATH = ROOT / "tests" / "ownership-balance" / "run.py"
+SPEC = importlib.util.spec_from_file_location("ownership_balance_run", RUN_PATH)
 assert SPEC is not None and SPEC.loader is not None
 RUN = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUN)
@@ -47,7 +47,7 @@ class BoundedRuntimeReportTests(unittest.TestCase):
 
 
 class BaselineRuntimeModeTests(unittest.TestCase):
-    """A leaking fixture must advise. A silent leak is the rejected outcome."""
+    """The hard-cutover baseline admits only checked, clean, or refused rows."""
 
     def read(self, rows: str) -> dict:
         with tempfile.NamedTemporaryFile(
@@ -63,14 +63,14 @@ class BaselineRuntimeModeTests(unittest.TestCase):
             RUN.BASELINE = original
             path.unlink(missing_ok=True)
 
-    def test_leaking_row_without_an_advisory_is_refused(self) -> None:
+    def test_leaking_runtime_mode_is_refused(self) -> None:
         with self.assertRaises(ValueError) as raised:
             self.read("silent.hew\t0\t0\t0\tleaks\n")
-        self.assertIn("must also advise", str(raised.exception))
+        self.assertIn("unknown runtime mode", str(raised.exception))
 
-    def test_leaking_row_with_an_advisory_round_trips(self) -> None:
-        rows = self.read("loud.hew\t2\t0\t0\tleaks\n")
-        self.assertEqual(rows["loud.hew"], (2, 0, 0, RUN.RUNTIME_LEAKS))
+    def test_clean_row_round_trips(self) -> None:
+        rows = self.read("clean.hew\t0\t0\t0\tclean\n")
+        self.assertEqual(rows["clean.hew"], (0, 0, 0, RUN.RUNTIME_CLEAN))
 
     def test_unknown_runtime_mode_is_refused(self) -> None:
         with self.assertRaises(ValueError):

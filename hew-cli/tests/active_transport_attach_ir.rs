@@ -90,8 +90,12 @@ fn function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
 fn attach_ids(body: &str, callee: &str, id_ty: &str) -> [i64; 2] {
     let call = body
         .lines()
-        .find(|line| line.contains(&format!("call i32 @{callee}(")))
-        .unwrap_or_else(|| panic!("missing {callee} call:\n{body}"));
+        .find(|line| {
+            let signature = format!("i32 @{callee}(");
+            line.contains(&signature)
+                && (line.contains(" call i32 ") || line.contains(" invoke i32 "))
+        })
+        .unwrap_or_else(|| panic!("missing {callee} call or invoke:\n{body}"));
     let id_separator = format!(", {id_ty} ");
     let mut ids = call.split(&id_separator).skip(1).map(|field| {
         field

@@ -360,39 +360,43 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
     let worker_count = options.jobs.min(tasks.len().max(1));
 
     std::thread::scope(|scope| {
-        for _ in 0..worker_count {
-            scope.spawn(|| loop {
-                let task_index = next_task.fetch_add(1, Ordering::Relaxed);
-                let Some(task) = tasks.get(task_index) else {
-                    break;
-                };
-                let result = if task.test.serial {
-                    let _serial_guard = serial_gate
+        for worker_index in 0..worker_count {
+            std::thread::Builder::new()
+                .name(format!("hew-test-worker-{worker_index}"))
+                .stack_size(crate::COMPILER_STACK_SIZE)
+                .spawn_scoped(scope, || loop {
+                    let task_index = next_task.fetch_add(1, Ordering::Relaxed);
+                    let Some(task) = tasks.get(task_index) else {
+                        break;
+                    };
+                    let result = if task.test.serial {
+                        let _serial_guard = serial_gate
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        run_single_test(
+                            &task.source,
+                            &task.test,
+                            options.ffi_lib,
+                            options.compile_paths,
+                            options.timeout,
+                            options.sir_mode,
+                        )
+                    } else {
+                        run_single_test(
+                            &task.source,
+                            &task.test,
+                            options.ffi_lib,
+                            options.compile_paths,
+                            options.timeout,
+                            options.sir_mode,
+                        )
+                    };
+                    result_slots
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    run_single_test(
-                        &task.source,
-                        &task.test,
-                        options.ffi_lib,
-                        options.compile_paths,
-                        options.timeout,
-                        options.sir_mode,
-                    )
-                } else {
-                    run_single_test(
-                        &task.source,
-                        &task.test,
-                        options.ffi_lib,
-                        options.compile_paths,
-                        options.timeout,
-                        options.sir_mode,
-                    )
-                };
-                result_slots
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)[task.result_index] =
-                    Some(result);
-            });
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)[task.result_index] =
+                        Some(result);
+                })
+                .expect("failed to spawn Hew test compiler worker");
         }
     });
 

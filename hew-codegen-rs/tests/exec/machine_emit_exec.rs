@@ -104,7 +104,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
     //
     // The two MachineEmitPlaceholder instructions are the wiring under test.
     // The store-back into ReturnSlot and Return let the function exit cleanly
-    // (no trap) so the JIT execution test can drive it without sigsetjmp.
+    // (no trap) so the JIT execution test can drive it without an actor boundary.
     let step_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::SynthesizedMachineStep {
             machine_name: machine_name.to_string(),

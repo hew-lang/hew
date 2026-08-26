@@ -2,9 +2,8 @@
 use super::*;
 #[cfg(not(test))]
 use super::{
-    base_local, is_borrowing_call_abi, is_handle_borrowing_call_abi, ty_is_nonowning_handle_leaf,
-    ty_is_owned_handle_leaf, BuiltinType, ClosureEnvFieldOwnership, HirExpr, HirExprKind, HirStmt,
-    HirStmtKind, Instr, Place, ResolvedTy, SelectArm, SelectArmKind, SuspendKind, Terminator,
+    base_local, BuiltinType, ClosureEnvFieldOwnership, HirExpr, HirExprKind, HirStmt, HirStmtKind,
+    Instr, Place, ResolvedTy, SelectArm, SelectArmKind, SuspendKind, Terminator,
 };
 
 /// The *source* (read) operands of an instruction — every `Place` whose
@@ -35,7 +34,8 @@ use super::{
 pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // No operands at all.
-        Instr::EnterContext
+        Instr::OwnershipEvent(_)
+        | Instr::EnterContext
         | Instr::ExitContext
         | Instr::CheckCancellation
         | Instr::ContextField { .. }
@@ -53,6 +53,7 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // A payload-slot neutralize stores a constant null — no source operand.
         | Instr::NeutralizePayloadSlot { .. }
         | Instr::AggregateProjectionNeutralize { .. } => Vec::new(),
+        Instr::InteriorMutationCommit { place } => vec![*place],
         // Binary arithmetic / comparison: both operands are sources, the
         // dest (and any overflow-flag dest) is a write.
         Instr::IntAdd { lhs, rhs, .. }
@@ -125,6 +126,9 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::TryWidthCast { src, .. } => vec![*src],
         // A Drop reads the place it releases.
         Instr::Drop { place, .. } => vec![*place],
+        Instr::AggregateOverwriteRelease {
+            old, replacement, ..
+        } => vec![*old, *replacement],
         // Witness size/align read no operand (the type is static metadata,
         // not a runtime place); drop-glue reads the place it releases; a
         // witness move reads its source.
@@ -524,6 +528,7 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         Instr::Drop {
             drop_fn: Some(_), ..
         } => false,
+        Instr::AggregateOverwriteRelease { .. } => false,
         Instr::RecordInit { fields, .. } => fields.iter().any(|(_, p)| refs(*p)),
         Instr::ClosureEnvInit { fields, .. } => fields
             .iter()
@@ -564,7 +569,8 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         } => refs(*fat_pointer) || args.iter().any(|p| refs(*p)),
         // Borrowing reads — a context/cancellation query or an arithmetic
         // operand does not retain the yielded value. These do NOT escape it.
-        Instr::EnterContext
+        Instr::OwnershipEvent(_)
+        | Instr::EnterContext
         | Instr::ExitContext
         | Instr::CheckCancellation
         | Instr::ContextField { .. }
@@ -640,6 +646,7 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         // the caller and may exempt a null-safe projected transfer.
         Instr::NeutralizePayloadSlot { place, .. } => refs(*place),
         Instr::AggregateProjectionNeutralize { root, .. } => refs(*root),
+        Instr::InteriorMutationCommit { place } => refs(*place),
     }
 }
 /// True when a terminator transfers ownership of `local` out of the body: a
@@ -803,6 +810,7 @@ pub(super) fn retained_string_terminator_drop_safe(
               diff and is forced to be re-examined if the `#1'` BitCopy gate is \
               ever loosened to owned captures (exhaustive-traversal-and-lowering)"
 )]
+#[cfg(test)]
 pub(super) fn instr_escape_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // A value stored into a still-live aggregate / actor state is aliased
@@ -911,6 +919,7 @@ pub(super) fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 /// (`Read`/`Accept`/`StreamNext`/`ChannelRecv`/`TaskAwait`/`Sleep`) move no
 /// owned value into a sink the fixpoint cannot model, so they escape nothing.
 #[must_use]
+#[cfg(test)]
 fn suspend_kind_escape_places(kind: &SuspendKind) -> Vec<Place> {
     match kind {
         SuspendKind::Ask { value, .. }
@@ -935,6 +944,7 @@ fn suspend_kind_escape_places(kind: &SuspendKind) -> Vec<Place> {
               shape but are kept as separate arms so the deliberate exclusion \
               of the borrowed actor-pid / timeout operands stays explicit"
 )]
+#[cfg(test)]
 pub(super) fn terminator_escape_places(
     term: &Terminator,
     suspend_kind: Option<&SuspendKind>,

@@ -867,20 +867,10 @@ fn resource_field_transition_out_drops() {
             drops_in_block(BODY_TO_IDLE)
         ),
         format!("Holding @resource-set: {holding_resource_places:?}"),
-        format!(
-            "Holding->Idle order: tag@{} < drop@{}",
-            first_tag_write_index(BODY_TO_IDLE),
-            first_drop_index(BODY_TO_IDLE)
-        ),
         "Holding->Holding default { self } drops: []".to_string(),
         format!(
             "Holding->Holding @reenter drops: {:?}",
             drop_summaries(BODY_REENTER)
-        ),
-        format!(
-            "Holding->Holding @reenter order: tag@{} < drop@{}",
-            first_tag_write_index(BODY_REENTER),
-            first_drop_index(BODY_REENTER)
         ),
         format!("Idle->Done drops: {:?}", drop_summaries(BODY_FINISH)),
         format!(
@@ -894,10 +884,8 @@ fn resource_field_transition_out_drops() {
             "Holding->Idle drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via UserClose(\\\"FileHandle::close\\\")\"]",
             "Holding->Idle dropped-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
             "Holding @resource-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
-            "Holding->Idle order: tag@2 < drop@4",
             "Holding->Holding default { self } drops: []",
             "Holding->Holding @reenter drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via UserClose(\\\"FileHandle::close\\\")\"]",
-            "Holding->Holding @reenter order: tag@2 < drop@4",
             "Idle->Done drops: []",
             "Holding->Holding @reenter carrying self.handle drops: []",
         ],

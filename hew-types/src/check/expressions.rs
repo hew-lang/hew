@@ -2269,6 +2269,11 @@ impl Checker {
                 if !Self::is_narrower_signed_int(&idx_resolved) {
                     self.check_against(&index.0, &index.1, &Ty::I64);
                 }
+                if matches!(ctx, IndexContext::Read)
+                    && !self.validate_vec_index_borrow_surface(&args[0], span)
+                {
+                    return Ty::Error;
+                }
                 if matches!(ctx, IndexContext::AssignTarget) {
                     self.record_resolved_vec_call("set", &args[0], span);
                 }

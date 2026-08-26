@@ -5,8 +5,7 @@
 //! rejection form one self-contained authority consumed by `elaborate` and
 //! the exit-plan construction.
 use super::{
-    dataflow, BasicBlock, Builder, CheckedMirFunction, HashSet, MirDiagnostic, MirDiagnosticKind,
-    Terminator,
+    dataflow, BasicBlock, CheckedMirFunction, HashSet, MirDiagnostic, MirDiagnosticKind, Terminator,
 };
 
 /// Blocks belonging to a `VecIter` yield body, walked from the recorded
@@ -35,13 +34,12 @@ pub(in crate::lower) fn vec_iter_yield_body_region(
 }
 
 /// Reject a conditionally-consumed `VecIter` yield that reaches an abandonment
-/// exit with `MaybeConsumed` state. An unconditional drop there could
-/// double-release the consumed predecessor, while omitting it would leak the
-/// still-live predecessor. Until the exit plan carries a runtime ownership
-/// sidecar for yielded payloads, this shape has no exact cleanup authority.
+/// exit with `MaybeConsumed` state. No static shared cleanup place is valid:
+/// releasing the branch destination double-frees the consumed predecessor,
+/// while omitting the source release leaks the still-live predecessor.
 pub(in crate::lower) fn vec_iter_yield_abandonment_diagnostics(
     checked: &CheckedMirFunction,
-    builder: &Builder,
+    exit_drops: &[crate::lower::VecIterYieldExitDrop],
     dataflow_result: &dataflow::DataflowResult,
 ) -> Vec<MirDiagnostic> {
     let cancellation_blocks: HashSet<u32> = checked
@@ -50,7 +48,7 @@ pub(in crate::lower) fn vec_iter_yield_abandonment_diagnostics(
         .map(|site| site.bb_id)
         .collect();
     let mut diagnostics = Vec::new();
-    for exit_drop in &builder.vec_iter_yield_exit_drops {
+    for exit_drop in exit_drops {
         let region = vec_iter_yield_body_region(&checked.blocks, exit_drop);
         let ambiguous = checked.blocks.iter().any(|block| {
             if !region.contains(&block.id) {
@@ -81,12 +79,11 @@ pub(in crate::lower) fn vec_iter_yield_abandonment_diagnostics(
                         .to_string(),
                     site: exit_drop.site,
                 },
-                note: "the yielded value is consumed on only some paths before a \
-                       cancellation, panic, yield, or suspend exit. The exit cannot \
-                       unconditionally release it without double-freeing the consumed \
-                       path, and omitting the release would leak the live path; move the \
-                       value on every path or place the abandonment point before the \
-                       conditional move"
+                note: "the yielded value is consumed on only some paths before a cancellation, \
+                       panic, yield, or suspend exit. The exit cannot unconditionally release it \
+                       without double-freeing the consumed path, and omitting the release would \
+                       leak the live path; move the value on every path or place the abandonment \
+                       point before the conditional move"
                     .to_string(),
             });
         }

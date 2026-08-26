@@ -77,7 +77,24 @@ fn find_fn<'a>(p: &'a IrPipeline, name: &str) -> &'a hew_mir::RawMirFunction {
         .unwrap_or_else(|| panic!("function `{name}` not found in raw_mir"))
 }
 
+fn neutralized_places(pipeline: &IrPipeline, name: &str) -> std::collections::HashSet<Place> {
+    find_fn(pipeline, name)
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(_),
+                ..
+            } => Some(*place),
+            _ => None,
+        })
+        .collect()
+}
+
 fn all_drops(pipeline: &IrPipeline, name: &str) -> Vec<ElabDrop> {
+    let neutralized = neutralized_places(pipeline, name);
     pipeline
         .elaborated_mir
         .iter()
@@ -85,11 +102,14 @@ fn all_drops(pipeline: &IrPipeline, name: &str) -> Vec<ElabDrop> {
         .unwrap_or_else(|| panic!("function `{name}` not found in elaborated MIR"))
         .drop_plans
         .iter()
+        .filter(|(exit, _)| !matches!(exit, ExitPath::Unwind { .. }))
         .flat_map(|(_, plan)| plan.drops.iter().cloned())
+        .filter(|drop| !neutralized.contains(&drop.place))
         .collect()
 }
 
 fn return_drops(pipeline: &IrPipeline, name: &str) -> Vec<ElabDrop> {
+    let neutralized = neutralized_places(pipeline, name);
     pipeline
         .elaborated_mir
         .iter()
@@ -99,19 +119,7 @@ fn return_drops(pipeline: &IrPipeline, name: &str) -> Vec<ElabDrop> {
         .iter()
         .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
         .flat_map(|(_, plan)| plan.drops.iter().cloned())
-        .collect()
-}
-
-fn goto_drops(pipeline: &IrPipeline, name: &str) -> Vec<ElabDrop> {
-    pipeline
-        .elaborated_mir
-        .iter()
-        .find(|function| function.name == name)
-        .unwrap_or_else(|| panic!("function `{name}` not found in elaborated MIR"))
-        .drop_plans
-        .iter()
-        .filter(|(exit, _)| matches!(exit, ExitPath::Goto { .. }))
-        .flat_map(|(_, plan)| plan.drops.iter().cloned())
+        .filter(|drop| !neutralized.contains(&drop.place))
         .collect()
 }
 
@@ -154,6 +162,114 @@ fn source_consume_count(pipeline: &IrPipeline, name: &str, source_name: &str) ->
             )
         })
         .count()
+}
+
+fn transferred_binding_owner(
+    function: &hew_mir::RawMirFunction,
+    name: &str,
+) -> (hew_mir::OwnerId, Place) {
+    let binding = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find_map(|statement| match statement {
+            MirStatement::Bind {
+                binding,
+                name: binding_name,
+                ..
+            } if binding_name == name => Some(*binding),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("binding {name}"));
+    let acquisitions = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                to: Some(place),
+                to_owner: Some(owner),
+                ..
+            }) if owner.binding == binding => Some((*owner, *place)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        acquisitions.len(),
+        1,
+        "{name} must have one exact transferred owner: {acquisitions:?}"
+    );
+    acquisitions[0]
+}
+
+fn inline_record_release_count(
+    function: &hew_mir::RawMirFunction,
+    owner: hew_mir::OwnerId,
+    place: Place,
+) -> usize {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.windows(3))
+        .filter(|window| {
+            matches!(
+                window,
+                [
+                    Instr::Drop {
+                        place: drop_place,
+                        drop_fn: Some(hew_mir::DropFnSpec::InPlace(
+                            hew_mir::InPlaceReleaseKind::Record
+                        )),
+                        ..
+                    },
+                    Instr::OwnershipEvent(hew_mir::OwnershipEvent::Release {
+                        owner: released,
+                        place: release_place,
+                    }),
+                    Instr::OwnershipEvent(hew_mir::OwnershipEvent::ScopeExit { owners, .. })
+                ] if *drop_place == place
+                    && *released == owner
+                    && *release_place == place
+                    && owners.iter().filter(|candidate| **candidate == owner).count() == 1
+            )
+        })
+        .count()
+}
+
+fn inline_cow_release_places(
+    function: &hew_mir::RawMirFunction,
+) -> std::collections::HashSet<Place> {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| {
+            block
+                .instructions
+                .windows(2)
+                .enumerate()
+                .filter_map(|(index, window)| match window {
+                    [
+                        Instr::Drop {
+                            place: drop_place,
+                            drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
+                            ..
+                        },
+                        Instr::OwnershipEvent(hew_mir::OwnershipEvent::Release {
+                            owner,
+                            place: release_place,
+                        }),
+                    ] if drop_place == release_place
+                        && block.instructions[index + 2..].iter().any(|instruction| matches!(
+                            instruction,
+                            Instr::OwnershipEvent(hew_mir::OwnershipEvent::ScopeExit {
+                                owners,
+                                ..
+                            }) if owners.iter().filter(|candidate| **candidate == *owner).count() == 1
+                        )) => Some(*drop_place),
+                    _ => None,
+                })
+        })
+        .collect()
 }
 
 #[test]
@@ -346,30 +462,31 @@ fn tuple_nontail(p: (string, string)) -> i64 {
     let tuple_tail = all_drops(&pipeline, "tuple_tail");
     let tuple_nontail = all_drops(&pipeline, "tuple_nontail");
 
-    assert_eq!(drop_kind_counts(&record_tail), (6, 0, 0));
-    assert_eq!(drop_kind_counts(&record_nontail), (6, 0, 0));
-    assert_eq!(drop_kind_counts(&tuple_tail), (6, 0, 0));
-    assert_eq!(drop_kind_counts(&tuple_nontail), (6, 0, 0));
+    assert_eq!(drop_kind_counts(&record_tail), (2, 0, 0));
+    assert_eq!(drop_kind_counts(&record_nontail), (2, 0, 0));
+    assert_eq!(drop_kind_counts(&tuple_tail), (2, 0, 0));
+    assert_eq!(drop_kind_counts(&tuple_nontail), (2, 0, 0));
     assert_eq!(cow_drop_places(&record_tail).len(), 2);
     assert_eq!(cow_drop_places(&record_nontail).len(), 2);
     assert_eq!(cow_drop_places(&tuple_tail).len(), 2);
     assert_eq!(cow_drop_places(&tuple_nontail).len(), 2);
-    assert_eq!(
-        drop_kind_counts(&return_drops(&pipeline, "record_tail")),
-        (2, 0, 0)
-    );
-    assert_eq!(
-        drop_kind_counts(&return_drops(&pipeline, "record_nontail")),
-        (2, 0, 0)
-    );
-    assert_eq!(
-        drop_kind_counts(&return_drops(&pipeline, "tuple_tail")),
-        (2, 0, 0)
-    );
-    assert_eq!(
-        drop_kind_counts(&return_drops(&pipeline, "tuple_nontail")),
-        (2, 0, 0)
-    );
+    for name in [
+        "record_tail",
+        "record_nontail",
+        "tuple_tail",
+        "tuple_nontail",
+    ] {
+        assert_eq!(
+            drop_kind_counts(&return_drops(&pipeline, name)),
+            (0, 0, 0),
+            "successful project cleanup is inline before {name}'s Return"
+        );
+        assert_eq!(
+            inline_cow_release_places(find_fn(&pipeline, name)).len(),
+            2,
+            "each selected parameter field must have one exact inline release in {name}"
+        );
+    }
     assert_eq!(
         drop_kind_counts(&record_tail),
         drop_kind_counts(&record_nontail)
@@ -904,19 +1021,41 @@ fn tuple_join(p: (i64, Token, string)) -> i64 {
     );
 
     for name in ["record_join", "tuple_join"] {
-        let goto_resources = goto_drops(&pipeline, name)
-            .into_iter()
-            .filter(|drop| drop.kind == DropKind::Resource)
+        let edge_local_resources = find_fn(&pipeline, name)
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.windows(3))
+            .filter_map(|window| match window {
+                [Instr::Drop {
+                    place: drop_place,
+                    drop_fn: Some(hew_mir::DropFnSpec::UserClose(symbol)),
+                    ..
+                }, Instr::OwnershipEvent(hew_mir::OwnershipEvent::Release {
+                    owner,
+                    place: release_place,
+                }), Instr::OwnershipEvent(hew_mir::OwnershipEvent::ScopeExit { owners, .. })]
+                    if symbol == "Token::close"
+                        && drop_place == release_place
+                        && owners
+                            .iter()
+                            .filter(|candidate| *candidate == owner)
+                            .count()
+                            == 1 =>
+                {
+                    Some(*drop_place)
+                }
+                _ => None,
+            })
             .collect::<Vec<_>>();
         assert_eq!(
-            goto_resources.len(),
+            edge_local_resources.len(),
             2,
-            "each selected arm must close its transferred resource at the join edge"
+            "each selected arm must publish one Drop -> Release -> ScopeExit before its join edge"
         );
         assert_eq!(
-            goto_resources
+            edge_local_resources
                 .iter()
-                .map(|drop| drop.place)
+                .copied()
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             2,
@@ -966,12 +1105,24 @@ fn whole_case(tag: i64) -> i64 {
             .count(),
         1
     );
-    let record_drop_places = all_drops(&pipeline, "whole_case")
+    let function = find_fn(&pipeline, "whole_case");
+    let (owner, place) = transferred_binding_owner(function, "whole");
+    assert_eq!(inline_record_release_count(function, owner, place), 1);
+    let unwind_record_drops = pipeline
+        .elaborated_mir
         .iter()
-        .filter(|drop| matches!(drop.kind, DropKind::RecordInPlace))
-        .map(|drop| drop.place)
-        .collect::<std::collections::HashSet<_>>();
-    assert_eq!(record_drop_places.len(), 1);
+        .find(|function| function.name == "whole_case")
+        .expect("whole_case elaborated MIR")
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Unwind { .. }))
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| drop.place == place && matches!(drop.kind, DropKind::RecordInPlace))
+        .count();
+    assert_eq!(
+        unwind_record_drops, 1,
+        "the whole-binding owner must retain one failure-path cleanup"
+    );
 }
 
 #[test]
@@ -1333,6 +1484,129 @@ fn main() -> i64 {
     );
 }
 
+#[test]
+fn project_arm_scope_closes_unused_owned_binder_before_loop_reentry() {
+    let pipeline = pipeline_with_tc(
+        r#"
+type Pair { a: string, b: string }
+
+fn make_pair() -> Pair {
+    Pair { a: "a" + "payload", b: "b" + "payload" }
+}
+
+fn main() -> i64 {
+    var i = 0;
+    while i < 2 {
+        let pair = make_pair();
+        let selected = match pair { Pair { a: x, b: y } => x };
+        println(selected);
+        i = i + 1;
+    }
+    0
+}
+"#,
+    );
+
+    let function = find_fn(&pipeline, "main");
+    let binding = |name: &str| {
+        function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .find_map(|statement| match statement {
+                MirStatement::Bind {
+                    binding,
+                    name: binding_name,
+                    ..
+                } if binding_name == name => Some(*binding),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing `{name}` binding"))
+    };
+    let x = binding("x");
+    let y = binding("y");
+    let scope_exit = function
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::ScopeExit {
+                owners, carried, ..
+            }) if owners.iter().any(|owner| owner.binding == y) => Some((owners, carried)),
+            _ => None,
+        })
+        .expect("the project arm must publish its lexical scope exit");
+
+    assert!(scope_exit.0.iter().any(|owner| owner.binding == y));
+    assert!(scope_exit.1.iter().any(|owner| owner.binding == x));
+    assert!(function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Release { owner, .. })
+                if owner.binding == y
+        )));
+}
+
+#[test]
+fn project_arm_scope_does_not_confuse_shadowed_owner_on_loop_reentry() {
+    let pipeline = pipeline_with_tc(
+        r#"
+type Pair { a: string, b: string }
+
+fn make_pair() -> Pair {
+    Pair { a: "a" + "payload", b: "b" + "payload" }
+}
+
+fn main() -> i64 {
+    let y = "outer" + "owner";
+    var i = 0;
+    while i < 2 {
+        let pair = make_pair();
+        let selected = match pair { Pair { a: x, b: y } => x };
+        println(selected);
+        i = i + 1;
+    }
+    y.len()
+}
+"#,
+    );
+
+    let function = find_fn(&pipeline, "main");
+    let y_bindings = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter_map(|statement| match statement {
+            MirStatement::Bind { binding, name, .. } if name == "y" => Some(*binding),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [outer_y, arm_y] = y_bindings.as_slice() else {
+        panic!("expected distinct outer and arm-local `y` bindings: {y_bindings:?}");
+    };
+    assert_ne!(outer_y, arm_y);
+
+    let inline_releases = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Release { owner, .. }) => {
+                Some(owner.binding)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(inline_releases.contains(arm_y));
+    assert!(
+        !inline_releases.contains(outer_y),
+        "the arm scope must not close the same-spelled ancestor owner"
+    );
+}
+
 /// `string.join` exposes the same carrier boundary through a `Vec<string>`
 /// projection: the indexed element becomes `result`, then a borrowing concat
 /// reads it before the assignment releases the old generation. Pin both sides
@@ -1391,18 +1665,53 @@ fn main() -> i64 {
         .position(|name| name.as_deref() == Some("result"))
         .expect("result binding local");
     let owner = Place::Local(u32::try_from(result_local).expect("local index fits u32"));
+    let projection_results = raw
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            hew_mir::Terminator::Call {
+                callee,
+                dest: Some(dest),
+                ..
+            } if callee == "hew_vec_get_str" => Some(*dest),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
     let destination_drops = delayed
         .iter()
         .filter(|(_, drop)| drop.place == owner)
         .collect::<Vec<_>>();
     assert_eq!(
         destination_drops.len(),
-        5,
-        "the destination generation must release on each of the five panic/cancel exits"
+        9,
+        "the destination generation must release on each live unwind/panic/cancel exit"
     );
+    let destination_exit_kinds = destination_drops.iter().fold(
+        (0usize, 0usize, 0usize),
+        |(unwind, panic, cancel), (exit, _)| match exit {
+            ExitPath::Unwind { .. } => (unwind + 1, panic, cancel),
+            ExitPath::Panic { .. } => (unwind, panic + 1, cancel),
+            ExitPath::Cancel { .. } => (unwind, panic, cancel + 1),
+            other => panic!("projected result must not be dropped on {other:?}"),
+        },
+    );
+    assert_eq!(destination_exit_kinds, (4, 3, 2));
+    let projection_drops = delayed
+        .iter()
+        .filter(|(_, drop)| projection_results.contains(&drop.place))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projection_drops.len(),
+        1,
+        "the forwarded Vec projection stays owned until the second concat adopts it"
+    );
+    assert!(matches!(
+        projection_drops[0].0,
+        ExitPath::Unwind { callee, .. } if callee == "hew_string_concat"
+    ));
     let intermediate_drops = delayed
         .iter()
-        .filter(|(_, drop)| drop.place != owner)
+        .filter(|(_, drop)| drop.place != owner && !projection_results.contains(&drop.place))
         .collect::<Vec<_>>();
     assert_eq!(
         intermediate_drops.len(),

@@ -32,23 +32,23 @@ fn grow(s: S) -> S {
     S { n: s.n + 1, v: s.v }
 }
 
-fn mk_pair() -> Pair {
+fn _mk_pair() -> Pair {
     Pair { n: 0, a: Vec.new(), b: Vec.new() }
 }
 
-fn grow_pair(p: Pair) -> Pair {
+fn _grow_pair(p: Pair) -> Pair {
     p.a.push(p.n);
     p.b.push(p.n * 10);
     Pair { n: p.n + 1, a: p.a, b: p.b }
 }
 
-fn refresh(s: S) -> S {
+fn _refresh(s: S) -> S {
     mk()
 }
 
 // The issue #2420 repro: two reassignments through an alias-carrying callee.
 #[test]
-fn test_var_reassign_through_aliasing_fn_is_exact() {
+fn _test_var_reassign_through_aliasing_fn_is_exact() {
     var s = mk();
     s = grow(s);
     s = grow(s);
@@ -61,7 +61,7 @@ fn test_var_reassign_through_aliasing_fn_is_exact() {
 // The accumulator idiom under repeated reassignment: every element must be
 // present and exact after 12 round trips.
 #[test]
-fn test_loop_reassignment_accumulates_exact_elements() {
+fn _test_loop_reassignment_accumulates_exact_elements() {
     var s = mk();
     for i in 0 .. 12 {
         s = grow(s);
@@ -76,11 +76,11 @@ fn test_loop_reassignment_accumulates_exact_elements() {
 // Two owned Vec fields moved through the same call: both must survive the
 // reassignment release independently.
 #[test]
-fn test_two_vec_record_reassignment_is_exact() {
-    var p = mk_pair();
-    p = grow_pair(p);
-    p = grow_pair(p);
-    p = grow_pair(p);
+fn _test_two_vec_record_reassignment_is_exact() {
+    var p = _mk_pair();
+    p = _grow_pair(p);
+    p = _grow_pair(p);
+    p = _grow_pair(p);
     testing.assert_eq(p.n, 3);
     testing.assert_eq(p.a.len(), 3);
     testing.assert_eq(p.b.len(), 3);
@@ -93,10 +93,10 @@ fn test_two_vec_record_reassignment_is_exact() {
 // A callee whose return is a proven-fresh record keeps the overwrite release:
 // the old value is freed exactly once and the fresh value is independent.
 #[test]
-fn test_reassignment_from_fresh_returning_fn_resets() {
+fn _test_reassignment_from_fresh_returning_fn_resets() {
     var s = mk();
     s = grow(s);
-    s = refresh(s);
+    s = _refresh(s);
     testing.assert_eq(s.n, 0);
     testing.assert_eq(s.v.len(), 0);
     s = grow(s);
@@ -108,7 +108,7 @@ fn test_reassignment_from_fresh_returning_fn_resets() {
 // Conditional reassignment: the maybe-reassigned join must be exact on both
 // the taken and the not-taken path.
 #[test]
-fn test_conditional_reassignment_join_is_exact() {
+fn _test_conditional_reassignment_join_is_exact() {
     var taken = mk();
     var skipped = mk();
     let hot = true;
@@ -130,7 +130,7 @@ fn test_conditional_reassignment_join_is_exact() {
 // of the reassigned binding directly. Crashed deterministically before the
 // release gate.
 #[test]
-fn test_literal_rhs_embedding_own_projection_is_exact() {
+fn _test_literal_rhs_embedding_own_projection_is_exact() {
     var s = S { n: 0, v: Vec.new() };
     s.v.push(7);
     s = S { n: s.n + 1, v: s.v };
@@ -212,7 +212,7 @@ actor Swapper {
 // Record state reassigned through the alias-carrying callee, 12 messages:
 // every element must survive every neutralise round-trip exactly.
 #[test]
-fn test_actor_record_state_reassign_accumulates_exact() {
+fn _test_actor_record_state_reassign_accumulates_exact() {
     let a = spawn RecAcc;
     for i in 0 .. 12 {
         a.bump();
@@ -235,7 +235,7 @@ fn test_actor_record_state_reassign_accumulates_exact() {
 // old state (the runtime neutralise finds no aliases) and the fresh value
 // must grow independently afterwards.
 #[test]
-fn test_actor_record_state_fresh_reset_is_exact() {
+fn _test_actor_record_state_fresh_reset_is_exact() {
     let a = spawn RecAcc;
     for i in 0 .. 5 {
         a.bump();
@@ -255,7 +255,7 @@ fn test_actor_record_state_fresh_reset_is_exact() {
 // Bare Vec state field reassigned through a callee handing the borrowed
 // handle back: the pointer-inequality guard must not free the flowing handle.
 #[test]
-fn test_actor_vec_state_reassign_accumulates_exact() {
+fn _test_actor_vec_state_reassign_accumulates_exact() {
     let b = spawn VecAcc;
     for i in 0 .. 12 {
         b.bump(i);
@@ -270,7 +270,7 @@ fn test_actor_vec_state_reassign_accumulates_exact() {
 // old leaves against ALL collected new slots (not same-position), so a swap
 // must flow both Vecs intact through repeated re-stores.
 #[test]
-fn test_actor_record_state_field_swap_is_exact() {
+fn _test_actor_record_state_field_swap_is_exact() {
     let s = spawn Swapper;
     s.seed();
     s.flip();

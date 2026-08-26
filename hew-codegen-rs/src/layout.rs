@@ -2510,17 +2510,195 @@ fn primitive_value_layout_extern_name(rty: &ResolvedTy) -> Option<&'static str> 
 /// `*const HewMapKeyLayout` pointer cast, so the LLVM-side type does not need
 /// to match the Rust-side struct.
 fn declare_extern_layout_global<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, name: &str) -> PointerValue<'ctx> {
-    if let Some(g) = fn_ctx.llvm_mod.get_global(name) {
+    declare_wire_layout_global(fn_ctx.ctx, fn_ctx.llvm_mod, name)
+}
+
+/// Declare a runtime-owned collection layout global from a codegen path that
+/// does not have a per-function [`FnCtx`] (notably wire codec thunk emission).
+pub(crate) fn declare_wire_layout_global<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    name: &str,
+) -> PointerValue<'ctx> {
+    if let Some(g) = llvm_mod.get_global(name) {
         return g.as_pointer_value();
     }
     // Use an opaque (i8) global type — the runtime owns the real shape and
     // the kernel pointer-casts on receipt. No initializer because the symbol
     // is resolved at link time against the runtime's `#[no_mangle]` static.
-    let i8_ty = fn_ctx.ctx.i8_type();
-    let g = fn_ctx.llvm_mod.add_global(i8_ty, None, name);
+    let i8_ty = ctx.i8_type();
+    let g = llvm_mod.add_global(i8_ty, None, name);
     g.set_linkage(Linkage::External);
     g.set_constant(true);
     g.as_pointer_value()
+}
+
+/// Resolve the runtime key descriptor used when a wire decoder reconstructs a
+/// `HashMap<K, _>` or `HashSet<K>`. Primitive key identity must use the exact
+/// same hash/equality/drop callbacks as ordinary collection construction.
+pub(crate) fn wire_map_key_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    key_ty: &ResolvedTy,
+) -> CodegenResult<PointerValue<'ctx>> {
+    if matches!(key_ty, ResolvedTy::Bytes) {
+        return Err(CodegenError::FailClosed(
+            "wire HashMap/HashSet keys do not yet admit owned `bytes`: ordinary collection \
+             insertion cannot release an overwritten caller key"
+                .to_string(),
+        ));
+    }
+    let name = primitive_key_layout_extern_name(key_ty).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "wire collection key `{key_ty:?}` has no standalone Hash+Eq layout; \
+             wire HashMap/HashSet keys currently require a primitive Hash type"
+        ))
+    })?;
+    Ok(declare_wire_layout_global(ctx, llvm_mod, name))
+}
+
+/// Resolve or emit the value descriptor used by a wire-decoded `HashMap`.
+/// This mirrors `hashmap_value_layout_descriptor_ptr`, but is callable from the
+/// module-level codec emitter, where no `FnCtx` exists.
+pub(crate) fn wire_map_value_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    regs: OwnedElemRegistries<'_, 'ctx>,
+    value_resolved_ty: &ResolvedTy,
+    value_llvm_ty: BasicTypeEnum<'ctx>,
+    requires_drop: bool,
+) -> CodegenResult<PointerValue<'ctx>> {
+    if let Some(name) = primitive_value_layout_extern_name(value_resolved_ty) {
+        return Ok(declare_wire_layout_global(ctx, llvm_mod, name));
+    }
+
+    let (size, align) = abi_size_align(value_llvm_ty, Some(target_data))?;
+    let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(regs, value_resolved_ty) else {
+        if requires_drop {
+            return Err(CodegenError::FailClosed(format!(
+                "wire HashMap value `{value_resolved_ty:?}` carries a drop obligation but \
+                 has no resolvable map value clone/drop thunk"
+            )));
+        }
+        let global_name = format!("__hew_map_value_layout_{size}_{align}_plain");
+        if let Some(global) = llvm_mod.get_global(&global_name) {
+            return Ok(global.as_pointer_value());
+        }
+        let usize_ty = ctx.ptr_sized_int_type(target_data, None);
+        let i8_ty = ctx.i8_type();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let layout_ty = ctx.struct_type(
+            &[
+                usize_ty.into(),
+                usize_ty.into(),
+                i8_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        );
+        let init = layout_ty.const_named_struct(&[
+            usize_ty.const_int(size, false).into(),
+            usize_ty.const_int(u64::from(align), false).into(),
+            i8_ty
+                .const_int(ownership_kind_byte(HewTypeOwnershipKind::Plain), false)
+                .into(),
+            ptr_ty.const_null().into(),
+            ptr_ty.const_null().into(),
+        ]);
+        let global = llvm_mod.add_global(layout_ty, None, &global_name);
+        global.set_constant(true);
+        global.set_linkage(Linkage::Private);
+        global.set_initializer(&init);
+        return Ok(global.as_pointer_value());
+    };
+
+    let kind_tag = match kind {
+        OwnedElemThunkKind::Record => "rec",
+        OwnedElemThunkKind::Enum => "enum",
+        OwnedElemThunkKind::Tuple => "tup",
+        OwnedElemThunkKind::PointerHandle => "handle",
+    };
+    let global_name = format!("__hew_map_value_layout_{kind_tag}_{key}_{size}_{align}_owned");
+    if let Some(global) = llvm_mod.get_global(&global_name) {
+        return Ok(global.as_pointer_value());
+    }
+    let (clone_fn, drop_fn) = match kind {
+        OwnedElemThunkKind::Record => (
+            get_or_declare_record_clone_inplace(ctx, llvm_mod, &key),
+            get_or_declare_record_drop_inplace(ctx, llvm_mod, &key),
+        ),
+        OwnedElemThunkKind::Enum => (
+            get_or_declare_enum_clone_inplace(ctx, llvm_mod, &key),
+            get_or_declare_enum_drop_inplace(ctx, llvm_mod, &key),
+        ),
+        OwnedElemThunkKind::Tuple => {
+            let ResolvedTy::Tuple(elems) = value_resolved_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "wire HashMap value `{value_resolved_ty:?}` resolved to a tuple thunk"
+                )));
+            };
+            crate::thunks::emit_tuple_inplace_thunk_bodies(
+                ctx,
+                llvm_mod,
+                target_data,
+                regs,
+                &key,
+                elems,
+                value_llvm_ty,
+            )?;
+            (
+                get_or_declare_tuple_clone_inplace(ctx, llvm_mod, &key),
+                get_or_declare_tuple_drop_inplace(ctx, llvm_mod, &key),
+            )
+        }
+        OwnedElemThunkKind::PointerHandle => {
+            let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(value_resolved_ty)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "wire HashMap collection value `{value_resolved_ty:?}` has no clone/free ABI"
+                    ))
+                })?;
+            crate::thunks::emit_collection_handle_thunk_bodies(
+                ctx, llvm_mod, &key, clone_sym, drop_sym,
+            )?;
+            (
+                get_or_declare_collection_clone_inplace(ctx, llvm_mod, &key),
+                get_or_declare_collection_drop_inplace(ctx, llvm_mod, &key),
+            )
+        }
+    };
+    let usize_ty = ctx.ptr_sized_int_type(target_data, None);
+    let i8_ty = ctx.i8_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let layout_ty = ctx.struct_type(
+        &[
+            usize_ty.into(),
+            usize_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let init = layout_ty.const_named_struct(&[
+        usize_ty.const_int(size, false).into(),
+        usize_ty.const_int(u64::from(align), false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+        clone_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let global = llvm_mod.add_global(layout_ty, None, &global_name);
+    global.set_constant(true);
+    global.set_linkage(Linkage::Private);
+    global.set_initializer(&init);
+    Ok(global.as_pointer_value())
 }
 
 /// Emit (or reuse) a `HewMapKeyLayout`-shaped private constant for `elem_ty`,
@@ -4140,6 +4318,13 @@ pub(crate) fn lower_vec_constructor_call(
         .builder
         .build_store(dest_ptr, handle)
         .llvm_ctx("Vec::new store")?;
+    // `Vec::new` is intercepted before the shared runtime-ABI producer tail,
+    // so this specialised emitter owns the destination's publication
+    // lifecycle.  The caller deactivates the old snapshot before entering us;
+    // rearm only after the constructor returned and the complete handle is in
+    // the MIR slot.  A constructor unwind therefore cannot expose a partial or
+    // fabricated Vec owner, while every later logical crash sees the new one.
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
 
     let next_bb = *fn_ctx
         .blocks

@@ -121,6 +121,41 @@ fn vec_index_rejects_unsigned_i32_index() {
     );
 }
 
+#[test]
+fn vec_index_admits_resource_element_as_an_interior_borrow() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Token { id: i64 }
+
+        fn inspect(tokens: Vec<Token>) -> i64 {
+            let token = tokens[0];
+            token.id
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "resource Vec indexing must reach MIR's borrow/escape authority: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_index_still_rejects_single_consumer_receiver() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let receiver = Ty::Named {
+        name: "std.channel.Receiver".to_string(),
+        args: vec![Ty::I64],
+        builtin: Some(BuiltinType::Receiver),
+    };
+    assert!(!checker.validate_vec_index_borrow_surface(&receiver, &Span::from(0..0)));
+    assert!(checker
+        .errors
+        .iter()
+        .any(|error| error.message.contains("single-consumer endpoint")));
+}
+
 /// the boundary does: a concrete type lands in both maps; a non-concrete type
 /// (a leaked inference var) lands only in `expr_types`, leaving the typed map
 /// correctly absent (fail-closed omission, never a fabricated guess).

@@ -2,6 +2,6 @@
 #   make dogfood-compile-measure DOGFOOD_MEASURE_UPDATE=1
 #
 # The gate compares exact LLVM define-block bytes and structural counts.
-ll_bytes=608134
-defines=101
-basic_blocks=202
+ll_bytes=453006
+defines=98
+basic_blocks=196

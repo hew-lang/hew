@@ -25,6 +25,14 @@
 //! for a different field is a schema-compatibility break, not just a style
 //! issue. `e.to_json()` and `TypeName.from_json(text)` (a call on the type
 //! name itself, not `::`) round-trip a `#[wire]` type through JSON today.
+//! `HashMap` and `HashSet` may be fields of that wire type: string-keyed maps
+//! become JSON objects, other supported primitive-key maps become arrays of
+//! `[key, value]` pairs (so key types are not stringified), and sets become
+//! deterministically ordered arrays. The same layouts round-trip through CBOR
+//! and YAML. Any bare `Serializable` value uses the same typed codec through
+//! this module's generic functions, for example `wire.to_json(features)` or
+//! `wire.from_json<HashMap<string, Feature>>(text)`; collections do not need
+//! collection-specific methods or a wrapper type.
 //! Check schema compatibility between two versions of a wire type with:
 //!
 //! ```text
@@ -49,3 +57,34 @@
 //! (`hew-runtime/src/envelope.rs`) became the sole internode encoding. The
 //! opaque `Value` contract for user-facing stdlib encoding modules lives in
 //! `value_trait.hew` and remains active.
+
+/// Encode any admitted `Serializable` value as binary CBOR.
+pub fn encode<T: Serializable>(value: T) -> bytes {
+    panic("compiler wire intrinsic")
+}
+
+/// Decode trusted binary CBOR as `T`. Malformed binary input follows the same
+/// trap-on-failure contract as `Type.decode(bytes)`.
+pub fn decode<T: Serializable>(data: bytes) -> T {
+    panic("compiler wire intrinsic")
+}
+
+/// Serialize any admitted `Serializable` value as JSON text.
+pub fn to_json<T: Serializable>(value: T) -> string {
+    panic("compiler wire intrinsic")
+}
+
+/// Parse JSON text as `T`, preserving typed parse failures in `Result`.
+pub fn from_json<T: Serializable>(text: string) -> Result<T, string> {
+    panic("compiler wire intrinsic")
+}
+
+/// Serialize any admitted `Serializable` value as YAML text.
+pub fn to_yaml<T: Serializable>(value: T) -> string {
+    panic("compiler wire intrinsic")
+}
+
+/// Parse YAML text as `T`, preserving typed parse failures in `Result`.
+pub fn from_yaml<T: Serializable>(text: string) -> Result<T, string> {
+    panic("compiler wire intrinsic")
+}

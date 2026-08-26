@@ -105,6 +105,7 @@ fn pipeline_with_extern(
         decisions: vec![],
         checks: vec![],
         cooperate_sites: vec![],
+        ownership_elaboration: None,
     };
     let elab = ElaboratedMirFunction {
         name: "probe".to_string(),

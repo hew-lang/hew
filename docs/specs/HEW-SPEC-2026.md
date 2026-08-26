@@ -3856,15 +3856,21 @@ fn main() {
 
 ### 5.7 Crash Isolation
 
-The runtime installs signal handlers for SEGV, SIGBUS, SIGFPE, and SIGILL. When an actor crashes:
+On native unwind-capable targets, language-level actor panics unwind through the
+runtime's `C-unwind` boundary. Owned locals are destroyed by LLVM cleanup pads
+before the scheduler catches the panic, marks the actor `Crashed`, emits a crash
+report, and notifies the supervisor. The worker may then continue processing
+other actors. Production `wasm32-wasip1` remains `panic=abort`; actor-local panic
+containment there is explicitly `WASM-TODO(actor-crash-containment)` in the
+capability matrix and must reach parity before this target can claim this
+native recovery contract.
 
-1. The signal handler catches the signal on the worker's alternate signal stack
-2. `siglongjmp` returns control to the scheduler's recovery point
-3. The actor is marked as `Crashed` and a crash report is generated
-4. The supervisor is notified and applies its restart strategy
-5. The worker thread continues processing other actors
+Synchronous hardware faults (SEGV, SIGBUS, SIGFPE, and SIGILL) are process-fatal.
+Signal handlers run on an alternate signal stack, record the terminal cause
+using async-signal-safe operations, and terminate; the runtime never jumps out
+of an arbitrary instruction or resumes a potentially corrupted process.
 
-The `panic()` builtin triggers a controlled crash for testing.
+The `panic()` builtin triggers the recoverable language-panic path for testing.
 
 ### 5.8 Process Exit Status (normative)
 
@@ -4571,7 +4577,9 @@ specification tracks four target tiers:
   I/O). The full browser execution runtime for those thread-dependent
   features is the v0.6.0 browser-runtime lane.
 - **Tier 2** (`wasm32-wasip1`): WASI execution runtime with a
-  single-threaded cooperative actor scheduler.
+  single-threaded cooperative actor scheduler. Its production panic strategy is
+  currently `abort`, so native actor-panic isolation does not apply; see
+  `WASM-TODO(actor-crash-containment)` in the capability matrix.
 
 Tier 2 surfaces are classified per feature as **Pass** (works as
 implemented), **Warn** (works with documented semantic differences),

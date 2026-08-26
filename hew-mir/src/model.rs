@@ -3473,7 +3473,13 @@ impl BasicBlock {
     #[must_use]
     pub fn successors(&self) -> Vec<u32> {
         match &self.terminator {
-            Terminator::Return | Terminator::Unreachable | Terminator::Trap { .. } => Vec::new(),
+            Terminator::Return
+            | Terminator::Unreachable
+            | Terminator::Trap { .. }
+            | Terminator::Call {
+                authority: CallAuthority::NoReturnDirect | CallAuthority::NoReturnExtern,
+                ..
+            } => Vec::new(),
             Terminator::Goto { target } => vec![*target],
             Terminator::Branch {
                 then_target,
@@ -3662,6 +3668,13 @@ pub enum CallAuthority {
     /// User externs deliberately remain [`Self::Direct`] even when their
     /// linker spelling collides with an audited runtime endpoint.
     Extern,
+    /// A checker-proven `Never`-returning ordinary Hew function. The call can
+    /// still unwind, but it has no normal CFG successor.
+    NoReturnDirect,
+    /// A checker-proven `Never`-returning audited extern. This preserves the
+    /// extern linkage/ownership contract while making the absent normal edge
+    /// first-class instead of rediscovering it from a symbol spelling.
+    NoReturnExtern,
     /// A catalogued runtime ABI call selected by the checker/HIR.
     Runtime(hew_types::runtime_call::RuntimeCallFamily),
     /// A compiler-owned structural operation with no public runtime catalog
@@ -3675,8 +3688,26 @@ impl CallAuthority {
     pub const fn runtime_family(self) -> Option<hew_types::runtime_call::RuntimeCallFamily> {
         match self {
             Self::Runtime(family) => Some(family),
-            Self::Direct | Self::Extern | Self::Compiler(_) => None,
+            Self::Direct
+            | Self::Extern
+            | Self::NoReturnDirect
+            | Self::NoReturnExtern
+            | Self::Compiler(_) => None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_no_return(self) -> Self {
+        match self {
+            Self::Direct => Self::NoReturnDirect,
+            Self::Extern => Self::NoReturnExtern,
+            other => other,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_no_return(self) -> bool {
+        matches!(self, Self::NoReturnDirect | Self::NoReturnExtern)
     }
 }
 
@@ -4615,6 +4646,11 @@ pub enum FloatWidth {
 /// "unknown authority = assume fine" arm — `exhaustive-coverage`, L125).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NeutralizeAuthority {
+    /// A selected, unguarded match arm moves an active enum payload field into
+    /// its binder. `transferee` is that binder's owner slot. This is the
+    /// canonical structural move-path handoff: the carrier stops owning the
+    /// moved field at the same MIR point the destination generation begins.
+    PayloadBindingTransfer,
     /// The move-out arm of a consuming match: an `OwnedBinding`-provenance
     /// projected payload binder is consumed, nulling the scrutinee's variant
     /// slot (`hew-mir/src/lower/expr.rs`). The payload is consumed into an
@@ -4633,6 +4669,16 @@ pub enum NeutralizeAuthority {
     /// fresh owner `dest` and its source slot nulled
     /// (`hew-mir/src/lower/move_value.rs`). `transferee` is the `dest` owner.
     WholeCarrierConsume,
+    /// A whole owned value moved into persistent actor state. Actor-state
+    /// storage is addressed by `(actor, field_offset)`, not by a MIR `Place`,
+    /// so the source slot is nulled after `ActorStateFieldStore` and the
+    /// terminal `OwnerId` transfer has no `transferee` place.
+    ActorStateStoreConsume,
+    /// A consuming method (for example a resource `close`) completed
+    /// successfully. The callee has discharged the value and the normal
+    /// successor nulls the caller's now-stale carrier. The invoke unwind edge
+    /// deliberately retains the owner and therefore has no such operation.
+    CallDischargeConsume,
     /// A scalar owned handle moved into a tuple or record that flows to the
     /// return slot. The constructor has already copied the handle into its
     /// aggregate `dest`; nulling the source leaves the returned aggregate as
@@ -4673,19 +4719,231 @@ impl NeutralizeAuthority {
     pub fn requires_transferee(self) -> bool {
         match self {
             NeutralizeAuthority::SendTransferLastUse
+            | NeutralizeAuthority::PayloadBindingTransfer
             | NeutralizeAuthority::WholeCarrierConsume
             | NeutralizeAuthority::ReturnedAggregateMemberConsume
             | NeutralizeAuthority::AggregateMemberConsume
             | NeutralizeAuthority::DivergentSelectionTransfer => true,
-            NeutralizeAuthority::MoveOutArmConsume | NeutralizeAuthority::EphemeralTempConsume => {
-                false
-            }
+            NeutralizeAuthority::MoveOutArmConsume
+            | NeutralizeAuthority::EphemeralTempConsume
+            | NeutralizeAuthority::ActorStateStoreConsume
+            | NeutralizeAuthority::CallDischargeConsume => false,
         }
     }
 }
 
+/// Immutable identity of one ownership generation in MIR.
+///
+/// A source binding may be reinitialised, but a generation never changes
+/// identity. Drop elaboration and verification therefore distinguish the old
+/// value from its replacement without guessing from adjacent writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OwnerId {
+    pub binding: BindingId,
+    pub generation: u32,
+}
+
+/// Immutable destructor authority for one ownership generation.
+///
+/// Lowering may use type/layout registries while Raw MIR is still mutable, but
+/// it must publish the resulting ritual before Checked MIR seals. Exit-plan
+/// derivation then combines this recipe with the `OwnerId`'s exact current Place;
+/// neither codegen nor validation consults Builder cleanup catalogues.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OwnerDropRecipe {
+    pub ty: ResolvedTy,
+    pub drop_fn: Option<DropFnSpec>,
+    pub kind: DropKind,
+    /// Monotonic source declaration rank. Higher ranks drop first (LIFO).
+    pub declaration_order: u32,
+}
+
+/// Stable drop-plan key for a non-suspending indirect closure invocation.
+pub const INDIRECT_CLOSURE_CALLEE: &str = "__hew_indirect_closure";
+
+/// Unique drop-plan key for one non-suspending indirect closure invocation.
+#[must_use]
+pub fn indirect_closure_callee(site: SiteId) -> String {
+    format!("{INDIRECT_CLOSURE_CALLEE}:{}", site.0)
+}
+
+/// Semantic reason a runtime ownership bit guards one owner generation.
+///
+/// The lowering builder may keep physical flag maps while constructing Raw
+/// MIR, but Checked MIR carries this discriminator so cleanup admission and
+/// validation never have to consult those maps after sealing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OwnershipGuardKind {
+    AffineRelease,
+    Overwrite,
+    Collection,
+    ActorMessageCow,
+    ConditionalRecord,
+    ProjectedPayload,
+    VecIter,
+}
+
+/// Storage domain borrowed by an interior-alias runtime result. Mutating or
+/// releasing the named receiver invalidates every live alias in this domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AliasInvalidationDomain {
+    CollectionElements,
+}
+
+/// Explicit ownership dataflow operation carried in the backend MIR stream.
+/// Codegen emits no machine instruction for these facts; Checked-MIR analyses
+/// consume them as the authoritative mint/transfer/release history.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OwnershipEvent {
+    Mint {
+        owner: OwnerId,
+        place: Place,
+        ty: ResolvedTy,
+    },
+    /// Publish the destructor ritual for an `OwnerId` definition. This event is
+    /// adjacent to Mint/Reset/successor Transfer/Join when that generation is
+    /// created and is replay-only metadata: it emits no machine instruction.
+    DropRecipe {
+        owner: OwnerId,
+        recipe: OwnerDropRecipe,
+    },
+    Transfer {
+        owner: OwnerId,
+        from: Place,
+        to: Option<Place>,
+        to_owner: Option<OwnerId>,
+        /// Type of a newly-published successor owner.  Required exactly when
+        /// `to_owner` is present so Checked MIR can reproduce owner metadata
+        /// without consulting the lowering Builder's local table.
+        to_ty: Option<ResolvedTy>,
+    },
+    /// Move the same live owner generation to different physical storage.
+    ///
+    /// This is not a discharge: cleanup authority remains in the current
+    /// frame until a later `Transfer`/`Release`.  It is used for pre-call
+    /// carrier moves where the caller owns the value on the unwind edge and
+    /// the callee adopts it only on normal return.
+    Relocate {
+        owner: OwnerId,
+        from: Place,
+        to: Place,
+    },
+    Release {
+        owner: OwnerId,
+        place: Place,
+    },
+    /// Path-sensitive release tied to the owner's published runtime guard.
+    /// The guarded branch can be statically reachable after a transfer even
+    /// though its flag value makes that execution impossible.  Encoding the
+    /// predicate keeps the release exact without treating ordinary duplicate
+    /// `Release` operations as idempotent.
+    GuardedRelease {
+        owner: OwnerId,
+        place: Place,
+        flag: Place,
+    },
+    /// Retract a provisional owner after typed carrier analysis proves that
+    /// the place is an interior alias. This ends the generation without
+    /// running a destructor; the enclosing carrier remains the sole owner.
+    DemoteToAlias {
+        owner: OwnerId,
+        place: Place,
+    },
+    Reset {
+        previous: OwnerId,
+        replacement: OwnerId,
+        place: Place,
+        ty: ResolvedTy,
+    },
+    /// Replace one ownership epoch with its immediate successor in the same
+    /// physical slot under the same cleanup authority.
+    ///
+    /// Unlike `Reset`, this lineage promises that both generations use one
+    /// unchanged guard and destructor recipe. Checked-MIR validation proves
+    /// that the predecessor is the only possibly-live generation at `place`
+    /// before the event and the replacement is the only live generation
+    /// afterwards. Codegen may therefore share the slot's crash snapshot
+    /// across these two otherwise-distinct owner identities.
+    Rearm {
+        previous: OwnerId,
+        replacement: OwnerId,
+        place: Place,
+        ty: ResolvedTy,
+    },
+    /// Attach the runtime drop flag that guards this owner generation after a
+    /// conditional projection transfer. Keeping it in MIR makes cleanup
+    /// derivation independent of the lowering builder's flag registry.
+    Guard {
+        owner: OwnerId,
+        flag: Place,
+        kind: OwnershipGuardKind,
+    },
+    /// A non-owning result points into storage controlled by `receiver`.
+    /// `receiver_owner` pins the borrow to one generation when the receiver is
+    /// itself represented by a Checked-MIR owner; `None` is retained only for
+    /// externally-owned/borrowed receivers and remains fail-closed for escape.
+    InteriorAlias {
+        result: Place,
+        receiver: Place,
+        receiver_owner: Option<OwnerId>,
+        domain: AliasInvalidationDomain,
+    },
+    /// Relocate alias provenance alongside a physical whole-value move.
+    AliasRelocate {
+        from: Place,
+        to: Place,
+    },
+    /// End an alias lifetime at its last use.
+    AliasEnd {
+        alias: Place,
+    },
+    /// Ownership SSA block parameter for a CFG join whose incoming paths all
+    /// own the same binding/place but carry different generations.
+    ///
+    /// `incoming` enumerates the only generations accepted on predecessor
+    /// edges. Generation-erased must-own dataflow proves the binding is present
+    /// on every edge before this event is emitted; applying the event replaces
+    /// whichever incoming generation reached the block with `replacement`.
+    Join {
+        incoming: Vec<OwnerId>,
+        replacement: OwnerId,
+        place: Place,
+        ty: ResolvedTy,
+    },
+    /// Preserve one exact owner across a specific CFG edge. This is emitted on
+    /// the source block when a loop/header phi is conditionally present; exit
+    /// cleanup must never infer the carry from instructions later in `target`.
+    EdgeCarry {
+        owner: OwnerId,
+        place: Place,
+        target: u32,
+    },
+    /// Lexical scopes exited at this exact program point. `owners` is filled
+    /// before Checked MIR sealing from the exact owner-state interpreter; the
+    /// adjacent physical drops and Releases are the executable authority.
+    ScopeExit {
+        scopes: Vec<hew_hir::ScopeId>,
+        owners: Vec<OwnerId>,
+        /// Places whose exact owner crosses this lexical boundary.  These are
+        /// published by the source lowering at the scope-exit program point;
+        /// `carried` pins them to immutable `OwnerIds` before Checked MIR seals.
+        carry_places: Vec<Place>,
+        carried: Vec<OwnerId>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
+    /// Ownership-SSA operation. This is semantic MIR authority and intentionally
+    /// lowers to no machine code; the adjacent physical move/drop remains the
+    /// backend operation.
+    OwnershipEvent(OwnershipEvent),
+    /// Normal-edge commit for a runtime call that mutates an owned value's
+    /// stack-resident representation in place. The call itself is a
+    /// terminator so its unwind edge observes the pre-call snapshot; this
+    /// marker begins the normal successor and refreshes backend crash-cleanup
+    /// state without emitting user-visible machine code.
+    InteriorMutationCommit { place: Place },
     /// Semantic marker at actor-handler entry. Codegen emits no user-visible
     /// instruction, but validates that the hidden execution-context argument is
     /// bound before any context-dependent carrier op can execute.
@@ -4910,6 +5168,10 @@ pub enum Instr {
     GeneratorNext {
         dest: Place,
         ctx: Place,
+        /// Exact live owner generation borrowed across `hew_cont_resume`.
+        /// Filled while Raw MIR is built so cleanup elaboration never has to
+        /// reverse-map the context place back to a binding identity.
+        ctx_owner: Option<OwnerId>,
         yield_ty: ResolvedTy,
     },
     /// Binary wire codec on a `#[wire]` struct.
@@ -5308,6 +5570,9 @@ pub enum Instr {
     /// environment pointer from `callee`, then emits an indirect call with the
     /// current execution context and environment pointer prepended to `args`.
     CallClosure {
+        /// Stable HIR program point. Multiple indirect calls may share one MIR
+        /// block, so exceptional cleanup cannot be keyed by block alone.
+        call_site: SiteId,
         callee: Place,
         args: Vec<Place>,
         ret_ty: ResolvedTy,
@@ -5347,6 +5612,16 @@ pub enum Instr {
         place: Place,
         ty: ResolvedTy,
         drop_fn: Option<DropFnSpec>,
+    },
+    /// Retire an aggregate's old generation immediately before replacing its
+    /// storage, while preserving any owned leaves that the replacement
+    /// reuses. Codegen lowers this through the typed collect-neutralize-drop
+    /// helper, so nested aliases transfer exactly once instead of making a
+    /// blind recursive drop race the incoming value.
+    AggregateOverwriteRelease {
+        old: Place,
+        replacement: Place,
+        ty: ResolvedTy,
     },
     /// Witness operation: load the runtime **size in bytes** of `ty` into
     /// `dest` (A606). `dest` is an integer-typed local (`ResolvedTy::Usize`).
@@ -5400,9 +5675,9 @@ pub enum Instr {
     /// pointer into `dest`. The `dest` local's type is `ResolvedTy::String`,
     /// which codegen maps to an opaque `ptr` (matching the runtime's
     /// `*const c_char` ABI). No runtime call is made: the pointer refers to
-    /// data in the compiled binary's read-only data segment, so
-    /// `hew_string_drop` safely skips freeing it via its `is_static_string`
-    /// guard.
+    /// data in the compiled binary's read-only data segment, so it is absent
+    /// from the managed-string provenance registry and `hew_string_drop`
+    /// safely treats it as borrowed.
     ///
     /// Escape decoding: `bytes` carries the already-decoded UTF-8 byte
     /// sequence from `HirLiteral::String` — the parser's `unescape_string`
@@ -6016,8 +6291,8 @@ pub enum Instr {
     /// to index a per-machine static string table populated alongside the
     /// machine's tagged-union layout in `register_machine_layouts`. Each
     /// table entry is the address of a private read-only NUL-terminated
-    /// global string. `hew_string_drop` skips static-segment pointers via
-    /// `is_static_string`, so no clone or heap allocation is needed —
+    /// global string. `hew_string_drop` treats pointers absent from the exact
+    /// managed-string provenance registry as borrowed, so no clone or heap allocation is needed —
     /// matches `Instr::StringLit`.
     ///
     /// `machine_name` carries the unqualified machine type name so codegen
@@ -6296,6 +6571,11 @@ pub struct CheckedMirFunction {
     /// with drop elaboration (e.g. a cooperate inside a cleanup block), the
     /// field can be migrated to `ElaboratedMirFunction` at that time.
     pub cooperate_sites: Vec<CooperateSite>,
+    /// Ownership elaboration frozen at the Raw→Checked boundary. Production
+    /// lowering always carries `Some`; hand-built analysis fixtures may omit
+    /// it when they do not invoke drop elaboration. Keeping the plan inside
+    /// Checked MIR makes replay independent of the mutable lowering builder.
+    pub ownership_elaboration: Option<Box<ElaboratedMirFunction>>,
 }
 
 /// Per-function legality findings produced by Checked MIR. A
@@ -6435,11 +6715,9 @@ pub enum MirCheck {
     /// path. A mint's release obligation is never met: a leak. The discharge
     /// set is re-derived independently from the primitive `Instr` stream + CFG
     /// reachability (never from the elaborator's `Disposition` ledger — the
-    /// ledger is the component under test). Legacy single-mint under-release
-    /// remains advisory because this lite tier cannot soundly distinguish
-    /// tracked stdlib holes without unforgeable module provenance. A missing
-    /// release for a MIR-explicit retain is blocking: the retain itself is a
-    /// direct, unforgeable proof that an additional owner was minted.
+    /// ledger is the component under test). Every under-release is blocking:
+    /// emitting LLVM for an ownership-invalid body would turn a failed
+    /// compiler invariant into a runtime leak.
     ObligationUnderReleased {
         /// Function symbol (`ElaboratedMirFunction::name`).
         function: String,
@@ -6457,9 +6735,6 @@ pub enum MirCheck {
         /// prose is rendered from this closed provenance instead of inferring
         /// a cause from severity.
         mint_provenance: ObligationMintProvenance,
-        /// Explicit retain-backed owner leaks are compiler invariant failures
-        /// and therefore blocking; legacy unretained holes remain advisory.
-        hard: bool,
         reason: String,
     },
     /// S1 obligation-balance: a heap-owning owned local accumulates TWO OR
@@ -6573,12 +6848,6 @@ impl ObligationMintProvenance {
         } else {
             Self::Mixed
         }
-    }
-
-    /// Whether this finding contains an explicit retain-backed owner debt.
-    #[must_use]
-    pub const fn is_blocking(self) -> bool {
-        !matches!(self, Self::Ordinary)
     }
 }
 
@@ -6713,8 +6982,9 @@ pub enum BlockKind {
 pub struct ElabBlock {
     pub id: u32,
     pub kind: BlockKind,
-    /// Drop instructions to fire on entry to this block. Empty for normal
-    /// blocks; populated in LIFO declaration order for cleanup blocks.
+    /// Compatibility projection of the matching exact `ExitPath::Panic`
+    /// plan. Empty for normal blocks and rebuilt from `drop_plans` after
+    /// Checked-MIR `OwnerId` replay; never an independent cleanup authority.
     pub drops: Vec<ElabDrop>,
     /// Successor block to jump to after firing this block's drops. `None`
     /// indicates the function terminates here (trap / return-from-cleanup).
@@ -6745,6 +7015,14 @@ pub enum ExitPath {
         block: u32,
         callee: String,
         next: u32,
+    },
+    /// Exceptional edge of a potentially-unwinding call. The normal
+    /// [`ExitPath::Call`] plan is empty because ownership continues into its
+    /// successor; this sibling plan destroys every live owner before LLVM
+    /// `resume` propagates the exception.
+    Unwind {
+        block: u32,
+        callee: String,
     },
     Panic {
         block: u32,
@@ -6908,10 +7186,23 @@ pub struct ElabDrop {
     /// authority to the binder. In both protocols codegen gates the drop on
     /// `flag == 0`, so it runs exactly on the path/generation represented by
     /// this `ElabDrop`.
-    /// The drop-plan validator re-derives only `kind` (via the Place-driven
-    /// `drop_kind_for` SSOT) and never inspects `guard`, so this runtime-gating
-    /// annotation is orthogonal to the structural drop-kind contract.
-    pub guard: Option<Place>,
+    /// The drop-plan validator replays Checked-MIR owner state and requires the
+    /// exact live [`OwnerId`] and its `Guard` event to match this descriptor;
+    /// codegen then consumes only the physical flag after that identity proof.
+    pub guard: Option<ElabDropGuard>,
+}
+
+/// Generation-qualified runtime gate for one elaborated cleanup.
+///
+/// A binding may be reset and mint a later owner generation in the same MIR
+/// function. Carrying the [`OwnerId`] beside the physical flag prevents a
+/// guard created for generation N from being silently reused by generation
+/// N+1, and lets Checked-MIR replay verify the association without lowering
+/// side state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ElabDropGuard {
+    pub owner: OwnerId,
+    pub flag: Place,
 }
 
 /// Drop-kind discriminator for `ElabDrop`. Each variant pins a
@@ -7541,16 +7832,14 @@ pub enum MirDiagnosticKind {
     DropPlanUndetermined { block: u32, reason: String },
     /// S1 obligation-balance under-release (leak): surfaced from
     /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has fewer
-    /// discharges than owner mints on a CFG path to a `Return` exit. Legacy
-    /// single-mint holes are advisory; missing releases for MIR-explicit
-    /// retains are blocking compiler-invariant failures.
+    /// discharges than owner mints on a CFG exit. Every instance is a blocking
+    /// compiler-invariant failure.
     ObligationUnderReleased {
         function: String,
         blocks: Vec<u32>,
         site: SiteId,
         name: String,
         local_ty: String,
-        hard: bool,
         reason: String,
     },
     /// S1 obligation-balance over-release (double-free): surfaced from
@@ -7789,42 +8078,6 @@ pub enum MirDiagnosticKind {
     /// When the full env-materialization protocol for Duplex captures is
     /// implemented, remove this guard AND the checker gate in `check_call`.
     ClosureCapturesDuplexHandle { name: String, site: SiteId },
-}
-
-impl MirDiagnosticKind {
-    /// Whether this diagnostic is ADVISORY — a compile-time warning that is
-    /// surfaced but does NOT fail the build — rather than a hard error.
-    ///
-    /// This is the single source of severity truth for MIR diagnostics: every
-    /// CLI consumer renders an advisory as a `warning` and never counts it
-    /// toward build failure. All other diagnostics stay hard `E_MIR_*` errors.
-    ///
-    /// Only a non-hard [`MirDiagnosticKind::ObligationUnderReleased`] is
-    /// advisory. A legacy under-release is a resource LEAK, not a memory-safety
-    /// violation, and the lite MIR-tier obligation-balance gate cannot SOUNDLY suppress a leak: it
-    /// has no un-forgeable defining-module provenance signal, so a per-function
-    /// allowlist keyed on the mangled symbol is forgeable (the compiler mangles
-    /// a user module `base64`'s `decode` to the same `base64$decode` a stdlib
-    /// entry used). Rather than hard-gate every leak behind a forgeable
-    /// allowlist — silently swallowing a genuine user leak that collides with a
-    /// tracked stdlib triple — the gate WARNS on legacy single-mint holes and
-    /// leaves the build green. Missing release for a MIR-explicit retain is an
-    /// unforgeable ownership-balance failure and remains hard. Promoting the
-    /// remaining under-release cases to a sound hard gate needs frontend module
-    /// provenance threaded into this gate so a stdlib site is distinguishable
-    /// from a same-named user site.
-    ///
-    /// Over-release ([`MirDiagnosticKind::ObligationOverReleased`], double-free)
-    /// is memory-unsafe and is NEVER advisory; the fail-closed undecidability
-    /// verdict ([`MirDiagnosticKind::ObligationBalanceUnverified`]) is NEVER
-    /// advisory.
-    #[must_use]
-    pub fn is_advisory(&self) -> bool {
-        matches!(
-            self,
-            MirDiagnosticKind::ObligationUnderReleased { hard: false, .. }
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8929,84 +9182,6 @@ mod suspend_terminator_tests {
             succs,
             vec![20],
             "successors must NOT collapse to [next] only (pre-fix regression)"
-        );
-    }
-}
-
-#[cfg(test)]
-mod diagnostic_severity_tests {
-    //! Severity classification of MIR diagnostics
-    //! ([`MirDiagnosticKind::is_advisory`]) — the single source of truth every
-    //! CLI consumer keys off. Pins the S1 obligation-balance severity split:
-    //! legacy single-mint under-release is advisory (compile-time warning,
-    //! build stays green); explicit-retain under-release, over-release
-    //! (double-free), and the fail-closed undecidability verdict are blocking.
-
-    use super::*;
-
-    #[test]
-    fn under_release_leak_is_advisory() {
-        // The exact triple the deleted forgeable allowlist keyed on
-        // (`base64$decode` / `out` / `bytes`): now surfaced, never suppressed,
-        // and classified advisory so it warns rather than fails the build.
-        let leak = MirDiagnosticKind::ObligationUnderReleased {
-            function: "base64$decode".to_string(),
-            blocks: vec![20],
-            site: SiteId(20),
-            name: "out".to_string(),
-            local_ty: "bytes".to_string(),
-            hard: false,
-            reason: "mint without discharge = leak".to_string(),
-        };
-        assert!(
-            leak.is_advisory(),
-            "under-release (leak) must be advisory — a compile-time warning that \
-             does not fail the build"
-        );
-    }
-
-    #[test]
-    fn explicit_retain_leak_is_blocking() {
-        let leak = MirDiagnosticKind::ObligationUnderReleased {
-            function: "f".to_string(),
-            blocks: vec![1],
-            site: SiteId(1),
-            name: "shared".to_string(),
-            local_ty: "string".to_string(),
-            hard: true,
-            reason: "retained owner has no release".to_string(),
-        };
-        assert!(
-            !leak.is_advisory(),
-            "a MIR-explicit retain is an unforgeable mint and its missing release must fail hard"
-        );
-    }
-
-    #[test]
-    fn over_release_double_free_is_blocking() {
-        let double_free = MirDiagnosticKind::ObligationOverReleased {
-            function: "f".to_string(),
-            block: 3,
-            name: "h".to_string(),
-            reason: "double release".to_string(),
-        };
-        assert!(
-            !double_free.is_advisory(),
-            "over-release (double-free) is memory-unsafe and must stay a hard \
-             error — never advisory"
-        );
-    }
-
-    #[test]
-    fn unverified_balance_verdict_is_blocking() {
-        let unverified = MirDiagnosticKind::ObligationBalanceUnverified {
-            function: "f".to_string(),
-            reason: "fixpoint exceeded cap".to_string(),
-        };
-        assert!(
-            !unverified.is_advisory(),
-            "an undecided balance verdict fails closed as a hard error — never \
-             advisory"
         );
     }
 }

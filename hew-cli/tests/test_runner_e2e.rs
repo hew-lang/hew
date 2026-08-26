@@ -269,6 +269,46 @@ fn parallel_suite_reports_in_discovery_order() {
 }
 
 #[test]
+fn parallel_csv_test_compilation_uses_compiler_stack_budget() {
+    require_codegen();
+
+    // Compiling this standard-library consumer exhausts the platform-default
+    // stack used by a scoped test worker, while the same compiler pipeline is
+    // healthy on the explicit compiler stack used by `hew-main`.
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-cli should have a workspace parent");
+    let output = run_hew_in(
+        workspace_root,
+        &[
+            "test",
+            "tests/hew/csv_test.hew",
+            "--no-color",
+            "--jobs",
+            "2",
+            "--filter",
+            "test_parse_get_by_name",
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("test test_parse_get_by_name ..."),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("test test_parse_get_by_name_missing_column_returns_empty ..."),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("test result:"),
+        "runner must render a complete result instead of aborting\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(stderr.is_empty(), "stderr: {stderr}");
+}
+
+#[test]
 fn serial_tests_do_not_overlap() {
     require_codegen();
 

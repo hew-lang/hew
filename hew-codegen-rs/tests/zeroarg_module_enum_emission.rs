@@ -334,6 +334,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "bad_fn".into(),

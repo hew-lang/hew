@@ -503,8 +503,8 @@ pub enum AskError {
 // callers that import from `crate::supervisor::*`.
 
 /// Error code stored in `actor.error_code` when an actor's arena cap is
-/// exhausted. Produced by `hew_arena_malloc` routing through the longjmp
-/// crash seam (native) or the unwind crash seam (WASM) when `cap > 0` and
+/// exhausted. Produced by `hew_arena_malloc` routing through the language-unwind
+/// crash seam (native) or the fail-closed trap seam (WASM) when `cap > 0` and
 /// an allocation would exceed it.
 ///
 /// Distinct from any POSIX signal number (which are < 32 on all supported

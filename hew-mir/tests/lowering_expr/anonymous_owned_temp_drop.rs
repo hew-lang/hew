@@ -1,8 +1,11 @@
 //! Anonymous caller-owned result and while-let scrutinee drop regressions.
 
-use hew_mir::{DropKind, ElabDrop, ExitPath, Instr, IrPipeline, MirStatement, Terminator};
+use hew_mir::{
+    DropKind, ElabDrop, ExitPath, Instr, IrPipeline, MirStatement, OwnershipEvent, Terminator,
+};
+use hew_mir::{NeutralizeAuthority, Place};
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::Checker;
+use hew_types::{BuiltinType, Checker, ResolvedTy};
 
 fn pipeline_with_tc(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -70,6 +73,61 @@ fn inline_enum_drops(p: &IrPipeline, fn_name: &str) -> usize {
         .count()
 }
 
+fn assert_no_block_drops_one_enum_place_twice(p: &IrPipeline, fn_name: &str) {
+    let function = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"));
+    for block in &function.blocks {
+        let mut seen = std::collections::HashSet::new();
+        for instr in &block.instructions {
+            let Instr::Drop {
+                place,
+                drop_fn: Some(hew_mir::DropFnSpec::InPlace(hew_mir::InPlaceReleaseKind::Enum)),
+                ..
+            } = instr
+            else {
+                continue;
+            };
+            assert!(
+                seen.insert(*place),
+                "bb{} physically drops enum carrier {place:?} twice",
+                block.id
+            );
+        }
+    }
+}
+
+fn vec_aggregate_handoffs(p: &IrPipeline, fn_name: &str) -> usize {
+    let function = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"));
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    place: Place::Local(local),
+                    authority: NeutralizeAuthority::AggregateMemberConsume,
+                    ..
+                } if matches!(
+                    function.locals.get(*local as usize),
+                    Some(ResolvedTy::Named {
+                        builtin: Some(BuiltinType::Vec),
+                        ..
+                    })
+                )
+            )
+        })
+        .count()
+}
+
 fn record_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -> Vec<ElabDrop> {
     p.elaborated_mir
         .iter()
@@ -121,6 +179,26 @@ fn string_retain_count(p: &IrPipeline, fn_name: &str) -> usize {
         .flat_map(|block| block.instructions.iter())
         .filter(|instr| matches!(instr, Instr::StringRetain { .. }))
         .count()
+}
+
+#[test]
+fn concat_owner_live_across_call_unwind_is_cleanup_safe() {
+    let pipeline = pipeline_with_tc(
+        r#"
+fn observe(value: string) -> bool { value.len() > 0 }
+
+fn combine(root: string, name: string) -> string {
+    let path = root + "/connections/" + name;
+    let _present = observe(path);
+    path
+}
+"#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "{:#?}",
+        pipeline.diagnostics
+    );
 }
 
 fn assert_record_param_embed_mints(p: &IrPipeline) {
@@ -301,6 +379,49 @@ fn scalar_control() {
             "{fn_name} must expose exactly one synthetic owner in raw MIR"
         );
         assert_eq!(inline_enum_drops(&p, fn_name), 1);
+        let function = p
+            .raw_mir
+            .iter()
+            .find(|function| function.name == fn_name)
+            .expect("discard function must be present");
+        let binding = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .find_map(|statement| match statement {
+                MirStatement::Bind { binding, name, .. }
+                    if name == "__hew_discarded_call_result" =>
+                {
+                    Some(*binding)
+                }
+                _ => None,
+            })
+            .expect("discard owner binding");
+        let mints = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(OwnershipEvent::Mint { owner, .. })
+                        if owner.binding == binding
+                )
+            })
+            .count();
+        let releases = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(OwnershipEvent::Release { owner, .. })
+                        if owner.binding == binding
+                )
+            })
+            .count();
+        assert_eq!((mints, releases), (1, 1), "{fn_name} owner ritual");
         assert!(
             enum_drops(&p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).is_empty(),
             "{fn_name} transfers its publication owner into the immediate discard, so no \
@@ -348,15 +469,15 @@ fn run(cap: i64) -> i64 {
         1,
         "while-let must reuse the from-call synthetic scrutinee owner"
     );
-    assert_eq!(
-        enum_drops(&p, "run", |exit| matches!(exit, ExitPath::Goto { .. })).len(),
-        2,
-        "while-let needs one drop on the body back-edge and one on the final false edge"
+    assert!(
+        inline_enum_drops(&p, "run") >= 2,
+        "while-let needs inline cleanup on the body back-edge and final false edge"
     );
     assert!(
         enum_drops(&p, "run", |exit| matches!(exit, ExitPath::Return { .. })).is_empty(),
         "the final false edge consumes the owner, so the later function return must not drop it again"
     );
+    assert_no_block_drops_one_enum_place_twice(&p, "run");
 }
 
 #[test]
@@ -378,10 +499,145 @@ fn run() -> i64 {
 "#,
     );
 
+    assert!(
+        inline_enum_drops(&p, "run") >= 1,
+        "an early return from the while-let body must inline-release its current scrutinee"
+    );
+    assert!(
+        enum_drops(&p, "run", |exit| matches!(exit, ExitPath::Return { .. })).is_empty(),
+        "the inline Drop+Release retires the owner before return-plan derivation"
+    );
+    assert_no_block_drops_one_enum_place_twice(&p, "run");
+}
+
+#[test]
+fn from_call_while_let_continue_does_not_add_body_end_release() {
+    let p = pipeline_with_tc(
+        r#"
+fn next(i: i64) -> Option<string> {
+    if i < 2 { Some("payload".to_upper()) } else { None }
+}
+
+fn run() -> i64 {
+    var total = 0;
+    for i in 0..3 {
+        match next(i) {
+            Some(value) => {
+                total = total + value.len();
+                continue;
+            },
+            None => {},
+        }
+    }
+    total
+}
+"#,
+    );
+    assert!(p.diagnostics.is_empty(), "{:#?}", p.diagnostics);
+    assert!(
+        inline_enum_drops(&p, "run") >= 2,
+        "the continue and final-false edges must each retain cleanup"
+    );
+    assert_no_block_drops_one_enum_place_twice(&p, "run");
+}
+
+#[test]
+fn hashmap_for_in_terminal_break_drops_call_carrier_once() {
+    let p = pipeline_with_tc(
+        r#"
+fn run() -> i64 {
+    let m: HashMap<string, string> = HashMap.new();
+    m.insert("k", "value");
+    var total = 0;
+    for (k, v) in m {
+        total = total + k.len() + v.len();
+    }
+    total
+}
+"#,
+    );
+    assert!(p.diagnostics.is_empty(), "{:#?}", p.diagnostics);
     assert_eq!(
-        enum_drops(&p, "run", |exit| matches!(exit, ExitPath::Return { .. })).len(),
+        inline_enum_drops(&p, "run"),
+        3,
+        "the selected Some, terminal None, and implicit fallback edges each owe one call-carrier drop"
+    );
+    assert_no_block_drops_one_enum_place_twice(&p, "run");
+}
+
+#[test]
+fn hashmap_iter_adopts_both_fresh_snapshot_owners_only_once() {
+    let p = pipeline_with_tc(
+        r"
+fn direct() -> i64 {
+    let m: HashMap<i64, i64> = HashMap.new();
+    m.insert(1, 2);
+    var total = 0;
+    for (k, v) in m { total = total + k + v; }
+    total
+}
+
+fn prebound() -> i64 {
+    let m: HashMap<i64, i64> = HashMap.new();
+    m.insert(1, 2);
+    let _cursor = m.into_iter();
+    1
+}
+
+fn borrowed_vec_control() -> i64 {
+    let values: Vec<i64> = [1, 2];
+    var total = 0;
+    for value in values { total = total + value; }
+    total + values.len()
+}
+",
+    );
+    assert!(p.diagnostics.is_empty(), "{:#?}", p.diagnostics);
+    for fn_name in ["direct", "prebound"] {
+        assert_eq!(
+            vec_aggregate_handoffs(&p, fn_name),
+            2,
+            "{fn_name} must transfer exactly the fresh keys and values snapshots into HashMapIter"
+        );
+    }
+    assert_eq!(
+        vec_aggregate_handoffs(&p, "borrowed_vec_control"),
+        0,
+        "a borrowed, nonfresh VecIter payload must keep the source Vec owner"
+    );
+}
+
+#[test]
+fn record_init_adopts_fresh_vec_field_but_not_borrowed_iterator_capture() {
+    let p = pipeline_with_tc(
+        r#"
+record Carrier { items: Vec<i64>, sibling: string }
+
+fn projected_record() -> i64 {
+    let values: Vec<i64> = Vec.new();
+    values.push(7);
+    let carrier = Carrier { items: values, sibling: "tag" };
+    carrier.items[0]
+}
+
+fn borrowed_vec_control() -> i64 {
+    let values: Vec<i64> = [1, 2];
+    var total = 0;
+    for value in values { total = total + value; }
+    total + values.len()
+}
+"#,
+    );
+    assert!(p.diagnostics.is_empty(), "{:#?}", p.diagnostics);
+    assert_eq!(
+        vec_aggregate_handoffs(&p, "projected_record"),
         1,
-        "an early return from the while-let body must release the current scrutinee exactly once"
+        "the successful record construction must transfer its fresh Vec field owner"
+    );
+    assert_eq!(
+        vec_aggregate_handoffs(&p, "borrowed_vec_control"),
+        0,
+        "a borrowed iterator capture must preserve its source Vec owner"
     );
 }
 
@@ -403,30 +659,86 @@ fn run() -> i64 {
 }
 "#,
     );
-    let drops = enum_drops(&p, "run", |_| true);
+    let run = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "run")
+        .expect("raw fn run");
+    let drops = run
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let (drop_index, place) = block.instructions.iter().enumerate().find_map(
+                |(index, instruction)| match instruction {
+                    Instr::Drop {
+                        place,
+                        drop_fn:
+                            Some(hew_mir::DropFnSpec::InPlace(hew_mir::InPlaceReleaseKind::Enum)),
+                        ..
+                    } => Some((index, *place)),
+                    _ => None,
+                },
+            )?;
+            let (release_index, owner) =
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, instruction)| match instruction {
+                        Instr::OwnershipEvent(OwnershipEvent::Release {
+                            owner,
+                            place: released,
+                        }) if *released == place => Some((index, *owner)),
+                        _ => None,
+                    })?;
+            (drop_index < release_index).then_some((block.id, place, owner))
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
         drops.len(),
         3,
         "the live scrutinee must release on each reachable exit: {drops:?}"
     );
     assert!(
-        drops.iter().all(|drop| drop.place == drops[0].place),
+        drops
+            .iter()
+            .all(|(_, place, owner)| *place == drops[0].1 && *owner == drops[0].2),
         "every exit must discharge the same composite owner: {drops:?}"
     );
-    let run = p
-        .raw_mir
+    assert_no_block_drops_one_enum_place_twice(&p, "run");
+    let neutralizations = run
+        .blocks
         .iter()
-        .find(|function| function.name == "run")
-        .expect("raw fn run");
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place,
+                transferee,
+                authority,
+            } => Some((*place, *transferee, *authority)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        run.blocks
-            .iter()
-            .flat_map(|block| block.instructions.iter())
-            .filter(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
-            .count(),
-        1,
-        "the escaping payload must transfer out of its composite slot exactly once"
+        neutralizations.len(),
+        2,
+        "the escaping payload must have one transfer and one terminal temp consume"
     );
+    assert!(matches!(
+        neutralizations.as_slice(),
+        [
+            (
+                transfer_place,
+                Some(_),
+                NeutralizeAuthority::PayloadBindingTransfer
+            ),
+            (
+                consume_place,
+                None,
+                NeutralizeAuthority::EphemeralTempConsume
+            )
+        ] if transfer_place == consume_place
+    ));
     assert_eq!(
         string_retain_count(&p, "run"),
         0,
@@ -692,13 +1004,92 @@ fn main() -> i64 {
             "run {run}: the borrowed-alias call result aliases `w.h`; a minted \
              owner would double-free against `w`'s own scope-exit drop"
         );
-        let record_drops = record_drops(&p, "main", |_| true);
+        let record_drops =
+            record_drops(&p, "main", |exit| !matches!(exit, ExitPath::Unwind { .. }));
+        let neutralized: std::collections::HashSet<_> = p
+            .raw_mir
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main raw MIR")
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| match instruction {
+                Instr::NeutralizePayloadSlot {
+                    place,
+                    transferee: Some(_),
+                    ..
+                } => Some(*place),
+                _ => None,
+            })
+            .collect();
         assert!(
             record_drops
                 .iter()
-                .all(|drop| matches!(drop.ty, hew_types::ResolvedTy::Named { ref name, .. } if name == "Wrap")),
-            "run {run}: only `w: Wrap` may carry a record drop; a Holder drop \
-             is the minted alias double-discharge: {record_drops:#?}"
+                .all(|drop| neutralized.contains(&drop.place)
+                    || matches!(drop.ty, hew_types::ResolvedTy::Named { ref name, .. } if name == "Wrap")),
+            "run {run}: only `w: Wrap` or a physically neutralized construction temp may carry \
+             a record drop; a live Holder drop is a minted alias double-discharge: \
+             {record_drops:#?}"
         );
     }
+}
+
+#[test]
+fn render_loop_early_exits_publish_final_join_epochs() {
+    let pipeline = pipeline_with_tc(
+        r#"
+        fn render(tmpl: string) -> Result<string, string> {
+            var out = "";
+            var pos = 0;
+            while pos < tmpl.len() {
+                let rest = tmpl.slice(pos, tmpl.len());
+                let open = match rest.find("{") {
+                    .Some(i) => i,
+                    .None => {
+                        out = out + rest;
+                        return Ok(out);
+                    },
+                };
+                out = out + tmpl.slice(pos, pos + open);
+                pos = pos + open + 1;
+                let tag = tmpl.slice(pos, tmpl.len());
+                if tag == "a" {
+                    out = out + "a";
+                } else if tag == "b" {
+                    out = out + "b";
+                } else if tag == "c" {
+                    out = out + "c";
+                } else {
+                    return Err("unknown");
+                }
+            }
+            Ok(out)
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "loop-carried string overwrites with early exits must seal every ownership Join after late owner re-keying: {:#?}",
+        pipeline.diagnostics
+    );
+    let joins = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "render")
+        .expect("render checked MIR")
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                Instr::OwnershipEvent(hew_mir::OwnershipEvent::Join { .. })
+            )
+        })
+        .count();
+    assert!(
+        joins >= 3,
+        "the control must retain the nested-loop Join topology that exercises final incoming-epoch refresh"
+    );
 }

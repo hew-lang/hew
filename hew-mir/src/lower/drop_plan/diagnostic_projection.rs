@@ -5,8 +5,7 @@ fn obligation_under_release_note(provenance: ObligationMintProvenance) -> String
     match provenance {
         ObligationMintProvenance::Ordinary => "every heap-owning owned value must be released \
              exactly once on every reachable exit path; this exit path never discharges the mint \
-             (leak). This is an advisory warning, not a build error — fix the drop plan (release \
-             on every exit) to silence it"
+             (leak). LLVM emission is blocked until the drop plan releases it on every exit"
             .to_string(),
         ObligationMintProvenance::ExplicitRetain => "an explicit MIR retain minted an \
              independently owned reference, but this exit never releases it. Retain-backed \
@@ -109,7 +108,6 @@ pub(in crate::lower) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagn
             name,
             local_ty,
             mint_provenance,
-            hard,
             reason,
         } => Some(MirDiagnostic {
             kind: MirDiagnosticKind::ObligationUnderReleased {
@@ -118,7 +116,6 @@ pub(in crate::lower) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagn
                 site: *site,
                 name: name.clone(),
                 local_ty: local_ty.clone(),
-                hard: *hard,
                 reason: reason.clone(),
             },
             note: obligation_under_release_note(*mint_provenance),

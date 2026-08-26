@@ -9,7 +9,7 @@ use hew_hir::{lower_program, IntentKind, ResolutionCtx};
 use hew_mir::model::NeutralizeAuthority;
 use hew_mir::{
     lower_hir_module, CmpPred, CowHeapRelease, DropFnSpec, DropKind, ExitPath, InPlaceReleaseKind,
-    Instr, IrPipeline, MirStatement, Place, Terminator,
+    Instr, IrPipeline, MirStatement, Place, RawMirFunction, Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
@@ -170,10 +170,10 @@ fn affine_vec_get_stays_on_clone_out_guard() {
         pipeline.diagnostics.iter().any(|diagnostic| matches!(
             &diagnostic.kind,
             hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct == "`VecIter<Holder>` clone-out"
+                if construct == "drop-only `Vec` element operation `get`"
         ) && diagnostic
             .note
-            .contains("resource `File` has an affine close contract")),
+            .contains("drop callback but no semantic clone")),
         "Vec::get must retain its element clone-out guard: {:#?}",
         pipeline.diagnostics
     );
@@ -214,6 +214,58 @@ fn raw_instructions<'a>(pipeline: &'a IrPipeline, function: &str) -> Vec<&'a Ins
         .iter()
         .flat_map(|block| block.instructions.iter())
         .collect()
+}
+
+fn assert_cursor_assignment_owner_handoff(function: &RawMirFunction) {
+    let cursor_handoffs: Vec<_> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                owner,
+                from,
+                to: Some(to),
+                to_owner: Some(successor),
+                to_ty: Some(ty),
+            }) if owner.binding != successor.binding
+                && matches!(
+                    ty,
+                    hew_types::ResolvedTy::Named {
+                        builtin: Some(hew_types::BuiltinType::VecIter),
+                        ..
+                    }
+                ) =>
+            {
+                Some((*owner, *from, *to, *successor))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cursor_handoffs.len(),
+        1,
+        "cursor reassignment must transfer the source owner into exactly one next \
+         destination generation: {:#?}",
+        function.blocks
+    );
+    let (source_owner, source, destination, _) = cursor_handoffs[0];
+    assert!(
+        !function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instruction| matches!(
+                instruction,
+                Instr::OwnershipEvent(hew_mir::OwnershipEvent::Relocate {
+                    owner,
+                    from,
+                    to,
+                }) if *owner == source_owner && *from == source && *to == destination
+            )),
+        "the transferred source generation must not survive as a relocation: {:#?}",
+        function.blocks
+    );
 }
 
 #[test]
@@ -535,6 +587,88 @@ fn vec_iter_yield_cancel_cleanup_is_path_exact_or_rejected() {
     );
 }
 
+#[test]
+fn vec_iter_guarded_release_retires_at_shared_loop_continuation() {
+    let pipeline = pipeline(
+        r"
+        fn nested_cursor_reentry(values: Vec<Vec<i64>>, ticks: Vec<i64>) {
+            for value in values {
+                print(value.len());
+                for tick in ticks {
+                    print(tick);
+                }
+            }
+        }
+        ",
+    );
+    let function = pipeline
+        .raw_mir
+        .iter()
+        .find(|candidate| candidate.name == "nested_cursor_reentry")
+        .expect("missing raw MIR for `nested_cursor_reentry`");
+    let cursor_owners = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Guard {
+                owner,
+                kind: hew_mir::OwnershipGuardKind::VecIter,
+                ..
+            }) => Some(*owner),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        cursor_owners.len() >= 2,
+        "fixture must include the outer yield cursor and re-entered inner cursor"
+    );
+
+    for owner in cursor_owners {
+        let releases = function
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.instructions.iter().any(|instruction| {
+                    matches!(
+                        instruction,
+                        Instr::OwnershipEvent(hew_mir::OwnershipEvent::GuardedRelease {
+                            owner: released,
+                            ..
+                        }) if *released == owner
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            releases.len(),
+            1,
+            "each cursor generation must have one logical guarded release: {owner:?}"
+        );
+        let continuation = releases[0];
+        let predecessor_count = function
+            .blocks
+            .iter()
+            .filter(|block| block.successors().contains(&continuation.id))
+            .count();
+        assert_eq!(
+            predecessor_count, 2,
+            "logical release must live after both physical-release and flag-skip paths: \
+             {owner:?} in bb{}",
+            continuation.id
+        );
+        assert!(
+            continuation
+                .instructions
+                .iter()
+                .all(|instruction| !matches!(instruction, Instr::RecordFieldDrop { .. })),
+            "the shared continuation carries logical authority only; the physical cursor drop \
+             remains on the guarded branch: {owner:?} in bb{}",
+            continuation.id
+        );
+    }
+}
+
 fn vec_iter_release_guard_flags(
     pipeline: &IrPipeline,
     function: &str,
@@ -777,6 +911,8 @@ fn cursor_assignment_drops_are_runtime_guarded_and_exit_plans_are_abandon_only()
         .find(|candidate| candidate.name == "reassign")
         .expect("missing raw MIR for `reassign`");
 
+    assert_cursor_assignment_owner_handoff(function);
+
     let release_blocks: Vec<_> = function
         .blocks
         .iter()
@@ -845,13 +981,16 @@ fn cursor_assignment_drops_are_runtime_guarded_and_exit_plans_are_abandon_only()
             assert!(
                 matches!(
                     exit,
-                    ExitPath::Cancel { .. }
+                    ExitPath::Unwind { .. }
+                        | ExitPath::Cancel { .. }
                         | ExitPath::Panic { .. }
                         | ExitPath::Yield { .. }
                         | ExitPath::Suspend { .. }
+                        | ExitPath::Return { .. }
                 ),
                 "a cursor field release may enter a drop plan only on an \
-                 abandonment edge, never normal flow: {exit:?} -> {drop:?}"
+                 abandonment edge or its guarded lexical return, never internal \
+                 normal flow: {exit:?} -> {drop:?}"
             );
             assert!(
                 drop.guard.is_some(),
@@ -863,6 +1002,10 @@ fn cursor_assignment_drops_are_runtime_guarded_and_exit_plans_are_abandon_only()
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the test audits guarded cursor authority across four distinct exit classes"
+)]
 fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
     let pipeline = pipeline(
         r"
@@ -930,11 +1073,11 @@ fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
         );
     }
 
-    for (needle, expected_path) in [
-        ("cancel_cursor", "cancel"),
-        ("panic_cursor", "panic"),
-        ("yield_cursor", "yield"),
-        ("park", "suspend"),
+    for (needle, expected_path, live_at_return) in [
+        ("cancel_cursor", "cancel", false),
+        ("panic_cursor", "panic", false),
+        ("yield_cursor", "yield", true),
+        ("park", "suspend", false),
     ] {
         assert!(
             cursor_drops.iter().any(|(function, exit, _)| {
@@ -950,13 +1093,23 @@ fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
             "`{needle}` must carry a guarded VecIter field release on its \
              {expected_path} abandonment edge: {cursor_drops:#?}"
         );
+        assert_eq!(
+            cursor_drops
+                .iter()
+                .filter(|(function, exit, _)| {
+                    function.contains(needle) && matches!(exit, ExitPath::Return { .. })
+                })
+                .count(),
+            usize::from(live_at_return),
+            "`{needle}` must carry a guarded Return cleanup exactly when its cursor \
+             remains live to Return: {cursor_drops:#?}"
+        );
     }
 
     assert!(
         cursor_drops.iter().all(|(_, exit, _)| !matches!(
             exit,
-            ExitPath::Return { .. }
-                | ExitPath::Goto { .. }
+            ExitPath::Goto { .. }
                 | ExitPath::Branch { .. }
                 | ExitPath::Call { .. }
                 | ExitPath::Send { .. }
@@ -964,20 +1117,22 @@ fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
                 | ExitPath::Select { .. }
                 | ExitPath::Join { .. }
         )),
-        "resume/normal flow must retain the cursor for its lexical release: \
-         {cursor_drops:#?}"
+        "internal normal flow must retain the cursor until its guarded lexical \
+         return or an abandonment edge: {cursor_drops:#?}"
     );
 
-    assert_cursor_release_disarms_before_later_cancellation(&pipeline);
+    for function in ["cancel_cursor", "panic_cursor", "Sleeper__recv__park"] {
+        assert_cursor_release_disarms_before_later_exit(&pipeline, function);
+    }
 }
 
-fn assert_cursor_release_disarms_before_later_cancellation(pipeline: &IrPipeline) {
-    let cancel = pipeline
+fn assert_cursor_release_disarms_before_later_exit(pipeline: &IrPipeline, function_name: &str) {
+    let function = pipeline
         .raw_mir
         .iter()
-        .find(|function| function.name == "cancel_cursor")
-        .expect("cancel_cursor raw MIR");
-    let release_blocks: Vec<_> = cancel
+        .find(|function| function.name == function_name)
+        .unwrap_or_else(|| panic!("{function_name} raw MIR"));
+    let release_blocks: Vec<_> = function
         .blocks
         .iter()
         .filter(|block| {
@@ -992,6 +1147,11 @@ fn assert_cursor_release_disarms_before_later_cancellation(pipeline: &IrPipeline
             })
         })
         .collect();
+    assert_eq!(
+        release_blocks.len(),
+        1,
+        "{function_name}: the normal path must release its cursor exactly once"
+    );
     assert!(
         release_blocks
             .iter()
@@ -1003,8 +1163,8 @@ fn assert_cursor_release_disarms_before_later_cancellation(pipeline: &IrPipeline
                 }
             ))),
         "every normal cursor field release must disarm its sidecar before \
-         continuing, preventing a later cancellation checkpoint from reusing \
-         the same release authority: {release_blocks:#?}"
+         continuing, preventing a later exit from reusing the same release \
+         authority in {function_name}: {release_blocks:#?}"
     );
 }
 

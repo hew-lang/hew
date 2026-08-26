@@ -88,6 +88,7 @@ fn send_status_pipeline() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "send_probe".to_string(),

@@ -1708,7 +1708,6 @@ pub(super) fn synthesize_machine_step_fn(
         super::BodySeal::AlreadyTerminated,
         super::BodyFinalizeSpec::nested_body(),
     );
-
     // Locals + diagnostics drained from the builder.
     let locals = builder.locals.clone();
     let params = vec![self_ty.clone(), event_ty.clone()];
@@ -1745,13 +1744,14 @@ pub(super) fn synthesize_machine_step_fn(
         statements: Vec::new(),
     };
 
-    let checked = CheckedMirFunction {
+    let mut checked = CheckedMirFunction {
         name: emit_name.clone(),
         return_ty: return_ty.clone(),
         blocks: blocks.clone(),
         decisions: Vec::new(),
         checks: Vec::new(),
         cooperate_sites: Vec::new(),
+        ownership_elaboration: None,
     };
 
     // Elaborated: mirror raw blocks as Normal kind with no owned-local drops.
@@ -1776,6 +1776,7 @@ pub(super) fn synthesize_machine_step_fn(
         coroutine: None,
         lambda_captures: Vec::new(),
     };
+    checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
 
     LoweredFunction {
         thir,

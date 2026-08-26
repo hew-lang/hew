@@ -980,6 +980,7 @@ impl Checker {
     fn try_check_namespaced_module_call(
         &mut self,
         func_name: &str,
+        type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
     ) -> Option<Ty> {
@@ -1069,7 +1070,7 @@ impl Checker {
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             &assoc_bindings,
-            None,
+            type_args,
             args,
             span,
             SignatureArgApplication::FunctionLike {
@@ -1080,6 +1081,13 @@ impl Checker {
             true,
             Some(GenericCallee::Function { key: &key }),
         );
+        let is_generic_wire_codec = self.record_generic_wire_codec_rewrite(
+            &canonical_owner,
+            method,
+            &applied_sig.params,
+            &applied_sig.return_type,
+            span,
+        );
         self.record_resolved_direct_call_ownership(
             &key,
             &sig,
@@ -1087,6 +1095,14 @@ impl Checker {
             &applied_sig.return_type,
             span,
         );
+        if is_generic_wire_codec {
+            let call_key = SpanKey::in_module(span, self.current_module_idx);
+            if let Some(pending) = self.resolved_direct_call_ownership.get_mut(&call_key) {
+                pending.fact.ownership = crate::runtime_call::ProducedValueOwnership::owned(
+                    crate::runtime_call::ProducedValueAcquisition::Fresh,
+                );
+            }
+        }
         // A module-qualified call has one canonical target shared by its
         // rewrite and its ordinary-call fact.  The signature key above may be
         // a lexical compatibility alias, so never mint a second identity from
@@ -2359,7 +2375,8 @@ impl Checker {
         // same signature, records the same module-qualified rewrite for HIR,
         // and applies the associated-type binding pins. The dot key is the
         // canonical registry identity for both surfaces.
-        if let Some(ret) = self.try_check_namespaced_module_call(&func_name, args, span) {
+        if let Some(ret) = self.try_check_namespaced_module_call(&func_name, type_args, args, span)
+        {
             return ret;
         }
 

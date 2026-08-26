@@ -12,7 +12,10 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::cabi::{alloc_cstring_data, cstr_to_str, cstring_retain, free_cstring, malloc_cstring};
+use crate::cabi::{
+    alloc_cstring_data, cstr_to_str, cstring_retain, free_cstring, is_managed_cstring,
+    malloc_cstring,
+};
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
 use crate::trap_code::{fmt_decimal_i64, fmt_decimal_usize, runtime_bounds_trap};
 use std::ffi::{c_void, CStr};
@@ -1247,156 +1250,10 @@ pub unsafe extern "C" fn hew_string_repeat(s: *const c_char, count: i32) -> *mut
     result.cast::<c_char>()
 }
 
-// ── Static string detection ─────────────────────────────────────────────
-//
-// String literals live in the binary's read-only data segment. We must
-// never pass them to `free()`. Each platform exposes the loaded binary
-// extent differently, but the check is always: is `ptr` inside [start, end)?
-
-/// Returns `true` if `ptr` points into the binary's loaded segments
-/// (text, rodata, data, bss). Such pointers must never be passed to `free`.
-fn is_static_string(ptr: *const u8) -> bool {
-    let addr = ptr as usize;
-    let (start, end) = static_string_bounds();
-    addr >= start && addr < end
-}
-
-/// ELF (Linux, FreeBSD, etc.): linker-provided symbols give the loaded extent directly.
-#[cfg(all(not(target_arch = "wasm32"), not(windows), not(target_os = "macos")))]
-fn static_string_bounds() -> (usize, usize) {
-    unsafe extern "C" {
-        #[link_name = "__executable_start"]
-        static EXEC_START: u8;
-        #[link_name = "_end"]
-        static EXEC_END: u8;
-    }
-    // SAFETY: These are linker-defined symbols provided by the ELF linker;
-    // taking their address is safe and gives the loaded extent of the binary.
-    let start = (&raw const EXEC_START) as usize;
-    let end = (&raw const EXEC_END) as usize;
-    (start, end)
-}
-
-/// macOS Mach-O: walk `_mh_execute_header` load commands to find the
-/// executable's virtual memory extent. Cached after first computation.
-#[cfg(target_os = "macos")]
-fn static_string_bounds() -> (usize, usize) {
-    use std::sync::OnceLock;
-
-    static BOUNDS: OnceLock<(usize, usize)> = OnceLock::new();
-
-    *BOUNDS.get_or_init(|| {
-        unsafe extern "C" {
-            #[link_name = "_mh_execute_header"]
-            static MH_HEADER: u8;
-        }
-
-        let header = &raw const MH_HEADER;
-        // mach_header_64: 32 bytes total (magic + cpu + cpusub + filetype + ncmds + sizeofcmds + flags + reserved)
-        // SAFETY: `header` points to our own Mach-O header; the load command
-        // fields at fixed offsets are guaranteed by the kernel loader.
-        let ncmds = unsafe { *((header as usize + 16) as *const u32) };
-        let mut cmd_ptr = header as usize + 32;
-        let mut lo = usize::MAX;
-        let mut hi = 0usize;
-        for _ in 0..ncmds {
-            // SAFETY: cmd_ptr walks valid load commands within the Mach-O header.
-            let cmd = unsafe { *(cmd_ptr as *const u32) };
-            // SAFETY: cmdsize is at offset +4 within the load command.
-            let cmdsize = unsafe { *((cmd_ptr + 4) as *const u32) } as usize;
-            // LC_SEGMENT_64 = 0x19
-            if cmd == 0x19 {
-                // segment_command_64.segname is a 16-byte fixed field at +8.
-                // `__PAGEZERO` is the reserved guard segment the loader maps at
-                // vmaddr 0 with a ~4 GiB vmsize and no file backing. Folding it
-                // into the extent collapses `lo` to 0, which then makes
-                // `slide = header - lo = header` and yields a bogus ~4 GiB
-                // "static" window `[header, header + 4 GiB)`. Real heap strings
-                // (malloc/alloc_cstring) land just above the image base, inside
-                // that window, so `is_static_string` would wrongly classify them
-                // as immortal literals — silently turning every COW retain/release
-                // (hew_string_clone / hew_string_drop) into a no-op (leaks) and
-                // making all macOS ASan refcount validation vacuous. Excluding
-                // __PAGEZERO restores the true image base as `lo`.
-                //
-                // SAFETY: segname is 16 bytes at offset +8 within a
-                // segment_command_64; reading them as a byte array is in bounds.
-                let segname: [u8; 16] = unsafe { *((cmd_ptr + 8) as *const [u8; 16]) };
-                // Canonical reserved name, NUL-padded to the 16-byte segname field.
-                let is_pagezero = segname == *b"__PAGEZERO\0\0\0\0\0\0";
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "64-bit platform only; Mach-O is macOS-specific"
-                )]
-                // SAFETY: vmaddr is at offset +24 within a segment_command_64.
-                let vmaddr = unsafe { *((cmd_ptr + 24) as *const u64) } as usize;
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "64-bit platform only; Mach-O is macOS-specific"
-                )]
-                // SAFETY: vmsize is at offset +32 within a segment_command_64.
-                let vmsize = unsafe { *((cmd_ptr + 32) as *const u64) } as usize;
-                // Also defensively skip any zero-vmaddr reserved segment: the
-                // real loaded image (__TEXT/__DATA/__DATA_CONST/__LINKEDIT/…)
-                // always has a non-zero vmaddr, so a vmaddr==0 segment can only
-                // be page-zero-like reserved space that must not widen `lo`.
-                if vmsize > 0 && !is_pagezero && vmaddr != 0 {
-                    lo = lo.min(vmaddr);
-                    hi = hi.max(vmaddr + vmsize);
-                }
-            }
-            cmd_ptr += cmdsize;
-        }
-        // Fail closed (CLAUDE §2): if the Mach-O walk found no real loaded
-        // segment the bounds would be nonsense; never return a bogus range.
-        assert!(
-            lo != usize::MAX && hi != 0,
-            "static_string_bounds: no non-__PAGEZERO LC_SEGMENT_64 found in Mach-O header"
-        );
-        // The file vmaddrs are relative to the image base; add the slide.
-        // With __PAGEZERO excluded, `lo` is __TEXT's vmaddr, so the slide is the
-        // genuine (small) ASLR slide and the bounds cover only the loaded image.
-        let slide = header as usize - lo;
-        (lo + slide, hi + slide)
-    })
-}
-
-/// Windows PE: read `SizeOfImage` from the PE optional header.
-/// Cached after first computation.
-#[cfg(windows)]
-fn static_string_bounds() -> (usize, usize) {
-    use std::sync::OnceLock;
-
-    static BOUNDS: OnceLock<(usize, usize)> = OnceLock::new();
-
-    *BOUNDS.get_or_init(|| {
-        unsafe extern "C" {
-            #[link_name = "__ImageBase"]
-            static IMAGE_BASE: u8;
-        }
-        let base = (&raw const IMAGE_BASE) as usize;
-        // SAFETY: __ImageBase is always a valid PE image mapped by the OS loader.
-        let pe_off = unsafe { *((base + 0x3C) as *const u32) } as usize;
-        // SAFETY: pe_off + 80 lands within the PE optional header of a valid mapped image.
-        let image_size = unsafe { *((base + pe_off + 24 + 56) as *const u32) } as usize;
-        (base, base + image_size)
-    })
-}
-
-/// WASM: static data lives below `__heap_base` in linear memory.
-#[cfg(target_arch = "wasm32")]
-fn static_string_bounds() -> (usize, usize) {
-    unsafe extern "C" {
-        static __heap_base: u8;
-    }
-    (0, (&raw const __heap_base) as usize)
-}
-
 /// Release one owner of a string. `String` is refcounted (P2a): this decrements
 /// the refcount and frees the allocation only when the last owner drops it.
-/// Safe to call with null or with pointers to string literals embedded in the
-/// binary — those are detected via linker symbols and silently skipped (they
-/// are immortal and carry no refcount header).
+/// Safe to call with null, an immortal literal, or a borrowed FFI view: only
+/// exact live pointers in the allocation-provenance registry are released.
 ///
 /// # Safety
 ///
@@ -1405,16 +1262,12 @@ fn static_string_bounds() -> (usize, usize) {
 /// (`malloc_cstring` / `str_to_malloc` / `alloc_cstring*`).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_drop(s: *mut c_char) {
-    if s.is_null() || is_static_string(s.cast()) {
+    if !is_managed_cstring(s) {
         return;
     }
-    // SAFETY: Not null and not a static string — must be a live header-aware
-    // heap string produced by malloc_cstring / alloc_cstring* (the universal
-    // String allocator path); free_cstring recovers the base, validates the
-    // header, and releases one owner (free at refcount zero). The
-    // is_static_string skip (incl. the wasm32 __heap_base branch) runs BEFORE
-    // any header/refcount logic.
-    unsafe { free_cstring(s) }; // CSTRING-FREE: str-open (hew_string_drop — THE universal String consumer; release, is_static_string skip kept BEFORE free_cstring)
+    // SAFETY: the provenance query established that this is an exact live
+    // managed pointer before free_cstring consults its header.
+    unsafe { free_cstring(s) }; // CSTRING-FREE: str-open (universal managed-String release)
 }
 
 /// Retain (share) a string. `String` is immutable-shareable, so cloning is a
@@ -1423,10 +1276,8 @@ pub unsafe extern "C" fn hew_string_drop(s: *mut c_char) {
 /// [`hew_string_drop`], which decrements the refcount and frees only when the
 /// last owner drops it.
 ///
-/// Static string literals (rodata, no refcount header) are immortal and carry
-/// no header, so the retain is skipped and the same pointer is returned —
-/// `hew_string_drop` likewise skips them. This `is_static_string` check MUST
-/// run **before** any refcount-header access, exactly as in [`hew_string_drop`].
+/// Static string literals and borrowed FFI views carry no registry entry, so
+/// retain returns the same non-owning pointer without touching adjacent memory.
 ///
 /// # Safety
 ///
@@ -1434,17 +1285,12 @@ pub unsafe extern "C" fn hew_string_drop(s: *mut c_char) {
 /// header-aware string produced by the `hew-cabi` allocator.
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_clone(s: *const c_char) -> *mut c_char {
-    if s.is_null() {
-        return std::ptr::null_mut();
-    }
-    // Static literals have no header — sharing an immortal string is just the
-    // pointer itself. The skip must precede any header/refcount access.
-    if is_static_string(s.cast()) {
+    if !is_managed_cstring(s) {
         return s.cast_mut();
     }
     // Header-aware heap string: retain (bump rc) and alias the same buffer.
-    // SAFETY: not null and not static — a live header-aware allocation.
-    unsafe { cstring_retain(s.cast_mut()) }; // CSTRING-RETAIN: str-open (hew_string_clone — COW share, is_static_string skip kept BEFORE retain)
+    // SAFETY: the provenance query established a live managed allocation.
+    unsafe { cstring_retain(s.cast_mut()) }; // CSTRING-RETAIN: str-open (managed COW share)
     s.cast_mut()
 }
 
@@ -1641,7 +1487,7 @@ pub unsafe extern "C" fn hew_string_join(
 ///
 /// Always aborts — safe to call from any context.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_abort_index_oob() -> ! {
+pub unsafe extern "C-unwind" fn hew_string_abort_index_oob() -> ! {
     // SAFETY: this exported fallback has no operand context.
     unsafe { string_bounds_trap("PANIC: string index/slice out of bounds or invalid UTF-8\n") }
 }
@@ -1714,7 +1560,7 @@ unsafe fn string_slice_oob_trap(start: i64, end: i64, len: Option<usize>) -> ! {
               real string codepoint counts never exceed usize::MAX"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_index(s: *const c_char, index: i64) -> i32 {
+pub unsafe extern "C-unwind" fn hew_string_index(s: *const c_char, index: i64) -> i32 {
     if s.is_null() || index < 0 {
         // SAFETY: this is the terminal index bounds path.
         unsafe { string_index_oob_trap(index, None) };
@@ -1758,7 +1604,7 @@ pub unsafe extern "C" fn hew_string_index(s: *const c_char, index: i64) -> i32 {
               real string codepoint counts never exceed usize::MAX"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_slice_codepoints(
+pub unsafe extern "C-unwind" fn hew_string_slice_codepoints(
     s: *const c_char,
     start: i64,
     end: i64,
@@ -1986,15 +1832,7 @@ mod tests {
     use crate::cabi::alloc_cstring_from_str;
     use std::ffi::CString;
 
-    // ── macOS static-string detection: __PAGEZERO exclusion ───────────────
-    //
-    // Regression guard for the Mach-O `static_string_bounds()` walk. Folding
-    // the reserved `__PAGEZERO` segment (vmaddr 0, ~4 GiB vmsize) into the
-    // extent collapsed `lo` to 0 and produced a bogus ~4 GiB "static" window
-    // starting at the image base. Heap strings land inside that window, so they
-    // were wrongly classified as immortal literals — silently turning every
-    // COW retain/release (hew_string_clone / hew_string_drop) into a no-op
-    // (leaks) and making all macOS ASan refcount validation vacuous.
+    // ── managed-string provenance ─────────────────────────────────────────
 
     /// Read the live refcount of a header-aware Hew string by reading the
     /// `rc:AtomicU32` field at offset 8 of the 16-byte header preceding `data`
@@ -2008,44 +1846,26 @@ mod tests {
         unsafe { *((data as usize - 16 + 8) as *const u32) }
     }
 
-    /// Proof #1: the corrected bounds are tight (the real loaded image, a few
-    /// dozen MB) — NOT the ~4 GiB false window — and the classifier agrees in
-    /// both directions: a freshly heap-allocated string is NON-static while a
-    /// genuine `&str` literal (in `__TEXT`/`__cstring`) is still static.
+    /// Proof #1: ownership classification is allocation-derived, not based on
+    /// an executable address range. A managed allocation is registered while
+    /// a genuine literal is not, on every object format.
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_static_bounds_exclude_pagezero_classify_heap_nonstatic() {
-        let (lo, hi) = static_string_bounds();
-        assert!(
-            lo < hi,
-            "bounds must be a non-empty range, got [{lo:#x}, {hi:#x})"
-        );
-        let width = hi - lo;
-        // The genuine loaded image is megabytes wide. The __PAGEZERO bug made
-        // this ~4 GiB. Assert well below 1 GiB to lock the regression out while
-        // tolerating large debug/ASan builds.
-        assert!(
-            width < 1usize << 30,
-            "static window must be the real image (MB), not the ~4 GiB __PAGEZERO \
-             window; width={width:#x} ({} MB)",
-            width / (1024 * 1024),
-        );
-
-        // Heap string → NON-static (the bug classified these as static).
+    fn macos_string_provenance_classifies_heap_and_literal() {
         let heap = alloc_cstring_from_str("a freshly allocated heap string");
         assert!(!heap.is_null());
         assert!(
-            !is_static_string(heap.cast()),
-            "heap string {heap:p} must be classified NON-static; bounds=[{lo:#x}, {hi:#x})",
+            is_managed_cstring(heap),
+            "heap string {heap:p} must carry managed allocation provenance",
         );
         // SAFETY: heap is a live header-aware allocation.
         unsafe { free_cstring(heap) };
 
-        // Genuine literal → still static (must not break literal detection).
+        // Genuine literal → unmanaged/immortal without reading its prefix.
         let lit: &str = "a genuine string literal that lives in read-only data";
         assert!(
-            is_static_string(lit.as_ptr()),
-            "string literal {:p} must be classified static; bounds=[{lo:#x}, {hi:#x})",
+            !is_managed_cstring(lit.as_ptr().cast()),
+            "string literal {:p} must not acquire heap ownership",
             lit.as_ptr(),
         );
     }

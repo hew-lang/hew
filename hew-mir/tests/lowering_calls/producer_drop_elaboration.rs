@@ -1,7 +1,7 @@
 //! E3: MIR drop elaboration for M2 substrate types — invariant pinning.
 //!
 //! With the typecheck→HIR bridge, HIR `expr_types` threading,
-//! `Instr::CallRuntimeAbi` + producer arms, and the consumer-side
+//! typed terminal runtime-call producer arms, and the consumer-side
 //! drop-plan scaffolding (slice 3/3.5/3.6) all in place, drop
 //! elaboration now flows end-to-end for real source-text-derived MIR.
 //! A `let (a, b) = duplex_pair<i64, i64>(N);` registers both bindings
@@ -43,7 +43,10 @@
 //!   synthetic-MIR fixtures in `tests/elaborate.rs`.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, DropKind, ExitPath, IrPipeline, Place};
+use hew_mir::{
+    lower_hir_module, CallAuthority, DropKind, ExitPath, Instr, IrPipeline, OwnershipEvent, Place,
+    Terminator,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -81,6 +84,110 @@ fn all_plan_drops(p: &IrPipeline, fn_name: &str) -> Vec<hew_mir::ElabDrop> {
         .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
         .flat_map(|(_, plan)| plan.drops.iter().cloned())
         .collect()
+}
+
+/// A typed substrate producer publishes ownership only in its successful
+/// continuation. The Mint and its immutable `DropRecipe` must be adjacent there,
+/// so the call's exceptional edge cannot observe an owner for an uninitialised
+/// out-place.
+#[test]
+fn duplex_pair_successor_publishes_two_typed_owner_recipes() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn main() -> i64 {
+            let (a, b) = duplex_pair<i64, i64>(16);
+            return 0;
+        }
+        ",
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main");
+    let next = raw
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Call {
+                authority: CallAuthority::Runtime(family),
+                next,
+                ..
+            } if *family == hew_types::runtime_call::RuntimeCallFamily::DuplexPair => Some(*next),
+            _ => None,
+        })
+        .expect("typed duplex-pair call");
+    let successor = raw
+        .blocks
+        .iter()
+        .find(|block| block.id == next)
+        .expect("duplex-pair normal successor");
+
+    let published: Vec<_> = successor
+        .instructions
+        .windows(2)
+        .filter_map(|pair| match (&pair[0], &pair[1]) {
+            (
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    owner,
+                    place: Place::DuplexHandle(_),
+                    ..
+                }),
+                Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                    owner: recipe_owner,
+                    recipe,
+                }),
+            ) if owner == recipe_owner && recipe.kind == DropKind::DuplexClose => Some(*owner),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        published.len(),
+        2,
+        "one adjacent typed Mint/DropRecipe pair per runtime out-place"
+    );
+}
+
+/// Actor pids are borrowed scheduler identities, not owning substrate handles.
+/// Their `ActorHandle` places have no close ABI and therefore must not acquire
+/// an owner generation or an exit drop merely because an owning handle place
+/// class was admitted above.
+#[test]
+fn spawned_actor_pid_remains_a_nonowning_handle_negative() {
+    let pipeline = pipeline_with_tc(
+        r"
+        actor Probe {
+            receive fn ping() {}
+        }
+
+        fn main() -> i64 {
+            let p = spawn Probe;
+            return 0;
+        }
+        ",
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main");
+    assert!(
+        raw.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .all(|instruction| !matches!(
+                instruction,
+                Instr::OwnershipEvent(OwnershipEvent::Mint {
+                    place: Place::ActorHandle(_),
+                    ..
+                })
+            )),
+        "non-owning actor pid must not mint cleanup authority"
+    );
+    assert!(
+        all_plan_drops(&pipeline, "main").is_empty(),
+        "non-owning actor pid must not acquire an exit drop"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +241,7 @@ fn duplex_pair_emits_two_duplex_close_drops_on_return() {
 /// `Builder::owned_locals` is appended in declaration order; `elaborate`
 /// reverses it (`iter().rev()` at `build_lifo_drops`).  The drop plan's
 /// first entry must correspond to `b`'s Place index, the second to
-/// `a`'s.  We recover the per-binding index from the `CallRuntimeAbi`
+/// `a`'s.  We recover the per-binding index from the typed terminal call
 /// args (`args[2]` is `dh0` for `a`, `args[3]` is `dh1` for `b`).
 ///
 /// LESSONS: LIFO discipline within a single binding site.
@@ -155,20 +262,23 @@ fn duplex_pair_drops_fire_in_reverse_binding_order() {
         .iter()
         .find(|f| f.name == "main")
         .expect("main");
-    let pair_call = raw
+    let pair_args = raw
         .blocks
         .iter()
-        .flat_map(|b| b.instructions.iter())
-        .find_map(|i| match i {
-            hew_mir::Instr::CallRuntimeAbi(c) if c.symbol() == "hew_duplex_pair" => Some(c),
+        .find_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee,
+                authority: CallAuthority::Runtime(family),
+                args,
+                ..
+            } if callee == "hew_duplex_pair" && family.c_symbol() == callee => Some(args),
             _ => None,
         })
         .expect("hew_duplex_pair call must be present");
-    let args = pair_call.args();
-    let Place::DuplexHandle(idx_a) = args[2] else {
+    let Place::DuplexHandle(idx_a) = pair_args[2] else {
         panic!("args[2] (dh0/a) must be DuplexHandle")
     };
-    let Place::DuplexHandle(idx_b) = args[3] else {
+    let Place::DuplexHandle(idx_b) = pair_args[3] else {
         panic!("args[3] (dh1/b) must be DuplexHandle")
     };
 

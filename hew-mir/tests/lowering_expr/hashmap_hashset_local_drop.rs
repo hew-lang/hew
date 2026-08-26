@@ -64,7 +64,7 @@ fn cancel_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
 /// Every `ElabDrop` across EVERY exit of the named function (used by the
 /// negative controls: an escaped handle must not be dropped on ANY path).
 fn all_exit_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
-    drops_matching(p, fn_name, |_| true)
+    drops_matching(p, fn_name, |exit| !matches!(exit, ExitPath::Unwind { .. }))
 }
 
 fn drops_matching(

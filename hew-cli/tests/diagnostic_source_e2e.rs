@@ -250,8 +250,14 @@ fn non_root_unused_variable_warning_becomes_error_with_werror() {
         "--Werror should still render the original warning; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("warnings treated as errors"),
-        "--Werror failure should explain why the command failed; got:\n{stderr}"
+        stderr.contains("let x = 42"),
+        "--Werror must preserve the imported source line; got:\n{stderr}"
+    );
+    assert!(
+        stderr.lines().any(|line| line
+            .split_once('|')
+            .is_some_and(|(_, marker)| marker.trim_start().starts_with('^'))),
+        "--Werror must preserve the imported-source caret; got:\n{stderr}"
     );
     assert!(
         !stderr.contains(": OK"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate direct-call ownership diagnostics against an exact per-file baseline."""
+"""Gate ownership verification and zero-leak execution against an exact baseline."""
 
 from __future__ import annotations
 
@@ -14,22 +14,16 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CORPUS = ROOT / "tests" / "obligation-advisory"
-BASELINE = ROOT / "tests" / "obligation-advisory" / "baseline.tsv"
+CORPUS = ROOT / "tests" / "ownership-balance"
+BASELINE = ROOT / "tests" / "ownership-balance" / "baseline.tsv"
 HEW = Path(os.environ.get("HEW_BIN", ROOT / "target" / "debug" / "hew"))
 RELEASE_HEW = Path(
     os.environ.get("HEW_RELEASE_BIN", ROOT / "target" / "release-lib" / "hew")
 )
 RUNTIME_CHECK = "check"
 RUNTIME_CLEAN = "clean"
-# An executed fixture whose leak is KNOWN and whose advisory is the only thing
-# standing between a user and it. The oracle must report a leak: if the leak is
-# ever closed this row fails at the lift event and gets repointed to `clean`,
-# and if the advisory is ever silenced the advisory count above fails first.
-# Nothing here may be silently suppressed.
-RUNTIME_LEAKS = "leaks"
 RUNTIME_REFUSE = "refuse"
-RUNTIME_MODES = {RUNTIME_CHECK, RUNTIME_CLEAN, RUNTIME_LEAKS, RUNTIME_REFUSE}
+RUNTIME_MODES = {RUNTIME_CHECK, RUNTIME_CLEAN, RUNTIME_REFUSE}
 ZERO_LEAKS = re.compile(r"0 leaks for 0 total leaked bytes\.")
 SANITIZER_FINDING = re.compile(
     r"ERROR: (?:AddressSanitizer|LeakSanitizer)"
@@ -72,17 +66,12 @@ def read_baseline() -> dict[str, tuple[int, int, int, str]]:
             line = line.rstrip("\n")
             if not line or line.startswith("#"):
                 continue
-            name, advisories, blocking, exit_code, runtime = line.split("\t")
+            name, under_release, other_blocking, exit_code, runtime = line.split("\t")
             if runtime not in RUNTIME_MODES:
                 raise ValueError(f"{name}: unknown runtime mode {runtime!r}")
-            if runtime == RUNTIME_LEAKS and int(advisories) == 0:
-                raise ValueError(
-                    f"{name}: a fixture whose leak oracle fires must also advise; "
-                    "a silent leak is the one outcome this corpus exists to reject"
-                )
             rows[name] = (
-                int(advisories),
-                int(blocking),
+                int(under_release),
+                int(other_blocking),
                 int(exit_code),
                 runtime,
             )
@@ -182,7 +171,6 @@ def run_runtime_fixture(
     binary: Path,
     environment: dict[str, str],
     host: str,
-    expect_leak: bool,
 ) -> str | None:
     run_environment = environment.copy()
     run_environment["HEW_WORKERS"] = "1"
@@ -208,20 +196,6 @@ def run_runtime_fixture(
         leaked = ZERO_LEAKS.search(report) is None
     else:
         leaked = SANITIZER_FINDING.search(report) is not None
-    if expect_leak:
-        if result.returncode not in (0, 1):
-            return bounded_runtime_report(
-                name, f"runtime oracle exited {result.returncode}", report
-            )
-        if not leaked:
-            return bounded_runtime_report(
-                name,
-                "the oracle reports NO leak: this fixture's leak is closed. That is "
-                "a lift event -- move the row to `clean` and repoint the corpus at "
-                "the next unclosed shape",
-                report,
-            )
-        return None
     if result.returncode != 0:
         return bounded_runtime_report(
             name, f"runtime oracle exited {result.returncode}", report
@@ -257,9 +231,6 @@ def main() -> int:
         return 1
     clean_fixtures = sorted(
         name for name, row in expected.items() if row[3] == RUNTIME_CLEAN
-    )
-    leaking_fixtures = sorted(
-        name for name, row in expected.items() if row[3] == RUNTIME_LEAKS
     )
     refused_fixtures = sorted(
         name for name, row in expected.items() if row[3] == RUNTIME_REFUSE
@@ -303,30 +274,28 @@ def main() -> int:
     runtime_environment = scrubbed.copy()
     with tempfile.TemporaryDirectory(prefix="hew-obligation-runtime-") as directory:
         output_dir = Path(directory)
-        executed = [(name, False) for name in clean_fixtures]
-        executed += [(name, True) for name in leaking_fixtures]
-        for index, (name, expect_leak) in enumerate(executed):
+        for index, name in enumerate(clean_fixtures):
             binary = output_dir / f"fixture-{index}"
             failure = compile_runtime_fixture(
                 HEW, name, runtime_environment, binary, host
             )
             if failure is None:
                 failure = run_runtime_fixture(
-                    name, binary, runtime_environment, host, expect_leak
+                    name, binary, runtime_environment, host
                 )
             if failure is not None:
                 failures.append(f"runtime/{host} {failure}")
 
     if failures:
-        print("ownership-advisory baseline drift:", file=sys.stderr)
+        print("ownership-balance baseline drift:", file=sys.stderr)
         for failure in failures:
             print(f"  {failure}", file=sys.stderr)
         return 1
     print(
-        "ownership-advisory: "
-        f"fixtures={len(expected)} profiles=4 advisories={totals[0]} "
-        f"blocking_mir={totals[1]} clean={len(clean_fixtures)} "
-        f"leaking={len(leaking_fixtures)} refusals={len(refused_fixtures)} "
+        "ownership-balance: "
+        f"fixtures={len(expected)} profiles=4 under_release={totals[0]} "
+        f"other_blocking_mir={totals[1]} clean={len(clean_fixtures)} "
+        f"refusals={len(refused_fixtures)} "
         f"oracle={host}"
     )
     return 0

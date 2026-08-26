@@ -2,11 +2,11 @@
 //!
 //! The send producer (`lower_duplex_send`) emits:
 //!   `ConstI64 { dest: len, value: 8 }` followed by
-//!   `CallRuntimeAbi { symbol: "hew_duplex_send", args: [recv, msg, len], dest: None }`.
+//!   `Terminator::Call { authority: Runtime(DuplexSend), args: [recv, msg, len], dest: None }`.
 //!
 //! These tests exercise the full pipeline: `duplex_pair<i64, ()>(16)` binds
 //! two `DuplexHandle` locals, and the tell-shaped `a.send(msg)` (reply `()`)
-//! produces the correct `CallRuntimeAbi` instruction sequence.  Handle-typed
+//! produces the correct typed terminal-call sequence. Handle-typed
 //! bindings must never appear as `Move` sources — the `stmt()` handler stores
 //! them directly into `binding_locals` to preserve the `DuplexHandle` kind for
 //! `drop_kind_for`.
@@ -40,7 +40,10 @@
 //! hand-built test was approximating.  The hand-built scaffolding is retired.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, DropKind, ExitPath, Instr, IrPipeline, MirDiagnosticKind, Place};
+use hew_mir::{
+    lower_hir_module, BasicBlock, CallAuthority, DropKind, ExitPath, Instr, IrPipeline,
+    MirDiagnosticKind, Place, Terminator,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -72,6 +75,41 @@ fn all_instrs(p: &IrPipeline, fn_name: &str) -> Vec<Instr> {
         .blocks
         .iter()
         .flat_map(|b| b.instructions.iter().cloned())
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TerminalRuntimeCall<'a> {
+    block: &'a BasicBlock,
+    args: &'a [Place],
+    dest: Option<Place>,
+}
+
+fn runtime_calls<'a>(
+    p: &'a IrPipeline,
+    fn_name: &str,
+    symbol: &str,
+) -> Vec<TerminalRuntimeCall<'a>> {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .expect("function must be present in raw_mir")
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee,
+                authority: CallAuthority::Runtime(family),
+                args,
+                dest,
+                ..
+            } if callee == symbol && family.c_symbol() == symbol => Some(TerminalRuntimeCall {
+                block,
+                args,
+                dest: *dest,
+            }),
+            _ => None,
+        })
         .collect()
 }
 
@@ -124,9 +162,8 @@ fn duplex_pair_plus_send_no_move_of_duplex_handle() {
     );
 }
 
-/// `a.send(42)` must produce exactly one `CallRuntimeAbi { symbol:
-/// "hew_duplex_send", args: [DuplexHandle, Local(msg), Local(len)], dest:
-/// None }` in the instruction stream, preceded immediately by
+/// `a.send(42)` must produce exactly one typed terminal `hew_duplex_send`
+/// with `[DuplexHandle, Local(msg), Local(len)]`, `dest: None`, preceded by
 /// `ConstI64 { value: 8 }`.
 #[test]
 fn one_send_emits_call_runtime_abi_with_three_args() {
@@ -138,21 +175,10 @@ fn one_send_emits_call_runtime_abi_with_three_args() {
         }
     ";
     let pipeline = pipeline_with_tc(source);
-    let instrs = all_instrs(&pipeline, "main");
-
-    let send_pos = instrs
-        .iter()
-        .position(
-            |i| matches!(i, Instr::CallRuntimeAbi(call) if call.symbol() == "hew_duplex_send"),
-        )
-        .expect("must find CallRuntimeAbi for hew_duplex_send");
-
-    let Instr::CallRuntimeAbi(call) = &instrs[send_pos] else {
-        unreachable!()
-    };
-
-    assert_eq!(call.symbol(), "hew_duplex_send");
-    let args = call.args();
+    let calls = runtime_calls(&pipeline, "main", "hew_duplex_send");
+    assert_eq!(calls.len(), 1, "must find one typed terminal send call");
+    let call = calls[0];
+    let args = call.args;
     assert_eq!(args.len(), 3, "3 args: recv, msg, len; got: {args:?}");
     assert!(
         matches!(args[0], Place::DuplexHandle(_)),
@@ -168,19 +194,21 @@ fn one_send_emits_call_runtime_abi_with_three_args() {
         "args[2] (len) must be Local"
     );
     assert!(
-        call.dest().is_none(),
+        call.dest.is_none(),
         "send discards result; dest must be None"
     );
 
-    assert!(send_pos > 0, "ConstI64 len must precede the send call");
     assert!(
-        matches!(instrs[send_pos - 1], Instr::ConstI64 { value: 8, .. }),
-        "instruction before hew_duplex_send must be ConstI64 {{value:8}}; got: {:?}",
-        instrs[send_pos - 1]
+        matches!(
+            call.block.instructions.last(),
+            Some(Instr::ConstI64 { value: 8, .. })
+        ),
+        "the final instruction before hew_duplex_send must be ConstI64 {{value:8}}; got: {:?}",
+        call.block.instructions
     );
 }
 
-/// Two consecutive `a.send(N)` calls produce two `CallRuntimeAbi` instructions,
+/// Two consecutive `a.send(N)` calls produce two typed terminal calls,
 /// each preceded by `ConstI64 { value: 8 }`.
 #[test]
 fn two_sends_emit_two_call_runtime_abi_instructions() {
@@ -193,25 +221,17 @@ fn two_sends_emit_two_call_runtime_abi_instructions() {
         }
     ";
     let pipeline = pipeline_with_tc(source);
-    let instrs = all_instrs(&pipeline, "main");
+    let sends = runtime_calls(&pipeline, "main", "hew_duplex_send");
+    assert_eq!(sends.len(), 2, "two sends → two terminal runtime calls");
 
-    let send_positions: Vec<usize> = instrs
-        .iter()
-        .enumerate()
-        .filter_map(|(i, instr)| {
-            matches!(instr, Instr::CallRuntimeAbi(call) if call.symbol() == "hew_duplex_send")
-                .then_some(i)
-        })
-        .collect();
-
-    assert_eq!(send_positions.len(), 2, "two sends → two CallRuntimeAbi");
-
-    for &pos in &send_positions {
-        assert!(pos > 0);
+    for send in sends {
         assert!(
-            matches!(instrs[pos - 1], Instr::ConstI64 { value: 8, .. }),
-            "instruction before send at {pos} must be ConstI64{{8}}; got {:?}",
-            instrs[pos - 1]
+            matches!(
+                send.block.instructions.last(),
+                Some(Instr::ConstI64 { value: 8, .. })
+            ),
+            "the final instruction before each send must be ConstI64{{8}}; got {:?}",
+            send.block.instructions
         );
     }
 }
@@ -288,19 +308,13 @@ fn two_sends_on_different_handles_use_distinct_receiver_places() {
         }
     ";
     let pipeline = pipeline_with_tc(source);
-    let instrs = all_instrs(&pipeline, "main");
-
-    let receivers: Vec<u32> = instrs
+    let receivers: Vec<u32> = runtime_calls(&pipeline, "main", "hew_duplex_send")
         .iter()
-        .filter_map(|i| {
-            if let Instr::CallRuntimeAbi(call) = i {
-                if call.symbol() == "hew_duplex_send" {
-                    if let Some(Place::DuplexHandle(n)) = call.args().first() {
-                        return Some(*n);
-                    }
-                }
-            }
-            None
+        .filter_map(|call| {
+            let Some(Place::DuplexHandle(n)) = call.args.first() else {
+                return None;
+            };
+            Some(*n)
         })
         .collect();
 
@@ -312,7 +326,7 @@ fn two_sends_on_different_handles_use_distinct_receiver_places() {
 }
 
 /// Value-context tell-shaped `.send` (`Duplex<i64, ()>`, reply `()`) must
-/// materialize the result: the `CallRuntimeAbi` carries a `dest:
+/// materialize the result: the terminal call carries a `dest:
 /// Some(Place::Local(_))` sized from the checker-recorded `Result<(),
 /// SendError>`. This is the MIR half of the value-context lowering; codegen
 /// constructs the Result into that slot. Contrast the statement-context tests
@@ -330,18 +344,12 @@ fn value_context_send_materializes_result_dest() {
         }
     ";
     let pipeline = pipeline_with_tc(source);
-    let instrs = all_instrs(&pipeline, "main");
+    let call = *runtime_calls(&pipeline, "main", "hew_duplex_send")
+        .first()
+        .expect("must find typed terminal hew_duplex_send");
 
-    let call = instrs
-        .iter()
-        .find_map(|i| match i {
-            Instr::CallRuntimeAbi(call) if call.symbol() == "hew_duplex_send" => Some(call),
-            _ => None,
-        })
-        .expect("must find CallRuntimeAbi for hew_duplex_send");
-
-    assert_eq!(call.args().len(), 3, "3 args: recv, msg, len");
-    let dest = call.dest();
+    assert_eq!(call.args.len(), 3, "3 args: recv, msg, len");
+    let dest = call.dest;
     assert!(
         matches!(dest, Some(Place::Local(_))),
         "value-context send must materialize a Result dest local; got {dest:?}"
@@ -362,18 +370,12 @@ fn statement_context_send_has_no_dest() {
         }
     ";
     let pipeline = pipeline_with_tc(source);
-    let instrs = all_instrs(&pipeline, "main");
-
-    let call = instrs
-        .iter()
-        .find_map(|i| match i {
-            Instr::CallRuntimeAbi(call) if call.symbol() == "hew_duplex_send" => Some(call),
-            _ => None,
-        })
-        .expect("must find CallRuntimeAbi for hew_duplex_send");
+    let call = *runtime_calls(&pipeline, "main", "hew_duplex_send")
+        .first()
+        .expect("must find typed terminal hew_duplex_send");
 
     assert!(
-        call.dest().is_none(),
+        call.dest.is_none(),
         "statement-context send is fire-and-forget; dest must be None"
     );
 }
@@ -438,21 +440,12 @@ fn has_unsupported_send_diagnostic(pipeline: &IrPipeline) -> bool {
     })
 }
 
-/// Number of `CallRuntimeAbi` instructions targeting either send ABI symbol
+/// Number of typed terminal calls targeting either send ABI symbol
 /// (`hew_duplex_send` for raw duplex handles, `hew_lambda_actor_send` for
 /// lambda-actor handles). A fail-closed `.send` must emit zero of these.
-fn send_call_count(instrs: &[Instr]) -> usize {
-    instrs
-        .iter()
-        .filter(|i| {
-            matches!(
-                i,
-                Instr::CallRuntimeAbi(call)
-                    if call.symbol() == "hew_duplex_send"
-                        || call.symbol() == "hew_lambda_actor_send"
-            )
-        })
-        .count()
+fn send_call_count(pipeline: &IrPipeline) -> usize {
+    runtime_calls(pipeline, "main", "hew_duplex_send").len()
+        + runtime_calls(pipeline, "main", "hew_lambda_actor_send").len()
 }
 
 /// A lambda actor keeps its ABI identity after crossing a function-return
@@ -476,25 +469,8 @@ fn returned_lambda_pid_send_uses_lambda_actor_abi() {
         }
     ";
     let pipeline = pipeline_with_tc(source);
-    let instrs = all_instrs(&pipeline, "main");
-    let lambda_sends = instrs
-        .iter()
-        .filter(|instr| {
-            matches!(
-                instr,
-                Instr::CallRuntimeAbi(call) if call.symbol() == "hew_lambda_actor_send"
-            )
-        })
-        .count();
-    let duplex_sends = instrs
-        .iter()
-        .filter(|instr| {
-            matches!(
-                instr,
-                Instr::CallRuntimeAbi(call) if call.symbol() == "hew_duplex_send"
-            )
-        })
-        .count();
+    let lambda_sends = runtime_calls(&pipeline, "main", "hew_lambda_actor_send").len();
+    let duplex_sends = runtime_calls(&pipeline, "main", "hew_duplex_send").len();
 
     assert_eq!(lambda_sends, 2, "both sends must retain the LambdaPid ABI");
     assert_eq!(
@@ -504,7 +480,7 @@ fn returned_lambda_pid_send_uses_lambda_actor_abi() {
 }
 
 /// Statement-context ask-shaped `.send` (a non-unit `Duplex` reply →
-/// `Result<R, AskError>`) must fail closed: no send `CallRuntimeAbi` is emitted
+/// `Result<R, AskError>`) must fail closed: no typed terminal send is emitted
 /// and the stable `NotYetImplemented` diagnostic fires. This is the regression
 /// guard for the statement/discarded path — discarding the result must NOT let
 /// an ask-shaped `.send` slip through as a fire-and-forget tell that silently
@@ -525,9 +501,9 @@ fn statement_context_ask_shaped_send_fails_closed() {
     let instrs = all_instrs(&pipeline, "main");
 
     assert_eq!(
-        send_call_count(&instrs),
+        send_call_count(&pipeline),
         0,
-        "ask-shaped statement `.send` must not lower to a send CallRuntimeAbi; \
+        "ask-shaped statement `.send` must not lower to a terminal runtime send; \
          instrs: {instrs:?}"
     );
     assert!(
@@ -540,7 +516,7 @@ fn statement_context_ask_shaped_send_fails_closed() {
 }
 
 /// Value-context ask-shaped `.send` (`Result<R, AskError>`, R ≠ ()) must fail
-/// closed the same way: no send `CallRuntimeAbi`, stable diagnostic. Pairs with
+/// closed the same way: no terminal runtime send, stable diagnostic. Pairs with
 /// `statement_context_ask_shaped_send_fails_closed` so neither use-context can
 /// fail open — the producer decides on the result SHAPE, not the call context.
 #[test]
@@ -556,9 +532,9 @@ fn value_context_ask_shaped_send_fails_closed() {
     let instrs = all_instrs(&pipeline, "main");
 
     assert_eq!(
-        send_call_count(&instrs),
+        send_call_count(&pipeline),
         0,
-        "ask-shaped value-context `.send` must not lower to a send CallRuntimeAbi; \
+        "ask-shaped value-context `.send` must not lower to a terminal runtime send; \
          instrs: {instrs:?}"
     );
     assert!(

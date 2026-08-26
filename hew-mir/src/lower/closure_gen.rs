@@ -5,13 +5,13 @@
 
 use super::{
     base_local, check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow,
-    elaborate, finalize_bytes_ownership, finalize_string_ownership, terminator_is_suspend_carrier,
-    ActorStateLoadMode, BindingId, Builder, BuiltinType, CaptureEnvSource, CheckedMirFunction,
-    ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership, DropKind, ElabDrop,
-    FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr, IntentKind, LambdaCapture,
-    LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
-    ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin, StreamProducerPumpCtx,
-    SuspendKind, Terminator, ThirFunction, ValueClass,
+    elaborate, finalize_bytes_ownership, finalize_string_ownership, seal_checked,
+    terminator_is_suspend_carrier, ActorStateLoadMode, BindingId, Builder, BuiltinType,
+    CaptureEnvSource, ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership,
+    DropKind, ElabDrop, FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr,
+    IntentKind, LambdaCapture, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    Place, RawMirFunction, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin,
+    StreamProducerPumpCtx, SuspendKind, Terminator, ThirFunction, ValueClass,
 };
 use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
@@ -255,8 +255,49 @@ impl Builder {
             env_mode,
             env_ownership,
         });
+        self.publish_closure_env_moved_handoffs(&manifest);
 
         Some(closure_place)
+    }
+
+    /// Retire each source owner only after its owning environment has crossed
+    /// the physical construction or task-handoff boundary.
+    ///
+    /// Heap closures call this immediately after `MakeClosure`; scope-owned
+    /// task closures call it immediately after `SpawnTaskClosure`. Runtime calls
+    /// before either boundary retain the source owner for unwind cleanup, while
+    /// later exits leave the environment destructor as the sole release
+    /// authority. A missing source binding generation emits no fabricated
+    /// transfer, and the exact-place ownership validator still rejects stale
+    /// or conflicting authority.
+    pub(super) fn publish_closure_env_moved_handoffs(&mut self, manifest: &[ClosureEnvFieldInit]) {
+        let mut transferred = HashSet::new();
+        for field in manifest {
+            let Some(binding) = field
+                .source_binding
+                .filter(|_| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+            else {
+                continue;
+            };
+            let Some(generation) = self.owner_generations.get(&binding).copied() else {
+                continue;
+            };
+            let owner = crate::model::OwnerId {
+                binding,
+                generation,
+            };
+            if transferred.insert(owner) {
+                self.push_instr(Instr::OwnershipEvent(
+                    crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        from: field.src,
+                        to: None,
+                        to_owner: None,
+                        to_ty: None,
+                    },
+                ));
+            }
+        }
     }
 
     /// U2 — the per-function proven-foreign ledger CROSSES into the closure
@@ -971,22 +1012,21 @@ impl Builder {
         let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
         let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
-        let checked = CheckedMirFunction {
-            name: shim_name.to_string(),
-            return_ty: ret_ty.clone(),
-            blocks: raw.blocks.clone(),
-            decisions: builder.decisions.clone(),
-            checks: dataflow_result.checks.clone(),
+        let (checked, elaboration_diagnostics) = seal_checked(
+            shim_name.to_string(),
+            ret_ty.clone(),
+            raw.blocks.clone(),
+            &raw,
+            builder.decisions.clone(),
+            dataflow_result.checks.clone(),
             cooperate_sites,
-        };
-        let (elaborated, elaboration_diagnostics) = elaborate(
-            &checked,
             &builder,
             &thir.statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
@@ -1160,22 +1200,21 @@ impl Builder {
         let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
         let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
-        let checked = CheckedMirFunction {
-            name: shim_name.to_string(),
-            return_ty: ret_ty.clone(),
-            blocks: raw.blocks.clone(),
-            decisions: builder.decisions.clone(),
-            checks: dataflow_result.checks.clone(),
+        let (checked, elaboration_diagnostics) = seal_checked(
+            shim_name.to_string(),
+            ret_ty.clone(),
+            raw.blocks.clone(),
+            &raw,
+            builder.decisions.clone(),
+            dataflow_result.checks.clone(),
             cooperate_sites,
-        };
-        let (elaborated, elaboration_diagnostics) = elaborate(
-            &checked,
             &builder,
             &thir.statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
@@ -1715,22 +1754,21 @@ impl Builder {
             finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
-        let checked = CheckedMirFunction {
-            name: body_name.clone(),
-            return_ty: body_user_return_ty.clone(),
-            blocks: raw.blocks.clone(),
-            decisions: body_builder.decisions.clone(),
-            checks: dataflow_result.checks.clone(),
+        let (checked, elaboration_diagnostics) = seal_checked(
+            body_name.clone(),
+            body_user_return_ty.clone(),
+            raw.blocks.clone(),
+            &raw,
+            body_builder.decisions.clone(),
+            dataflow_result.checks.clone(),
             cooperate_sites,
-        };
-        let (elaborated, elaboration_diagnostics) = elaborate(
-            &checked,
             &body_builder,
             &thir.statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        let elaborated = elaborate(&checked);
         body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
@@ -2334,16 +2372,6 @@ impl Builder {
                     fields: init_fields,
                     dest,
                 });
-                // `OwnedMove` is a genuine whole-value escape from the
-                // receive-handler shell into the heap environment. Record the
-                // transfer in the ownership ledger after the all-or-nothing
-                // environment construction succeeds so no shell-side
-                // scope-exit authority can release the same payload. `Owned`
-                // snapshot sources are deliberately absent: they retain their
-                // own drop while codegen constructs an independent clone.
-                for binding in env_moved_bindings {
-                    self.mark_binding_moved(binding);
-                }
                 env_place = Some(dest);
                 env_ty = Some(env_resolved_ty);
             }
@@ -2572,22 +2600,21 @@ impl Builder {
             finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
-        let checked = CheckedMirFunction {
-            name: body_name.clone(),
-            return_ty: return_ty.clone(),
-            blocks: raw.blocks.clone(),
-            decisions: body_builder.decisions.clone(),
-            checks: dataflow_result.checks.clone(),
+        let (checked, elaboration_diagnostics) = seal_checked(
+            body_name.clone(),
+            return_ty.clone(),
+            raw.blocks.clone(),
+            &raw,
+            body_builder.decisions.clone(),
+            dataflow_result.checks.clone(),
             cooperate_sites,
-        };
-        let (elaborated, elaboration_diagnostics) = elaborate(
-            &checked,
             &body_builder,
             &thir.statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        let elaborated = elaborate(&checked);
         body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
@@ -2621,6 +2648,7 @@ impl Builder {
             (None, None) => None,
             _ => unreachable!("generator env place/type must be constructed together"),
         };
+        let env_transfer_place = env.as_ref().map(|plan| plan.place);
         self.finish_current_block(Terminator::MakeGenerator {
             dest: gen_place,
             body_fn: body_name.clone(),
@@ -2628,6 +2656,28 @@ impl Builder {
             env,
         });
         self.start_block(next);
+        // `OwnedMove` commits only after `MakeGenerator` returns normally.
+        // Publish the source neutralisation and exact OwnerId transfer in that
+        // successor, where both the physical and semantic ownership changes
+        // occur. The unwind edge retains the source owner in the caller.
+        if let Some(env_place) = env_transfer_place {
+            for binding in env_moved_bindings {
+                let source = *self
+                    .binding_locals
+                    .get(&binding)
+                    .expect("generator OwnedMove binding has no source place");
+                self.push_instr(Instr::NeutralizePayloadSlot {
+                    place: source,
+                    transferee: Some(env_place),
+                    authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
+                });
+                self.set_owned_local_consumed(
+                    binding,
+                    Some(env_place),
+                    super::DischargeSite::BindingMoved,
+                );
+            }
+        }
         gen_place
     }
 
@@ -2884,6 +2934,7 @@ impl Builder {
         self.push_instr(Instr::GeneratorNext {
             dest: opt_dest,
             ctx: gen_place,
+            ctx_owner: None,
             yield_ty: pump.yield_ty.clone(),
         });
         let Place::Local(opt_local) = opt_dest else {
@@ -3000,7 +3051,15 @@ impl Builder {
         let value_place = if let Some(val_expr) = value {
             self.decide(val_expr);
             match self.lower_value_for_move(val_expr) {
-                Some(p) => p,
+                Some(p) => {
+                    // `Yield` transfers the value into the generator companion's
+                    // output slot. A direct BindingRef was already consumed by
+                    // `lower_value_for_move`; close the anonymous typed-producer
+                    // generation (for example `yield make_rows(i)`) here too so
+                    // normal resume cannot drop the caller-owned output.
+                    self.mark_yielded_binding_moved(val_expr);
+                    p
+                }
                 None => {
                     // The value sub-expression failed to lower.  The child
                     // diagnostic has already been pushed; propagate failure

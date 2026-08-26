@@ -75,6 +75,7 @@ fn walk_expr(expr: &HirExpr, f: &mut impl FnMut(&HirExpr)) {
             }
         }
         HirExprKind::FieldAccess { object, .. } => walk_expr(object, f),
+        HirExprKind::SubsumedValue { source, .. } => walk_expr(source, f),
         HirExprKind::StructInit { fields, base, .. } => {
             for (_, v) in fields {
                 walk_expr(v, f);
@@ -180,6 +181,59 @@ fn fstring_dispatches_through_lang_item_registry() {
         "f-string interpolant should dispatch to `Point::fmt` via the \
          lang-item registry's display_fmt binding; observed: {calls:?}"
     );
+}
+
+#[test]
+fn fstring_preserves_every_authored_interpolant_as_a_subsumed_source() {
+    let source = r#"
+        fn main(left: string, right: string) {
+            let rendered: string = f"{left}:{right}";
+        }
+    "#;
+    let output = lower_checked(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "no diagnostics expected; got: {:#?}",
+        output.diagnostics
+    );
+
+    let parents = hew_hir::verify::collect_site_parents(&output.module);
+    let mut authored = Vec::new();
+    let mut subsuming_sites = Vec::new();
+    for item in &output.module.items {
+        if let HirItem::Function(function) = item {
+            walk_block(&function.body, &mut |expr| match &expr.kind {
+                HirExprKind::BindingRef { name, .. } if name == "left" || name == "right" => {
+                    authored.push((name.clone(), expr.site));
+                }
+                HirExprKind::SubsumedValue { .. } => subsuming_sites.push(expr.site),
+                _ => {}
+            });
+        }
+    }
+    authored.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        authored
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["left", "right"],
+        "both authored identifiers must remain structural HIR occurrences"
+    );
+    for (name, site) in authored {
+        assert!(
+            output.module.produced_value_facts.contains_key(&site),
+            "authored interpolant `{name}` lost its checker-produced ownership fact"
+        );
+        let parent =
+            parents.get(&site).copied().flatten().unwrap_or_else(|| {
+                panic!("authored interpolant `{name}` has no structural parent")
+            });
+        assert!(
+            subsuming_sites.contains(&parent),
+            "authored interpolant `{name}` must be directly retained by the f-string rewrite's subsumption boundary"
+        );
+    }
 }
 
 /// F1 negative: with no `#[lang_item("display_fmt")]` registered, the

@@ -112,6 +112,7 @@ fn base_pipeline(
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
@@ -567,6 +568,7 @@ fn hash_thunk_dedup_one_per_record_per_module() {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
@@ -717,6 +719,7 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
@@ -1118,6 +1121,7 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),

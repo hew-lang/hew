@@ -1,7 +1,10 @@
 //! Structural ownership pins for fresh owned records cloned by `Vec` indexing
 //! and used immediately as record-projection bases.
 
-use hew_mir::{DropKind, ExitPath, Instr, IrPipeline, Place, Terminator};
+use hew_mir::{
+    DropFnSpec, DropKind, ExitPath, InPlaceReleaseKind, Instr, IrPipeline, OwnershipEvent, Place,
+    Terminator,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::runtime_call::{RuntimeCallFamily, VecGetElem};
 use hew_types::Checker;
@@ -82,21 +85,6 @@ fn call_builtin(pipeline: &IrPipeline, fn_name: &str, symbol: &str) -> Option<Ru
         })
 }
 
-fn runtime_call_count(pipeline: &IrPipeline, fn_name: &str, symbol: &str) -> usize {
-    pipeline
-        .raw_mir
-        .iter()
-        .find(|function| function.name == fn_name)
-        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
-        .blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter(|instruction| {
-            matches!(instruction, Instr::CallRuntimeAbi(call) if call.symbol() == symbol)
-        })
-        .count()
-}
-
 fn aggregate_neutralize_count(pipeline: &IrPipeline, fn_name: &str) -> usize {
     pipeline
         .raw_mir
@@ -108,6 +96,53 @@ fn aggregate_neutralize_count(pipeline: &IrPipeline, fn_name: &str) -> usize {
         .flat_map(|block| block.instructions.iter())
         .filter(|instruction| matches!(instruction, Instr::AggregateProjectionNeutralize { .. }))
         .count()
+}
+
+fn inline_root_release_gotos(pipeline: &IrPipeline, fn_name: &str, local: u32) -> Vec<(u32, u32)> {
+    pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let Terminator::Goto { target } = &block.terminator else {
+                return None;
+            };
+            let drop = block.instructions.iter().position(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::Drop {
+                        place: Place::Local(candidate),
+                        drop_fn: Some(DropFnSpec::InPlace(InPlaceReleaseKind::Record)),
+                        ..
+                    } if *candidate == local
+                )
+            })?;
+            let (release, owner) =
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, instruction)| match instruction {
+                        Instr::OwnershipEvent(OwnershipEvent::Release { owner, place })
+                            if *place == Place::Local(local) =>
+                        {
+                            Some((index, *owner))
+                        }
+                        _ => None,
+                    })?;
+            let scope_exit = block.instructions.iter().position(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. })
+                        if owners.contains(&owner)
+                )
+            })?;
+            (drop < release && release < scope_exit).then_some((block.id, *target))
+        })
+        .collect()
 }
 
 fn clone_drop_exits<'a>(
@@ -183,8 +218,20 @@ fn borrowed_control() -> i64 {
     let direct_locals = clone_destinations(&p, "direct");
     assert_eq!(direct_locals.len(), 1);
     let direct_exits = clone_drop_exits(&p, "direct", direct_locals[0]);
-    assert_eq!(direct_exits.len(), 1);
-    assert!(matches!(direct_exits[0], (ExitPath::Return { .. }, 1)));
+    assert_eq!(
+        direct_exits
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+            .count(),
+        1
+    );
+    assert!(direct_exits.iter().all(|(exit, count)| {
+        *count == 1
+            && !matches!(
+                exit,
+                ExitPath::Unwind { callee, .. } if callee == "hew_vec_get_clone"
+            )
+    }));
 
     assert_eq!(call_count(&p, "bound", "hew_vec_get_clone"), 1);
     assert_eq!(
@@ -202,13 +249,17 @@ fn borrowed_control() -> i64 {
     assert_eq!(call_count(&p, "bitcopy_control", "hew_vec_get_clone"), 0);
     assert!(clone_destinations(&p, "bitcopy_control").is_empty());
 
+    assert_eq!(call_count(&p, "borrowed_control", "hew_vec_get_owned"), 1);
     assert_eq!(
-        runtime_call_count(&p, "borrowed_control", "hew_vec_get_owned"),
-        1,
-        "the nested collection must use the borrow getter, not the fresh composite clone route"
+        call_builtin(&p, "borrowed_control", "hew_vec_get_owned"),
+        Some(RuntimeCallFamily::VecGet(VecGetElem::Owned)),
+        "the nested collection must keep the typed owned-get authority on its terminal call"
     );
     assert_eq!(call_count(&p, "borrowed_control", "hew_vec_get_clone"), 0);
     assert!(clone_destinations(&p, "borrowed_control").is_empty());
+    assert_eq!(aggregate_neutralize_count(&p, "direct"), 0);
+    assert_eq!(aggregate_neutralize_count(&p, "bound"), 0);
+    assert_eq!(aggregate_neutralize_count(&p, "borrowed_control"), 0);
 }
 
 #[test]
@@ -280,12 +331,21 @@ fn indexed(i: i64) -> i64 {
     let locals = clone_destinations(&p, "indexed");
     assert_eq!(locals.len(), 1);
     let exits = clone_drop_exits(&p, "indexed", locals[0]);
-    assert_eq!(exits.len(), 1);
-    assert!(matches!(exits[0], (ExitPath::Return { .. }, 1)));
-    assert!(
-        !exits
+    assert_eq!(
+        exits
             .iter()
-            .any(|(exit, _)| matches!(exit, ExitPath::Panic { .. })),
+            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        !exits.iter().any(|(exit, _)| {
+            matches!(exit, ExitPath::Panic { .. })
+                || matches!(
+                    exit,
+                    ExitPath::Unwind { callee, .. } if callee == "hew_vec_get_clone"
+                )
+        }),
         "the bounds-failure edge precedes the clone and must not drop its uninitialised result"
     );
 }
@@ -309,9 +369,55 @@ fn transfer() -> i64 {
     assert_eq!(call_count(&p, "transfer", "hew_vec_get_clone"), 1);
     let locals = clone_destinations(&p, "transfer");
     assert_eq!(locals.len(), 1);
+    let root = Place::Local(locals[0]);
+    p.raw_mir
+        .iter()
+        .find(|function| function.name == "transfer")
+        .expect("function transfer must be present")
+        .blocks
+        .iter()
+        .find_map(|block| {
+            let (neutralize, transferee) =
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, instruction)| match instruction {
+                        Instr::AggregateProjectionNeutralize {
+                            root: candidate,
+                            fields,
+                            transferee,
+                            ..
+                        } if *candidate == root && fields.as_slice() == [0] => {
+                            Some((index, *transferee))
+                        }
+                        _ => None,
+                    })?;
+            let field_drop = block.instructions.iter().position(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::RecordFieldDrop {
+                        record,
+                        field_offset: hew_mir::FieldOffset(0),
+                        ..
+                    } if *record == transferee
+                )
+            })?;
+            (neutralize < field_drop).then_some(block.id)
+        })
+        .expect("the exact inner projection must transfer before its override drop");
+    let root_exits = clone_drop_exits(&p, "transfer", locals[0]);
+    assert_eq!(
+        root_exits
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+            .count(),
+        1,
+        "the neutralized synthetic root still owns its unaffected fields and must clean up"
+    );
     assert!(
-        clone_drop_exits(&p, "transfer", locals[0]).is_empty(),
-        "the destructive update transfers the projected member and must exclude the parent root"
+        root_exits.iter().all(|(_, count)| *count == 1),
+        "each reachable synthetic-root cleanup must execute exactly once: {root_exits:?}"
     );
 }
 
@@ -350,23 +456,33 @@ fn loop_edges(stop: bool) -> i64 {
     assert_eq!(early_locals.len(), 2);
     for local in early_locals {
         let exits = clone_drop_exits(&p, "early", local);
-        assert_eq!(exits.len(), 1, "each return-site root must drop once");
-        assert!(matches!(exits[0], (ExitPath::Return { .. }, 1)));
+        assert_eq!(
+            exits
+                .iter()
+                .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+                .count(),
+            1,
+            "each return-site root must drop once on its normal exit"
+        );
+        assert!(exits.iter().all(|(exit, count)| {
+            *count == 1
+                && !matches!(
+                    exit,
+                    ExitPath::Unwind { callee, .. } if callee == "hew_vec_get_clone"
+                )
+        }));
     }
 
     let loop_locals = clone_destinations(&p, "loop_edges");
     assert_eq!(loop_locals.len(), 1);
-    let exits = clone_drop_exits(&p, "loop_edges", loop_locals[0]);
+    let exits = inline_root_release_gotos(&p, "loop_edges", loop_locals[0]);
     assert_eq!(
-        exits
-            .iter()
-            .filter(|(exit, _)| matches!(exit, ExitPath::Goto { .. }))
-            .count(),
+        exits.len(),
         2,
-        "the live root must drop once on the loop back-edge and once on break"
+        "the live root must inline Drop/Release/ScopeExit once on the loop back-edge and once on break"
     );
     assert!(
-        exits.iter().all(|(_, count)| *count == 1),
-        "every exit from the live projection region must carry exactly one root drop: {exits:?}"
+        exits.iter().all(|(block, target)| block != target),
+        "each cleanup must lead to its declared successor: {exits:?}"
     );
 }

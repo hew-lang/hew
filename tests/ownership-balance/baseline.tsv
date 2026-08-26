@@ -1,17 +1,11 @@
-# Exact per-file ownership-diagnostic expectations for the direct-call carrier
-# corpus. Columns: fixture, ObligationUnderReleased advisories, other blocking
-# MIR findings, `hew check` exit code, runtime mode.
+# Exact per-file ownership-verifier expectations for the direct-call carrier
+# corpus. Columns: fixture, under-release findings, other blocking MIR findings,
+# `hew check` exit code, runtime mode. Every finding is blocking.
 #
 # Runtime modes and what each one proves:
 #   check   the fixture is checked only (no `main` to execute, or a module root).
 #   clean   the fixture is BUILT at -O2 and executed under the platform leak
 #           oracle, and must report ZERO leaks.
-#   leaks   the fixture is BUILT and executed the same way, and the oracle MUST
-#           report a leak. These pin the demote-never-suppress rule: the leak is
-#           real and the advisory is the only thing a user has. Silence the
-#           advisory and the count column fails; close the leak and the oracle
-#           fails at the lift event, at which point the row moves to `clean`.
-#           A `leaks` row with zero advisories is refused structurally.
 #   refuse  the fixture must produce a blocking MIR finding and a non-zero exit.
 #
 # Every executed fixture drives its shape at least 200,000 times. A per-call
@@ -19,12 +13,11 @@
 # shares of one string collapse into a single leak node — an executed fixture
 # that calls its shape once can report zero leaks while leaking on every call.
 #
-# pO_alias.hew remains a counterexample: a `for` cursor over an owned-element
-# `Vec` leaks two allocations per call, and its advisory is the only report of
-# that. The validator must not fold its downstream binding into an ephemeral
-# carrier that is absent from the balance model and thereby hide the leak.
+# pO_alias.hew pins the fixed move-chain case: a discarded owned item yielded by
+# a `VecIter` transfers its release obligation to the terminal local and is
+# released exactly once.
 #
-# fixture	advisories	blocking_mir	exit_code	runtime
+# fixture	under_release	other_blocking_mir	exit_code	runtime
 cross_module_result/main.hew	0	0	0	check
 direct_call_terminal_carriers.hew	0	0	0	clean
 escaping_direct_call_binding.hew	0	0	0	check
@@ -37,7 +30,7 @@ pK.hew	0	0	0	check
 pL.hew	0	0	0	clean
 pM.hew	0	0	0	clean
 pN.hew	0	0	0	clean
-pO_alias.hew	1	0	0	leaks
+pO_alias.hew	0	0	0	clean
 rA.hew	0	0	0	clean
 rC.hew	0	0	0	clean
 rG_inline.hew	0	0	0	clean

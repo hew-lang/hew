@@ -239,8 +239,16 @@ fn check_werror_still_promotes_frontend_warnings() {
         "warning diagnostic should still render under --Werror; got:\n{stderr}",
     );
     assert!(
-        stderr.contains("warnings treated as errors"),
-        "--Werror failure summary should be preserved; got:\n{stderr}",
+        stderr
+            .lines()
+            .any(|line| line.contains('|') && line.trim_end().ends_with('2')),
+        "warning diagnostic should preserve the unreachable source line; got:\n{stderr}",
+    );
+    assert!(
+        stderr.lines().any(|line| line
+            .split_once('|')
+            .is_some_and(|(_, marker)| marker.trim_start().starts_with('^'))),
+        "warning diagnostic should preserve its source caret; got:\n{stderr}",
     );
 }
 

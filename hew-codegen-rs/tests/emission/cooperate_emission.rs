@@ -87,6 +87,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
             decisions: Vec::new(),
             checks: Vec::new(),
             cooperate_sites,
+            ownership_elaboration: None,
         }],
         elaborated_mir: Vec::new(),
         capabilities: hew_mir::ModuleCapabilities::EMPTY,

@@ -150,7 +150,7 @@ pub(crate) unsafe fn runtime_bounds_trap(code: c_int) -> ! {
 /// WASM trap-code bridge used by codegen before `llvm.trap`.
 ///
 /// Native implements the exported symbol in `supervisor.rs` because it routes
-/// through the longjmp recovery seam. wasm32 has no longjmp seam, so the bridge
+/// through the language-unwind recovery seam. wasm32 has no portable EH seam, so the bridge
 /// stamps the current actor's `error_code` and panics. The production
 /// wasm32-wasip1 sysroot is `panic=abort`, making this a module-fatal trap; it
 /// is not a contained actor crash. Host-side parity builds may unwind only to

@@ -29,8 +29,8 @@ use hew_mir::{
     TrapKind,
 };
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::Checker;
-use hew_types::ResolvedTy;
+use hew_types::runtime_call::{RuntimeCallFamily, VecGetElem};
+use hew_types::{BuiltinType, Checker, ResolvedTy};
 
 // ---------------------------------------------------------------------------
 // Allowlist coverage for Vec runtime symbols
@@ -415,20 +415,127 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
     lower_hir_module(&hir.module)
 }
 
-fn runtime_symbols_in_fn(pipeline: &IrPipeline, name: &str) -> Vec<String> {
-    pipeline
+fn assert_typed_scalar_getter(
+    pipeline: &IrPipeline,
+    name: &str,
+    family: RuntimeCallFamily,
+    elem_ty: &ResolvedTy,
+) {
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "supported scalar indexing must not diagnose: {:#?}",
+        pipeline.diagnostics
+    );
+    let function = pipeline
         .raw_mir
         .iter()
         .find(|f| f.name == name)
-        .unwrap_or_else(|| panic!("function `{name}` not found in raw MIR"))
+        .unwrap_or_else(|| panic!("function `{name}` not found in raw MIR"));
+    let symbol = family.c_symbol();
+    let calls: Vec<_> = function
         .blocks
         .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| match instr {
-            Instr::CallRuntimeAbi(call) => Some(call.symbol().to_string()),
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee,
+                authority,
+                args,
+                dest,
+                ..
+            } if callee == symbol => Some((block.id, *authority, args.as_slice(), *dest)),
             _ => None,
         })
-        .collect()
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "Vec scalar index must have one terminal `{symbol}` call: {:#?}",
+        function.blocks
+    );
+    assert!(
+        !function.blocks.iter().any(
+            |block| block.instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instr::CallRuntimeAbi(call) if call.symbol() == symbol
+            ))
+        ),
+        "canonical lowering must not retain a duplicate instruction-form `{symbol}` call"
+    );
+    let (call_block, authority, args, dest) = calls[0];
+    assert_eq!(
+        authority.runtime_family(),
+        Some(family),
+        "`{symbol}` must carry its typed runtime authority"
+    );
+    assert_eq!(args.len(), 2, "`{symbol}` takes Vec receiver and i64 index");
+
+    let local_ty = |place: Place| {
+        let Place::Local(local) = place else {
+            panic!("`{symbol}` operand must be an ordinary local, got {place:?}");
+        };
+        function
+            .locals
+            .get(local as usize)
+            .unwrap_or_else(|| panic!("`{symbol}` refers to missing local{local}"))
+    };
+    assert!(
+        matches!(
+            local_ty(args[0]),
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::Vec),
+                ..
+            } if name == "Vec" && args.as_slice() == std::slice::from_ref(elem_ty)
+        ),
+        "`{symbol}` arg0 must be Vec<{elem_ty:?}>; args={args:?}, locals={:?}",
+        function.locals
+    );
+    assert_eq!(
+        local_ty(args[1]),
+        &ResolvedTy::I64,
+        "`{symbol}` arg1 must be the widened i64 index"
+    );
+    let dest = dest.expect("scalar Vec getter must materialize a destination");
+    assert_eq!(
+        local_ty(dest),
+        elem_ty,
+        "`{symbol}` destination must retain the Hew scalar type"
+    );
+
+    assert_index_oob_branch(function, call_block);
+}
+
+fn assert_index_oob_branch(function: &RawMirFunction, call_block: u32) {
+    let trap_blocks: Vec<_> = function
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                block.terminator,
+                Terminator::Trap {
+                    kind: TrapKind::IndexOutOfBounds
+                }
+            )
+        })
+        .map(|block| block.id)
+        .collect();
+    assert_eq!(
+        trap_blocks.len(),
+        1,
+        "scalar Vec index must preserve one IndexOutOfBounds trap"
+    );
+    assert!(
+        function.blocks.iter().any(|block| matches!(
+            block.terminator,
+            Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } if then_target == trap_blocks[0] && else_target == call_block
+        )),
+        "bounds-check branch must select the OOB trap or typed getter"
+    );
 }
 
 #[test]
@@ -439,10 +546,11 @@ fn vec_bool_scalar_index_lowers_to_bool_getter() {
         ",
     );
 
-    let symbols = runtime_symbols_in_fn(&pipeline, "pick_bool");
-    assert!(
-        symbols.iter().any(|sym| sym == "hew_vec_get_bool"),
-        "Vec<bool> scalar index must lower to hew_vec_get_bool; got {symbols:?}"
+    assert_typed_scalar_getter(
+        &pipeline,
+        "pick_bool",
+        RuntimeCallFamily::VecGet(VecGetElem::Bool),
+        &ResolvedTy::Bool,
     );
 }
 
@@ -454,13 +562,10 @@ fn vec_char_scalar_index_lowers_to_i32_getter() {
         ",
     );
 
-    let symbols = runtime_symbols_in_fn(&pipeline, "pick_char");
-    assert!(
-        symbols.iter().any(|sym| sym == "hew_vec_get_i32"),
-        "Vec<char> scalar index must lower to hew_vec_get_i32; got {symbols:?}"
-    );
-    assert!(
-        !symbols.iter().any(|sym| sym.contains("_char")),
-        "Vec<char> scalar index must not introduce a char-specific Vec symbol; got {symbols:?}"
+    assert_typed_scalar_getter(
+        &pipeline,
+        "pick_char",
+        RuntimeCallFamily::VecGet(VecGetElem::I32),
+        &ResolvedTy::Char,
     );
 }

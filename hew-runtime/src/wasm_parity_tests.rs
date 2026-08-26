@@ -1095,7 +1095,7 @@ unsafe extern "C-unwind" fn close_wasm_mailbox_then_cooperate_dispatch(
     std::ptr::null_mut()
 }
 
-unsafe extern "C" fn mark_terminate_state(state: *mut c_void) {
+unsafe extern "C-unwind" fn mark_terminate_state(state: *mut c_void) {
     if !state.is_null() {
         // SAFETY: the test installs an AtomicBool as the actor state pointer.
         unsafe { (*state.cast::<AtomicBool>()).store(true, Ordering::Release) };
@@ -1479,9 +1479,9 @@ fn wasm_cooperate_returns_cancel_when_mailbox_closes_during_dispatch() {
 
 // ── HeapExceeded parity ─────────────────────────────────────────────────────
 //
-// Native arena cap exhaustion routes through the longjmp seam, stamping
+// Native arena cap exhaustion routes through the language-unwind seam, stamping
 // `HEW_TRAP_HEAP_EXCEEDED` on `actor.error_code` so the supervisor sees
-// `ExitReason::HeapExceeded`. WASM has no longjmp and the production WASI
+// `ExitReason::HeapExceeded`. WASM has no portable EH and the production WASI
 // sysroot is panic=abort: the arena stamps the same code for diagnostics, then
 // terminates the module. Actor-local containment is intentionally not claimed.
 //

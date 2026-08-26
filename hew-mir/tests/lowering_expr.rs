@@ -18,6 +18,8 @@ mod binop_bitwise_logical;
 mod borrowed_forwarder_retained_owner_class;
 #[path = "lowering_expr/bytes_literal_lowering.rs"]
 mod bytes_literal_lowering;
+#[path = "lowering_expr/bytes_retained_local_share.rs"]
+mod bytes_retained_local_share;
 #[path = "lowering_expr/closure_await_fail_closed.rs"]
 mod closure_await_fail_closed;
 #[path = "lowering_expr/closure_env_ownership.rs"]
@@ -77,6 +79,8 @@ mod match_literal_string;
 mod match_project;
 #[path = "lowering_expr/monomorph_lowering_test.rs"]
 mod monomorph_lowering_test;
+#[path = "lowering_expr/nested_tuple_alias_rebind.rs"]
+mod nested_tuple_alias_rebind;
 #[path = "lowering_expr/numeric_cast_lowering.rs"]
 mod numeric_cast_lowering;
 #[path = "lowering_expr/observe_string_temp_drop_canary.rs"]

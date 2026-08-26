@@ -23,9 +23,10 @@ use hew_cabi::vec::HewTypeOwnershipKind;
 
 use crate::hashmap::{
     hew_hashmap_clear_layout, hew_hashmap_clone_layout, hew_hashmap_contains_key_layout,
-    hew_hashmap_free_layout, hew_hashmap_insert_layout, hew_hashmap_keys_layout,
+    hew_hashmap_free_layout, hew_hashmap_insert_layout, hew_hashmap_iter_free_layout,
+    hew_hashmap_iter_new_layout, hew_hashmap_iter_next_layout, hew_hashmap_keys_layout,
     hew_hashmap_len_layout, hew_hashmap_new_with_layout, hew_hashmap_remove_layout,
-    HewLayoutHashMap,
+    HewLayoutHashMap, HewLayoutHashMapIter,
 };
 use crate::vec::HewVec;
 
@@ -110,6 +111,67 @@ static VALUE_LAYOUT: HewMapValueLayout = HewMapValueLayout {
 pub struct HewLayoutHashSet {
     /// Underlying layout-backed map. Elements are keys; values are ZST.
     map: *mut HewLayoutHashMap,
+}
+
+/// Opaque borrowing cursor over a layout-backed set.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewLayoutHashSetIter {
+    inner: *mut HewLayoutHashMapIter,
+}
+
+/// Create an iterator over `set`'s elements.
+///
+/// # Safety
+///
+/// `set` must remain live and unmodified until the iterator is freed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_iter_new_layout(
+    set: *const HewLayoutHashSet,
+) -> *mut HewLayoutHashSetIter {
+    // SAFETY: set is live per this fn's contract.
+    unsafe { validate_set_op(set) };
+    // SAFETY: validation established set and its wrapped map are live; the
+    // caller guarantees neither is mutated while the iterator exists.
+    let inner = unsafe { hew_hashmap_iter_new_layout((*set).map) };
+    Box::into_raw(Box::new(HewLayoutHashSetIter { inner }))
+}
+
+/// Advance a set iterator, returning a borrowed pointer to its next element.
+///
+/// # Safety
+///
+/// `iter` and `out_elem` must be non-null and the source set must remain live
+/// and unmodified.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_iter_next_layout(
+    iter: *mut HewLayoutHashSetIter,
+    out_elem: *mut *const c_void,
+) -> bool {
+    if iter.is_null() || out_elem.is_null() {
+        crate::set_last_error("HewLayoutHashSet iterator: null argument");
+        std::process::abort();
+    }
+    let mut ignored_value = ptr::null();
+    // SAFETY: the arguments were checked above, and the constructor captured a
+    // live map iterator whose source remains unmodified by contract.
+    unsafe { hew_hashmap_iter_next_layout((*iter).inner, out_elem, &raw mut ignored_value) }
+}
+
+/// Free a set iterator. A null pointer is a no-op.
+///
+/// # Safety
+///
+/// `iter` must be null or a live iterator returned by
+/// [`hew_hashset_iter_new_layout`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_iter_free_layout(iter: *mut HewLayoutHashSetIter) {
+    if !iter.is_null() {
+        // SAFETY: iter has unique ownership from Box::into_raw per the contract.
+        let cursor = unsafe { Box::from_raw(iter) };
+        // SAFETY: cursor.inner is the still-live iterator owned by cursor.
+        unsafe { hew_hashmap_iter_free_layout(cursor.inner) };
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -15,8 +15,8 @@
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
-    BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
-    ExitPath, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator,
+    BasicBlock, BlockKind, CallAuthority, CheckedMirFunction, DropPlan, ElabBlock,
+    ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place, RawMirFunction, Terminator,
 };
 use hew_types::{BuiltinType, ResolvedTy};
 
@@ -42,34 +42,39 @@ fn duplex_ty() -> ResolvedTy {
 /// Minimal pipeline with a `hew_duplex_pair` call — mirrors the shape produced
 /// by `lower_duplex_pair` in `hew-mir/src/lower.rs`.
 fn pipeline_with_duplex_pair_call() -> IrPipeline {
-    let raw_blocks = vec![BasicBlock {
-        id: 0,
-        statements: vec![],
-        instructions: vec![
-            Instr::ConstI64 {
+    let raw_blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::ConstI64 {
                 dest: Place::Local(0),
                 value: 16,
+            }],
+            terminator: Terminator::Call {
+                callee: "hew_duplex_pair".to_owned(),
+                authority: CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::DuplexPair,
+                ),
+                args: vec![
+                    Place::Local(0),
+                    Place::Local(0),
+                    Place::DuplexHandle(1),
+                    Place::DuplexHandle(2),
+                ],
+                dest: None,
+                next: 1,
             },
-            Instr::CallRuntimeAbi(
-                RuntimeCall::new(
-                    "hew_duplex_pair",
-                    vec![
-                        Place::Local(0),
-                        Place::Local(0),
-                        Place::DuplexHandle(1),
-                        Place::DuplexHandle(2),
-                    ],
-                    None,
-                )
-                .expect("hew_duplex_pair is on the M2 allowlist"),
-            ),
-            Instr::ConstI64 {
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![Instr::ConstI64 {
                 dest: Place::ReturnSlot,
                 value: 0,
-            },
-        ],
-        terminator: Terminator::Return,
-    }];
+            }],
+            terminator: Terminator::Return,
+        },
+    ];
     IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
@@ -104,19 +109,28 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             statements: vec![],
             decisions: vec![],
-            blocks: vec![ElabBlock {
-                id: 0,
-                kind: BlockKind::Normal,
-                drops: vec![],
-                successor: None,
-            }],
-            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            blocks: vec![
+                ElabBlock {
+                    id: 0,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: Some(1),
+                },
+                ElabBlock {
+                    id: 1,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+            ],
+            drop_plans: vec![(ExitPath::Return { block: 1 }, DropPlan::default())],
             coroutine: None,
             lambda_captures: vec![],
         }],
@@ -193,6 +207,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
@@ -284,6 +299,7 @@ fn pipeline_no_duplex() -> IrPipeline {
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),

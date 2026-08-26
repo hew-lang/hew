@@ -57,10 +57,18 @@ pub struct FrontendOptions {
 
 #[derive(Debug, Clone)]
 pub enum FrontendDiagnosticKind {
-    Message(String),
+    Message(FrontendMessageDiagnostic),
     Parse(hew_parser::ParseError),
     Type(hew_types::TypeError),
     Hir(hew_hir::HirDiagnostic),
+}
+
+/// A frontend failure that has no parser/type/HIR payload but still needs a
+/// stable machine-readable identity (for example package-module resolution).
+#[derive(Debug, Clone)]
+pub struct FrontendMessageDiagnostic {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +87,22 @@ impl FrontendDiagnostic {
             source: None,
             filename: None,
             note_sources: Vec::new(),
-            kind: FrontendDiagnosticKind::Message(message.into()),
+            kind: FrontendDiagnosticKind::Message(FrontendMessageDiagnostic {
+                code: "E_MESSAGE".to_string(),
+                message: message.into(),
+            }),
+        }
+    }
+
+    fn coded_message(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            source: None,
+            filename: None,
+            note_sources: Vec::new(),
+            kind: FrontendDiagnosticKind::Message(FrontendMessageDiagnostic {
+                code: code.to_string(),
+                message: message.into(),
+            }),
         }
     }
 
@@ -146,6 +169,14 @@ impl FrontendFailure {
 
     fn message_only(message: impl Into<String>) -> Self {
         Self::new(message, Vec::new())
+    }
+
+    fn coded_message(code: &str, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::new(
+            message.clone(),
+            vec![FrontendDiagnostic::coded_message(code, message)],
+        )
     }
 }
 
@@ -1303,6 +1334,10 @@ fn resolve_file_imports_internal(
             Item::Import(decl) if !decl.path.is_empty() => {
                 let module_str = decl.path.join("::");
                 let source_module = decl.path.join(".");
+                let is_declared_dependency = ctx.manifest_deps.is_some_and(|deps| {
+                    deps.iter()
+                        .any(|dependency| dependency == &module_str || dependency == &source_module)
+                });
                 let is_local = ctx
                     .package_name
                     .is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg));
@@ -1321,6 +1356,7 @@ fn resolve_file_imports_internal(
                     .join(format!("{last}.hew"));
                 let mut candidates = Vec::new();
                 let mut locked_project_candidates = Vec::new();
+                let mut installed_package_dir = None;
                 let locked_version = ctx
                     .locked_versions
                     .and_then(|locked| {
@@ -1364,6 +1400,9 @@ fn resolve_file_imports_internal(
                     candidates.push(ctx.project_dir.join(".hew/packages").join(&rel_path));
                     let project_package_dir =
                         ctx.project_dir.join(".hew/packages").join(&module_dir);
+                    if is_declared_dependency {
+                        installed_package_dir = Some(project_package_dir.clone());
+                    }
                     let project_package_entry =
                         ctx.project_dir.join(".hew/packages").join(&dir_path);
                     if let Some(version) = locked_version {
@@ -1460,7 +1499,7 @@ fn resolve_file_imports_internal(
                         .map(|p| p.display().to_string())
                         .collect::<Vec<_>>()
                         .join("` and `");
-                    return Err(FrontendFailure::message_only(format!(
+                    return Err(FrontendFailure::coded_message("E_IMPORT_AMBIGUOUS", format!(
                         "Error: import `{source_module}` is ambiguous: both `{paths}` exist.\n  Rename or remove one to resolve the ambiguity."
                     )));
                 }
@@ -1468,25 +1507,33 @@ fn resolve_file_imports_internal(
                 if let Some(canonical) = resolved.into_iter().next() {
                     canonical
                 } else {
+                    if let Some(package_dir) = installed_package_dir.filter(|dir| dir.is_dir()) {
+                        let expected = package_dir.join(format!("{last}.hew"));
+                        return Err(FrontendFailure::coded_message(
+                            "E_PACKAGE_ROOT_MISSING",
+                            format!(
+                                "Error: installed dependency `{source_module}` has no canonical root module `{last}.hew` at {}\n  hint: a library package exposes `<package-name>.hew`; create `{}` and set `[package] main = \"{last}.hew\"` (new packages get this layout from `hew init --lib {source_module}`)",
+                                package_dir.display(),
+                                expected.display(),
+                            ),
+                        ));
+                    }
                     let tried = candidates
                         .iter()
                         .map(|candidate| candidate.display().to_string())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let hint = if ctx.manifest_deps.is_some_and(|deps| {
-                        deps.iter().any(|dependency| {
-                            dependency == &module_str || dependency == &source_module
-                        })
-                    }) {
+                    let hint = if is_declared_dependency {
                         "\n  hint: this dependency is declared in hew.toml — run `hew install`"
                     } else if ctx.manifest_deps.is_some() {
                         "\n  hint: add this module to [dependencies] in hew.toml"
                     } else {
                         ""
                     };
-                    return Err(FrontendFailure::message_only(format!(
-                        "Error: module `{source_module}` not found (tried: {tried}){hint}"
-                    )));
+                    return Err(FrontendFailure::coded_message(
+                        "E_MODULE_NOT_FOUND",
+                        format!("Error: module `{source_module}` not found (tried: {tried}){hint}"),
+                    ));
                 }
             }
             _ => continue,

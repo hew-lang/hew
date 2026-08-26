@@ -81,6 +81,7 @@ fn pipeline_with_entry_terminator(
             decisions: vec![],
             checks: vec![],
             cooperate_sites: vec![],
+            ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),

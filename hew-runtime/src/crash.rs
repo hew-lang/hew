@@ -161,23 +161,34 @@ fn push_crash_report_to(log: &PoisonSafe<VecDeque<CrashReport>>, report: CrashRe
     });
 }
 
-/// Record a fault-injected crash in the global crash log.
+/// Record a logical actor failure caught by the scheduler's language-unwind
+/// boundary.
 ///
-/// Creates a minimal crash report with `signal = -1` (injected) so it
-/// can be distinguished from real crashes.
-pub(crate) fn record_injected_crash(actor_id: u64) {
+/// Logical failures do not carry hardware `siginfo_t`; the typed Hew trap code
+/// occupies `signal`, matching the historical recovery report and the public
+/// `CrashReport`/observe schema. The scheduler supplies the message type when a
+/// mailbox node backs the activation; resumed continuations use zero.
+pub(crate) fn record_logical_crash(actor_id: u64, code: i32, msg_type: i32) {
     let report = CrashReport {
         actor_id,
         actor_pid: actor_id,
-        signal: -1, // Indicates injected fault, not a real signal.
+        signal: code,
         signal_code: 0,
         fault_addr: 0,
-        msg_type: 0,
+        msg_type,
         timestamp_ns: monotonic_time_ns(),
         worker_id: 0,
         total_crashes: 0,
     };
     push_crash_report(report);
+}
+
+/// Record a fault-injected crash in the global crash log.
+///
+/// Uses `signal = -1` so injected failures remain distinguishable from typed
+/// logical traps and hardware signals.
+pub(crate) fn record_injected_crash(actor_id: u64) {
+    record_logical_crash(actor_id, -1, 0);
 }
 
 // ── Monotonic timestamp utility ─────────────────────────────────────────
@@ -371,50 +382,6 @@ pub fn snapshot_crashes_json() -> String {
         json.push(']');
         json
     })
-}
-
-// ── Integration with signal recovery ────────────────────────────────────
-
-/// Build a crash report from signal recovery context.
-///
-/// This function is called from [`crate::signal::handle_crash_recovery`]
-/// to create a detailed crash report from the recovery context.
-///
-/// # Safety
-///
-/// Must be called from a worker thread immediately after crash recovery.
-/// `actor` must be a valid pointer to the crashed actor.
-pub(crate) unsafe fn build_crash_report(
-    actor: *mut crate::actor::HewActor,
-    signal: i32,
-    signal_code: i32,
-    fault_addr: usize,
-    msg_type: i32,
-    worker_id: u32,
-) -> CrashReport {
-    let timestamp_ns = monotonic_time_ns();
-
-    // SAFETY: Caller guarantees actor is valid.
-    {
-        let id = if actor.is_null() {
-            0
-        } else {
-            // SAFETY: Caller guarantees actor pointer is valid.
-            unsafe { (*actor).id }
-        };
-
-        CrashReport {
-            actor_id: id,
-            actor_pid: id,
-            signal,
-            signal_code,
-            fault_addr,
-            msg_type,
-            timestamp_ns,
-            worker_id,
-            total_crashes: 0, // Will be updated by caller if they have CrashStats
-        }
-    }
 }
 
 #[cfg(test)]

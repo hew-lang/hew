@@ -98,7 +98,7 @@ pub struct HewActor {
     pub init_state: *mut c_void,
     pub init_state_size: usize,
     pub coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
-    pub terminate_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub terminate_fn: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
     pub state_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
     pub state_clone_fn: Option<crate::actor::HewStateCloneFn>,
     pub terminate_called: AtomicBool,
@@ -1739,7 +1739,7 @@ unsafe fn settle_after_activation_wasm(actor: *mut HewActor) {
 ///
 /// This is the WASM-simplified version of the native `activate_actor`.
 /// Key differences from native:
-/// - No signal recovery (`sigsetjmp`/`siglongjmp`) — no signals on WASM.
+/// - No native signal recovery — no signals on WASM.
 /// - No `ACTIVE_WORKERS` tracking (always 1 worker).
 /// - No crash fault injection or delay faults.
 /// - State transitions use plain `.store()` — single thread, no contention.
@@ -1831,6 +1831,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     let mut execution_context = crate::execution_context::HewExecutionContext {
         actor: actor.cast::<c_void>().cast::<crate::actor::HewActor>(),
         actor_id: a.id,
+        // Host-side parity builds enclose dispatch in `catch_unwind`; the
+        // production wasm32 artifact aborts on panic before consulting this bit.
+        flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
         arena: a.arena.cast::<crate::arena::ActorArena>(),
         prev_context: crate::execution_context::current_context(),
         lock_seat: crate::actor::actor_state_lock_seat(actor.cast::<crate::actor::HewActor>()),
@@ -2125,14 +2128,17 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Err(panic_payload) = dispatch_result {
                     crate::set_last_error("actor dispatch panicked");
+                    let code = panic_payload
+                        .downcast_ref::<crate::actor::HewPanic>()
+                        .map_or(101, |panic| panic.code);
                     // Tagged-crash surfacing: if the dispatch (or anything
                     // it called, e.g. `hew_arena_malloc` on cap exhaustion)
                     // stamped a HEW_TRAP_* code onto the actor before the
                     // panic, transition the actor to Crashed so
                     // ExitReason::from_error_code(actor.error_code) surfaces
                     // the named reason at the supervisor boundary. This is
-                    // the WASM counterpart of the native longjmp seam,
-                    // which jumps directly out of dispatch with the code
+                    // the WASM counterpart of the native unwind seam,
+                    // which exits dispatch with the code
                     // already installed.
                     let cooperative_crash = a.error_code.load(Ordering::Acquire) != 0;
                     // SAFETY: catch_unwind proves the dispatch stack is
@@ -2152,6 +2158,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                         a.actor_state
                             .store(HewActorState::Crashed as i32, Ordering::Release);
                     }
+                    crate::crash::record_logical_crash(a.id, code, msg_ref.msg_type);
                     crate::util::quarantine_panic_payload(panic_payload);
                 // SAFETY: normal dispatch return matches the scope opened
                 // immediately before handler entry.
@@ -2298,9 +2305,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         // restoring the previous arena, not saving a new one here.
         let _ = arena_install(PREV_ARENA);
 
-        // Native skips arena_reset when the actor crashed (crash recovery via
-        // siglongjmp resets the arena itself on the crash path).  WASM has no
-        // signal/siglongjmp mechanism today, so there is no separate crash
+        // Native skips arena_reset when the actor crashed (its caught-unwind
+        // recovery resets the arena on the crash path). WASM has no native
+        // unwind mechanism today, so there is no separate crash
         // recovery path that could issue a competing reset.  Unconditional
         // reset here is therefore safe and correct for WASM until a crash
         // handling mechanism is added.
@@ -5779,7 +5786,7 @@ mod tests {
 
     static TERMINATE_COUNT: AtomicI32 = AtomicI32::new(0);
 
-    unsafe extern "C" fn counting_terminate_fn(_state: *mut c_void) {
+    unsafe extern "C-unwind" fn counting_terminate_fn(_state: *mut c_void) {
         TERMINATE_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 

@@ -2,12 +2,29 @@
 
 > The legacy HBF byte-layout helpers (`encode_header`, `decode_header`,
 > `validate_header`) were removed when the CBOR-native wire format replaced the
-> HBF era. This module now holds only the
+> HBF era. This module now holds the generic typed codec facade plus the
 > opaque `Value` contract described below. See
 > [`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](../../../docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md)
 > §5 S1 for history.
 
-`std::encoding::wire` holds the canonical opaque `Value` contract shared by the
+`std::encoding::wire` exposes one generic codec surface for every admitted
+`Serializable` value:
+
+```hew
+import std.encoding.wire;
+
+let json = wire.to_json(features);
+let back = wire.from_json<HashMap<string, Feature>>(json);
+let bytes = wire.encode(features);
+let decoded = wire.decode<HashMap<string, Feature>>(bytes);
+```
+
+`to_json`/`from_json` and `to_yaml`/`from_yaml` reuse the same typed CBOR
+descriptor and compiler-emitted thunks as `#[wire]` methods and actor
+transport. `from_json` and `from_yaml` are fallible; binary `decode` retains the
+existing trusted-input, trap-on-malformed-data contract of `Type.decode`.
+
+The module also holds the canonical opaque `Value` contract shared by the
 stdlib encoding modules.
 
 ## Why `Value` stays opaque

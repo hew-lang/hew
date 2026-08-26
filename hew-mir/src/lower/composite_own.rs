@@ -29,18 +29,17 @@ use super::{
     bytes_runtime_arg_is_borrow, bytes_share_sink_places, close_alias_binders_forward,
     collect_record_field_binders, compute_collection_interior_alias_taint,
     descend_match_bound_hop_alias_chain, descend_match_bound_hop_aliases, forward_move_closure,
-    instr_escape_places, instr_source_places, local_is_byte_copy_aggregate, note_payload_escape,
+    instr_source_places, local_is_byte_copy_aggregate, note_payload_escape,
     place_is_interior_projection, place_is_tag_read, propagate_payload_binder_root,
     propagate_whole_value_alias_roots, readmit_retained_bytes_tuple_roots, render_owned_handle_ty,
     retained_string_terminator_drop_safe, shift_instr_spans_on_insert,
     string_binder_read_is_user_fn_borrow, string_field_load_producer_dest,
-    terminator_escape_places, terminator_source_places, ty_is_heap_owning_enum_composite,
-    ty_is_heap_owning_tuple, ty_is_owned_handle_leaf, user_record_layout_key,
-    vec_iter_record_init_vec_source, AggregateOwner, BTreeMap, BasicBlock, BindingId, Builder,
-    BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
-    FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement,
-    PayloadBinderRoot, Place, ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, StringRetainCondition,
-    SuspendKind, Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
+    terminator_source_places, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
+    ty_is_owned_handle_leaf, user_record_layout_key, vec_iter_record_init_vec_source,
+    AggregateOwner, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
+    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, FieldBinderProvenance,
+    FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, PayloadBinderRoot, Place,
+    ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, StringRetainCondition, SuspendKind, Terminator,
 };
 pub(crate) use aggregate_borrowed_ingress_clone::string_or_bitcopy_tree;
 use aggregate_borrowed_ingress_clone::{
@@ -1416,6 +1415,13 @@ pub(super) fn derive_enum_composite_drop_allowed(
     let mut payload_binder_candidate_root: HashMap<u32, PayloadBinderRoot> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
+            if matches!(instr, Instr::InteriorMutationCommit { .. }) {
+                // This normal-edge marker refreshes the same stack-resident
+                // bytes owner after a mutating runtime call. It neither
+                // aliases nor escapes the value and cannot revoke the
+                // binding's sole cleanup authority.
+                continue;
+            }
             if let Instr::Move { dest, src } = instr {
                 if place_is_interior_projection(*src) {
                     if let Some(sl) = base_local(*src) {
@@ -1597,7 +1603,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         place,
                         transferee,
                         authority:
-                            crate::model::NeutralizeAuthority::SendTransferLastUse
+                            crate::model::NeutralizeAuthority::PayloadBindingTransfer
+                            | crate::model::NeutralizeAuthority::SendTransferLastUse
                             | crate::model::NeutralizeAuthority::WholeCarrierConsume
                             | crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
                     } => *place == source && *transferee == Some(dest),
@@ -1788,6 +1795,12 @@ pub(super) fn derive_enum_composite_drop_allowed(
     for block in blocks {
         for (instr_index, instr) in block.instructions.iter().enumerate() {
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
+                continue;
+            }
+            if matches!(instr, Instr::InteriorMutationCommit { .. }) {
+                // The marker updates the existing stack triple on the call's
+                // normal edge. It is a borrow-compatible in-place write, not
+                // an owning sink or alias escape.
                 continue;
             }
             // COPY-IN element store (`hew_vec_push_owned` / `hew_vec_set_owned`)
@@ -2948,7 +2961,7 @@ pub(super) fn derive_owned_record_drop_allowed(
 /// receiver-borrowing collection op:
 /// those calls borrow the handle in place and never free it, so arg[0] is a
 /// transient read, not an ownership escape. Every other read — a `Move` to a
-/// non-member slot / `ReturnSlot`, a `RecordInit` / `SpawnActor` / closure-env
+/// non-member slot, a `RecordInit` / `SpawnActor` / closure-env
 /// capture, an actor `Send` / `Ask`, a return — is an escape and excludes the
 /// root. A handle the prover does not positively clear LEAKS (as before this
 /// fix); it never double-frees. The default for any binding the prover did not
@@ -3071,8 +3084,10 @@ pub(super) fn derive_local_collection_drop_allowed(
             }
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member — already folded into the alias set) from a
-            // real escape (dest is a non-member local or the `ReturnSlot`, which
-            // is never an alias member).
+            // real escape. A direct `ReturnSlot` move stays admitted: it is a
+            // path-local transfer, so the per-exit dataflow suppresses the
+            // successful return drop while earlier unwind edges still release
+            // the live collection owner.
             if let Instr::Move { dest, src } = instr {
                 if let Some(sl) = base_local(*src) {
                     let src_is_member = alias_of.contains_key(&sl)
@@ -3080,7 +3095,7 @@ pub(super) fn derive_local_collection_drop_allowed(
                     let dest_is_member = base_local(*dest).is_some_and(|dl| {
                         alias_of.contains_key(&dl) && matches!(dest, Place::Local(_))
                     });
-                    if src_is_member && !dest_is_member {
+                    if src_is_member && !dest_is_member && !matches!(dest, Place::ReturnSlot) {
                         note_escape(sl, &mut excluded_roots);
                     }
                 }
@@ -3478,9 +3493,18 @@ pub(super) fn derive_local_bytes_drop_allowed(
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
                 continue;
             }
+            if matches!(instr, Instr::InteriorMutationCommit { .. }) {
+                // The marker updates the existing stack triple on the call's
+                // normal edge. It is a borrow-compatible in-place write, not
+                // an owning sink or alias escape.
+                continue;
+            }
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member — already folded into the alias set) from a
-            // real escape (dest is a non-member local or the `ReturnSlot`).
+            // real escape. A move into `ReturnSlot` is a path-local transfer:
+            // keep the source in the cleanup candidate set so an earlier call's
+            // unwind edge releases it; the ownership dataflow marks it consumed
+            // on the successful return path.
             if let Instr::Move { dest, src } = instr {
                 if let Some(sl) = base_local(*src) {
                     let src_is_member = alias_of.contains_key(&sl)
@@ -3488,7 +3512,7 @@ pub(super) fn derive_local_bytes_drop_allowed(
                     let dest_is_member = base_local(*dest).is_some_and(|dl| {
                         alias_of.contains_key(&dl) && matches!(dest, Place::Local(_))
                     });
-                    if src_is_member && !dest_is_member {
+                    if src_is_member && !dest_is_member && !matches!(dest, Place::ReturnSlot) {
                         note_escape(sl, &mut excluded_roots);
                     }
                 }
@@ -5417,7 +5441,11 @@ use returned_member_flow::{compute_returned_flow_locals, retained_owner_values_b
 ///        `RecordInit`, so the returned `Ok(handle)` member enters the set).
 ///   3. Map back: every `owned_locals` binding whose backing local (resolved by
 ///      [`base_local`], which also resolves the handle places) is in
-///      `flows_to_return` is a returned member and is excluded from drop.
+///      `flows_to_return` is a returned member and is excluded from drop, except
+///      a whole owner moved directly to `ReturnSlot`. That direct move is
+///      represented precisely by ownership dataflow: it consumes the owner on
+///      the successful return path while keeping it live for earlier unwind
+///      exits, so blanket exclusion would leak those exits.
 ///
 /// Owned handle members (`DuplexHandle`/`SendHalf`/`RecvHalf`/`LambdaActorHandle`/
 /// `ActorHandle`) are registered in `binding_locals` directly as their handle
@@ -5453,12 +5481,23 @@ pub(super) fn derive_returned_aggregate_member_bindings(
     binding_locals: &HashMap<BindingId, Place>,
 ) -> HashSet<BindingId> {
     let flows_to_return = compute_returned_flow_locals(blocks);
+    let direct_return_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src,
+            } => base_local(*src),
+            _ => None,
+        })
+        .collect();
     // Map member locals back to their owned bindings.
     let mut returned_members = HashSet::new();
     for (binding, _name, _ty) in owned_locals {
         if let Some(place) = binding_locals.get(binding) {
             if let Some(local) = base_local(*place) {
-                if flows_to_return.contains(&local) {
+                if flows_to_return.contains(&local) && !direct_return_locals.contains(&local) {
                     returned_members.insert(*binding);
                 }
             }
@@ -6198,6 +6237,7 @@ pub(super) fn derive_borrowed_builtin_handle_projection_alias_bindings(
               escape-poison can recover a collapsed carrier's moved-out payload"
 )]
 #[must_use]
+#[cfg(test)]
 pub(super) fn detect_unproven_aggregate_handle_double_free(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,

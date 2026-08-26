@@ -64,7 +64,9 @@
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::runtime_symbols::is_known_runtime_symbol;
-use hew_mir::{lower_hir_module, Instr, IrPipeline, MirDiagnosticKind, Terminator};
+use hew_mir::{
+    lower_hir_module, Instr, IrPipeline, MirDiagnosticKind, OwnershipEvent, Place, Terminator,
+};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 /// Lower a Hew source string through the full type-checked HIR→MIR pipeline.
@@ -263,7 +265,7 @@ fn has_nyi(pl: &IrPipeline) -> bool {
 /// `hew_vec_get_str` must be the element fetch (proves the real retained-getter
 /// for-in path lowered, not a fake-green workaround).
 fn emits_vec_get_str(pl: &IrPipeline) -> bool {
-    emitted_runtime_symbols(pl)
+    emitted_call_symbols(pl)
         .iter()
         .any(|s| s == "hew_vec_get_str")
 }
@@ -409,13 +411,109 @@ fn vec_string_for_in_unused_binding_drops_once() {
     );
 }
 
+fn assert_returned_binding_paths_are_exact(function: &hew_mir::RawMirFunction) {
+    let handoffs: Vec<_> = function
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            block.instructions.iter().find_map(|instruction| {
+                let Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                    owner,
+                    from,
+                    to: None,
+                    ..
+                }) = instruction
+                else {
+                    return None;
+                };
+                block
+                    .instructions
+                    .iter()
+                    .any(|candidate| {
+                        matches!(candidate, Instr::Move { dest: Place::ReturnSlot, src } if src == from)
+                    })
+                    .then_some((block.id, *owner, *from))
+            })
+        })
+        .collect();
+    let [(handoff_block, owner, place)] = handoffs.as_slice() else {
+        panic!("expected one terminal owner handoff for returned `line`; got {handoffs:?}");
+    };
+
+    let mut return_path = std::collections::HashSet::new();
+    let mut pending = vec![*handoff_block];
+    let mut reaches_return = false;
+    while let Some(block_id) = pending.pop() {
+        if !return_path.insert(block_id) {
+            continue;
+        }
+        let block = function
+            .blocks
+            .iter()
+            .find(|block| block.id == block_id)
+            .expect("successor must name a real block");
+        reaches_return |= matches!(block.terminator, Terminator::Return);
+        assert!(
+            !block.instructions.iter().any(|instruction| {
+                matches!(instruction, Instr::Drop { place: dropped, .. } if dropped == place)
+            }),
+            "the return arm transferred {owner:?} from {place:?}; its continuation must not drop that caller-owned place: {block:?}",
+        );
+        pending.extend(block.successors());
+    }
+    assert!(
+        reaches_return,
+        "the owner handoff must reach a return terminator"
+    );
+
+    let non_return_pairs: usize = function
+        .blocks
+        .iter()
+        .filter(|block| !return_path.contains(&block.id))
+        .map(|block| {
+            let drops = block
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(instruction,
+                        Instr::Drop {
+                            place: dropped,
+                            ty: hew_types::ResolvedTy::String,
+                            drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
+                        } if dropped == place
+                    )
+                })
+                .count();
+            let releases = block
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(instruction,
+                        Instr::OwnershipEvent(OwnershipEvent::Release {
+                            owner: released,
+                            place: released_place,
+                        }) if released == owner && released_place == place
+                    )
+                })
+                .count();
+            assert_eq!(
+                drops, releases,
+                "the non-return arm must pair the physical drop of {place:?} with its exact logical release in the same block",
+            );
+            drops
+        })
+        .sum();
+    assert_eq!(
+        non_return_pairs, 1,
+        "exactly one mutually-exclusive non-return arm must drop and release {owner:?} at {place:?}",
+    );
+}
+
 /// NEGATIVE / ownership-escape: a body that `return`s the binding genuinely
-/// moves the single retained reference to the caller. The body-end drop is
-/// SUPPRESSED on every path (leak-not-double-free), so NO `hew_string_drop` is
-/// emitted for the iteration binding — emitting one would over-release a
-/// reference the caller now owns. This proves the escape suppression fires
-/// rather than blindly dropping. (It does NOT trip an NYI — an escaping element
-/// is a legitimate program shape, matching the generator-yield posture.)
+/// moves the single retained reference to the caller. The return arm and its
+/// cleanup continuation must not drop that transferred place. The mutually
+/// exclusive non-return arm still owns its clone and must pair exactly one
+/// physical drop with one logical release before continuing the loop.
 #[test]
 fn vec_string_for_in_returned_binding_suppresses_drop() {
     let pl = pipeline_with_tc(
@@ -439,13 +537,12 @@ fn vec_string_for_in_returned_binding_suppresses_drop() {
         emits_vec_get_clone(&pl),
         "the clone-out getter still lowers"
     );
-    assert_eq!(
-        string_drop_count(&pl),
-        0,
-        "the returned binding's single retained reference escapes to the caller; \
-         the body-end drop must be suppressed (leak-not-double-free), so no \
-         hew_string_drop is emitted for the iteration binding",
-    );
+    let function = pl
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "first_match")
+        .expect("first_match must be present in raw MIR");
+    assert_returned_binding_paths_are_exact(function);
 }
 
 /// SCALAR INDEX, BOUND form: `let y = xs[i]` over `Vec<string>` lowers through

@@ -140,7 +140,7 @@ enum CrashCleanupRunState {
     Done,
 }
 
-/// How a typed slot may be escrowed for post-longjmp cleanup.
+/// How a typed slot may be escrowed for cleanup after a caught dispatch unwind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum CrashCleanupRelocation {
@@ -157,10 +157,11 @@ pub enum CrashCleanupRelocation {
 #[repr(u32)]
 pub enum CrashCleanupStorage {
     /// The slot itself lies in the tracked coroutine allocation and remains
-    /// readable after longjmp until raw frame reclamation.
+    /// readable after the unwind until raw frame reclamation.
     DirectFrame = 0,
     /// The slot lies on a nested synchronous helper stack. Runtime keeps an
-    /// ABI-aligned emergency byte snapshot because that stack dies at longjmp.
+    /// ABI-aligned emergency byte snapshot because that helper stack is gone
+    /// when the scheduler catches the unwind.
     Snapshot = 1,
 }
 
@@ -230,16 +231,16 @@ thread_local! {
     ///
     /// A tracked ramp allocation pushes immediately. A normal ramp return hands
     /// the frame to its caller and pops it. `hew_cont_resume` brackets the
-    /// CoroSplit resume outline with the same enter/leave pair. A signal
-    /// longjmp skips the normal pop and leaves the positively tracked frames
-    /// here for scheduler crash recovery to reclaim in LIFO order.
+    /// CoroSplit resume outline with the same enter/leave pair. A language
+    /// unwind skips the normal pop and leaves the positively tracked frames
+    /// here for scheduler recovery to reclaim in LIFO order.
     static ACTIVE_COROUTINE_FRAMES: RefCell<Vec<ActiveCoroutineFrame>> =
         const { RefCell::new(Vec::new()) };
 
     /// Scheduler-bracketed cooperative crash domains. Ordinary handler and
     /// free-function stack owners attach here when no tracked coroutine frame
-    /// is active. Native longjmp and unwind-capable host parity recovery detach
-    /// and drain the top scope; normal dispatch completion discards its state
+    /// is active. Native and unwind-capable host recovery detach and drain the
+    /// top scope; normal dispatch completion discards its state
     /// escrow only after generated lexical owners have retired their tokens.
     /// The production wasm32-wasip1 panic=abort artifact has no unwind edge.
     static DISPATCH_CRASH_CLEANUP_SCOPES: RefCell<Vec<*mut CrashCleanupRegistry>> =
@@ -289,7 +290,7 @@ thread_local! {
 // KEEP(wasm32): called from `drain_active_coroutine_frames_excluding`, whose
 // only caller `reclaim_active_coroutine_frames_excluding` is
 // `#[cfg(not(target_arch = "wasm32"))]` — the native crash-drain path taken
-// after a signal longjmp abandons a stack. This module is ungated, so wasm32 is
+// after the scheduler catches a language unwind. This module is ungated, so wasm32 is
 // the only build where the drain has no entry point. Deleting it reopens the
 // same-drain ABA / tcache double-free closed by PR #2865 (LESSONS.md
 // `crash-recovery-frame-owner-is-single-authority`).
@@ -319,7 +320,7 @@ fn publish_crash_cleanup_drain_to_signal_handler(active: bool) {
     #[cfg(not(target_arch = "wasm32"))]
     crate::signal::set_crash_cleanup_drain_active(active);
 
-    // wasm32 has no native signal module or hardware-fault longjmp boundary.
+    // wasm32 has no native signal module or hardware-fault boundary.
     // The thread-local drain-depth guard remains authoritative for cooperative
     // trap rejection without claiming native signal containment.
     #[cfg(target_arch = "wasm32")]
@@ -354,7 +355,7 @@ impl Drop for CrashCleanupDrainGuard {
 
 /// Whether this thread is executing a detached crash-cleanup finalizer.
 ///
-/// Trap bridges use this to reject a nested longjmp/unwind. A finalizer that
+/// Trap bridges use this to reject a nested unwind. A finalizer that
 /// traps may already have performed non-idempotent work; retrying it or jumping
 /// over the durable drain would make memory safety unknowable. The supported
 /// policy is therefore: Rust unwinds are caught per entry where unwinding is
@@ -366,12 +367,12 @@ pub(crate) fn crash_cleanup_drain_active() -> bool {
 
 /// Reject a cooperative trap raised by a cleanup finalizer.
 ///
-/// Longjmp/unwind would abandon a registry whose current entry is Running and
+/// An unwind would abandon a registry whose current entry is Running and
 /// may already have performed a non-idempotent close. There is no sound retry
 /// point. Rust panics crossing the `C-unwind` callback are caught per entry;
 /// Hew traps take this explicit process-fatal edge instead.
 pub(crate) fn abort_if_crash_cleanup_finalizer_trap(kind: &str) {
-    if crash_cleanup_drain_active() {
+    if crash_cleanup_drain_active() || crate::signal::state_field_finalizer_active() {
         eprintln!(
             "fatal: {kind} raised during crash-cleanup finalization; refusing to retry a partially executed finalizer"
         );
@@ -449,7 +450,7 @@ pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
 /// real coroutine frame and pushes it onto the current thread's active-frame
 /// stack. Generated coroutine prologues use only this sibling. A normal ramp
 /// return calls [`hew_cont_frame_handoff`] immediately before returning the
-/// handle; a trap/longjmp skips that handoff, leaving the frame positively
+/// handle; a language unwind skips that handoff, leaving the frame positively
 /// identified for crash recovery.
 ///
 /// # Safety
@@ -698,7 +699,7 @@ unsafe fn free_dispatch_state_snapshot(registry: &mut CrashCleanupRegistry, run:
             // every generated field update cleared its range before a
             // potentially trapping release, publishing new bytes only after
             // the replacement became valid. The generated state-drop thunk is
-            // therefore valid for this escrow even after longjmp/unwind.
+            // therefore valid for this escrow even after an unwind.
             registry.state_run_state = CrashCleanupRunState::Running;
             // This catch remains defensive for a callback that can genuinely
             // cross C-unwind. Current generated state-drop thunks call plain-C
@@ -1810,7 +1811,7 @@ unsafe fn drain_active_coroutine_frames_excluding(
 /// before this raw drain.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_void) -> usize {
-    // SAFETY: scheduler calls this only after longjmp/unwind has killed every
+    // SAFETY: scheduler calls this only after catch_unwind has retired every
     // non-excluded active frame on this thread.
     unsafe {
         drain_active_coroutine_frames_excluding(excluded, |frame| {
@@ -1836,7 +1837,7 @@ pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_
 /// Resuming a completed or destroyed continuation is undefined behaviour the
 /// compiler's emission and the executor's [`ResumePoll`] discipline prevent.
 #[no_mangle]
-pub unsafe extern "C" fn hew_cont_resume(handle: *mut c_void) {
+pub unsafe extern "C-unwind" fn hew_cont_resume(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
@@ -1933,7 +1934,7 @@ pub unsafe extern "C" fn hew_cont_poll(handle: *mut c_void, out_value: *mut c_vo
 /// dangling. Destroying twice is a double-free the single-owner discipline
 /// prevents.
 #[no_mangle]
-pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
+pub unsafe extern "C-unwind" fn hew_cont_destroy(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
@@ -2019,7 +2020,7 @@ pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
 /// per generator value.
 #[no_mangle]
 #[cfg(not(target_arch = "wasm32"))]
-pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
+pub unsafe extern "C-unwind" fn hew_gen_coro_destroy(companion: *mut c_void) {
     if companion.is_null() {
         return;
     }
@@ -2046,7 +2047,9 @@ pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
     let env_thunk_slot = unsafe { companion.cast::<u8>().add(ptr_width.saturating_mul(2)) };
     // SAFETY: the thunk field is a `void(ptr)` fn-ptr written by codegen (or null).
     let env_thunk = unsafe {
-        ptr::read_unaligned(env_thunk_slot.cast::<Option<unsafe extern "C" fn(*mut c_void)>>())
+        ptr::read_unaligned(
+            env_thunk_slot.cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
+        )
     };
     if let Some(thunk) = env_thunk {
         // SAFETY: the codegen-synthesised thunk expects this generator's env
@@ -2078,7 +2081,9 @@ pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
         // MakeGenerator codegen (or null). `read_unaligned` is sound regardless
         // of the byte-offset cast's static alignment (the field is pointer-aligned).
         let thunk = unsafe {
-            ptr::read_unaligned(thunk_slot.cast::<Option<unsafe extern "C" fn(*mut c_void)>>())
+            ptr::read_unaligned(
+                thunk_slot.cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
+            )
         };
         if let Some(thunk) = thunk {
             // SAFETY: the thunk is the codegen-synthesised per-`Y` out-drop
@@ -2113,8 +2118,8 @@ pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
 /// Frame prefix `CoroSplit` writes: resume fn-ptr, destroy fn-ptr.
 #[repr(C)]
 struct CoroFramePrefix {
-    resume: Option<unsafe extern "C" fn(*mut c_void)>,
-    destroy: Option<unsafe extern "C" fn(*mut c_void)>,
+    resume: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+    destroy: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
 }
 
 /// `llvm.coro.resume(handle)`: indirect-call the frame's resume fn-ptr.
@@ -3335,19 +3340,6 @@ mod tests {
         };
         crate::signal::init_crash_handling();
         crate::signal::init_worker_recovery(u32::MAX);
-        // Install a valid actor recovery target. Surviving via longjmp returns
-        // the sentinel 77, making both counterfactuals distinguishable from the
-        // required process-fatal disposition.
-        // SAFETY: null actor/message are accepted test metadata.
-        let jmp_buf =
-            unsafe { crate::signal::prepare_dispatch_recovery(ptr::null_mut(), ptr::null_mut()) };
-        assert!(!jmp_buf.is_null());
-        // SAFETY: the helper frame remains live until the child terminates.
-        if unsafe { crate::signal::sigsetjmp(jmp_buf, 1) } != 0 {
-            std::process::exit(77);
-        }
-        crate::signal::mark_recovery_active();
-
         let mut state = 19_u64;
         // SAFETY: state remains live through the death-test process.
         unsafe {
@@ -3433,21 +3425,6 @@ mod tests {
         }
         crate::signal::init_crash_handling();
         crate::signal::init_worker_recovery(u32::MAX);
-        // Install a valid jump target so the counterfactual is meaningful: the
-        // old handler would siglongjmp here and bypass the drain guard.
-        // SAFETY: null actor/message are accepted test metadata; the returned
-        // buffer belongs to this initialized worker thread.
-        let jmp_buf =
-            unsafe { crate::signal::prepare_dispatch_recovery(ptr::null_mut(), ptr::null_mut()) };
-        assert!(!jmp_buf.is_null());
-        // SAFETY: jmp_buf is the current thread's live recovery buffer and this
-        // helper frame remains active until the expected process exit.
-        let jumped = unsafe { crate::signal::sigsetjmp(jmp_buf, 1) };
-        if jumped != 0 {
-            std::process::exit(77);
-        }
-        crate::signal::mark_recovery_active();
-
         let mut value = 37_u64;
         // SAFETY: value stays initialized through the detached drain; the
         // registered callback deliberately terminates the subprocess.
@@ -4136,7 +4113,7 @@ mod tests {
     /// Exercises the frame-prefix layout the handle ABI commits to.
     #[test]
     fn coro_done_tracks_resume_slot_nulling() {
-        unsafe extern "C" fn noop_resume(_: *mut c_void) {}
+        unsafe extern "C-unwind" fn noop_resume(_: *mut c_void) {}
         let mut prefix = CoroFramePrefix {
             resume: Some(noop_resume),
             destroy: None,

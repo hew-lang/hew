@@ -65,7 +65,6 @@ actor Driver {
         };
         return out;
     }
-
     receive fn run_cancelled_owned() -> string {
         var out: string = "unset".to_upper();
         scope {
@@ -79,7 +78,6 @@ actor Driver {
         };
         return out;
     }
-
     receive fn run_zero() -> Point {
         var out: Point = Point { x: 9, y: 9 };
         scope {
@@ -95,17 +93,17 @@ fn main() {
     let d = spawn Driver;
     let zero = await d.run_zero();
     match zero {
-        Ok(p) => println(f"zero x={p.x} y={p.y}"),
-        Err(_) => println("zero failed"),
+        .Ok(p) => println(f"zero x={p.x} y={p.y}"),
+        .Err(_) => println("zero failed"),
     }
     let cancelled = await d.run_cancelled();
     match cancelled {
-        Ok(p) => println(f"fabricated x={p.x} y={p.y}"),
-        Err(_) => println("cancelled"),
+        .Ok(p) => println(f"fabricated x={p.x} y={p.y}"),
+        .Err(_) => println("cancelled"),
     }
     let owned_cancelled = await d.run_cancelled_owned();
     match owned_cancelled {
-        Ok(value) => println(f"fabricated owned={value}"),
-        Err(_) => println("owned cancelled"),
+        .Ok(value) => println(f"fabricated owned={value}"),
+        .Err(_) => println("owned cancelled"),
     }
 }

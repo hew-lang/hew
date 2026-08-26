@@ -106,6 +106,98 @@ fn wire_text_format_methods_record_codec_rewrite() {
 }
 
 #[test]
+fn generic_wire_facade_records_all_typed_codec_rewrites() {
+    let parsed = hew_parser::parse(
+        r"
+        import std.encoding.wire;
+
+        fn main() {
+            let values: HashMap<string, i64> = HashMap.new();
+            let binary: bytes = wire.encode(values);
+            let _binary_back: HashMap<string, i64> =
+                wire.decode<HashMap<string, i64>>(binary);
+            let json: string = wire.to_json(values);
+            let _json_back: Result<HashMap<string, i64>, string> =
+                wire.from_json<HashMap<string, i64>>(json);
+            let yaml: string = wire.to_yaml(values);
+            let _yaml_back: Result<HashMap<string, i64>, string> =
+                wire.from_yaml<HashMap<string, i64>>(yaml);
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "generic wire facade source must parse: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "generic wire facade must type-check: {:?}",
+        output.errors
+    );
+
+    for direction in [
+        WireCodecDirection::Encode,
+        WireCodecDirection::Decode,
+        WireCodecDirection::ToJson,
+        WireCodecDirection::FromJson,
+        WireCodecDirection::ToYaml,
+        WireCodecDirection::FromYaml,
+    ] {
+        assert!(
+            output.method_call_rewrites.values().any(|rewrite| {
+                matches!(
+                    rewrite,
+                    MethodCallRewrite::GenericWireCodec { direction: actual, .. }
+                        if *actual == direction
+                )
+            }),
+            "generic wire facade must record {direction:?} through the typed codec rewrite"
+        );
+    }
+}
+
+#[test]
+fn generic_wire_facade_rejects_shapes_outside_typed_codec_admission() {
+    let parsed = hew_parser::parse(
+        r#"
+        import std.encoding.wire;
+
+        #[wire]
+        type Key { id: i64 @1 }
+
+        fn main() {
+            let _record_keyed =
+                wire.from_json<HashMap<Key, string>>("[]");
+            let _vec_bytes = wire.from_json<Vec<bytes>>("[]");
+        }
+        "#,
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "source must parse: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    let serializable_errors = output
+        .errors
+        .iter()
+        .filter(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("Serializable")
+        })
+        .count();
+    assert_eq!(
+        serializable_errors, 2,
+        "record-keyed maps and Vec<bytes> must fail at the generic Serializable boundary: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn wire_from_json_returns_result_self_string() {
     // A `#[wire]` type's `from_json`/`from_yaml` static parsers are fallible
     // (arbitrary user input — config files, HTTP bodies), so they return

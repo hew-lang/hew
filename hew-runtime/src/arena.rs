@@ -370,12 +370,12 @@ fn get_current_arena() -> *mut ActorArena {
 ///
 /// When an arena with a non-zero cap is active and this allocation would
 /// exceed that cap, returns null **and** triggers a `HeapExceeded` actor
-/// crash via the longjmp/supervisor seam. The actor's `error_code` is set
+/// crash via the language-unwind/supervisor seam. The actor's `error_code` is set
 /// to `HEW_TRAP_HEAP_EXCEEDED` (200). Teardown (timers, links, monitors,
 /// arena free) runs via the normal crash path.
 ///
-/// On WASM the longjmp seam is absent; the null is returned to the caller
-/// and the WASM `catch_unwind` path handles any subsequent trap.
+/// On WASM portable exception handling is absent; the null is returned to the
+/// caller and the configured fail-closed trap path handles any subsequent trap.
 ///
 /// # Safety
 ///
@@ -395,19 +395,15 @@ pub unsafe extern "C-unwind" fn hew_arena_malloc(size: usize) -> *mut c_void {
             .alloc(size, std::mem::align_of::<*mut c_void>())
             .cast::<c_void>();
 
-        // If the allocation failed and the arena has a cap set, this is a
-        // HeapExceeded condition — route through the crash seam so the
-        // supervisor sees a named exit reason instead of a generic SIGSEGV.
+        // If the allocation failed under a cap, propagate the typed logical
+        // failure through the normal unwind boundary. Returning null would
+        // merely defer it into an unrelated pointer fault.
         #[cfg(not(target_arch = "wasm32"))]
         if ptr.is_null() && arena.cap > 0 {
-            // SAFETY: must be called from an actor dispatch context on a
-            // worker thread (hew_arena_set_current is only called from the
-            // scheduler's activate_actor path). The longjmp unwinds to the
-            // sigsetjmp frame in the scheduler without returning here.
-            unsafe {
-                crate::signal::try_direct_longjmp_with_code(
-                    crate::supervisor::HEW_TRAP_HEAP_EXCEEDED,
-                );
+            let code = crate::supervisor::HEW_TRAP_HEAP_EXCEEDED;
+            let _ = crate::trap_code::stamp_current_actor_error_code(code);
+            if crate::execution_context::current_context_can_unwind() {
+                std::panic::panic_any(crate::actor::HewPanic { code });
             }
         }
 
@@ -746,7 +742,11 @@ mod tests {
         let cap = 128_usize;
         let arena = hew_arena_new_with_cap(cap);
         assert!(!arena.is_null(), "hew_arena_new_with_cap must succeed");
-        let _ctx = TestExecutionContext::install(HewExecutionContext::default());
+        let _ctx = TestExecutionContext::install(HewExecutionContext {
+            // This fixture supplies the catch boundary around the over-cap call.
+            flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
+            ..HewExecutionContext::default()
+        });
 
         // SAFETY: arena is a valid pointer from hew_arena_new_with_cap.
         unsafe { hew_arena_set_current(arena) };
@@ -760,10 +760,19 @@ mod tests {
         let p2 = unsafe { hew_arena_malloc(64) };
         assert!(!p2.is_null(), "malloc exactly at cap must succeed");
 
-        // Over cap.
-        // SAFETY: arena is installed; malloc must return null when cap exhausted.
-        let p3 = unsafe { hew_arena_malloc(1) };
-        assert!(p3.is_null(), "malloc over cap must return null");
+        // Over cap is a typed logical failure, not a nullable allocation
+        // result. Catch it here exactly as the scheduler actor boundary does.
+        let exhausted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: arena is installed; malloc unwinds when the cap is exhausted.
+            let _ = unsafe { hew_arena_malloc(1) };
+        }))
+        .expect_err("malloc over cap must unwind");
+        assert_eq!(
+            exhausted
+                .downcast_ref::<crate::actor::HewPanic>()
+                .map(|panic| panic.code),
+            Some(crate::supervisor::HEW_TRAP_HEAP_EXCEEDED)
+        );
 
         // SAFETY: null is always safe.
         unsafe { hew_arena_set_current(ptr::null_mut()) };

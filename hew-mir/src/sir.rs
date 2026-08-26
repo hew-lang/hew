@@ -313,7 +313,7 @@ fn lower_verified_sir_function(
         instr_spans: std::collections::BTreeMap::new(),
         source_origin: raw_source_origin(&callable.source_origin),
     };
-    let checked = CheckedMirFunction {
+    let mut checked = CheckedMirFunction {
         name: raw.name.clone(),
         return_ty: raw.return_ty.clone(),
         blocks: raw.blocks.clone(),
@@ -323,9 +323,11 @@ fn lower_verified_sir_function(
         // they target. Its scheduler therefore uses structural latches rather
         // than the legacy raw-MIR numeric block-order convention.
         cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
+        ownership_elaboration: None,
     };
     verify_strict_sir_raw_checked(module, callable, &raw, &checked)?;
     let elaborated = zero_drop_elaboration(&raw, &checked)?;
+    checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
     Ok(SirMirLowered {
         raw,
         checked,
@@ -1149,7 +1151,10 @@ pub fn apply_sir_to_pipeline(
                 // injected cancellation exit has the same plan in Checked and
                 // Elaborated MIR.
                 match zero_drop_elaboration(&lowered.raw, &lowered.checked) {
-                    Ok(elaborated) => lowered.elaborated = elaborated,
+                    Ok(elaborated) => {
+                        lowered.checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
+                        lowered.elaborated = elaborated;
+                    }
                     Err(error) => {
                         report.statuses.push((
                             function.name.clone(),
@@ -1272,7 +1277,7 @@ fn lower_sir_function_with_template(
         instr_spans: std::collections::BTreeMap::new(),
         source_origin: raw_source_origin(&function.source_origin),
     };
-    let checked = CheckedMirFunction {
+    let mut checked = CheckedMirFunction {
         name: raw.name.clone(),
         return_ty: raw.return_ty.clone(),
         blocks: raw.blocks.clone(),
@@ -1284,8 +1289,10 @@ fn lower_sir_function_with_template(
         // established schedule only when it maps truthfully; candidate-local
         // scheduling itself must remain structural.
         cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
+        ownership_elaboration: None,
     };
     let elaborated = zero_drop_elaboration(&raw, &checked)?;
+    checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
     Ok(SirMirLowered {
         raw,
         checked,
@@ -2589,6 +2596,7 @@ mod tests {
                 bb_id: 0,
                 kind: crate::CooperateKind::FunctionEntry,
             }],
+            ownership_elaboration: None,
         };
         let elaborated = ElaboratedMirFunction {
             name: "semantic_unreachable".to_string(),
@@ -3473,6 +3481,7 @@ mod tests {
                 bb_id: 0,
                 kind: crate::CooperateKind::FunctionEntry,
             }],
+            ownership_elaboration: None,
         };
         let mut pipeline = IrPipeline {
             raw_mir: vec![raw],

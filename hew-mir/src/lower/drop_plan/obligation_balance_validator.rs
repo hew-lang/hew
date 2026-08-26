@@ -6,6 +6,7 @@
 //! pass does not re-introduce move-checker liveness rejection (A278 /
 //! S1875).
 use super::*;
+use crate::model::CallAuthority;
 
 fn ret_ty() -> ResolvedTy {
     ResolvedTy::Unit
@@ -49,6 +50,138 @@ fn plain_drop(place: Place) -> ElabDrop {
         kind: DropKind::Resource,
         guard: None,
     }
+}
+
+#[test]
+fn unwind_cleanup_coverage_requires_exact_call_siblings() {
+    let blocks = vec![block(
+        0,
+        vec![],
+        Terminator::Call {
+            callee: "may_fail".to_string(),
+            authority: CallAuthority::default(),
+            args: vec![],
+            dest: None,
+            next: 1,
+        },
+    )];
+    let complete = elab_with_plans(vec![
+        (
+            ExitPath::Call {
+                block: 0,
+                callee: "may_fail".to_string(),
+                next: 1,
+            },
+            DropPlan::default(),
+        ),
+        (
+            ExitPath::Unwind {
+                block: 0,
+                callee: "may_fail".to_string(),
+            },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(2))],
+            },
+        ),
+    ]);
+    assert!(validate_unwind_cleanup_coverage_over(&complete, &blocks).is_empty());
+
+    let missing = elab_with_plans(vec![(
+        ExitPath::Call {
+            block: 0,
+            callee: "may_fail".to_string(),
+            next: 1,
+        },
+        DropPlan::default(),
+    )]);
+    assert!(matches!(
+        validate_unwind_cleanup_coverage_over(&missing, &blocks).as_slice(),
+        [MirCheck::ObligationBalanceUnverified { .. }]
+    ));
+}
+
+#[test]
+fn unwind_cleanup_coverage_rejects_duplicate_destroy() {
+    let blocks = vec![block(
+        0,
+        vec![],
+        Terminator::Call {
+            callee: "may_fail".to_string(),
+            authority: CallAuthority::default(),
+            args: vec![],
+            dest: None,
+            next: 1,
+        },
+    )];
+    let drop = plain_drop(Place::Local(2));
+    let elab = elab_with_plans(vec![
+        (
+            ExitPath::Call {
+                block: 0,
+                callee: "may_fail".to_string(),
+                next: 1,
+            },
+            DropPlan::default(),
+        ),
+        (
+            ExitPath::Unwind {
+                block: 0,
+                callee: "may_fail".to_string(),
+            },
+            DropPlan {
+                drops: vec![drop.clone(), drop],
+            },
+        ),
+    ]);
+    assert!(matches!(
+        validate_unwind_cleanup_coverage_over(&elab, &blocks).as_slice(),
+        [MirCheck::ObligationBalanceUnverified { .. }]
+    ));
+}
+
+#[test]
+fn unwind_edge_does_not_mint_failed_call_destination() {
+    let blocks = vec![
+        block(
+            0,
+            vec![],
+            Terminator::Call {
+                callee: "produce".to_string(),
+                authority: CallAuthority::default(),
+                args: vec![],
+                dest: Some(Place::Local(1)),
+                next: 1,
+            },
+        ),
+        block(1, vec![], Terminator::Return),
+    ];
+    let plans = vec![
+        (
+            ExitPath::Call {
+                block: 0,
+                callee: "produce".to_string(),
+                next: 1,
+            },
+            DropPlan::default(),
+        ),
+        (
+            ExitPath::Unwind {
+                block: 0,
+                callee: "produce".to_string(),
+            },
+            DropPlan::default(),
+        ),
+        (
+            ExitPath::Return { block: 1 },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(1))],
+            },
+        ),
+    ];
+    assert!(
+        run(blocks, plans, &[(1, "call result")]).is_empty(),
+        "a failed call never initializes its destination owner"
+    );
 }
 
 fn variant_place(local: u32) -> Place {
@@ -102,7 +235,7 @@ fn run_with_suspend_kinds(
 }
 
 #[test]
-fn minted_call_carrier_partial_transfer_without_drop_stays_advisory() {
+fn minted_call_carrier_partial_transfer_without_drop_blocks() {
     let blocks = vec![block(
         0,
         vec![
@@ -122,7 +255,7 @@ fn minted_call_carrier_partial_transfer_without_drop_stays_advisory() {
         .into_iter()
         .collect();
     let mint_sites = [(1_u32, SiteId(7))].into_iter().collect();
-    let partial_transfer_carrier_mints = [1_u32].into_iter().collect();
+    let partial_transfer_payload_slots = [variant_place(1)].into_iter().collect();
     let findings = validate_obligation_balance_with(
         &elab,
         &blocks,
@@ -130,14 +263,14 @@ fn minted_call_carrier_partial_transfer_without_drop_stays_advisory() {
         &tracked,
         (&local_types, &mint_sites),
         &HashSet::new(),
-        &partial_transfer_carrier_mints,
+        &partial_transfer_payload_slots,
     );
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { hard: false, .. }]
+            [MirCheck::ObligationUnderReleased { .. }]
         ),
-        "a partial call-carrier transfer without a shell drop must remain advisory: {findings:?}"
+        "a partial call-carrier transfer without a shell drop must block: {findings:?}"
     );
 }
 
@@ -189,103 +322,63 @@ fn discharge_authority_missing_allows_move_out_arm_without_transferee() {
 }
 
 #[test]
-fn discharge_authority_corroboration_flags_fabricated_transferee() {
-    // The neutralize names local 9 as the new owner, but the primitive
-    // stream never moves any value into local 9 — the carried transfer fact
-    // and the actual routing disagree (dual-carrier drift).
-    let blocks = vec![block(
-        0,
-        vec![Instr::NeutralizePayloadSlot {
-            place: variant_place(1),
-            transferee: Some(Place::Local(9)),
-            authority: NeutralizeAuthority::WholeCarrierConsume,
-        }],
-        Terminator::Return,
-    )];
-    let findings = validate_discharge_authority_corroboration_over("f", &blocks);
-    assert!(
-        matches!(
-            findings.as_slice(),
-            [MirCheck::DischargeAuthorityDrift { .. }]
-        ),
-        "a transferee the stream never writes must drift, got {findings:?}"
-    );
+fn explicit_owner_transfer_flags_fabricated_source() {
+    let owner = crate::model::OwnerId {
+        binding: BindingId(90),
+        generation: 0,
+    };
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(1),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+            owner,
+            from: Place::Local(8),
+            to: Some(Place::Local(9)),
+            to_owner: None,
+            to_ty: None,
+        }),
+    ]);
+    assert!(matches!(
+        validate_ownership_events(&checked).as_slice(),
+        [MirCheck::DischargeAuthorityDrift { .. }]
+    ));
 }
 
 #[test]
-fn discharge_authority_corroboration_accepts_real_transfer() {
-    // The well-formed emit shape: the carrier is moved into the destination
-    // immediately before the neutralize names it as the transferee. The two
-    // carriers agree, so no drift.
-    let blocks = vec![block(
+fn explicit_owner_transfer_accepts_real_transfer() {
+    let whole_value_blocks = vec![block(
         0,
         vec![
+            mint(1),
             Instr::Move {
                 dest: Place::Local(9),
-                src: variant_place(1),
+                src: Place::Local(1),
             },
             Instr::NeutralizePayloadSlot {
-                place: variant_place(1),
+                place: Place::Local(1),
                 transferee: Some(Place::Local(9)),
                 authority: NeutralizeAuthority::WholeCarrierConsume,
             },
         ],
         Terminator::Return,
     )];
-    assert!(
-        validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
-        "a transferee the stream actually writes must corroborate clean"
-    );
-}
-
-#[test]
-fn discharge_authority_corroborates_returned_aggregate_member() {
-    let blocks = vec![block(
-        0,
-        vec![
-            Instr::TupleConstruct {
-                elements: vec![Place::Local(1)],
-                dest: Place::Local(9),
-            },
-            Instr::NeutralizePayloadSlot {
-                place: Place::Local(1),
-                transferee: Some(Place::Local(9)),
-                authority: NeutralizeAuthority::ReturnedAggregateMemberConsume,
-            },
-        ],
-        Terminator::Return,
+    let plans = vec![(
+        ExitPath::Return { block: 0 },
+        DropPlan {
+            drops: vec![plain_drop(Place::Local(9))],
+        },
     )];
     assert!(
-        validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
-        "an exact aggregate member constructor must corroborate its carried transfer"
-    );
-}
-
-#[test]
-fn discharge_authority_corroborates_aggregate_member_through_move_alias() {
-    let blocks = vec![block(
-        0,
-        vec![
-            Instr::Move {
-                dest: Place::Local(2),
-                src: Place::Local(1),
-            },
-            Instr::RecordInit {
-                ty: ResolvedTy::Unit,
-                fields: vec![(FieldOffset(0), Place::Local(2))],
-                dest: Place::Local(9),
-            },
-            Instr::NeutralizePayloadSlot {
-                place: Place::Local(1),
-                transferee: Some(Place::Local(9)),
-                authority: NeutralizeAuthority::AggregateMemberConsume,
-            },
-        ],
-        Terminator::Return,
-    )];
-    assert!(
-        validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
-        "a record member routed through a move alias must corroborate its transfer"
+        run(
+            whole_value_blocks,
+            plans,
+            &[(1, "source"), (9, "destination")]
+        )
+        .is_empty(),
+        "a whole-value transfer renames one live obligation; the destination drop terminates it"
     );
 }
 
@@ -361,7 +454,6 @@ fn bytes_retain_move_requires_independent_destination_release() {
             [MirCheck::ObligationUnderReleased {
                 name,
                 mint_provenance: crate::model::ObligationMintProvenance::ExplicitRetain,
-                hard: true,
                 ..
             }] if name == "retained"
         ),
@@ -400,7 +492,6 @@ fn string_retain_move_preserves_source_obligation() {
             [MirCheck::ObligationUnderReleased {
                 name,
                 mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
-                hard: false,
                 ..
             }] if name == "source"
         ),
@@ -433,7 +524,6 @@ fn standalone_retain_adds_an_owner_obligation() {
             findings.as_slice(),
             [MirCheck::ObligationUnderReleased {
                 mint_provenance: crate::model::ObligationMintProvenance::ExplicitRetain,
-                hard: true,
                 ..
             }]
         ),
@@ -558,7 +648,6 @@ fn branch_local_retain_debt_is_not_diluted_at_join() {
             findings.as_slice(),
             [MirCheck::ObligationUnderReleased {
                 mint_provenance: crate::model::ObligationMintProvenance::Mixed,
-                hard: true,
                 ..
             }]
         ),
@@ -729,7 +818,7 @@ fn under_release_aggregates_all_exits_and_projects_the_mint_site() {
     assert_eq!(name, "resolve(...)");
 
     let diagnostic = check_to_diagnostic(&findings[0]).expect("finding must be visible");
-    assert!(diagnostic.note.contains("advisory warning"));
+    assert!(diagnostic.note.contains("LLVM emission is blocked"));
     let MirDiagnosticKind::ObligationUnderReleased {
         blocks, site, name, ..
     } = diagnostic.kind
@@ -917,6 +1006,7 @@ fn empty_enum_tag_does_not_remint_a_discharged_call_scrutinee() {
             vec![
                 mint(1),
                 Instr::CallClosure {
+                    call_site: hew_hir::SiteId(0),
                     callee: Place::Local(8),
                     args: vec![Place::Local(1)],
                     dest: Some(Place::Local(9)),
@@ -1164,7 +1254,13 @@ fn return_transfer_balances_and_extra_drop_rejects() {
 fn guarded_exit_drop_is_never_a_definite_verdict() {
     let blocks = vec![block(0, vec![mint(1)], Terminator::Return)];
     let guarded = ElabDrop {
-        guard: Some(Place::Local(7)),
+        guard: Some(crate::model::ElabDropGuard {
+            owner: crate::model::OwnerId {
+                binding: BindingId(1),
+                generation: 0,
+            },
+            flag: Place::Local(7),
+        }),
         ..plain_drop(Place::Local(1))
     };
     let plans = vec![(

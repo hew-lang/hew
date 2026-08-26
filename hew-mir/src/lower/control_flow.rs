@@ -194,6 +194,16 @@ impl Builder {
                 self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
             let keep_for_drop_elab =
                 self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
+            let dest = self.alloc_local(binding.ty.clone());
+            // Let-else binders escape into the enclosing scope. Publish their
+            // real storage before minting the Checked-MIR owner generation.
+            self.binding_locals.insert(binding.binding, dest);
+            let source = Place::MachineVariant {
+                local: scrutinee_local,
+                variant_idx,
+                field_idx: binding.field_idx,
+            };
+            self.push_instr(Instr::Move { dest, src: source });
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
@@ -202,15 +212,6 @@ impl Builder {
                     warrant,
                 );
             }
-            let dest = self.alloc_local(binding.ty.clone());
-            let source = Place::MachineVariant {
-                local: scrutinee_local,
-                variant_idx,
-                field_idx: binding.field_idx,
-            };
-            self.push_instr(Instr::Move { dest, src: source });
-            // Escape: insert into binding_locals and never restore.
-            self.binding_locals.insert(binding.binding, dest);
             let transferred_sink = self.transfer_contextual_sink_payload(
                 scrutinee_owner.as_ref(),
                 binding.binding,
@@ -247,15 +248,8 @@ impl Builder {
                 self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
             let keep_for_drop_elab =
                 self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
-            if keep_for_drop_elab {
-                self.register_owned_local(
-                    binding.binding,
-                    binding.name.clone(),
-                    binding_ty.clone(),
-                    warrant,
-                );
-            }
             let dest = self.alloc_local(binding.ty.clone());
+            self.binding_locals.insert(binding.binding, dest);
             self.push_instr(Instr::Move {
                 dest,
                 src: Place::MachineVariant {
@@ -264,7 +258,14 @@ impl Builder {
                     field_idx: binding.field_idx,
                 },
             });
-            self.binding_locals.insert(binding.binding, dest);
+            if keep_for_drop_elab {
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                    warrant,
+                );
+            }
             // #2523 F2 — nested let-else binder bound from a transient predicate
             // copy; reject a heap-owning move-out fail-closed.
             self.record_projected_payload_provenance(
@@ -304,6 +305,7 @@ impl Builder {
             let _ = self.lower_value(tail);
         }
         self.emit_pending_defers(else_body.scope);
+        self.emit_scope_exit_marker([else_body.scope]);
         self.active_scopes.pop();
         self.finish_current_block(Terminator::Goto { target: cont_bb });
 
@@ -363,7 +365,6 @@ impl Builder {
             continue_target: header_bb,
             exit_target: exit_bb,
             scope_depth: loop_scope_depth,
-            body_scope: body.scope,
         });
         self.active_scopes.push(body.scope);
         for stmt in &body.statements {
@@ -383,6 +384,7 @@ impl Builder {
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
         self.emit_scope_stream_drops(body.scope);
+        self.emit_scope_exit_marker([body.scope]);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope`. Without this, an
@@ -392,8 +394,6 @@ impl Builder {
         // The scope captured is the body's, not any nested block's: nested
         // block-scope bindings already self-drop when their block closes via
         // the existing scope-exit pass.
-        self.loop_back_edge_blocks
-            .insert(self.current_block_id, body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         self.finish_current_block(Terminator::Goto { target: header_bb });
@@ -620,7 +620,11 @@ impl Builder {
                 scrutinee.site,
                 binding_ty.clone(),
             );
-            self.record_binding_scope(binding.binding);
+            // This binder is emitted before `body.scope` is pushed onto the
+            // active-scope cursor, but it is lexically recreated for each loop
+            // body.  Assigning it to the outer scope carries generation zero
+            // across the back edge and re-executes the same Mint next time.
+            self.record_binding_scope_in(binding.binding, body.scope);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
             // provenance to the ledger and the authority before any owner
@@ -629,6 +633,14 @@ impl Builder {
                 self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
             let keep_for_drop_elab =
                 self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
+            let dest = self.alloc_local(binding.ty.clone());
+            let previous = self.binding_locals.insert(binding.binding, dest);
+            let source = Place::MachineVariant {
+                local: pattern_scrutinee_local,
+                variant_idx,
+                field_idx: binding.field_idx,
+            };
+            self.push_instr(Instr::Move { dest, src: source });
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
@@ -637,14 +649,6 @@ impl Builder {
                     warrant,
                 );
             }
-            let dest = self.alloc_local(binding.ty.clone());
-            let source = Place::MachineVariant {
-                local: pattern_scrutinee_local,
-                variant_idx,
-                field_idx: binding.field_idx,
-            };
-            self.push_instr(Instr::Move { dest, src: source });
-            let previous = self.binding_locals.insert(binding.binding, dest);
             if let Some(local) = base_local(dest) {
                 self.transient_local_scopes.insert(local, body.scope);
             }
@@ -680,7 +684,7 @@ impl Builder {
                 scrutinee.site,
                 binding_ty.clone(),
             );
-            self.record_binding_scope(binding.binding);
+            self.record_binding_scope_in(binding.binding, body.scope);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
             // provenance to the ledger and the authority before any owner
@@ -689,15 +693,8 @@ impl Builder {
                 self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
             let keep_for_drop_elab =
                 self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
-            if keep_for_drop_elab {
-                self.register_owned_local(
-                    binding.binding,
-                    binding.name.clone(),
-                    binding_ty.clone(),
-                    warrant,
-                );
-            }
             let dest = self.alloc_local(binding.ty.clone());
+            let previous = self.binding_locals.insert(binding.binding, dest);
             self.push_instr(Instr::Move {
                 dest,
                 src: Place::MachineVariant {
@@ -706,7 +703,14 @@ impl Builder {
                     field_idx: binding.field_idx,
                 },
             });
-            let previous = self.binding_locals.insert(binding.binding, dest);
+            if keep_for_drop_elab {
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                    warrant,
+                );
+            }
             if let Some(local) = base_local(dest) {
                 self.transient_local_scopes.insert(local, body.scope);
             }
@@ -738,7 +742,6 @@ impl Builder {
             continue_target: header_bb,
             exit_target: exit_bb,
             scope_depth: loop_scope_depth,
-            body_scope: body.scope,
         });
         let active_iteration_owner_mark = self.active_iteration_owners.len();
         let active_snapshot_parent_mark = self.active_while_let_snapshot_parents.len();
@@ -775,6 +778,7 @@ impl Builder {
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
         self.emit_scope_stream_drops(body.scope);
+        self.emit_scope_exit_marker([body.scope]);
         if let Some((binding, ty)) = &scrutinee_owner {
             self.record_iteration_owner_drop(
                 *binding,
@@ -795,8 +799,6 @@ impl Builder {
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope` (including the
         // match-arm payload bindings the `while let` itself introduces).
-        self.loop_back_edge_blocks
-            .insert(self.current_block_id, body.scope);
         self.active_iteration_owners
             .truncate(active_iteration_owner_mark);
         self.active_while_let_snapshot_parents
@@ -1496,7 +1498,7 @@ impl Builder {
                 scrutinee.site,
                 binding_ty.clone(),
             );
-            self.record_binding_scope(binding.binding);
+            self.record_binding_scope_in(binding.binding, body.scope);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
             // provenance to the ledger and the authority before any owner
@@ -1505,6 +1507,14 @@ impl Builder {
                 self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
             let keep_for_drop_elab =
                 self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
+            let dest = self.alloc_local(binding.ty.clone());
+            let previous = self.binding_locals.insert(binding.binding, dest);
+            let source = Place::MachineVariant {
+                local: scrutinee_local,
+                variant_idx,
+                field_idx: binding.field_idx,
+            };
+            self.push_instr(Instr::Move { dest, src: source });
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
@@ -1513,14 +1523,6 @@ impl Builder {
                     warrant,
                 );
             }
-            let dest = self.alloc_local(binding.ty.clone());
-            let source = Place::MachineVariant {
-                local: scrutinee_local,
-                variant_idx,
-                field_idx: binding.field_idx,
-            };
-            self.push_instr(Instr::Move { dest, src: source });
-            let previous = self.binding_locals.insert(binding.binding, dest);
             if keep_for_drop_elab {
                 self.deferred_drop_binding_locals
                     .insert(binding.binding, dest);
@@ -1553,7 +1555,7 @@ impl Builder {
                 scrutinee.site,
                 binding_ty.clone(),
             );
-            self.record_binding_scope(binding.binding);
+            self.record_binding_scope_in(binding.binding, body.scope);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
             // provenance to the ledger and the authority before any owner
@@ -1562,15 +1564,8 @@ impl Builder {
                 self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
             let keep_for_drop_elab =
                 self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
-            if keep_for_drop_elab {
-                self.register_owned_local(
-                    binding.binding,
-                    binding.name.clone(),
-                    binding_ty.clone(),
-                    warrant,
-                );
-            }
             let dest = self.alloc_local(binding.ty.clone());
+            let previous = self.binding_locals.insert(binding.binding, dest);
             self.push_instr(Instr::Move {
                 dest,
                 src: Place::MachineVariant {
@@ -1579,7 +1574,14 @@ impl Builder {
                     field_idx: binding.field_idx,
                 },
             });
-            let previous = self.binding_locals.insert(binding.binding, dest);
+            if keep_for_drop_elab {
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                    warrant,
+                );
+            }
             if keep_for_drop_elab {
                 self.deferred_drop_binding_locals
                     .insert(binding.binding, dest);
@@ -1618,12 +1620,10 @@ impl Builder {
                 "if-let then branch",
                 body.tail.as_ref().map_or(scrutinee.site, |tail| tail.site),
             )?;
-            self.push_instr(Instr::Move {
-                dest: result_place,
-                src,
-            });
+            self.push_composite_result_move(result_place, src, result_ty);
         }
         self.emit_pending_defers(body.scope);
+        self.emit_scope_exit_marker_with_carries([body.scope], [result_place]);
         self.active_scopes.pop();
 
         // Restore lexical mappings now. Owned payload places remain available
@@ -1666,12 +1666,10 @@ impl Builder {
                     "if-let else branch",
                     eb.tail.as_ref().map_or(scrutinee.site, |tail| tail.site),
                 )?;
-                self.push_instr(Instr::Move {
-                    dest: result_place,
-                    src,
-                });
+                self.push_composite_result_move(result_place, src, result_ty);
             }
             self.emit_pending_defers(eb.scope);
+            self.emit_scope_exit_marker_with_carries([eb.scope], [result_place]);
             self.active_scopes.pop();
         }
         if !self.cursor_unreachable {
@@ -2080,7 +2078,6 @@ impl Builder {
             continue_target: inc_bb,
             exit_target: exit_bb,
             scope_depth: loop_scope_depth,
-            body_scope: body.scope,
         });
         for stmt in &body.statements {
             self.stmt(stmt);
@@ -2098,6 +2095,7 @@ impl Builder {
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
         self.emit_scope_stream_drops(body.scope);
+        self.emit_scope_exit_marker([body.scope]);
         // Record body→inc as the per-iteration back-edge for body-scope
         // bindings. body.scope closes here (active_scopes.pop next), so any
         // heap-owning let-binding declared inside the body must be released
@@ -2105,8 +2103,6 @@ impl Builder {
         // on the next iteration. The counter binding itself lives in the
         // outer scope (registered before active_scopes.push(body.scope)) and
         // is i64 — no drop — so the back-edge plan never touches it.
-        self.loop_back_edge_blocks
-            .insert(self.current_block_id, body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         // Body fall-through → increment block.
@@ -2208,7 +2204,6 @@ impl Builder {
             continue_target: body_bb,
             exit_target: exit_bb,
             scope_depth: loop_scope_depth,
-            body_scope: body.scope,
         });
         self.active_scopes.push(body.scope);
         for stmt in &body.statements {
@@ -2226,13 +2221,12 @@ impl Builder {
         // the generator release above (see `emit_scope_vec_iter_drops`).
         self.emit_scope_vec_iter_drops(body.scope);
         self.emit_scope_stream_drops(body.scope);
+        self.emit_scope_exit_marker([body.scope]);
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope`. `loop { ... }` has
         // no separate header — `body_bb` is both entry and re-entry — so
         // this back-edge is the one place per-iteration drops can fire.
-        self.loop_back_edge_blocks
-            .insert(self.current_block_id, body.scope);
         self.active_scopes.pop();
         self.loop_stack.pop();
         self.finish_current_block(Terminator::Goto { target: body_bb });

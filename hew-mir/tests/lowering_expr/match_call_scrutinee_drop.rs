@@ -25,7 +25,10 @@
 //! let-bound scrutinee must not gain a SECOND owner over the same slot, and an
 //! escaping payload must keep the composite excluded (leak, never double-free).
 
-use hew_mir::{DropKind, ElabDrop, ExitPath, Instr, IrPipeline};
+use hew_mir::{
+    CheckedMirFunction, DropFnSpec, DropKind, ElabDrop, ExitPath, InPlaceReleaseKind, Instr,
+    IrPipeline, MirStatement, OwnerId, OwnershipEvent, Place,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -68,12 +71,6 @@ fn return_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
     drops_matching(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. }))
 }
 
-/// Every `ElabDrop` on the named function's `Goto` exits (the loop back-edge
-/// plan lives on the body-closing `Goto`).
-fn goto_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
-    drops_matching(p, fn_name, |exit| matches!(exit, ExitPath::Goto { .. }))
-}
-
 fn enum_in_place(drops: &[ElabDrop]) -> Vec<ElabDrop> {
     drops
         .iter()
@@ -96,10 +93,304 @@ fn string_cow_drops(drops: &[ElabDrop]) -> Vec<ElabDrop> {
         .collect()
 }
 
+fn binding_owner(function: &CheckedMirFunction, name: &str) -> (OwnerId, Place) {
+    let binding = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find_map(|statement| match statement {
+            MirStatement::Bind {
+                binding,
+                name: binding_name,
+                ..
+            } if binding_name == name => Some(*binding),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("owned binding {name}"));
+    let definitions: Vec<(OwnerId, Place)> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, .. })
+                if owner.binding == binding =>
+            {
+                Some((*owner, *place))
+            }
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                to: Some(place),
+                to_owner: Some(owner),
+                ..
+            }) if owner.binding == binding => Some((*owner, *place)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        definitions.len(),
+        1,
+        "{name} must publish exactly one owner: {definitions:?}"
+    );
+    definitions[0]
+}
+
+fn call_carrier_owner(function: &CheckedMirFunction) -> (OwnerId, Place) {
+    binding_owner(function, "__hew_call_scrutinee")
+}
+
+fn block_reaches_before_owner_redefinition(
+    function: &CheckedMirFunction,
+    from: u32,
+    target: u32,
+    owner: OwnerId,
+) -> bool {
+    let mut pending = function
+        .blocks
+        .iter()
+        .find(|block| block.id == from)
+        .map_or_else(Vec::new, hew_mir::BasicBlock::successors);
+    let mut visited = std::collections::HashSet::new();
+    while let Some(block_id) = pending.pop() {
+        if block_id == target {
+            return true;
+        }
+        if !visited.insert(block_id) {
+            continue;
+        }
+        if let Some(block) = function.blocks.iter().find(|block| block.id == block_id) {
+            if block.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(OwnershipEvent::Mint { owner: candidate, .. })
+                        if *candidate == owner
+                )
+            }) {
+                continue;
+            }
+            pending.extend(block.successors());
+        }
+    }
+    false
+}
+
+fn carrier_release_block(block: &hew_mir::BasicBlock, owner: OwnerId, place: Place) -> Option<u32> {
+    let pairs: Vec<usize> = block
+        .instructions
+        .windows(2)
+        .enumerate()
+        .filter_map(|(index, pair)| {
+            matches!(
+                pair,
+                [
+                    Instr::Drop {
+                        place: drop_place,
+                        drop_fn: Some(DropFnSpec::InPlace(InPlaceReleaseKind::Enum)),
+                        ..
+                    },
+                    Instr::OwnershipEvent(OwnershipEvent::Release {
+                        owner: release_owner,
+                        place: release_place,
+                    })
+                ] if *drop_place == place && *release_owner == owner && *release_place == place
+            )
+            .then_some(index + 1)
+        })
+        .collect();
+    if pairs.is_empty() {
+        return None;
+    }
+    assert_eq!(
+        pairs.len(),
+        1,
+        "call carrier must release at most once in block {}",
+        block.id
+    );
+    assert!(
+        block.instructions[pairs[0] + 1..]
+            .iter()
+            .any(|instruction| matches!(
+                instruction,
+                Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. })
+                    if owners.iter().filter(|candidate| **candidate == owner).count() == 1
+            )),
+        "call-carrier Release must be ratified by a later ScopeExit in block {}: {:#?}",
+        block.id,
+        block.instructions
+    );
+    Some(block.id)
+}
+
+/// Assert the canonical per-arm call-carrier cleanup. Each selected variant
+/// owns one inline enum Drop/Release before its lexical `ScopeExit`; the two
+/// sites are mutually exclusive and no closing `Goto` plan duplicates either.
+fn inline_call_carrier_cleanup(p: &IrPipeline, fn_name: &str) -> (OwnerId, Place, Vec<u32>) {
+    let function = p
+        .checked_mir
+        .iter()
+        .find(|function| function.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in checked_mir"));
+    let (owner, place) = call_carrier_owner(function);
+    let recipes: Vec<&DropKind> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                owner: candidate,
+                recipe,
+            }) if *candidate == owner => Some(&recipe.kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        recipes,
+        vec![&DropKind::EnumInPlace],
+        "call carrier must publish one exact EnumInPlace recipe"
+    );
+    let release_blocks: Vec<u32> = function
+        .blocks
+        .iter()
+        .filter_map(|block| carrier_release_block(block, owner, place))
+        .collect();
+    assert_eq!(
+        release_blocks.len(),
+        2,
+        "each selected Result arm must release the carrier once: {release_blocks:?}"
+    );
+    assert!(
+        !block_reaches_before_owner_redefinition(
+            function,
+            release_blocks[0],
+            release_blocks[1],
+            owner,
+        ) && !block_reaches_before_owner_redefinition(
+            function,
+            release_blocks[1],
+            release_blocks[0],
+            owner,
+        ),
+        "call-carrier release blocks must be mutually exclusive within one owner generation: \
+         {release_blocks:?}"
+    );
+    let elaborated = p
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == fn_name)
+        .expect("elaborated function");
+    for release_block in &release_blocks {
+        assert!(
+            elaborated.drop_plans.iter().all(|(exit, plan)| {
+                !matches!(exit, ExitPath::Goto { block, .. } if block == release_block)
+                    || plan.drops.iter().all(|drop| drop.place != place)
+            }),
+            "inline call-carrier cleanup must not be duplicated by bb{release_block}'s Goto plan"
+        );
+    }
+    (owner, place, release_blocks)
+}
+
+fn has_enum_release_pair(block: &hew_mir::BasicBlock, owner: OwnerId, place: Place) -> bool {
+    block.instructions.windows(2).any(|pair| {
+        matches!(
+            pair,
+            [
+                Instr::Drop {
+                    place: drop_place,
+                    drop_fn: Some(DropFnSpec::InPlace(InPlaceReleaseKind::Enum)),
+                    ..
+                },
+                Instr::OwnershipEvent(OwnershipEvent::Release {
+                    owner: release_owner,
+                    place: release_place,
+                })
+            ] if *drop_place == place && *release_owner == owner && *release_place == place
+        )
+    })
+}
+
+fn assert_returned_payload_carrier_cleanup(p: &IrPipeline) {
+    let poll = p
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "poll")
+        .expect("checked poll");
+    let (poll_owner, poll_place) = call_carrier_owner(poll);
+    assert!(
+        poll.blocks.iter().any(|block| {
+            matches!(block.terminator, hew_mir::Terminator::Return)
+                && has_enum_release_pair(block, poll_owner, poll_place)
+        }),
+        "the direct-call early-return path keeps its existing exact carrier cleanup"
+    );
+
+    let poll_let = p
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "poll_let")
+        .expect("checked poll_let");
+    let (result_owner, result_place) = binding_owner(poll_let, "result");
+    let release_blocks = poll_let
+        .blocks
+        .iter()
+        .filter(|block| has_enum_release_pair(block, result_owner, result_place))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        release_blocks.len(),
+        2,
+        "the early-return and continuing/failure paths must each retire result exactly once"
+    );
+    let return_release = release_blocks
+        .iter()
+        .find(|block| matches!(block.terminator, hew_mir::Terminator::Return))
+        .expect("early-return result release");
+    let neutralize = return_release
+        .instructions
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot {
+                    place: Place::MachineVariant { local, .. },
+                    ..
+                } if result_place == Place::Local(*local)
+            )
+        })
+        .expect("selected payload neutralize");
+    let release = return_release
+        .instructions
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction,
+                Instr::OwnershipEvent(OwnershipEvent::Release { owner, place })
+                    if *owner == result_owner && *place == result_place
+            )
+        })
+        .expect("logical result release");
+    assert!(
+        release > neutralize,
+        "the carrier release must follow the selected payload transfer"
+    );
+    let continuing_release = release_blocks
+        .iter()
+        .find(|block| !matches!(block.terminator, hew_mir::Terminator::Return))
+        .expect("continuing/failure result release");
+    assert!(
+        continuing_release
+            .instructions
+            .iter()
+            .any(|instruction| matches!(
+                instruction,
+                Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. })
+                    if owners.iter().filter(|owner| **owner == result_owner).count() == 1
+            )),
+        "the existing failure/continuation cleanup must remain claimed by its scope exit"
+    );
+}
+
 /// The #2429 headline shape: a `Result<bytes, string>` returned from a call and
 /// consumed directly by a `match` inside a `while` loop. The scrutinee temp
-/// must earn a per-iteration `EnumInPlace` release on the loop back-edge
-/// `Goto` — the edge that previously leaked one payload per iteration.
+/// must earn one `EnumInPlace` release on each selected arm before the loop
+/// back-edge — the paths that previously leaked one payload per iteration.
 #[test]
 fn from_call_bytes_scrutinee_in_loop_gets_backedge_enum_in_place_drop() {
     let p = pipeline_with_tc(
@@ -120,18 +411,81 @@ fn main() {
 }
 "#,
     );
-    let backedge = enum_in_place(&goto_drops(&p, "main"));
-    assert_eq!(
-        backedge.len(),
-        1,
-        "the from-call Result<bytes, string> scrutinee must be released exactly \
-         once per iteration on the loop back-edge Goto plan; got {backedge:?}"
+    inline_call_carrier_cleanup(&p, "main");
+}
+
+/// A selected payload arm with `continue` seals the current call-result
+/// carrier before the loop reuses its physical result slot. The escape scan
+/// must stop at that exact non-carrying lexical close: a later iteration's
+/// payload operations are a new lifetime, not an escape of the prior owner.
+#[test]
+fn from_call_payload_continue_loop_releases_before_result_slot_reuse() {
+    let p = pipeline_with_tc(
+        r#"
+fn f() -> Result<bytes, string> {
+    Ok("payload".to_bytes())
+}
+
+fn main() {
+    var i = 0;
+    while i < 4 {
+        i = i + 1;
+        match f() {
+            Ok(b) => {
+                if b.len() == 7 && i == 2 {
+                    continue;
+                }
+            }
+            Err(e) => {}
+        }
+    }
+}
+"#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "each iteration must end its synthetic call-result generation before the next static Mint: {:?}",
+        p.diagnostics
+    );
+
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("raw main");
+    let carrier_owner = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Mint {
+                owner,
+                ty:
+                    hew_types::ResolvedTy::Named {
+                        builtin: Some(hew_types::BuiltinType::Result),
+                        ..
+                    },
+                ..
+            }) => Some(*owner),
+            _ => None,
+        })
+        .expect("synthetic Result call carrier Mint");
+    assert!(
+        main.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instruction| matches!(
+                instruction,
+                Instr::OwnershipEvent(hew_mir::OwnershipEvent::Release { owner, .. })
+                    if *owner == carrier_owner
+            )),
+        "the selected-arm paths must publish an exact Release for the call carrier"
     );
 }
 
 /// Straight-line variant: a single un-looped `match f() { … }` releases the
-/// scrutinee temp on the `Return` plan (the shape that leaked one payload
-/// even without a loop).
+/// scrutinee temp on each selected arm (the shape that leaked one payload even
+/// without a loop).
 #[test]
 fn from_call_bytes_scrutinee_single_gets_return_enum_in_place_drop() {
     let p = pipeline_with_tc(
@@ -148,18 +502,12 @@ fn main() {
 }
 "#,
     );
-    let ret = enum_in_place(&return_drops(&p, "main"));
-    assert_eq!(
-        ret.len(),
-        1,
-        "the straight-line from-call scrutinee must be released exactly once on \
-         the Return plan; got {ret:?}"
-    );
+    inline_call_carrier_cleanup(&p, "main");
 }
 
 /// String payloads ride the same seam: the from-call `Result<string, string>`
-/// scrutinee (previously released only when let-bound) earns the back-edge
-/// release in the unbound shape too.
+/// scrutinee (previously released only when let-bound) earns the selected-arm
+/// releases in the unbound shape too.
 #[test]
 fn from_call_string_scrutinee_in_loop_gets_backedge_enum_in_place_drop() {
     let p = pipeline_with_tc(
@@ -180,13 +528,7 @@ fn main() {
 }
 "#,
     );
-    let backedge = enum_in_place(&goto_drops(&p, "main"));
-    assert_eq!(
-        backedge.len(),
-        1,
-        "the from-call Result<string, string> scrutinee must be released exactly \
-         once per iteration on the loop back-edge Goto plan; got {backedge:?}"
-    );
+    inline_call_carrier_cleanup(&p, "main");
 }
 
 /// Moving a payload binder into an early return transfers only the selected
@@ -248,52 +590,7 @@ fn poll_let(svc: LocalPid<Svc>) -> Snap {
         "the payload transfer and remaining carrier release must balance: {:?}",
         p.diagnostics
     );
-    for name in ["poll", "poll_let"] {
-        let poll = p
-            .raw_mir
-            .iter()
-            .find(|function| function.name == name)
-            .unwrap_or_else(|| panic!("raw fn {name}"));
-        let return_block = poll
-            .blocks
-            .iter()
-            .find(|block| {
-                matches!(block.terminator, hew_mir::Terminator::Return)
-                    && block.instructions.iter().any(|instr| {
-                        matches!(
-                            instr,
-                            Instr::NeutralizePayloadSlot {
-                                place: hew_mir::Place::MachineVariant { .. },
-                                ..
-                            }
-                        )
-                    })
-            })
-            .unwrap_or_else(|| panic!("payload-return block in {name}"));
-        let neutralize = return_block
-            .instructions
-            .iter()
-            .position(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
-            .expect("payload slot transfer");
-        let release = return_block
-            .instructions
-            .iter()
-            .position(|instr| {
-                matches!(
-                    instr,
-                    Instr::Drop {
-                        place: hew_mir::Place::Local(_),
-                        drop_fn: Some(_),
-                        ..
-                    }
-                )
-            })
-            .expect("remaining carrier release");
-        assert!(
-            release > neutralize,
-            "the carrier release must follow the selected payload transfer in {name}"
-        );
-    }
+    assert_returned_payload_carrier_cleanup(&p);
 }
 
 /// Bytes-payload admission (the second #2429 gap): a LET-BOUND
@@ -397,12 +694,7 @@ fn main() -> i64 {
         1,
         "the moved-out match result must retain exactly one string release; got {ret:?}"
     );
-    assert_eq!(
-        enum_in_place(&ret).len(),
-        1,
-        "the call-carrier shell remains the complementary inactive-alternative cleanup, \
-         but must not be counted as a second discharge of the moved-out string; got {ret:?}"
-    );
+    inline_call_carrier_cleanup(&p, "main");
 }
 
 /// A non-idempotent resource selected as the value of a call-result match must
@@ -521,7 +813,7 @@ fn collect(n: i64) -> string {
 }
 
 /// Moving a payload into an outer binding neutralizes its source slot. The
-/// carrier therefore keeps its back-edge release for the shell and sibling
+/// carrier therefore keeps its per-arm inline release for the shell and sibling
 /// slot without invalidating the escaped payload.
 #[test]
 fn escaping_payload_neutralizes_slot_before_backedge_carrier_drop() {
@@ -551,33 +843,77 @@ fn main() {
         p.diagnostics
     );
     let main = p
-        .raw_mir
+        .checked_mir
         .iter()
         .find(|function| function.name == "main")
-        .expect("raw fn main");
-    assert!(
-        main.blocks.iter().any(
-            |block| block.instructions.iter().any(|instruction| matches!(
+        .expect("checked main");
+    let (_, carrier_place, release_blocks) = inline_call_carrier_cleanup(&p, "main");
+    let Place::Local(carrier_local) = carrier_place else {
+        panic!("call carrier must use a local place: {carrier_place:?}");
+    };
+    let escaped_arm = main
+        .blocks
+        .iter()
+        .find(|block| {
+            block.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::NeutralizePayloadSlot {
+                        place: Place::MachineVariant { local, .. },
+                        transferee: Some(_),
+                        ..
+                    } if *local == carrier_local
+                )
+            })
+        })
+        .expect("escaped payload arm");
+    let (neutralize, transferee) = escaped_arm
+        .instructions
+        .iter()
+        .enumerate()
+        .find_map(|(index, instruction)| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place: Place::MachineVariant { local, .. },
+                transferee: Some(transferee),
+                ..
+            } if *local == carrier_local => Some((index, *transferee)),
+            _ => None,
+        })
+        .expect("carrier payload neutralize");
+    let transfer = escaped_arm.instructions.iter().position(|instruction| {
+        matches!(
                 instruction,
-                Instr::NeutralizePayloadSlot {
-                    place: hew_mir::Place::MachineVariant { .. },
+                Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                    from,
+                    to: None,
+                    to_owner: None,
                     ..
-                }
-            ))
-        ),
-        "the escaped payload must clear its carrier slot"
-    );
-    let backedge = enum_in_place(&goto_drops(&p, "main"));
+                }) if *from == transferee
+        )
+    });
+    let carrier_drop = escaped_arm.instructions.iter().position(|instruction| {
+        matches!(
+            instruction,
+            Instr::Drop {
+                place: candidate,
+                drop_fn: Some(DropFnSpec::InPlace(InPlaceReleaseKind::Enum)),
+                ..
+            } if *candidate == carrier_place
+        )
+    });
     assert!(
-        !backedge.is_empty(),
-        "the neutralized carrier must release on the loop back-edge"
+        matches!((transfer, carrier_drop), (Some(transfer), Some(drop)) if neutralize < transfer && transfer < drop)
+            && release_blocks.contains(&escaped_arm.id),
+        "payload escape must precede the exact inline carrier cleanup: {:#?}",
+        escaped_arm.instructions
     );
 }
 
 /// A payload may itself contain a carrier whose selected leaf escapes. The
-/// nested match must retain the original call carrier's projection authority:
-/// clearing only the copied inner temp leaves the original record field live
-/// and its terminal carrier drop would free the escaped string a second time.
+/// nested match must retain an independent owner for the escaped string. The
+/// selected outer payload is already transferred into a `RecordInPlace` owner,
+/// so suppressing that parent cleanup would leak its other fields; the inner
+/// string copy instead needs one balanced retain before entering the result.
 #[test]
 fn nested_record_payload_escape_neutralizes_original_call_carrier() {
     let p = pipeline_with_tc(
@@ -609,22 +945,39 @@ fn take() -> Option<string> {
         .iter()
         .find(|function| function.name == "take")
         .expect("raw fn take");
-    let projection_paths = take
+    let escaped_retain_and_store = take
         .blocks
         .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instruction| match instruction {
-            Instr::AggregateProjectionNeutralize {
-                root: hew_mir::Place::MachineVariant { .. },
-                fields,
-                ..
-            } => Some(fields.clone()),
-            _ => None,
+        .find_map(|block| {
+            block.instructions.windows(2).find_map(|pair| match pair {
+                [Instr::StringRetain {
+                    value,
+                    condition: hew_mir::StringRetainCondition::Always,
+                }, Instr::Move {
+                    dest: Place::MachineVariant { .. },
+                    src,
+                }] if value == src => Some(*src),
+                _ => None,
+            })
         })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        projection_paths,
-        vec![vec![1]],
-        "the escaped inner payload must clear field 1 in the original outer carrier"
+        .expect("the escaped projected string must retain before result ingress");
+    assert!(matches!(escaped_retain_and_store, Place::Local(_)));
+    assert!(
+        take.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .all(|instruction| !matches!(instruction, Instr::AggregateProjectionNeutralize { .. })),
+        "the borrowed record projection must not gain destructive neutralization authority"
+    );
+    assert!(
+        p.elaborated_mir
+            .iter()
+            .find(|function| function.name == "take")
+            .expect("elaborated fn take")
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .any(|drop| matches!(drop.kind, DropKind::RecordInPlace)),
+        "the parent Slot owner must retain its structural cleanup"
     );
 }

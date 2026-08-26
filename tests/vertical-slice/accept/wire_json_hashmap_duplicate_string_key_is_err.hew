@@ -1,0 +1,14 @@
+// Validation (FAIL CLOSED): JSON object parsing preserves duplicate string
+// keys until the typed HashMap walk can reject them. Last-value normalisation
+// would silently change the wire value and must never be accepted.
+#[wire]
+type DuplicateStringMap {
+    values: HashMap<string, string> @1,
+}
+
+fn main() -> i64 {
+    match DuplicateStringMap.from_json("{\"values\":{\"same\":\"old\",\"same\":\"new\"}}") {
+        .Err(_) => 42,
+        .Ok(_) => 1,
+    }
+}

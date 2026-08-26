@@ -100,6 +100,29 @@ jobs:
         # the compiled-Hew behaviour suites, which run the programs.
         run: make dogfood-compile-measure
 
+      - name: Install cargo-geiger
+        # A from-source `cargo install` -- minutes of compile, no cache. It
+        # belongs on a schedule that runs once a night, not on the merge path
+        # where every pull request paid for it.
+        run: cargo install cargo-geiger --locked
+
+      - name: Runtime unsafe telemetry
+        # Measurement, not a gate. This used to compare cargo-geiger's summed
+        # unsafe counters against a committed `total=` ceiling on the required
+        # lint job. The count is a snapshot magnitude: it fired on every legal
+        # refactor that added a documented unsafe block, and the only available
+        # response was to raise the number -- so it recorded churn, not a
+        # decision anybody made.
+        #
+        # The RULES that number stood for are unchanged and still required on
+        # every pull request: `runtime-unsafe-clippy` rejects an undocumented
+        # unsafe block, and `unsafe-pattern-audit` rejects a new transmute,
+        # from_raw_parts, or c_void cast whose nearby SAFETY rationale does not
+        # name provenance, bounds, and the type tag. Those are forbidden-pattern
+        # rules; they catch the unsafe code that is actually wrong. This step
+        # reports the trend into the run summary where a human can read it.
+        run: make runtime-unsafe-geiger
+
   # ─────────────────────────────────────────────────────────────────────────
   # Code coverage — Rust workspace tests instrumented with cargo-llvm-cov.
   # Moved verbatim off ci.yml's per-PR path: same LLVM setup, same disk purge,

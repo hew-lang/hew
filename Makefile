@@ -2163,11 +2163,25 @@ runtime-unsafe-clippy:
 runtime-unsafe-clippy-build:
 	cargo clippy -p hew-runtime --tests
 
-# cargo-geiger's single reviewed ceiling is deliberately plain text: increasing
-# it is the explicit review waiver for new runtime unsafe code.
-# inputs: .github/hew-runtime-unsafe-count.txt scripts/check-runtime-unsafe-count.py
+# Runtime unsafe TELEMETRY, not a gate. This compared cargo-geiger's summed
+# counters against a committed `total=` ceiling on the required lint job. The
+# count is a snapshot magnitude: it moved on every legal refactor that added a
+# documented unsafe block, and the only response available was to raise the
+# number, so it recorded churn rather than a decision anybody made.
+#
+# The rules it stood for are unchanged and still required on every pull
+# request: `runtime-unsafe-clippy` rejects an undocumented unsafe block, and
+# `unsafe-pattern-audit` rejects a new transmute/from_raw_parts/c_void cast
+# whose SAFETY rationale does not name provenance, bounds, and the type tag.
+# Those reject the unsafe code that is actually wrong; the total never did.
+#
+# It runs on the nightly tier, where the from-source `cargo install
+# cargo-geiger` it needs costs a scheduled runner minutes rather than every
+# pull request's merge path.
+# inputs: scripts/runtime-unsafe-telemetry.py hew-runtime/src/*.rs
+# preflight: never — telemetry on the scheduled tier; the forbidden-pattern rules it replaced (runtime-unsafe-clippy, unsafe-pattern-audit) carry the pull-request path
 runtime-unsafe-geiger:
-	python3 scripts/check-runtime-unsafe-count.py
+	python3 scripts/runtime-unsafe-telemetry.py
 
 # The selector invokes each selected gate's build form before its timed check.
 # Provision the external checker there so any CI lane that selects this gate

@@ -861,6 +861,7 @@ LINT_OWNED_GATES=(
     lint-wasm-todo
     ll-identity-selftest
     runtime-poison-safe-lint
+    runtime-unsafe-clippy
     sandbox-parity-coverage-check
     shell-script-lint
     structural-lint
@@ -871,6 +872,7 @@ LINT_OWNED_GATES=(
     test-structural-lint-bootstrap
     test-verify-ffi
     tool-pin-contract-check
+    unsafe-pattern-audit
     verify-ffi
     verify-sys-lane-closure
 )

@@ -265,13 +265,6 @@ jobs:
       - name: Verify structural lint bootstrap contract
         run: make test-ast-grep-contract test-structural-lint-bootstrap
 
-      # The preflight dispatcher routes every branch gate, so its own routing
-      # and timeout counterfactuals belong on the required job rather than on
-      # the path-filtered scripts job that a compiler-only change skips.
-      # Stub-driven and temporary-tree only; no compiler build.
-      - name: Verify build harness contracts
-        run: make test-build-harness
-
       # >>> CI-PARITY-STEPS
       # This job is an active required status check on main. Keep the workflow
       # contract here unconditionally so nightly/release-gate drift cannot merge
@@ -844,6 +837,10 @@ jobs:
         env:
           COMPILED_HEW_GATE_OWNER: aggregate
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
+          # Newly-passing expected-failure entries annotate on a pull request
+          # and BLOCK on the default branch, where the list must be current.
+          # An unexpected FAILURE is red on both.
+          RATCHET_STRICT: ${{ github.event_name == 'push' && '--strict-passes' || '' }}
         # The route is derived from the event, once, by
         # scripts/ci-preflight-route.sh. The `--base origin/main` this
         # replaces was wrong in both directions: on a pull request it diffed

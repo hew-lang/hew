@@ -1374,6 +1374,14 @@ test-runtime-unit-build: $(LIBHEW_READY)
 
 # Ratcheted wrappers for the Hew-language test suites.
 #
+# Newly-passing expected-failure entries are DEBT ACCOUNTING, not a merge
+# gate: failing somebody's pull request because they fixed something punishes
+# exactly the behaviour the ratchet exists to encourage. They annotate on the
+# pull-request tier and BLOCK where the list must actually be current -- the
+# default branch and the release boundary -- via RATCHET_STRICT=--strict-passes.
+# An unexpected FAILURE is red on every tier, always.
+RATCHET_STRICT ?=
+
 # These targets run the suites through scripts/corpus-ratchet.sh, which
 # compares the set of failing tests against an exhaustive tracked-failures
 # list.  Any unexpected failure or unexpected
@@ -1408,7 +1416,7 @@ test-hew-ratchet-build:
 else
 test-hew-ratchet: hew-native runtime $(LIBHEW_READY) ## Test: run compiled Hew suites against their ratchet
 	@echo "==> Running Hew test suite (ratcheted)"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(RATCHET_STRICT) $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-hew-ratchet-build: hew-native runtime $(LIBHEW_READY)
@@ -1584,7 +1592,7 @@ check-counterfactual-output-artifacts-build: $(LIBHEW_READY)
 test-stdlib-ratchet: hew-native ## Test: type-check the standard library against its ratchet
 	@bash scripts/tests/test_stdlib_ratchet_deprecations.sh
 	@echo "==> Type-checking stdlib (ratcheted)"
-	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib
+	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib $(RATCHET_STRICT)
 
 # Every stdlib source must stay clean in isolation, and every module must stay
 # silent when checked and built through a temporary user package.
@@ -1714,7 +1722,7 @@ test-example-expectations-selftest-build:
 # inputs: docs/hew-language-guide.md docs/specs/HEW-SPEC-2026.md docs/language/*.hew
 # inputs: scripts/corpus-ratchet.sh scripts/doc-test-expected-failures.txt
 test-doc-examples: hew-native
-	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences
+	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences $(RATCHET_STRICT)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-doc-examples-build: hew-native
@@ -2154,13 +2162,27 @@ test-release-workflow-contract:
 test-release-workflow-contract-build:
 	@:
 
-LINT_GATES += test-build-harness
+# Deliberately NOT in LINT_GATES. `make lint` is the local mirror of the
+# required CI lint job, and A12 holds the two in exact correspondence; a
+# harness self-test on that path is the "don't test the test harness on the
+# merge path" rule broken in both places at once. The router's tests are real
+# and are kept -- they run when the harness changes, selected by the
+# declarations below, and not when the compiler changes.
+#
+# The harness's own counterfactuals. `test-ci-preflight-dispatcher` was a
+# byte-identical second target reading the same two files, so a comprehensive
+# profile selected BOTH into the same shard -- 426s + 398s of the identical
+# suite -- while the lint job ran it a third time at 468s. About 21.5 runner
+# minutes per pull request spent proving the routing of a router. One target
+# now, one invocation, selected only when a harness input actually changes.
+#
 # inputs: scripts/tests/test_ci_preflight_dispatcher.py
 # inputs: scripts/tests/test_ci_preflight_timeout.sh
-# inputs: scripts/ci-preflight-route.sh
+# inputs: scripts/ci-preflight-route.sh scripts/lib/timeout.sh
 # inputs: scripts/tests/test_playground_path_filter_oracle.py
 # inputs: scripts/tests/test_libhew_freshness.py scripts/tests/test_hew_suite_cache.py
 # inputs: scripts/tests/test_makefile_interfaces.py scripts/make-help.py
+# inputs: scripts/tests/test_corpus_ratchet_pass_policy.sh
 # inputs: scripts/shell-script-lint.py
 # Counterfactuals for the build harness itself: the preflight dispatcher's
 # routing and timeout behaviour, the CI playground path filter, the libhew
@@ -2176,6 +2198,7 @@ test-build-harness:
 	python3 scripts/tests/test_libhew_freshness.py
 	python3 scripts/tests/test_hew_suite_cache.py
 	python3 scripts/tests/test_makefile_interfaces.py
+	bash scripts/tests/test_corpus_ratchet_pass_policy.sh
 
 # Python and shell only; no artifacts.
 test-build-harness-build:
@@ -2271,7 +2294,7 @@ hew-fmt-property-build: hew
 # inputs: scripts/hew-corpus-expected-failures.txt
 hew-check-all: hew-native
 	@echo "==> hew-check-all: compiling full .hew corpus"
-	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
+	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus $(RATCHET_STRICT)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 hew-check-all-build: hew-native
@@ -2333,19 +2356,6 @@ test-mir-baselines:
 test-mir-baselines-build:
 	cargo nextest run --profile ci -p hew-cli --test funcupdate_mir_baselines \
 		--test artifact_platform_neutrality_selftest --no-run
-
-# The preflight router's own tests.  Without this target a routing change could
-# only be validated by running the test files by hand.
-.PHONY: test-ci-preflight-dispatcher
-# inputs: scripts/ci-preflight-dispatcher.sh scripts/tests/test_ci_preflight_dispatcher.py
-# inputs: scripts/tests/test_ci_preflight_timeout.sh scripts/lib/timeout.sh
-test-ci-preflight-dispatcher:
-	python3 scripts/tests/test_ci_preflight_dispatcher.py
-	bash scripts/tests/test_ci_preflight_timeout.sh
-
-# Python and shell only; no artifacts.
-test-ci-preflight-dispatcher-build:
-	@:
 
 .PHONY: codegen-trap-inventory-check
 LINT_GATES += codegen-trap-inventory-check

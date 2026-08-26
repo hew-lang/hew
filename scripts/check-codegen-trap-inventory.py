@@ -35,13 +35,22 @@ CANONICAL = {"emit_trap_with_code", "emit_trap_with_code_raw"}
 DEFENSE_MARKER = "TRAP-DISPOSITION: defense-only("
 HEW_PANIC_MARKER = "TRAP-DISPOSITION: actor-cooperative(hew_panic)"
 MARKER_LOOKBEHIND_LINES = 16
-EXPECTED_CANONICAL_COUNTS = {
-    "emit_trap_with_code": 1,
-    "emit_trap_with_code_raw": 1,
-}
-EXPECTED_DEFENSE_SITES = 1
-EXPECTED_HEW_PANIC_DECLARATIONS = 4
-EXPECTED_HEW_PANIC_CALLS = 2
+
+# There are deliberately no expected counts here.
+#
+# The RULE is the contract: a raw trap lives inside a canonical cooperative
+# helper or carries a defense-only proof beside it, and a generated hew_panic
+# edge carries an actor-cooperative proof. That rule rejects a real wrong
+# program -- an unclassified terminating edge reachable from an actor -- and it
+# survives refactoring.
+#
+# The four constants that used to sit here (canonical site counts, defense-only
+# site count, hew_panic declaration and call counts) rejected no wrong program
+# the rule does not already reject. They fired on a legal refactor that split a
+# helper in two or inlined a call, and they stayed silent on a NET-ZERO
+# relocation, which is the case that actually matters. A count is a
+# change-detector wearing a contract's clothes; the enumeration below is
+# reported, and floored at non-empty, and never asserted equal.
 
 
 @dataclass(frozen=True)
@@ -183,31 +192,29 @@ def main() -> int:
     canonical_counts = Counter(
         site.function for site in raw_sites if site.function in CANONICAL
     )
-    if canonical_counts != Counter(EXPECTED_CANONICAL_COUNTS):
-        errors.append(
-            "canonical trap emitter site counts changed: "
-            f"expected {EXPECTED_CANONICAL_COUNTS}, got {dict(canonical_counts)}"
-        )
     defense_sites = sum(
         site.function not in CANONICAL and site.disposed for site in raw_sites
     )
-    if defense_sites != EXPECTED_DEFENSE_SITES:
-        errors.append(
-            "defense-only trap site count changed: "
-            f"expected {EXPECTED_DEFENSE_SITES}, got {defense_sites}"
-        )
-
     panic_counts = Counter(site.kind for site in panic_sites)
-    expected_panic_counts = Counter(
-        {
-            "hew_panic declaration": EXPECTED_HEW_PANIC_DECLARATIONS,
-            "hew_panic call": EXPECTED_HEW_PANIC_CALLS,
-        }
-    )
-    if panic_counts != expected_panic_counts:
+
+    # Anti-vacuity FLOOR, not a target (LESSONS.md enumeration-gate-floors).
+    # The scanner walking the whole of hew-codegen-rs/src and finding nothing
+    # means the regexes stopped matching, not that codegen stopped trapping --
+    # and a gate that enforces nothing while reporting green is the exact
+    # failure this file exists to prevent one layer down.
+    if not raw_sites:
         errors.append(
-            "generated hew_panic site counts changed: "
-            f"expected {dict(expected_panic_counts)}, got {dict(panic_counts)}"
+            "no raw llvm.trap site found anywhere in hew-codegen-rs/src; the "
+            "scanner is broken, because codegen does emit traps"
+        )
+    if not any(site.function in CANONICAL for site in raw_sites):
+        errors.append(
+            "no raw trap sits inside a canonical cooperative helper "
+            f"({sorted(CANONICAL)}); the canonical rule has nothing to enforce"
+        )
+    if not panic_sites:
+        errors.append(
+            "no generated hew_panic site found; the hew_panic scanner is broken"
         )
 
     if errors:

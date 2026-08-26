@@ -158,6 +158,7 @@ run_harness() {
     local expected_file="$1"
     local fail_file="$2"
     local call_log="$3"
+    shift 3
 
     HARNESS_STATUS=0
     HARNESS_OUTPUT="$({
@@ -166,7 +167,8 @@ run_harness() {
         "$HARNESS" doc-fences \
             --expected-failures "$expected_file" \
             --outdir "$OUTDIR" \
-            --hew-bin "$FAKE_HEW"
+            --hew-bin "$FAKE_HEW" \
+            "$@"
     } 2>&1)" || HARNESS_STATUS=$?
 
     HARNESS_CALL=$(( HARNESS_CALL + 1 ))
@@ -313,14 +315,31 @@ while IFS= read -r fence_id; do
     printf '%s\n' "$fence_id" >> "$NOW_PASS_IDS"
 done < "$BASELINE_FAIL_IDS"
 
-run_harness "$BASELINE_EXPECTED" "$NOW_PASS_IDS" /dev/null
+# A listed failure that now PASSES is debt accounting, not a regression.
+# It BLOCKS where the list must be current -- the default branch and the
+# release boundary both pass --strict-passes -- and ANNOTATES elsewhere,
+# because failing a pull request because it fixed something punishes exactly
+# the behaviour this ratchet exists to encourage. Either way the entry is
+# named: relaxing the verdict must not relax the reporting, and it must not
+# touch which entry matched which
+# (LESSONS.md positional-ratchet-content-binding).
+run_harness "$BASELINE_EXPECTED" "$NOW_PASS_IDS" /dev/null --strict-passes
 if [[ "$HARNESS_STATUS" -ne 0 ]]; then
-    pass "now-pass mutation is rejected"
+    pass "now-pass mutation is rejected under --strict-passes"
 else
-    fail "now-pass mutation was accepted"
+    fail "now-pass mutation was accepted under --strict-passes"
 fi
 assert_contains "$HARNESS_OUTPUT" "NOW-PASSES: $first_failure" \
     "now-pass mutation names the exact fence"
+
+run_harness "$BASELINE_EXPECTED" "$NOW_PASS_IDS" /dev/null
+if [[ "$HARNESS_STATUS" -eq 0 ]]; then
+    pass "now-pass mutation annotates rather than blocks by default"
+else
+    fail "now-pass mutation blocked a default-tier run (status $HARNESS_STATUS)"
+fi
+assert_contains "$HARNESS_OUTPUT" "NOW-PASSES: $first_failure" \
+    "the default-tier annotation still names the exact fence"
 
 # Mutation 2: a previously passing fence fails and must be rejected.
 cp "$BASELINE_FAIL_IDS" "$NEW_FAILURE_IDS"

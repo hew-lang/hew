@@ -92,6 +92,16 @@ Corpora:
   doc-fences   `hew check` over ```hew doc fences  (make test-doc-examples)
 
 Options:
+  --strict-passes             Treat a listed failure that now PASSES as a gate
+                              failure.  OFF by default: newly-passing entries are
+                              debt accounting, and failing somebody's pull request
+                              because they FIXED something is a gate that punishes
+                              the behaviour it exists to encourage.  The
+                              default-branch and release tiers pass this flag, so
+                              the list is still forced current where the tree is
+                              integrated and where the artefact is cut.
+                              An unexpected FAILURE is always red, with or without
+                              this flag; only the newly-passing verdict moves.
   --expected-failures <path>  Override the corpus's expected-failures file.
   --hew-bin <path>            Override the hew binary.       [hew-corpus, doc-fences]
   --emit-o0-outcomes <path>   Write the O0 outcome set out.  [hew-suite]
@@ -105,6 +115,7 @@ EOF
 
 CORPUS=""
 EXPECTED_FAILURES_FILE=""
+STRICT_PASSES=0
 HEW_BIN_ARG=""
 EMIT_O0_OUTCOMES_FILE=""
 JUNIT_OUTPUT_ARG=""
@@ -152,6 +163,8 @@ require_value() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --strict-passes)
+            STRICT_PASSES=1; shift ;;
         --expected-failures)
             require_value "$@"; EXPECTED_FAILURES_FILE="$2"; shift 2 ;;
         --hew-bin)
@@ -274,8 +287,31 @@ ratchet_verdict() {
         "$RATCHET_EXTRA_FAIL_FN" detect
     fi
 
-    if (( count_unexpected_fail == 0 && count_unexpected_pass == 0 \
+    # A newly-passing entry is not a regression; it is stale debt
+    # accounting. It blocks on the default branch and at the release boundary
+    # (--strict-passes), where the list must be current, and annotates
+    # everywhere else. The CONTENT binding is untouched: entries are still
+    # matched by their tracked identity, so relaxing this verdict cannot
+    # relax which entry matched which
+    # (LESSONS.md positional-ratchet-content-binding).
+    local passes_are_fatal=0
+    if (( STRICT_PASSES == 1 )); then
+        passes_are_fatal=$count_unexpected_pass
+    fi
+
+    if (( count_unexpected_fail == 0 && passes_are_fatal == 0 \
           && RATCHET_EXTRA_FAIL_COUNT == 0 )); then
+        if (( count_unexpected_pass > 0 )); then
+            (( RATCHET_FAIL_LEADING_BLANK == 1 )) && echo ""
+            echo "::warning::$count_unexpected_pass listed failure(s) now PASS — remove from $EXPECTED_FAILURES_FILE:"
+            while IFS= read -r entry; do
+                [[ -z "$entry" ]] && continue
+                echo "  NOW-PASSES: $entry"
+            done <<< "$unexpected_passes"
+            echo ""
+            printf '%s\n' "$RATCHET_NOWPASS_HELP"
+            echo ""
+        fi
         if (( count_actual == 0 )); then
             (( RATCHET_ALL_PASS_LEADING_BLANK == 1 )) && echo ""
             echo "${RATCHET_INDENT}${RATCHET_ALL_PASS_TEXT}"
@@ -311,7 +347,7 @@ ratchet_verdict() {
         echo ""
     fi
 
-    if (( count_unexpected_pass > 0 )); then
+    if (( count_unexpected_pass > 0 && STRICT_PASSES == 1 )); then
         echo "$RATCHET_FAIL_PREFIX: $count_unexpected_pass listed failure(s) now PASS — remove from list:"
         while IFS= read -r entry; do
             [[ -z "$entry" ]] && continue

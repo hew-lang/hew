@@ -1028,7 +1028,11 @@ jobs:
           archive="$RUNNER_TEMP/ci-linux-nextest-download/ci-linux-nextest.tar.zst"
           root="$RUNNER_TEMP/ci-linux-nextest"
           test -s "$archive"
-          download_seconds=$(( $(date +%s) - ${ARCHIVE_TRANSFER_START:-0} ))
+          if [ -n "${ARCHIVE_TRANSFER_START:-}" ]; then
+            download_seconds="$(( $(date +%s) - ARCHIVE_TRANSFER_START ))s"
+          else
+            download_seconds="unknown"
+          fi
           mkdir -p "$root"
           start=$SECONDS
           cargo nextest list \
@@ -1043,6 +1047,7 @@ jobs:
           extract_seconds=$(( SECONDS - start ))
 
           target="$root/target"
+          test -s "$RUNNER_TEMP/ci-linux-nextest-binaries.json"
           test -s "$target/nextest/binaries-metadata.json"
           test -s "$target/nextest/cargo-metadata.json"
           test -x "$target/debug/hew"
@@ -1065,7 +1070,7 @@ jobs:
             echo "### Linux test archive (shard ${{ matrix.shard }}/4)"
             echo ""
             echo "- archive size: \`$(du -h "$archive" | cut -f1)\`"
-            echo "- download: \`${download_seconds}s\`"
+            echo "- download: \`${download_seconds}\`"
             echo "- extract: \`${extract_seconds}s\`"
           } >> "$GITHUB_STEP_SUMMARY"
 

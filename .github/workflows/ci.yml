@@ -347,15 +347,22 @@ jobs:
         run: make hew-fmt-check
 
       - name: Install SARIF tools
+        # Downloaded into RUNNER_TEMP rather than the checkout. These two land
+        # in /usr/local/bin a moment later, so the window is short — but a
+        # download that touches the working tree at all is a router input that
+        # nobody declared, and the class is what this fixes, not the window.
         run: |
+          set -euo pipefail
           .github/scripts/retry-download.sh \
             gh release download clippy-sarif-latest --repo psastras/sarif-rs \
-            --pattern "clippy-sarif-x86_64-unknown-linux-gnu" --output clippy-sarif --clobber
+            --pattern "clippy-sarif-x86_64-unknown-linux-gnu" \
+            --output "$RUNNER_TEMP/clippy-sarif" --clobber
           .github/scripts/retry-download.sh \
             gh release download sarif-fmt-latest --repo psastras/sarif-rs \
-            --pattern "sarif-fmt-x86_64-unknown-linux-gnu" --output sarif-fmt --clobber
-          chmod +x clippy-sarif sarif-fmt
-          mv clippy-sarif sarif-fmt /usr/local/bin/
+            --pattern "sarif-fmt-x86_64-unknown-linux-gnu" \
+            --output "$RUNNER_TEMP/sarif-fmt" --clobber
+          chmod +x "$RUNNER_TEMP/clippy-sarif" "$RUNNER_TEMP/sarif-fmt"
+          mv "$RUNNER_TEMP/clippy-sarif" "$RUNNER_TEMP/sarif-fmt" /usr/local/bin/
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -846,15 +853,23 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+        # Downloaded under RUNNER_TEMP, never the checkout. An archive
+        # extracted into $PWD is four untracked paths that no gate declares as
+        # an input, so the router fails closed to comprehensive on every run
+        # and the change-aware selection it exists for never happens
+        # (LESSONS.md preflight-perf-discipline). The runner's temp directory
+        # is outside the repository, so the working tree stays clean and the
+        # diff the router reads is the diff the author wrote.
         run: |
           set -euo pipefail
           WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "$RUNNER_TEMP" --clobber
+          tar -xJf "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz" -C "$RUNNER_TEMP"
+          rm -f "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz"
+          echo "$RUNNER_TEMP/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/${WASMTIME_DIR}/wasmtime" --version
 
       - name: Install wasm-pack v0.13.1 and Binaryen 117
         if: env.RUN_CODE_PATH == 'true'
@@ -1071,11 +1086,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "rustup target add wasm32-wasip1 failed" }
 
           $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
-          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --clobber
+          $archive = Join-Path $env:RUNNER_TEMP "$dir.zip"
+          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --dir $env:RUNNER_TEMP --clobber
           if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
 
-          Expand-Archive -Path "$dir.zip" -DestinationPath . -Force
-          $wasmtimeBin = Join-Path (Get-Location).Path $dir
+          # Extracted under RUNNER_TEMP, not the checkout: an archive unpacked
+          # into $PWD is untracked paths no gate declares, which makes the
+          # change router fail closed to comprehensive on every run.
+          Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP -Force
+          Remove-Item -LiteralPath $archive -Force
+          $wasmtimeBin = Join-Path $env:RUNNER_TEMP $dir
           $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
           if (-not (Test-Path -LiteralPath $wasmtimeExe)) {
             throw "wasmtime.exe not found at $wasmtimeExe after extracting $dir.zip"
@@ -1225,16 +1245,20 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+        # Extracted under RUNNER_TEMP, not the checkout: see the Linux job's
+        # "Install wasmtime" step for why a polluted working tree defeats the
+        # router.
         run: |
           set -euo pipefail
           rustup target add wasm32-wasip1
           WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-aarch64-macos"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "$RUNNER_TEMP" --clobber
+          tar -xJf "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz" -C "$RUNNER_TEMP"
+          rm -f "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz"
+          echo "$RUNNER_TEMP/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/${WASMTIME_DIR}/wasmtime" --version
           command -v wasm-ld
           wasm-ld --version
 

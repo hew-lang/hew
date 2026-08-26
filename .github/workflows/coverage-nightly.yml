@@ -164,10 +164,11 @@ jobs:
           WASMTIME_DIR="wasmtime-${WASMTIME_TAG}-x86_64-linux"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_TAG" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "$RUNNER_TEMP" --clobber
+          tar -xJf "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz" -C "$RUNNER_TEMP"
+          rm -f "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz"
+          echo "$RUNNER_TEMP/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run tests with coverage
         # Default features include "full" (encryption + profiler + quic),
@@ -338,11 +339,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "rustup target add wasm32-wasip1 failed" }
 
           $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
-          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --clobber
+          $archive = Join-Path $env:RUNNER_TEMP "$dir.zip"
+          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --dir $env:RUNNER_TEMP --clobber
           if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
 
-          Expand-Archive -Path "$dir.zip" -DestinationPath . -Force
-          $wasmtimeBin = Join-Path (Get-Location).Path $dir
+          Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP -Force
+          Remove-Item -LiteralPath $archive -Force
+          $wasmtimeBin = Join-Path $env:RUNNER_TEMP $dir
           $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
           if (-not (Test-Path -LiteralPath $wasmtimeExe)) {
             throw "wasmtime.exe not found at $wasmtimeExe after extracting $dir.zip"
@@ -442,10 +445,11 @@ jobs:
           WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-aarch64-macos"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "$RUNNER_TEMP" --clobber
+          tar -xJf "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz" -C "$RUNNER_TEMP"
+          rm -f "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz"
+          echo "$RUNNER_TEMP/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/${WASMTIME_DIR}/wasmtime" --version
           command -v wasm-ld
           wasm-ld --version
 

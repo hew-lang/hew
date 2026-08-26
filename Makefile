@@ -2117,7 +2117,15 @@ test-sandbox-parity-coverage-check-build:
 # Keep the required release handoff fail-closed and correlated to its exact
 # downstream workflow run. This target is called by CI for release workflow
 # and static-oracle changes and by the scripts/config preflight profile.
+#
+# It also carries the CI-substrate workflow contracts
+# (test_ci_workflow_contract.py): the same question — "does the parsed
+# workflow graph still say what we require of it?" — asked of ci.yml and the
+# scheduled tier rather than of the release path. One gate, one home; adding a
+# second target for the same question would be the accretion this substrate
+# exists to reverse.
 # inputs: .github/workflows/* scripts/tests/test_release_workflow_contract.py
+# inputs: scripts/tests/test_ci_workflow_contract.py .github/actions/*/action.yml
 # inputs: scripts/tests/test_pre_release_validate_contract.py
 # inputs: scripts/tests/test_cargo_output_dir.py
 # inputs: scripts/tests/test_target_dir_gate_wiring.py scripts/pre-release-validate.sh
@@ -2131,6 +2139,7 @@ test-sandbox-parity-coverage-check-build:
 # inputs: docs/cross-platform-build-guide.md
 test-release-workflow-contract:
 	python3 scripts/tests/test_release_workflow_contract.py
+	python3 scripts/tests/test_ci_workflow_contract.py
 	python3 scripts/tests/test_pre_release_validate_contract.py
 	python3 scripts/tests/test_cargo_output_dir.py
 	python3 scripts/tests/test_target_dir_gate_wiring.py

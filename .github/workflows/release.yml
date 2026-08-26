@@ -732,7 +732,10 @@ jobs:
       - name: Smoke test packaged archive (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
-          $SmokeRoot = Join-Path $PWD "pkg-smoke"
+          # Scratch, not the checkout: the Unix leg beside this one already
+          # uses `mktemp -d`, and unpacking into $PWD leaves a `pkg-smoke/`
+          # tree the change router would read as an undeclared input.
+          $SmokeRoot = Join-Path $env:RUNNER_TEMP "pkg-smoke"
           Remove-Item -Recurse -Force $SmokeRoot -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $SmokeRoot | Out-Null
 

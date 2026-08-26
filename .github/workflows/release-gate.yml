@@ -199,10 +199,11 @@ jobs:
           WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-${WASMTIME_ARCH}-linux"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "$RUNNER_TEMP" --clobber
+          tar -xJf "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz" -C "$RUNNER_TEMP"
+          rm -f "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz"
+          echo "$RUNNER_TEMP/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/${WASMTIME_DIR}/wasmtime" --version
 
       - name: Build shared Rust test artifact
         run: make stdlib
@@ -350,10 +351,11 @@ jobs:
           WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-${WASMTIME_ARCH}-linux"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "$RUNNER_TEMP" --clobber
+          tar -xJf "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz" -C "$RUNNER_TEMP"
+          rm -f "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz"
+          echo "$RUNNER_TEMP/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/${WASMTIME_DIR}/wasmtime" --version
 
       - name: Build shared Rust test artifact
         run: make stdlib
@@ -454,10 +456,11 @@ jobs:
           WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-${WASMTIME_ARCH}-macos"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "$RUNNER_TEMP" --clobber
+          tar -xJf "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz" -C "$RUNNER_TEMP"
+          rm -f "$RUNNER_TEMP/${WASMTIME_DIR}.tar.xz"
+          echo "$RUNNER_TEMP/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/${WASMTIME_DIR}/wasmtime" --version
           LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm@${{ env.LLVM_VERSION }})}"
           LLD_PREFIX="${LLD_PREFIX:-$(brew --prefix lld@${{ env.LLVM_VERSION }})}"
           export PATH="${LLD_PREFIX}/bin:${LLVM_PREFIX}/bin:$PATH"

@@ -90,6 +90,23 @@ tests/hew/hew_test_emit_*/
 /stdlib_io_scanner_file_oracle
 /wire_json_vec_option_roundtrip
 
+# Downloaded CI tooling. These are provisioned under the runner's temp
+# directory, never the checkout — see the "Install wasmtime" step in
+# .github/workflows/ci.yml. The patterns are defence in depth: an archive
+# extracted into the working tree is untracked paths that no gate declares as
+# an input, which makes the change router fail closed to comprehensive on
+# every single run (LESSONS.md preflight-perf-discipline). Ignoring them keeps
+# a local `hew` build or a hand-run workflow step from doing the same thing.
+wasmtime-*/
+wasmtime-*.tar.xz
+wasmtime-*.zip
+binaryen-*/
+binaryen-*.tar.gz
+wasm-pack-v*/
+/clippy-sarif
+/sarif-fmt
+/clippy-results.sarif
+
 # Retired local C++/MLIR codegen checkout and clangd residue. The active v0.5
 # compiler substrate is `hew-codegen-rs`; keep any machine-local `hew-codegen/`
 # directory untracked without deleting it.

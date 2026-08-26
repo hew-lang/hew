@@ -332,11 +332,21 @@ path = "junit.xml"
 # Escalation is unchanged: at platform tier `full` both jobs still run the
 # whole workspace. This profile is the FLOOR, not the ceiling.
 #
-# The step asserts the selection is NON-EMPTY and prints the count into the
-# job summary. The count is reported, never asserted equal: a filterset that
-# selects nothing is a green job proving nothing (LESSONS.md
+# The step asserts the selection is NON-EMPTY and prints the per-binary table
+# into the job summary. The count is reported, never asserted equal: a
+# filterset that selects nothing is a green job proving nothing (LESSONS.md
 # enumeration-gate-floors), while an exact count is a change-detector that
 # fires on any new test.
+#
+# EVERY selector below is `binary_id(...)`, and that is not a style choice.
+# Measured against cargo-nextest 0.9.132: a `test(...)` predicate in a
+# `default-filter` does NOT intersect the way it reads.
+# `binary_id(hew-cli::run_e2e) and test(=__no_such_test__)` selects the whole
+# 171-test binary, and a bare `test(=__no_such_test__)` selects all 14,561
+# workspace tests. A `test()` predicate added here would therefore widen this
+# profile silently rather than narrow it, which is the opposite of a filter.
+# nextest does reject an unmatched `binary_id` at config-parse time (exit 96),
+# so a typo here is caught before anything runs.
 #
 # Timeouts and test groups are inherited from the file-level defaults and the
 # `profile.ci` overrides that apply by filter; nothing about the hang ceilings

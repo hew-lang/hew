@@ -51,6 +51,19 @@ on:
 
 permissions:
   contents: read
+  # BOTH sides of the intersection are load-bearing, and getting either wrong
+  # produces a reporter that looks wired and 403s on every call.
+  #
+  # GitHub intersects a called workflow's `permissions:` with the calling job's.
+  # The caller granting `issues: write` is necessary and NOT sufficient: a
+  # callee that declares only `contents: read` drops `issues` from the
+  # intersection, so the token this workflow's jobs receive cannot write an
+  # issue at all. Declaring it here is likewise not sufficient — a caller that
+  # omits it removes it again.
+  #
+  # scripts/tests/test_ci_workflow_contract.py asserts both sides and mutates
+  # each independently, because only the pair is the contract.
+  issues: write
 
 jobs:
   report:

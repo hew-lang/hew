@@ -97,11 +97,39 @@ no longer schedules is an error.
   The caller grants `issues: write`, because a called workflow cannot elevate
   its caller's token scope.
 - **Freshness** — `scripts/check-nightly-freshness.py`, run by the standalone
-  `nightly-freshness` job and aggregated into `Build & test (Linux)`. It queries
-  `event=schedule` only, so a manual dispatch cannot launder a rotting nightly
-  green. Auth failures (401/403/404) are red naming the missing permission and
-  are never retried or reported as staleness; transport and 5xx failures get a
-  bounded retry and then fail closed.
+  `nightly-freshness` job. It queries `event=schedule` only, so a manual
+  dispatch cannot launder a rotting nightly green. Auth failures (401/403/404)
+  are red naming the missing permission and are never retried or reported as
+  staleness; transport and 5xx failures get a bounded retry and then fail
+  closed.
+
+  **Advisory today, required after one green nightly.** The check runs on every
+  pull request and reports its own red, but is not aggregated into
+  `Build & test (Linux)` yet. The last successful *scheduled* coverage-nightly
+  run predates the gdb provisioning fix, so requiring it now would turn the
+  required Linux context red on every pull request for a reason no author can
+  fix — a repository-wide deadlock, not a gate. Nothing about the check is
+  softened to make it land: no flag, no bypass, no grace window, no permissive
+  fallback. One `needs:` edge is deferred.
+
+  To activate, once a scheduled coverage-nightly run has succeeded:
+
+  ```
+  gh api "repos/:owner/:repo/actions/workflows/coverage-nightly.yml/runs?event=schedule&status=success&per_page=1" \
+    --jq '.workflow_runs[0].run_started_at'
+  python3 scripts/check-nightly-freshness.py   # must exit 0
+  ```
+
+  then, in one commit:
+
+  1. add `nightly-freshness` to `linux-required`'s `needs:`;
+  2. add `NIGHTLY_FRESHNESS_RESULT: ${{ needs.nightly-freshness.result }}` to
+     that job's `env:`;
+  3. add `test "$NIGHTLY_FRESHNESS_RESULT" = success` to its assertion.
+
+  `scripts/tests/test_ci_workflow_contract.py` holds the job to the advisory
+  shape until then and to the required shape afterwards, and rejects a `needs:`
+  entry that arrives without its assertion.
 
 There is no bypass label and no skip environment variable. A stale nightly is
 fixed, or the nightly and its owner entry are deleted in one commit.

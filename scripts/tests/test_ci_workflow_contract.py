@@ -652,6 +652,75 @@ def reporter_findings(document: dict, name: str) -> list[str]:
     return findings
 
 
+def callee_permission_findings(document: dict) -> list[str]:
+    """The other half of the intersection, read off the reusable workflow.
+
+    A caller that grants `issues: write` to a callee declaring only
+    `contents: read` produces an effective token WITHOUT `issues` — the
+    reporter runs, looks wired, and 403s on the first write. Neither side is
+    sufficient alone, so neither side is the contract alone.
+    """
+    findings: list[str] = []
+    permissions = document.get("permissions")
+    if not isinstance(permissions, dict):
+        return [
+            "the reusable reporter declares no `permissions:` block; the "
+            "intersection would be whatever a caller happened to grant"
+        ]
+    if permissions.get("issues") != "write":
+        findings.append(
+            "the reusable reporter does not declare `issues: write`; GitHub "
+            "intersects it with the caller's grant, so the effective token "
+            "cannot write an issue however the caller is configured"
+        )
+    if permissions.get("contents") != "read":
+        findings.append(
+            "the reusable reporter must keep `contents: read` to check out the "
+            "owner table and the reporter script"
+        )
+    return findings
+
+
+def test_the_reusable_reporter_keeps_issues_write_on_its_own_side() -> None:
+    document = load(WORKFLOWS / "scheduled-failure-report.yml")
+    findings = callee_permission_findings(document)
+    assert not findings, "reusable reporter permissions:\n  " + "\n  ".join(findings)
+
+
+def test_the_permission_intersection_is_rejected_from_either_side() -> None:
+    """Falsifiability: mutate each half independently.
+
+    Both mutations produce a reporter that runs to completion and writes
+    nothing, which is why the pair has to be asserted rather than either half.
+    """
+    callee_without = parse_yaml(
+        "on:\n  workflow_call:\njobs:\n"
+        "  report:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n",
+        "fixture",
+    )
+    callee_without["permissions"] = {"contents": "read"}
+    assert any(
+        "does not declare `issues: write`" in finding
+        for finding in callee_permission_findings(callee_without)
+    ), callee_permission_findings(callee_without)
+
+    callee_none = parse_yaml(
+        "on:\n  workflow_call:\njobs:\n"
+        "  report:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n",
+        "fixture",
+    )
+    assert any(
+        "declares no `permissions:` block" in finding
+        for finding in callee_permission_findings(callee_none)
+    ), callee_permission_findings(callee_none)
+
+    caller_without = _reporter_fixture(permissions="contents: read")
+    assert any(
+        "the CALLER must grant" in finding
+        for finding in reporter_findings(caller_without, "fixture")
+    ), reporter_findings(caller_without, "fixture")
+
+
 def test_every_scheduled_workflow_reports_to_an_owner() -> None:
     findings: list[str] = []
     for path in scheduled_workflows():
@@ -746,7 +815,7 @@ def test_the_owner_table_matches_the_scheduled_workflows_exactly() -> None:
 # ── contract: the freshness gate is durably required and correctly scoped ────
 
 
-def test_the_freshness_job_is_standalone_required_and_scoped() -> None:
+def test_the_freshness_job_is_standalone_scoped_and_advisory_for_now() -> None:
     """Every clause here is load-bearing, and each was wrong in a draft.
 
     `needs:` must be absent, or a stranded `main-health` would skip the very
@@ -754,9 +823,15 @@ def test_the_freshness_job_is_standalone_required_and_scoped() -> None:
     `actions: read` must be present, or the run-history read 404s and the
     script reports an auth defect as rot. Both token spellings must be
     exported, because the script accepts either and neither is set by default.
-    And `linux-required` must aggregate it, unconditionally: nightly rot is
-    not a property of the diff, so a docs-only pull request does not get to
-    skip it.
+
+    The check is ADVISORY today and this asserts that too. The last successful
+    scheduled coverage-nightly run predates the provisioning fix in this same
+    branch, so requiring it now would turn the required Linux context red on
+    every pull request for a reason no author can influence -- a
+    repository-wide deadlock rather than a gate. Nothing about the check is
+    softened: no flag, no bypass, no grace window, no permissive fallback. One
+    `needs:` edge is deferred, and the ACTIVATION note in the workflow spells
+    out exactly what adds it back.
     """
     ci = load(WORKFLOWS / "ci.yml")
     all_jobs = jobs(ci)
@@ -767,6 +842,9 @@ def test_the_freshness_job_is_standalone_required_and_scoped() -> None:
         "nightly-freshness must have no `needs:`; hanging it off another job "
         "means a stranded upstream skips it exactly when it matters"
     )
+    # A job-level `if:` would make the check skippable on some diffs. Nightly
+    # rot is not a property of anyone's change.
+    assert not job.get("if"), job.get("if")
     permissions = job.get("permissions") or {}
     assert permissions.get("actions") == "read", permissions
     assert permissions.get("contents") == "read", permissions
@@ -778,14 +856,34 @@ def test_the_freshness_job_is_standalone_required_and_scoped() -> None:
     )
     env = runner.get("env") or {}
     assert env.get("GH_TOKEN") and env.get("GITHUB_TOKEN"), env
+    # Advisory means "not aggregated into a required context", never "cannot
+    # fail". The job still reports its own red.
+    assert not runner.get("continue-on-error"), runner
+    assert not job.get("continue-on-error"), job
 
     required = all_jobs["linux-required"]
     needs = required.get("needs") or []
     needs = [needs] if isinstance(needs, str) else list(needs)
-    assert "nightly-freshness" in needs, needs
     assertion = "\n".join(str(step.get("run", "")) for step in steps(required))
-    assert "NIGHTLY_FRESHNESS_RESULT" in assertion, assertion
-    assert 'test "$NIGHTLY_FRESHNESS_RESULT" = success' in assertion, assertion
+
+    if "nightly-freshness" in needs:
+        # Activated. Both halves must land together: a `needs:` entry without
+        # the assertion makes the aggregate WAIT for the check and then ignore
+        # its verdict, which is worse than not requiring it at all.
+        assert "NIGHTLY_FRESHNESS_RESULT" in assertion, assertion
+        assert 'test "$NIGHTLY_FRESHNESS_RESULT" = success' in assertion, assertion
+    else:
+        assert "NIGHTLY_FRESHNESS_RESULT" not in assertion, (
+            "linux-required asserts a freshness result it does not depend on; "
+            "that expression evaluates to the empty string, so the aggregate "
+            "would fail for a reason unrelated to nightly health"
+        )
+        workflow_text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+        assert "ACTIVATION, exactly" in workflow_text, (
+            "a deferred required-check edge must carry the exact steps that "
+            "undo it, or it becomes permanent by being forgotten"
+        )
+
     # A job-level `if:` would report the required context as skipped rather
     # than satisfied (LESSONS.md ci-required-gate-sequencing clause 2).
     assert required.get("if") == "always()", required.get("if")
@@ -899,6 +997,156 @@ def test_the_platform_profile_keeps_the_macos_oracles_off_hosted_ci() -> None:
     assert selectors, "the platform profile selects nothing"
     offenders = [name for name in selectors if "oracle" in name]
     assert not offenders, offenders
+
+
+# ── contract: strict ratchet policy reaches the tiers that claim it ──────────
+
+# `RATCHET_STRICT` is a BOOLEAN the Makefile maps to `--strict-passes`. It has
+# to arrive by ENVIRONMENT rather than on the command line, because
+# test_freebsd_workflow_contract.py asserts the exact `gmake` command tuples
+# the FreeBSD release leg runs, and a policy knob spliced into one of those
+# commands makes that assertion unmatchable.
+#
+# The FreeBSD leg is the case a text search gets wrong: its gates execute
+# inside a `vmactions/freebsd-vm` guest, so the host job's `env:` does not
+# reach them. It needs its own export, BEFORE the gate, inside the same script.
+RATCHET_GATES = ("test-hew-ratchet", "test-stdlib-ratchet")
+
+
+def strict_ratchet_findings(
+    text: str, origin: str, *, from_step_env: bool = False
+) -> list[str]:
+    """Every ratchet invocation in a release script, and whether strict reached it.
+
+    `from_step_env` says the step's own `env:` already carries the knob. That
+    is true for an ordinary `run:` on the host and FALSE for a script handed to
+    a VM action: `vmactions/freebsd-vm` executes its payload inside the guest,
+    where the host step's environment does not exist. The FreeBSD leg
+    therefore needs its own export INSIDE the script, before the gate -- which
+    is the case a text search for "RATCHET_STRICT appears somewhere in this
+    file" gets wrong.
+    """
+    findings: list[str] = []
+    exported = from_step_env
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if line.startswith("#"):
+            continue
+        if re.match(r"^export\s+RATCHET_STRICT=\S+", line):
+            exported = True
+            continue
+        for gate in RATCHET_GATES:
+            if re.search(rf"\b(?:g?make)\s+{re.escape(gate)}\b", line):
+                if "RATCHET_STRICT" in line:
+                    findings.append(
+                        f"{origin}:{number}: {gate} carries RATCHET_STRICT on its "
+                        "command line; the workflow contract asserts this exact "
+                        "command tuple, so the knob must arrive by environment"
+                    )
+                elif not exported:
+                    findings.append(
+                        f"{origin}:{number}: {gate} runs without RATCHET_STRICT in "
+                        "scope; the release tier would silently use the "
+                        "pull-request policy"
+                    )
+    return findings
+
+
+def test_the_freebsd_release_guest_exports_strict_ratchet_before_its_gates() -> None:
+    """The claim and the code must agree.
+
+    A previous revision of this branch described this export in its commit
+    message and did not ship it, which is exactly the failure a contract test
+    exists to make impossible: the FreeBSD release leg would have run the
+    pull-request ratchet policy while the history said otherwise.
+    """
+    document = load(WORKFLOWS / "release-gate.yml")
+    findings: list[str] = []
+    for job_name, job in jobs(document).items():
+        for step in steps(job):
+            step_env = step.get("env") or {}
+            in_env = isinstance(step_env, dict) and "RATCHET_STRICT" in step_env
+            origin = f"release-gate.yml {job_name}"
+
+            host = step.get("run")
+            if isinstance(host, str):
+                findings.extend(
+                    strict_ratchet_findings(host, origin, from_step_env=in_env)
+                )
+
+            # A payload handed to an action runs wherever that action puts it.
+            # For the FreeBSD VM that is a guest with its own environment, so
+            # the host step's `env:` confers nothing on it.
+            guest = step.get("with")
+            if isinstance(guest, dict):
+                for value in guest.values():
+                    if isinstance(value, str):
+                        findings.extend(
+                            strict_ratchet_findings(
+                                value, f"{origin} (guest)", from_step_env=False
+                            )
+                        )
+    assert not findings, "strict ratchet policy:\n  " + "\n  ".join(findings)
+
+
+def test_the_strict_ratchet_rule_rejects_a_gate_the_export_never_reached() -> None:
+    """Falsifiability, in both the ways this can be got wrong."""
+    missing = "cargo build\ngmake test-vertical-slice\ngmake test-hew-ratchet\n"
+    assert any(
+        "without RATCHET_STRICT" in finding
+        for finding in strict_ratchet_findings(missing, "fixture")
+    ), strict_ratchet_findings(missing, "fixture")
+
+    after = "gmake test-hew-ratchet\nexport RATCHET_STRICT=1\n"
+    assert any(
+        "without RATCHET_STRICT" in finding
+        for finding in strict_ratchet_findings(after, "fixture")
+    ), "an export AFTER the gate was accepted"
+
+    on_argv = "make test-hew-ratchet RATCHET_STRICT=1\n"
+    assert any(
+        "on its command line" in finding
+        for finding in strict_ratchet_findings(on_argv, "fixture")
+    ), strict_ratchet_findings(on_argv, "fixture")
+
+    correct = (
+        "export RATCHET_STRICT=1\ngmake test-vertical-slice\ngmake test-hew-ratchet\n"
+    )
+    assert not strict_ratchet_findings(correct, "fixture")
+
+    # A host step may carry the knob in `env:` instead of exporting it inline.
+    assert not strict_ratchet_findings(
+        "make test-hew-ratchet\n", "fixture", from_step_env=True
+    )
+    # A step `env:` confers nothing on a VM guest, so the same script handed to
+    # the FreeBSD action must still be rejected.
+    assert any(
+        "without RATCHET_STRICT in scope" in finding
+        for finding in strict_ratchet_findings(
+            "gmake test-hew-ratchet\n", "fixture", from_step_env=False
+        )
+    )
+
+
+def test_the_strict_ratchet_knob_is_a_boolean_not_flag_text() -> None:
+    """A variable spliced into a gate's argv is a bypass surface.
+
+    As flag text, `RATCHET_STRICT` could pass any argument to the ratchet from
+    the environment. As a boolean mapped by the Makefile, it can only turn one
+    documented policy on.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert "RATCHET_STRICT_FLAG = $(if $(RATCHET_STRICT),--strict-passes,)" in makefile
+    invocations = [
+        line
+        for line in makefile.splitlines()
+        if "corpus-ratchet.sh" in line and not line.lstrip().startswith("#")
+    ]
+    assert invocations, makefile[:0]
+    for line in invocations:
+        assert "$(RATCHET_STRICT)" not in line, (
+            f"a raw RATCHET_STRICT is spliced into a ratchet command line: {line}"
+        )
 
 
 def _discover_tests() -> list:

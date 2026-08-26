@@ -840,7 +840,7 @@ jobs:
           # Newly-passing expected-failure entries annotate on a pull request
           # and BLOCK on the default branch, where the list must be current.
           # An unexpected FAILURE is red on both.
-          RATCHET_STRICT: ${{ github.event_name == 'push' && '--strict-passes' || '' }}
+          RATCHET_STRICT: ${{ github.event_name == 'push' && '1' || '' }}
         # The route is derived from the event, once, by
         # scripts/ci-preflight-route.sh. The `--base origin/main` this
         # replaces was wrong in both directions: on a pull request it diffed
@@ -872,15 +872,39 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   nightly-freshness:
     name: Nightly freshness
-    # LAND ORDER, and it is not optional: this job is RED today. The last
-    # successful SCHEDULED coverage-nightly run is ~740h old, because the job
-    # was missing gdb (fixed in this same branch, in coverage-nightly.yml).
-    # Merging this `needs:` edge before one green scheduled coverage-nightly
-    # run exists on main would turn `Build & test (Linux)` red on every open
-    # pull request for a reason no pull request author can fix. Land the
-    # coverage-nightly provisioning fix, let one scheduled cycle succeed, then
-    # merge this. The alternative -- softening the gate so it can land early --
-    # is the theatre this whole lane exists to remove.
+    # ADVISORY TODAY, REQUIRED AFTER ONE GREEN NIGHTLY. Read this before
+    # changing either half.
+    #
+    # The check itself is complete and fails closed: a scheduled workflow past
+    # its window, an unowned scheduled workflow, an empty enumeration, or an
+    # unanswerable API is RED. What is deliberately not yet done is aggregating
+    # it into the required `Build & test (Linux)` context.
+    #
+    # Why: the last successful SCHEDULED coverage-nightly run is ~740h old,
+    # because that job was missing gdb — fixed in this same branch, in
+    # coverage-nightly.yml, but the fix cannot have taken effect until a
+    # scheduled run executes it. Requiring the check now would turn
+    # `Build & test (Linux)` red on every open pull request for a reason no
+    # author can fix or influence, which is a repository-wide deadlock rather
+    # than a gate.
+    #
+    # The check still RUNS on every pull request and reports its own red, so
+    # the signal is visible from the day this merges. It simply does not block.
+    # No flag, no bypass, no grace window, and no permissive fallback were
+    # added to make it land early: the only thing deferred is one `needs:`
+    # entry.
+    #
+    # ACTIVATION, exactly — three edits, one commit, no other change:
+    #   1. Confirm a green scheduled run exists:
+    #        gh api "repos/:owner/:repo/actions/workflows/coverage-nightly.yml/runs?event=schedule&status=success&per_page=1" \
+    #          --jq '.workflow_runs[0].run_started_at'
+    #      and that `python3 scripts/check-nightly-freshness.py` exits 0.
+    #   2. Add `nightly-freshness` to `linux-required`'s `needs:` list.
+    #   3. Add `NIGHTLY_FRESHNESS_RESULT: ${{ needs.nightly-freshness.result }}`
+    #      to that job's env and `test "$NIGHTLY_FRESHNESS_RESULT" = success`
+    #      to its assertion.
+    # scripts/tests/test_ci_workflow_contract.py holds the job to the advisory
+    # shape until then, and to the required shape afterwards.
     #
     # Deliberately NO `needs:`. Every other job in this workflow hangs off
     # `changes`, which hangs off `main-health`; a stranded `main-health` would
@@ -923,7 +947,9 @@ jobs:
   # "Build & test (Linux)", remains the single required context.
   linux-required:
     name: Build & test (Linux)
-    needs: [changes, build-and-test, compiled-hew-aggregate, nightly-freshness]
+    # `nightly-freshness` is deliberately absent until one green scheduled
+    # coverage-nightly run exists on main — see that job's ACTIVATION note.
+    needs: [changes, build-and-test, compiled-hew-aggregate]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -944,21 +970,16 @@ jobs:
           CHANGE_RESULT: ${{ needs.changes.result }}
           RUST_GATES_RESULT: ${{ needs.build-and-test.result }}
           COMPILED_HEW_RESULT: ${{ needs.compiled-hew-aggregate.result }}
-          # The scheduled tier is aggregated here rather than into `lint`
-          # because `lint` is on a deletion path -- anything parked there gets
-          # swept away by the next slimming pass. This job is a five-minute
-          # `if: always()` aggregator whose whole purpose is asserting
-          # needs.*.result, so one more entry is the cheapest durable home in
-          # the topology, and it needs no ruleset edit to become required.
-          # This step is asserted unconditionally: a docs-only pull request
-          # takes the no-op branch above for the heavy gates, but nightly rot
-          # is not a property of the diff.
-          NIGHTLY_FRESHNESS_RESULT: ${{ needs.nightly-freshness.result }}
+        # When the scheduled tier is activated (see `nightly-freshness`), this
+        # aggregator is its home rather than `lint`: `lint` is on a slimming
+        # path, while this is a five-minute `if: always()` job whose whole
+        # purpose is asserting needs.*.result, so one more entry is the
+        # cheapest durable place in the topology and it needs no ruleset edit
+        # to become required.
         run: |
           test "$CHANGE_RESULT" = success
           test "$RUST_GATES_RESULT" = success
           test "$COMPILED_HEW_RESULT" = success
-          test "$NIGHTLY_FRESHNESS_RESULT" = success
 
   # Code coverage moved off the per-PR path: it was the flakiest required check
   # (cargo-llvm-cov instrumentation + the duplicated target/llvm-cov-target/
@@ -1137,20 +1158,18 @@ jobs:
 
       - name: Assert the platform behaviour suite is not empty
         # LESSONS.md enumeration-gate-floors -- see the macOS job for why this
-        # is a floor and never an asserted count.
+        # is a floor and never an asserted count. `python` rather than
+        # `python3`: the Windows image ships the former on PATH.
         if: env.PLATFORM_TIER == 'smoke'
         shell: pwsh
         env:
           HEW_TEST_NO_BUILD: "1"
         run: |
-          $listing = Join-Path $env:RUNNER_TEMP "platform-selection.txt"
-          cargo nextest list --workspace --exclude hew-wasm --exclude hew-cabi --profile platform --list-type full > $listing
+          $listing = Join-Path $env:RUNNER_TEMP "platform-selection.json"
+          cargo nextest list --workspace --exclude hew-wasm --exclude hew-cabi --profile platform --message-format json --list-type full > $listing
           if ($LASTEXITCODE -ne 0) { throw "cargo nextest list failed with exit code $LASTEXITCODE" }
-          $selected = (Get-Content $listing | Where-Object { $_.Trim() -ne '' }).Count
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Platform behaviour suite: $selected test(s) selected"
-          if ($selected -eq 0) {
-            throw "the platform nextest profile selected no tests; a suite that runs nothing cannot report a platform regression"
-          }
+          python scripts/platform-suite-floor.py $listing
+          if ($LASTEXITCODE -ne 0) { throw "platform behaviour suite floor rejected the selection" }
 
       - name: Run the platform behaviour suite
         # NARROWED from the five-crate smoke set (hew-runtime, hew-codegen-rs,
@@ -1323,21 +1342,22 @@ jobs:
           HEW_TEST_NO_BUILD: "1"
         run: |
           set -euo pipefail
-          # The enumeration is written out first and counted second: a cargo
-          # command inside a command substitution is unreadable to the
+          # Machine format, and the count comes from the JSON test records
+          # rather than from non-blank lines of human output: progress lines,
+          # warnings, colour codes and a `--list-type` change all move a line
+          # count, and any of them would turn "no tests selected" into a
+          # number greater than zero.
+          #
+          # The listing is written out first and read second: a cargo command
+          # inside a command substitution is unreadable to the
           # gate-reachability tokeniser, and a command it cannot read is a
           # command whose test filters it cannot check.
           cargo nextest list \
             --workspace --exclude hew-wasm --exclude hew-cabi \
-            --profile platform --list-type full \
-            > "$RUNNER_TEMP/platform-selection.txt"
-          selected=$(grep -c . "$RUNNER_TEMP/platform-selection.txt" || true)
-          echo "Platform behaviour suite: ${selected} test(s) selected" \
-            >> "$GITHUB_STEP_SUMMARY"
-          if [ "${selected}" -eq 0 ]; then
-            echo "::error::the platform nextest profile selected no tests; a suite that runs nothing cannot report a platform regression"
-            exit 1
-          fi
+            --profile platform --message-format json --list-type full \
+            > "$RUNNER_TEMP/platform-selection.json"
+          python3 scripts/platform-suite-floor.py \
+            "$RUNNER_TEMP/platform-selection.json"
 
       - name: Run the platform behaviour suite
         # Same narrowed selection as the Windows job: see that job's step for

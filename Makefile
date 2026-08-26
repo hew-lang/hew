@@ -1378,9 +1378,17 @@ test-runtime-unit-build: $(LIBHEW_READY)
 # gate: failing somebody's pull request because they fixed something punishes
 # exactly the behaviour the ratchet exists to encourage. They annotate on the
 # pull-request tier and BLOCK where the list must actually be current -- the
-# default branch and the release boundary -- via RATCHET_STRICT=--strict-passes.
+# default branch and the release boundary -- via RATCHET_STRICT=1.
 # An unexpected FAILURE is red on every tier, always.
+#
+# A BOOLEAN, not flag text: any non-empty value turns the policy on and
+# nothing else. Splicing a caller-supplied string straight into the ratchet's
+# argv would let an environment variable pass arbitrary arguments to a gate,
+# which is a bypass surface rather than a policy knob. `?=` so an exported
+# environment value wins, which is how the release job and the FreeBSD guest
+# set it without touching the command tuples the workflow contracts assert.
 RATCHET_STRICT ?=
+RATCHET_STRICT_FLAG = $(if $(RATCHET_STRICT),--strict-passes,)
 
 # These targets run the suites through scripts/corpus-ratchet.sh, which
 # compares the set of failing tests against an exhaustive tracked-failures
@@ -1416,7 +1424,7 @@ test-hew-ratchet-build:
 else
 test-hew-ratchet: hew-native runtime $(LIBHEW_READY) ## Test: run compiled Hew suites against their ratchet
 	@echo "==> Running Hew test suite (ratcheted)"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(RATCHET_STRICT) $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(RATCHET_STRICT_FLAG) $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-hew-ratchet-build: hew-native runtime $(LIBHEW_READY)
@@ -1592,7 +1600,7 @@ check-counterfactual-output-artifacts-build: $(LIBHEW_READY)
 test-stdlib-ratchet: hew-native ## Test: type-check the standard library against its ratchet
 	@bash scripts/tests/test_stdlib_ratchet_deprecations.sh
 	@echo "==> Type-checking stdlib (ratcheted)"
-	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib $(RATCHET_STRICT)
+	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib $(RATCHET_STRICT_FLAG)
 
 # Every stdlib source must stay clean in isolation, and every module must stay
 # silent when checked and built through a temporary user package.
@@ -1722,7 +1730,7 @@ test-example-expectations-selftest-build:
 # inputs: docs/hew-language-guide.md docs/specs/HEW-SPEC-2026.md docs/language/*.hew
 # inputs: scripts/corpus-ratchet.sh scripts/doc-test-expected-failures.txt
 test-doc-examples: hew-native
-	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences $(RATCHET_STRICT)
+	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences $(RATCHET_STRICT_FLAG)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-doc-examples-build: hew-native
@@ -2134,6 +2142,8 @@ test-sandbox-parity-coverage-check-build:
 # exists to reverse.
 # inputs: .github/workflows/* scripts/tests/test_release_workflow_contract.py
 # inputs: scripts/tests/test_ci_workflow_contract.py .github/actions/*/action.yml
+# inputs: scripts/tests/test_platform_suite_floor.py scripts/platform-suite-floor.py
+# inputs: .config/nextest.toml
 # inputs: scripts/tests/test_scheduled_failure_report.py
 # inputs: scripts/scheduled-failure-report.py .github/nightly-owners.yml
 # inputs: scripts/tests/test_check_nightly_freshness.py
@@ -2152,6 +2162,7 @@ test-sandbox-parity-coverage-check-build:
 test-release-workflow-contract:
 	python3 scripts/tests/test_release_workflow_contract.py
 	python3 scripts/tests/test_ci_workflow_contract.py
+	python3 scripts/tests/test_platform_suite_floor.py
 	python3 scripts/tests/test_scheduled_failure_report.py
 	python3 scripts/tests/test_check_nightly_freshness.py
 	python3 scripts/tests/test_pre_release_validate_contract.py
@@ -2316,7 +2327,7 @@ hew-fmt-property-build: hew
 # inputs: scripts/hew-corpus-expected-failures.txt
 hew-check-all: hew-native
 	@echo "==> hew-check-all: compiling full .hew corpus"
-	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus $(RATCHET_STRICT)
+	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus $(RATCHET_STRICT_FLAG)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 hew-check-all-build: hew-native

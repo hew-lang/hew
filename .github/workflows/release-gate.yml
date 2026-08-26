@@ -230,7 +230,7 @@ jobs:
           # The release boundary is where the expected-failure lists must be
           # current: a newly-passing entry annotates on a pull request and
           # BLOCKS here. An unexpected failure is red on every tier regardless.
-          RATCHET_STRICT: --strict-passes
+          RATCHET_STRICT: "1"
         run: |
           make check-gate-reachability
           make test-release-workflow-contract
@@ -695,6 +695,14 @@ jobs:
             # at link time. Run it on its own so the C-ABI ownership contract
             # is actually proven on this platform rather than merely skipped.
             cargo nextest run --profile ci-cabi -p hew-cabi
+
+            # The release boundary is where the expected-failure lists must be
+            # current: a newly-passing entry annotates on a pull request and
+            # BLOCKS here. Exported rather than passed on the command line so
+            # the gate invocations below stay byte-identical to the commands
+            # the FreeBSD workflow contract asserts. The host job's `env:` does
+            # not reach this guest, which runs inside the VM.
+            export RATCHET_STRICT=1
 
             gmake test-vertical-slice
             gmake test-hew-ratchet

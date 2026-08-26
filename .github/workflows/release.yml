@@ -469,9 +469,7 @@ jobs:
       # ── Third-party license attribution ─────────────────────────────────
 
       - name: Install cargo-about
-        run: |
-          cargo-about --version 2>/dev/null | grep -q ' 0.9.0$' || \
-            cargo install cargo-about --locked --features cli --version 0.9.0 --force
+        run: cargo install cargo-about --locked --features cli --version 0.9.0 --force
 
       - name: Generate THIRD-PARTY-LICENSES
         run: cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
@@ -890,9 +888,7 @@ jobs:
             --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
       - name: Install cargo-about
-        run: |
-          cargo-about --version 2>/dev/null | grep -q ' 0.9.0$' || \
-            cargo install cargo-about --locked --features cli --version 0.9.0 --force
+        run: cargo install cargo-about --locked --features cli --version 0.9.0 --force
 
       - name: Generate THIRD-PARTY-LICENSES
         run: cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
@@ -1062,8 +1058,7 @@ jobs:
               --archive cross-release-libs/x86_64-unknown-freebsd/libhew.a
 
             # ── Third-party license attribution ────────────────────────────
-            cargo-about --version 2>/dev/null | grep -q ' 0.9.0$' || \
-              cargo install cargo-about --locked --features cli --version 0.9.0 --force
+            cargo install cargo-about --locked --features cli --version 0.9.0 --force
             cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
 
             # ── Package archive ────────────────────────────────────────────
@@ -1211,8 +1206,7 @@ jobs:
               --consumer-archive cross-release-libs/aarch64-unknown-freebsd/libhew_release_link_probe.a
 
             # ── Third-party license attribution ────────────────────────────
-            cargo-about --version 2>/dev/null | grep -q ' 0.9.0$' || \
-              cargo install cargo-about --locked --features cli --version 0.9.0 --force
+            cargo install cargo-about --locked --features cli --version 0.9.0 --force
             cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
 
             # ── Package archive ────────────────────────────────────────────

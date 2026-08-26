@@ -394,10 +394,17 @@ def test_the_archive_declares_the_consumer_interface() -> None:
 def test_a_weakened_archive_entry_is_rejected() -> None:
     config = NEXTEST_CONFIG.read_text(encoding="utf-8")
 
-    weakened = config.replace(
-        '{ path = "debug/libhew.a", relative-to = "target", on-missing = "error" }',
-        '{ path = "debug/libhew.a", relative-to = "target", on-missing = "warn" }',
-    )
+    def without(path: str) -> str:
+        """The config with one archive entry removed, whatever its indent."""
+        kept = [
+            line
+            for line in config.splitlines(keepends=True)
+            if f'path = "{path}"' not in line
+        ]
+        return "".join(kept)
+
+    entry = '{ path = "debug/libhew.a", relative-to = "target", on-missing = "error" }'
+    weakened = config.replace(entry, entry.replace('"error"', '"warn"'))
     assert weakened != config, "the mutation matched nothing; the test is vacuous"
     try:
         assert_the_archive_carries_the_consumer_interface(weakened)
@@ -406,10 +413,7 @@ def test_a_weakened_archive_entry_is_rejected() -> None:
     else:
         raise AssertionError("a warn-on-missing shared archive was accepted")
 
-    removed = config.replace(
-        '    { path = "debug/libhew.a", relative-to = "target", on-missing = "error" },\n',
-        "",
-    )
+    removed = without("debug/libhew.a")
     assert removed != config, "the mutation matched nothing; the test is vacuous"
     try:
         assert_the_archive_carries_the_consumer_interface(removed)
@@ -418,11 +422,8 @@ def test_a_weakened_archive_entry_is_rejected() -> None:
     else:
         raise AssertionError("a missing shared archive entry was accepted")
 
-    widened = config.replace(
-        '    { path = "debug/hew", relative-to = "target", on-missing = "error" },\n',
-        '    { path = "debug/deps", relative-to = "target", depth = "infinite" },\n'
-        '    { path = "debug/hew", relative-to = "target", on-missing = "error" },\n',
-    )
+    recursive = '{ path = "debug/deps", relative-to = "target", depth = "infinite" },'
+    widened = config.replace("archive.include = [", f"archive.include = [\n{recursive}")
     assert widened != config, "the mutation matched nothing; the test is vacuous"
     try:
         assert_the_archive_carries_the_consumer_interface(widened)

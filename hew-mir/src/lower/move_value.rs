@@ -233,6 +233,12 @@ impl Builder {
                     && !self.ty_is_machine(&owned_ty)
                     && self
                         .param_ownership
+                        .param_consume
+                        .get(&(callee_item, index))
+                        .copied()
+                        != Some(true)
+                    && self
+                        .param_ownership
                         .call_param_owned_carrier
                         .get(&(callee_item, index))
                         .copied()
@@ -939,11 +945,44 @@ impl Builder {
                     });
                 let target_is_owned_carrier = callee_item.is_some_and(|item| {
                     self.param_ownership
-                        .call_param_owned_carrier
+                        .param_consume
+                        .get(&(item, index))
+                        .copied()
+                        != Some(true)
+                        && self
+                            .param_ownership
+                            .call_param_owned_carrier
+                            .get(&(item, index))
+                            .copied()
+                            == Some(true)
+                });
+                let target_is_affine_consume = callee_item.is_some_and(|item| {
+                    self.param_ownership
+                        .param_consume
                         .get(&(item, index))
                         .copied()
                         == Some(true)
+                        && !(index == 0
+                            && self.param_ownership.true_receiver_methods.contains(&item))
                 });
+                if target_is_affine_consume {
+                    // Keep projections on the ordinary move funnel: a loaded
+                    // resource field must neutralize its root-relative carrier
+                    // slot before the callee adopts it. The funnel also keeps
+                    // reusable closure captures fail-closed.
+                    let value = self.lower_value_for_move(arg)?;
+                    // A named binding emitted its guard + terminal Transfer
+                    // during ordinary BindingRef lowering. A fresh rvalue has
+                    // a synthetic produced-value owner instead; end that exact
+                    // generation here so the consuming callee owns the copied
+                    // parameter from entry and caller unwind never closes it.
+                    // The receiver exclusion is load-bearing: its slot can
+                    // appear in `param_consume` because the method returns or
+                    // otherwise forwards `self`, while the call-site receiver's
+                    // owner lineage continues through the result.
+                    self.consume_typed_produced_value_owner_at_terminal_boundary(arg.site, value);
+                    return Some(value);
+                }
                 if is_move && target_is_owned_carrier {
                     if self.reject_capture_env_whole_escape_expr(arg) {
                         return None;

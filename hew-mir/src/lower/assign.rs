@@ -205,7 +205,7 @@ impl Builder {
                 }
                 owns_source
             } else {
-                self.consume_typed_produced_value_owner_into_actor_state(value.site, src)
+                self.consume_typed_produced_value_owner_at_terminal_boundary(value.site, src)
             };
             if transferred {
                 self.push_instr(Instr::NeutralizePayloadSlot {

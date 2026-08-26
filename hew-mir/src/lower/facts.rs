@@ -1181,6 +1181,7 @@ pub(super) fn compute_param_ownership(
     ParamOwnershipFacts {
         produced_value_facts: HashMap::new(),
         param_consume,
+        true_receiver_methods,
         borrow_arg_sites,
         proven_borrow_arg_sites,
         call_param_consume,

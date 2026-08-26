@@ -745,11 +745,9 @@ fn checked_mir_rejects_second_resource_close() {
     );
 }
 
-/// Assert the Checked-MIR discharge protocol around a consuming call. The
-/// caller retains the guarded release authority on the unwind edge; only the
-/// successful continuation arms the guard, applies the call-kind's exact slot
-/// neutralization policy, and retires the owner. Normal call/return paths
-/// therefore carry no competing close.
+/// Assert the Checked-MIR discharge protocol around a consuming receiver. The
+/// caller retains its guarded owner on unwind; only a successful close commits
+/// the transfer and leaves no competing caller-side return cleanup.
 #[expect(
     clippy::too_many_lines,
     reason = "the test helper pins one complete Checked-MIR owner lifecycle and every exit edge"
@@ -758,7 +756,6 @@ fn assert_resource_call_discharge_paths_are_exact(
     pipeline: &hew_mir::IrPipeline,
     function_name: &str,
     callee_name: &str,
-    neutralizes_slot: bool,
 ) {
     let checked = pipeline
         .checked_mir
@@ -800,55 +797,32 @@ fn assert_resource_call_discharge_paths_are_exact(
         .iter()
         .find(|block| block.id == continuation)
         .expect("call continuation block present");
-    let exact_discharge = if neutralizes_slot {
-        continuation_block.instructions.windows(3).any(|window| {
-            matches!(
-                window,
-                [
-                    Instr::ConstI64 { dest, value: 1 },
-                    Instr::NeutralizePayloadSlot {
-                        place,
-                        transferee: None,
-                        authority: hew_mir::NeutralizeAuthority::CallDischargeConsume,
-                    },
-                    Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
-                        owner: transfer_owner,
-                        from,
-                        to: None,
-                        to_owner: None,
-                        to_ty: None,
-                    }),
-                ] if *dest == flag
-                    && *place == argument
-                    && *transfer_owner == owner
-                    && *from == argument
-            )
-        })
-    } else {
-        continuation_block.instructions.windows(2).any(|window| {
-            matches!(
-                window,
-                [
-                    Instr::ConstI64 { dest, value: 1 },
-                    Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
-                        owner: transfer_owner,
-                        from,
-                        to: None,
-                        to_owner: None,
-                        to_ty: None,
-                    }),
-                ] if *dest == flag && *transfer_owner == owner && *from == argument
-            )
-        }) && continuation_block.instructions.iter().all(|instruction| {
-            !matches!(
-                instruction,
-                Instr::NeutralizePayloadSlot { place, .. } if *place == argument
-            )
-        })
-    };
+    let exact_discharge = continuation_block.instructions.windows(3).any(|window| {
+        matches!(
+            window,
+            [
+                Instr::ConstI64 { dest, value: 1 },
+                Instr::NeutralizePayloadSlot {
+                    place,
+                    transferee: None,
+                    authority: hew_mir::NeutralizeAuthority::CallDischargeConsume,
+                },
+                Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
+                    owner: transfer_owner,
+                    from,
+                    to: None,
+                    to_owner: None,
+                    to_ty: None,
+                }),
+            ] if *dest == flag
+                && *place == argument
+                && *transfer_owner == owner
+                && *from == argument
+        )
+    });
     assert!(
         exact_discharge,
-        "only the successful continuation may discharge the caller owner: {:?}",
+        "only the successful continuation may discharge the receiver owner: {:?}",
         continuation_block.instructions
     );
 
@@ -934,7 +908,7 @@ fn explicit_resource_close_suppresses_scope_exit_drop() {
         "a single explicit close must type-check cleanly: {:?}",
         p.diagnostics
     );
-    assert_resource_call_discharge_paths_are_exact(&p, "serve", "Conn::close", true);
+    assert_resource_call_discharge_paths_are_exact(&p, "serve", "Conn::close");
 }
 
 /// A `#[resource]` value that is NEVER explicitly closed keeps its scope-exit
@@ -1281,26 +1255,6 @@ fn direct_string_resource_move_has_only_resource_flag_authority() {
     );
 }
 
-/// Duplicate source-shape control for the release-flag protocol: even an
-/// unconditional close keeps unwind cleanup until the call succeeds. The
-/// continuation then performs the exact discharge and leaves no return drop.
-#[test]
-fn unconditional_resource_close_emits_no_scope_exit_drop() {
-    let p = lower_source(
-        r"
-        #[resource]
-        type Conn { id: i64 }
-        impl Conn { fn close(self) { } }
-        fn serve() {
-            let c = Conn { id: 1 };
-            c.close();
-        }
-    ",
-    );
-    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
-    assert_resource_call_discharge_paths_are_exact(&p, "serve", "Conn::close", true);
-}
-
 /// A never-closed `#[resource]` earns its implicit scope-exit close, and that
 /// close is FLAG-GUARDED too — the same exactly-once machinery the
 /// conditional case rides, so a never-closed resource on a `MaybeConsumed`
@@ -1345,37 +1299,6 @@ fn never_closed_resource_keeps_flag_guarded_scope_exit_drop() {
          must carry a path-sensitive drop-flag guard: {:?}",
         serve.drop_plans
     );
-}
-
-/// #1941 — a `#[resource]` moved BY VALUE into an ordinary free function is an
-/// ownership transfer into the callee (Hew has no by-reference parameters):
-/// the callee owns and closes it after the call succeeds, so the caller's
-/// binding transitions to `Consumed` and earns no normal scope-exit close.
-/// Until that success edge, the unwind plan retains the caller's guarded
-/// cleanup. Before the fix the argument
-/// lowered `IntentKind::Read`, the caller stayed `Live`, and the caller's
-/// implicit drop double-closed what the callee already closed.
-#[test]
-fn value_move_into_free_fn_consumes_caller_binding() {
-    let p = lower_source(
-        r"
-        #[resource]
-        type Conn { id: i64 }
-        impl Conn { fn close(self) { } }
-        fn sink(c: Conn) { c.close(); }
-        fn run() {
-            let c = Conn { id: 1 };
-            sink(c);
-        }
-    ",
-    );
-    assert!(
-        p.diagnostics.is_empty(),
-        "a clean by-value move of a resource into a consumer must type-check: \
-         {:?}",
-        p.diagnostics
-    );
-    assert_resource_call_discharge_paths_are_exact(&p, "run", "sink", false);
 }
 
 /// #1941 negative — reading a `#[resource]` after moving it by value into a

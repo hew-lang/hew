@@ -1259,16 +1259,18 @@ impl Builder {
         operations
     }
 
-    /// Move a freshly published owner into actor-state storage, which is
-    /// outside the MIR `Place` domain.
+    /// Move a freshly published owner across a terminal boundary whose new
+    /// owner is outside this MIR frame's `Place` domain: actor-state storage
+    /// or a direct Hew callee's consuming parameter.
     ///
     /// The typed publication site selects the exact provisional `OwnerId`. The
-    /// terminal event is emitted beside the physical state store, so unwind
-    /// before the store retains frame cleanup while normal continuation ends
-    /// the local generation. Returning whether an owner was found lets the
-    /// caller null only a source that actually transferred; borrowed and
-    /// bit-copy publications remain untouched.
-    pub(crate) fn consume_typed_produced_value_owner_into_actor_state(
+    /// caller chooses the semantic boundary: actor-state lowering emits the
+    /// event after its non-unwinding store, while direct-call lowering emits it
+    /// immediately before invoke so the callee owns cleanup on both return and
+    /// unwind. Returning whether an owner was found lets the caller null only a
+    /// source that actually transferred; borrowed and bit-copy publications
+    /// remain untouched.
+    pub(crate) fn consume_typed_produced_value_owner_at_terminal_boundary(
         &mut self,
         site: SiteId,
         source: Place,

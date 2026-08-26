@@ -410,6 +410,28 @@ struct PendingOwnedCallSite {
     args: Vec<PendingOwnedCallArg>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AffineCallConsumeCandidate {
+    index: usize,
+    binding: BindingId,
+    guard: Place,
+    site: SiteId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingAffineCallConsumeArg {
+    index: usize,
+    binding: BindingId,
+    source: Place,
+    guard: Place,
+    site: SiteId,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingAffineCallConsumeSite {
+    args: Vec<PendingAffineCallConsumeArg>,
+}
+
 #[derive(Debug, Clone)]
 enum OwnedCarrierNeutralizeTarget {
     Whole(Place),
@@ -499,6 +521,19 @@ struct Builder {
     /// into an owning sink. Resolved after CFG construction so liveness and
     /// projection taint choose snapshot versus last-use transfer.
     pending_owned_call_args: HashMap<u32, PendingOwnedCallSite>,
+    /// Affine whole-local arguments whose declared extern contract consumes the
+    /// value only after the call returns normally. The HIR `Use { Consume }`
+    /// remains in the call block for move checking, while these facts defer
+    /// physical neutralization and the owner transfer to `next`, leaving the
+    /// same owner live for caller-side unwind cleanup.
+    pending_affine_call_consumes: HashMap<u32, PendingAffineCallConsumeSite>,
+    /// HIR argument sites whose affine consume commits on the normal call edge:
+    /// either a declared-extern site recorded in `pending_affine_call_consumes`
+    /// or a catalogued runtime `ProvenConsume` site finalized by
+    /// `splice_normal_call_ownership_commits`. Binding-ref lowering consults
+    /// this exact-site set so a nested expression cannot accidentally defer a
+    /// different consume of the same binding.
+    deferred_affine_call_consume_sites: HashSet<SiteId>,
     /// Callee-side parameters admitted by the same carrier summary. Every
     /// terminal path receives the inverse snapshot drop.
     owned_carrier_params: Vec<OwnedCarrierParam>,
@@ -3977,6 +4012,11 @@ pub(crate) struct ParamOwnershipFacts {
     /// drop. Only affine `Named { builtin: None }` resource params ever appear;
     /// non-resource and builtin-handle params are absent.
     param_consume: HashMap<(hew_hir::ItemId, usize), bool>,
+    /// Impl/trait functions whose parameter zero is a source-level receiver.
+    /// Associated functions remain ordinary at index zero. Direct-call
+    /// lowering uses this identity to keep a fluent receiver's existing owner
+    /// lineage distinct from a non-receiver consuming parameter handoff.
+    true_receiver_methods: HashSet<hew_hir::ItemId>,
     /// `SiteId`s of free-call arguments whose target parameter is a resource
     /// BORROW. At the single `MirStatement::Use` emission point such an arg's
     /// over-stamped `Consume` intent is downgraded to a borrowing `Read`, so the
@@ -7219,6 +7259,7 @@ fn splice_body_ownership_releases(
     }
     splice_opaque_extern_string_argument_handoffs(blocks, builder);
     splice_normal_call_ownership_commits(blocks, builder);
+    splice_affine_call_argument_consumes(blocks, builder);
     splice_retained_field_aggregate_commits(blocks, builder);
     finalize_string_local_share_intents(&mut *blocks, builder);
     splice_escaped_record_sibling_field_drops(blocks, builder);
@@ -7442,8 +7483,22 @@ fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut
                 to_ty: None,
             });
             if !successor.instructions.contains(&event) {
-                shift_instr_spans_on_insert(&mut builder.instr_spans, next, 0);
-                successor.instructions.insert(0, event);
+                let mut operations = Vec::new();
+                if let Some(flag) = builder.affine_release_flags.get(&binding).copied() {
+                    operations.push(Instr::ConstI64 {
+                        dest: flag,
+                        value: 1,
+                    });
+                }
+                operations.push(event);
+                for (index, operation) in operations.into_iter().enumerate() {
+                    shift_instr_spans_on_insert(
+                        &mut builder.instr_spans,
+                        next,
+                        u32::try_from(index).unwrap_or(u32::MAX),
+                    );
+                    successor.instructions.insert(index, operation);
+                }
             }
         }
         // A source-level consuming argument already authored the checker
@@ -7585,6 +7640,264 @@ fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut
         }
         builder.set_owned_local_consumed_post_lowering(
             owner.binding,
+            None,
+            DischargeSite::CallArgumentTransfer,
+        );
+    }
+}
+
+struct AffineCallConsumeCommit {
+    next: u32,
+    owner: crate::model::OwnerId,
+    place: Place,
+    guard: Place,
+}
+
+/// Commit a declared-extern affine argument only after the extern returns
+/// normally. Lowering preserved the checker `Use { Consume }` in the call
+/// block but deliberately left the `OwnerId` and guard live, so the caller can
+/// clean up an extern that unwinds before accepting ownership. A Hew callee is
+/// different: its consuming parameter owns the value from function entry, so
+/// ordinary binding lowering transfers the caller owner before the invoke.
+fn splice_affine_call_argument_consumes(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let pending = std::mem::take(&mut builder.pending_affine_call_consumes);
+    if pending.is_empty() {
+        return;
+    }
+    let commits = collect_affine_call_consume_commits(blocks, builder, pending);
+    apply_affine_call_consume_commits(blocks, builder, commits);
+}
+
+struct AffineCallConsumeResolution<'a> {
+    blocks: &'a [BasicBlock],
+    owner_exits: &'a HashMap<u32, drop_plan::ExactOwnerState>,
+    predecessors: &'a HashMap<u32, Vec<u32>>,
+    guards: &'a HashMap<crate::model::OwnerId, Place>,
+}
+
+fn reject_affine_call_consume(
+    builder: &mut Builder,
+    site: SiteId,
+    construct: impl Into<String>,
+    note: impl Into<String>,
+) {
+    builder.diagnostics.push(MirDiagnostic {
+        kind: MirDiagnosticKind::NotYetImplemented {
+            construct: construct.into(),
+            site,
+        },
+        note: note.into(),
+    });
+}
+
+fn collect_affine_call_consume_commits(
+    blocks: &[BasicBlock],
+    builder: &mut Builder,
+    pending: HashMap<u32, PendingAffineCallConsumeSite>,
+) -> Vec<AffineCallConsumeCommit> {
+    let (_, owner_exits) = drop_plan::exact_owner_states(blocks);
+    let mut predecessors = HashMap::<u32, Vec<u32>>::new();
+    for block in blocks {
+        for successor in block.successors() {
+            predecessors.entry(successor).or_default().push(block.id);
+        }
+    }
+    let guards = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard { owner, flag, .. }) => {
+                Some((*owner, *flag))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let resolution = AffineCallConsumeResolution {
+        blocks,
+        owner_exits: &owner_exits,
+        predecessors: &predecessors,
+        guards: &guards,
+    };
+    let mut pending = pending.into_iter().collect::<Vec<_>>();
+    pending.sort_by_key(|(block_id, _)| *block_id);
+    let mut commits = Vec::new();
+    for (block_id, site) in pending {
+        for commit in resolve_affine_call_consume_site(&resolution, builder, block_id, site) {
+            if !commits.iter().any(|existing: &AffineCallConsumeCommit| {
+                existing.next == commit.next
+                    && existing.owner == commit.owner
+                    && existing.place == commit.place
+            }) {
+                commits.push(commit);
+            }
+        }
+    }
+    commits
+}
+
+fn resolve_affine_call_consume_site(
+    resolution: &AffineCallConsumeResolution<'_>,
+    builder: &mut Builder,
+    block_id: u32,
+    site: PendingAffineCallConsumeSite,
+) -> Vec<AffineCallConsumeCommit> {
+    let site_id = site.args.first().map_or(SiteId(0), |arg| arg.site);
+    let Some(block) = resolution.blocks.iter().find(|block| block.id == block_id) else {
+        reject_affine_call_consume(
+            builder,
+            site_id,
+            format!("pending affine call consume without basic block bb{block_id}"),
+            "typed call-argument ownership facts must resolve before Checked MIR",
+        );
+        return Vec::new();
+    };
+    let Terminator::Call { args, next, .. } = &block.terminator else {
+        reject_affine_call_consume(
+            builder,
+            site_id,
+            "affine call consume without call terminator",
+            "typed call-argument ownership facts must terminate at their recorded call",
+        );
+        return Vec::new();
+    };
+    if resolution.predecessors.get(next).map(Vec::as_slice) != Some(&[block_id]) {
+        reject_affine_call_consume(
+            builder,
+            site_id,
+            "affine call consume with shared normal successor",
+            format!(
+                "normal-edge ownership commits require bb{next} to be dedicated to bb{block_id}; incoming blocks are {:?}",
+                resolution.predecessors.get(next).cloned().unwrap_or_default()
+            ),
+        );
+        return Vec::new();
+    }
+    let Some(state) = resolution.owner_exits.get(&block_id) else {
+        for arg in &site.args {
+            reject_affine_call_consume(
+                builder,
+                arg.site,
+                "affine call consume without exact predecessor ownership",
+                "the caller must retain one exact owner through the call's unwind edge",
+            );
+        }
+        return Vec::new();
+    };
+    site.args
+        .into_iter()
+        .filter_map(|arg| {
+            resolve_affine_call_consume_arg(builder, args, *next, state, resolution.guards, arg)
+        })
+        .collect()
+}
+
+fn resolve_affine_call_consume_arg(
+    builder: &mut Builder,
+    args: &[Place],
+    next: u32,
+    state: &drop_plan::ExactOwnerState,
+    guards: &HashMap<crate::model::OwnerId, Place>,
+    arg: PendingAffineCallConsumeArg,
+) -> Option<AffineCallConsumeCommit> {
+    let Some(argument) = args.get(arg.index).copied() else {
+        reject_affine_call_consume(
+            builder,
+            arg.site,
+            "affine call consume argument index is absent",
+            "the typed parameter contract must align with the emitted call ABI",
+        );
+        return None;
+    };
+    if argument != arg.source {
+        reject_affine_call_consume(
+            builder,
+            arg.site,
+            "affine call consume source changed before finalization",
+            "the call-argument owner must be resolved at its exact emitted place",
+        );
+        return None;
+    }
+    let mut owners = state
+        .iter()
+        .filter_map(|(owner, place)| {
+            (owner.binding == arg.binding && *place == argument).then_some((*owner, *place))
+        })
+        .collect::<Vec<_>>();
+    owners.sort_by_key(|(owner, _)| *owner);
+    let [(owner, place)] = owners.as_slice() else {
+        reject_affine_call_consume(
+            builder,
+            arg.site,
+            "affine call consume without one exact live owner",
+            format!(
+                "binding {:?} must retain one owner at {argument:?} through the unwind edge; found {owners:?}",
+                arg.binding
+            ),
+        );
+        return None;
+    };
+    if guards.get(owner).copied() != Some(arg.guard) {
+        reject_affine_call_consume(
+            builder,
+            arg.site,
+            "affine call consume without its exact live guard",
+            format!(
+                "owner {owner:?} must retain guard {:?} through the unwind edge; found {:?}",
+                arg.guard,
+                guards.get(owner)
+            ),
+        );
+        return None;
+    }
+    Some(AffineCallConsumeCommit {
+        next,
+        owner: *owner,
+        place: *place,
+        guard: arg.guard,
+    })
+}
+
+fn apply_affine_call_consume_commits(
+    blocks: &mut [BasicBlock],
+    builder: &mut Builder,
+    commits: Vec<AffineCallConsumeCommit>,
+) {
+    for commit in commits {
+        let Some(successor) = blocks.iter_mut().find(|block| block.id == commit.next) else {
+            continue;
+        };
+        let event = Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+            owner: commit.owner,
+            from: commit.place,
+            to: None,
+            to_owner: None,
+            to_ty: None,
+        });
+        if successor.instructions.contains(&event) {
+            continue;
+        }
+        let operations = [
+            Instr::ConstI64 {
+                dest: commit.guard,
+                value: 1,
+            },
+            Instr::NeutralizePayloadSlot {
+                place: commit.place,
+                transferee: None,
+                authority: crate::model::NeutralizeAuthority::CallDischargeConsume,
+            },
+            event,
+        ];
+        for (offset, operation) in operations.into_iter().enumerate() {
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                commit.next,
+                u32::try_from(offset).unwrap_or(u32::MAX),
+            );
+            successor.instructions.insert(offset, operation);
+        }
+        builder.set_owned_local_consumed_post_lowering(
+            commit.owner.binding,
             None,
             DischargeSite::CallArgumentTransfer,
         );
@@ -13410,6 +13723,14 @@ pub(crate) fn lower_function(
     debug_assert!(
         builder.pending_owned_call_args.is_empty(),
         "checked MIR cannot retain unresolved owned call-carrier arguments"
+    );
+    debug_assert!(
+        builder.pending_affine_call_consumes.is_empty(),
+        "checked MIR cannot retain unresolved affine call-consume arguments"
+    );
+    debug_assert!(
+        builder.deferred_affine_call_consume_sites.is_empty(),
+        "checked MIR cannot retain an active affine call-consume lowering context"
     );
     assert_eq!(
         builder.param_boundary_modes.len(),

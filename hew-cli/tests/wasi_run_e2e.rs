@@ -358,6 +358,39 @@ fn toml_encoding_round_trips_under_wasi() {
 }
 
 #[test]
+fn json_value_implicit_close_runs_once_under_wasi() {
+    require_wasi_runner();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("json_implicit_close_wasi.hew");
+    fs::write(
+        &source,
+        r#"import std.encoding.json;
+
+fn main() {
+    let value = json.null();
+    println("json-implicit-close-ok");
+}
+"#,
+    )
+    .expect("write JSON implicit-close WASI source");
+
+    let output = run_wasi_example(&source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "JSON's implicit resource close must not recursively re-close its discharged FFI value\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert_eq!(
+        stdout.as_ref(),
+        "json-implicit-close-ok\n",
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn wasm_channel_send_full_traps_instead_of_dropping() {
     require_wasi_runner();
 

@@ -1037,12 +1037,21 @@ jobs:
         # makes the router fail closed to comprehensive on every run
         # (LESSONS.md preflight-perf-discipline).
         #
-        # Exporting the extracted `target` as CARGO_TARGET_DIR is what makes
-        # the rest of the build system resolve into it without a second path
-        # authority: scripts/cargo-output-dir.py already answers the way Cargo
-        # does, so the Makefile's DEBUG_DIR/RELEASE_LIB_DIR/WASM_DEBUG_DIR,
-        # check-libhew-fresh.sh, and hew-testutil's own resolver all follow.
-        # JUnit is unaffected -- nextest writes its store under the remapped
+        # The extracted tree is made READ-ONLY and is NOT exported as
+        # CARGO_TARGET_DIR. Those are the same decision from two directions.
+        # Its `libhew.a` carries a freshness certificate binding it to the
+        # sources that produced it and its `hew` is the compiler the producer
+        # built; if Cargo wrote here, any ordinary or feature-specific build
+        # would silently replace them. One did, deterministically:
+        # `forced-cancel-composite-check-build` builds a
+        # `hew-runtime/forced-cancel-test` compiler and archive in warm-up,
+        # before any gate runs. The Makefile reads shared artefacts from
+        # HEW_CI_NEXTEST_TARGET_DIR while Cargo keeps writing to its own
+        # directory, and `chmod -R a-w` makes a clobber impossible rather than
+        # merely unlikely -- a write here fails loudly at the writer instead of
+        # surfacing as a wrong link hours later.
+        #
+        # JUnit is unaffected: nextest writes its store under the remapped
         # WORKSPACE root, so target/nextest/<profile>/junit.xml stays where the
         # upload step reads it.
         #
@@ -1085,8 +1094,11 @@ jobs:
           test -s "$target/wasm32-wasip1/debug/libhew_runtime.a"
           test -s "$target/wasm32-wasip1/debug/libhew_std.a"
 
+          # Directories keep +x so the tree stays traversable; nothing in it
+          # stays writable. Test binaries and the compiler keep +r+x.
+          chmod -R a-w "$root"
+
           {
-            echo "CARGO_TARGET_DIR=$target"
             echo "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"
             echo "HEW_CI_NEXTEST_BINARIES_METADATA=$target/nextest/binaries-metadata.json"
             echo "HEW_CI_NEXTEST_CARGO_METADATA=$target/nextest/cargo-metadata.json"

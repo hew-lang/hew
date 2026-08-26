@@ -23,6 +23,7 @@ Every assertion is followed by the mutation it would otherwise accept.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -235,7 +236,6 @@ def assert_materialization_precedes_every_gate(text: str) -> None:
     )
     assert "--extract-to" in step and "--workspace-remap" in step
     for exported in (
-        "CARGO_TARGET_DIR=",
         "HEW_CI_PREBUILT_TEST_ARTIFACTS=1",
         "HEW_CI_NEXTEST_BINARIES_METADATA=",
         "HEW_CI_NEXTEST_CARGO_METADATA=",
@@ -326,7 +326,7 @@ def test_each_workflow_property_rejects_its_own_defect() -> None:
         assert_materialization_precedes_every_gate,
     )
     rejects(
-        text.replace('            echo "CARGO_TARGET_DIR=$target"\n', ""),
+        text.replace('            echo "HEW_CI_NEXTEST_TARGET_DIR=$target"\n', ""),
         assert_materialization_precedes_every_gate,
     )
     rejects(
@@ -395,6 +395,154 @@ def assert_the_archive_carries_the_consumer_interface(config: str) -> None:
         assert "depth" not in by_path[path], (
             f"{path} declares a recursion depth; every entry here is one file"
         )
+
+
+def assert_the_archive_is_not_cargos_output_directory(text: str) -> None:
+    """Cargo must not be pointed at a tree whose contents are certified.
+
+    The archive's `libhew.a` carries a freshness certificate binding it to the
+    sources that produced it, and its `hew` is the compiler the producer built.
+    Exporting the extracted tree as CARGO_TARGET_DIR made every ordinary cargo
+    invocation in the job a writer to it, and one did so deterministically:
+    `forced-cancel-composite-check-build` builds a
+    `hew-runtime/forced-cancel-test` compiler and archive in WARM-UP, before a
+    single gate runs.
+    """
+    step = step_named(jobs(text)[CONSUMER_JOB], "Materialize the Linux test archive")
+    # Read the commands, not the commentary: a rule satisfied by a comment
+    # that mentions the command is a rule that checks nothing.
+    body = "\n".join(
+        line for line in step.splitlines() if not line.strip().startswith("#")
+    )
+    assert "CARGO_TARGET_DIR=" not in body, (
+        "the extracted archive is exported as Cargo's output directory again; "
+        "any feature-specific build in the job would overwrite certified "
+        "artefacts"
+    )
+    assert 'chmod -R a-w "$root"' in body, (
+        "the extracted tree stays writable; the separation would be trusted "
+        "rather than enforced"
+    )
+    for exported in ("HEW_CI_NEXTEST_TARGET_DIR=", "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"):
+        assert exported in body, f"{exported} is never exported to the gates"
+
+
+def test_the_archive_is_immutable_to_the_job_that_reads_it() -> None:
+    assert_the_archive_is_not_cargos_output_directory(
+        CI_WORKFLOW.read_text(encoding="utf-8")
+    )
+
+
+def test_pointing_cargo_at_the_archive_is_rejected() -> None:
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    for mutation in (
+        text.replace(
+            '            echo "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"',
+            '            echo "CARGO_TARGET_DIR=$target"\n'
+            '            echo "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"',
+        ),
+        text.replace('          chmod -R a-w "$root"\n', ""),
+    ):
+        assert mutation != text, "the mutation matched nothing; the test is vacuous"
+        try:
+            assert_the_archive_is_not_cargos_output_directory(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("a writable archive under Cargo's output was accepted")
+
+
+def test_the_makefile_reads_the_archive_and_writes_somewhere_else() -> None:
+    """One path-authority split, not a list of patched targets.
+
+    ARTIFACT_* is where shared artefacts are READ from; CARGO_* is where Cargo
+    WRITES. Locally they are the same directory. In prebuilt mode they are
+    not, and that is what makes the clobber class unreachable rather than one
+    command's problem.
+    """
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    assert "ARTIFACT_ROOT := $(HEW_CI_NEXTEST_TARGET_DIR)" in makefile
+    assert "ARTIFACT_ROOT := $(CARGO_TARGET_ROOT)" in makefile
+    for derived in (
+        "DEBUG_DIR  := $(ARTIFACT_NATIVE_OUT)/debug",
+        "RELEASE_LIB_DIR := $(ARTIFACT_NATIVE_OUT)/release-lib",
+        "WASM_DEBUG_DIR  := $(ARTIFACT_ROOT)/wasm32-wasip1/debug",
+    ):
+        assert derived in makefile, f"{derived} no longer follows the artefact root"
+
+    with tempfile.TemporaryDirectory() as raw:
+        env = prebuilt_fixture(Path(raw))
+        archive = env["HEW_CI_NEXTEST_TARGET_DIR"]
+        # Every gate that still compiles must compile somewhere else.
+        for target in ("test-cabi", "test-runtime-unit", "stdlib", "test"):
+            plan = make_dry_run(target, env)
+            assert plan.returncode == 0, plan.stderr
+            for line in plan.stdout.replace("\\\n", " ").splitlines():
+                if not re.search(r"\bcargo\s+(build|run|test|nextest)\b", line):
+                    continue
+                if "--binaries-metadata" in line or "--target-dir-remap" in line:
+                    continue  # reuse metadata is a READ of the archive
+                assert f"CARGO_TARGET_DIR={archive}" not in line, (
+                    f"make {target} points Cargo at the archive:\n{line}"
+                )
+
+        # The one command that must carry its own directory, because its gate
+        # does: a forced-cancel-test compiler is not the ordinary one.
+        forced = make_dry_run("forced-cancel-composite-check-build", env)
+        assert forced.returncode == 0, forced.stderr
+        assert "forced-cancel-gate" in forced.stdout, forced.stdout
+        assert archive not in forced.stdout, forced.stdout
+
+
+def test_a_sibling_build_cannot_alter_the_archive() -> None:
+    """Attempt the write the old arrangement allowed, and prove it cannot land.
+
+    No self-heal, no repair, no "restored from backup" message: the write
+    fails at the writer, the bytes are unchanged, and the prebuilt
+    verification that consumers depend on still passes afterwards.
+    """
+    with tempfile.TemporaryDirectory() as raw:
+        env = prebuilt_fixture(Path(raw))
+        archive = Path(env["HEW_CI_NEXTEST_TARGET_DIR"])
+        certified = {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (archive / "debug" / "libhew.a", archive / "debug" / "hew")
+        }
+
+        subprocess.run(["chmod", "-R", "a-w", str(archive)], check=True)
+        try:
+            for path in certified:
+                clobber = subprocess.run(
+                    ["bash", "-c", f'printf "forced-cancel-test" > {path}'],
+                    capture_output=True,
+                    text=True,
+                )
+                assert clobber.returncode != 0, (
+                    f"{path.name} was overwritten; the archive is still writable"
+                )
+                assert (
+                    "denied" in clobber.stderr.lower()
+                    or "read-only" in clobber.stderr.lower()
+                ), clobber.stderr
+
+            for path, digest in certified.items():
+                assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, (
+                    f"{path.name} changed despite the write being refused"
+                )
+
+            # A later consumer still sees what the producer certified.
+            verify = make_dry_run("runtime", env)
+            assert verify.returncode == 0, verify.stderr
+            command = next(
+                line
+                for line in verify.stdout.replace("\\\n", " ").splitlines()
+                if line.strip().startswith("test -s ")
+            )
+            ran = subprocess.run(
+                ["bash", "-c", command], capture_output=True, text=True, cwd=ROOT
+            )
+            assert ran.returncode == 0, ran.stderr
+        finally:
+            subprocess.run(["chmod", "-R", "u+w", str(archive)], check=False)
 
 
 def test_the_archive_declares_the_consumer_interface() -> None:

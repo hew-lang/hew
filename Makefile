@@ -204,13 +204,60 @@ ifeq ($(CARGO_NATIVE_OUT),)
 $(error scripts/cargo-output-dir.py could not resolve Cargo's output directory)
 endif
 
-DEBUG_DIR  := $(CARGO_NATIVE_OUT)/debug
+# ── Two authorities, because CI has two directories ─────────────────────────
+#
+# CARGO_* is where Cargo WRITES. ARTIFACT_* is where the shared test artefacts
+# are READ from. Locally they are the same directory and every path below is
+# byte-identical to what it was.
+#
+# Under HEW_CI_PREBUILT_TEST_ARTIFACTS they are deliberately different, and
+# that difference is a correctness fix rather than a convenience. The Linux
+# shards read their shared artefacts out of an extracted cargo-nextest archive
+# whose contents are CERTIFIED: `libhew.a` carries a freshness certificate
+# binding it to the sources that produced it, and `hew` is the compiler the
+# producer built. Pointing CARGO_TARGET_DIR at that tree made every ordinary
+# cargo invocation in the job a writer to it, and one of them did exactly that
+# deterministically -- `forced-cancel-composite-check-build` runs
+# `cargo build -p hew-cli -p hew-lib --features hew-runtime/forced-cancel-test`
+# in warm-up, which overwrote the certified `debug/hew` and `debug/libhew.a`
+# with a forced-cancel-test build before a single gate ran. Every later gate in
+# that shard would then have linked against a runtime nobody selected.
+#
+# Splitting the authorities removes the whole class, not that one command: a
+# feature-specific build, a `cargo run`, a plain `cargo test`, or anything a
+# future gate adds writes to Cargo's own directory and cannot reach the
+# archive. The workflow additionally makes the extracted tree read-only, so the
+# separation is enforced by the filesystem rather than trusted.
+ifeq ($(strip $(HEW_CI_PREBUILT_TEST_ARTIFACTS)),1)
+HEW_CI_PREBUILT := 1
+else ifneq ($(strip $(HEW_CI_PREBUILT_TEST_ARTIFACTS)),)
+$(error HEW_CI_PREBUILT_TEST_ARTIFACTS must be 1 or empty, got \
+'$(HEW_CI_PREBUILT_TEST_ARTIFACTS)')
+else
+HEW_CI_PREBUILT :=
+endif
+
+ifeq ($(HEW_CI_PREBUILT),1)
+ifeq ($(strip $(HEW_CI_NEXTEST_TARGET_DIR)),)
+$(error HEW_CI_PREBUILT_TEST_ARTIFACTS=1 without HEW_CI_NEXTEST_TARGET_DIR)
+endif
+ARTIFACT_ROOT := $(HEW_CI_NEXTEST_TARGET_DIR)
+ARTIFACT_NATIVE_OUT := $(HEW_CI_NEXTEST_TARGET_DIR)
+else
+ARTIFACT_ROOT := $(CARGO_TARGET_ROOT)
+ARTIFACT_NATIVE_OUT := $(CARGO_NATIVE_OUT)
+endif
+
+DEBUG_DIR  := $(ARTIFACT_NATIVE_OUT)/debug
+# `release` is a packaging profile: `assemble`, the installers and the release
+# gate BUILD into it, so it stays on Cargo's side of the split. No shared test
+# artefact lives there.
 RELEASE_DIR := $(CARGO_NATIVE_OUT)/release
 # The SHIPPED libhew.a builds under the non-LTO `release-lib` cargo profile:
 # a fat-LTO archive cannot dedupe its folded libstd against external Rust
 # staticlibs (`--link-lib` packages), so packaging must never ship the
 # `release` archive. See `[profile.release-lib]` in Cargo.toml.
-RELEASE_LIB_DIR := $(CARGO_NATIVE_OUT)/release-lib
+RELEASE_LIB_DIR := $(ARTIFACT_NATIVE_OUT)/release-lib
 ifeq ($(OS),Windows_NT)
 DEBUG_HEW := $(DEBUG_DIR)/hew.exe
 RELEASE_HEW := $(RELEASE_DIR)/hew.exe
@@ -225,14 +272,15 @@ endif
 # The wasm archives are always built with an explicit `--target wasm32-wasip1`,
 # which outranks the environment, so they hang off the target root rather than
 # the native output directory.
-WASM_DEBUG_DIR  := $(CARGO_TARGET_ROOT)/wasm32-wasip1/debug
+WASM_DEBUG_DIR  := $(ARTIFACT_ROOT)/wasm32-wasip1/debug
 WASM_RELEASE_DIR := $(CARGO_TARGET_ROOT)/wasm32-wasip1/release
 
-# Symlinks under build/ point into the Cargo output directory. While that
-# directory is inside the repository the links stay relative, so a moved
-# checkout keeps working; an out-of-tree CARGO_TARGET_DIR resolves to an
-# absolute path, which must not have `../` hops prepended to it.
-ifeq ($(filter /%,$(CARGO_TARGET_ROOT)),)
+# Symlinks under build/ point at the shared artefacts. While they live inside
+# the repository the links stay relative, so a moved checkout keeps working; an
+# out-of-tree target directory -- or the extracted archive, which is always
+# out of tree -- resolves to an absolute path, which must not have `../` hops
+# prepended to it.
+ifeq ($(filter /%,$(ARTIFACT_ROOT)),)
 LINK_UP2 := ../../
 LINK_UP3 := ../../../
 else
@@ -315,11 +363,10 @@ LIBHEW_READY := $(SHARED_TEST_ARTIFACT_TARGETS) | check-libhew-fresh
 # The four Linux gate shards consume one cargo-nextest archive built once per
 # run by the `linux-nextest-archive` job. The archive carries the selected test
 # binaries, nextest's own metadata, and the shared Cargo outputs named in
-# `[profile.ci] archive.include` (.config/nextest.toml). Its extracted `target`
-# is exported as CARGO_TARGET_DIR, so everything derived from
-# scripts/cargo-output-dir.py above -- DEBUG_DIR, RELEASE_LIB_DIR,
-# WASM_DEBUG_DIR, LIBHEW, and check-libhew-fresh.sh -- already resolves into
-# it. No second path authority is introduced.
+# `[profile.ci] archive.include` (.config/nextest.toml). ARTIFACT_ROOT above
+# points the shared-artefact paths at it while Cargo keeps writing to its own
+# directory -- see the two-authorities note there for why that separation is
+# load-bearing rather than tidy.
 #
 # What this mode changes, and only in this mode:
 #   * The foundational artefact recipes VERIFY instead of invoking Cargo. They
@@ -333,25 +380,21 @@ LIBHEW_READY := $(SHARED_TEST_ARTIFACT_TARGETS) | check-libhew-fresh
 #   * The `<target>-build` warm-up forms that exist only to compile test
 #     binaries become no-ops. Their binaries arrived built.
 #
-# What this mode does NOT change: any gate that genuinely builds. `make
-# test-cabi` still compiles hew-cabi (every workspace-wide nextest invocation
-# in this repository excludes it, and `cargo nextest archive --workspace` is
-# one of those), `test-runtime-no-default-features` still compiles its own
-# feature set, and `sandbox-parity` still runs plain Cargo. Those are bounded
-# correctness fallbacks, not artefact-recovery paths.
+# What this mode does NOT change: any gate that genuinely builds. Because the
+# archive carries runnable outputs and no rlibs or fingerprints, anything that
+# needs to COMPILE still compiles, into Cargo's own directory. That is
+# `make test-cabi` (every workspace-wide nextest invocation in this repository
+# excludes hew-cabi, and `cargo nextest archive --workspace` is one of those),
+# `test-runtime-unit` (a `--no-default-features` build of hew-runtime, a
+# different feature set and therefore a different artefact), `sandbox-parity`
+# (plain Cargo plus the Node runner), `forced-cancel-composite-check` (a
+# `hew-runtime/forced-cancel-test` build, in its own isolated target directory)
+# and `stdlib-user-build-clean`. Those are bounded correctness fallbacks, not
+# artefact-recovery paths, and they are why the runner's disk guard stays.
 #
 # Everywhere else -- every developer machine, macOS, Windows, FreeBSD, the
 # release gate, the nightly tiers -- HEW_CI_PREBUILT_TEST_ARTIFACTS is empty
 # and every recipe below is exactly what it was.
-HEW_CI_PREBUILT_TEST_ARTIFACTS ?=
-ifeq ($(strip $(HEW_CI_PREBUILT_TEST_ARTIFACTS)),1)
-HEW_CI_PREBUILT := 1
-else ifneq ($(strip $(HEW_CI_PREBUILT_TEST_ARTIFACTS)),)
-$(error HEW_CI_PREBUILT_TEST_ARTIFACTS must be 1 or empty, got \
-'$(HEW_CI_PREBUILT_TEST_ARTIFACTS)')
-else
-HEW_CI_PREBUILT :=
-endif
 
 ifeq ($(HEW_CI_PREBUILT),1)
 # All three, or the mode is refused. A half-supplied environment must not
@@ -362,9 +405,6 @@ $(error HEW_CI_PREBUILT_TEST_ARTIFACTS=1 without HEW_CI_NEXTEST_BINARIES_METADAT
 endif
 ifeq ($(strip $(HEW_CI_NEXTEST_CARGO_METADATA)),)
 $(error HEW_CI_PREBUILT_TEST_ARTIFACTS=1 without HEW_CI_NEXTEST_CARGO_METADATA)
-endif
-ifeq ($(strip $(HEW_CI_NEXTEST_TARGET_DIR)),)
-$(error HEW_CI_PREBUILT_TEST_ARTIFACTS=1 without HEW_CI_NEXTEST_TARGET_DIR)
 endif
 ifeq ($(wildcard $(HEW_CI_NEXTEST_BINARIES_METADATA)),)
 $(error prebuilt binaries metadata $(HEW_CI_NEXTEST_BINARIES_METADATA) does not exist)
@@ -2032,8 +2072,15 @@ endif
 forced-cancel-composite-check:
 	bash scripts/forced-cancel-composite-check.sh
 
+# The gate builds a `hew-runtime/forced-cancel-test` compiler and archive, so
+# it uses its own target directory: those artefacts must never be mistaken for
+# the ordinary ones. The warm-up has to build into the SAME directory or it
+# warms nothing the gate reads -- and, when the shared artefacts come from a
+# prebuilt archive, a warm-up that inherited the ambient target directory is
+# what overwrote a certified `hew`/`libhew.a` before any gate ran.
 forced-cancel-composite-check-build:
-	cargo build -p hew-cli -p hew-lib --features hew-runtime/forced-cancel-test --quiet
+	CARGO_TARGET_DIR="$(CURDIR)/target/forced-cancel-gate" \
+		cargo build -p hew-cli -p hew-lib --features hew-runtime/forced-cancel-test --quiet
 
 # Platform-independent counterfactuals for the ASan/LSan sentinel: a genuine
 # sanitizer diagnostic must be accepted, while a bare non-zero probe exit must

@@ -41,6 +41,10 @@ env:
   # x86_64-windows.zip.
   WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
+  # The pull request's own base commit, written once and read by every job
+  # that routes a preflight. Empty on push and workflow_dispatch, which is
+  # correct: those tiers take no diff at all (scripts/ci-preflight-route.sh).
+  PREFLIGHT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
@@ -202,14 +206,13 @@ jobs:
 
       - name: Classify the change with the local selector
         id: selector
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # One derivation for the whole workflow: a pull request diffs against
+        # its own base SHA, a push or dispatch takes no diff at all. The
+        # hardcoded `HEAD^` this replaces answered a different question from
+        # the Linux job's hardcoded `origin/main`, and neither answered the
+        # one the author asked.
         run: |
-          base_ref="${BASE_SHA}"
-          if [[ -z "${base_ref}" ]]; then
-            base_ref=HEAD^
-          fi
-          scripts/ci-preflight-dispatcher.sh --dry-run --base "${base_ref}" \
+          scripts/ci-preflight-route.sh --dry-run \
             --github-output "${GITHUB_OUTPUT}"
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -242,19 +245,7 @@ jobs:
 
       - name: Run change-scoped checks
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          base_ref="${BASE_SHA}"
-          if [[ -z "${base_ref}" ]]; then
-            base_ref=HEAD^
-          fi
-          args=(--base "${base_ref}")
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            args+=(--fail-fast)
-          fi
-          scripts/ci-preflight-dispatcher.sh "${args[@]}"
+        run: scripts/ci-preflight-route.sh
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lint — code quality plus 1,778-file formatter preservation
@@ -894,26 +885,26 @@ jobs:
       - name: Run change-scoped tests
         if: env.RUN_CODE_PATH == 'true'
         env:
-          CI_PREFLIGHT_BASE: origin/main
           COMPILED_HEW_GATE_OWNER: aggregate
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
-        # A push to main broadcasts failures to every branch; stop its affected
-        # shard at the first failure. Sharding keeps that from narrowing the
-        # report — strategy.fail-fast is false, so the other three shards run to
-        # completion and a broken change still surfaces up to four independent
-        # first failures.
+        # The route is derived from the event, once, by
+        # scripts/ci-preflight-route.sh. The `--base origin/main` this
+        # replaces was wrong in both directions: on a pull request it diffed
+        # against a moving trunk rather than the branch's own base, and on a
+        # push TO main it diffed main against itself and produced an empty
+        # change set.
+        #
+        # A push to main broadcasts failures to every branch, so the route
+        # adds --fail-fast there. Sharding keeps that from narrowing the
+        # report -- strategy.fail-fast is false, so the other three shards run
+        # to completion and a broken change still surfaces up to four
+        # independent first failures.
         #
         # The dispatcher writes a per-command result table (command, elapsed,
         # result, first failure line) to $GITHUB_STEP_SUMMARY and emits an
         # ::error annotation per failed command, so a red shard reports the
         # failing line at the top of the job instead of only "exit 1".
-        run: |
-          set -euo pipefail
-          args=(--base origin/main --shard ${{ matrix.shard }}/4)
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            args+=(--fail-fast)
-          fi
-          scripts/ci-preflight-dispatcher.sh "${args[@]}"
+        run: scripts/ci-preflight-route.sh --shard ${{ matrix.shard }}/4
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'

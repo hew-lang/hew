@@ -2151,6 +2151,7 @@ test-release-workflow-contract-build:
 LINT_GATES += test-build-harness
 # inputs: scripts/tests/test_ci_preflight_dispatcher.py
 # inputs: scripts/tests/test_ci_preflight_timeout.sh
+# inputs: scripts/ci-preflight-route.sh
 # inputs: scripts/tests/test_playground_path_filter_oracle.py
 # inputs: scripts/tests/test_libhew_freshness.py scripts/tests/test_hew_suite_cache.py
 # inputs: scripts/tests/test_makefile_interfaces.py scripts/make-help.py

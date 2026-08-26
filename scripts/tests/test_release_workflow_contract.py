@@ -2004,8 +2004,9 @@ def test_rc3_to_final_release_boundary_is_complete() -> None:
 def test_contract_oracle_runs_in_required_ci() -> None:
     ci = CI_WORKFLOW.read_text()
     assert "'.github/workflows/release.yml'" in ci
-    assert 'scripts/ci-preflight-dispatcher.sh "${args[@]}"' in ci
-    assert 'args=(--base "${base_ref}")' in ci
+    # The router is reached through its event adapter; the base ref is derived
+    # once, per event, rather than spelled again in every job that needs it.
+    assert "scripts/ci-preflight-route.sh" in ci
     dispatched = subprocess.run(
         [
             "bash",
@@ -2273,7 +2274,7 @@ def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
 
     indirect_test_entries = {
         "lint": "make test-ast-grep-contract test-structural-lint-bootstrap",
-        "build-and-test": 'scripts/ci-preflight-dispatcher.sh "${args[@]}"',
+        "build-and-test": "scripts/ci-preflight-route.sh --shard",
     }
     jobs = workflow_jobs(ci)
     for name, entry in indirect_test_entries.items():
@@ -2499,15 +2500,29 @@ def test_ci_verify_only_scope_mutations_are_rejected() -> None:
 
 
 def test_docs_and_scripts_uses_the_selector_diff_base() -> None:
+    """Both preflight jobs derive their base from the same authority.
+
+    They used to spell it separately -- and the Linux shards spelled it a
+    third way, as `origin/main`. Three jobs, three answers, and on a branch
+    whose base has moved none of them is the diff the author wrote. The
+    property is now "nobody spells it at all": every job routes through
+    scripts/ci-preflight-route.sh, and the payload expression appears once, at
+    workflow level.
+    """
     ci = CI_WORKFLOW.read_text()
-    selector = workflow_job(ci, "changes")
-    lightweight = workflow_job(ci, "docs-and-scripts")
-    for job in (selector, lightweight):
-        assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in job
-        assert 'base_ref="${BASE_SHA}"' in job
-        assert "base_ref=HEAD^" in job
-    assert '--dry-run --base "${base_ref}"' in selector
-    assert 'args=(--base "${base_ref}")' in lightweight
+    for name in ("changes", "docs-and-scripts", "build-and-test"):
+        commands = [
+            line
+            for step in workflow_steps(workflow_job(ci, name))
+            for line in step.splitlines()
+            if "ci-preflight" in line and not line.lstrip().startswith("#")
+        ]
+        assert commands, f"{name} must run a preflight"
+        for command in commands:
+            assert "ci-preflight-route.sh" in command, (name, command)
+    assert (
+        ci.count("PREFLIGHT_BASE_SHA: ${{ github.event.pull_request.base.sha }}") == 1
+    ), "the pull request base expression belongs at workflow level, written once"
 
 
 def assert_binaryen_downloader_contract(downloader: str) -> None:
@@ -2552,7 +2567,7 @@ def test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen() -> None:
         (
             workflow_job(CI_WORKFLOW.read_text(), "build-and-test"),
             "uses: ./.github/actions/setup-wasm-pack",
-            "scripts/ci-preflight-dispatcher.sh",
+            "scripts/ci-preflight-route.sh",
         ),
         (
             workflow_job(RELEASE_GATE.read_text(), "gate-linux"),
@@ -3238,12 +3253,10 @@ def test_freebsd_aarch64_installs_wasi_std_before_building_stdlib() -> None:
     version = "RUST_VERSION=$(rustc --version | awk '{print $2}')"
     component = 'RUST_STD_COMPONENT="rust-std-${RUST_VERSION}-wasm32-wasip1"'
     archive = '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz"'
-    checksum = (
-        '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"'
-    )
+    checksum = '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"'
     verify = (
         'test "$(sha256 -q "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz")" = \\\n'
-        '              "$(awk \'{print $1}\' '
+        "              \"$(awk '{print $1}' "
         '"$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz.sha256")"'
     )
     install = (

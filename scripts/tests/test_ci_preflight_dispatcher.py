@@ -1791,8 +1791,13 @@ def test_analysis_change_runs_known_dependents_without_workspace() -> None:
 
 
 def test_hosted_linux_executes_the_dispatcher_directly() -> None:
+    """The Linux shards run the router, not a hand-picked list of gates.
+
+    Naming a gate in the workflow puts a second selection authority beside the
+    router, and the two drift.
+    """
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert 'scripts/ci-preflight-dispatcher.sh "${args[@]}"' in workflow
+    assert "scripts/ci-preflight-route.sh --shard" in workflow, workflow[:0]
     assert "run: make test-hew-ratchet" not in workflow
 
 
@@ -1893,12 +1898,15 @@ def test_a_labelled_fix_for_main_runs_against_a_red_main() -> None:
 
 
 def test_a_push_to_main_stops_at_the_first_failing_gate() -> None:
-    """A red main broadcasts; finishing the other 37 commands proves nothing."""
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert workflow.count('if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then') == 2, (
-        workflow
-    )
-    assert workflow.count("args+=(--fail-fast)") == 2, workflow
+    """A red main broadcasts; finishing the other 37 commands proves nothing.
+
+    Asserted at the route helper, which is where the decision now lives — a
+    count of `--fail-fast` occurrences in the workflow text passed on a broken
+    workflow and failed on a benign reformat.
+    """
+    assert "--fail-fast" in route_argv("push")
+    assert "--fail-fast" not in route_argv("pull_request", "cafebabe")
+    assert "--fail-fast" not in route_argv("workflow_dispatch")
 
 
 def test_every_job_waits_for_a_green_main() -> None:
@@ -2261,16 +2269,9 @@ def test_hosted_linux_matrix_matches_the_dispatcher_shard_denominator() -> None:
     assert shards == list(range(1, len(shards) + 1)), shards
 
     denominators = re.findall(
-        r"ci-preflight-dispatcher\.sh --base origin/main --fail-fast "
         r"--shard \$\{\{ matrix\.shard \}\}/(\d+)",
         job,
     )
-    if not denominators:
-        denominators = re.findall(
-            r"args=\(--base origin/main --shard "
-            r"\$\{\{ matrix\.shard \}\}/(\d+)\)",
-            job,
-        )
     assert denominators, job
     assert {int(value) for value in denominators} == {len(shards)}, denominators
 
@@ -3730,9 +3731,109 @@ def test_comprehensive_refuses_to_share_the_decision_with_a_diff() -> None:
     assert "explicit paths" in with_paths.stderr, with_paths.stderr
 
 
+# ---------------------------------------------------------------------------
+# Event -> route derivation.  One question per event, one answer, and an
+# unrecognised event is an error rather than a guess.
+# ---------------------------------------------------------------------------
+
+ROUTE = ROOT / "scripts" / "ci-preflight-route.sh"
+
+
+def derive_route(
+    event: str | None, base_sha: str | None = None, *forwarded: str
+) -> subprocess.CompletedProcess[str]:
+    overrides = {"PREFLIGHT_ROUTE_PRINT_ONLY": "1"}
+    if event is not None:
+        overrides["GITHUB_EVENT_NAME"] = event
+    if base_sha is not None:
+        overrides["PREFLIGHT_BASE_SHA"] = base_sha
+    return _run_dispatcher_process(["bash", str(ROUTE), *forwarded], env=overrides)
+
+
+def route_argv(
+    event: str | None, base_sha: str | None = None, *forwarded: str
+) -> list[str]:
+    result = derive_route(event, base_sha, *forwarded)
+    assert result.returncode == 0, (event, result.stderr)
+    return result.stdout.split()
+
+
+def test_a_pull_request_routes_against_its_own_base_commit() -> None:
+    """Not `origin/main`, and not `HEAD^`.
+
+    The Linux job diffed every branch against a moving trunk while the
+    `changes` job used `HEAD^`; on a branch whose base has advanced, neither
+    is the diff the author wrote.
+    """
+    assert route_argv("pull_request", "cafebabe") == ["--base", "cafebabe"]
+    assert route_argv("pull_request", "cafebabe", "--shard", "2/4") == [
+        "--base",
+        "cafebabe",
+        "--shard",
+        "2/4",
+    ]
+
+
+def test_a_pull_request_with_no_base_payload_is_an_error() -> None:
+    """Fail closed rather than substitute a guess for the missing payload."""
+    result = derive_route("pull_request", None)
+    assert result.returncode != 0, result.stdout
+    assert "base SHA" in result.stderr, result.stderr
+
+
+def test_push_and_dispatch_are_comprehensive_by_policy() -> None:
+    """Neither tier asks "what changed?", so neither takes a diff.
+
+    `--base origin/main` on a push TO main diffed main against itself: an
+    empty change set the dispatcher used to accept as "nothing to do".
+    """
+    assert route_argv("push") == ["--comprehensive", "--fail-fast"]
+    assert route_argv("workflow_dispatch") == ["--comprehensive"]
+    assert "--base" not in route_argv("push")
+    assert "--base" not in route_argv("workflow_dispatch")
+
+
+def test_an_unrecognised_event_is_an_error() -> None:
+    """Including merge_group, which needs its own derivation and a real run.
+
+    Letting it fall through to a diff-derived route would ship an unexercised
+    code path and a readiness claim nothing proves.
+    """
+    for event in ("merge_group", "schedule", "repository_dispatch"):
+        result = derive_route(event, "cafebabe")
+        assert result.returncode != 0, (event, result.stdout)
+        assert "unsupported event" in result.stderr, (event, result.stderr)
+
+    missing = derive_route(None)
+    assert missing.returncode != 0, missing.stdout
+    assert "GITHUB_EVENT_NAME is unset" in missing.stderr, missing.stderr
+
+
+def test_every_ci_preflight_invocation_goes_through_the_route_helper() -> None:
+    """One derivation, not one per job.
+
+    Three jobs each spelled their own base and disagreed. A fourth would have
+    disagreed differently. The rule is on the call site so a new job cannot
+    reintroduce a private answer.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    direct = [
+        line.strip()
+        for line in workflow.splitlines()
+        if "ci-preflight-dispatcher.sh" in line and not line.strip().startswith("#")
+    ]
+    assert not direct, (
+        "ci.yml must route through scripts/ci-preflight-route.sh, not the "
+        f"dispatcher directly: {direct}"
+    )
+    assert "ci-preflight-route.sh" in workflow, workflow[:0]
+    assert (
+        "PREFLIGHT_BASE_SHA: ${{ github.event.pull_request.base.sha }}" in workflow
+    ), "the base SHA expression must be written once, at workflow level"
+
+
 def _discover_tests() -> list:
     """Every test function defined in this module, resolved at RUN time.
-
     Resolving at definition time is the same bug one layer down: tests added
     below the roster are silently omitted, which is how the hand-written list
     came to run 71 of 78.

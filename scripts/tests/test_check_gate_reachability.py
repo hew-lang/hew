@@ -536,7 +536,7 @@ def test_real_ci_reaches_the_complete_test_prerequisite_graph() -> None:
     known = set(prereqs) | phony
     workflows = gate.load_workflows()
     commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
-    if "ci-preflight-dispatcher.sh" in commands:
+    if any(entry in commands for entry in gate.DISPATCHER_ENTRYPOINTS):
         fallback = subprocess.run(
             [
                 "bash",
@@ -692,7 +692,8 @@ def test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_autho
         oracle = next(
             (index, run)
             for index, run in enumerate(runnable)
-            if "make mqtt-broker-e2e" in run or "ci-preflight-dispatcher.sh" in run
+            if "make mqtt-broker-e2e" in run
+            or any(entry in run for entry in gate.DISPATCHER_ENTRYPOINTS)
         )
         assert "mosquitto_pub" in provision[1] and "mosquitto_sub" in provision[1], (
             f"{path.name}:{job_name} must verify both MQTT client commands"
@@ -700,7 +701,7 @@ def test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_autho
         assert provision[0] < oracle[0], (
             f"{path.name}:{job_name} must provision clients before the MQTT oracle"
         )
-        if "ci-preflight-dispatcher.sh" in oracle[1]:
+        if any(entry in oracle[1] for entry in gate.DISPATCHER_ENTRYPOINTS):
             selected = subprocess.run(
                 [
                     "bash",

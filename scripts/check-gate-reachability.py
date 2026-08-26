@@ -118,6 +118,14 @@ MAKEFILE = REPO_ROOT / "Makefile"
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 ACTION_DIR = REPO_ROOT / ".github" / "actions"
 DISPATCHER = REPO_ROOT / "scripts" / "ci-preflight-dispatcher.sh"
+# CI reaches the dispatcher through scripts/ci-preflight-route.sh, which
+# derives the route from the event and execs the dispatcher. Both names are
+# the same edge; recognising only one would report every dispatcher-selected
+# gate as unreached the moment the call site gained its event adapter.
+DISPATCHER_ENTRYPOINTS = (
+    "ci-preflight-dispatcher.sh",
+    "ci-preflight-route.sh",
+)
 NEXTEST_TOML = REPO_ROOT / ".config" / "nextest.toml"
 ROOT_CARGO = REPO_ROOT / "Cargo.toml"
 STRUCTURAL_LINT_WRAPPER = REPO_ROOT / "scripts" / "ast-grep-lint.sh"
@@ -2566,7 +2574,7 @@ def comparison_targets(recipes: dict[str, str]) -> dict[str, str]:
         body = DELEGATION_RE.sub("", FORMATTER_IDEMPOTENCY_RE.sub("", body))
         if not body.strip() or target in regen:
             continue
-        if "ci-preflight-dispatcher.sh" in body:
+        if any(entry in body for entry in DISPATCHER_ENTRYPOINTS):
             continue
         if SELF_TEST_SCRIPT_RE.search(body) or SELF_TEST_SCRIPT_RE.search(target):
             continue
@@ -2672,7 +2680,7 @@ def main() -> int:
     live = triggerable(workflows)
     step_commands = ci_step_commands(workflows)
     ci_text = "\n".join(command for _, command in step_commands)
-    if "ci-preflight-dispatcher.sh" in ci_text:
+    if any(entry in ci_text for entry in DISPATCHER_ENTRYPOINTS):
         for selection_name, probe_path in (
             ("fallback", "some-unclassified-root-file.txt"),
             ("scripts-config", "scripts/example.sh"),

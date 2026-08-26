@@ -30,7 +30,7 @@ pub fn dump_sir(module: &SemModule) -> String {
             }
             writeln!(out, ":").expect("write to String");
             for op in &block.ops {
-                dump_op(&mut out, op);
+                dump_op(&mut out, module, op);
             }
             dump_term(&mut out, &block.terminator);
         }
@@ -39,9 +39,23 @@ pub fn dump_sir(module: &SemModule) -> String {
     out
 }
 
-fn dump_op(out: &mut String, op: &crate::SemOp) {
-    let result = &op.results[0];
-    write!(out, "    %{} = ", result.id.0).expect("write to String");
+fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
+    write!(out, "    ").expect("write to String");
+    match op.results.as_slice() {
+        [] => {}
+        [result] => write!(out, "%{} = ", result.id.0).expect("write to String"),
+        // The verifier rejects multi-result operations in this initial slice,
+        // but a dump must remain total for malformed IR used in diagnostics.
+        results => {
+            for (index, result) in results.iter().enumerate() {
+                if index != 0 {
+                    write!(out, ", ").expect("write to String");
+                }
+                write!(out, "%{}", result.id.0).expect("write to String");
+            }
+            write!(out, " = ").expect("write to String");
+        }
+    }
     match &op.kind {
         SemOpKind::ConstI64(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstBool(value) => writeln!(out, "const {value}").expect("write to String"),
@@ -55,8 +69,12 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
             writeln!(out, "cast %{} to {}", value.value.0, to.user_facing())
                 .expect("write to String");
         }
-        SemOpKind::Call { target, args } => {
-            write!(out, "call {target:?}(").expect("write to String");
+        SemOpKind::Call { callee, args } => {
+            let target = module.callable(*callee).map_or_else(
+                || format!("<invalid-callable:{}>", callee.0),
+                |callable| callable.symbol.clone(),
+            );
+            write!(out, "call @{target}(").expect("write to String");
             for (index, arg) in args.iter().enumerate() {
                 if index != 0 {
                     write!(out, ", ").expect("write to String");

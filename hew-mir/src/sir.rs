@@ -9,10 +9,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use hew_hir::{IntentKind, SiteId, ValueClass};
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_sir::{
-    BlockArg, BlockId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemFunction, SemModule,
-    SemOp, SemOpKind, SemTerminator, UseMode, ValueDef, ValueId,
+    BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemCallConv,
+    SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
+    SemTerminator, UseMode, ValueDef, ValueId,
 };
 #[cfg(test)]
 use hew_types::DefId;
@@ -20,7 +22,8 @@ use hew_types::ResolvedTy;
 
 use crate::{
     dataflow, BasicBlock, CheckedMirFunction, FunctionCallConv, Instr, IntArithOp, IntSignedness,
-    IrPipeline, ModuleCapabilities, Place, RawMirFunction, Strategy, Terminator, TrapKind,
+    IrPipeline, ModuleCapabilities, ParamBoundaryFact, ParamBoundaryMode, Place, RawMirFunction,
+    Strategy, Terminator, TrapKind,
 };
 
 /// The result of lowering one SIR function into the existing raw/checked MIR
@@ -28,9 +31,53 @@ use crate::{
 /// scalar, non-owning values, and the code generator deliberately accepts a
 /// missing elaborated entry as an empty drop-plan set.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SirMirLowered {
-    pub raw: RawMirFunction,
-    pub checked: CheckedMirFunction,
+struct SirMirLowered {
+    raw: RawMirFunction,
+    checked: CheckedMirFunction,
+}
+
+/// A closed, self-contained scalar SIR call-graph realization.
+///
+/// Unlike the temporary shadow bridge, this component has no raw-MIR
+/// template input. SIR owns each callable's symbol, signature, and parameter
+/// ABI facts; this lowering independently creates both raw and checked MIR.
+/// A driver either installs the entire selected call graph or reports its
+/// unsupported boundary — it never silently mixes a SIR caller with a legacy
+/// body inside the selected closure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SirMirComponent {
+    /// Callables included in deterministic SIR table order.
+    callables: Vec<CallableId>,
+    raw_mir: Vec<RawMirFunction>,
+    checked_mir: Vec<CheckedMirFunction>,
+}
+
+impl SirMirComponent {
+    /// The deterministic closed callable set realized by this component.
+    #[must_use]
+    pub fn callables(&self) -> &[CallableId] {
+        &self.callables
+    }
+
+    /// Build the body portion of a fresh MIR pipeline from SIR-owned facts.
+    ///
+    /// This deliberately starts with `IrPipeline::default()` rather than a
+    /// legacy HIR→MIR pipeline. The admitted scalar direct-call domain has no
+    /// declaration layouts, runtime authorities, or ownership facts; later
+    /// SIR domains will receive a bodyless declaration-header input instead.
+    #[must_use]
+    pub fn into_pipeline(self) -> IrPipeline {
+        let mut pipeline = IrPipeline {
+            raw_mir: self.raw_mir,
+            checked_mir: self.checked_mir,
+            ..IrPipeline::default()
+        };
+        pipeline.capabilities =
+            ModuleCapabilities::from_raw_mir(&pipeline.raw_mir, &pipeline.extern_decls);
+        pipeline.lint_warnings = crate::liveness::run_mir_lints(&pipeline.raw_mir);
+        pipeline.debug_assert_capabilities_current();
+        pipeline
+    }
 }
 
 /// A conservative refusal to lower a SIR function through the first
@@ -38,12 +85,25 @@ pub struct SirMirLowered {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SirMirLoweringError {
     pub reason: String,
+    /// Callable whose missing SIR body caused a strict closed-component
+    /// refusal, when the failure is specifically a HIR→SIR surface gap.
+    /// Driver diagnostics use this resolved identity to report the originating
+    /// SIR lowering reason without parsing display strings.
+    pub missing_body: Option<CallableId>,
 }
 
 impl SirMirLoweringError {
     fn unsupported(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
+            missing_body: None,
+        }
+    }
+
+    fn missing_body(callable: CallableId, reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            missing_body: Some(callable),
         }
     }
 }
@@ -78,6 +138,877 @@ impl SirMirLoweringReport {
             .filter(|(_, status)| matches!(status, SirMirLoweringStatus::Lowered))
             .count()
     }
+}
+
+/// Lower a closed scalar direct-call component without consulting legacy MIR.
+///
+/// `roots` are resolved SIR callable identities, normally the HIR-established
+/// root-unit entry callable. Every direct call reachable from a root must have
+/// exactly one SIR body in the admitted scalar domain. This is intentionally
+/// all-or-nothing: the strict SIR lane must not hide a legacy body behind a
+/// SIR call edge.
+///
+/// # Errors
+///
+/// Returns a deterministic refusal when module verification fails or a
+/// reachable callable has no SIR body / falls outside the initial direct-call
+/// domain.
+pub fn lower_closed_scalar_component(
+    module: &SemModule,
+    roots: &[CallableId],
+) -> Result<SirMirComponent, SirMirLoweringError> {
+    if let Some(diagnostic) = hew_sir::verify_module(module).into_iter().next() {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "SIR module verifier rejected the direct-call component: {:?}",
+            diagnostic.kind
+        )));
+    }
+    if roots.is_empty() {
+        return Err(SirMirLoweringError::unsupported(
+            "strict SIR lowering requires at least one resolved callable root",
+        ));
+    }
+
+    let mut selected = BTreeSet::new();
+    let mut pending = roots
+        .iter()
+        .copied()
+        .map(|root| (root, vec![root]))
+        .collect::<Vec<_>>();
+
+    while let Some((callable_id, path)) = pending.pop() {
+        if !selected.insert(callable_id) {
+            continue;
+        }
+        let callable = module.callable(callable_id).ok_or_else(|| {
+            SirMirLoweringError::unsupported(format!(
+                "strict SIR direct-call closure reaches unknown callable {} via {}",
+                callable_id.0,
+                format_callable_path(module, &path)
+            ))
+        })?;
+        validate_direct_callable(callable)?;
+        let function = unique_function_for_callable(module, callable_id).ok_or_else(|| {
+            SirMirLoweringError::missing_body(
+                callable_id,
+                format!(
+                    "strict SIR direct-call closure requires one lowered body for `{}` via {}",
+                    callable.symbol,
+                    format_callable_path(module, &path)
+                ),
+            )
+        })?;
+        for callee in direct_callees(function) {
+            let mut next_path = path.clone();
+            next_path.push(callee);
+            pending.push((callee, next_path));
+        }
+    }
+
+    let mut raw_mir = Vec::with_capacity(selected.len());
+    let mut checked_mir = Vec::with_capacity(selected.len());
+    for callable_id in &selected {
+        let function = unique_function_for_callable(module, *callable_id).ok_or_else(|| {
+            SirMirLoweringError::unsupported(format!(
+                "selected SIR callable {} lost its body during component realization",
+                callable_id.0
+            ))
+        })?;
+        let lowered = lower_verified_sir_function(module, function)?;
+        raw_mir.push(lowered.raw);
+        checked_mir.push(lowered.checked);
+    }
+
+    Ok(SirMirComponent {
+        callables: selected.into_iter().collect(),
+        raw_mir,
+        checked_mir,
+    })
+}
+
+/// Test helper for lowering one verifier-approved SIR function.
+///
+/// Production callers must use [`lower_closed_scalar_component`] so every
+/// direct call resolves within a closed realized component.
+#[cfg(test)]
+fn lower_sir_function(
+    module: &SemModule,
+    function: &SemFunction,
+) -> Result<SirMirLowered, SirMirLoweringError> {
+    if let Some(diagnostic) = hew_sir::verify_module(module).into_iter().next() {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "SIR module verifier rejected function `{}`: {:?}",
+            function.name, diagnostic.kind
+        )));
+    }
+    lower_verified_sir_function(module, function)
+}
+
+fn lower_verified_sir_function(
+    module: &SemModule,
+    function: &SemFunction,
+) -> Result<SirMirLowered, SirMirLoweringError> {
+    let callable = module.callable(function.callable).ok_or_else(|| {
+        SirMirLoweringError::unsupported(format!(
+            "SIR function `{}` has no resolved callable {}",
+            function.name, function.callable.0
+        ))
+    })?;
+    validate_direct_callable(callable)?;
+    validate_sir_function_signature(function, callable)?;
+    if function.entry != BlockId(0) {
+        return Err(SirMirLoweringError::unsupported(
+            "the initial raw-MIR realization requires SIR entry block bb0",
+        ));
+    }
+
+    let collected = CollectedValues::from_function(function)?;
+    let mut lowerer = RawLowerer::new(function, collected, Some(module))?;
+    for block in &function.blocks {
+        lowerer.lower_block(block)?;
+    }
+    let (locals, blocks) = lowerer.finish()?;
+    let parameter_decisions = sir_parameter_decisions(callable)?;
+    let raw = RawMirFunction {
+        name: callable.symbol.clone(),
+        return_ty: callable.signature.return_ty.clone(),
+        call_conv: FunctionCallConv::Default,
+        params: callable
+            .signature
+            .params
+            .iter()
+            .map(|parameter| parameter.ty.clone())
+            .collect(),
+        locals,
+        // SIR values do not yet carry source binding/scope debug identities.
+        // An empty debug projection is truthful and preferable to copying
+        // storage metadata authored for a legacy HIR→MIR body.
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks,
+        decisions: parameter_decisions.clone(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: Some((
+            u32::try_from(function.span.start).unwrap_or(u32::MAX),
+            u32::try_from(function.span.end).unwrap_or(u32::MAX),
+        )),
+        instr_spans: std::collections::BTreeMap::new(),
+        source_origin: raw_source_origin(&callable.source_origin),
+    };
+    let checked = CheckedMirFunction {
+        name: raw.name.clone(),
+        return_ty: raw.return_ty.clone(),
+        blocks: raw.blocks.clone(),
+        decisions: parameter_decisions,
+        checks: crate::validate_context_markers(&raw),
+        // Strict SIR may introduce edge-forwarding blocks after the CFG nodes
+        // they target. Its scheduler therefore uses structural latches rather
+        // than the legacy raw-MIR numeric block-order convention.
+        cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
+    };
+    verify_strict_sir_raw_checked(module, callable, &raw, &checked)?;
+    Ok(SirMirLowered { raw, checked })
+}
+
+/// Verify the small, deliberately storage-free SIR → raw/checked-MIR contract.
+///
+/// This is intentionally narrower than the legacy raw-MIR validators.  The
+/// strict SIR lane currently admits only scalar values, direct calls, and the
+/// CFG forms authored by [`RawLowerer`].  Checking that exact contract here
+/// means a future SIR lowering edit cannot accidentally smuggle an unmodelled
+/// ownership, place, or ABI convention through a raw-MIR body merely because
+/// a later backend happens to accept it.
+fn verify_strict_sir_raw_checked(
+    module: &SemModule,
+    callable: &SemCallable,
+    raw: &RawMirFunction,
+    checked: &CheckedMirFunction,
+) -> Result<(), SirMirLoweringError> {
+    if raw.name != callable.symbol
+        || raw.return_ty != callable.signature.return_ty
+        || raw.call_conv != FunctionCallConv::Default
+    {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw function does not match callable `{}` ABI",
+            callable.symbol
+        )));
+    }
+    if checked.name != raw.name || checked.return_ty != raw.return_ty {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: checked function identity does not match raw `{}`",
+            raw.name
+        )));
+    }
+
+    let expected_params = callable
+        .signature
+        .params
+        .iter()
+        .map(|parameter| parameter.ty.clone())
+        .collect::<Vec<_>>();
+    if raw.params != expected_params {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw parameters do not match callable `{}` ABI",
+            callable.symbol
+        )));
+    }
+    if raw.locals.len() < raw.params.len() {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw `{}` has fewer locals than ABI parameters",
+            raw.name
+        )));
+    }
+    for (index, parameter_ty) in raw.params.iter().enumerate() {
+        if raw.locals[index] != *parameter_ty {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: raw `{}` parameter local {index} does not match its ABI type",
+                raw.name
+            )));
+        }
+    }
+    for (index, local_ty) in raw.locals.iter().enumerate() {
+        if !is_supported_value_type(local_ty) {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: raw `{}` local {index} has unsupported type `{}`",
+                raw.name,
+                local_ty.user_facing()
+            )));
+        }
+    }
+
+    verify_strict_sir_block_layout("raw", &raw.blocks)?;
+    verify_strict_sir_block_layout("checked", &checked.blocks)?;
+    if raw.blocks != checked.blocks {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw and checked blocks diverge for `{}`",
+            raw.name
+        )));
+    }
+    if raw.decisions != checked.decisions {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw and checked decisions diverge for `{}`",
+            raw.name
+        )));
+    }
+    if checked.checks != crate::validate_context_markers(raw) {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: checked context findings are stale for `{}`",
+            raw.name
+        )));
+    }
+    if checked.cooperate_sites != dataflow::compute_structural_cooperate_sites(&raw.blocks) {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: checked scheduler facts are stale for `{}`",
+            raw.name
+        )));
+    }
+    verify_strict_sir_parameter_boundary_facts(callable, raw)?;
+
+    for block in &raw.blocks {
+        if !block.statements.is_empty() {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: raw bb{} carries legacy MIR statements",
+                block.id
+            )));
+        }
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            verify_strict_sir_instruction(raw, block.id, instruction_index, instruction)?;
+        }
+        verify_strict_sir_terminator(module, raw, block)?;
+    }
+    Ok(())
+}
+
+fn verify_strict_sir_block_layout(
+    lane: &str,
+    blocks: &[BasicBlock],
+) -> Result<(), SirMirLoweringError> {
+    if blocks.is_empty() {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: {lane} MIR has no basic blocks"
+        )));
+    }
+    for (index, block) in blocks.iter().enumerate() {
+        let expected_id = u32::try_from(index).map_err(|_| {
+            SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: {lane} MIR block count exceeds u32"
+            ))
+        })?;
+        if block.id != expected_id {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: {lane} MIR has noncanonical block id bb{} at index {index}",
+                block.id
+            )));
+        }
+        for target in block.successors() {
+            let target_index = usize::try_from(target).map_err(|_| {
+                SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {lane} bb{} successor bb{target} cannot index the CFG",
+                    block.id
+                ))
+            })?;
+            if target_index >= blocks.len() {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {lane} bb{} targets missing bb{target}",
+                    block.id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_strict_sir_parameter_boundary_facts(
+    callable: &SemCallable,
+    raw: &RawMirFunction,
+) -> Result<(), SirMirLoweringError> {
+    if raw.decisions.len() != callable.signature.params.len() {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw `{}` has {} parameter-boundary facts for {} ABI parameters",
+            raw.name,
+            raw.decisions.len(),
+            callable.signature.params.len()
+        )));
+    }
+    let parameter_count = u32::try_from(callable.signature.params.len()).map_err(|_| {
+        SirMirLoweringError::unsupported(
+            "strict SIR raw/checked verifier: callable parameter count exceeds u32",
+        )
+    })?;
+    for (index, (decision, parameter)) in raw
+        .decisions
+        .iter()
+        .zip(&callable.signature.params)
+        .enumerate()
+    {
+        let parameter_index = u32::try_from(index).map_err(|_| {
+            SirMirLoweringError::unsupported(
+                "strict SIR raw/checked verifier: callable parameter index exceeds u32",
+            )
+        })?;
+        let Strategy::ParamBoundary(fact) = &decision.strategy else {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: raw `{}` decision {index} is not a parameter-boundary fact",
+                raw.name
+            )));
+        };
+        let expected = ParamBoundaryFact {
+            param_index: parameter_index,
+            param_count: parameter_count,
+            caller_visible_projection: parameter.caller_visible_projection,
+            mode: match parameter.passing {
+                SemParamPassing::ReadOnly => ParamBoundaryMode::BorrowReadOnly,
+            },
+        };
+        if decision.site != SiteId(parameter_index)
+            || decision.ty != parameter.ty
+            || decision.value_class != ValueClass::BitCopy
+            || decision.intent != IntentKind::Unknown
+            || *fact != expected
+        {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: raw `{}` parameter-boundary fact {index} does not match callable ABI",
+                raw.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive scalar-instruction allowlist makes the strict SIR-to-MIR boundary auditable in one place"
+)]
+fn verify_strict_sir_instruction(
+    raw: &RawMirFunction,
+    block_id: u32,
+    instruction_index: usize,
+    instruction: &Instr,
+) -> Result<(), SirMirLoweringError> {
+    let context = format!("raw bb{block_id} instruction {instruction_index}");
+    match instruction {
+        Instr::ConstI64 { dest, .. } => {
+            let destination_ty = strict_sir_local_ty(raw, *dest, &context)?;
+            if !destination_ty.is_integer() && *destination_ty != ResolvedTy::Bool {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {context} writes a constant to non-scalar `{}`",
+                    destination_ty.user_facing()
+                )));
+            }
+        }
+        Instr::BoolNot { dest, operand } => {
+            verify_strict_sir_same_type(raw, *dest, *operand, &context, &ResolvedTy::Bool)?;
+        }
+        Instr::IntNegChecked {
+            signed,
+            dest,
+            operand,
+            overflow_flag,
+        } => {
+            let destination_ty =
+                verify_strict_sir_same_integer_type(raw, *dest, *operand, &context)?;
+            if signedness(destination_ty)? != *signed
+                || strict_sir_local_ty(raw, *overflow_flag, &context)? != &ResolvedTy::Bool
+            {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {context} has an invalid checked-negation shape"
+                )));
+            }
+        }
+        Instr::IntBitNot { dest, operand } => {
+            let _ = verify_strict_sir_same_integer_type(raw, *dest, *operand, &context)?;
+        }
+        Instr::IntAdd { dest, lhs, rhs }
+        | Instr::IntSub { dest, lhs, rhs }
+        | Instr::IntMul { dest, lhs, rhs }
+        | Instr::IntBitAnd { dest, lhs, rhs }
+        | Instr::IntBitOr { dest, lhs, rhs }
+        | Instr::IntBitXor { dest, lhs, rhs } => {
+            let destination_ty = verify_strict_sir_same_integer_type(raw, *dest, *lhs, &context)?;
+            if strict_sir_local_ty(raw, *rhs, &context)? != destination_ty {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {context} mixes scalar arithmetic local types"
+                )));
+            }
+        }
+        Instr::IntArithChecked {
+            signed,
+            dest,
+            lhs,
+            rhs,
+            overflow_flag,
+            ..
+        } => {
+            let destination_ty = verify_strict_sir_same_integer_type(raw, *dest, *lhs, &context)?;
+            if strict_sir_local_ty(raw, *rhs, &context)? != destination_ty
+                || signedness(destination_ty)? != *signed
+                || strict_sir_local_ty(raw, *overflow_flag, &context)? != &ResolvedTy::Bool
+            {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {context} has an invalid checked-arithmetic shape"
+                )));
+            }
+        }
+        Instr::IntCmp {
+            dest,
+            pred,
+            lhs,
+            rhs,
+        } => {
+            if strict_sir_local_ty(raw, *dest, &context)? != &ResolvedTy::Bool {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {context} comparison result is not bool"
+                )));
+            }
+            let lhs_ty = strict_sir_local_ty(raw, *lhs, &context)?;
+            let is_bool_equality = lhs_ty == &ResolvedTy::Bool
+                && matches!(pred, crate::CmpPred::Eq | crate::CmpPred::NotEq);
+            if (!lhs_ty.is_integer() && !is_bool_equality)
+                || strict_sir_local_ty(raw, *rhs, &context)? != lhs_ty
+            {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {context} comparison operands are not same-typed integers or boolean equality operands"
+                )));
+            }
+        }
+        Instr::NumericCast {
+            dest,
+            src,
+            from_ty,
+            to_ty,
+        } => {
+            if strict_sir_local_ty(raw, *src, &context)? != from_ty
+                || strict_sir_local_ty(raw, *dest, &context)? != to_ty
+                || !from_ty.can_explicitly_numeric_cast_to(to_ty)
+            {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {context} has an invalid numeric-cast shape"
+                )));
+            }
+        }
+        Instr::Move { dest, src } => verify_strict_sir_move(raw, *dest, *src, &context)?,
+        _ => {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: {context} uses an instruction outside the scalar SIR subset"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_strict_sir_terminator(
+    module: &SemModule,
+    raw: &RawMirFunction,
+    block: &BasicBlock,
+) -> Result<(), SirMirLoweringError> {
+    match &block.terminator {
+        Terminator::Return => {
+            let return_stores = block
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(
+                        instruction,
+                        Instr::Move {
+                            dest: Place::ReturnSlot,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            if raw.return_ty == ResolvedTy::Unit {
+                if return_stores != 0 {
+                    return Err(SirMirLoweringError::unsupported(format!(
+                        "strict SIR raw/checked verifier: raw bb{} writes a value for a unit return",
+                        block.id
+                    )));
+                }
+            } else if return_stores != 1
+                || !matches!(
+                    block.instructions.last(),
+                    Some(Instr::Move {
+                        dest: Place::ReturnSlot,
+                        ..
+                    })
+                )
+            {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: raw bb{} must finish its scalar return with one return-slot move",
+                    block.id
+                )));
+            }
+        }
+        Terminator::Goto { .. }
+        | Terminator::Trap {
+            kind: TrapKind::IntegerOverflow,
+        } => {}
+        Terminator::Branch { cond, .. } => {
+            if strict_sir_local_ty(raw, *cond, &format!("raw bb{} branch", block.id))?
+                != &ResolvedTy::Bool
+            {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: raw bb{} branches on a non-bool local",
+                    block.id
+                )));
+            }
+        }
+        Terminator::Call {
+            callee,
+            authority,
+            args,
+            dest,
+            ..
+        } => verify_strict_sir_call(module, raw, block.id, callee, *authority, args, *dest)?,
+        _ => {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: raw bb{} uses a terminator outside the scalar SIR subset",
+                block.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_strict_sir_call(
+    module: &SemModule,
+    raw: &RawMirFunction,
+    block_id: u32,
+    callee_symbol: &str,
+    authority: crate::CallAuthority,
+    args: &[Place],
+    dest: Option<Place>,
+) -> Result<(), SirMirLoweringError> {
+    if authority != crate::CallAuthority::Direct {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw bb{block_id} direct call `{callee_symbol}` has non-direct authority"
+        )));
+    }
+    let mut matching = module
+        .callables
+        .iter()
+        .filter(|callable| callable.symbol == callee_symbol);
+    let callee = matching.next().ok_or_else(|| {
+        SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw bb{block_id} calls unknown SIR callable `{callee_symbol}`"
+        ))
+    })?;
+    if matching.next().is_some() {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw bb{block_id} call `{callee_symbol}` has ambiguous SIR callable identity"
+        )));
+    }
+    validate_direct_callable(callee)?;
+    if args.len() != callee.signature.params.len() {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: raw bb{block_id} call `{callee_symbol}` has {} arguments for {} ABI parameters",
+            args.len(),
+            callee.signature.params.len()
+        )));
+    }
+    for (index, (argument, parameter)) in args.iter().zip(&callee.signature.params).enumerate() {
+        if strict_sir_local_ty(
+            raw,
+            *argument,
+            &format!("raw bb{block_id} call argument {index}"),
+        )? != &parameter.ty
+        {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: raw bb{block_id} call `{callee_symbol}` argument {index} does not match its ABI type"
+            )));
+        }
+    }
+    match (&callee.signature.return_ty, dest) {
+        (ResolvedTy::Unit, None) => {}
+        (ResolvedTy::Unit, Some(_)) => {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: raw bb{block_id} unit call `{callee_symbol}` has a destination"
+            )));
+        }
+        (_, None) => {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: raw bb{block_id} value call `{callee_symbol}` lacks a destination"
+            )));
+        }
+        (return_ty, Some(destination)) => {
+            if strict_sir_local_ty(
+                raw,
+                destination,
+                &format!("raw bb{block_id} call destination"),
+            )? != return_ty
+            {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: raw bb{block_id} call `{callee_symbol}` destination does not match its ABI return"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_strict_sir_move(
+    raw: &RawMirFunction,
+    dest: Place,
+    src: Place,
+    context: &str,
+) -> Result<(), SirMirLoweringError> {
+    let source_ty = strict_sir_local_ty(raw, src, context)?;
+    match dest {
+        Place::Local(_) => {
+            if strict_sir_local_ty(raw, dest, context)? != source_ty {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {context} moves between different local types"
+                )));
+            }
+        }
+        Place::ReturnSlot => {
+            if raw.return_ty == ResolvedTy::Unit || &raw.return_ty != source_ty {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: {context} writes an incompatible value to the return slot"
+                )));
+            }
+        }
+        _ => {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "strict SIR raw/checked verifier: {context} moves into a non-scalar place"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_strict_sir_same_type(
+    raw: &RawMirFunction,
+    dest: Place,
+    operand: Place,
+    context: &str,
+    expected: &ResolvedTy,
+) -> Result<(), SirMirLoweringError> {
+    if strict_sir_local_ty(raw, dest, context)? != expected
+        || strict_sir_local_ty(raw, operand, context)? != expected
+    {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: {context} does not use `{}` locals",
+            expected.user_facing()
+        )));
+    }
+    Ok(())
+}
+
+fn verify_strict_sir_same_integer_type<'a>(
+    raw: &'a RawMirFunction,
+    dest: Place,
+    operand: Place,
+    context: &str,
+) -> Result<&'a ResolvedTy, SirMirLoweringError> {
+    let destination_ty = strict_sir_local_ty(raw, dest, context)?;
+    if !destination_ty.is_integer() || strict_sir_local_ty(raw, operand, context)? != destination_ty
+    {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: {context} does not use same-typed integer locals"
+        )));
+    }
+    Ok(destination_ty)
+}
+
+fn strict_sir_local_ty<'a>(
+    raw: &'a RawMirFunction,
+    place: Place,
+    context: &str,
+) -> Result<&'a ResolvedTy, SirMirLoweringError> {
+    let Place::Local(local) = place else {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: {context} uses non-local place {place:?}"
+        )));
+    };
+    let local_index = usize::try_from(local).map_err(|_| {
+        SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: {context} local {local} cannot index raw locals"
+        ))
+    })?;
+    let local_ty = raw.locals.get(local_index).ok_or_else(|| {
+        SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: {context} references out-of-bounds local {local}"
+        ))
+    })?;
+    if !is_supported_value_type(local_ty) {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR raw/checked verifier: {context} references non-scalar local {local}"
+        )));
+    }
+    Ok(local_ty)
+}
+
+fn validate_direct_callable(callable: &SemCallable) -> Result<(), SirMirLoweringError> {
+    if callable.call_conv != SemCallConv::Default || callable.kind != SemCallableKind::HewDirect {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "SIR callable `{}` is outside the initial default HewDirect ABI domain",
+            callable.symbol
+        )));
+    }
+    for (index, parameter) in callable.signature.params.iter().enumerate() {
+        if parameter.passing != SemParamPassing::ReadOnly
+            || parameter.caller_visible_projection
+            || !is_supported_value_type(&parameter.ty)
+        {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "SIR callable `{}` parameter {index} needs ownership or aggregate ABI lowering",
+                callable.symbol
+            )));
+        }
+    }
+    if !is_supported_return_type(&callable.signature.return_ty) {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "SIR callable `{}` return type `{}` needs later ABI lowering",
+            callable.symbol,
+            callable.signature.return_ty.user_facing()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sir_function_signature(
+    function: &SemFunction,
+    callable: &SemCallable,
+) -> Result<(), SirMirLoweringError> {
+    let function_params = function
+        .params
+        .iter()
+        .map(|parameter| &parameter.ty)
+        .collect::<Vec<_>>();
+    let callable_params = callable
+        .signature
+        .params
+        .iter()
+        .map(|parameter| &parameter.ty)
+        .collect::<Vec<_>>();
+    if function.callable != callable.id
+        || function.id != callable.function
+        || function.declaration != callable.declaration
+        || function.name != callable.symbol
+        || function.source_origin != callable.source_origin
+        || function.return_ty != callable.signature.return_ty
+        || function_params != callable_params
+    {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "SIR function `{}` does not match its resolved callable authority",
+            function.name
+        )));
+    }
+    Ok(())
+}
+
+fn sir_parameter_decisions(
+    callable: &SemCallable,
+) -> Result<Vec<crate::DecisionFact>, SirMirLoweringError> {
+    let parameter_count = u32::try_from(callable.signature.params.len()).map_err(|_| {
+        SirMirLoweringError::unsupported("SIR parameter count exceeds raw-MIR ABI limits")
+    })?;
+    callable
+        .signature
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| {
+            let index = u32::try_from(index).map_err(|_| {
+                SirMirLoweringError::unsupported("SIR parameter index exceeds raw-MIR ABI limits")
+            })?;
+            Ok(crate::DecisionFact {
+                // ABI boundary facts have no source expression site. The
+                // stable parameter ordinal is sufficient for the raw/checked
+                // decision stream and deliberately does not borrow a legacy
+                // HIR-to-MIR site identity.
+                site: SiteId(index),
+                ty: parameter.ty.clone(),
+                value_class: ValueClass::BitCopy,
+                intent: IntentKind::Unknown,
+                strategy: Strategy::ParamBoundary(ParamBoundaryFact {
+                    param_index: index,
+                    param_count: parameter_count,
+                    caller_visible_projection: false,
+                    mode: ParamBoundaryMode::BorrowReadOnly,
+                }),
+                why: "SIR scalar direct-call parameter boundary".to_string(),
+            })
+        })
+        .collect()
+}
+
+fn unique_function_for_callable(module: &SemModule, callable: CallableId) -> Option<&SemFunction> {
+    let mut matches = module
+        .functions
+        .iter()
+        .filter(|function| function.callable == callable);
+    let function = matches.next()?;
+    matches.next().is_none().then_some(function)
+}
+
+fn direct_callees(function: &SemFunction) -> impl Iterator<Item = CallableId> + '_ {
+    function.blocks.iter().flat_map(|block| {
+        block
+            .ops
+            .iter()
+            .filter_map(|operation| match &operation.kind {
+                SemOpKind::Call { callee, .. } => Some(*callee),
+                _ => None,
+            })
+    })
+}
+
+fn format_callable_path(module: &SemModule, path: &[CallableId]) -> String {
+    path.iter()
+        .map(|id| {
+            module.callable(*id).map_or_else(
+                || format!("callable#{}", id.0),
+                |callable| callable.symbol.clone(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" → ")
 }
 
 /// Lower every executable SIR function possible into `pipeline`.
@@ -157,7 +1088,7 @@ pub fn apply_sir_to_pipeline(
             continue;
         }
         let template = pipeline.raw_mir[*raw_index].clone();
-        match lower_sir_function(function, &template) {
+        match lower_sir_function_with_template(function, &template) {
             Ok(mut lowered) => {
                 // The initial scalar SIR subset is acyclic and has no calls,
                 // so it creates no scheduler sites of its own.  Preserve the
@@ -250,7 +1181,7 @@ fn cooperate_sites_apply_to(raw: &RawMirFunction, sites: &[crate::CooperateSite]
 ///
 /// Returns an explicit unsupported reason whenever the function needs a
 /// semantic fact not carried by the initial SIR value/CFG subset.
-pub fn lower_sir_function(
+fn lower_sir_function_with_template(
     function: &SemFunction,
     template: &RawMirFunction,
 ) -> Result<SirMirLowered, SirMirLoweringError> {
@@ -262,7 +1193,7 @@ pub fn lower_sir_function(
     }
     let parameter_decisions = validate_template(function, template)?;
     let collected = CollectedValues::from_function(function)?;
-    let mut lowerer = RawLowerer::new(function, collected)?;
+    let mut lowerer = RawLowerer::new(function, collected, None)?;
     for block in &function.blocks {
         lowerer.lower_block(block)?;
     }
@@ -305,9 +1236,11 @@ pub fn lower_sir_function(
         blocks: raw.blocks.clone(),
         decisions: parameter_decisions,
         checks: crate::validate_context_markers(&raw),
-        // SIR may introduce edge-forwarding blocks after the CFG nodes they
-        // target. Its scheduler therefore uses structural latches rather than
-        // the legacy raw-MIR numeric block-order convention.
+        // Template-backed shadow realization is still SIR CFG production:
+        // edge-forwarding blocks do not preserve the legacy raw-MIR numeric
+        // allocation convention. `apply_sir_to_pipeline` may retain an
+        // established schedule only when it maps truthfully; candidate-local
+        // scheduling itself must remain structural.
         cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
     };
     Ok(SirMirLowered { raw, checked })
@@ -546,6 +1479,7 @@ struct PendingBlock {
 
 struct RawLowerer<'a> {
     function: &'a SemFunction,
+    module: Option<&'a SemModule>,
     value_types: BTreeMap<ValueId, ResolvedTy>,
     block_args: BTreeMap<BlockId, Vec<BlockArg>>,
     value_places: BTreeMap<ValueId, Place>,
@@ -558,6 +1492,7 @@ impl<'a> RawLowerer<'a> {
     fn new(
         function: &'a SemFunction,
         collected: CollectedValues,
+        module: Option<&'a SemModule>,
     ) -> Result<Self, SirMirLoweringError> {
         let mut locals = Vec::new();
         let mut value_places = BTreeMap::new();
@@ -587,6 +1522,7 @@ impl<'a> RawLowerer<'a> {
             .collect();
         Ok(Self {
             function,
+            module,
             value_types: collected.types,
             block_args: collected.block_args,
             value_places,
@@ -605,6 +1541,9 @@ impl<'a> RawLowerer<'a> {
     }
 
     fn lower_op(&mut self, operation: &SemOp) -> Result<(), SirMirLoweringError> {
+        if let SemOpKind::Call { callee, args } = &operation.kind {
+            return self.lower_call(*callee, args, &operation.results);
+        }
         let (result, result_ty) = Self::single_result(operation)?;
         let dest = self.value_place(result)?;
         match &operation.kind {
@@ -653,12 +1592,93 @@ impl<'a> RawLowerer<'a> {
                     to_ty: to.clone(),
                 });
             }
-            SemOpKind::Call { .. } => {
-                return Err(SirMirLoweringError::unsupported(
-                    "direct calls remain on the established MIR path until SIR carries resolved emitted-symbol and ABI authority",
-                ));
-            }
+            SemOpKind::Call { .. } => unreachable!("calls return before value-result lowering"),
         }
+        Ok(())
+    }
+
+    /// Legalize a semantic direct call into raw MIR's CFG-splitting call
+    /// terminator. The callable signature determines whether the operation
+    /// has one destination value or no destination at all. The current SIR
+    /// block continues at the newly-created raw continuation, so subsequent
+    /// operations and its source terminator stay in program order without
+    /// manufacturing a second SIR CFG form.
+    fn lower_call(
+        &mut self,
+        callee: CallableId,
+        args: &[Operand],
+        results: &[ValueDef],
+    ) -> Result<(), SirMirLoweringError> {
+        let module = self.module.ok_or_else(|| {
+            SirMirLoweringError::unsupported(
+                "the temporary SIR shadow bridge does not lower direct calls; use the strict SIR component",
+            )
+        })?;
+        let callable = module.callable(callee).ok_or_else(|| {
+            SirMirLoweringError::unsupported(format!(
+                "SIR call targets unknown callable {}",
+                callee.0
+            ))
+        })?;
+        validate_direct_callable(callable)?;
+        let destination = match (callable.signature.return_ty == ResolvedTy::Unit, results) {
+            (true, []) => None,
+            (true, _) => {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "unit-returning SIR call to `{}` must have zero results",
+                    callable.symbol
+                )));
+            }
+            (false, [ValueDef { id, ty }]) if ty == &callable.signature.return_ty => {
+                Some(self.value_place(*id)?)
+            }
+            (false, [ValueDef { ty, .. }]) => {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "SIR call result `{}` does not match callable `{}` return `{}`",
+                    ty.user_facing(),
+                    callable.symbol,
+                    callable.signature.return_ty.user_facing()
+                )));
+            }
+            (false, _) => {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "non-unit SIR call to `{}` requires exactly one result",
+                    callable.symbol
+                )));
+            }
+        };
+        if args.len() != callable.signature.params.len() {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "SIR call to `{}` has {} argument(s), expected {}",
+                callable.symbol,
+                args.len(),
+                callable.signature.params.len()
+            )));
+        }
+        let mut raw_args = Vec::with_capacity(args.len());
+        for (index, (argument, parameter)) in
+            args.iter().zip(&callable.signature.params).enumerate()
+        {
+            Self::require_read(argument, "direct call")?;
+            let actual = self.value_type(argument.value)?;
+            if actual != &parameter.ty || parameter.passing != SemParamPassing::ReadOnly {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "SIR call argument {index} does not satisfy `{}` scalar ReadOnly ABI",
+                    callable.symbol
+                )));
+            }
+            raw_args.push(self.value_place(argument.value)?);
+        }
+
+        let continuation = self.fresh_block()?;
+        self.terminate(Terminator::Call {
+            callee: callable.symbol.clone(),
+            authority: crate::CallAuthority::Direct,
+            args: raw_args,
+            dest: destination,
+            next: continuation,
+        })?;
+        self.current = continuation;
         Ok(())
     }
 
@@ -1082,8 +2102,56 @@ fn ordering_predicate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hew_hir::{IntentKind, ItemId, SiteId, ValueClass};
-    use hew_sir::{OpId, Provenance};
+    use hew_hir::ItemId;
+    use hew_sir::{OpId, Provenance, SemAbiParam, SemSignature};
+
+    fn test_callable(function: &SemFunction) -> SemCallable {
+        SemCallable {
+            id: function.callable,
+            function: function.id,
+            declaration: function.declaration.clone(),
+            symbol: function.name.clone(),
+            source_origin: function.source_origin.clone(),
+            signature: SemSignature {
+                params: function
+                    .params
+                    .iter()
+                    .map(|parameter| SemAbiParam {
+                        ty: parameter.ty.clone(),
+                        passing: SemParamPassing::ReadOnly,
+                        caller_visible_projection: false,
+                    })
+                    .collect(),
+                return_ty: function.return_ty.clone(),
+            },
+            call_conv: SemCallConv::Default,
+            kind: SemCallableKind::HewDirect,
+            effect_summary: hew_sir::EffectSummary::Unknown,
+        }
+    }
+
+    fn test_module(functions: Vec<SemFunction>) -> SemModule {
+        let mut callables = functions.iter().map(test_callable).collect::<Vec<_>>();
+        callables.sort_unstable_by_key(|callable| callable.id);
+        let root_unit_callables = callables
+            .iter()
+            .filter(|callable| callable.source_origin == FunctionSourceOrigin::RootUnit)
+            .map(|callable| callable.id)
+            .collect::<Vec<_>>();
+        let entry_callable = callables
+            .iter()
+            .find(|callable| {
+                callable.source_origin == FunctionSourceOrigin::RootUnit
+                    && callable.symbol == "main"
+            })
+            .map(|callable| callable.id);
+        SemModule {
+            callables,
+            root_unit_callables,
+            entry_callable,
+            functions,
+        }
+    }
 
     fn template(name: &str, params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> RawMirFunction {
         let parameter_count = u32::try_from(params.len()).expect("test parameter count fits u32");
@@ -1149,6 +2217,152 @@ mod tests {
         }
     }
 
+    fn zero_result_op(id: u32, kind: SemOpKind) -> SemOp {
+        SemOp {
+            id: OpId(id),
+            results: Vec::new(),
+            kind,
+            provenance: Provenance::Synthesized,
+        }
+    }
+
+    fn strict_i64_identity_function() -> SemFunction {
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("identity"),
+            name: "identity".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: vec![BlockArg {
+                value: ValueId(0),
+                ty: ResolvedTy::I64,
+            }],
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return {
+                    value: Some(ValueId(0)),
+                },
+            }],
+        }
+    }
+
+    fn strict_boolean_equality_function() -> SemFunction {
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("same"),
+            name: "same".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: vec![
+                BlockArg {
+                    value: ValueId(0),
+                    ty: ResolvedTy::Bool,
+                },
+                BlockArg {
+                    value: ValueId(1),
+                    ty: ResolvedTy::Bool,
+                },
+            ],
+            return_ty: ResolvedTy::Bool,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![op(
+                    0,
+                    definition(2, ResolvedTy::Bool),
+                    SemOpKind::Binary {
+                        op: BinaryOp::Equal,
+                        lhs: operand(0),
+                        rhs: operand(1),
+                    },
+                )],
+                terminator: SemTerminator::Return {
+                    value: Some(ValueId(2)),
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn strict_post_lowering_verifier_accepts_boolean_equality_and_rejects_bad_local() {
+        let function = strict_boolean_equality_function();
+        let module = test_module(vec![function.clone()]);
+        let mut lowered = lower_sir_function(&module, &function)
+            .expect("boolean equality is in the strict scalar SIR subset");
+        let callable = module
+            .callable(function.callable)
+            .expect("test callable must exist");
+        verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
+            .expect("the strict lowerer must produce a self-consistent raw/checked pair");
+        assert!(matches!(
+            lowered.raw.blocks[0].instructions[0],
+            Instr::IntCmp {
+                pred: crate::CmpPred::Eq,
+                ..
+            }
+        ));
+
+        match &mut lowered.raw.blocks[0].instructions[0] {
+            Instr::IntCmp { dest, .. } => *dest = Place::Local(99),
+            instruction => {
+                panic!("expected boolean equality to lower as IntCmp, got {instruction:?}")
+            }
+        }
+        lowered.checked.blocks = lowered.raw.blocks.clone();
+        let error =
+            verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
+                .expect_err("an out-of-bounds scalar local must fail at the SIR raw boundary");
+        assert!(error.reason.contains("out-of-bounds local 99"));
+    }
+
+    #[test]
+    fn strict_post_lowering_verifier_rejects_bad_cfg_target() {
+        let function = strict_i64_identity_function();
+        let module = test_module(vec![function.clone()]);
+        let mut lowered =
+            lower_sir_function(&module, &function).expect("the identity function should lower");
+        let callable = module
+            .callable(function.callable)
+            .expect("test callable must exist");
+        lowered.raw.blocks[0].terminator = Terminator::Goto { target: 1 };
+        lowered.checked.blocks = lowered.raw.blocks.clone();
+
+        let error =
+            verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
+                .expect_err("a raw target outside the canonical CFG must fail at the SIR boundary");
+        assert!(error.reason.contains("targets missing bb1"));
+    }
+
+    #[test]
+    fn strict_post_lowering_verifier_rejects_parameter_boundary_fact_drift() {
+        let function = strict_i64_identity_function();
+        let module = test_module(vec![function.clone()]);
+        let mut lowered =
+            lower_sir_function(&module, &function).expect("the identity function should lower");
+        let callable = module
+            .callable(function.callable)
+            .expect("test callable must exist");
+        lowered.raw.decisions[0].strategy = Strategy::ParamBoundary(ParamBoundaryFact {
+            param_index: 0,
+            param_count: 1,
+            caller_visible_projection: false,
+            mode: ParamBoundaryMode::TransferResource,
+        });
+        lowered.checked.decisions = lowered.raw.decisions.clone();
+
+        let error =
+            verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
+                .expect_err("a stale ownership boundary fact must fail before later MIR stages");
+        assert!(error.reason.contains("parameter-boundary fact 0"));
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1157,6 +2371,7 @@ mod tests {
     fn realizes_ssa_diamond_into_raw_cfg_and_overflow_paths() {
         let function = SemFunction {
             id: ItemId(0),
+            callable: CallableId(0),
             declaration: DefId::for_test("f"),
             name: "f".to_string(),
             span: 12..96,
@@ -1272,7 +2487,7 @@ mod tests {
             ],
         };
 
-        let lowered = lower_sir_function(
+        let lowered = lower_sir_function_with_template(
             &function,
             &template("f", vec![ResolvedTy::I64, ResolvedTy::I64], ResolvedTy::I64),
         )
@@ -1319,6 +2534,7 @@ mod tests {
     fn rejects_unverified_sir_before_raw_realization() {
         let function = SemFunction {
             id: ItemId(0),
+            callable: CallableId(0),
             declaration: DefId::for_test("bad_entry"),
             name: "bad_entry".to_string(),
             span: 0..0,
@@ -1339,13 +2555,59 @@ mod tests {
             }],
         };
 
-        let error = lower_sir_function(
+        let error = lower_sir_function_with_template(
             &function,
             &template("bad_entry", Vec::new(), ResolvedTy::I64),
         )
         .expect_err("a malformed SIR entry must fail before raw MIR exists");
         assert!(error.reason.contains("SIR verifier rejected function"));
         assert!(error.reason.contains("EntryBlockArgs"));
+    }
+
+    #[test]
+    fn rejects_noncanonical_sir_blocks_before_raw_realization() {
+        let function = SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("noncanonical"),
+            name: "noncanonical".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: Vec::new(),
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![
+                SemBlock {
+                    id: BlockId(0),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::Goto(Edge {
+                        target: BlockId(2),
+                        args: Vec::new(),
+                    }),
+                },
+                SemBlock {
+                    id: BlockId(2),
+                    args: Vec::new(),
+                    ops: vec![op(
+                        0,
+                        definition(0, ResolvedTy::I64),
+                        SemOpKind::ConstI64(1),
+                    )],
+                    terminator: SemTerminator::Return {
+                        value: Some(ValueId(0)),
+                    },
+                },
+            ],
+        };
+        let module = test_module(vec![function.clone()]);
+
+        let error = lower_sir_function(&module, &function)
+            .expect_err("noncanonical SIR must fail verification before raw-MIR realization");
+        assert!(error
+            .reason
+            .contains("SIR module verifier rejected function"));
+        assert!(error.reason.contains("NonCanonicalBlockOrder"));
     }
 
     #[test]
@@ -1356,6 +2618,7 @@ mod tests {
     fn edge_argument_materialization_uses_parallel_copies() {
         let function = SemFunction {
             id: ItemId(0),
+            callable: CallableId(0),
             declaration: DefId::for_test("swap"),
             name: "swap".to_string(),
             span: 0..0,
@@ -1412,7 +2675,7 @@ mod tests {
                 },
             ],
         };
-        let lowered = lower_sir_function(
+        let lowered = lower_sir_function_with_template(
             &function,
             &template(
                 "swap",
@@ -1462,9 +2725,307 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::similar_names,
+        clippy::too_many_lines,
+        reason = "the complete direct-call component fixture keeps caller/callee ABI and continuation assertions together"
+    )]
+    fn realizes_a_closed_direct_call_component_without_a_raw_template() {
+        let callee = SemFunction {
+            id: ItemId(1),
+            callable: CallableId(0),
+            declaration: DefId::for_test("add_one"),
+            name: "add_one".to_string(),
+            span: 20..60,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: vec![BlockArg {
+                value: ValueId(0),
+                ty: ResolvedTy::I64,
+            }],
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![
+                    op(0, definition(1, ResolvedTy::I64), SemOpKind::ConstI64(1)),
+                    op(
+                        1,
+                        definition(2, ResolvedTy::I64),
+                        SemOpKind::Binary {
+                            op: BinaryOp::Add,
+                            lhs: operand(0),
+                            rhs: operand(1),
+                        },
+                    ),
+                ],
+                terminator: SemTerminator::Return {
+                    value: Some(ValueId(2)),
+                },
+            }],
+        };
+        let caller = SemFunction {
+            id: ItemId(0),
+            callable: CallableId(1),
+            declaration: DefId::for_test("main"),
+            name: "main".to_string(),
+            span: 0..80,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: Vec::new(),
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![
+                    op(0, definition(0, ResolvedTy::I64), SemOpKind::ConstI64(40)),
+                    op(
+                        1,
+                        definition(1, ResolvedTy::I64),
+                        SemOpKind::Call {
+                            callee: CallableId(0),
+                            args: vec![operand(0)],
+                        },
+                    ),
+                    // This operation must land in the Call continuation; it
+                    // proves raw-MIR's terminator call did not truncate the
+                    // semantic source block.
+                    op(2, definition(2, ResolvedTy::I64), SemOpKind::ConstI64(1)),
+                    op(
+                        3,
+                        definition(3, ResolvedTy::I64),
+                        SemOpKind::Binary {
+                            op: BinaryOp::Add,
+                            lhs: operand(1),
+                            rhs: operand(2),
+                        },
+                    ),
+                ],
+                terminator: SemTerminator::Return {
+                    value: Some(ValueId(3)),
+                },
+            }],
+        };
+        let module = test_module(vec![caller, callee]);
+        let component = lower_closed_scalar_component(&module, &[CallableId(1)])
+            .expect("a closed scalar SIR direct-call graph should lower independently");
+
+        assert_eq!(component.callables(), &[CallableId(0), CallableId(1)]);
+        let caller_raw = component
+            .raw_mir
+            .iter()
+            .find(|raw| raw.name == "main")
+            .expect("selected caller must have a fresh raw body");
+        let (destination, continuation) = match &caller_raw.blocks[0].terminator {
+            Terminator::Call {
+                callee,
+                authority,
+                dest: Some(destination),
+                next,
+                ..
+            } => {
+                assert_eq!(callee, "add_one");
+                assert_eq!(*authority, crate::CallAuthority::Direct);
+                (*destination, *next)
+            }
+            other => panic!("expected SIR call to lower as raw terminator, got {other:?}"),
+        };
+        assert!(matches!(destination, Place::Local(_)));
+        let continuation = caller_raw
+            .blocks
+            .iter()
+            .find(|block| block.id == continuation)
+            .expect("raw call continuation must exist");
+        assert!(continuation
+            .instructions
+            .iter()
+            .any(|instruction| { matches!(instruction, Instr::ConstI64 { value: 1, .. }) }));
+        assert!(continuation.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instr::IntArithChecked {
+                    op: IntArithOp::Add,
+                    ..
+                }
+            )
+        }));
+        let callee_checked = component
+            .checked_mir
+            .iter()
+            .find(|checked| checked.name == "add_one")
+            .expect("callee must receive freshly-derived checked MIR");
+        assert!(matches!(
+            callee_checked.decisions.as_slice(),
+            [crate::DecisionFact {
+                strategy: Strategy::ParamBoundary(ParamBoundaryFact {
+                    param_index: 0,
+                    param_count: 1,
+                    caller_visible_projection: false,
+                    mode: ParamBoundaryMode::BorrowReadOnly,
+                }),
+                ..
+            }]
+        ));
+        assert!(component
+            .checked_mir
+            .iter()
+            .find(|checked| checked.name == "main")
+            .is_some_and(|checked| !checked.cooperate_sites.is_empty()));
+        let pipeline = component.into_pipeline();
+        assert_eq!(pipeline.raw_mir.len(), 2);
+        assert_eq!(pipeline.checked_mir.len(), 2);
+        assert!(pipeline.elaborated_mir.is_empty());
+    }
+
+    #[test]
+    #[allow(
+        clippy::similar_names,
+        reason = "the focused unit-call component fixture intentionally contrasts callee and caller raw-MIR realization"
+    )]
+    fn realizes_a_zero_result_unit_direct_call_without_a_raw_template() {
+        let callee = SemFunction {
+            id: ItemId(1),
+            callable: CallableId(0),
+            declaration: DefId::for_test("record"),
+            name: "record".to_string(),
+            span: 20..40,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: vec![BlockArg {
+                value: ValueId(0),
+                ty: ResolvedTy::I64,
+            }],
+            return_ty: ResolvedTy::Unit,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return { value: None },
+            }],
+        };
+        let caller = SemFunction {
+            id: ItemId(0),
+            callable: CallableId(1),
+            declaration: DefId::for_test("main"),
+            name: "main".to_string(),
+            span: 0..60,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![
+                    op(0, definition(0, ResolvedTy::I64), SemOpKind::ConstI64(7)),
+                    zero_result_op(
+                        1,
+                        SemOpKind::Call {
+                            callee: CallableId(0),
+                            args: vec![operand(0)],
+                        },
+                    ),
+                ],
+                terminator: SemTerminator::Return { value: None },
+            }],
+        };
+        let component =
+            lower_closed_scalar_component(&test_module(vec![caller, callee]), &[CallableId(1)])
+                .expect("a closed unit direct-call graph should lower independently");
+
+        let caller_raw = component
+            .raw_mir
+            .iter()
+            .find(|raw| raw.name == "main")
+            .expect("selected unit caller must have a fresh raw body");
+        let continuation = match &caller_raw.blocks[0].terminator {
+            Terminator::Call {
+                callee,
+                authority,
+                args,
+                dest: None,
+                next,
+            } => {
+                assert_eq!(callee, "record");
+                assert_eq!(*authority, crate::CallAuthority::Direct);
+                assert_eq!(args.len(), 1);
+                *next
+            }
+            other => panic!("expected zero-result SIR call to lower as raw call, got {other:?}"),
+        };
+        assert_eq!(
+            caller_raw.locals.len(),
+            1,
+            "the unit call must not allocate a raw-MIR destination local"
+        );
+        assert!(matches!(
+            caller_raw
+                .blocks
+                .iter()
+                .find(|block| block.id == continuation)
+                .expect("raw unit-call continuation must exist")
+                .terminator,
+            Terminator::Return
+        ));
+    }
+
+    #[test]
+    fn rejects_a_reachable_callable_without_a_sir_body_atomically() {
+        let caller = SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("main"),
+            name: "main".to_string(),
+            span: 0..20,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: Vec::new(),
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![op(
+                    0,
+                    definition(0, ResolvedTy::I64),
+                    SemOpKind::Call {
+                        callee: CallableId(1),
+                        args: Vec::new(),
+                    },
+                )],
+                terminator: SemTerminator::Return {
+                    value: Some(ValueId(0)),
+                },
+            }],
+        };
+        let mut module = test_module(vec![caller]);
+        module.callables.push(SemCallable {
+            id: CallableId(1),
+            function: ItemId(1),
+            declaration: DefId::for_test("missing"),
+            symbol: "missing".to_string(),
+            source_origin: FunctionSourceOrigin::Unknown,
+            signature: SemSignature {
+                params: Vec::new(),
+                return_ty: ResolvedTy::I64,
+            },
+            call_conv: SemCallConv::Default,
+            kind: SemCallableKind::HewDirect,
+            effect_summary: hew_sir::EffectSummary::Unknown,
+        });
+
+        let error = lower_closed_scalar_component(&module, &[CallableId(0)])
+            .expect_err("a reachable callable without a SIR body must not fall back");
+        assert!(error
+            .reason
+            .contains("requires one lowered body for `missing`"));
+        assert!(error.reason.contains("main → missing"));
+    }
+
+    #[test]
     fn replacing_a_scalar_body_removes_stale_elaboration() {
         let function = SemFunction {
             id: ItemId(0),
+            callable: CallableId(0),
             declaration: DefId::for_test("constant"),
             name: "constant".to_string(),
             span: 0..0,
@@ -1510,12 +3071,7 @@ mod tests {
             ..IrPipeline::default()
         };
 
-        let report = apply_sir_to_pipeline(
-            &SemModule {
-                functions: vec![function],
-            },
-            &mut pipeline,
-        );
+        let report = apply_sir_to_pipeline(&test_module(vec![function]), &mut pipeline);
         assert_eq!(report.lowered_count(), 1, "{report:#?}");
         assert!(pipeline.elaborated_mir.is_empty());
         assert!(matches!(
@@ -1534,6 +3090,7 @@ mod tests {
     fn module_verification_prevents_duplicate_functions_from_mutating_mir() {
         let function = SemFunction {
             id: ItemId(0),
+            callable: CallableId(0),
             declaration: DefId::for_test("duplicate"),
             name: "duplicate".to_string(),
             span: 0..0,
@@ -1562,12 +3119,7 @@ mod tests {
             ..IrPipeline::default()
         };
 
-        let report = apply_sir_to_pipeline(
-            &SemModule {
-                functions: vec![function, duplicate],
-            },
-            &mut pipeline,
-        );
+        let report = apply_sir_to_pipeline(&test_module(vec![function, duplicate]), &mut pipeline);
 
         assert_eq!(report.lowered_count(), 0, "{report:#?}");
         assert_eq!(pipeline.raw_mir, vec![raw]);

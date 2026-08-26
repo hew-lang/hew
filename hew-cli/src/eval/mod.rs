@@ -106,6 +106,7 @@ fn resolve_eval_target(
 /// Run the `hew eval` subcommand.
 pub fn cmd_eval(args: &crate::args::EvalArgs) {
     let timeout = resolve_eval_timeout(&args.timeout);
+    let sir_mode = args.sir.mode();
     let target_spec = resolve_eval_target(args.target.as_deref(), args.jit).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
@@ -116,11 +117,11 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
     validate_eval_request(&request, args.json, target);
 
     if args.json {
-        emit_json_eval(&request, timeout, target, args.jit);
+        emit_json_eval(&request, timeout, target, args.jit, sir_mode);
         return;
     }
 
-    execute_eval_request(&request, timeout, target, args.jit, args.quiet);
+    execute_eval_request(&request, timeout, target, args.jit, sir_mode, args.quiet);
 }
 
 fn resolve_eval_timeout(raw: &str) -> std::time::Duration {
@@ -181,12 +182,15 @@ fn emit_json_eval(
     timeout: std::time::Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
+    sir_mode: crate::compile::SirMode,
 ) {
     let result = match request {
         EvalRequest::File(path) => {
-            capture_json_eval(|| repl::eval_file(path, timeout, target, jit))
+            capture_json_eval(|| repl::eval_file(path, timeout, target, jit, sir_mode))
         }
-        EvalRequest::Expr(expr) => capture_json_eval(|| repl::eval_one(expr, timeout, target, jit)),
+        EvalRequest::Expr(expr) => {
+            capture_json_eval(|| repl::eval_one(expr, timeout, target, jit, sir_mode))
+        }
         EvalRequest::Repl => unreachable!("validated before JSON evaluation"),
     };
 
@@ -213,13 +217,18 @@ fn execute_eval_request(
     timeout: std::time::Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
+    sir_mode: crate::compile::SirMode,
     quiet: bool,
 ) {
     match request {
-        EvalRequest::File(path) => emit_eval_output(repl::eval_file(path, timeout, target, jit)),
-        EvalRequest::Expr(expr) => emit_eval_output(repl::eval_one(expr, timeout, target, jit)),
+        EvalRequest::File(path) => {
+            emit_eval_output(repl::eval_file(path, timeout, target, jit, sir_mode));
+        }
+        EvalRequest::Expr(expr) => {
+            emit_eval_output(repl::eval_one(expr, timeout, target, jit, sir_mode));
+        }
         EvalRequest::Repl => {
-            if let Err(e) = repl::run_interactive(timeout, target, jit, quiet) {
+            if let Err(e) = repl::run_interactive(timeout, target, jit, sir_mode, quiet) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }

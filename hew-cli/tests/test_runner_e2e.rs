@@ -3,7 +3,7 @@ mod support;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
-use support::{hew_binary, require_codegen, run_hew_in};
+use support::{hew_binary, repo_root, require_codegen, run_hew_in};
 
 fn write_file(root: &Path, relative_path: &str, contents: &str) {
     let path = root.join(relative_path);
@@ -102,6 +102,46 @@ fn passing_suite_exits_zero() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("test passes ... ok"));
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+}
+
+/// The test runner synthesizes a unit-returning `main` which calls the
+/// discovered test.  This therefore exercises a closed strict SIR component
+/// containing two zero-result direct calls: `main -> unit_test -> helper`.
+/// A successful executable run proves the flag reaches the in-process test
+/// compiler and that SIR realizes those calls rather than merely parsing the
+/// test input.
+#[test]
+fn sir_lower_runs_unit_returning_direct_test_wrapper() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "sir_unit_test.hew",
+        "fn helper() {}\n\n#[test]\nfn unit_test() {\n    helper();\n}\n",
+    );
+    let mut command = Command::new(hew_binary());
+    command
+        .args(["test", ".", "--sir-lower", "--no-color", "--jobs", "1"])
+        // Integration builds may place the compiler in an SSD target directory
+        // outside the checkout, where its dev-layout stdlib discovery cannot
+        // infer this source tree from a temporary test project.
+        .env("HEW_STD", repo_root().join("std"))
+        .current_dir(dir.path());
+    let output = support::run_bounded_command(command, "run strict SIR unit test wrapper");
+
+    assert!(
+        output.status.success(),
+        "strict SIR test wrapper must compile and execute successfully:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test unit_test ... ok"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("1 passed; 0 failed; 0 ignored"),
+        "stdout: {stdout}"
+    );
 }
 
 #[test]

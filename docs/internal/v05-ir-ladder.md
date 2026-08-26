@@ -11,11 +11,11 @@ implementation plan for this work.
 ### Migration status
 
 The intended steady-state ladder includes SIR between typed HIR and Raw MIR.
-The first executable SIR value/CFG slice is now present, but it uses a bounded
-legacy-MIR differential bridge while the remaining language surface migrates.
-That bridge is deliberately disposable: it is not a second release compiler
-configuration or a compatibility contract.  The cutover contract in §1.2
-defines exactly what must be removed before SIR becomes the normal path.
+The first value/CFG proof uses a bounded legacy-MIR differential bridge, while
+the first strict direct-call slice already produces fresh Raw/Checked MIR from
+SIR. The bridge is deliberately disposable: it is not a second release
+compiler configuration or a compatibility contract. The cutover contract in
+§1.2 defines exactly what must be removed before SIR becomes the normal path.
 
 ---
 
@@ -67,11 +67,26 @@ source.hew
 
 The current SIR bridge is bounded migration evidence, not a permanent dual
 pipeline. `--sir-shadow` is a temporary differential oracle, and `--sir-lower`
-is a temporary selector for the scalar CFG slice. Neither is a release-mode
+is a temporary selector for the migrated SIR domain. Neither is a release-mode
 compatibility promise.
 
+The first strict domain is already template-free: a closed reachable graph of
+ordinary, non-generic, default-convention direct calls with scalar `ReadOnly`
+parameters and scalar or `Unit` returns. SIR owns each callable's stable
+identity, emitted symbol, signature, source origin, effect summary, and
+parameter facts; SIR → Raw/Checked MIR independently legalizes call
+continuations and creates fresh boundary/scheduling facts. A reachable feature
+outside that domain fails explicitly. An unrelated unsupported body neither
+blocks the selected component nor becomes a hidden legacy callee.
+
+The temporary shadow adapter remains a scalar CFG differential probe and does
+not realize direct SIR calls through its legacy Raw-MIR template. Shadow
+success is therefore not evidence for direct-call correctness. Until the old
+body-lowering branch is deleted, each strict domain must instead carry an
+execution-parity test against the established lane.
+
 The following scaffolding is a deletion target: raw-function name matching,
-`lower_sir_function(..., RawMirFunction template)`, copied parameter-boundary
+`lower_sir_function_with_template(..., RawMirFunction template)`, copied parameter-boundary
 and scheduler facts, per-function legacy fallback, SIR mode flags, and the
 shadow corpus harness. The normal CLI flips only after all of these gates hold:
 
@@ -87,10 +102,11 @@ shadow corpus harness. The normal CLI flips only after all of these gates hold:
 5. The default path is changed to SIR and all bridge flags, template code, and
    legacy body-lowering branches are removed.
 
-The immediate next slice is declaration-keyed direct scalar calls: a verified
-SIR callable table feeds `Terminator::Call` legalization for a closed ordinary
-call graph, without looking up or copying a legacy Raw MIR template. Aggregates,
-ownership, async, actors, and machines follow as separate complete domains.
+The direct-call slice has replaced the immediate template dependency; the next
+semantic domains are abstract aggregates/projections, explicit ownership use
+modes, closures, async/suspension, actors, and machines. Each must enter as a
+closed reachable SIR lowering domain and delete its replaced HIR → Raw-MIR
+branch rather than accumulating a mixed artifact fallback.
 
 ### Design axioms
 

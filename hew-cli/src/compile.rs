@@ -27,11 +27,12 @@ use crate::target::TargetSpec;
 
 /// Selects how the Semantic IR lane participates in a compilation.
 ///
-/// `Shadow` realizes every currently eligible SIR body into a cloned raw-MIR
-/// pipeline, verifies the candidate reaches the backend front gate, then
-/// deliberately emits the established pipeline. `Lower` uses that same
-/// verified candidate for eligible functions and leaves explicit fallbacks on
-/// the established HIR → MIR path.
+/// `Shadow` realizes eligible SIR bodies into a cloned raw-MIR pipeline,
+/// verifies the candidate reaches the backend front gate, then deliberately
+/// emits the established pipeline. It is a temporary differential oracle.
+/// `Lower` is the strict cutover lane for its admitted domain: it lowers a
+/// closed SIR direct-call graph into fresh raw/checked MIR and rejects every
+/// reachable unsupported callee instead of mixing legacy function bodies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SirMode {
     #[default]

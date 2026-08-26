@@ -1,6 +1,6 @@
 use hew_hir::{ItemId, SiteId};
 use hew_parser::ast::Span;
-use hew_types::{CallTarget, DefId, ResolvedTy};
+use hew_types::{DefId, ResolvedTy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockId(pub u32);
@@ -8,6 +8,12 @@ pub struct BlockId(pub u32);
 pub struct ValueId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OpId(pub u32);
+/// Stable, module-local identity for a SIR direct-call target.
+///
+/// IDs are assigned from the deterministic [`SemModule::callables`] order;
+/// unlike an emitted symbol, they are not reconstructed from spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CallableId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Provenance {
@@ -73,6 +79,11 @@ pub struct SemBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemFunction {
     pub id: ItemId,
+    /// Module-local ABI-neutral identity of this body's resolved callable.
+    /// The verifier proves this agrees with the callable table's checker
+    /// declaration and exact emitted symbol; consumers must use it rather
+    /// than rejoining functions by a symbol spelling.
+    pub callable: CallableId,
     /// Resolver-minted source declaration identity.  `name` is an emitted
     /// symbol spelling, whereas calls and future monomorphization carry this
     /// stable semantic identity.
@@ -88,14 +99,162 @@ pub struct SemFunction {
     pub blocks: Vec<SemBlock>,
 }
 
+/// The call convention SIR is permitted to model before ownership/layout MIR
+/// decides concrete ABI carriers.
+///
+/// Runtime, C-ABI, coroutine, actor, and other specialised conventions stay
+/// outside this initial domain.  Keeping this enum explicit prevents a
+/// resolved SIR call from silently acquiring a target-specific ABI policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SemCallConv {
+    Default,
+}
+
+/// Semantic class of a callable in the initial SIR direct-call domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SemCallableKind {
+    /// An ordinary Hew user function or flattened impl-method body.
+    HewDirect,
+}
+
+/// ABI disposition for one semantic callable parameter.
+///
+/// This is intentionally separate from [`UseMode`]: call operands express the
+/// semantic use at one call site, while this records the callee-side ABI
+/// obligation that ownership/layout MIR must eventually realize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SemParamPassing {
+    /// The initial scalar direct-call domain accepts only non-owning reads.
+    ReadOnly,
+}
+
+/// ABI-neutral parameter facts owned by a resolved SIR callable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemAbiParam {
+    pub ty: ResolvedTy,
+    pub passing: SemParamPassing,
+    /// Positive authority for a parameter whose storage projection is visible
+    /// to its caller. Scalar v1 direct calls always set this to `false`; later
+    /// ownership/layout slices must make any `true` fact explicit here rather
+    /// than borrowing a legacy raw-MIR decision.
+    pub caller_visible_projection: bool,
+}
+
+/// ABI-neutral signature of a resolved SIR callable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemSignature {
+    pub params: Vec<SemAbiParam>,
+    pub return_ty: ResolvedTy,
+}
+
+/// Conservative interprocedural effect summary carried by a resolved SIR
+/// callable.
+///
+/// SIR does not yet compute a function-summary fixed point, so every
+/// producer currently writes [`Self::Unknown`].  The explicit carrier means
+/// call operations can derive their effects from resolved callee metadata when
+/// that analysis arrives, without turning `SemOp` into a second source of
+/// truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum EffectSummary {
+    #[default]
+    Unknown,
+    /// The callable has no other known observable effect, but can transfer
+    /// control to a language-visible trap. Initial scalar bodies commonly
+    /// fall in this class because checked integer operations can overflow.
+    MayTrap,
+    Pure,
+}
+
+impl EffectSummary {
+    #[must_use]
+    pub const fn effects(self) -> EffectSet {
+        match self {
+            Self::Unknown => EffectSet::UNKNOWN_CALL,
+            Self::MayTrap => EffectSet::MAY_TRAP,
+            Self::Pure => EffectSet::PURE,
+        }
+    }
+}
+
+/// One checker-resolved, ABI-neutral SIR callable.
+///
+/// This table is the sole SIR authority for a direct call's stable semantic
+/// declaration, exact emitted symbol, source provenance, and signature.  A
+/// callable may deliberately have no [`SemFunction`] body: HIR-to-SIR records
+/// every eligible scalar declaration before body lowering so a strict driver
+/// can diagnose a *reachable* missing body without treating unrelated
+/// unsupported functions as a module-wide failure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemCallable {
+    pub id: CallableId,
+    /// HIR function item that owns the body when it is lowered to SIR.
+    pub function: ItemId,
+    /// Resolver-minted semantic declaration identity.
+    pub declaration: DefId,
+    /// Exact body symbol selected by HIR's direct-call symbol index.
+    pub symbol: String,
+    pub source_origin: FunctionSourceOrigin,
+    pub signature: SemSignature,
+    pub call_conv: SemCallConv,
+    pub kind: SemCallableKind,
+    pub effect_summary: EffectSummary,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
+    /// Deterministic resolved direct-call authority.  IDs must equal their
+    /// indexes in this vector; [`crate::verify_module`] checks that invariant.
+    pub callables: Vec<SemCallable>,
+    /// Every root-unit callable in `callables` order. This supports source
+    /// provenance and diagnostics; executable strict reachability starts only
+    /// from [`Self::entry_callable`], so unrelated root bodies do not block a
+    /// selected program.
+    pub root_unit_callables: Vec<CallableId>,
+    /// Checked root-unit entry callable, if its signature belongs to the
+    /// current SIR surface. HIR establishes this from the root source `main`
+    /// declaration once; strict selection never rediscovers it by symbol.
+    pub entry_callable: Option<CallableId>,
     pub functions: Vec<SemFunction>,
+}
+
+impl SemModule {
+    /// Look up a callable only when its identity agrees with the canonical
+    /// table index.  This intentionally fails closed for malformed tables.
+    #[must_use]
+    pub fn callable(&self, id: CallableId) -> Option<&SemCallable> {
+        self.callables
+            .get(usize::try_from(id.0).ok()?)
+            .filter(|callable| callable.id == id)
+    }
+
+    /// Find a resolved callable from checker-owned declaration identity.
+    #[must_use]
+    pub fn callable_for_declaration(&self, declaration: &DefId) -> Option<&SemCallable> {
+        self.callables
+            .iter()
+            .find(|callable| &callable.declaration == declaration)
+    }
+
+    /// Return the lowered SIR body for `id`, if the body was in the current
+    /// supported surface slice.  Absence is meaningful to strict call-graph
+    /// selection and is not a malformed callable-table condition by itself.
+    #[must_use]
+    pub fn function_for_callable(&self, id: CallableId) -> Option<&SemFunction> {
+        self.callable(id)?;
+        self.functions
+            .iter()
+            .find(|function| function.callable == id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemOp {
     pub id: OpId,
+    /// SSA values defined by this operation.  Ordinary value operations and
+    /// non-unit calls define exactly one value in the initial SIR slice.
+    /// A direct call whose resolved callable returns `Unit` defines no value:
+    /// its control/effect still remains explicit as a zero-result `Call`.
     pub results: Vec<ValueDef>,
     pub kind: SemOpKind,
     pub provenance: Provenance,
@@ -107,9 +266,9 @@ pub struct SemOp {
 /// can clone or synthesize operations without maintaining a second source of
 /// truth.  The initial bit set is intentionally small; it gives early
 /// canonicalization passes a sound motion/CSE barrier without committing SIR
-/// to memory SSA or effect tokens.  Resolved calls currently lack an effect
-/// summary, so they are conservatively [`Self::UNKNOWN_CALL`] until the call
-/// ABI slice introduces one.
+/// to memory SSA or effect tokens.  Isolated operations conservatively report
+/// [`Self::UNKNOWN_CALL`] for calls; module-aware consumers use the resolved
+/// callable's effect summary through [`SemOpKind::effects_in`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EffectSet(u8);
 
@@ -136,7 +295,7 @@ impl EffectSet {
 
     #[must_use]
     pub const fn may_trap(self) -> bool {
-        self.contains(Self::MAY_TRAP) || self.contains(Self::UNKNOWN_CALL)
+        self.contains(Self::MAY_TRAP)
     }
 }
 
@@ -162,8 +321,14 @@ pub enum SemOpKind {
         value: Operand,
         to: ResolvedTy,
     },
+    /// A resolved ordinary Hew direct call.
+    ///
+    /// The callable table determines result arity: a non-unit callee produces
+    /// one SSA value, while a unit callee is an explicit zero-result operation.
+    /// This avoids inventing a unit SSA carrier solely to model a call with
+    /// observable control/effect behavior.
     Call {
-        target: CallTarget,
+        callee: CallableId,
         args: Vec<Operand>,
     },
 }
@@ -194,6 +359,21 @@ impl SemOpKind {
             | Self::Unary { .. }
             | Self::Binary { .. }
             | Self::Cast { .. } => EffectSet::PURE,
+        }
+    }
+
+    /// Return the operation's effect set using resolved module call metadata
+    /// when it is available.  The context-free [`Self::effects`] remains
+    /// conservative for tools that inspect isolated operations.
+    #[must_use]
+    pub fn effects_in(&self, module: &SemModule) -> EffectSet {
+        match self {
+            Self::Call { callee, .. } => module
+                .callable(*callee)
+                .map_or(EffectSet::UNKNOWN_CALL, |callable| {
+                    callable.effect_summary.effects()
+                }),
+            _ => self.effects(),
         }
     }
 }

@@ -1564,6 +1564,20 @@ _VALUE_FLAGS = {
     "-p",
     "--package",
     "--exclude",
+    # cargo-nextest's archive and reuse-build interface. The Linux shards
+    # consume one archive built by `linux-nextest-archive`; each of these takes
+    # a path, and an unclassified one would read as a positional test-name
+    # filter, which is exactly the "filtered run certified as unfiltered"
+    # mistake this table exists to prevent.
+    "--archive-file",
+    "--archive-format",
+    "--extract-to",
+    "--binaries-metadata",
+    "--cargo-metadata",
+    "--workspace-remap",
+    "--target-dir-remap",
+    "--build-dir-remap",
+    "--zstd-level",
 }
 
 # Long flags that take no value; every other unknown long flag is ambiguous.
@@ -1598,6 +1612,8 @@ _BOOLEAN_FLAGS = {
     "--help",
     "--hide-progress-bar",
     "--ignore-default-filter",
+    "--extract-overwrite",
+    "--persist-extract-tempdir",
 }
 
 CARGO_CMD_RE = re.compile(r"(?<![\w./-])cargo(?![\w-])")

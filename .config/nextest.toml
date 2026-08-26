@@ -117,6 +117,39 @@ default-filter = "not package(hew-wasm) - binary(parity) - binary(parity_ratchet
 # Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
 # tests after 3 × 100 s = 300 s without status updates/output.
 slow-timeout = { period = "100s", terminate-after = 3 }
+# Shared test artefacts that nextest cannot infer.
+#
+# Nextest already archives the test binaries it selects, the non-test binaries
+# integration tests use, linked dynamic libraries, build-script output, and its
+# own metadata. It cannot know about the outputs Hew's Make targets produce and
+# hew-testutil resolves by path: the combined runtime+stdlib static archive and
+# its freshness certificate, the native runtime archive, the two wasm32-wasip1
+# archives, and the release-lib launcher `make hew-profile-check` asserts on.
+#
+# Every host path is `on-missing = "error"`. A silently absent archive is the
+# failure mode this list exists to prevent: the consumer would extract a valid
+# archive, find no libhew.a, and fail at the linker inside a timed gate rather
+# than at the producer that did not build it. The cross-architecture entry is
+# `ignore` because `libhew-test-targets` only builds it where a matching
+# multiarch sysroot exists, which is a property of the runner.
+#
+# Deliberately NOT here: `deps/`, `.fingerprint/`, `incremental/`, or a
+# recursive `target`. Those are Cargo's build state, not a runnable surface;
+# carrying them would recreate the whole-target-directory transfer this
+# arrangement exists to avoid, and would make the archive a second, staler
+# authority on what is built.
+archive.include = [
+  { path = "debug/hew", relative-to = "target", on-missing = "error" },
+  { path = "debug/libhew.a", relative-to = "target", on-missing = "error" },
+  { path = "debug/libhew_runtime.a", relative-to = "target", on-missing = "error" },
+  { path = "debug/.hew-libhew-freshness-v1", relative-to = "target", on-missing = "error" },
+  { path = "release-lib/hew", relative-to = "target", on-missing = "error" },
+  { path = "release-lib/libhew.a", relative-to = "target", on-missing = "error" },
+  { path = "wasm32-wasip1/debug/libhew_runtime.a", relative-to = "target", on-missing = "error" },
+  { path = "wasm32-wasip1/debug/libhew_std.a", relative-to = "target", on-missing = "error" },
+  # Built only where the opposite-architecture Linux sysroot exists.
+  { path = "aarch64-unknown-linux-gnu/debug/libhew.a", relative-to = "target", on-missing = "ignore" },
+]
 
 [[profile.ci.overrides]]
 # The Intel macOS release-gate runner is roughly three times slower than the

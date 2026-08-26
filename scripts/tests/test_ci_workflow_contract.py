@@ -120,6 +120,11 @@ _TAR_EXTRACT = re.compile(r"\btar\b[^|;&\n]*\s-[A-Za-z]*x")
 _TAR_DESTINATION = re.compile(r"(?:\s-C\s|--directory[= ])(\S+)")
 _EXPAND_ARCHIVE = re.compile(r"\bExpand-Archive\b[^\n]*", re.IGNORECASE)
 _EXPAND_DESTINATION = re.compile(r"-DestinationPath\s+(\S+)", re.IGNORECASE)
+# cargo-nextest is an archive extractor too. Its `--extract-to` sits on a
+# continuation line of a multi-line `cargo nextest list` invocation, so the
+# destination is read from the flag itself rather than from the command line
+# that opened the call.
+_NEXTEST_EXTRACT = re.compile(r"--extract-to\s+(\S+)")
 
 _SCRATCH_ROOTS = (
     "RUNNER_TEMP",
@@ -223,6 +228,9 @@ def extraction_destinations(body: str) -> list[tuple[str, str | None]]:
             found.append(
                 (command, _resolve(match.group(1), assignments) if match else None)
             )
+        nextest = _NEXTEST_EXTRACT.search(line)
+        if nextest:
+            found.append((line, _resolve(nextest.group(1), assignments)))
     return found
 
 
@@ -283,6 +291,13 @@ def test_the_extraction_rule_rejects_an_unpack_into_the_checkout() -> None:
     ]
     assert offending_extractions(via_pwd_variable, "fixture"), (
         "an extraction into a $PWD-rooted variable was accepted"
+    )
+
+    nextest_into_checkout = [
+        ("j", "s", 'root="./ci-linux-nextest"\ncargo nextest list --extract-to "$root"')
+    ]
+    assert offending_extractions(nextest_into_checkout, "fixture"), (
+        "a nextest archive extraction into the checkout was accepted"
     )
 
 

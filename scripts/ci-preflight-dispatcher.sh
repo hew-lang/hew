@@ -31,6 +31,70 @@ cd "$REPO_ROOT"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/lib/timeout.sh"
 
+# ── Prebuilt test artefacts (Linux CI only) ─────────────────────────────────
+#
+# The Linux gate shards consume one cargo-nextest archive built once per run by
+# the `linux-nextest-archive` job, so a shard never compiles the test binaries
+# it is about to execute. The Makefile carries the same mode for its own gates
+# (HEW_CI_PREBUILT_TEST_ARTIFACTS); this half covers the dispatcher's own
+# direct Rust-closure nextest command.
+#
+# All three variables or none. A half-supplied environment is refused rather
+# than quietly ignored: a shard that fell back to compiling would spend the
+# budget this exists to save, and would hide the producer failure that caused
+# it behind a slow green.
+PREFLIGHT_NEXTEST_REUSE=0
+PREFLIGHT_NEXTEST_REUSE_FLAGS=""
+if [[ -n "${HEW_CI_PREBUILT_TEST_ARTIFACTS:-}${HEW_CI_NEXTEST_BINARIES_METADATA:-}${HEW_CI_NEXTEST_CARGO_METADATA:-}${HEW_CI_NEXTEST_TARGET_DIR:-}" ]]; then
+    if [[ "${HEW_CI_PREBUILT_TEST_ARTIFACTS:-}" != "1" ]]; then
+        echo "error: HEW_CI_NEXTEST_* requires HEW_CI_PREBUILT_TEST_ARTIFACTS=1" >&2
+        exit 1
+    fi
+    for _reuse_var in HEW_CI_NEXTEST_BINARIES_METADATA HEW_CI_NEXTEST_CARGO_METADATA HEW_CI_NEXTEST_TARGET_DIR; do
+        if [[ -z "${!_reuse_var:-}" ]]; then
+            echo "error: HEW_CI_PREBUILT_TEST_ARTIFACTS=1 without $_reuse_var" >&2
+            exit 1
+        fi
+    done
+    [[ -f "$HEW_CI_NEXTEST_BINARIES_METADATA" ]] ||
+        { echo "error: prebuilt binaries metadata $HEW_CI_NEXTEST_BINARIES_METADATA does not exist" >&2; exit 1; }
+    [[ -f "$HEW_CI_NEXTEST_CARGO_METADATA" ]] ||
+        { echo "error: prebuilt cargo metadata $HEW_CI_NEXTEST_CARGO_METADATA does not exist" >&2; exit 1; }
+    [[ -d "$HEW_CI_NEXTEST_TARGET_DIR" ]] ||
+        { echo "error: prebuilt target directory $HEW_CI_NEXTEST_TARGET_DIR does not exist" >&2; exit 1; }
+    PREFLIGHT_NEXTEST_REUSE=1
+    PREFLIGHT_NEXTEST_REUSE_FLAGS=" --binaries-metadata $(printf '%q' "$HEW_CI_NEXTEST_BINARIES_METADATA")"
+    PREFLIGHT_NEXTEST_REUSE_FLAGS+=" --cargo-metadata $(printf '%q' "$HEW_CI_NEXTEST_CARGO_METADATA")"
+    PREFLIGHT_NEXTEST_REUSE_FLAGS+=" --workspace-remap $(printf '%q' "$REPO_ROOT")"
+    PREFLIGHT_NEXTEST_REUSE_FLAGS+=" --target-dir-remap $(printf '%q' "$HEW_CI_NEXTEST_TARGET_DIR")"
+fi
+
+# Package selection for the Rust-closure nextest command.
+#
+# `--binaries-metadata` and every Cargo package/target flag are ONE clap group
+# in cargo-nextest; passing both is rejected before a test runs. Reuse mode
+# therefore says the same thing with a filterset over the archived binaries,
+# which is the only spelling nextest accepts alongside reuse metadata.
+nextest_package_selection() {
+    local package_args="$1"
+    local package expression=""
+    if (( PREFLIGHT_NEXTEST_REUSE == 0 )); then
+        printf '%s' "$package_args"
+        return 0
+    fi
+    for package in $package_args; do
+        [[ "$package" == "-p" ]] && continue
+        if [[ -n "$expression" ]]; then
+            expression="$expression + package($package)"
+        else
+            expression="package($package)"
+        fi
+    done
+    # No closure package means the whole selected surface, in both modes.
+    [[ -n "$expression" ]] || return 0
+    printf " -E '%s'" "$expression"
+}
+
 # Per-lane wall-clock budgets (seconds).  These values bound hung commands and
 # surface the dominant-cost step in the summary table.  Override via env vars
 # *for measurement only* — the timeout still kills the command on expiry; these
@@ -1080,6 +1144,14 @@ derive_warmup() {
             # certify it once before any nextest process exists; the executed
             # command receives HEW_TEST_NO_BUILD below and fails closed if a
             # nested path attempts to rebuild it.
+            #
+            # In prebuilt mode there is nothing to warm: the archive supplied
+            # both the shared artefacts and the test binaries, `make stdlib`
+            # would only verify what the gate itself verifies, and `--no-run`
+            # is not accepted alongside reuse metadata.
+            if [[ "$cmd" == *" --binaries-metadata "* ]]; then
+                return 0
+            fi
             add_warmup_command "make stdlib"
             if [[ "$cmd" == *" --no-run"* ]]; then
                 add_warmup_command "$cmd"
@@ -1388,7 +1460,7 @@ if (( COMPREHENSIVE == 1 )); then
     add_command "cargo clippy --workspace --tests -- -D warnings"
 elif (( NEEDS_RUST_CLOSURE == 1 )); then
     add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
-    add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
+    add_command "cargo nextest run${PREFLIGHT_NEXTEST_REUSE_FLAGS} --profile ci$(nextest_package_selection "$AFFECTED_PACKAGE_ARGS")"
 fi
 
 for selected_gate in "${SELECTED_GATES[@]+"${SELECTED_GATES[@]}"}"; do

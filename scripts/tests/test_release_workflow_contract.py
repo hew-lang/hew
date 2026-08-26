@@ -2353,7 +2353,7 @@ def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
         )
 
         for step in workflow_steps(job):
-            if "run: make stdlib" in step:
+            if SHARED_ARTIFACT_BUILD_COMMAND.search(step):
                 assert "HEW_TEST_NO_BUILD" not in step, (
                     f"{name}'s shared-artifact build inherits the verify-only environment"
                 )
@@ -2367,9 +2367,9 @@ def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
                 assert 'HEW_TEST_NO_BUILD: "1"' in step, (
                     f"{name}'s direct Rust test step is not verify-only"
                 )
-        build = "run: make stdlib"
-        assert job.count(build) == 1, f"{name} must build libhew exactly once"
-        assert job.index(build) < test_commands[0].start(), (
+        builds = list(SHARED_ARTIFACT_BUILD_COMMAND.finditer(job))
+        assert len(builds) == 1, f"{name} must build libhew exactly once"
+        assert builds[0].start() < test_commands[0].start(), (
             f"{name} starts Rust tests before building libhew"
         )
 
@@ -2385,9 +2385,15 @@ def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
     jobs = workflow_jobs(ci)
     for name, entry in indirect_test_entries.items():
         job = jobs[name]
-        build = "run: make stdlib"
-        assert job.count(build) == 1, f"{name} must build libhew exactly once"
-        assert job.index(build) < job.index(entry), (
+        # One `make stdlib` step per job, before the test entry point. The
+        # command is matched wherever it appears in a step body, not as the
+        # literal `run: make stdlib` line: on the Linux shards it now runs
+        # inside a timed block that reports how long verifying the prebuilt
+        # archive took, and the invariant being held is "one certified shared
+        # artefact set, established before any test runs" -- not the spelling.
+        builds = list(SHARED_ARTIFACT_BUILD_COMMAND.finditer(job))
+        assert len(builds) == 1, f"{name} must build libhew exactly once"
+        assert builds[0].start() < job.index(entry), (
             f"{name} starts its test entry point before building libhew"
         )
 

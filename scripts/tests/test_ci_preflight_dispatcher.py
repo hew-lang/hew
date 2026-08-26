@@ -628,10 +628,20 @@ def test_comprehensive_warms_every_gate_through_its_own_build_form() -> None:
     assert "  - make sandbox-parity-build\n" in warmup, result.stdout
 
     makefile = (ROOT / "Makefile").read_text()
+    # The recipe is read as make expands it, not as it is spelled. `test-build`
+    # now selects its packages through a variable, because reuse mode has to
+    # say `-E 'not package(hew-cabi)'` where local mode says
+    # `--workspace --exclude hew-cabi` -- cargo-nextest rejects the two
+    # spellings together. What must hold is that the build form still compiles
+    # the binaries `make test` runs, and it is the expansion that says so.
+    plan = _make_plan("test-build")
+    assert plan.returncode == 0, plan.stderr
     assert (
-        "\ntest-build: wasm-runtime runtime $(LIBHEW_READY)\n\t$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
-        in makefile
-    ), "make test's build form must build its binaries the way make test does"
+        "cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run"
+        in plan.stdout
+    ), (
+        f"make test's build form must build its binaries the way make test does\n{plan.stdout}"
+    )
     assert (
         "\nlint-build: structural-lint-bootstrap-install\n\tcargo clippy --workspace --tests\n"
         in makefile
@@ -833,6 +843,12 @@ def _checkable_gates() -> list[str]:
 
 
 _COMPILING_COMMAND = re.compile(r"\bcargo\s+(?:build|run|test|nextest|clippy)\b")
+# A query is not a build. `cargo nextest run --help` prints its interface and
+# compiles nothing, in every one of the tools above; a contract that reads the
+# tool's own help to prove a flag exists would otherwise register as a gate
+# compiling inside its own budget. Matched as a whole token so a path or a
+# fixture named `--help-something` cannot launder a real build.
+_NON_COMPILING_QUERY = re.compile(r"(?:^|[\s\"'])--(?:help|version)(?:$|[\s\"'])")
 _SCRIPT_REF = re.compile(r"(?:^|[\s\"'=])((?:scripts|tests)/[\w./-]+\.(?:sh|py))")
 _MAKE_CALL = re.compile(r"(?:^|[\s;&|(\"'])(?:\$\(MAKE\)|make)\s+([A-Za-z][\w.-]*)")
 _RUNS_A_SUBPROCESS = re.compile(
@@ -1018,7 +1034,9 @@ def compiling_evidence(
             # cannot see a multi-line argv at all: `subprocess.run([` and
             # `"cargo",` are different lines and neither one satisfies it.
             for command in _python_commands(text):
-                if _COMPILING_COMMAND.search(command):
+                if _COMPILING_COMMAND.search(
+                    command
+                ) and not _NON_COMPILING_QUERY.search(command):
                     return f"{origin}: {command}"
                 follow(command)
         for number, raw in enumerate(text.splitlines(), start=1):
@@ -1034,9 +1052,11 @@ def compiling_evidence(
                 # applies to a `make` it names.
                 if not _RUNS_A_SUBPROCESS.search(line):
                     continue
-                if _PYTHON_CARGO.search(line):
+                if _PYTHON_CARGO.search(line) and not _NON_COMPILING_QUERY.search(line):
                     return f"{origin}: {line}"
-            elif _COMPILING_COMMAND.search(line):
+            elif _COMPILING_COMMAND.search(line) and not _NON_COMPILING_QUERY.search(
+                line
+            ):
                 return f"{origin}: {line}"
             follow(line)
     return None
@@ -1154,6 +1174,28 @@ def test_the_compile_walk_does_not_count_printed_text() -> None:
         compiling_evidence("\tscripts/hint.sh\n", lambda target: None, scripts.get)
         is None
     )
+
+
+def test_the_compile_walk_does_not_count_asking_a_tool_for_its_interface() -> None:
+    """`--help` compiles nothing; the same invocation without it does.
+
+    A contract that proves a pinned tool carries the flags a gate passes has
+    to run that tool. Reading its help as a build would make every such
+    contract look like a gate compiling inside its own hang budget.
+    """
+    asking = {
+        "scripts/pin.sh": "  cargo nextest run --help\n",
+        "scripts/pin.py": '    subprocess.run(["cargo", "nextest", "run", "--help"])\n',
+        "scripts/build.sh": "  cargo nextest run --profile ci --no-run\n",
+    }
+    for script in ("scripts/pin.sh", "scripts/pin.py"):
+        assert (
+            compiling_evidence(f"\t{script}\n", lambda target: None, asking.get) is None
+        ), script
+    assert (
+        compiling_evidence("\tscripts/build.sh\n", lambda target: None, asking.get)
+        is not None
+    ), "the exemption swallowed a real build"
 
 
 def test_the_compile_walk_reads_python_data_as_data() -> None:
@@ -1576,13 +1618,16 @@ def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> 
     either package, the compiled leak/drop oracles and the e2e suites silently
     stop running for HIR/MIR/codegen and type-checker diffs — exactly the
     consumer-corpus escape class this ratchet exists to block.
+
+    Read from the EXPANSION, not the recipe text: the package list moved into
+    a variable because reuse mode must spell the same selection as a filterset
+    (cargo-nextest rejects `--binaries-metadata` beside `-p`). A ratchet that
+    reads the literal would pass on an empty variable.
     """
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    match = re.search(
-        r"^test-compiler-pipeline:[^\n]*\n(?:\t[^\n]*\n)+", makefile, re.MULTILINE
-    )
-    assert match is not None, "test-compiler-pipeline recipe not found in Makefile"
-    recipe = match.group(0)
+    plan = _make_plan("test-compiler-pipeline")
+    assert plan.returncode == 0, plan.stderr
+    joined = plan.stdout.replace("\\\n", " ")
+    recipe = next(line for line in joined.splitlines() if "cargo nextest run" in line)
     assert "--profile ci" in recipe, recipe
     assert "-p hew-cli" in recipe, recipe
     assert "-p hew-pkg" in recipe, recipe
@@ -1619,10 +1664,14 @@ def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
 
     makefile = (ROOT / "Makefile").read_text()
     assert "cargo nextest run --workspace --profile smoke" in makefile, makefile
+    # `make test`'s own invocation is read from the expansion: its package
+    # selection lives in a variable so reuse mode can spell it as a filterset.
+    plan = _make_plan("test")
+    assert plan.returncode == 0, plan.stderr
     assert (
         "cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast"
-        in makefile
-    ), makefile
+        in plan.stdout
+    ), plan.stdout
 
     nextest = (ROOT / ".config/nextest.toml").read_text()
     assert (

@@ -310,6 +310,120 @@ endif
 # the point of use.
 LIBHEW_READY := $(SHARED_TEST_ARTIFACT_TARGETS) | check-libhew-fresh
 
+# ── Prebuilt shared test artefacts (Linux CI only) ──────────────────────────
+#
+# The four Linux gate shards consume one cargo-nextest archive built once per
+# run by the `linux-nextest-archive` job. The archive carries the selected test
+# binaries, nextest's own metadata, and the shared Cargo outputs named in
+# `[profile.ci] archive.include` (.config/nextest.toml). Its extracted `target`
+# is exported as CARGO_TARGET_DIR, so everything derived from
+# scripts/cargo-output-dir.py above -- DEBUG_DIR, RELEASE_LIB_DIR,
+# WASM_DEBUG_DIR, LIBHEW, and check-libhew-fresh.sh -- already resolves into
+# it. No second path authority is introduced.
+#
+# What this mode changes, and only in this mode:
+#   * The foundational artefact recipes VERIFY instead of invoking Cargo. They
+#     have to: they are phony, and a nextest archive deliberately carries no
+#     Cargo fingerprints or rlibs, so an unmodified recipe would rebuild every
+#     one of them in every shard -- which is the duplication this removes.
+#   * Workspace-wide nextest invocations pass the archive's metadata instead of
+#     letting Cargo build, and express their package selection as a filterset:
+#     nextest rejects --binaries-metadata alongside -p/--workspace/--exclude
+#     (they are one clap group), so the two spellings cannot be combined.
+#   * The `<target>-build` warm-up forms that exist only to compile test
+#     binaries become no-ops. Their binaries arrived built.
+#
+# What this mode does NOT change: any gate that genuinely builds. `make
+# test-cabi` still compiles hew-cabi (every workspace-wide nextest invocation
+# in this repository excludes it, and `cargo nextest archive --workspace` is
+# one of those), `test-runtime-no-default-features` still compiles its own
+# feature set, and `sandbox-parity` still runs plain Cargo. Those are bounded
+# correctness fallbacks, not artefact-recovery paths.
+#
+# Everywhere else -- every developer machine, macOS, Windows, FreeBSD, the
+# release gate, the nightly tiers -- HEW_CI_PREBUILT_TEST_ARTIFACTS is empty
+# and every recipe below is exactly what it was.
+HEW_CI_PREBUILT_TEST_ARTIFACTS ?=
+ifeq ($(strip $(HEW_CI_PREBUILT_TEST_ARTIFACTS)),1)
+HEW_CI_PREBUILT := 1
+else ifneq ($(strip $(HEW_CI_PREBUILT_TEST_ARTIFACTS)),)
+$(error HEW_CI_PREBUILT_TEST_ARTIFACTS must be 1 or empty, got \
+'$(HEW_CI_PREBUILT_TEST_ARTIFACTS)')
+else
+HEW_CI_PREBUILT :=
+endif
+
+ifeq ($(HEW_CI_PREBUILT),1)
+# All three, or the mode is refused. A half-supplied environment must not
+# become a quiet rebuild: a shard that silently recompiled would spend the
+# budget this exists to save and hide the producer failure that caused it.
+ifeq ($(strip $(HEW_CI_NEXTEST_BINARIES_METADATA)),)
+$(error HEW_CI_PREBUILT_TEST_ARTIFACTS=1 without HEW_CI_NEXTEST_BINARIES_METADATA)
+endif
+ifeq ($(strip $(HEW_CI_NEXTEST_CARGO_METADATA)),)
+$(error HEW_CI_PREBUILT_TEST_ARTIFACTS=1 without HEW_CI_NEXTEST_CARGO_METADATA)
+endif
+ifeq ($(strip $(HEW_CI_NEXTEST_TARGET_DIR)),)
+$(error HEW_CI_PREBUILT_TEST_ARTIFACTS=1 without HEW_CI_NEXTEST_TARGET_DIR)
+endif
+ifeq ($(wildcard $(HEW_CI_NEXTEST_BINARIES_METADATA)),)
+$(error prebuilt binaries metadata $(HEW_CI_NEXTEST_BINARIES_METADATA) does not exist)
+endif
+ifeq ($(wildcard $(HEW_CI_NEXTEST_CARGO_METADATA)),)
+$(error prebuilt cargo metadata $(HEW_CI_NEXTEST_CARGO_METADATA) does not exist)
+endif
+ifeq ($(wildcard $(HEW_CI_NEXTEST_TARGET_DIR)/.),)
+$(error prebuilt target directory $(HEW_CI_NEXTEST_TARGET_DIR) does not exist)
+endif
+NEXTEST_REUSE_ARGS := \
+	--binaries-metadata "$(HEW_CI_NEXTEST_BINARIES_METADATA)" \
+	--cargo-metadata "$(HEW_CI_NEXTEST_CARGO_METADATA)" \
+	--workspace-remap "$(CURDIR)" \
+	--target-dir-remap "$(HEW_CI_NEXTEST_TARGET_DIR)"
+else
+NEXTEST_REUSE_ARGS :=
+endif
+
+# Package selection, spelled twice because nextest accepts exactly one of the
+# two spellings at a time. The Cargo form drives a build; the filterset form
+# selects already-built binaries out of the archive. They must denote the same
+# set -- scripts/tests/test_ci_prebuilt_artifacts.py holds them to it.
+ifeq ($(HEW_CI_PREBUILT),1)
+NEXTEST_SELECT_WORKSPACE := -E 'not package(hew-cabi)'
+NEXTEST_SELECT_LEAK_HARNESS := -E 'binary_id(hew-cli::leak_harness_fail_closed)'
+NEXTEST_SELECT_PIPELINE := -E 'package(hew-lexer) + package(hew-parser) + package(hew-types) + package(hew-hir) + package(hew-sir) + package(hew-mir) + package(hew-codegen-rs) + package(hew-cli) + package(hew-pkg)'
+NEXTEST_SELECT_CAPABILITY_GEN := -E 'package(hew-capability-gen)'
+NEXTEST_SELECT_CODEGEN := -E 'package(hew-codegen-rs)'
+NEXTEST_SELECT_MIR_BASELINES := -E 'binary_id(hew-cli::funcupdate_mir_baselines) + binary_id(hew-cli::artifact_platform_neutrality_selftest)'
+# The binaries arrived built; a warm-up that compiles them is the duplication
+# this removes. `true` rather than an empty recipe so `make -n` shows the
+# decision instead of an absence.
+NEXTEST_PREBUILD := true
+else
+NEXTEST_SELECT_WORKSPACE := --workspace --exclude hew-cabi
+NEXTEST_SELECT_LEAK_HARNESS := -p hew-cli --test leak_harness_fail_closed
+NEXTEST_SELECT_PIPELINE := -p hew-lexer -p hew-parser -p hew-types -p hew-hir -p hew-sir -p hew-mir -p hew-codegen-rs -p hew-cli -p hew-pkg
+NEXTEST_SELECT_CAPABILITY_GEN := -p hew-capability-gen
+NEXTEST_SELECT_CODEGEN := -p hew-codegen-rs
+NEXTEST_SELECT_MIR_BASELINES := -p hew-cli --test funcupdate_mir_baselines --test artifact_platform_neutrality_selftest
+NEXTEST_PREBUILD :=
+endif
+
+# A foundational artefact recipe in prebuilt mode. The message names the
+# producer, because that is where a missing artefact was actually decided.
+define require_prebuilt
+	@test -s "$(1)" || { \
+		echo "prebuilt test artefact missing: $(1)" >&2; \
+		echo "the linux-nextest-archive producer did not supply it; see" >&2; \
+		echo "  .config/nextest.toml [profile.ci] archive.include" >&2; \
+		exit 1; \
+	}
+endef
+
+DEBUG_RUNTIME_LIB := $(DEBUG_DIR)/$(if $(filter Windows_NT,$(OS)),hew_runtime.lib,libhew_runtime.a)
+WASM_RUNTIME_LIB := $(WASM_DEBUG_DIR)/libhew_runtime.a
+WASM_STD_LIB := $(WASM_DEBUG_DIR)/libhew_std.a
+
 # Host triple used to populate lib/<triple>/ for target-aware lib lookup.
 HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
 ifeq ($(shell uname -s),Darwin)
@@ -347,7 +461,11 @@ build: all
 # both the driver and its linkable archive. Keep a separate debug launcher for
 # compiler debugging without changing the stable build/bin/hew selection.
 hew: libhew-release-lib ## Build: build the release-lib compiler and native archive
+ifeq ($(HEW_CI_PREBUILT),1)
+	$(call require_prebuilt,$(RELEASE_LIB_HEW))
+else
 	cargo build -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
+endif
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)" "$(BUILD_DIR)/bin/hew"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
@@ -392,7 +510,11 @@ hew-build: hew
 # `target/debug/hew.lib` on Windows). Keep this target cross-platform so fresh
 # Windows hosts use the same build graph as Linux/macOS.
 hew-native: libhew-debug
+ifeq ($(HEW_CI_PREBUILT),1)
+	$(call require_prebuilt,$(DEBUG_HEW))
+else
 	cargo build -p hew-cli $(CARGO_TARGET_FLAG)
+endif
 
 # The gate is itself an artifact build; warming it is building it.
 hew-native-build: hew-native
@@ -446,7 +568,11 @@ libhew-link-race-test-build: hew-native $(LIBHEW_READY)
 
 # Build the runtime static library (debug)
 runtime:
+ifeq ($(HEW_CI_PREBUILT),1)
+	$(call require_prebuilt,$(DEBUG_RUNTIME_LIB))
+else
 	cargo build -p hew-runtime $(CARGO_TARGET_FLAG)
+endif
 
 # The gate is itself an artifact build; warming it is building it.
 runtime-build: runtime
@@ -469,14 +595,25 @@ stdlib-build: stdlib
 # possibly space-bearing output path back into Make's target graph.
 .PHONY: libhew-debug libhew-test-targets
 libhew-debug: $(LIBHEW_SRCS)
+ifeq ($(HEW_CI_PREBUILT),1)
+	$(call require_prebuilt,$(LIBHEW))
+	env -u HEW_TEST_NO_BUILD $(LIBHEW_FRESHNESS_SCRIPT) verify --debug-dir "$(DEBUG_DIR)"
+else
 	env -u HEW_TEST_NO_BUILD $(LIBHEW_FRESHNESS_SCRIPT) build --debug-dir "$(DEBUG_DIR)" -- cargo build -p hew-lib $(CARGO_TARGET_FLAG)
+endif
 
 # Native cross-arch link tests consume an opposite-architecture slice from
 # Cargo's shared target directory. Build it serially after the certified host
 # archive, before the test runner starts; test helpers only verify these paths.
 # Linux only exercises this path when its matching multiarch sysroot exists.
 libhew-test-targets: libhew-debug
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(HEW_CI_PREBUILT),1)
+# The cross archive is `on-missing = "ignore"` in the archive manifest, because
+# the opposite-architecture build only happens where the matching multiarch
+# sysroot exists. A test that needs a missing cross archive still fails through
+# its own helper, exactly as it does locally.
+	@:
+else ifeq ($(shell uname -s),Darwin)
 	@for triple in $(DARWIN_NATIVE_LIB_TRIPLES); do \
 		[ "$$triple" != "$(HOST_TRIPLE)" ] || continue; \
 		cargo build -p hew-lib --target "$$triple" || exit $$?; \
@@ -496,7 +633,11 @@ endif
 
 .PHONY: libhew-release-lib
 libhew-release-lib: $(LIBHEW_SRCS)
+ifeq ($(HEW_CI_PREBUILT),1)
+	$(call require_prebuilt,$(RELEASE_LIBHEW))
+else
 	cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
+endif
 
 # Build the WASM runtime + the consolidated stdlib archive (libhew_std.a).
 #
@@ -505,10 +646,18 @@ libhew-release-lib: $(LIBHEW_SRCS)
 # graph makes repeated invocations cheap and authoritative.
 .PHONY: wasm-runtime-debug wasm-std-debug
 wasm-runtime-debug: $(LIBHEW_SRCS)
+ifeq ($(HEW_CI_PREBUILT),1)
+	$(call require_prebuilt,$(WASM_RUNTIME_LIB))
+else
 	$(WASM_UNINSTRUMENTED_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+endif
 
 wasm-std-debug: $(LIBHEW_SRCS)
+ifeq ($(HEW_CI_PREBUILT),1)
+	$(call require_prebuilt,$(WASM_STD_LIB))
+else
 	$(WASM_UNINSTRUMENTED_ENV) cargo build -p hew-std --target wasm32-wasip1
+endif
 
 wasm-runtime: wasm-runtime-debug wasm-std-debug
 
@@ -1072,9 +1221,9 @@ assemble-release:
 test: wasm-runtime runtime $(LIBHEW_READY) ## Test: run the Rust workspace test suite
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
 		set -e; \
-		$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run; \
+		$(or $(NEXTEST_PREBUILD),$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run); \
 		test -f "$(LIBHEW)"; \
-		$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast; \
+		$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_SELECT_WORKSPACE) --profile ci --no-fail-fast $(NEXTEST_REUSE_ARGS); \
 	else \
 		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
 		echo "         Install with: cargo install cargo-nextest" >&2; \
@@ -1083,7 +1232,7 @@ test: wasm-runtime runtime $(LIBHEW_READY) ## Test: run the Rust workspace test 
 
 # Build this target's binaries the way it builds them, without running them.
 test-build: wasm-runtime runtime $(LIBHEW_READY)
-	$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run
+	$(or $(NEXTEST_PREBUILD),$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run)
 
 # Prove the table-derived builder produced every concrete path the verify-only
 # helpers can demand on this host.
@@ -1108,12 +1257,12 @@ macos-leak-oracle: test-leak-oracle-selftest hew-native $(LIBHEW_READY)
 # inputs: hew-cli/tests/*leak*
 # inputs: scripts/macos-leak-source-inventory.py
 test-leak-oracle-selftest: $(LIBHEW_READY)
-	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
+	$(TEST_RUN_ENV) cargo nextest run --profile ci $(NEXTEST_SELECT_LEAK_HARNESS) $(NEXTEST_REUSE_ARGS)
 	scripts/tests/test_macos_leak_oracle_runner.sh
 
 # The shell counterfactual needs no build; the Rust one does.
 test-leak-oracle-selftest-build: $(LIBHEW_READY)
-	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed --no-run
+	$(or $(NEXTEST_PREBUILD),$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed --no-run)
 
 # The C-ABI crate, run on its own.
 #
@@ -1152,20 +1301,12 @@ test-cabi-build: $(LIBHEW_READY)
 # preflight: comprehensive-only — Rust changes run the reverse-dependency closure instead
 test-compiler-pipeline: runtime wasm-runtime hew-native $(LIBHEW_READY)
 	$(TEST_RUN_ENV) cargo nextest run --profile ci \
-		-p hew-lexer \
-		-p hew-parser \
-		-p hew-types \
-		-p hew-hir \
-		-p hew-sir \
-		-p hew-mir \
-		-p hew-codegen-rs \
-		-p hew-cli \
-		-p hew-pkg
+		$(NEXTEST_SELECT_PIPELINE) $(NEXTEST_REUSE_ARGS)
 	$(MAKE) test-compiler-lifecycle
 
 # Build this target's binaries the way it builds them, without running them.
 test-compiler-pipeline-build: runtime wasm-runtime hew-native $(LIBHEW_READY)
-	$(TEST_RUN_ENV) cargo nextest run --profile ci --no-run \
+	$(or $(NEXTEST_PREBUILD),$(TEST_RUN_ENV) cargo nextest run --profile ci --no-run \
 		-p hew-lexer \
 		-p hew-parser \
 		-p hew-types \
@@ -1174,7 +1315,7 @@ test-compiler-pipeline-build: runtime wasm-runtime hew-native $(LIBHEW_READY)
 		-p hew-mir \
 		-p hew-codegen-rs \
 		-p hew-cli \
-		-p hew-pkg
+		-p hew-pkg)
 	$(MAKE) test-opaque-resource-lifecycle-matrix-build
 
 # The compiled-Hew lifecycle evidence is separate so CI jobs that already ran
@@ -2207,6 +2348,11 @@ preflight-weights-drift:
 # inputs: scripts/tests/test_ci_preflight_dispatcher.py
 # inputs: scripts/tests/test_ci_preflight_timeout.sh
 # inputs: scripts/ci-preflight-route.sh scripts/lib/timeout.sh
+# The build-once test archive spans the workflow, the nextest archive manifest,
+# this Makefile's prebuilt mode, and the dispatcher's reuse flags. A change to
+# any one of those four can silently make a shard rebuild what the producer
+# already built, so all four select the contract that holds them together.
+# inputs: scripts/tests/test_ci_prebuilt_artifacts.py .config/nextest.toml
 # inputs: scripts/tests/test_playground_path_filter_oracle.py
 # inputs: scripts/tests/test_libhew_freshness.py scripts/tests/test_hew_suite_cache.py
 # inputs: scripts/tests/test_makefile_interfaces.py scripts/make-help.py
@@ -2225,6 +2371,7 @@ preflight-weights-drift:
 test-build-harness:
 	python3 scripts/tests/test_ci_preflight_dispatcher.py
 	bash scripts/tests/test_ci_preflight_timeout.sh
+	python3 scripts/tests/test_ci_prebuilt_artifacts.py
 	python3 scripts/tests/test_playground_path_filter_oracle.py
 	python3 scripts/tests/test_libhew_freshness.py
 	python3 scripts/tests/test_hew_suite_cache.py
@@ -2354,11 +2501,11 @@ codegen-carried-identity-gate-build:
 .PHONY: capability-authority-ratchet
 # inputs: hew-mir/src/*.rs hew-types/src/*.rs hew-capability-gen/*
 capability-authority-ratchet:
-	cargo nextest run --profile ci -p hew-capability-gen
+	cargo nextest run --profile ci $(NEXTEST_SELECT_CAPABILITY_GEN) $(NEXTEST_REUSE_ARGS)
 
 # Build the ratchet's test binary; the gate runs it.
 capability-authority-ratchet-build:
-	cargo nextest run --profile ci -p hew-capability-gen --no-run
+	$(or $(NEXTEST_PREBUILD),cargo nextest run --profile ci -p hew-capability-gen --no-run)
 
 # hew-codegen-rs/tests/exec/* compiles each fixture below with the in-tree
 # compiler and diffs stdout against its paired .expected.  The fixtures live
@@ -2367,11 +2514,11 @@ capability-authority-ratchet-build:
 .PHONY: test-codegen-exec-fixtures
 # inputs: examples/enums/* examples/machine/* examples/collections/* examples/records/*
 test-codegen-exec-fixtures:
-	cargo nextest run --profile ci -p hew-codegen-rs
+	cargo nextest run --profile ci $(NEXTEST_SELECT_CODEGEN) $(NEXTEST_REUSE_ARGS)
 
 # The exec suites compile and run Hew fixtures against the native runtime.
 test-codegen-exec-fixtures-build: hew-native runtime $(LIBHEW_READY)
-	cargo nextest run --profile ci -p hew-codegen-rs --no-run
+	$(or $(NEXTEST_PREBUILD),cargo nextest run --profile ci -p hew-codegen-rs --no-run)
 
 # The committed --dump-mir elab baselines under tests/mir-baselines are asserted
 # by hew-cli integration tests.  Nothing in the reverse-dependency closure sees
@@ -2379,14 +2526,13 @@ test-codegen-exec-fixtures-build: hew-native runtime $(LIBHEW_READY)
 .PHONY: test-mir-baselines
 # inputs: tests/mir-baselines/*
 test-mir-baselines:
-	cargo nextest run --profile ci -p hew-cli --test funcupdate_mir_baselines \
-		--test artifact_platform_neutrality_selftest
+	cargo nextest run --profile ci $(NEXTEST_SELECT_MIR_BASELINES) $(NEXTEST_REUSE_ARGS)
 
 # Build BOTH test binaries the gate runs: naming only the first would leave the
 # second to compile inside the timed gate.
 test-mir-baselines-build:
-	cargo nextest run --profile ci -p hew-cli --test funcupdate_mir_baselines \
-		--test artifact_platform_neutrality_selftest --no-run
+	$(or $(NEXTEST_PREBUILD),cargo nextest run --profile ci -p hew-cli --test funcupdate_mir_baselines \
+		--test artifact_platform_neutrality_selftest --no-run)
 
 .PHONY: codegen-trap-inventory-check
 LINT_GATES += codegen-trap-inventory-check

@@ -691,12 +691,163 @@ jobs:
           check_name: Compiled Hew Test Results
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Linux test archive — one build of the Rust test surface for four shards
+  # ─────────────────────────────────────────────────────────────────────────
+  #
+  # Every Linux shard used to compile the test binaries it was about to run,
+  # plus the shared Cargo outputs those binaries link against: a measured
+  # 376/406/338/188 s of warm-up per run, four times over one tree.
+  #
+  # This job builds that surface once and hands it to the shards as a
+  # cargo-nextest archive. The archive carries the selected test binaries,
+  # nextest's own binaries/cargo metadata, build-script output, linked paths,
+  # and the shared Hew artefacts named explicitly in
+  # `.config/nextest.toml [profile.ci] archive.include` -- and nothing else. It
+  # is NOT a target-directory transfer: no `deps/`, no `.fingerprint/`, no
+  # incremental state. Those are Cargo's build state, and shipping them would
+  # make this a second, staler authority on what is built.
+  #
+  # Identity comes from the workflow, not from a manifest. The consumers are
+  # DAG-gated on this job in the same run; `download-artifact` reads the
+  # current run of the current repository; the artifact is immutable and its
+  # digest is validated on download; producer and consumers pin the same
+  # ubuntu-24.04 image, the same Rust toolchain, the same LLVM, the same mold
+  # RUSTFLAGS, and the same checkout SHA. A manifest binding rustc, ref, lock
+  # hash and feature set would restate those guarantees as a second identity
+  # system with its own drift. The compiled-Hew bundle keeps its manifest for
+  # the different problem it solves: a compact binary pair consumed by a step
+  # that must know which revision produced it.
+  #
+  # hew-wasm is excluded because it needs a wasmtime runner; hew-cabi because
+  # every workspace-wide nextest invocation in this repository excludes it (its
+  # `#[cfg(test)]` stubs re-`#[no_mangle]` runtime symbols), and
+  # `cargo nextest archive --workspace` is one of those. `make test-cabi`
+  # therefore keeps its own build, in the shard that selects it.
+  linux-nextest-archive:
+    name: Build Linux test archive
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_INCREMENTAL: "0"
+      # Identical to the shards': a different linker is a different rustc
+      # fingerprint, and the shards must be able to link what this built.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+    steps:
+      - name: No-op for docs-only changes
+        if: env.RUN_CODE_PATH != 'true'
+        run: echo "No code changes detected; no Linux test archive is needed."
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        if: env.RUN_CODE_PATH == 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Free runner disk
+        if: env.RUN_CODE_PATH == 'true'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install build tools
+        if: env.RUN_CODE_PATH == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config mold zlib1g-dev libzstd-dev
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        if: env.RUN_CODE_PATH == 'true'
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - uses: ./.github/actions/setup-rust-build
+        if: env.RUN_CODE_PATH == 'true'
+        with:
+          targets: 'wasm32-unknown-unknown, wasm32-wasip1'
+          tools: nextest@0.9.120
+          cache-shared-key: linux-mold
+
+      - name: Install WASI target
+        if: env.RUN_CODE_PATH == 'true'
+        run: rustup target add wasm32-wasip1
+
+      - name: Build the shared test artefacts
+        if: env.RUN_CODE_PATH == 'true'
+        # `stdlib` is the table-derived shared artefact set (debug hew,
+        # libhew.a and its freshness certificate, the native runtime archive,
+        # the two wasm32-wasip1 archives). `hew-profile-check` additionally
+        # builds and asserts the release-lib launcher, which the shard that
+        # selects that gate can then verify instead of rebuilding.
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          make hew-profile-check stdlib
+          echo "ARTEFACT_BUILD_SECONDS=$(( SECONDS - start ))" >> "$GITHUB_ENV"
+
+      - name: Archive the Linux test binaries
+        if: env.RUN_CODE_PATH == 'true'
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          cargo nextest archive \
+            --workspace \
+            --exclude hew-wasm \
+            --exclude hew-cabi \
+            --profile ci \
+            --archive-file "$RUNNER_TEMP/ci-linux-nextest.tar.zst"
+          echo "ARCHIVE_SECONDS=$(( SECONDS - start ))" >> "$GITHUB_ENV"
+
+      - name: Report the archive cost
+        if: always() && env.RUN_CODE_PATH == 'true'
+        # Cost telemetry, asserted by nothing. The acceptance question this
+        # feeds is whether producer build + archive + the worst consumer's
+        # download and extract beats the four-shard warm-up it replaced; that
+        # is a measurement, not a number to guess in a comment.
+        run: |
+          archive="$RUNNER_TEMP/ci-linux-nextest.tar.zst"
+          {
+            echo "### Linux test archive (producer)"
+            echo ""
+            echo "- shared artefact build: \`${ARTEFACT_BUILD_SECONDS:-unknown}s\`"
+            echo "- archive creation: \`${ARCHIVE_SECONDS:-unknown}s\`"
+            if [ -f "$archive" ]; then
+              echo "- archive size: \`$(du -h "$archive" | cut -f1)\`"
+            else
+              echo "- archive size: not produced"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the Linux test archive
+        if: env.RUN_CODE_PATH == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ci-linux-nextest-${{ github.sha }}
+          path: ${{ runner.temp }}/ci-linux-nextest.tar.zst
+          # The payload is already a Zstandard tarball. v7 transports artifacts
+          # as a Zip; asking Zlib to compress an incompressible file again is
+          # runner minutes spent to grow the upload. This is the action's own
+          # documented input for that case -- no wrapper, no second transport.
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Build & test — Rust workspace
   # Produces JUnit XML for GitHub Actions test reporting.
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Linux gates (shard ${{ matrix.shard }}/4)
-    needs: changes
+    # `linux-nextest-archive` is a hard dependency, deliberately. If the
+    # producer fails, these shards do not run, `linux-required` sees a
+    # non-success matrix result, and the required context is RED. There is no
+    # per-shard rebuild fallback: a fallback would turn a producer defect into
+    # four slow green runs and nobody would find it.
+    needs: [changes, linux-nextest-archive]
     runs-on: ubuntu-24.04
     # Four shards of the selected preflight profile. The dispatcher partitions
     # the profile's command list into four duration-balanced groups and each
@@ -831,9 +982,104 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-ast-grep
 
-      - name: Build shared Rust test artifact
+      - name: Mark the archive transfer start
         if: env.RUN_CODE_PATH == 'true'
-        run: make stdlib
+        # The download is an action, so it cannot time itself. This marker plus
+        # the materialize step's own clock give the transfer cost the
+        # acceptance question needs: producer build + archive + the worst
+        # consumer's download and extract, against the four-shard warm-up this
+        # replaced.
+        run: echo "ARCHIVE_TRANSFER_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Download the Linux test archive
+        if: env.RUN_CODE_PATH == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ci-linux-nextest-${{ github.sha }}
+          path: ${{ runner.temp }}/ci-linux-nextest-download
+          # This is the action's default. It is spelled anyway because a
+          # transport that silently accepted a corrupted archive would surface
+          # as an inexplicable link failure inside a timed gate, hours from
+          # the download that caused it.
+          digest-mismatch: error
+
+      - name: Materialize the Linux test archive
+        if: env.RUN_CODE_PATH == 'true'
+        # `cargo nextest list --extract-to` is nextest's own extractor; it runs
+        # no test. Extraction lands under RUNNER_TEMP, never the checkout: an
+        # archive unpacked into $PWD is untracked paths no gate declares, which
+        # makes the router fail closed to comprehensive on every run
+        # (LESSONS.md preflight-perf-discipline).
+        #
+        # Exporting the extracted `target` as CARGO_TARGET_DIR is what makes
+        # the rest of the build system resolve into it without a second path
+        # authority: scripts/cargo-output-dir.py already answers the way Cargo
+        # does, so the Makefile's DEBUG_DIR/RELEASE_LIB_DIR/WASM_DEBUG_DIR,
+        # check-libhew-fresh.sh, and hew-testutil's own resolver all follow.
+        # JUnit is unaffected -- nextest writes its store under the remapped
+        # WORKSPACE root, so target/nextest/<profile>/junit.xml stays where the
+        # upload step reads it.
+        #
+        # Every check below is an interface assertion, not a second identity
+        # system: it says what a consumer needs to find, never which commit
+        # produced it. A failure here is fatal before any gate runs.
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/ci-linux-nextest-download/ci-linux-nextest.tar.zst"
+          root="$RUNNER_TEMP/ci-linux-nextest"
+          test -s "$archive"
+          download_seconds=$(( $(date +%s) - ${ARCHIVE_TRANSFER_START:-0} ))
+          mkdir -p "$root"
+          start=$SECONDS
+          cargo nextest list \
+            --archive-file "$archive" \
+            --extract-to "$root" \
+            --extract-overwrite \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --profile ci \
+            --list-type binaries-only \
+            --message-format json \
+            > "$RUNNER_TEMP/ci-linux-nextest-binaries.json"
+          extract_seconds=$(( SECONDS - start ))
+
+          target="$root/target"
+          test -s "$target/nextest/binaries-metadata.json"
+          test -s "$target/nextest/cargo-metadata.json"
+          test -x "$target/debug/hew"
+          test -s "$target/debug/libhew.a"
+          test -s "$target/debug/libhew_runtime.a"
+          test -s "$target/debug/.hew-libhew-freshness-v1"
+          test -x "$target/release-lib/hew"
+          test -s "$target/release-lib/libhew.a"
+          test -s "$target/wasm32-wasip1/debug/libhew_runtime.a"
+          test -s "$target/wasm32-wasip1/debug/libhew_std.a"
+
+          {
+            echo "CARGO_TARGET_DIR=$target"
+            echo "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"
+            echo "HEW_CI_NEXTEST_BINARIES_METADATA=$target/nextest/binaries-metadata.json"
+            echo "HEW_CI_NEXTEST_CARGO_METADATA=$target/nextest/cargo-metadata.json"
+            echo "HEW_CI_NEXTEST_TARGET_DIR=$target"
+          } >> "$GITHUB_ENV"
+          {
+            echo "### Linux test archive (shard ${{ matrix.shard }}/4)"
+            echo ""
+            echo "- archive size: \`$(du -h "$archive" | cut -f1)\`"
+            echo "- download: \`${download_seconds}s\`"
+            echo "- extract: \`${extract_seconds}s\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the shared Rust test artefacts
+        if: env.RUN_CODE_PATH == 'true'
+        # The same target that BUILT this set locally; under
+        # HEW_CI_PREBUILT_TEST_ARTIFACTS it verifies the archive supplied every
+        # member instead. First use of the prebuilt mode in the job, so a bad
+        # archive fails here rather than inside a timed gate's hang budget.
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          make stdlib
+          echo "- shared artefact verify: \`$(( SECONDS - start ))s\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run change-scoped tests
         if: env.RUN_CODE_PATH == 'true'

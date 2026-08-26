@@ -45,6 +45,30 @@ fn increment(value: i64) -> i64 {
 }
 ";
 
+/// The smallest source-level vertical slice for Raw MIR virtual values. The
+/// tuple must remain semantic/value-only through strict SIR lowering; only
+/// its selected scalar field reaches the existing return ABI slot.
+const VIRTUAL_TUPLE_PROJECTION: &str = r"
+fn main() -> i64 {
+    let pair = (0, 42);
+    pair.0
+}
+";
+
+/// Extends the virtual tuple proof to the only ABI shape admitted by the
+/// first Raw-value slice: `BitCopy` scalar parameters. The tuple itself remains
+/// internal and semantic; `pair_second` returns only a selected scalar.
+const VIRTUAL_TUPLE_SCALAR_PARAMS: &str = r"
+fn pair_second(x: i64, y: i64) -> i64 {
+    let pair = (x, y);
+    pair.1
+}
+
+fn main() -> i64 {
+    pair_second(42, 0)
+}
+";
+
 const SHORT_CIRCUIT_INSPECTION: &str = r"
 fn rhs() -> bool {
     true
@@ -169,6 +193,24 @@ fn function_section<'a>(dump: &'a str, name: &str) -> &'a str {
     let end = rest[1..]
         .find("\nfn ")
         .map_or(rest.len(), |index| index + 1);
+    &rest[..end]
+}
+
+fn llvm_function_section<'a>(llvm: &'a str, name: &str) -> &'a str {
+    let symbol = format!("@{name}(");
+    let start = llvm
+        .match_indices(&symbol)
+        .find_map(|(symbol_start, _)| {
+            let line_start = llvm[..symbol_start]
+                .rfind('\n')
+                .map_or(0, |index| index + 1);
+            llvm[line_start..symbol_start]
+                .starts_with("define ")
+                .then_some(line_start)
+        })
+        .unwrap_or_else(|| panic!("LLVM IR must define `{symbol}`:\n{llvm}"));
+    let rest = &llvm[start..];
+    let end = rest.find("\n}").map_or(rest.len(), |index| index + 2);
     &rest[..end]
 }
 
@@ -342,6 +384,180 @@ fn sir_lower_closed_direct_call_graph_compiles_and_runs() {
     assert_success(
         &executed,
         "native binary containing only SIR-lowered bodies must run successfully",
+    );
+}
+
+/// A source tuple projection must select the strict SIR → virtual Raw MIR
+/// path, cross Checked and Elaborated MIR as a no-drop body, and execute as a
+/// native binary. The raw dump is part of the assertion: it rules out quietly
+/// returning to the legacy `Place`/storage lowering path merely because the
+/// observable result happens to be scalar.
+#[test]
+fn sir_lower_virtual_tuple_projection_compiles_and_runs_without_legacy_storage() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_virtual_tuple_projection.hew");
+    fs::write(&source, VIRTUAL_TUPLE_PROJECTION).expect("write virtual tuple SIR fixture");
+
+    let lowered = raw_mir_dump(&source, Some("--sir-lower"));
+    assert_success(&lowered, "strict SIR virtual tuple raw dump must succeed");
+    let dump = String::from_utf8_lossy(&lowered.stdout);
+    let main = function_section(&dump, "main");
+    assert!(
+        main.contains("tuple.make")
+            && main.contains("tuple.get")
+            && main.contains("materialize.return_abi"),
+        "source tuple must lower through Raw MIR virtual values:\n{main}"
+    );
+    assert!(
+        !main.contains("locals:") && !main.contains("tuple.construct"),
+        "virtual tuple lowering must not reintroduce legacy storage operations:\n{main}"
+    );
+    let dump_stderr = String::from_utf8_lossy(&lowered.stderr);
+    assert!(
+        dump_stderr.contains("no legacy MIR bodies were lowered"),
+        "strict tuple dump must report that no legacy body was used:\n{}",
+        describe_output(&lowered)
+    );
+
+    let mut compile = Command::new(hew_binary());
+    compile
+        .arg("compile")
+        .arg("--sir-lower")
+        .arg("--emit-dir")
+        .arg(dir.path())
+        .arg(&source)
+        .current_dir(repo_root());
+    let compiled = support::run_bounded_command(compile, "compile strict SIR virtual tuple");
+    assert_success(
+        &compiled,
+        "source tuple must reach LLVM through strict SIR virtual Raw MIR",
+    );
+    let compile_stderr = String::from_utf8_lossy(&compiled.stderr);
+    assert!(
+        compile_stderr.contains("no legacy MIR bodies were lowered"),
+        "strict tuple compile must report no legacy fallback:\n{}",
+        describe_output(&compiled)
+    );
+
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "sir_virtual_tuple_projection");
+    assert!(
+        binary.is_file(),
+        "virtual tuple compile did not produce expected native binary {}:\n{}",
+        binary.display(),
+        describe_output(&compiled),
+    );
+    let executed = support::run_bounded_command(
+        Command::new(&binary),
+        format!("run strict SIR virtual tuple {}", binary.display()),
+    );
+    assert_success(
+        &executed,
+        "native virtual tuple program must return the selected zero field",
+    );
+}
+
+/// Scalar parameters of a virtual tuple body must map directly to LLVM
+/// parameters, rather than acquiring legacy Raw-MIR locals or allocas. This
+/// is source-driver coverage for the ABI contract also exercised by the
+/// hand-built LLVM fixture.
+#[test]
+fn sir_lower_virtual_tuple_scalar_params_remain_value_only() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_virtual_tuple_scalar_params.hew");
+    let emit_dir = dir.path().join("emit");
+    fs::create_dir(&emit_dir).expect("create virtual tuple scalar parameter emit directory");
+    fs::write(&source, VIRTUAL_TUPLE_SCALAR_PARAMS)
+        .expect("write virtual tuple scalar parameter SIR fixture");
+
+    let lowered = raw_mir_dump(&source, Some("--sir-lower"));
+    assert_success(
+        &lowered,
+        "strict SIR virtual scalar-parameter raw dump must succeed",
+    );
+    let dump = String::from_utf8_lossy(&lowered.stdout);
+    let pair_second = function_section(&dump, "pair_second");
+    assert!(
+        pair_second.contains("param 0")
+            && pair_second.contains("param 1")
+            && pair_second.contains("tuple.make")
+            && pair_second.contains("tuple.get")
+            && pair_second.contains("materialize.return_abi"),
+        "scalar tuple parameters must lower through Raw virtual values:\n{pair_second}"
+    );
+    assert!(
+        !pair_second.contains("locals:")
+            && !pair_second.contains("local_0")
+            && !pair_second.contains("local_1")
+            && !pair_second.contains("tuple.construct"),
+        "virtual scalar parameters must not reintroduce storage or allocas:\n{pair_second}"
+    );
+    let dump_stderr = String::from_utf8_lossy(&lowered.stderr);
+    assert!(
+        dump_stderr.contains("no legacy MIR bodies were lowered"),
+        "strict scalar-parameter dump must report no legacy fallback:\n{}",
+        describe_output(&lowered)
+    );
+
+    let mut compile = Command::new(hew_binary());
+    compile
+        .arg("compile")
+        .arg("--sir-lower")
+        .arg("--emit-llvm")
+        .arg("--emit-dir")
+        .arg(&emit_dir)
+        .arg(&source)
+        .current_dir(repo_root());
+    let compiled = support::run_bounded_command(
+        compile,
+        "compile strict SIR virtual tuple scalar parameters",
+    );
+    assert_success(
+        &compiled,
+        "source scalar parameters must reach LLVM through strict SIR virtual Raw MIR",
+    );
+    let compile_stderr = String::from_utf8_lossy(&compiled.stderr);
+    assert!(
+        compile_stderr.contains("no legacy MIR bodies were lowered"),
+        "strict scalar-parameter compile must report no legacy fallback:\n{}",
+        describe_output(&compiled)
+    );
+
+    let llvm = fs::read_to_string(emit_dir.join("sir_virtual_tuple_scalar_params.ll"))
+        .expect("strict scalar-parameter LLVM emission must produce an .ll artifact");
+    let pair_second_llvm = llvm_function_section(&llvm, "pair_second");
+    assert!(
+        pair_second_llvm.contains("insertvalue { i64, i64 }")
+            && pair_second_llvm.contains("extractvalue { i64, i64 }"),
+        "scalar tuple body must retain an LLVM aggregate value:\n{pair_second_llvm}"
+    );
+    assert!(
+        !pair_second_llvm.contains("alloca { i64, i64 }")
+            && !pair_second_llvm.contains("local_0")
+            && !pair_second_llvm.contains("local_1"),
+        "scalar tuple parameters must not acquire tuple or parameter local allocas:\n{pair_second_llvm}"
+    );
+
+    let binary = hew_testutil::compiled_binary_path(&emit_dir, "sir_virtual_tuple_scalar_params");
+    assert!(
+        binary.is_file(),
+        "virtual scalar-parameter compile did not produce expected native binary {}:\n{}",
+        binary.display(),
+        describe_output(&compiled),
+    );
+    let executed = support::run_bounded_command(
+        Command::new(&binary),
+        format!(
+            "run strict SIR virtual tuple scalar parameters {}",
+            binary.display()
+        ),
+    );
+    assert_success(
+        &executed,
+        "native virtual tuple scalar-parameter program must return the selected zero field",
     );
 }
 

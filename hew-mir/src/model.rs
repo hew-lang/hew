@@ -4932,6 +4932,69 @@ pub enum OwnershipEvent {
     },
 }
 
+/// A typed compiler value in the value-only subset of raw MIR.
+///
+/// This is intentionally distinct from [`Place`]. A `RawValueId` has no
+/// address, storage lifetime, or layout-derived projection. The initial use
+/// is a small no-drop scalar/tuple slice lowered from SIR; later raw-MIR
+/// value-flow work may extend it with block arguments and value edges without
+/// teaching `Place` to masquerade as an SSA value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RawValueId(pub u32);
+
+/// One typed definition in raw MIR's value-only instruction stream.
+///
+/// The first slice keeps the type adjacent to its definition instead of adding
+/// a function-global value table. That avoids making every existing raw-MIR
+/// constructor own a second, partially populated value namespace while the
+/// current subset remains one-block and def-before-use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawValueDef {
+    pub id: RawValueId,
+    pub ty: ResolvedTy,
+}
+
+/// Value-only raw-MIR operations.
+///
+/// These operations describe semantic values before any addressable storage is
+/// needed. They are deliberately limited to bit-copy scalar and tuple values:
+/// ownership, aggregate layout, calls, and control-flow value transport remain
+/// outside this first vertical slice.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawValueOp {
+    /// Bind one declared ABI parameter as a virtual raw-MIR value. Codegen
+    /// reads the incoming LLVM parameter directly rather than first storing it
+    /// in a `Place::Local` alloca.
+    Param { dest: RawValueDef, index: u32 },
+    /// An integer constant.
+    ConstI64 { dest: RawValueDef, value: i64 },
+    /// A boolean constant.
+    ConstBool { dest: RawValueDef, value: bool },
+    /// Construct an abstract tuple value in field order. `fields` are virtual
+    /// values, not addressable tuple slots.
+    TupleMake {
+        dest: RawValueDef,
+        fields: Vec<RawValueId>,
+    },
+    /// Observe one semantic tuple member by positional index. This is not a
+    /// byte-offset or physical-layout operation.
+    TupleGet {
+        dest: RawValueDef,
+        tuple: RawValueId,
+        index: u32,
+    },
+}
+
+/// Why a virtual raw-MIR value becomes addressable storage.
+///
+/// Keep this explicit so storage cannot quietly leak back into value-only
+/// lowering. The initial slice admits only the final ABI return handoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueMaterializationReason {
+    /// The ABI return epilogue consumes `Place::ReturnSlot` today.
+    ReturnAbi,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
     /// Ownership-SSA operation. This is semantic MIR authority and intentionally
@@ -4944,6 +5007,16 @@ pub enum Instr {
     /// marker begins the normal successor and refreshes backend crash-cleanup
     /// state without emitting user-visible machine code.
     InteriorMutationCommit { place: Place },
+    /// Define a virtual, value-only raw-MIR value. This instruction never
+    /// names a [`Place`] and therefore does not itself imply an alloca.
+    Value(RawValueOp),
+    /// Make a virtual value addressable for a concrete representation boundary.
+    /// The first slice permits only `ReturnAbi` into [`Place::ReturnSlot`].
+    MaterializeValue {
+        dest: Place,
+        value: RawValueId,
+        reason: ValueMaterializationReason,
+    },
     /// Semantic marker at actor-handler entry. Codegen emits no user-visible
     /// instruction, but validates that the hidden execution-context argument is
     /// bound before any context-dependent carrier op can execute.

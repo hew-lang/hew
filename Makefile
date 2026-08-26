@@ -1294,11 +1294,29 @@ test-cabi-build: $(LIBHEW_READY)
 # (libhew_runtime.a for wasm32-wasip1) is needed by wasm32-wasi eval tests
 # even when they are expected to fail before codegen (the linker search runs
 # before the fast typecheck path reports its diagnostic).
+#
+# LOCAL TARGET. Kept because "run the compiler pipeline's tests" is a thing a
+# developer asks for; deliberately not a CI gate, and this is the arithmetic.
+#
+# Its eight packages are workspace members that `make test` does not exclude
+# (it excludes hew-cabi alone) and both run `--profile ci`, so its test set is
+# a strict SUBSET of `make test`'s. It was `comprehensive-only`, and the
+# comprehensive profile always selects `make test` -- so on the only tier that
+# ever selected it, every test it ran had already run. Measured on a hosted
+# comprehensive Linux run: 1190 s, the single largest command in the profile,
+# entirely duplicated.
+#
+# The one thing it adds is the `test-compiler-lifecycle` chain below, an alias
+# for `test-opaque-resource-lifecycle-matrix` -- which the comprehensive
+# profile selects in its own right. Nothing is lost.
+#
+# A narrow Rust change is unaffected: those routes never selected this gate.
+# They run the reverse-dependency closure's own nextest command instead.
 # inputs: hew-lexer/src/*.rs editors/sublime/Hew.tmLanguage.json
 # inputs: hew-parser/src/*.rs hew-types/src/*.rs hew-hir/src/*.rs
 # inputs: hew-mir/src/*.rs hew-sir/src/*.rs hew-codegen-rs/src/*.rs hew-cli/src/*.rs hew-pkg/src/*.rs
 # inputs: tests/ll-oracle/corpus/*.hew scripts/sir-shadow-corpus.sh
-# preflight: comprehensive-only — Rust changes run the reverse-dependency closure instead
+# preflight: never — a strict subset of `make test`, which every tier that selected this one also runs
 test-compiler-pipeline: runtime wasm-runtime hew-native $(LIBHEW_READY)
 	$(TEST_RUN_ENV) cargo nextest run --profile ci \
 		$(NEXTEST_SELECT_PIPELINE) $(NEXTEST_REUSE_ARGS)

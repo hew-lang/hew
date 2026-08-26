@@ -470,18 +470,31 @@ jobs:
         run: make playground-check
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Compiled-Hew artifact — one Linux build for the language-suite consumers
+  # Compiled-Hew artifact — packaged from the one Linux build, not a second one
   # ─────────────────────────────────────────────────────────────────────────
+  #
+  # This job used to build the debug compiler, libhew.a, AND the release-lib
+  # compiler, at a measured 12.8 minutes: 4.9 of them asserting the developer
+  # compiler profile and 3.8 building and certifying the bundle. Every one of
+  # those artefacts is now produced once by `linux-nextest-archive` and carried
+  # in its archive, so this job compiles nothing at all -- it downloads,
+  # certifies, and repackages the two binaries the compiled-Hew suites need
+  # into the compact revision-bound bundle those five consumers already verify.
+  #
+  # `make hew-profile-check` is not run here any more either: it is a selected
+  # gate in the Linux shards, so asserting the same profile twice per run was
+  # 4.9 minutes spent re-proving something already proved. The producer builds
+  # the release-lib launcher the assertion needs; the shard asserts it.
+  #
+  # No apt, no LLVM: nothing here links or codegens. cargo-nextest is present
+  # only because it owns the archive's extraction format.
   compiled-hew-linux:
-    name: Build compiled Hew artifact (Linux)
-    needs: changes
+    name: Package compiled Hew bundle (Linux)
+    needs: [changes, linux-nextest-archive]
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     env:
       RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
-      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-      CARGO_INCREMENTAL: "0"
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'
@@ -490,34 +503,46 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
-      - name: Install build tools
-        if: env.RUN_CODE_PATH == 'true'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config mold zlib1g-dev libzstd-dev
-
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
-        uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
-
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          cache-shared-key: linux-mold
+          tools: nextest@0.9.120
+          # `linux`, not `linux-mold`: this job links nothing, so it declares
+          # no mold rustflag, and a key naming a fingerprint the job does not
+          # compile under could never hit. cargo-nextest is here only as the
+          # archive's extractor -- reuse mode never invokes a compiler.
+          cache-shared-key: linux
 
-      - name: Assert the developer compiler profile
+      - name: Download the Linux test archive
         if: env.RUN_CODE_PATH == 'true'
-        run: make hew-profile-check
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ci-linux-nextest-${{ github.sha }}
+          path: ${{ runner.temp }}/ci-linux-nextest-download
+          digest-mismatch: error
 
-      - name: Build and certify the compiled Hew bundle
+      - name: Certify and package the compiled Hew bundle
         if: env.RUN_CODE_PATH == 'true'
+        # The freshness certificate travels in the archive, so this certifies
+        # the archive's own bytes rather than issuing a second certificate for
+        # a rebuild that happened to agree. `pack` verifies that certificate
+        # before it copies anything, which is why no separate
+        # check-libhew-fresh.sh call stands in front of it: one verification,
+        # in the tool that depends on the answer.
         run: |
-          make hew-native libhew-debug
-          scripts/check-libhew-fresh.sh
+          set -euo pipefail
+          root="$RUNNER_TEMP/ci-linux-nextest"
+          mkdir -p "$root"
+          cargo nextest list \
+            --archive-file "$RUNNER_TEMP/ci-linux-nextest-download/ci-linux-nextest.tar.zst" \
+            --extract-to "$root" \
+            --extract-overwrite \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --profile ci \
+            --list-type binaries-only \
+            > /dev/null
           python3 scripts/compiled-hew-artifact.py pack \
-            --source-debug-dir target/debug \
+            --source-debug-dir "$root/target/debug" \
             --source-revision "$GITHUB_SHA" \
             --output compiled-hew-linux.tar.gz
 
@@ -696,7 +721,8 @@ jobs:
   #
   # Every Linux shard used to compile the test binaries it was about to run,
   # plus the shared Cargo outputs those binaries link against: a measured
-  # 376/406/338/188 s of warm-up per run, four times over one tree.
+  # 417/732/470/383 s of warm-up per run, four times over one tree, on top
+  # of a 3.2-minute `make stdlib` in every one of them.
   #
   # This job builds that surface once and hands it to the shards as a
   # cargo-nextest archive. The archive carries the selected test binaries,
@@ -1090,6 +1116,11 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         env:
           COMPILED_HEW_GATE_OWNER: aggregate
+          # `playground-wasm-build` owns these two gates when the playground
+          # filter fires -- it already has the browser tooling provisioned.
+          # Empty when that job does not run, so a change the filter misses
+          # still runs both here.
+          PLAYGROUND_GATE_OWNER: ${{ needs.changes.outputs.playground == 'true' && 'playground' || '' }}
           # The `lint` job runs its authority gates unconditionally on every
           # pull request, so selecting them here as well runs each of them
           # twice for one change. Declaring the owner removes the duplicate

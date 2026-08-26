@@ -855,10 +855,45 @@ add_command() {
                 ;;
         esac
     fi
+    # `playground-wasm-build` runs these two gates itself, with the browser
+    # tooling they need already provisioned, whenever the playground filter
+    # fires. Selecting them into a Linux shard as well ran `make
+    # playground-check` twice for one change -- a measured 186 s each time --
+    # on every pull request touching Cargo.lock, the Makefile, ci.yml, or any
+    # of the five crates in that filter, which is most of them. The owner is
+    # declared by the caller exactly as the compiled-Hew aggregate declares
+    # its two suites, and it is EMPTY when that job does not run, so a change
+    # the playground filter misses still gets both gates here.
+    if [[ "${PLAYGROUND_GATE_OWNER:-dispatcher}" == "playground" ]]; then
+        case "$command" in
+            "make playground-check"|"make sandbox-fixtures-check")
+                return 0
+                ;;
+        esac
+    fi
     if [[ "${LINT_GATE_OWNER:-dispatcher}" == "lint" && "$command" == "make "* ]]; then
         if lint_owns_gate "${command#make }"; then
             return 0
         fi
+    fi
+    # Workspace Clippy is lint's too, and it is the most expensive duplicate of
+    # the set. `lint` runs `cargo clippy --workspace --tests -- -D warnings`
+    # unconditionally on every code change, wrapped only in SARIF plumbing --
+    # the same invocation, the same lint surface. A shard selecting it paid the
+    # 92 s run AND a full cold workspace clippy check-build in warm-up, because
+    # clippy's artefacts carry a different fingerprint from rustc's and no
+    # shared artefact can supply them.
+    #
+    # A narrow route's closure form (`cargo clippy -p A -p B --tests`) is a
+    # subset of the workspace form, so lint subsumes that too. Matched on the
+    # `-D warnings` tail so a future clippy invocation with different lint
+    # arguments is NOT silently dropped: it would be a different gate.
+    if [[ "${LINT_GATE_OWNER:-dispatcher}" == "lint" ]]; then
+        case "$command" in
+            "cargo clippy "*" --tests -- -D warnings")
+                return 0
+                ;;
+        esac
     fi
     if [[ ${COMMANDS[0]+set} == set ]]; then
         for existing in "${COMMANDS[@]}"; do

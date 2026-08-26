@@ -31,6 +31,7 @@ def _hermetic_env(
         if (
             key == "CI"
             or key == "COMPILED_HEW_GATE_OWNER"
+            or key == "PLAYGROUND_GATE_OWNER"
             or key.startswith("GITHUB_")
             or key.startswith("HEW_")
             or key.startswith("PREFLIGHT_")
@@ -624,8 +625,14 @@ def test_comprehensive_warms_every_gate_through_its_own_build_form() -> None:
     assert "  - cargo clippy --workspace --tests\n" in warmup, result.stdout
     assert "  - make test-build\n" in warmup, result.stdout
     assert "  - make test-cabi-build\n" in warmup, result.stdout
-    assert "  - make test-compiler-pipeline-build\n" in warmup, result.stdout
+    assert "  - make test-runtime-unit-build\n" in warmup, result.stdout
     assert "  - make sandbox-parity-build\n" in warmup, result.stdout
+
+    # `make test-compiler-pipeline` is deliberately absent: its eight packages
+    # are a strict subset of `make test`'s workspace run under the same
+    # profile, so it is `preflight: never` and no tier selects it. A witness
+    # for a gate no profile runs would assert nothing.
+    assert "test-compiler-pipeline" not in result.stdout, result.stdout
 
     makefile = (ROOT / "Makefile").read_text()
     # The recipe is read as make expands it, not as it is spelled. `test-build`
@@ -2026,6 +2033,104 @@ def test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts() -> None:
 
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     assert "COMPILED_HEW_GATE_OWNER: aggregate" in workflow, workflow
+
+
+def test_playground_job_owns_the_browser_gates_when_it_runs() -> None:
+    """One gate, one home -- and the home is conditional, so the owner is too.
+
+    `playground-wasm-build` runs `make playground-check` and
+    `make sandbox-fixtures-check` itself, with the browser tooling already
+    provisioned, whenever the playground filter fires. Selecting them into a
+    Linux shard as well ran playground-check twice for one change (a measured
+    186 s each time) on every pull request touching Cargo.lock, the Makefile,
+    ci.yml, or any of the five crates in that filter.
+
+    The owner must be EMPTY when that job is skipped, or a change the filter
+    misses would run neither copy -- which is a coverage hole, not a saving.
+    """
+    unowned = run_dispatcher("some-unclassified-root-file.txt")
+    assert unowned.returncode == 0, unowned.stderr
+    assert "  - make playground-check " in unowned.stdout, unowned.stdout
+    assert "  - make sandbox-fixtures-check " in unowned.stdout, unowned.stdout
+
+    for empty in ("", "dispatcher"):
+        still = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            env={"PLAYGROUND_GATE_OWNER": empty},
+        )
+        assert still.returncode == 0, still.stderr
+        assert "make playground-check" in still.stdout, (
+            f"PLAYGROUND_GATE_OWNER={empty!r} dropped a gate nobody else runs"
+        )
+
+    owned = run_dispatcher(
+        "some-unclassified-root-file.txt",
+        env={"PLAYGROUND_GATE_OWNER": "playground"},
+    )
+    assert owned.returncode == 0, owned.stderr
+    assert "make playground-check" not in owned.stdout, owned.stdout
+    assert "make sandbox-fixtures-check" not in owned.stdout, owned.stdout
+
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert (
+        "PLAYGROUND_GATE_OWNER: ${{ needs.changes.outputs.playground == 'true'"
+        " && 'playground' || '' }}"
+    ) in workflow, "the shard must derive the owner from the same filter the job uses"
+
+
+def test_lint_owns_the_workspace_clippy_the_shards_used_to_repeat() -> None:
+    """The most expensive duplicate in the profile, and the hardest to see.
+
+    `lint` runs `cargo clippy --workspace --tests -- -D warnings` on every code
+    change, wrapped only in SARIF plumbing. The comprehensive profile added the
+    identical invocation as a shard command, so one change paid the 92 s run
+    twice AND paid a full cold workspace clippy check-build in shard warm-up --
+    clippy artefacts carry a different fingerprint from rustc's, so no shared
+    artefact can supply them.
+
+    A narrow route's closure form is a subset of the workspace form, so it is
+    subsumed too. A clippy invocation with DIFFERENT lint arguments is not: it
+    would be a different gate, and dropping it would be a coverage hole.
+    """
+    unowned = run_dispatcher("some-unclassified-root-file.txt")
+    assert unowned.returncode == 0, unowned.stderr
+    assert "cargo clippy --workspace --tests -- -D warnings" in unowned.stdout, (
+        "a local preflight must still run the workspace lint itself"
+    )
+
+    owned = run_dispatcher(
+        "some-unclassified-root-file.txt", env={"LINT_GATE_OWNER": "lint"}
+    )
+    assert owned.returncode == 0, owned.stderr
+    assert "cargo clippy" not in owned.stdout, owned.stdout
+
+    closure = run_dispatcher("hew-mir/src/lib.rs", env={"LINT_GATE_OWNER": "lint"})
+    assert closure.returncode == 0, closure.stderr
+    assert "cargo clippy" not in closure.stdout, closure.stdout
+    assert "cargo nextest run" in closure.stdout, (
+        "the closure's test command is not lint's and must survive"
+    )
+
+    # The lint job must actually run what it now owns, with the same arguments.
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "cargo clippy --workspace --tests --message-format=json -- -D warnings" in (
+        workflow
+    ), "lint no longer runs the workspace clippy the shards stopped running"
+
+    # Falsifiability: a clippy invocation carrying different lint arguments is
+    # a different gate and must not be swallowed by this ownership rule.
+    other = run_dispatcher(
+        "some-unclassified-root-file.txt",
+        env={
+            "LINT_GATE_OWNER": "lint",
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_COMMANDS": "cargo clippy --workspace --tests -- -D clippy::pedantic",
+        },
+    )
+    assert other.returncode == 0, other.stderr
+    assert "-D clippy::pedantic" in other.stdout, (
+        "an unrelated clippy invocation was dropped as if lint ran it"
+    )
 
 
 def test_compiled_hew_recipe_guard_preserves_gate_declarations() -> None:

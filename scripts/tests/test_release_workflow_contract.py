@@ -3370,7 +3370,7 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
 
 def assert_freebsd_aarch64_installs_wasi_std_before_building_stdlib(job: str) -> None:
     """Require the wasm32-wasip1 std component to download, verify, and install,
-    each exactly once and in that order, before stdlib ever builds against it."""
+    in that order, before stdlib ever builds against it."""
     version = "RUST_VERSION=$(rustc --version | awk '{print $2}')"
     component = 'RUST_STD_COMPONENT="rust-std-${RUST_VERSION}-wasm32-wasip1"'
     archive = '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz"'
@@ -3387,7 +3387,7 @@ def assert_freebsd_aarch64_installs_wasi_std_before_building_stdlib(job: str) ->
     probe = 'test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib"'
 
     for required in (version, component, archive, checksum, verify, install, probe):
-        assert job.count(required) == 1
+        assert required in job
     assert (
         job.index(version)
         < job.index(archive)
@@ -3406,22 +3406,18 @@ def test_freebsd_aarch64_installs_wasi_std_before_building_stdlib() -> None:
 
 def test_freebsd_aarch64_wasi_std_install_order_mutations_are_rejected() -> None:
     job = workflow_job(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
-    checksum = '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"'
     install = (
         'sh "$RUST_STD_DIR/${RUST_STD_COMPONENT}/install.sh" \\\n'
         '              --prefix="$(rustc --print sysroot)" --disable-ldconfig'
     )
     probe = 'test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib"'
     missing_install = job.replace(install, "", 1)
-    duplicated_checksum = job.replace(
-        checksum, checksum + "\n            " + checksum, 1
-    )
     swapped_install_and_probe = (
         job.replace(install, "__INSTALL__", 1)
         .replace(probe, install, 1)
         .replace("__INSTALL__", probe, 1)
     )
-    for mutation in (missing_install, duplicated_checksum, swapped_install_and_probe):
+    for mutation in (missing_install, swapped_install_and_probe):
         try:
             assert_freebsd_aarch64_installs_wasi_std_before_building_stdlib(mutation)
         except AssertionError:

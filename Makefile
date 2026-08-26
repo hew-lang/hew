@@ -2126,6 +2126,10 @@ test-sandbox-parity-coverage-check-build:
 # exists to reverse.
 # inputs: .github/workflows/* scripts/tests/test_release_workflow_contract.py
 # inputs: scripts/tests/test_ci_workflow_contract.py .github/actions/*/action.yml
+# inputs: scripts/tests/test_scheduled_failure_report.py
+# inputs: scripts/scheduled-failure-report.py .github/nightly-owners.yml
+# inputs: scripts/tests/test_check_nightly_freshness.py
+# inputs: scripts/check-nightly-freshness.py
 # inputs: scripts/tests/test_pre_release_validate_contract.py
 # inputs: scripts/tests/test_cargo_output_dir.py
 # inputs: scripts/tests/test_target_dir_gate_wiring.py scripts/pre-release-validate.sh
@@ -2140,6 +2144,8 @@ test-sandbox-parity-coverage-check-build:
 test-release-workflow-contract:
 	python3 scripts/tests/test_release_workflow_contract.py
 	python3 scripts/tests/test_ci_workflow_contract.py
+	python3 scripts/tests/test_scheduled_failure_report.py
+	python3 scripts/tests/test_check_nightly_freshness.py
 	python3 scripts/tests/test_pre_release_validate_contract.py
 	python3 scripts/tests/test_cargo_output_dir.py
 	python3 scripts/tests/test_target_dir_gate_wiring.py

@@ -913,6 +913,52 @@ jobs:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
           check_name: Test Results (Linux shard ${{ matrix.shard }})
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # Nightly freshness — the scheduled tier is only a tier while it reports
+  # ─────────────────────────────────────────────────────────────────────────
+  nightly-freshness:
+    name: Nightly freshness
+    # LAND ORDER, and it is not optional: this job is RED today. The last
+    # successful SCHEDULED coverage-nightly run is ~740h old, because the job
+    # was missing gdb (fixed in this same branch, in coverage-nightly.yml).
+    # Merging this `needs:` edge before one green scheduled coverage-nightly
+    # run exists on main would turn `Build & test (Linux)` red on every open
+    # pull request for a reason no pull request author can fix. Land the
+    # coverage-nightly provisioning fix, let one scheduled cycle succeed, then
+    # merge this. The alternative -- softening the gate so it can land early --
+    # is the theatre this whole lane exists to remove.
+    #
+    # Deliberately NO `needs:`. Every other job in this workflow hangs off
+    # `changes`, which hangs off `main-health`; a stranded `main-health` would
+    # skip this one too, and the whole point is that nightly rot cannot hide
+    # behind another job's verdict.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Workflow-run history lives under the `actions` scope. `contents: read`
+      # does not cover it, and an unauthorised read 404s on a private
+      # repository -- indistinguishable from "never ran on schedule", which
+      # would report an auth defect as nightly rot. The script separates the
+      # two, and this grant is what makes the separation meaningful.
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          sparse-checkout: |
+            .github/workflows
+            .github/nightly-owners.yml
+            scripts/check-nightly-freshness.py
+            scripts/scheduled-failure-report.py
+            scripts/check-gate-reachability.py
+          sparse-checkout-cone-mode: false
+
+      - name: Assert the scheduled tier is fresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/check-nightly-freshness.py
+
   # Keep the established required-check name while allowing the Rust and
   # compiled-Hew suites to execute in parallel.
   #
@@ -923,7 +969,7 @@ jobs:
   # "Build & test (Linux)", remains the single required context.
   linux-required:
     name: Build & test (Linux)
-    needs: [changes, build-and-test, compiled-hew-aggregate]
+    needs: [changes, build-and-test, compiled-hew-aggregate, nightly-freshness]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -939,10 +985,21 @@ jobs:
           CHANGE_RESULT: ${{ needs.changes.result }}
           RUST_GATES_RESULT: ${{ needs.build-and-test.result }}
           COMPILED_HEW_RESULT: ${{ needs.compiled-hew-aggregate.result }}
+          # The scheduled tier is aggregated here rather than into `lint`
+          # because `lint` is on a deletion path -- anything parked there gets
+          # swept away by the next slimming pass. This job is a five-minute
+          # `if: always()` aggregator whose whole purpose is asserting
+          # needs.*.result, so one more entry is the cheapest durable home in
+          # the topology, and it needs no ruleset edit to become required.
+          # This step is asserted unconditionally: a docs-only pull request
+          # takes the no-op branch above for the heavy gates, but nightly rot
+          # is not a property of the diff.
+          NIGHTLY_FRESHNESS_RESULT: ${{ needs.nightly-freshness.result }}
         run: |
           test "$CHANGE_RESULT" = success
           test "$RUST_GATES_RESULT" = success
           test "$COMPILED_HEW_RESULT" = success
+          test "$NIGHTLY_FRESHNESS_RESULT" = success
 
   # Code coverage moved off the per-PR path: it was the flakiest required check
   # (cargo-llvm-cov instrumentation + the duplicated target/llvm-cov-target/

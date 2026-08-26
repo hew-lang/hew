@@ -147,6 +147,28 @@ jobs:
         # entering the build, independently of the build itself.
         run: df -h /
 
+      - name: Install debugger and MQTT clients
+        # Twelve consecutive scheduled failures, 2026-08-14 to 2026-08-25, all
+        # the same cause: hew-cli's dwarf_debugger_locals_e2e suite panics with
+        # "no debugger found on linux: install gdb". That test refuses to skip
+        # on purpose -- a skipped live-debugger proof reports success while
+        # proving nothing -- so an unprovisioned runner is a hard red, and it
+        # was red every night.
+        #
+        # This is exactly the environment-contract drift the WASI step below
+        # already warns about: ci.yml's "Build & test (Linux)" job installs gdb
+        # and mosquitto-clients, this instrumented twin of it did not, and the
+        # instrumented run resolves the same workspace. Provision the same
+        # tools and prove they are present, so a broken install fails in this
+        # step rather than resurfacing as a test panic.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb mosquitto-clients
+          command -v gdb
+          command -v mosquitto_pub
+          command -v mosquitto_sub
+
       - name: Install WASI runner prerequisites
         # The instrumented run includes hew-cli's wasmtime-backed e2e tests
         # (e.g. sort_merge_authority_runs_under_wasmtime), whose support
@@ -486,3 +508,34 @@ jobs:
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
           check_name: Test Results (macOS, coverage-nightly)
+
+  # ── Ownership ───────────────────────────────────────────────────────────
+  # A scheduled failure that reaches nobody is not a signal. `needs:` lists
+  # EVERY other job in this workflow, so a job added later without being added
+  # here is caught by the parsed-workflow contract in
+  # scripts/tests/test_ci_workflow_contract.py rather than silently escaping
+  # the report. `always()` keeps a red upstream from skipping the reporter at
+  # exactly the moment it is needed, and the schedule/dispatch guard keeps a
+  # branch run of this workflow from filing issues.
+  #
+  # `issues: write` is granted HERE, by the caller: GitHub intersects a called
+  # workflow's permissions with the caller's token scope, so declaring it
+  # inside the reusable workflow would grant nothing and every invocation
+  # would 403.
+  #
+  # The reporter runs on green too, so the next successful scheduled run
+  # closes the issue. A red-only reporter can only ever open one.
+  report:
+    needs: [runtime-e2e-coverage, coverage, full-windows, full-macos]
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/scheduled-failure-report.yml
+    with:
+      workflow-file: coverage-nightly.yml
+      outcome: >-
+        ${{ (contains(needs.*.result, 'failure')
+        || contains(needs.*.result, 'cancelled')
+        || contains(needs.*.result, 'timed_out')) && 'failure' || 'success' }}
+      failed-jobs: ${{ toJSON(needs) }}

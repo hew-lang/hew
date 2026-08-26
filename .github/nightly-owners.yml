@@ -1,0 +1,45 @@
+# Owners of the scheduled tier.
+#
+# A tier without an owner is not a tier. Moving work to nightly is only
+# legitimate when a nightly failure reaches a person with a deadline —
+# `coverage-nightly.yml` failed on twelve consecutive scheduled runs, its own
+# header said failures "need a same-day owner", and no notification mechanism
+# existed in any of the three scheduled workflows.
+#
+# This file is the one artefact the scheduled tier gains. Two mechanisms read
+# it and neither maintains its own copy:
+#
+#   * .github/workflows/scheduled-failure-report.yml — who the issue is
+#     assigned to when a scheduled run goes red.
+#   * scripts/check-nightly-freshness.py — how long a workflow may go without
+#     a successful SCHEDULED run before the required Linux check turns red.
+#
+# It is VALIDATED against the workflows rather than maintained beside them: a
+# workflow with an `on: schedule:` trigger and no entry here is an error, and
+# an entry naming a workflow that no longer schedules is an error. Neither can
+# drift silently.
+#
+# freshness_hours is at least two scheduled cycles for every entry, so one
+# transient failure never trips the gate — the reporter has already filed an
+# owned issue by the time freshness bites. The resolutions when it does bite
+# are "fix the nightly" or "delete the nightly and its entry in one commit".
+# There is no bypass label and no skip environment variable
+# (LESSONS.md preflight-gate-no-bypass).
+#
+# `owner` must be a login this repository can actually assign. GitHub's
+# POST /issues/{n}/assignees succeeds and assigns nobody for a non-assignable
+# user, so the reporter asserts the returned assignee list contains the login
+# rather than trusting the 2xx.
+
+workflows:
+  - file: coverage-nightly.yml
+    owner: slepp
+    freshness_hours: 48
+
+  - file: nightly-sanitizers.yml
+    owner: slepp
+    freshness_hours: 48
+
+  - file: freebsd.yml
+    owner: slepp
+    freshness_hours: 72

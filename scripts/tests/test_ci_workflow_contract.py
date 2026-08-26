@@ -573,6 +573,224 @@ def test_pull_requests_restore_the_cache_but_never_save_it() -> None:
     assert not ungated, f"sccache steps run on pull requests: {ungated}"
 
 
+# ── contract: every scheduled workflow reports to an owner ───────────────────
+
+REPORTER = ".github/workflows/scheduled-failure-report.yml"
+OWNER_TABLE = ROOT / ".github" / "nightly-owners.yml"
+
+
+def scheduled_workflows() -> list[Path]:
+    """Every workflow with an `on: schedule:` trigger.
+
+    Enumerated from the triggers, never listed: a scheduled workflow added
+    tomorrow inherits the requirement. An empty enumeration is a failure --
+    a reporter contract that finds nothing to check is a contract that checks
+    nothing (LESSONS.md enumeration-gate-floors).
+    """
+    found = []
+    for path in workflow_files():
+        triggers = load(path).get("on") or load(path).get(True) or {}
+        if isinstance(triggers, dict) and "schedule" in triggers:
+            found.append(path)
+    assert found, "no scheduled workflows found; the reporter contract is vacuous"
+    return found
+
+
+def reporter_findings(document: dict, name: str) -> list[str]:
+    """Every way a reporter job can look wired and report nothing."""
+    findings: list[str] = []
+    all_jobs = jobs(document)
+    callers = {
+        job_name: job
+        for job_name, job in all_jobs.items()
+        if REPORTER in str(job.get("uses", ""))
+    }
+    if len(callers) != 1:
+        return [
+            f"{name}: expected exactly one job calling the reporter, found "
+            f"{sorted(callers) or 'none'}"
+        ]
+    job_name, job = next(iter(callers.items()))
+
+    needs = job.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    expected = set(all_jobs) - {job_name}
+    if set(needs) != expected:
+        findings.append(
+            f"{name}: reporter `needs:` is {sorted(needs)} but the workflow's "
+            f"other jobs are {sorted(expected)}; a job outside `needs:` never "
+            "reaches the report"
+        )
+
+    condition = str(job.get("if", ""))
+    if "always()" not in condition:
+        findings.append(
+            f"{name}: reporter `if:` lacks always(); a red upstream would skip "
+            "it at exactly the moment it is needed"
+        )
+    if "schedule" not in condition or "workflow_dispatch" not in condition:
+        findings.append(
+            f"{name}: reporter `if:` must be guarded to schedule/dispatch; a "
+            "branch run of a scheduled workflow must not file issues"
+        )
+
+    permissions = job.get("permissions") or {}
+    if not isinstance(permissions, dict) or permissions.get("issues") != "write":
+        findings.append(
+            f"{name}: the CALLER must grant `issues: write`. GitHub intersects "
+            "a called workflow's permissions with the caller's token scope, so "
+            "granting it only inside the reusable workflow 403s on every call"
+        )
+
+    outcome = str((job.get("with") or {}).get("outcome", ""))
+    for state in ("failure", "cancelled", "timed_out"):
+        if state not in outcome:
+            findings.append(
+                f"{name}: the aggregate outcome ignores `{state}`, so that "
+                "state would be reported as a green run"
+            )
+    return findings
+
+
+def test_every_scheduled_workflow_reports_to_an_owner() -> None:
+    findings: list[str] = []
+    for path in scheduled_workflows():
+        findings.extend(reporter_findings(load(path), path.name))
+    assert not findings, "scheduled reporter wiring:\n  " + "\n  ".join(findings)
+
+
+def _reporter_fixture(**overrides: str) -> dict:
+    fields = {
+        "needs": "[alpha, beta]",
+        "if": "always() && (github.event_name == 'schedule' "
+        "|| github.event_name == 'workflow_dispatch')",
+        "permissions": "issues: write",
+        "outcome": "failure-cancelled-timed_out",
+    }
+    fields.update(overrides)
+    return parse_yaml(
+        "on:\n  schedule:\n    - cron: '0 7 * * *'\njobs:\n"
+        "  alpha:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n"
+        "  beta:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n"
+        "  report:\n"
+        f"    needs: {fields['needs']}\n"
+        f"    if: {fields['if']}\n"
+        "    permissions:\n"
+        f"      {fields['permissions']}\n"
+        f"    uses: {REPORTER}\n"
+        "    with:\n"
+        f"      outcome: {fields['outcome']}\n",
+        "fixture",
+    )
+
+
+def test_the_reporter_contract_rejects_each_broken_clause() -> None:
+    """Falsifiability: mutate every clause the wiring depends on."""
+    assert not reporter_findings(_reporter_fixture(), "fixture"), reporter_findings(
+        _reporter_fixture(), "fixture"
+    )
+
+    cases = {
+        "never reaches the report": _reporter_fixture(needs="[alpha]"),
+        "lacks always()": _reporter_fixture(
+            **{
+                "if": "github.event_name == 'schedule' "
+                "|| github.event_name == 'workflow_dispatch'"
+            }
+        ),
+        "must not file issues": _reporter_fixture(**{"if": "always()"}),
+        "must grant": _reporter_fixture(permissions="contents: read"),
+        "ignores `cancelled`": _reporter_fixture(outcome="failure-timed_out"),
+    }
+    for expected, document in cases.items():
+        findings = reporter_findings(document, "fixture")
+        assert any(expected in finding for finding in findings), (expected, findings)
+
+    # A scheduled workflow with no reporter at all is the state this replaces.
+    none = parse_yaml(
+        "on:\n  schedule:\n    - cron: '0 7 * * *'\njobs:\n"
+        "  alpha:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n",
+        "fixture",
+    )
+    assert any(
+        "exactly one job calling the reporter" in finding
+        for finding in reporter_findings(none, "fixture")
+    )
+
+
+def test_the_owner_table_matches_the_scheduled_workflows_exactly() -> None:
+    """Validated against the workflows, not maintained beside them.
+
+    Both directions are errors: a scheduled workflow with no owner files
+    unowned issues, and an owner entry for a workflow that no longer schedules
+    is a freshness window nothing can ever satisfy.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "scheduled_failure_report", ROOT / "scripts" / "scheduled-failure-report.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    owners = module.parse_owners(OWNER_TABLE.read_text(encoding="utf-8"))
+
+    scheduled = {path.name for path in scheduled_workflows()}
+    assert set(owners) == scheduled, {
+        "unowned": sorted(scheduled - set(owners)),
+        "orphaned": sorted(set(owners) - scheduled),
+    }
+    for name, entry in owners.items():
+        assert entry["owner"], name
+        assert int(entry["freshness_hours"]) >= 24, (name, entry)
+
+
+# ── contract: the freshness gate is durably required and correctly scoped ────
+
+
+def test_the_freshness_job_is_standalone_required_and_scoped() -> None:
+    """Every clause here is load-bearing, and each was wrong in a draft.
+
+    `needs:` must be absent, or a stranded `main-health` would skip the very
+    check that says the scheduled tier stopped producing verdicts.
+    `actions: read` must be present, or the run-history read 404s and the
+    script reports an auth defect as rot. Both token spellings must be
+    exported, because the script accepts either and neither is set by default.
+    And `linux-required` must aggregate it, unconditionally: nightly rot is
+    not a property of the diff, so a docs-only pull request does not get to
+    skip it.
+    """
+    ci = load(WORKFLOWS / "ci.yml")
+    all_jobs = jobs(ci)
+    assert "nightly-freshness" in all_jobs, sorted(all_jobs)
+    job = all_jobs["nightly-freshness"]
+
+    assert not job.get("needs"), (
+        "nightly-freshness must have no `needs:`; hanging it off another job "
+        "means a stranded upstream skips it exactly when it matters"
+    )
+    permissions = job.get("permissions") or {}
+    assert permissions.get("actions") == "read", permissions
+    assert permissions.get("contents") == "read", permissions
+
+    runner = next(
+        step
+        for step in steps(job)
+        if "check-nightly-freshness.py" in str(step.get("run", ""))
+    )
+    env = runner.get("env") or {}
+    assert env.get("GH_TOKEN") and env.get("GITHUB_TOKEN"), env
+
+    required = all_jobs["linux-required"]
+    needs = required.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    assert "nightly-freshness" in needs, needs
+    assertion = "\n".join(str(step.get("run", "")) for step in steps(required))
+    assert "NIGHTLY_FRESHNESS_RESULT" in assertion, assertion
+    assert 'test "$NIGHTLY_FRESHNESS_RESULT" = success' in assertion, assertion
+    # A job-level `if:` would report the required context as skipped rather
+    # than satisfied (LESSONS.md ci-required-gate-sequencing clause 2).
+    assert required.get("if") == "always()", required.get("if")
+
+
 def _discover_tests() -> list:
     return [
         value

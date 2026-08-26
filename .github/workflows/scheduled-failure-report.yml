@@ -1,0 +1,77 @@
+name: Scheduled failure report
+
+# A scheduled tier with no notification is a tier nobody owns.
+# `coverage-nightly.yml` failed on twelve consecutive scheduled runs while its
+# own header said failures "need a same-day owner"; there was no notification
+# mechanism in any of the three scheduled workflows, so two weeks of red went
+# unowned.
+#
+# This workflow is invoked as a JOB by each scheduled workflow, on green as
+# well as on red. Three mechanism facts shape it, and a naive version misses
+# all three:
+#
+#   1. A called workflow cannot elevate its caller's permissions. GitHub
+#      intersects the called workflow's `permissions:` with the caller's
+#      GITHUB_TOKEN scope, so `issues: write` declared here grants nothing
+#      unless the CALLER grants it too. Each caller job therefore declares it.
+#   2. "On failure of a scheduled workflow" is not a trigger a caller can
+#      express. A called workflow runs inside the same run, so the calling job
+#      needs `needs:` over EVERY other job plus `if: always()`, or it is
+#      skipped exactly when it is needed.
+#   3. A reporter that only runs on red can never close an issue. It would be
+#      a one-way ratchet into a permanently-open ticket, which is the same
+#      unowned red wearing a different costume.
+#
+# The aggregate outcome is passed in rather than re-derived from the API: the
+# caller already knows it, and a second derivation is a second thing to get
+# wrong.
+
+on:
+  workflow_call:
+    inputs:
+      workflow-file:
+        description: >
+          The calling workflow's file name, e.g. `coverage-nightly.yml`. Keys
+          the owner lookup in .github/nightly-owners.yml and the issue title,
+          so one workflow owns exactly one issue.
+        required: true
+        type: string
+      outcome:
+        description: >
+          `failure` or `success`, aggregated by the caller from needs.*.result.
+        required: true
+        type: string
+      failed-jobs:
+        description: >
+          toJSON(needs) from the caller. Used to name the failing jobs in the
+          issue body.
+        required: false
+        type: string
+        default: '{}'
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Report scheduled outcome
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          sparse-checkout: |
+            .github/nightly-owners.yml
+            scripts/scheduled-failure-report.py
+          sparse-checkout-cone-mode: false
+
+      - name: File, update, or close the ownership issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPORT_WORKFLOW_FILE: ${{ inputs.workflow-file }}
+          REPORT_OUTCOME: ${{ inputs.outcome }}
+          REPORT_NEEDS: ${{ inputs.failed-jobs }}
+          REPORT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/scheduled-failure-report.py

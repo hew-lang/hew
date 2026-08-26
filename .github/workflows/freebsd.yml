@@ -166,3 +166,34 @@ jobs:
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/nextest/ci-focused/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
           check_name: Test Results (FreeBSD)
+
+  # ── Ownership ───────────────────────────────────────────────────────────
+  # A scheduled failure that reaches nobody is not a signal. `needs:` lists
+  # EVERY other job in this workflow, so a job added later without being added
+  # here is caught by the parsed-workflow contract in
+  # scripts/tests/test_ci_workflow_contract.py rather than silently escaping
+  # the report. `always()` keeps a red upstream from skipping the reporter at
+  # exactly the moment it is needed, and the schedule/dispatch guard keeps a
+  # branch run of this workflow from filing issues.
+  #
+  # `issues: write` is granted HERE, by the caller: GitHub intersects a called
+  # workflow's permissions with the caller's token scope, so declaring it
+  # inside the reusable workflow would grant nothing and every invocation
+  # would 403.
+  #
+  # The reporter runs on green too, so the next successful scheduled run
+  # closes the issue. A red-only reporter can only ever open one.
+  report:
+    needs: [build-and-test]
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/scheduled-failure-report.yml
+    with:
+      workflow-file: freebsd.yml
+      outcome: >-
+        ${{ (contains(needs.*.result, 'failure')
+        || contains(needs.*.result, 'cancelled')
+        || contains(needs.*.result, 'timed_out')) && 'failure' || 'success' }}
+      failed-jobs: ${{ toJSON(needs) }}

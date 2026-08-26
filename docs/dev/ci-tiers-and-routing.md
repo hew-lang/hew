@@ -274,13 +274,37 @@ which revision produced it.
 **How a consumer uses it.** `cargo nextest list --extract-to` (nextest's own
 extractor; it runs no test) unpacks under `RUNNER_TEMP`, never the checkout —
 an archive in `$PWD` is untracked paths no gate declares, which makes the
-router fail closed to comprehensive on every run. The extracted `target` is
-exported as `CARGO_TARGET_DIR`, so `scripts/cargo-output-dir.py` and everything
-derived from it — the Makefile's `DEBUG_DIR`/`RELEASE_LIB_DIR`/`WASM_DEBUG_DIR`,
-`check-libhew-fresh.sh`, and `hew-testutil`'s own resolver — already point into
-it. No second path authority is introduced. JUnit is unaffected: nextest writes
-its store under the remapped *workspace* root, so
-`target/nextest/<profile>/junit.xml` stays where the upload step reads it.
+router fail closed to comprehensive on every run. It is then made **read-only**
+and is deliberately **not** Cargo's output directory.
+
+Those are the same decision from two directions. The archive's contents are
+certified — `libhew.a` carries a freshness certificate binding it to the
+sources that produced it, `hew` is the compiler the producer built — so a tree
+Cargo writes into is a tree those certificates stop describing. Pointing
+`CARGO_TARGET_DIR` at it did exactly that:
+`forced-cancel-composite-check-build` runs
+`cargo build -p hew-cli -p hew-lib --features hew-runtime/forced-cancel-test`
+in warm-up, before any gate, and overwrote both. Every later gate in that shard
+would have linked a runtime nobody selected.
+
+So the Makefile carries two authorities instead of one path: `CARGO_*` is where
+Cargo WRITES, `ARTIFACT_*` is where shared artefacts are READ from. Locally
+they are the same directory and nothing changes. In prebuilt mode
+`ARTIFACT_ROOT` is the archive — `DEBUG_DIR`, `RELEASE_LIB_DIR`,
+`WASM_DEBUG_DIR`, `LIBHEW` and `check-libhew-fresh.sh` follow it — while every
+`cargo build`, `cargo run`, `cargo test` and feature-specific build writes to
+Cargo's own directory. `chmod -R a-w` on the extracted tree makes that
+separation enforced rather than trusted: a stray write fails at the writer with
+a permission error instead of surfacing as a wrong link an hour later. There is
+no repair path and no self-heal message, because there is nothing to repair.
+
+`hew-testutil` needs no change either way: it resolves a shared artefact from
+its own test executable's `<target>/<profile>/deps/` position, so an archived
+binary finds the archive and a locally built one finds the local target.
+
+JUnit is unaffected: nextest writes its store under the remapped *workspace*
+root, so `target/nextest/<profile>/junit.xml` stays where the upload step
+reads it.
 
 **Two spellings of one selection.** `--binaries-metadata` and every Cargo
 package/target flag are one clap group in cargo-nextest; passing both is
@@ -289,12 +313,12 @@ local mode says `-p x`. The Makefile carries both spellings side by side and
 `scripts/tests/test_ci_prebuilt_artifacts.py` holds them to denoting the same
 set.
 
-**What still builds.** `make test-cabi` compiles hew-cabi: every workspace-wide
-nextest invocation in this repository excludes it, and
-`cargo nextest archive --workspace` is one of those.
-`test-runtime-no-default-features` compiles its own feature set, which is a
-different build and not shareable. `sandbox-parity` runs plain Cargo. These are
-bounded correctness fallbacks, not artefact-recovery paths.
+**What still builds.** Everything the archive cannot carry, because it carries
+runnable outputs and no rlibs or fingerprints: `make test-cabi`,
+`make test-runtime-unit`, `make sandbox-parity`,
+`make forced-cancel-composite-check`, `make stdlib-user-build-clean`, and any
+`-build` form of those. They are bounded correctness fallbacks, not
+artefact-recovery paths, and they are why the runner's disk guard stays.
 
 **Failure is closed.** A producer failure skips the shards, `linux-required`
 sees a non-success matrix result, and the required context is red. A digest
@@ -453,11 +477,29 @@ or a subsumption, never by dropping a check:
 | `make playground-check`, `make sandbox-fixtures-check` | 191 s | `playground-wasm-build` runs both with the browser tooling already provisioned. Owned by that job whenever the playground filter fires, and by the shards when it does not. |
 | Debug compiler, `libhew.a`, release-lib compiler in `compiled-hew-linux` | 8.7 min | The archive producer builds them once. That job now downloads, certifies and packages; it compiles nothing and installs no LLVM. |
 
-The four Linux shards additionally each ran `make stdlib` (3.2 min apiece) and
-derived their own warm-up. The archive above removes both: what survives in
-warm-up is only what genuinely differs — `hew-cabi` (excluded from every
-workspace nextest run) and `hew-runtime --no-default-features` (a different
-feature set, so a different build).
+The four Linux shards additionally each ran `make stdlib` — 2.2, 3.2, 3.2 and
+2.5 minutes, 11.1 job-minutes across the four — and derived their own warm-up.
+
+The archive removes the compiled artefacts it carries, and nothing else. It
+carries **runnable outputs only**: test binaries, non-test binaries integration
+tests use, build-script output, linked paths, nextest's metadata, and the
+shared Hew archives. It deliberately carries no `.fingerprint/`, no `deps/`
+rlibs and no incremental state, because those are Cargo's private build ledger
+— they are large, they go stale against any toolchain or flag difference, and a
+consumer that trusted them would be trusting a second, weaker answer to "is
+this current" than the freshness certificate already gives.
+
+The consequence is exact and worth stating plainly: **anything that must
+COMPILE still compiles**, into Cargo's own directory, from a Swatinem-restored
+dependency layer. In the comprehensive profile that is `make test-cabi`
+(hew-cabi is excluded from every workspace nextest invocation, and
+`cargo nextest archive --workspace` is one of those), `make test-runtime-unit`
+(`--no-default-features`, a different feature set and therefore a different
+artefact), `make sandbox-parity` (plain Cargo plus the Node runner),
+`make forced-cancel-composite-check` (a `hew-runtime/forced-cancel-test` build,
+in its own target directory), `make stdlib-user-build-clean`, and
+`make playground-check` where the playground job does not own it. The shards
+still compile, still write to disk, and still need the runner's disk guard.
 
 ### Projected effect
 
@@ -467,20 +509,30 @@ and partitioned by the same LPT packer the dispatcher uses:
 | | gate work | shard makespan |
 |---|---:|---:|
 | before this pass | 114.8 job-min | 28.7 min |
-| − `test-compiler-pipeline` | 94.9 job-min | 23.8 min |
-| − playground gates (pull requests) | 91.7 job-min | 22.9 min |
+| after, with the corpus corrected from the same run | 94.2 job-min | 24.0 min |
 
-Whole-run, against the 413 job-minute baseline: **roughly 325–340
-job-minutes**, a 18–22% reduction, of which about 20 job-minutes is the
-subsumed compiler-pipeline gate, about 40 is warm-up and `make stdlib` no
-longer paid four times, and about 10 is the compiled-Hew packager no longer
-rebuilding a compiler.
+The corpus correction matters to that second row and is why it is not lower.
+Several commands had no measured row and were taking the 60-second default —
+`make test-build-harness` among them, at a real 558 seconds. Feeding the
+partitioner its true weights moved the makespan from an apparent 22.9 minutes
+to an honest 24.0.
+
+Whole-run, against the 413 job-minute baseline: **about 342 job-minutes, a 17%
+reduction.** Roughly 20 of that is the subsumed compiler-pipeline gate, roughly
+44 is warm-up and `make stdlib` no longer paid four times, and roughly 10 is
+the compiled-Hew packager no longer rebuilding a compiler; the producer costs
+about 22 back.
 
 The critical path is the honest part. Removing gate work shortens the longest
-shard by about five minutes, but the archive producer is a serial prefix the
-shards wait on: it costs roughly six minutes of wall time to save roughly forty
-runner-minutes. That trade is taken deliberately, and it is reversible on its
-own — the producer is one job, one `needs:` entry, and one Makefile mode.
+shard, but the archive producer is a serial prefix the shards wait on, so the
+run lands near **59 minutes against a measured 69.1** — and, measured instead
+against this branch *without* the producer, the producer costs roughly six
+minutes of wall time to save roughly forty runner-minutes. That trade is taken
+deliberately, and it is reversible on its own: the producer is one job, one
+`needs:` entry, and one Makefile mode.
+
+None of these figures assume the cache behaviour below improves. If it does,
+they get better; the projection does not spend it in advance.
 
 ### Retained expensive gates, and why
 
@@ -505,16 +557,23 @@ own — the producer is one job, one `needs:` entry, and one Makefile mode.
 
 ### Candidates left on the table, with the measurement each needs
 
-* **`Free runner disk` (11 job-min over four shards)** — the shards no longer
-  compile the workspace, so the purge may be unnecessary. It exists because
-  the runner died of ENOSPC twice. The step already prints `df -h /`; one
-  hosted run under the archive answers whether it can go.
-* **ast-grep provisioning (21 job-min over five jobs)** — the cache missed in
-  all five and four of the five then failed to save, racing for one key. With
-  the producer in front, the shards start after `lint` has saved it, and the
-  read-only sccache change stops pull requests evicting the entry. Expected to
-  resolve without further work; verify from the next run's cache lines before
-  spending anything on it.
+* **ast-grep provisioning (21 job-min over five jobs, 3.7–4.7 min each)** —
+  every one of the four shards missed the cache; three of them then failed to
+  save it (`Unable to reserve cache with key …, another job may be creating
+  this cache`) and one won the race. So five jobs paid a cold build of a
+  toolchain that one of them then stored. With the producer in front the shards
+  start later than `lint`, and the read-only sccache change stops pull requests
+  evicting the entry, so this may resolve without any work. Verify it from the
+  next run's `Cache restored`/`Cache saved` lines before spending anything on
+  it; if it does not resolve, the fix is to give one job the cold build rather
+  than to race five.
+* **`Free runner disk` (11 job-min over four shards)** — **not** a candidate
+  for removal on the strength of this work. The shards still compile (see the
+  list above), still install LLVM, and now additionally hold an extracted
+  archive; the step exists because the runner died of ENOSPC twice. It already
+  prints `df -h /`, so the headroom under the new arrangement is readable from
+  the next run — and only a measurement showing real headroom, not the
+  existence of the archive, would justify touching it.
 * **More shards** — after the compiler-pipeline gate goes, the makespan is
   bounded by `make test` itself, so a fifth shard buys about a minute of wall
   for roughly twelve runner-minutes of setup. Not worth it.

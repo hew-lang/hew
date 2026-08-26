@@ -1,6 +1,172 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{BlockId, OpId, SemFunction, UseSite, ValueId};
+use crate::{BlockId, OpId, SemFunction, SuccessorSlot, UseSite, ValueId};
+
+/// Stable identity of one outgoing CFG edge in a semantic function.
+///
+/// The source block plus [`Self::slot`] identify an edge independently of its
+/// target. In particular, the two successor slots of a branch remain distinct
+/// even when both target the same block. `EdgeRef` is a snapshot identity over
+/// verified SIR: a transformation that changes a terminator must rebuild its
+/// [`CfgIndex`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeRef {
+    pub source: BlockId,
+    pub slot: SuccessorSlot,
+}
+
+/// Deterministic control-flow facts for one semantic function.
+///
+/// `predecessors` and `successors` retain one [`EdgeRef`] per semantic edge,
+/// including duplicate edges. Their vectors are sorted by stable edge identity
+/// rather than relying on incidental allocation order. `edge_targets` records
+/// the target observed while indexing, so analyses can consume a coherent CFG
+/// snapshot without re-inspecting mutable terminators.
+///
+/// Reachability and reverse postorder contain only blocks that exist in the
+/// function. An edge to an unknown block remains visible in the index for
+/// diagnostics, but does not manufacture a reachable CFG node. Duplicate
+/// block identities are malformed SIR and must be rejected by the verifier
+/// before clients rely on `EdgeRef` as a unique semantic identity.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CfgIndex {
+    predecessors: BTreeMap<BlockId, Vec<EdgeRef>>,
+    successors: BTreeMap<BlockId, Vec<EdgeRef>>,
+    edge_targets: BTreeMap<EdgeRef, BlockId>,
+    reachable: BTreeSet<BlockId>,
+    reverse_postorder: Vec<BlockId>,
+}
+
+impl CfgIndex {
+    /// Return all incoming edges for `block` in stable edge-reference order.
+    #[must_use]
+    pub fn predecessors_of(&self, block: BlockId) -> &[EdgeRef] {
+        self.predecessors.get(&block).map_or(&[], Vec::as_slice)
+    }
+
+    /// Return all outgoing edges for `block` in stable successor-slot order.
+    #[must_use]
+    pub fn successors_of(&self, block: BlockId) -> &[EdgeRef] {
+        self.successors.get(&block).map_or(&[], Vec::as_slice)
+    }
+
+    /// Return the target captured for one indexed edge.
+    #[must_use]
+    pub fn edge_target(&self, edge: EdgeRef) -> Option<BlockId> {
+        self.edge_targets.get(&edge).copied()
+    }
+
+    /// Whether `block` is reachable from the function's declared entry block.
+    #[must_use]
+    pub fn is_reachable(&self, block: BlockId) -> bool {
+        self.reachable.contains(&block)
+    }
+
+    /// Return every block reachable from the function entry in stable block-ID
+    /// order.
+    #[must_use]
+    pub fn reachable(&self) -> &BTreeSet<BlockId> {
+        &self.reachable
+    }
+
+    /// Return the deterministic reverse-postorder traversal of reachable
+    /// blocks. DFS visits successors in [`SuccessorSlot`] order before
+    /// reversing its postorder.
+    #[must_use]
+    pub fn rpo(&self) -> &[BlockId] {
+        &self.reverse_postorder
+    }
+}
+
+/// Build the deterministic CFG facts for one semantic function.
+///
+/// The verifier remains authoritative for canonical, unique block identities
+/// and known successor targets. Consumers that transform SIR must verify first
+/// and rebuild the index after changing a terminator or block collection. An
+/// otherwise uniquely identified function with an unknown target can still be
+/// indexed for diagnostics, but duplicate block identities have no coherent
+/// `EdgeRef` meaning.
+#[must_use]
+pub fn build_cfg_index(function: &SemFunction) -> CfgIndex {
+    let mut index = CfgIndex::default();
+    let known_blocks = function
+        .blocks
+        .iter()
+        .map(|block| block.id)
+        .collect::<BTreeSet<_>>();
+
+    for block in &function.blocks {
+        index.predecessors.entry(block.id).or_default();
+        index.successors.entry(block.id).or_default();
+    }
+    for block in &function.blocks {
+        block.terminator.visit_successors_with_slots(|slot, edge| {
+            let edge_ref = EdgeRef {
+                source: block.id,
+                slot,
+            };
+            index.successors.entry(block.id).or_default().push(edge_ref);
+            index
+                .predecessors
+                .entry(edge.target)
+                .or_default()
+                .push(edge_ref);
+            index.edge_targets.insert(edge_ref, edge.target);
+        });
+    }
+    for edges in index.predecessors.values_mut() {
+        edges.sort_unstable();
+    }
+    for edges in index.successors.values_mut() {
+        edges.sort_unstable();
+    }
+
+    let mut postorder = Vec::new();
+    if known_blocks.contains(&function.entry) {
+        visit_reachable_postorder(
+            function.entry,
+            &known_blocks,
+            &index.successors,
+            &index.edge_targets,
+            &mut index.reachable,
+            &mut postorder,
+        );
+    }
+    postorder.reverse();
+    index.reverse_postorder = postorder;
+    index
+}
+
+fn visit_reachable_postorder(
+    block: BlockId,
+    known_blocks: &BTreeSet<BlockId>,
+    successors: &BTreeMap<BlockId, Vec<EdgeRef>>,
+    edge_targets: &BTreeMap<EdgeRef, BlockId>,
+    reachable: &mut BTreeSet<BlockId>,
+    postorder: &mut Vec<BlockId>,
+) {
+    if !reachable.insert(block) {
+        return;
+    }
+    if let Some(edges) = successors.get(&block) {
+        for edge in edges {
+            let Some(target) = edge_targets.get(edge).copied() else {
+                continue;
+            };
+            if known_blocks.contains(&target) {
+                visit_reachable_postorder(
+                    target,
+                    known_blocks,
+                    successors,
+                    edge_targets,
+                    reachable,
+                    postorder,
+                );
+            }
+        }
+    }
+    postorder.push(block);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dominators {
@@ -20,12 +186,7 @@ pub fn compute_dominators(function: &SemFunction) -> Dominators {
         .iter()
         .map(|b| b.id)
         .collect::<BTreeSet<_>>();
-    let mut predecessors: BTreeMap<BlockId, Vec<BlockId>> = BTreeMap::new();
-    for block in &function.blocks {
-        block
-            .terminator
-            .visit_successors(|edge| predecessors.entry(edge.target).or_default().push(block.id));
-    }
+    let cfg = build_cfg_index(function);
     let mut sets = function
         .blocks
         .iter()
@@ -45,18 +206,21 @@ pub fn compute_dominators(function: &SemFunction) -> Dominators {
             if block.id == function.entry {
                 continue;
             }
-            let mut next = predecessors
-                .get(&block.id)
-                .map_or_else(BTreeSet::new, |preds| {
-                    let mut result = all.clone();
-                    for pred in preds {
-                        result = result
-                            .intersection(sets.get(pred).expect("predecessor must be a block"))
-                            .copied()
-                            .collect();
-                    }
-                    result
-                });
+            let mut next = if cfg.predecessors_of(block.id).is_empty() {
+                BTreeSet::new()
+            } else {
+                let mut result = all.clone();
+                for predecessor in cfg.predecessors_of(block.id) {
+                    result = result
+                        .intersection(
+                            sets.get(&predecessor.source)
+                                .expect("predecessor must be a block"),
+                        )
+                        .copied()
+                        .collect();
+                }
+                result
+            };
             next.insert(block.id);
             if sets.get(&block.id) != Some(&next) {
                 sets.insert(block.id, next);
@@ -248,4 +412,185 @@ pub fn replace_all_uses(
     }
     *function = rewritten;
     Ok(replaced)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use hew_hir::ItemId;
+    use hew_types::{DefId, ResolvedTy};
+
+    use super::{build_cfg_index, EdgeRef};
+    use crate::{
+        BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemFunction,
+        SemTerminator, SuccessorSlot, UseMode, ValueId,
+    };
+
+    fn read(value: u32) -> Operand {
+        Operand {
+            value: ValueId(value),
+            mode: UseMode::Read,
+        }
+    }
+
+    fn edge(target: u32) -> Edge {
+        Edge {
+            target: BlockId(target),
+            args: Vec::new(),
+        }
+    }
+
+    fn block(id: u32, terminator: SemTerminator) -> SemBlock {
+        SemBlock {
+            id: BlockId(id),
+            args: Vec::new(),
+            ops: Vec::new(),
+            terminator,
+        }
+    }
+
+    fn function(blocks: Vec<SemBlock>) -> SemFunction {
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("cfg_index"),
+            name: "cfg_index".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: vec![BlockArg {
+                value: ValueId(0),
+                ty: ResolvedTy::Bool,
+            }],
+            return_ty: ResolvedTy::Unit,
+            entry: BlockId(0),
+            blocks,
+        }
+    }
+
+    #[test]
+    fn successor_slots_preserve_duplicate_branch_edges_and_legacy_visitors() {
+        let mut terminator = SemTerminator::Branch {
+            condition: read(0),
+            then_target: edge(1),
+            else_target: edge(1),
+        };
+
+        let mut slotted = Vec::new();
+        terminator.visit_successors_with_slots(|slot, edge| slotted.push((slot, edge.target)));
+        assert_eq!(
+            slotted,
+            vec![
+                (SuccessorSlot(0), BlockId(1)),
+                (SuccessorSlot(1), BlockId(1)),
+            ]
+        );
+
+        let mut legacy = Vec::new();
+        terminator.visit_successors(|edge| legacy.push(edge.target));
+        assert_eq!(legacy, vec![BlockId(1), BlockId(1)]);
+
+        terminator
+            .successor_mut(SuccessorSlot(1))
+            .expect("branch else edge must own successor slot 1")
+            .target = BlockId(2);
+        terminator.visit_successors_with_slots_mut(|slot, edge| {
+            if slot == SuccessorSlot(0) {
+                edge.target = BlockId(3);
+            }
+        });
+        assert_eq!(
+            terminator
+                .successor(SuccessorSlot(0))
+                .map(|edge| edge.target),
+            Some(BlockId(3))
+        );
+        assert_eq!(
+            terminator
+                .successor(SuccessorSlot(1))
+                .map(|edge| edge.target),
+            Some(BlockId(2))
+        );
+        assert_eq!(terminator.successor(SuccessorSlot(2)), None);
+    }
+
+    #[test]
+    fn cfg_index_preserves_duplicate_edges_and_computes_stable_rpo() {
+        let function = function(vec![
+            block(
+                0,
+                SemTerminator::Branch {
+                    condition: read(0),
+                    then_target: edge(1),
+                    else_target: edge(1),
+                },
+            ),
+            block(1, SemTerminator::Goto(edge(2))),
+            block(
+                2,
+                SemTerminator::Branch {
+                    condition: read(0),
+                    then_target: edge(1),
+                    else_target: edge(3),
+                },
+            ),
+            block(3, SemTerminator::Return { value: None }),
+            block(4, SemTerminator::Return { value: None }),
+        ]);
+        assert!(crate::verify_function(&function).is_empty());
+
+        let index = build_cfg_index(&function);
+        let entry_then = EdgeRef {
+            source: BlockId(0),
+            slot: SuccessorSlot(0),
+        };
+        let entry_else = EdgeRef {
+            source: BlockId(0),
+            slot: SuccessorSlot(1),
+        };
+        let loop_back = EdgeRef {
+            source: BlockId(2),
+            slot: SuccessorSlot(0),
+        };
+        let exit = EdgeRef {
+            source: BlockId(2),
+            slot: SuccessorSlot(1),
+        };
+
+        assert_eq!(index.successors_of(BlockId(0)), &[entry_then, entry_else]);
+        assert_eq!(
+            index.predecessors_of(BlockId(1)),
+            &[entry_then, entry_else, loop_back]
+        );
+        assert_eq!(index.successors_of(BlockId(2)), &[loop_back, exit]);
+        assert_eq!(index.edge_target(entry_then), Some(BlockId(1)));
+        assert_eq!(index.edge_target(entry_else), Some(BlockId(1)));
+        assert_eq!(index.edge_target(exit), Some(BlockId(3)));
+        assert_eq!(
+            index.reachable,
+            BTreeSet::from([BlockId(0), BlockId(1), BlockId(2), BlockId(3)])
+        );
+        assert!(!index.is_reachable(BlockId(4)));
+        assert_eq!(
+            index.rpo(),
+            &[BlockId(0), BlockId(1), BlockId(2), BlockId(3)]
+        );
+        assert_eq!(index, build_cfg_index(&function));
+    }
+
+    #[test]
+    fn cfg_index_keeps_unknown_targets_for_diagnostics_without_reaching_them() {
+        let function = function(vec![block(0, SemTerminator::Goto(edge(9)))]);
+
+        let index = build_cfg_index(&function);
+        let unknown_edge = EdgeRef {
+            source: BlockId(0),
+            slot: SuccessorSlot(0),
+        };
+        assert_eq!(index.predecessors_of(BlockId(9)), &[unknown_edge]);
+        assert_eq!(index.edge_target(unknown_edge), Some(BlockId(9)));
+        assert_eq!(index.reachable, BTreeSet::from([BlockId(0)]));
+        assert!(!index.is_reachable(BlockId(9)));
+        assert_eq!(index.rpo(), &[BlockId(0)]);
+    }
 }

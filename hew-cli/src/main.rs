@@ -411,18 +411,34 @@ fn report_strict_sir_missing_body(
 }
 
 fn lower_verified_hir_to_sir(module: &hew_hir::HirModule) -> Result<hew_sir::LoweredModule, ()> {
-    let sir = hew_sir::lower_module(module);
+    let mut sir = hew_sir::lower_module(module);
     let diagnostics = hew_sir::verify_module(&sir.module);
     if !diagnostics.is_empty() {
-        for diagnostic in diagnostics {
-            eprintln!(
-                "SIR verifier error in `{}`: {:?}",
-                diagnostic.function, diagnostic.kind
-            );
-        }
+        render_sir_diagnostics("verifier", diagnostics);
+        return Err(());
+    }
+    if let Err(error) = hew_sir::canonicalize_module_constant_cfg(&mut sir.module) {
+        let (stage, diagnostics) = match error {
+            hew_sir::SirOptimizationError::InvalidInput(diagnostics) => {
+                ("canonicalization input verifier", diagnostics)
+            }
+            hew_sir::SirOptimizationError::InvalidOutput(diagnostics) => {
+                ("canonicalization output verifier", diagnostics)
+            }
+        };
+        render_sir_diagnostics(stage, diagnostics);
         return Err(());
     }
     Ok(sir)
+}
+
+fn render_sir_diagnostics(stage: &str, diagnostics: Vec<hew_sir::SirDiagnostic>) {
+    for diagnostic in diagnostics {
+        eprintln!(
+            "SIR {stage} error in `{}`: {:?}",
+            diagnostic.function, diagnostic.kind
+        );
+    }
 }
 
 /// File frontend plus verified HIR, shared by SIR inspection and every
@@ -515,18 +531,7 @@ fn lower_file_to_sir(
         eprintln!("Error: {error}");
     })?;
     let verified = lower_file_to_verified_hir(input_path, &target, options)?;
-    let sir = hew_sir::lower_module(&verified.lower_output.module);
-    let diagnostics = hew_sir::verify_module(&sir.module);
-    if !diagnostics.is_empty() {
-        for diagnostic in diagnostics {
-            eprintln!(
-                "SIR verifier error in `{}`: {:?}",
-                diagnostic.function, diagnostic.kind
-            );
-        }
-        return Err(());
-    }
-    Ok(sir)
+    lower_verified_hir_to_sir(&verified.lower_output.module)
 }
 
 fn lower_file_to_mir_with_options(

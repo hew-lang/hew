@@ -15,6 +15,39 @@ pub struct OpId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallableId(pub u32);
 
+/// Stable semantic identity for one generic HIR template.
+///
+/// This deliberately contains the resolver-minted declaration identity only.
+/// A linker symbol is an emitted-name projection, not part of semantic
+/// instance identity: two concrete SIR bodies are deduplicated by this
+/// template plus their closed semantic substitutions.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GenericTemplateId {
+    pub declaration: DefId,
+}
+
+/// Closed semantic specialization of a generic HIR template.
+///
+/// SIR creates these at the normalized-HIR boundary.  `type_args` are
+/// `ResolvedTy` facts only; no layout, ABI, storage, or target information is
+/// permitted to enter this key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SirInstanceKey {
+    pub template: GenericTemplateId,
+    pub type_args: Vec<ResolvedTy>,
+}
+
+/// Semantic instance kind of a resolved SIR callable.
+///
+/// `CallableId` is the identity of an emitted SIR body.  The source `ItemId`
+/// and `DefId` retained by [`SemCallable`] are provenance for that body; they
+/// are not sufficient to identify a generic instance on their own.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CallableInstance {
+    Monomorphic,
+    Generic(SirInstanceKey),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Provenance {
     Site(SiteId),
@@ -156,6 +189,10 @@ pub struct SemBlock {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemFunction {
+    /// Source HIR item provenance for this body.
+    ///
+    /// A generic template can produce several SIR functions with this same
+    /// value.  Consumers must use [`Self::callable`] as the body identity.
     pub id: ItemId,
     /// Module-local ABI-neutral identity of this body's resolved callable.
     /// The verifier proves this agrees with the callable table's checker
@@ -225,6 +262,31 @@ pub struct SemSignature {
     pub return_ty: ResolvedTy,
 }
 
+/// Body-free semantic header for one generic HIR definition.
+///
+/// SIR never retains an abstract generic function body: every
+/// [`CallableInstance::Generic`] is a concrete, closed semantic instance.
+/// The header preserves just enough pre-substitution semantic information for
+/// the verifier to prove that a concrete callable's provenance, signature,
+/// and derived emitted symbol actually match its [`SirInstanceKey`].  It is
+/// deliberately free of layout, ABI carrier, storage, and target facts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemGenericTemplate {
+    /// Semantic template identity used by every concrete instance key.
+    pub id: GenericTemplateId,
+    /// Source HIR provenance only; this is not the identity of a concrete SIR
+    /// callable body.
+    pub function: ItemId,
+    /// Base emitted symbol. Concrete symbols are derived from this *after*
+    /// semantic-key selection and are never part of the key itself.
+    pub symbol: String,
+    pub source_origin: FunctionSourceOrigin,
+    /// Canonical source-semantic parameters in substitution order.
+    pub type_params: Vec<String>,
+    /// Pre-substitution semantic callable signature.
+    pub signature: SemSignature,
+}
+
 /// Conservative interprocedural effect summary carried by a resolved SIR
 /// callable.
 ///
@@ -266,11 +328,18 @@ impl EffectSummary {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemCallable {
     pub id: CallableId,
-    /// HIR function item that owns the body when it is lowered to SIR.
+    /// Source HIR item provenance for the body.  This is not an SIR-body
+    /// identity: one generic HIR item may have multiple concrete callables.
     pub function: ItemId,
     /// Resolver-minted semantic declaration identity.
     pub declaration: DefId,
-    /// Exact body symbol selected by HIR's direct-call symbol index.
+    /// Whether this callable is a monomorphic source body or one concrete
+    /// generic specialization.  This is the authoritative semantic instance
+    /// identity; `symbol` is only its derived emitted-name projection.
+    pub instance: CallableInstance,
+    /// Exact emitted body symbol. Monomorphic callables retain the resolver's
+    /// direct-call symbol; a generic callable derives this only after its
+    /// canonical semantic instance has been selected.
     pub symbol: String,
     pub source_origin: FunctionSourceOrigin,
     pub signature: SemSignature,
@@ -284,6 +353,10 @@ pub struct SemModule {
     /// Deterministic resolved direct-call authority.  IDs must equal their
     /// indexes in this vector; [`crate::verify_module`] checks that invariant.
     pub callables: Vec<SemCallable>,
+    /// Body-free generic semantic headers. These are the substitution
+    /// authority for concrete generic callables and must not be confused with
+    /// abstract SIR function bodies.
+    pub generic_templates: Vec<SemGenericTemplate>,
     /// Every root-unit callable in `callables` order. This supports source
     /// provenance and diagnostics; executable strict reachability starts only
     /// from [`Self::entry_callable`], so unrelated root bodies do not block a
@@ -306,12 +379,34 @@ impl SemModule {
             .filter(|callable| callable.id == id)
     }
 
-    /// Find a resolved callable from checker-owned declaration identity.
+    /// Find a monomorphic resolved callable from checker-owned declaration
+    /// identity.
+    ///
+    /// A generic declaration can own many concrete SIR bodies, so callers
+    /// must use [`Self::callable_for_instance`] for that case rather than
+    /// accidentally selecting an arbitrary specialization.
     #[must_use]
     pub fn callable_for_declaration(&self, declaration: &DefId) -> Option<&SemCallable> {
-        self.callables
+        self.callables.iter().find(|callable| {
+            &callable.declaration == declaration
+                && matches!(callable.instance, CallableInstance::Monomorphic)
+        })
+    }
+
+    /// Find one concrete generic callable from its closed semantic key.
+    #[must_use]
+    pub fn callable_for_instance(&self, key: &SirInstanceKey) -> Option<&SemCallable> {
+        self.callables.iter().find(|callable| {
+            matches!(&callable.instance, CallableInstance::Generic(candidate) if candidate == key)
+        })
+    }
+
+    /// Look up the body-free semantic template header for an instance key.
+    #[must_use]
+    pub fn generic_template(&self, id: &GenericTemplateId) -> Option<&SemGenericTemplate> {
+        self.generic_templates
             .iter()
-            .find(|callable| &callable.declaration == declaration)
+            .find(|template| &template.id == id)
     }
 
     /// Return the lowered SIR body for `id`, if the body was in the current

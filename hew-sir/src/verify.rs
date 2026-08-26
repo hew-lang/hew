@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::OpId;
 use crate::{
-    BlockId, CallableId, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp,
-    SemOpKind, SemParamPassing, SemTerminator, UseMode, UseSite, ValueId,
+    BlockId, CallableId, CallableInstance, GenericTemplateId, SemCallConv, SemCallable,
+    SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
+    SemSignature, SemTerminator, SirInstanceKey, UseMode, UseSite, ValueId,
 };
+use hew_hir::{monomorph::function_monomorph_symbol, substitute_type_params};
 use hew_types::ResolvedTy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +15,13 @@ pub enum SirDiagnosticKind {
     DuplicateFunctionDeclaration(String),
     DuplicateCallableId(CallableId),
     DuplicateCallableDeclaration(String),
+    DuplicateCallableInstance(String),
     DuplicateCallableSymbol(String),
+    DuplicateGenericTemplate(String),
+    InvalidGenericTemplate {
+        template: String,
+        reason: String,
+    },
     InvalidCallable {
         callable: CallableId,
         reason: String,
@@ -158,7 +166,10 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
                 SirDiagnosticKind::DuplicateFunctionName(function.name.clone()),
             ));
         }
-        if !declarations.insert(function.declaration.clone()) {
+        let monomorphic_body = callables
+            .callable(function.callable)
+            .is_none_or(|callable| matches!(callable.instance, CallableInstance::Monomorphic));
+        if monomorphic_body && !declarations.insert(function.declaration.clone()) {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::DuplicateFunctionDeclaration(format!(
@@ -349,9 +360,12 @@ fn verify_callable_table<'a>(
     module: &'a SemModule,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) -> CallableContext<'a> {
+    let generic_templates = verify_generic_template_headers(module, diagnostics);
     let mut by_id = BTreeMap::new();
     let mut ids = HashSet::new();
-    let mut declarations = HashSet::new();
+    let mut monomorphic_declarations = HashSet::new();
+    let mut generic_declarations = HashSet::new();
+    let mut generic_instances = HashSet::new();
     let mut symbols = HashSet::new();
     for (index, callable) in module.callables.iter().enumerate() {
         let expected = CallableId(
@@ -371,12 +385,49 @@ fn verify_callable_table<'a>(
                 callable.id,
             )));
         }
-        if !declarations.insert(callable.declaration.clone()) {
-            diagnostics.push(module_diag(
-                SirDiagnosticKind::DuplicateCallableDeclaration(
-                    callable.declaration.full_path().to_string(),
-                ),
-            ));
+        match &callable.instance {
+            CallableInstance::Monomorphic => {
+                if !monomorphic_declarations.insert(callable.declaration.clone()) {
+                    diagnostics.push(module_diag(
+                        SirDiagnosticKind::DuplicateCallableDeclaration(
+                            callable.declaration.full_path().to_string(),
+                        ),
+                    ));
+                }
+                if generic_declarations.contains(&callable.declaration) {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "a declaration cannot have both a monomorphic SIR body and concrete generic SIR instances"
+                            .to_string(),
+                    }));
+                }
+                if generic_templates.contains_key(&GenericTemplateId {
+                    declaration: callable.declaration.clone(),
+                }) {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "a declaration with a generic semantic template header cannot also be a monomorphic SIR body"
+                            .to_string(),
+                    }));
+                }
+            }
+            CallableInstance::Generic(key) => {
+                generic_declarations.insert(callable.declaration.clone());
+                if monomorphic_declarations.contains(&callable.declaration) {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "a declaration cannot have both a monomorphic SIR body and concrete generic SIR instances"
+                            .to_string(),
+                    }));
+                }
+                verify_generic_callable_instance(
+                    callable,
+                    key,
+                    &mut generic_instances,
+                    &generic_templates,
+                    diagnostics,
+                );
+            }
         }
         if !symbols.insert(callable.symbol.clone()) {
             diagnostics.push(module_diag(SirDiagnosticKind::DuplicateCallableSymbol(
@@ -506,6 +557,182 @@ fn verify_callable_table<'a>(
         }
     }
     CallableContext { by_id }
+}
+
+/// Collect and verify body-free semantic template headers before checking
+/// concrete generic callable bodies.
+fn verify_generic_template_headers<'a>(
+    module: &'a SemModule,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) -> BTreeMap<GenericTemplateId, &'a SemGenericTemplate> {
+    let mut templates = BTreeMap::new();
+    for template in &module.generic_templates {
+        let name = template.id.declaration.full_path().to_string();
+        if template.type_params.is_empty() {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
+                template: name.clone(),
+                reason: "a generic template header must retain at least one type parameter"
+                    .to_string(),
+            }));
+        }
+        let mut type_params = HashSet::new();
+        for (index, parameter) in template.type_params.iter().enumerate() {
+            if parameter.is_empty() {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
+                    template: name.clone(),
+                    reason: format!("type parameter {index} has an empty semantic name"),
+                }));
+            }
+            if !type_params.insert(parameter) {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
+                    template: name.clone(),
+                    reason: format!("type parameter `{parameter}` occurs more than once"),
+                }));
+            }
+        }
+        for (index, parameter) in template.signature.params.iter().enumerate() {
+            if parameter.passing != SemParamPassing::ReadOnly || parameter.caller_visible_projection
+            {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
+                    template: name.clone(),
+                    reason: format!(
+                        "template parameter {index} carries ownership or caller-visible ABI policy before SIR owns it"
+                    ),
+                }));
+            }
+        }
+        if templates.insert(template.id.clone(), template).is_some() {
+            diagnostics.push(module_diag(SirDiagnosticKind::DuplicateGenericTemplate(
+                name,
+            )));
+        }
+    }
+    templates
+}
+
+/// Verify the semantic identity of one concrete SIR generic body.
+///
+/// The initial generic slice intentionally accepts only scalar concrete type
+/// arguments, but the key still records them as `ResolvedTy` rather than any
+/// representation property.  This makes malformed or residual generic SIR
+/// fail here, before raw MIR is allowed to choose storage or ABI details.
+fn verify_generic_callable_instance(
+    callable: &SemCallable,
+    key: &SirInstanceKey,
+    seen: &mut HashSet<SirInstanceKey>,
+    templates: &BTreeMap<GenericTemplateId, &SemGenericTemplate>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    if key.template.declaration != callable.declaration {
+        diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+            callable: callable.id,
+            reason: "generic instance template declaration does not match callable provenance"
+                .to_string(),
+        }));
+    }
+    if key.type_args.is_empty() {
+        diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+            callable: callable.id,
+            reason: "generic instance has no semantic type arguments".to_string(),
+        }));
+    }
+    if !seen.insert(key.clone()) {
+        diagnostics.push(module_diag(SirDiagnosticKind::DuplicateCallableInstance(
+            format!(
+                "{}<{}>",
+                key.template.declaration.full_path(),
+                key.type_args
+                    .iter()
+                    .map(|ty| ty.user_facing().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )));
+    }
+    for (index, argument) in key.type_args.iter().enumerate() {
+        if !is_initial_scalar(argument) {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                callable: callable.id,
+                reason: format!(
+                    "generic semantic type argument {index} `{}` is outside the initial scalar SIR instance surface",
+                    argument.user_facing()
+                ),
+            }));
+        }
+    }
+    let Some(template) = templates.get(&key.template).copied() else {
+        diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+            callable: callable.id,
+            reason: "generic instance has no body-free semantic template header".to_string(),
+        }));
+        return;
+    };
+    if callable.function != template.function {
+        diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+            callable: callable.id,
+            reason: "generic instance source item provenance does not match its semantic template header"
+                .to_string(),
+        }));
+    }
+    if callable.source_origin != template.source_origin {
+        diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+            callable: callable.id,
+            reason: "generic instance source origin does not match its semantic template header"
+                .to_string(),
+        }));
+    }
+    if key.type_args.len() != template.type_params.len() {
+        diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+            callable: callable.id,
+            reason: format!(
+                "generic instance carries {} type argument(s), but template `{}` requires {}",
+                key.type_args.len(),
+                template.id.declaration.full_path(),
+                template.type_params.len()
+            ),
+        }));
+        return;
+    }
+    let expected_signature = substitute_template_signature(template, &key.type_args);
+    if callable.signature != expected_signature {
+        diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+            callable: callable.id,
+            reason: "generic instance signature does not equal its semantic template signature after substitution"
+                .to_string(),
+        }));
+    }
+    let expected_symbol = function_monomorph_symbol(&template.symbol, &key.type_args);
+    if callable.symbol != expected_symbol {
+        diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+            callable: callable.id,
+            reason:
+                "generic instance emitted symbol is not the derived projection of its semantic key"
+                    .to_string(),
+        }));
+    }
+}
+
+fn substitute_template_signature(
+    template: &SemGenericTemplate,
+    type_args: &[ResolvedTy],
+) -> SemSignature {
+    SemSignature {
+        params: template
+            .signature
+            .params
+            .iter()
+            .map(|parameter| crate::SemAbiParam {
+                ty: substitute_type_params(&parameter.ty, &template.type_params, type_args),
+                passing: parameter.passing,
+                caller_visible_projection: parameter.caller_visible_projection,
+            })
+            .collect(),
+        return_ty: substitute_type_params(
+            &template.signature.return_ty,
+            &template.type_params,
+            type_args,
+        ),
+    }
 }
 
 fn verify_function_callable_identity(

@@ -1,8 +1,10 @@
 use hew_hir::{lower_program_host_target, ResolutionCtx};
-use hew_sir::{dump_sir, lower_module, verify_module, SemOpKind, SirLoweringStatus};
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_sir::{
+    dump_sir, lower_module, verify_module, CallableInstance, SemOpKind, SirLoweringStatus,
+};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
-fn lower_source(source: &str) -> hew_sir::LoweredModule {
+fn lower_hir(source: &str) -> hew_hir::HirModule {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -17,7 +19,12 @@ fn lower_source(source: &str) -> hew_sir::LoweredModule {
         "source must lower to HIR before the SIR lowering test: {:#?}",
         hir.diagnostics
     );
-    lower_module(&hir.module)
+    hir.module
+}
+
+fn lower_source(source: &str) -> hew_sir::LoweredModule {
+    let hir = lower_hir(source);
+    lower_module(&hir)
 }
 
 #[test]
@@ -318,5 +325,291 @@ fn recursive_scalar_call_resolves_to_its_own_callable_id() {
         verify_module(module).is_empty(),
         "recursive direct-call SIR must verify: {:#?}",
         verify_module(module)
+    );
+}
+
+/// Generic SIR instances are discovered from checked call-site facts rather
+/// than copied from HIR's legacy monomorphisation registry.  This exercises
+/// three core requirements together: nested generic forwarding, per-instance
+/// deduplication, and a header-first self-recursive instance.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fixture intentionally verifies one complete instance graph, malformed-IR boundary, and dump"
+)]
+fn generic_scalar_instances_are_closed_cached_and_template_free() {
+    let mut hir = lower_hir(
+        r"
+        pub fn id<T>(x: T) -> T {
+            let result: T = x;
+            return result;
+        }
+
+        pub fn relay<U>(y: U) -> U {
+            id(id(y))
+        }
+
+        pub fn countdown<T>(value: T, n: i64) -> T {
+            if n == 0 {
+                value
+            } else {
+                countdown(value, n - 1)
+            }
+        }
+
+        fn main() -> i64 {
+            let forwarded: i64 = relay(40);
+            let counted: i64 = countdown(forwarded, 2);
+            let flag: bool = id(true);
+            if flag { counted } else { 0 }
+        }
+        ",
+    );
+    assert!(
+        !hir.monomorphisations.is_empty(),
+        "the fixture must prove SIR is not merely observing an empty legacy registry"
+    );
+    hir.monomorphisations.clear();
+
+    let lowered = lower_module(&hir);
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "closed generic SIR instances must verify without the legacy registry: {:#?}",
+        verify_module(&lowered.module)
+    );
+    for name in ["id", "relay", "countdown"] {
+        assert!(
+            matches!(
+                lowered
+                    .statuses
+                    .iter()
+                    .find(|(candidate, _)| candidate == name),
+                Some((
+                    _,
+                    SirLoweringStatus::GenericTemplate {
+                        failed_instances: 0,
+                        ..
+                    }
+                ))
+            ),
+            "generic HIR origin `{name}` must remain a template, not an abstract SIR body: {:#?}",
+            lowered.statuses
+        );
+    }
+    assert!(matches!(
+        lowered
+            .statuses
+            .iter()
+            .find(|(candidate, _)| candidate == "main"),
+        Some((_, SirLoweringStatus::Lowered))
+    ));
+    assert_eq!(
+        lowered.module.generic_templates.len(),
+        3,
+        "SIR must retain only body-free template headers for id, relay, and countdown"
+    );
+
+    let generic_callables = lowered
+        .module
+        .callables
+        .iter()
+        .filter(|callable| matches!(&callable.instance, CallableInstance::Generic(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        generic_callables.len(),
+        4,
+        "id<i64>, id<bool>, relay<i64>, and countdown<i64> must be the complete concrete SIR instance set: {generic_callables:#?}"
+    );
+    assert!(
+        lowered
+            .module
+            .functions
+            .iter()
+            .all(|function| !["id", "relay", "countdown"].contains(&function.name.as_str())),
+        "generic origin templates must never appear as abstract SIR functions: {:#?}",
+        lowered.module.functions
+    );
+    for symbol in ["id$$i64", "id$$bool", "relay$$i64", "countdown$$i64"] {
+        assert!(
+            lowered
+                .module
+                .functions
+                .iter()
+                .any(|function| function.name == symbol),
+            "missing concrete semantic SIR body `{symbol}`"
+        );
+    }
+
+    let id_i64 = generic_callables
+        .iter()
+        .find(|callable| callable.symbol == "id$$i64")
+        .expect("nested forwarding must request id<i64>");
+    let id_i64_key = match &id_i64.instance {
+        CallableInstance::Generic(key) => key,
+        CallableInstance::Monomorphic => panic!("id<i64> must retain a semantic instance key"),
+    };
+    assert_eq!(
+        lowered
+            .module
+            .callable_for_instance(id_i64_key)
+            .map(|callable| callable.id),
+        Some(id_i64.id),
+        "instance lookup must use the closed semantic key, not a mangled symbol"
+    );
+    let relay_i64 = generic_callables
+        .iter()
+        .find(|callable| callable.symbol == "relay$$i64")
+        .expect("main must request relay<i64>");
+    let relay_body = lowered
+        .module
+        .function_for_callable(relay_i64.id)
+        .expect("concrete relay<i64> body must be lowered");
+    let relay_callees = relay_body
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .filter_map(|operation| match &operation.kind {
+            SemOpKind::Call { callee, .. } => Some(*callee),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(relay_callees, vec![id_i64.id, id_i64.id]);
+
+    let countdown_i64 = generic_callables
+        .iter()
+        .find(|callable| callable.symbol == "countdown$$i64")
+        .expect("main must request countdown<i64>");
+    let countdown_body = lowered
+        .module
+        .function_for_callable(countdown_i64.id)
+        .expect("concrete countdown<i64> body must be lowered");
+    assert!(countdown_body
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|operation| matches!(&operation.kind, SemOpKind::Call { callee, .. } if *callee == countdown_i64.id)),
+        "self-recursive concrete instance must resolve through its preallocated CallableId");
+    assert!(
+        lowered
+            .callable_statuses
+            .iter()
+            .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
+        "every requested concrete instance must have a body: {:#?}",
+        lowered.callable_statuses
+    );
+    let dump = dump_sir(&lowered.module);
+    assert!(dump.contains("fn relay$$i64("));
+    assert!(dump.contains("call @id$$i64"));
+    assert!(dump.contains("fn countdown$$i64("));
+
+    let mut forged_signature = lowered.module.clone();
+    let id_i64_index = usize::try_from(id_i64.id.0).expect("callable ID fits usize");
+    forged_signature.callables[id_i64_index].signature.return_ty = ResolvedTy::Bool;
+    assert!(
+        verify_module(&forged_signature).iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidCallable { callable, reason }
+                if *callable == id_i64.id
+                    && reason.contains("semantic template signature after substitution")
+        )),
+        "the verifier must reject a generic callable whose concrete signature does not match its key: {:#?}",
+        verify_module(&forged_signature)
+    );
+
+    let mut mixed_forms = lowered.module.clone();
+    let mut forged_monomorphic = (**id_i64).clone();
+    forged_monomorphic.id = hew_sir::CallableId(
+        u32::try_from(mixed_forms.callables.len()).expect("test callable count fits u32"),
+    );
+    forged_monomorphic.instance = CallableInstance::Monomorphic;
+    forged_monomorphic.symbol = "forged_id_monomorphic".to_string();
+    mixed_forms.callables.push(forged_monomorphic);
+    assert!(
+        verify_module(&mixed_forms)
+            .iter()
+            .any(|diagnostic| matches!(
+                &diagnostic.kind,
+                hew_sir::SirDiagnosticKind::InvalidCallable { reason, .. }
+                    if reason.contains("generic semantic template header")
+            )),
+        "the verifier must reject an abstract monomorphic body alongside a generic template: {:#?}",
+        verify_module(&mixed_forms)
+    );
+}
+
+/// A generic instance header must be published before its body is lowered.
+/// Otherwise the first body in this cycle could request `odd<i64>` but the
+/// second body would be unable to resolve its edge back to `even<i64>`.
+#[test]
+fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisation() {
+    let mut hir = lower_hir(
+        r"
+        pub fn even<T>(value: T, count: i64) -> T {
+            if count == 0 {
+                value
+            } else {
+                odd(value, count - 1)
+            }
+        }
+
+        pub fn odd<T>(value: T, count: i64) -> T {
+            if count == 0 {
+                value
+            } else {
+                even(value, count - 1)
+            }
+        }
+
+        fn main() -> i64 {
+            even(42, 2)
+        }
+        ",
+    );
+    assert!(
+        !hir.monomorphisations.is_empty(),
+        "the fixture must prove SIR closes the generic cycle itself"
+    );
+    hir.monomorphisations.clear();
+
+    let lowered = lower_module(&hir);
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "mutually recursive generic instances must verify without legacy monomorphisation: {:#?}",
+        verify_module(&lowered.module)
+    );
+    let even = lowered
+        .module
+        .callables
+        .iter()
+        .find(|callable| callable.symbol == "even$$i64")
+        .expect("main must request a concrete even<i64> callable");
+    let odd = lowered
+        .module
+        .callables
+        .iter()
+        .find(|callable| callable.symbol == "odd$$i64")
+        .expect("even<i64> must request a concrete odd<i64> callable");
+    for (caller, expected_callee) in [(even, odd.id), (odd, even.id)] {
+        let body = lowered
+            .module
+            .function_for_callable(caller.id)
+            .expect("every predeclared concrete generic header must receive a body");
+        assert!(
+            body.blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .any(|operation| matches!(&operation.kind, SemOpKind::Call { callee, .. } if *callee == expected_callee)),
+            "{} must retain the cross-recursive edge to callable {}",
+            caller.symbol,
+            expected_callee.0
+        );
+    }
+    assert!(
+        lowered
+            .callable_statuses
+            .iter()
+            .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
+        "the closed mutual-recursive instance graph must have no missing body: {:#?}",
+        lowered.callable_statuses
     );
 }

@@ -19,10 +19,11 @@ pub use analysis::{
 pub use dump::dump_sir;
 pub use lower::{lower_module, LoweredModule, SirLoweringStatus};
 pub use model::{
-    BlockArg, BlockId, CallableId, Edge, EffectSet, EffectSummary, FunctionSourceOrigin, OpId,
-    Operand, OperandSlot, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable,
-    SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature,
-    SemTerminator, UseMode, UseSite, ValueDef, ValueId,
+    BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, EffectSummary,
+    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, SemAbiParam,
+    SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemGenericTemplate,
+    SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirInstanceKey,
+    UseMode, UseSite, ValueDef, ValueId,
 };
 pub use verify::{
     verify_function, verify_function_in_module, verify_module, SirDiagnostic, SirDiagnosticKind,

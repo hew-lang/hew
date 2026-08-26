@@ -888,10 +888,27 @@ def rc1_structural_authority_findings(
                 text = str(match["text"]).strip()
                 if any(text == f"{enum_name}::{variant}" for variant in names):
                     results.add(finding(group, f"{form_prefix}-use", match))
+        handled: set[str] = set()
         for match in run_query(ast_grep, root, kind="match_pattern"):
             text = str(match["text"]).lstrip()
-            if any(text.startswith(f"{enum_name}::{variant}") for variant in names):
-                results.add(finding(group, f"{form_prefix}-consumer", match))
+            for variant in names:
+                if text.startswith(f"{enum_name}::{variant}"):
+                    results.add(finding(group, f"{form_prefix}-consumer", match))
+                    handled.add(variant)
+        # Deliberately NO variant/consumer congruence assertion here. It was
+        # tried and it was not sound: `match_pattern` text starting with
+        # `Enum::Variant` does not see how these carriers are really consumed
+        # -- binding patterns, `if let`, and dispatch through helpers all read
+        # as unhandled -- so the rule flagged three live
+        # `ProducedValueDependency` variants that production code handles
+        # correctly. A rule that cannot tell a real consumer from an absent one
+        # is not evidence.
+        #
+        # It would also have duplicated rustc: a variant added to a closed enum
+        # with no arm and no wildcard is already a compile error, and where a
+        # wildcard exists this query could not see the gap either. The retired
+        # exact counts caught "a variant appeared" only as change detection,
+        # and the actual exhaustiveness guarantee comes from the compiler.
         return names
 
     # These are the real checker and HIR ownership-relation carriers. Their
@@ -1469,24 +1486,28 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         return "stage-5"
 
 
-def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
-    expected: dict[tuple[str, str, str], int] = {}
+def load_inventory(path: Path) -> set[tuple[str, str, str]]:
+    """The OWNER MODULES permitted to carry each authority form.
+
+    This used to carry a reviewed exact count per (group, form, path) and
+    compare it. The count rejected two things: a site appearing in a file
+    nobody had reviewed, and a site being added to or removed from a file
+    already reviewed. Only the first is a wrong program. The second fired on
+    every legal refactor inside an owner module, and the file's own prologue
+    conceded it could not see a net-zero relocation between two listed
+    modules -- so the churn was paid without buying the case that motivated it.
+
+    Membership keeps the first and drops the second: an authority site in an
+    unlisted module is red, a listed module with none left is red (the row is
+    stale, or the parse stopped matching), and moving sites around inside an
+    owner module is nobody's business.
+    """
+    expected: set[tuple[str, str, str]] = set()
     with path.open(newline="") as handle:
         source = (line for line in handle if line.strip() and not line.startswith("#"))
         for row in csv.DictReader(source, delimiter="\t"):
-            group, form, target, count = (
-                row["group"],
-                row["form"],
-                row["path"],
-                row["count"],
-            )
-            if (
-                group not in ALL_GROUPS
-                or not form
-                or not target
-                or not count.isdigit()
-                or int(count) == 0
-            ):
+            group, form, target = (row["group"], row["form"], row["path"])
+            if group not in ALL_GROUPS or not form or not target:
                 raise SystemExit(f"invalid authority inventory row: {row}")
             required_stage = canonical_stage(group, form, target)
             if row.get("retirement_stage") != required_stage:
@@ -1500,7 +1521,7 @@ def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
             key = (group, form, target)
             if key in expected:
                 raise SystemExit(f"duplicate authority inventory row: {key}")
-            expected[key] = int(count)
+            expected.add(key)
     return expected
 
 
@@ -1516,30 +1537,30 @@ def load_inventory_reasons(path: Path) -> dict[tuple[str, str, str], str]:
 
 def render_inventory(
     path: Path,
-    counts: dict[tuple[str, str, str], int],
+    owners: set[tuple[str, str, str]],
     reasons: dict[tuple[str, str, str], str],
 ) -> str:
-    """Rebuild the inventory from observed counts, preserving the prologue.
+    """Rebuild the inventory from the observed owner modules, keeping the prologue.
 
-    Counts are derived, so they are rewritten. Reasons are editorial, so an
-    authority form/path that has never been reviewed cannot be minted here --
-    `write_inventory` refuses instead of authoring a placeholder.
+    Which modules carry an authority is derived, so it is rewritten. Reasons
+    are editorial, so an authority form/path that has never been reviewed
+    cannot be minted here -- `write_inventory` refuses instead of authoring a
+    placeholder.
     """
     lines = path.read_text().splitlines()
     prologue = [line for line in lines if line.startswith("#")]
-    header = "group\tform\tpath\tcount\tretirement_stage\treason"
+    header = "group\tform\tpath\tretirement_stage\treason"
     rows = [
         "\t".join(
             (
                 group,
                 form,
                 target,
-                str(counts[(group, form, target)]),
                 canonical_stage(group, form, target),
                 reasons[(group, form, target)],
             )
         )
-        for (group, form, target) in counts
+        for (group, form, target) in owners
     ]
     rows.sort()
     return "\n".join([*prologue, header, *rows]) + "\n"
@@ -1547,17 +1568,18 @@ def render_inventory(
 
 def write_inventory(
     path: Path,
-    counts: dict[tuple[str, str, str], int],
+    owners: set[tuple[str, str, str]],
 ) -> int:
-    """Re-record the inventory counts. A brand-new authority row is an error.
+    """Re-record which modules own each authority. A brand-new row is an error.
 
-    Dropping to zero and shrinking are the drift this regen exists to absorb:
-    they mean an authority was retired, which is the direction the cutover is
-    supposed to move. A key with no prior row is the opposite -- new authority
-    landed -- and it needs a human reason before it enters the baseline.
+    A module that no longer carries the authority is the drift this regen
+    exists to absorb: it means an authority was retired, which is the
+    direction the cutover is supposed to move. A key with no prior row is the
+    opposite -- new authority landed somewhere nobody reviewed -- and it needs
+    a human reason before it enters the baseline.
     """
     reasons = load_inventory_reasons(path)
-    unreviewed = sorted(key for key in counts if key not in reasons)
+    unreviewed = sorted(key for key in owners if key not in reasons)
     if unreviewed:
         print(
             "structural authority inventory: new authority form/path rows cannot be "
@@ -1566,14 +1588,14 @@ def write_inventory(
         )
         for group, form, target in unreviewed:
             print(
-                f"  - {group}\t{form}\t{target}\t{counts[(group, form, target)]}"
+                f"  - {group}\t{form}\t{target}"
                 f"\t{canonical_stage(group, form, target)}\t<reason>",
                 file=sys.stderr,
             )
         return 1
-    path.write_text(render_inventory(path, counts, reasons))
+    path.write_text(render_inventory(path, owners, reasons))
     print(
-        f"structural authority inventory: re-recorded {len(counts)} authority "
+        f"structural authority inventory: re-recorded {len(owners)} authority "
         "form/path rows"
     )
     return 0
@@ -2280,7 +2302,7 @@ def main() -> int:
             return 0
 
     inventory = args.inventory or root / "scripts/structural-authority-inventory.tsv"
-    expected = {} if args.write_inventory else load_inventory(inventory)
+    expected = set() if args.write_inventory else load_inventory(inventory)
     findings, test_ranges = discover(ast_grep, root)
 
     actual: defaultdict[tuple[str, str, str], int] = defaultdict(int)
@@ -2304,13 +2326,29 @@ def main() -> int:
         if blocked:
             print("\n".join(f"  - {item}" for item in blocked), file=sys.stderr)
             return 1
-        return write_inventory(inventory, dict(actual))
+        return write_inventory(inventory, set(actual))
 
     failures = []
-    for key in sorted(set(expected) | set(actual)):
-        want, got = expected.get(key, 0), actual.get(key, 0)
-        if want != got:
-            failures.append(f"{key[0]}/{key[1]} {key[2]}: expected {want}, found {got}")
+    # Membership, not magnitude. An authority site in a module nobody reviewed
+    # is the wrong program; how many sites a reviewed module holds is its own
+    # business, and asserting it fired on every legal refactor while still
+    # missing a net-zero relocation between two listed modules.
+    for key in sorted(set(actual) - expected):
+        failures.append(
+            f"{key[0]}/{key[1]} {key[2]}: this authority appears in a module the "
+            "inventory does not list. Review the site, then add the owner row "
+            "with its reason."
+        )
+    # Anti-vacuity floor (LESSONS.md enumeration-gate-floors): a listed owner
+    # module with no sites left means the authority retired -- delete the row --
+    # or that the parse stopped matching, which would make this whole audit
+    # green while enforcing nothing.
+    for key in sorted(expected - set(actual)):
+        failures.append(
+            f"{key[0]}/{key[1]} {key[2]}: the inventory lists this owner module "
+            "but no site was found. Remove the row if the authority retired; "
+            "if it did not, the parse has stopped matching."
+        )
     forbidden = scalar_span_site_findings(ast_grep, root, test_ranges)
     for item in forbidden:
         failures.append(

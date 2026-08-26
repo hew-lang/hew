@@ -1335,11 +1335,9 @@ ll-golden: hew-native
 #         tests/compile-measure/** scripts/dogfood-compile-measure.sh
 # The gate measures define blocks, excluding host-specific module headers.
 #         build/bin/hew (release-lib profile)
-LINT_GATES += dogfood-compile-measure
 dogfood-compile-measure: hew $(LIBHEW_READY)
 	@args=""; \
-	if [ "$(DOGFOOD_MEASURE_UPDATE)" = "1" ]; then args="--update"; fi; \
-	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/dogfood-compile-measure.sh $$args
+	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/dogfood-compile-measure.sh
 
 # Warm the release-lib compiler and the table-derived shared artifacts without
 # running the measurement gate.

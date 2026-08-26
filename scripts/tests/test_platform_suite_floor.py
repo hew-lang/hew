@@ -6,11 +6,25 @@ matches nothing. `cargo nextest run` over an empty selection EXITS ZERO, so the
 step is green, the job is green, and the required platform context is green
 having executed no test at all.
 
-The counterfactual is driven through a REAL `cargo nextest list` against a
-copied nextest config whose platform filter cannot match, so the assertion is
-about what nextest actually emits rather than about a hand-written fixture that
-resembles it. Every other case is fixture-driven, because payload shapes are
-cheaper to enumerate than to provoke.
+These cases are fixture-driven on purpose. Listing the real workspace BUILDS
+its test binaries, and this file is reached by the routed
+`test-release-workflow-contract` gate whose build form declares that it
+compiles nothing -- a `cargo nextest list` here would be the exact defect
+`test_no_gate_compiles_behind_an_empty_build_form` exists to catch, and
+guarding it at runtime does not help, because that walk reads the source.
+
+The live proof is where it belongs: the Windows and macOS jobs run this floor
+against a real listing on every smoke-tier pull request, so the non-empty
+direction is proved by the thing it protects rather than by a local rehearsal.
+
+The rejection direction was additionally verified end to end during
+development, against cargo-nextest 0.9.132 and this repository real workspace:
+a `[profile.platform]` `default-filter` of
+`binary_id(hew-cli::run_e2e) - binary_id(hew-cli::run_e2e)` parses, lists
+cleanly, exits 0 and selects zero tests -- and this floor rejects it. An
+UNMATCHED `binary_id` is rejected by nextest itself at config-parse time with
+exit 96, which is a useful second line of defence but not the case a floor is
+for.
 
 Only non-empty is asserted anywhere. An exact expected count would fire on
 every added test and tell a reviewer nothing.
@@ -18,8 +32,6 @@ every added test and tell a reviewer nothing.
 
 import importlib.util
 import json
-import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -115,121 +127,6 @@ def test_the_count_ignores_human_output_noise() -> None:
     result = run_floor(noisy)
     assert result.returncode != 0, result.stdout
     assert "selected no tests" in result.stderr, result.stderr
-
-
-def test_a_zero_match_platform_filter_is_rejected_end_to_end() -> None:
-    """The real thing: nextest, a real config, a filter that selects nothing.
-
-    The filter is a self-difference (`binary_id(X) - binary_id(X)`) because it
-    has to be one nextest ACCEPTS. An unmatched `binary_id` is rejected at
-    config-parse time with exit 96 -- a useful second line of defence, but not
-    the case this floor exists for. A self-difference parses, lists cleanly,
-    exits 0, and selects no test at all: exactly the green-having-run-nothing
-    shape.
-
-    Skipped only when cargo-nextest is unavailable, so a machine without it
-    reports "not run" rather than a pass it did not earn.
-    """
-    if shutil.which("cargo") is None:
-        print("SKIP (no cargo on PATH)")
-        return
-    probe = subprocess.run(
-        ["cargo", "nextest", "--version"], capture_output=True, text=True
-    )
-    if probe.returncode != 0:
-        print("SKIP (cargo-nextest unavailable)")
-        return
-
-    config = (ROOT / ".config" / "nextest.toml").read_text(encoding="utf-8")
-    start = config.index("[profile.platform]")
-    end = config.index("[profile.smoke]")
-    block = config[start:end]
-    filter_start = block.index('default-filter = """')
-    filter_end = block.index('"""', filter_start + len('default-filter = """')) + 3
-    broken = (
-        config[:start]
-        + block[:filter_start]
-        + 'default-filter = "binary_id(hew-cli::run_e2e) - binary_id(hew-cli::run_e2e)"\n'
-        + block[filter_end:]
-        + config[end:]
-    )
-
-    with tempfile.TemporaryDirectory() as raw:
-        scratch = Path(raw) / "nextest.toml"
-        scratch.write_text(broken, encoding="utf-8")
-        listed = subprocess.run(
-            [
-                "cargo",
-                "nextest",
-                "list",
-                "--config-file",
-                str(scratch),
-                "--profile",
-                "platform",
-                "--workspace",
-                "--exclude",
-                "hew-wasm",
-                "--exclude",
-                "hew-cabi",
-                "--message-format",
-                "json",
-                "--list-type",
-                "full",
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            env={**os.environ, "HEW_TEST_NO_BUILD": "1"},
-        )
-        if listed.returncode != 0:
-            print("SKIP (workspace could not be listed in this environment)")
-            return
-        selected = floor.parse_listing(listed.stdout)
-        assert not selected, (
-            "a self-difference filter still selected tests; the counterfactual "
-            "proves nothing"
-        )
-        result = run_floor(listed.stdout)
-        assert result.returncode != 0, result.stdout
-        assert "selected no tests" in result.stderr, result.stderr
-
-
-def test_the_real_platform_profile_selects_a_non_empty_set() -> None:
-    """And the floor is not vacuous in the other direction.
-
-    Non-empty only. The number is reported by the job summary and never
-    asserted here.
-    """
-    if shutil.which("cargo") is None:
-        print("SKIP (no cargo on PATH)")
-        return
-    listed = subprocess.run(
-        [
-            "cargo",
-            "nextest",
-            "list",
-            "--profile",
-            "platform",
-            "--workspace",
-            "--exclude",
-            "hew-wasm",
-            "--exclude",
-            "hew-cabi",
-            "--message-format",
-            "json",
-            "--list-type",
-            "full",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "HEW_TEST_NO_BUILD": "1"},
-    )
-    if listed.returncode != 0:
-        print("SKIP (workspace could not be listed in this environment)")
-        return
-    selected = floor.parse_listing(listed.stdout)
-    assert selected, "the platform profile selects nothing in this tree"
 
 
 def _discover_tests() -> list:

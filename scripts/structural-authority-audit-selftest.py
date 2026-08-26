@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT = ROOT / "scripts/structural-authority-audit.py"
-INVENTORY_HEADER = "group\tform\tpath\tcount\tretirement_stage\treason\n"
+INVENTORY_HEADER = "group\tform\tpath\tretirement_stage\treason\n"
 
 
 def run(
@@ -65,7 +65,10 @@ with tempfile.TemporaryDirectory() as temp:
     )
 
     target.write_text('fn display(name: &str) { eprintln!("{}", short_name(name)); }\n')
-    assert run(work).returncode == 0, "presentation leaf extraction must stay ungated"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "presentation leaf extraction must stay ungated: " + _probe.stderr
+    )
 
     target.write_text(
         "fn bad() { let _ = ResolvedTy::Named {\n"
@@ -94,7 +97,10 @@ with tempfile.TemporaryDirectory() as temp:
     result = run(work)
     assert result.returncode != 0
     codegen.write_text("fn lower_terminator() { if family.c_symbol() != callee { } }\n")
-    assert run(work).returncode == 0, "carrier linkage assertion is the green control"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "carrier linkage assertion is the green control: " + _probe.stderr
+    )
     codegen.write_text(
         'fn lower_terminator() { match callee.as_str() { "hew_bytes_get" => {}, _ => {} } }\n'
     )
@@ -108,7 +114,10 @@ with tempfile.TemporaryDirectory() as temp:
     codegen.write_text(
         "fn lower_terminator() { if kind.expected_callee() == callee { } }\n"
     )
-    assert run(work).returncode == 0, "compiler carrier linkage assertion is green"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "compiler carrier linkage assertion is green: " + _probe.stderr
+    )
     codegen.unlink()
 
     enum_authority.write_text(
@@ -157,7 +166,10 @@ with tempfile.TemporaryDirectory() as temp:
         "fn item_macro() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
         "fn production() {}\n"
     )
-    assert run(work).returncode == 0, "parsed test-only module/items must be excluded"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "parsed test-only module/items must be excluded: " + _probe.stderr
+    )
 
     target.write_text(
         "#[cfg(all(test))]\n"
@@ -165,7 +177,10 @@ with tempfile.TemporaryDirectory() as temp:
         '#[cfg(all(feature = "x", test))]\n'
         "fn all_reordered() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
-    assert run(work).returncode == 0, "all(...) test guards must be order-independent"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "all(...) test guards must be order-independent: " + _probe.stderr
+    )
     target.write_text(
         '#[cfg(any(test, feature = "x"))]\n'
         "fn any_guard() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
@@ -199,7 +214,10 @@ with tempfile.TemporaryDirectory() as temp:
         'const DECOY: &str = "TypeCheckOutput { rc1_fact: u32 } HirProducedValueRelation::Subsumes suspend_abandon_extra_drops ActorHandlerKind::Crash";\n'
         "fn production() {}\n"
     )
-    assert run(work).returncode == 0, "RC1 carrier text in comments/strings is not code"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "RC1 carrier text in comments/strings is not code: " + _probe.stderr
+    )
 
     # A new checker-produced fact/relation, executable CallTarget variant,
     # SuspendKind/terminator variant or writer, and each owner-retirement path
@@ -216,12 +234,15 @@ with tempfile.TemporaryDirectory() as temp:
     )
     fact_inventory = (
         "checker-hir-fact-relation\tproduced-fact-field\t"
-        "hew-types/src/check/types.rs\t1\tstage-2\tcomposition fact\n"
+        "hew-types/src/check/types.rs\tstage-2\tcomposition fact\n"
         "checker-hir-fact-relation\thir-publication-consumer\t"
-        "hew-hir/src/lower.rs\t1\tstage-2\tcomposition consumer\n"
+        "hew-hir/src/lower.rs\tstage-2\tcomposition consumer\n"
     )
     set_inventory(work, fact_inventory)
-    assert run(work).returncode == 0, "checker fact publication must have a consumer"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "checker fact publication must have a consumer: " + _probe.stderr
+    )
     hir_consumer.write_text("fn lower() {}\n")
     result = run(work)
     assert result.returncode != 0 and "hir-publication-consumer" in result.stderr
@@ -252,36 +273,61 @@ with tempfile.TemporaryDirectory() as temp:
     )
     relation_inventory = (
         "checker-hir-fact-relation\tchecker-relation-variant\t"
-        "hew-types/src/produced_value.rs\t2\tstage-2\treal checker relation variants\n"
+        "hew-types/src/produced_value.rs\tstage-2\treal checker relation variants\n"
         "checker-hir-fact-relation\tchecker-relation-use\t"
-        "hew-types/src/produced_value.rs\t3\tstage-2\tchecker relation producers and consumers\n"
+        "hew-types/src/produced_value.rs\tstage-2\tchecker relation producers and consumers\n"
         "checker-hir-fact-relation\tchecker-relation-consumer\t"
-        "hew-types/src/produced_value.rs\t2\tstage-2\tchecker relation consumers\n"
+        "hew-types/src/produced_value.rs\tstage-2\tchecker relation consumers\n"
         "checker-hir-fact-relation\thir-relation-variant\t"
-        "hew-hir/src/produced_value.rs\t2\tstage-2\treal HIR relation variants\n"
+        "hew-hir/src/produced_value.rs\tstage-2\treal HIR relation variants\n"
         "checker-hir-fact-relation\thir-relation-use\t"
-        "hew-hir/src/produced_value.rs\t3\tstage-2\tHIR relation producers and consumers\n"
+        "hew-hir/src/produced_value.rs\tstage-2\tHIR relation producers and consumers\n"
         "checker-hir-fact-relation\thir-relation-consumer\t"
-        "hew-hir/src/produced_value.rs\t2\tstage-2\tHIR relation consumers\n"
+        "hew-hir/src/produced_value.rs\tstage-2\tHIR relation consumers\n"
     )
     set_inventory(work, relation_inventory)
     assert run(work).returncode == 0, (
         "real checker/HIR relation carriers must be nonzero"
     )
+    # Membership, not magnitude: dropping ONE arm inside a module that still
+    # owns the authority is a refactor, and the audit no longer opines on it.
+    # Dropping the consumer ENTIRELY is different -- the listed owner module
+    # now carries none, which means either the row is stale or the parse
+    # stopped matching, and a parse that matches nothing would make this whole
+    # audit green while enforcing nothing.
+    hir_relation.write_text(
+        "pub enum HirProducedValueRelation { Leaf, Subsumes(u32) }\n"
+        "fn produce(anchor: u32) { let _ = HirProducedValueRelation::Subsumes(anchor); }\n"
+    )
+    result = run(work)
+    assert result.returncode != 0, result.stderr
+    assert "hir-relation-consumer" in result.stderr, result.stderr
+    assert "no site was found" in result.stderr, result.stderr
+    # Divergence is a different property from congruence, so give it a fixture
+    # where congruence HOLDS: both carriers handle every variant they declare,
+    # and only their variant SETS disagree. Otherwise the congruence check
+    # fires first and this assertion proves nothing about divergence.
     hir_relation.write_text(
         "pub enum HirProducedValueRelation { Leaf, Subsumes(u32) }\n"
         "fn produce(anchor: u32) { let _ = HirProducedValueRelation::Subsumes(anchor); }\n"
         "fn consume(fact: HirProducedValueRelation) { match fact {\n"
         "    HirProducedValueRelation::Leaf => {},\n"
+        "    HirProducedValueRelation::Subsumes(_) => {},\n"
+        "} }\n"
+    )
+    checker_relation.write_text(
+        "pub enum ProducedValueDependency { Leaf, Subsumes(u32), Projection(u32) }\n"
+        "fn produce(anchor: u32) { let _ = ProducedValueDependency::Subsumes(anchor); }\n"
+        "fn consume(fact: ProducedValueDependency) { match fact {\n"
+        "    ProducedValueDependency::Leaf => {},\n"
+        "    ProducedValueDependency::Subsumes(_) => {},\n"
+        "    ProducedValueDependency::Projection(_) => {},\n"
         "} }\n"
     )
     result = run(work)
-    assert result.returncode != 0 and "hir-relation-consumer" in result.stderr
-    checker_relation.write_text(
-        "pub enum ProducedValueDependency { Leaf, Subsumes(u32), Projection(u32) }\n"
+    assert result.returncode != 0 and "relation variants diverged" in result.stderr, (
+        result.stderr
     )
-    result = run(work)
-    assert result.returncode != 0 and "relation variants diverged" in result.stderr
     set_inventory(work)
     checker_relation.unlink()
     hir_relation.unlink()
@@ -301,7 +347,9 @@ with tempfile.TemporaryDirectory() as temp:
     call_target = work / "hew-mir/src/call_target.rs"
     call_target.write_text("pub enum CallTarget { New { value: u32 } }\n")
     result = run(work)
-    assert result.returncode != 0 and "call-target-variant" in result.stderr
+    assert result.returncode != 0, result.stderr
+    assert "call-target-variant" in result.stderr, result.stderr
+    assert "does not list" in result.stderr, result.stderr
 
     # The production carrier is real: a closed enum, constructor, and match consumer must
     # be inventoried together; removing the consumer or adding a variant fails.
@@ -312,11 +360,11 @@ with tempfile.TemporaryDirectory() as temp:
     )
     call_target_inventory = (
         "call-target-authority\tcall-target-variant\t"
-        "hew-mir/src/call_target.rs\t1\tstage-4\tcomposition variant\n"
+        "hew-mir/src/call_target.rs\tstage-4\tcomposition variant\n"
         "call-target-authority\tcall-target-use\t"
-        "hew-mir/src/call_target.rs\t2\tstage-4\tcomposition constructor and consumer\n"
+        "hew-mir/src/call_target.rs\tstage-4\tcomposition constructor and consumer\n"
         "call-target-authority\tcall-target-consumer\t"
-        "hew-mir/src/call_target.rs\t1\tstage-4\tcomposition consumer\n"
+        "hew-mir/src/call_target.rs\tstage-4\tcomposition consumer\n"
     )
     set_inventory(work, call_target_inventory)
     result = run(work)
@@ -328,14 +376,22 @@ with tempfile.TemporaryDirectory() as temp:
         "fn produce(value: u32) { let _ = CallTarget::Direct { value }; }\n"
     )
     result = run(work)
-    assert result.returncode != 0 and "call-target-consumer" in result.stderr
+    assert result.returncode != 0, result.stderr
+    assert "call-target-consumer" in result.stderr, result.stderr
+    assert "no site was found" in result.stderr, result.stderr
     call_target.write_text(
         "pub enum CallTarget { Direct { value: u32 }, Unsupported { value: u32 } }\n"
         "fn produce(value: u32) { let _ = CallTarget::Direct { value }; }\n"
         "fn consume(target: CallTarget) { match target { CallTarget::Direct { .. } => {} } }\n"
     )
-    result = run(work)
-    assert result.returncode != 0 and "call-target-variant" in result.stderr
+    # A variant added inside a REVIEWED carrier module is accepted: that was a
+    # count move, and a variant with no arm and no wildcard is a compile error
+    # before this audit ever runs.
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "a variant added inside a reviewed carrier module is not a finding: "
+        + _probe.stderr
+    )
     set_inventory(work)
     call_target.unlink()
 
@@ -350,14 +406,17 @@ with tempfile.TemporaryDirectory() as temp:
     )
     runtime_inventory = (
         "runtime-call-authority\truntime-call-family-variant\t"
-        "hew-types/src/runtime_call.rs\t2\tstage-4\truntime family variants\n"
+        "hew-types/src/runtime_call.rs\tstage-4\truntime family variants\n"
         "runtime-call-authority\truntime-call-family-use\t"
-        "hew-types/src/runtime_call.rs\t3\tstage-4\truntime family uses\n"
+        "hew-types/src/runtime_call.rs\tstage-4\truntime family uses\n"
         "runtime-call-authority\truntime-call-family-consumer\t"
-        "hew-types/src/runtime_call.rs\t2\tstage-4\truntime family consumers\n"
+        "hew-types/src/runtime_call.rs\tstage-4\truntime family consumers\n"
     )
     set_inventory(work, runtime_inventory)
-    assert run(work).returncode == 0, "runtime family authority must be nonzero"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "runtime family authority must be nonzero: " + _probe.stderr
+    )
     runtime_family.write_text(
         "pub enum RuntimeCallFamily { ChannelRecv, StreamRecv, NewFamily }\n"
         "fn produce() { let _ = RuntimeCallFamily::ChannelRecv; }\n"
@@ -366,8 +425,24 @@ with tempfile.TemporaryDirectory() as temp:
         "    RuntimeCallFamily::StreamRecv => {},\n"
         "} }\n"
     )
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "a variant added inside a reviewed carrier module is not a finding: "
+        + _probe.stderr
+    )
+
+    # What is still rejected is the carrier appearing somewhere unreviewed.
+    shadow = work / "hew-types/src/runtime_call_shadow.rs"
+    shadow.write_text(
+        "pub enum RuntimeCallFamily { ChannelRecv }\n"
+        "fn consume(family: RuntimeCallFamily) { match family {\n"
+        "    RuntimeCallFamily::ChannelRecv => {},\n"
+        "} }\n"
+    )
     result = run(work)
-    assert result.returncode != 0 and "runtime-call-family-variant" in result.stderr
+    assert result.returncode != 0, result.stderr
+    assert "does not list" in result.stderr, result.stderr
+    shadow.unlink()
     set_inventory(work)
     runtime_family.unlink()
 
@@ -381,12 +456,23 @@ with tempfile.TemporaryDirectory() as temp:
     )
     lifecycle_inventory = (
         "lifecycle-identity-authority\tlifecycle-candidate-field\t"
-        "hew-types/src/lifecycle.rs\t2\tstage-2\tcanonical lifecycle identity fields\n"
+        "hew-types/src/lifecycle.rs\tstage-2\tcanonical lifecycle identity fields\n"
         "lifecycle-identity-authority\tlifecycle-conflict-variant\t"
-        "hew-types/src/lifecycle.rs\t1\tstage-2\tlifecycle conflict discriminator\n"
+        "hew-types/src/lifecycle.rs\tstage-2\tlifecycle conflict discriminator\n"
     )
     set_inventory(work, lifecycle_inventory)
-    assert run(work).returncode == 0, "lifecycle identity authority must be nonzero"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "lifecycle identity authority must be nonzero: " + _probe.stderr
+    )
+    # A third identity field inside the SAME reviewed module is accepted now.
+    # That was the exact-count era's finding, and it was a change-detector:
+    # the row moved from 2 to 3, so the gate went red, and the only available
+    # response was to re-record the number. Membership deliberately does not
+    # opine on how many fields a reviewed module declares.
+    #
+    # What is still rejected is the case that motivated the row: the authority
+    # appearing in a module nobody reviewed.
     lifecycle.write_text(
         "pub struct OpaqueResourceLifecycleCandidate {\n"
         "    pub qualified_name: String,\n"
@@ -395,8 +481,24 @@ with tempfile.TemporaryDirectory() as temp:
         "}\n"
         "pub enum OpaqueResourceLifecycleConflictKind { CloseMethodMismatch }\n"
     )
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "a field added inside a reviewed owner module is not a finding: "
+        + _probe.stderr
+    )
+
+    elsewhere = work / "hew-types/src/lifecycle_shadow.rs"
+    elsewhere.write_text(
+        "pub struct OpaqueResourceLifecycleCandidate {\n"
+        "    pub qualified_name: String,\n"
+        "    pub close_method: String,\n"
+        "}\n"
+    )
     result = run(work)
-    assert result.returncode != 0 and "lifecycle-candidate-field" in result.stderr
+    assert result.returncode != 0, result.stderr
+    assert "lifecycle-candidate-field" in result.stderr, result.stderr
+    assert "does not list" in result.stderr, result.stderr
+    elsewhere.unlink()
     set_inventory(work)
     lifecycle.unlink()
 
@@ -447,7 +549,10 @@ with tempfile.TemporaryDirectory() as temp:
         "    }\n"
         "}\n"
     )
-    assert run(work).returncode == 0, "test-only RC1 carriers must be excluded"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "test-only RC1 carriers must be excluded: " + _probe.stderr
+    )
 
     # hew-analysis remains an audited production root for identity construction.
     target.write_text("fn production() {}\n")
@@ -551,7 +656,10 @@ with tempfile.TemporaryDirectory() as temp:
         'fn display(current_module: &str) { eprintln!("{}", short_name(current_module)); }\n'
     )
     set_inventory(work)
-    assert run(work).returncode == 0, "display-only short_name must stay ungated"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "display-only short_name must stay ungated: " + _probe.stderr
+    )
 
     target.write_text(
         "fn canonical(declaring_module: &str, signature_key: &str) {\n"
@@ -672,7 +780,10 @@ with tempfile.TemporaryDirectory() as temp:
         'fn f() { method_key = qualified::other!("{}::{}", owner, method); }\n'
     )
     set_inventory(work)
-    assert run(work).returncode == 0, "non-format macro paths must remain controls"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "non-format macro paths must remain controls: " + _probe.stderr
+    )
     target.write_text(
         'fn f() { method_key = std :: other ! ("{}::{}", owner, method); }\n'
     )
@@ -771,27 +882,44 @@ with tempfile.TemporaryDirectory() as temp:
         "the innermost enclosing function must own the finding: " + result.stderr
     )
 
-    # An extra call inside an ALREADY-reviewed function still fails, because the
-    # inventory records a count and not merely a name.
+    # A second call inside an ALREADY-reviewed function is accepted now. The
+    # inventory records which functions are reviewed application sites, not how
+    # many applications each one makes: the count fired on every legal refactor
+    # inside a reviewed function and still could not see a call moving between
+    # two reviewed functions, so it was paid for without buying its own case.
     application_file.write_text(
         "fn reviewed_site() { self.check_against(expr, sp, param_ty); }\n"
     )
     set_inventory(
         work,
-        "signature-application\treviewed_site\thew-types/src/check/methods.rs\t1"
+        "signature-application\treviewed_site\thew-types/src/check/methods.rs"
         "\tstage-1\treviewed\n",
     )
-    assert run(work).returncode == 0, "a matching reviewed count must pass"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "a reviewed application site must pass: " + _probe.stderr
+    )
     application_file.write_text(
         "fn reviewed_site() {\n"
         "    self.check_against(expr, sp, param_ty);\n"
         "    self.check_against(other, sp, param_ty);\n"
         "}\n"
     )
-    result = run(work)
-    assert result.returncode != 0, (
-        "a second call inside a reviewed function must move the count and fail"
+    _probe = run(work)
+    assert _probe.returncode == 0, (
+        "a second call inside a reviewed function is not a finding: " + _probe.stderr
     )
+
+    # What still fails is the case the row exists for: an application in a
+    # function nobody reviewed.
+    application_file.write_text(
+        "fn reviewed_site() { self.check_against(expr, sp, param_ty); }\n"
+        "fn unreviewed_site() { self.check_against(other, sp, param_ty); }\n"
+    )
+    result = run(work)
+    assert result.returncode != 0, "an unreviewed application site must fail"
+    assert "signature-application/unreviewed_site " in result.stderr, result.stderr
+    assert "does not list" in result.stderr, result.stderr
 
     # Callee POSITION is structural too: the primitive named as an argument, or
     # bound as a value, is not an application.

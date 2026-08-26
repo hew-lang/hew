@@ -84,6 +84,22 @@ jobs:
           path: coverage-out/runtime-e2e/runtime-summary.txt
           if-no-files-found: ignore
 
+      - name: Dogfood compile telemetry
+        # Measurement, not a gate. This used to compare exact LLVM
+        # define-block bytes, define count and basic-block count against a
+        # committed baseline on the required lint job; every benign codegen
+        # change broke it and the fix was always to regenerate the baseline, so
+        # it measured nothing anybody decided on while costing time on the
+        # merge path.
+        #
+        # It still fails if the fixture does not COMPILE or emits IR with no
+        # functions -- that is a real defect, not a shape opinion -- and the
+        # numbers land in this run's summary where a human can read the trend.
+        # Regressions in what this fixture compiles to are caught by the
+        # ll-byte-identity oracle, where byte identity IS the contract, and by
+        # the compiled-Hew behaviour suites, which run the programs.
+        run: make dogfood-compile-measure
+
   # ─────────────────────────────────────────────────────────────────────────
   # Code coverage — Rust workspace tests instrumented with cargo-llvm-cov.
   # Moved verbatim off ci.yml's per-PR path: same LLVM setup, same disk purge,

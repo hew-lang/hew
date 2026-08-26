@@ -19,6 +19,7 @@ Contracts, and the wrong program each rejects:
 """
 
 import importlib.util
+import os
 import subprocess
 import re
 import sys
@@ -1147,6 +1148,103 @@ def test_the_strict_ratchet_knob_is_a_boolean_not_flag_text() -> None:
         assert "$(RATCHET_STRICT)" not in line, (
             f"a raw RATCHET_STRICT is spliced into a ratchet command line: {line}"
         )
+
+
+# ── contract: one gate, one home, per pull request ───────────────────────────
+
+
+def test_the_lint_owned_gate_list_matches_the_lint_job_exactly() -> None:
+    """The de-duplication list is derived, not remembered.
+
+    `lint` runs its authority gates with no `if:` guard, so the router must
+    not select them into a Linux shard as well -- `structural-lint` cost 242s
+    in a shard and 246s in `lint` for the same change. The dispatcher skips
+    them when a caller declares `LINT_GATE_OWNER=lint`.
+
+    Both directions of drift are defects, and only one of them is loud:
+    a gate added to `lint` but missing from the list keeps running twice,
+    while a gate REMOVED from `lint` but left in the list stops running on the
+    pull-request path altogether. Equality is the only assertion that catches
+    the second.
+    """
+    reachability_lint_targets = set()
+    workflow_text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    for _name, command in _reachability.lint_run_blocks(workflow_text):
+        reachability_lint_targets.update(
+            _reachability.lint_invoked_make_targets(command)
+        )
+    # `stdlib` is a build step the job needs, not an authority it owns.
+    reachability_lint_targets.discard("stdlib")
+    assert reachability_lint_targets, "the lint job invokes no make target"
+
+    dispatcher = (ROOT / "scripts" / "ci-preflight-dispatcher.sh").read_text(
+        encoding="utf-8"
+    )
+    block = dispatcher.split("LINT_OWNED_GATES=(", 1)[1].split(")", 1)[0]
+    declared = {
+        line.strip()
+        for line in block.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+    assert declared == reachability_lint_targets, {
+        "runs in lint but not declared owned (still duplicated)": sorted(
+            reachability_lint_targets - declared
+        ),
+        "declared owned but no longer in lint (would stop running)": sorted(
+            declared - reachability_lint_targets
+        ),
+    }
+
+
+def test_declaring_lint_ownership_removes_the_duplicate_selection() -> None:
+    """Behavioural, at the router: same diff, one fewer invocation.
+
+    And the local path is unchanged, which is what keeps `make preflight` a
+    rehearsal of CI rather than a subset of it.
+    """
+    dispatcher = ROOT / "scripts" / "ci-preflight-dispatcher.sh"
+    probe = "scripts/structural-authority-audit.py"
+
+    def selected(env: dict[str, str]) -> str:
+        result = subprocess.run(
+            ["bash", str(dispatcher), "--dry-run", "--", probe],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **env},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    local = selected({})
+    hosted = selected({"LINT_GATE_OWNER": "lint"})
+    assert "make structural-lint " in local, local[:0]
+    assert "make structural-lint " not in hosted, (
+        "declaring lint ownership did not remove the duplicate selection"
+    )
+
+
+def test_every_job_that_runs_the_router_declares_lint_ownership() -> None:
+    """A job added later must not quietly reintroduce the duplication."""
+    ci = load(WORKFLOWS / "ci.yml")
+    missing: list[str] = []
+    for job_name, job in jobs(ci).items():
+        for step in steps(job):
+            body = str(step.get("run", ""))
+            if "ci-preflight-route.sh" not in body:
+                continue
+            # The `changes` job only classifies (`--dry-run`); it dispatches
+            # nothing, so it cannot duplicate anything.
+            if "--dry-run" in body:
+                continue
+            env = step.get("env") or {}
+            if not isinstance(env, dict) or env.get("LINT_GATE_OWNER") != "lint":
+                missing.append(f"{job_name} / {step.get('name', '<unnamed>')}")
+    assert not missing, (
+        "job(s) run the router without declaring who owns the lint gates, so "
+        f"those gates run twice per pull request: {missing}"
+    )
 
 
 def _discover_tests() -> list:

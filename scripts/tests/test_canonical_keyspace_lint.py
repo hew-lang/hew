@@ -75,7 +75,7 @@ def main() -> None:
         )
 
     allow = (
-        "# canonical-keyspace-allow\thew-types/src/lib.rs\titem_defs\t1\t"
+        "# canonical-keyspace-allow\thew-types/src/lib.rs\titem_defs\t"
         "hew-types\ta316-keyspace-item-defs\treviewed pre-existing key\n"
     )
     green = run(SOURCE, allow)
@@ -84,8 +84,30 @@ def main() -> None:
             f"allowlisted pre-existing counterfactual failed:\n{green.stderr}"
         )
 
-    stale = run(SOURCE, allow.replace("\t1\t", "\t2\t", 1))
-    if stale.returncode != 1 or "allowlisted 2, found 1" not in stale.stderr:
+    # Membership, not magnitude: a SECOND reviewed insert in an
+    # already-reviewed module is not a new finding. The exact count that used
+    # to be here made every legal refactor inside a reviewed module red while
+    # proving nothing extra about the keyspace.
+    two_inserts = SOURCE.replace(
+        "tables.item_defs.insert(name, 1);",
+        "tables.item_defs.insert(name, 1);\n    tables.item_defs.insert(other, 2);",
+    )
+    grew = run(two_inserts, allow)
+    if grew.returncode != 0:
+        raise SystemExit(
+            "a second insert in an already-reviewed module must not be a new "
+            f"finding:\n{grew.stderr}"
+        )
+
+    # The floor still bites: an allowance whose module holds no bare insert is
+    # stale debt, or a sign the parse stopped matching and this lint has gone
+    # green while enforcing nothing.
+    cleaned = SOURCE.replace(
+        "tables.item_defs.insert(name, 1);",
+        "tables.item_defs.insert(machine_layout_key(&name), 1);",
+    )
+    stale = run(cleaned, allow)
+    if stale.returncode != 1 or "no bare insert was found" not in stale.stderr:
         raise SystemExit(
             f"stale allowlist counterfactual did not fail closed:\n{stale.stderr}"
         )
@@ -95,7 +117,7 @@ def main() -> None:
             "tables.item_defs.insert(name, 1);",
             "tables.machine_layout_names.insert(name);",
         ),
-        "# canonical-keyspace-allow\thew-types/src/lib.rs\tmachine_layout_names\t1\t"
+        "# canonical-keyspace-allow\thew-types/src/lib.rs\tmachine_layout_names\t"
         "hew-types\ta316-keyspace-layouts\tinvalid canonical-only exception\n",
     )
     if (

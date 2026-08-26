@@ -206,6 +206,11 @@ jobs:
 
       - name: Run change-scoped checks
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
+        env:
+          # `lint` runs alongside this job on exactly the changes it handles,
+          # and runs its authority gates unconditionally. Same reason as the
+          # Linux shards: one gate, one home, per pull request.
+          LINT_GATE_OWNER: lint
         run: scripts/ci-preflight-route.sh
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -398,8 +403,6 @@ jobs:
         # (test-sandbox-parity-coverage-check).
         run: make sandbox-parity-coverage-check
 
-      - name: Measure dogfood compiler IR
-        run: make dogfood-compile-measure
 
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown
@@ -836,6 +839,12 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         env:
           COMPILED_HEW_GATE_OWNER: aggregate
+          # The `lint` job runs its authority gates unconditionally on every
+          # pull request, so selecting them here as well runs each of them
+          # twice for one change. Declaring the owner removes the duplicate
+          # without removing the gate; a local preflight sets no owner and
+          # still runs everything.
+          LINT_GATE_OWNER: lint
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
           # Newly-passing expected-failure entries annotate on a pull request
           # and BLOCK on the default branch, where the list must be current.

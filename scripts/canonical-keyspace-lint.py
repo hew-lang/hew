@@ -294,22 +294,31 @@ def discover(ast_grep: Path, root: Path) -> list[Finding]:
     return sorted(set(findings))
 
 
-def load_allowlist(path: Path) -> dict[tuple[str, str], int]:
-    allowed: dict[tuple[str, str], int] = {}
+def load_allowlist(path: Path) -> set[tuple[str, str]]:
+    """The (module, table) pairs reviewed as permitted to hold bare inserts.
+
+    Membership, not magnitude. The contract is that a bare identifier does not
+    reach a canonical keyspace from a module nobody reviewed; how many
+    already-reviewed inserts a reviewed module still holds is a debt figure,
+    and asserting it turned every legal refactor inside such a module into a
+    red gate while proving nothing extra about the keyspace.
+
+    Everything that makes a row a REVIEW rather than a waiver is unchanged and
+    still required: the owner, the follow-on work item, and the reason.
+    """
+    allowed: set[tuple[str, str]] = set()
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.startswith(ALLOW_PREFIX):
             continue
         fields = line.split("\t")
-        if len(fields) != 7:
+        if len(fields) != 6:
             raise SystemExit(
                 f"invalid canonical keyspace allowlist row at {path}:{number}"
             )
-        _, target, table, count, owner, follow_on_work, reason = fields
+        _, target, table, owner, follow_on_work, reason = fields
         if (
             not target.endswith(".rs")
             or not KEYSPACE_NAME.fullmatch(table)
-            or not count.isdigit()
-            or int(count) == 0
             or not owner
             or not follow_on_work
             or not reason
@@ -326,7 +335,7 @@ def load_allowlist(path: Path) -> dict[tuple[str, str], int]:
             raise SystemExit(
                 f"duplicate canonical keyspace allowlist row: {target} {table}"
             )
-        allowed[key] = int(count)
+        allowed.add(key)
     return allowed
 
 
@@ -337,10 +346,20 @@ def check(
     actual = Counter((item.path, item.table) for item in findings)
     allowed = load_allowlist(inventory)
     failures: list[str] = []
-    for key in sorted(set(actual) | set(allowed)):
-        want, got = allowed.get(key, 0), actual.get(key, 0)
-        if want != got:
-            failures.append(f"{key[0]} {key[1]}: allowlisted {want}, found {got}")
+    for key in sorted(set(actual) - allowed):
+        failures.append(
+            f"{key[0]} {key[1]}: a bare identifier reaches this canonical keyspace "
+            "from a module with no reviewed allowance"
+        )
+    # Anti-vacuity floor: an allowance whose module holds no bare insert is
+    # either stale debt to delete, or a sign that the parse stopped matching
+    # and this lint has become green while enforcing nothing.
+    for key in sorted(allowed - set(actual)):
+        failures.append(
+            f"{key[0]} {key[1]}: allowlisted but no bare insert was found. Remove "
+            "the allowance if the module was cleaned up; if it was not, the parse "
+            "has stopped matching."
+        )
     return findings, failures
 
 

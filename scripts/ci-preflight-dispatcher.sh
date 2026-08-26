@@ -419,7 +419,6 @@ COUNTERFACTUAL_ROSTER=(
     "make check-sanitizer-gate"
     "make test-release-workflow-contract"
     "make test-leak-oracle-selftest"
-    "make dogfood-compile-measure"
 )
 
 COUNTERFACTUAL_GATE_REQUIREMENTS_FILE="${REPO_ROOT}/hew-testutil/shared-test-artifacts.tsv"
@@ -707,6 +706,59 @@ collect_paths_from_status() {
     return 0
 }
 
+# Gates the hosted `lint` job runs UNCONDITIONALLY on every pull request.
+#
+# Selecting one of these into a Linux shard as well runs it twice for one
+# change: `structural-lint` cost 242s in a shard and 246s in `lint`,
+# `check-gate-reachability` 105s and 72s, workspace Clippy 74s and 132s. The
+# gate is not wrong in either place -- it is wrong that both places run it.
+#
+# The dispatcher therefore skips them when the caller declares that `lint`
+# owns them, exactly as COMPILED_HEW_GATE_OWNER already lets the compiled-Hew
+# aggregate own its two suites. A LOCAL preflight sets no owner and still runs
+# everything, which is what keeps `make preflight` a real rehearsal.
+#
+# This list must equal the set of gates the `lint` job actually invokes with no
+# `if:` guard. scripts/tests/test_ci_workflow_contract.py asserts that equality
+# against the parsed workflow, so a step added to or removed from `lint` fails
+# here rather than silently un-deduplicating or, worse, silently dropping a
+# gate from the pull-request path entirely.
+LINT_OWNED_GATES=(
+    cabi-surface-check
+    check-gate-reachability
+    check-sanitizer-gate
+    codegen-carried-identity-gate
+    codegen-trap-inventory-check
+    freebsd-workflow-contract-check
+    hew-fmt-check
+    leak-scan
+    legacy-path-syntax-lint
+    lint-wasm-todo
+    ll-identity-selftest
+    runtime-poison-safe-lint
+    sandbox-parity-coverage-check
+    shell-script-lint
+    structural-lint
+    structural-lint-bootstrap-install
+    test-ast-grep-contract
+    test-cabi-surface
+    test-python310-toml-compat
+    test-structural-lint-bootstrap
+    test-verify-ffi
+    tool-pin-contract-check
+    verify-ffi
+    verify-sys-lane-closure
+)
+
+lint_owns_gate() {
+    local target="$1"
+    local owned
+    for owned in "${LINT_OWNED_GATES[@]}"; do
+        [[ "$owned" == "$target" ]] && return 0
+    done
+    return 1
+}
+
 add_command() {
     local command="$1"
     local existing
@@ -716,6 +768,11 @@ add_command() {
                 return 0
                 ;;
         esac
+    fi
+    if [[ "${LINT_GATE_OWNER:-dispatcher}" == "lint" && "$command" == "make "* ]]; then
+        if lint_owns_gate "${command#make }"; then
+            return 0
+        fi
     fi
     if [[ ${COMMANDS[0]+set} == set ]]; then
         for existing in "${COMMANDS[@]}"; do

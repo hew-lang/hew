@@ -8,4 +8,3 @@ hew-std-wasi	wasm-staticlib	hew-std	libhew_std.a	libhew_std.a	-	wasm-runtime
 
 # record	target	requirement
 gate	test-leak-oracle-selftest	shared-artifacts
-gate	dogfood-compile-measure	shared-artifacts

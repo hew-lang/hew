@@ -134,6 +134,61 @@ no longer schedules is an error.
 There is no bypass label and no skip environment variable. A stale nightly is
 fixed, or the nightly and its owner entry are deleted in one commit.
 
+## One gate, one home
+
+`lint` runs its authority gates with no `if:` guard, so selecting them into a
+Linux shard as well runs each of them twice for one change — `structural-lint`
+cost 242s in a shard and 246s in `lint`. Jobs that dispatch the router declare
+`LINT_GATE_OWNER=lint`, and the router skips the gates `lint` owns, exactly as
+`COMPILED_HEW_GATE_OWNER=aggregate` already lets the compiled-Hew aggregate own
+its two suites.
+
+A local `make preflight` sets no owner and still runs everything, which is what
+keeps it a rehearsal of CI rather than a subset of it. The owned list is held
+equal to the parsed `lint` job by `scripts/tests/test_ci_workflow_contract.py`,
+in both directions: a gate added to `lint` but missing from the list keeps
+running twice, and a gate removed from `lint` but left in the list would stop
+running on the pull-request path altogether.
+
+## Dogfood IR: telemetry, not a gate
+
+`make dogfood-compile-measure` compiles the dogfood fixture and REPORTS what it
+produced. It used to compare exact LLVM define-block bytes, define count and
+basic-block count against a committed baseline, on the required lint job; every
+benign codegen change broke it and the only available response was to
+regenerate the baseline, so it measured nothing anybody decided on while
+costing time on the merge path.
+
+It still fails if the fixture does not compile, or emits IR with no functions —
+that is a defect, not a shape opinion. The numbers go to the nightly run
+summary. Regressions in what this fixture compiles to are caught by the
+ll-byte-identity oracle, where byte identity IS the contract, and by the
+compiled-Hew behaviour suites, which run the programs.
+
+## Structural authority: membership, not magnitude
+
+`scripts/structural-authority-inventory.tsv` records which MODULES are reviewed
+and permitted to carry each parsed authority form. It no longer records how many
+sites each module holds.
+
+- an authority site in a module with no row is red — new authority landed
+  somewhere nobody looked;
+- a row whose module carries no site is red — the row is stale, or the parse
+  stopped matching and the audit has quietly become vacuous;
+- sites moving around inside a reviewed module are that module's business.
+
+The retired per-(form, path) counts fired on every legal refactor inside an
+owner module, and the file's own prologue conceded they could not see a
+net-zero relocation between two listed modules. What is deliberately no longer
+detected: an extra call inside an already-reviewed function, a third identity
+field on an already-reviewed struct, a new variant on an already-reviewed
+carrier. For the last of those, rustc rejects an unhandled variant on a closed
+enum before this audit runs.
+
+The canonical-keyspace allowances carry the same semantics and the same
+review requirements — owner, follow-on work item, reason — without a per-file
+occurrence count.
+
 ## Shard balance
 
 `scripts/preflight-command-weights.tsv` holds measured elapsed seconds per

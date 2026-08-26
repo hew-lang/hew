@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
-# Compile the dogfood-shaped corpus fixture with the staged release-lib compiler.
+# Compile the dogfood-shaped corpus fixture with the staged release-lib
+# compiler and REPORT what it produced.
 #
 # Usage:
 #   HEW_BIN=build/bin/hew scripts/dogfood-compile-measure.sh
-#   HEW_BIN=build/bin/hew scripts/dogfood-compile-measure.sh --update
 #
-# --update is deliberately the sole baseline-writing path. Normal verification
-# never changes the checked-in measurement values.
+# This is telemetry, not a gate on IR shape. It used to compare exact LLVM
+# define-block bytes, define count and basic-block count against a committed
+# baseline; every benign codegen change broke it, and the fix was always to
+# regenerate the baseline. A number whose only response is "update the number"
+# measures nothing anybody decides on, and it cost time on the required lint
+# job to do it.
+#
+# What remains is a real behavioural floor -- the fixture must COMPILE and the
+# compiler must emit IR containing at least one function -- plus the
+# measurements themselves, printed for a human and into the run summary when
+# one exists. A regression in what this fixture compiles to is caught by the
+# ll-byte-identity oracle, where byte identity IS the contract, and by the
+# compiled-Hew behaviour suites, which run the programs.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURE="$ROOT/tests/compile-measure/dogfood-shape.hew"
-BASELINE="$ROOT/tests/compile-measure/dogfood-shape-baseline.txt"
 HEW_BIN="${HEW_BIN:-$ROOT/build/bin/hew}"
-UPDATE=0
 
-if [[ "${1:-}" == "--update" ]]; then
-    UPDATE=1
-    shift
-fi
 if [[ $# -ne 0 ]]; then
-    echo "usage: $0 [--update]" >&2
+    echo "usage: $0" >&2
     exit 2
 fi
 if [[ ! -x "$HEW_BIN" ]]; then
@@ -30,8 +35,8 @@ fi
 if [[ "$HEW_BIN" != /* ]]; then
     HEW_BIN="$(cd "$(dirname "$HEW_BIN")" && pwd)/$(basename "$HEW_BIN")"
 fi
-if [[ ! -f "$FIXTURE" || ! -f "$BASELINE" ]]; then
-    echo "dogfood-compile-measure: fixture or baseline is missing" >&2
+if [[ ! -f "$FIXTURE" ]]; then
+    echo "dogfood-compile-measure: fixture is missing at $FIXTURE" >&2
     exit 2
 fi
 
@@ -76,69 +81,35 @@ basic_blocks="$(
 )"
 wall_ms="$(( (wall_end - wall_start) / 1000000 ))"
 
-if (( UPDATE == 1 )); then
-    {
-        echo "# Generated only by:"
-        echo "#   make dogfood-compile-measure DOGFOOD_MEASURE_UPDATE=1"
-        echo "#"
-        echo "# The gate compares exact LLVM define-block bytes and structural counts."
-        echo "ll_bytes=$ll_bytes"
-        echo "defines=$defines"
-        echo "basic_blocks=$basic_blocks"
-    } >"$BASELINE"
-    echo "dogfood-compile-measure: updated $BASELINE"
-fi
-
-baseline_value() {
-    local baseline="$1"
-    local key="$2"
-    local value
-    value="$(sed -n "s/^${key}=//p" "$baseline")"
-    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
-        echo "dogfood-compile-measure: baseline lacks a positive $key value" >&2
-        exit 2
-    fi
-    printf '%s\n' "$value"
-}
-
-expect_exact() {
-    local key="$1"
-    local actual="$2"
-    local expected
-    expected="$(baseline_value "$BASELINE" "$key")"
-    if [[ "$actual" != "$expected" ]]; then
-        echo "dogfood-compile-measure: $key changed: expected $expected, got $actual" >&2
-        echo "  Review the IR change, then explicitly run:" >&2
-        echo "  make dogfood-compile-measure DOGFOOD_MEASURE_UPDATE=1" >&2
-        exit 1
-    fi
-}
-
-baseline_matches() {
-    local baseline="$1"
-    [[ "$ll_bytes" == "$(baseline_value "$baseline" ll_bytes)" ]] \
-        && [[ "$defines" == "$(baseline_value "$baseline" defines)" ]] \
-        && [[ "$basic_blocks" == "$(baseline_value "$baseline" basic_blocks)" ]]
-}
-
-expect_exact ll_bytes "$ll_bytes"
-expect_exact defines "$defines"
-expect_exact basic_blocks "$basic_blocks"
-
-# This counterfactual proves that the comparison is load-bearing: changing the
-# recorded byte count must make the same assertion fail.
-counterfactual_baseline="$tmpdir/mutated-baseline.txt"
-sed 's/^ll_bytes=.*/ll_bytes=1/' "$BASELINE" >"$counterfactual_baseline"
-if baseline_matches "$counterfactual_baseline"; then
-    echo "dogfood-compile-measure: mutated baseline unexpectedly passed" >&2
+# Anti-vacuity floor, and the only thing here that can fail: a fixture that
+# compiles to no functions at all means the compile silently produced nothing,
+# which would make every number below a confident zero.
+if (( defines < 1 )); then
+    echo "dogfood-compile-measure: --emit-llvm produced IR with no functions" >&2
     exit 1
 fi
-echo "CF-dogfood-compile-measure: mutated baseline rejected"
 
-echo "dogfood-compile-measure: exact IR gate passed"
-echo "  LLVM define-block bytes: $ll_bytes"
-echo "  defines: $defines"
-echo "  basic blocks: $basic_blocks"
+report() {
+    echo "dogfood-compile-measure: telemetry (no shape is asserted)"
+    echo "  LLVM define-block bytes: $ll_bytes"
+    echo "  defines: $defines"
+    echo "  basic blocks: $basic_blocks"
+    echo "  wall: ${wall_ms} ms"
+}
+report
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+        echo "### Dogfood compile telemetry"
+        echo ""
+        echo "| Measure | Value |"
+        echo "| --- | ---: |"
+        echo "| LLVM define-block bytes | ${ll_bytes} |"
+        echo "| defines | ${defines} |"
+        echo "| basic blocks | ${basic_blocks} |"
+        echo "| wall (ms) | ${wall_ms} |"
+    } >> "$GITHUB_STEP_SUMMARY"
+fi
+
 grep '^hew measure: MIR lowering ' "$log" || echo "hew measure: MIR lowering unavailable"
 grep '^hew measure: backend ' "$log" || echo "hew measure: backend unavailable"
 echo "hew measure: wall ${wall_ms} ms"

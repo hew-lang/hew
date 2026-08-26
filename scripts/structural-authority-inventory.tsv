@@ -1,186 +1,193 @@
-# Exact nonzero counts keyed by parsed syntax form and source path.
+# OWNER MODULES for each parsed authority form. Membership, not magnitude.
 # Retirement stages are checked against canonical_stage() and cannot be edited
 # independently of the Stage 1-5 cutover dependency map.
 #
-# signature-application rows: one reviewed count per (enclosing function, file)
-# for every call of an argument-check primitive under hew-types/src/. Callees are
-# reduced through the parse, so method, UFCS, fully-pathed, parenthesized and
-# comment-separated spellings all count, and the primitive in argument or value
-# position does not. It DETECTS: a call in a function not listed here, and an
-# extra call inside a function that is. It does NOT detect a net-zero relocation
-# — moving a call between two already-listed functions changes no total when the
-# two counts move by the same amount in opposite directions. Accepted residual:
-# closing it needs per-call-site identity, which byte offsets cannot supply
-# without churning on every unrelated edit above the site.
+# Each row says: this authority form is REVIEWED and PERMITTED in this module.
+# The audit rejects a site in a module with no row -- new authority landing
+# somewhere nobody looked -- and rejects a row whose module no longer carries
+# the authority, which means either the row is stale or the parse stopped
+# matching and the whole audit has quietly become vacuous.
 #
-# Canonical keyspace exceptions use this machine-readable comment form:
-# canonical-keyspace-allow<TAB>path<TAB>table<TAB>count<TAB>owner<TAB>follow-on work<TAB>reason
-# canonical-keyspace-allow	hew-hir/src/lower.rs	const_registry	1	hew-hir	a316-keyspace-registries	canonical const identity is qualified today but remains a bare local at insertion
-# canonical-keyspace-allow	hew-hir/src/lower.rs	machine_ctor_registry	7	hew-hir	a316-keyspace-registries	constructor registry still passes reviewed qualified locals into the insertion sink
-# canonical-keyspace-allow	hew-types/src/check/items.rs	fn_sigs	1	hew-types	a316-keyspace-fn-sigs	trait default signature restoration still inserts a reviewed qualified local
-# canonical-keyspace-allow	hew-types/src/check/registration.rs	fn_sigs	4	hew-types	a316-keyspace-fn-sigs	function signature publication remains in the deferred table-family cutover
-# canonical-keyspace-allow	hew-types/src/check/registration.rs	trait_defs	1	hew-types	a316-keyspace-trait-defs	trait definition publication remains in the deferred table-family cutover
+# It deliberately does NOT assert how many sites a reviewed module holds. That
+# count fired on every legal refactor inside an owner module, and it still
+# could not see a net-zero relocation between two listed modules -- the churn
+# was paid without buying the case that motivated it. Sites moving around
+# inside a module somebody already reviewed are that module's business.
+#
+# signature-application rows cover calls of an argument-check primitive under
+# hew-types/src/. Callees are reduced through the parse, so method, UFCS,
+# fully-pathed, parenthesized and comment-separated spellings all resolve, and
+# the primitive in argument or value position does not count.
+#
+# Canonical keyspace exceptions use this machine-readable comment form, and
+# carry the same membership semantics:
+# canonical-keyspace-allow<TAB>path<TAB>table<TAB>owner<TAB>follow-on work<TAB>reason
+# canonical-keyspace-allow	hew-hir/src/lower.rs	const_registry	hew-hir	a316-keyspace-registries	canonical const identity is qualified today but remains a bare local at insertion
+# canonical-keyspace-allow	hew-hir/src/lower.rs	machine_ctor_registry	hew-hir	a316-keyspace-registries	constructor registry still passes reviewed qualified locals into the insertion sink
+# canonical-keyspace-allow	hew-types/src/check/items.rs	fn_sigs	hew-types	a316-keyspace-fn-sigs	trait default signature restoration still inserts a reviewed qualified local
+# canonical-keyspace-allow	hew-types/src/check/registration.rs	fn_sigs	hew-types	a316-keyspace-fn-sigs	function signature publication remains in the deferred table-family cutover
+# canonical-keyspace-allow	hew-types/src/check/registration.rs	trait_defs	hew-types	a316-keyspace-trait-defs	trait definition publication remains in the deferred table-family cutover
 # ownership-hard-cutover	suspend-authority/suspend-kind-consumer	hew-mir/src/lower/drop_plan.rs	5->0	secondary obligation-balance suspend inference is now test-only; production cleanup consumes exact OwnerId events and frozen DropRecipe plans
-group	form	path	count	retirement_stage	reason
-call-target-authority	call-target-consumer	hew-hir/src/lower.rs	13	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-hir/src/lower.rs	32	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/calls.rs	25	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/dispatch.rs	1	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/methods.rs	20	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/type_members.rs	1	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-variant	hew-types/src/check/dispatch.rs	10	stage-4	exact checker-selected executable identity carrier
-checker-hir-fact-relation	checker-relation-consumer	hew-types/src/check/expressions.rs	1	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	checker-relation-consumer	hew-types/src/check/mod.rs	3	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	checker-relation-use	hew-hir/src/lower.rs	7	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	checker-relation-use	hew-types/src/check/expressions.rs	11	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	checker-relation-use	hew-types/src/check/mod.rs	15	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	checker-relation-variant	hew-types/src/check/types.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	373	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering
-checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	5	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-use	hew-hir/src/lower.rs	4	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	22	stage-2	real checker/HIR produced-value carrier inventory; +3 for the subsumption-spine guardrail (Subsumes/Identity edge-skip check publishing CheckerBoundaryViolation)
-checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	9	stage-2	real checker/HIR produced-value carrier inventory plus exact projection-source lookup for completing an owned temporary parent behind a runtime-borrowed string field
-checker-hir-fact-relation	hir-relation-variant	hew-hir/src/node.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	64	stage-2	real checker/HIR produced-value carrier inventory plus interpolation Display-selection identity
-checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	1	stage-2	RC1 syntax-node authority inventory
-checker-hir-publication	checker-insert-call	hew-types/src/check/methods.rs	2	stage-2	RC1 syntax-node authority inventory
-checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	3	stage-2	RC1 syntax-node authority inventory; +1 for the range-bound identifier declaration-site expr_types re-record
-checker-hir-publication	checker-insert-call	hew-types/src/check/types.rs	1	stage-2	RC1 syntax-node authority inventory
-legacy-heap-reader	heap-reader-call	hew-codegen-rs/src/llvm.rs	2	stage-5	RC1 syntax-node authority inventory
-legacy-heap-reader	heap-reader-call	hew-mir/src/model.rs	2	stage-5	RC1 syntax-node authority inventory
-legacy-heap-reader	heap-reader-call	hew-mir/src/ownership.rs	6	stage-4	RC1 syntax-node authority inventory
-lifecycle-identity-authority	lifecycle-candidate-field	hew-types/src/check/types.rs	13	stage-2	canonical checker lifecycle identity carrier
-lifecycle-identity-authority	lifecycle-conflict-use	hew-types/src/check/registration.rs	9	stage-2	canonical checker lifecycle identity carrier
-lifecycle-identity-authority	lifecycle-conflict-variant	hew-types/src/check/types.rs	5	stage-2	canonical checker lifecycle identity carrier
-mir-ownership-sink	ownership-classify-call	hew-mir/src/lower/ownership.rs	4	stage-4	reviewed cleanup-shape classification sites, including destination classification when an exact source OwnerId generation transfers into a newly bound local
-mir-ownership-sink	ownership-classify-call	hew-mir/src/ownership.rs	1	stage-4	RC1 syntax-node authority inventory
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/closure_gen.rs	2	stage-3	composed owner retirement path
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/drop_plan.rs	2	stage-3	composed owner retirement path
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/mod.rs	4	stage-3	composed owner retirement path
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/temp_drop.rs	2	stage-3	composed owner retirement path
-owner-retirement-path	crash-cleanup-owner-path	hew-codegen-rs/src/llvm.rs	2	stage-3	composed owner retirement path
-owner-retirement-path	crash-cleanup-owner-path	hew-mir/src/lower/machine_synth.rs	1	stage-3	composed owner retirement path
-owner-retirement-path	join-owner-consumer	hew-codegen-rs/src/llvm.rs	3	stage-3	composed owner retirement path
-owner-retirement-path	join-owner-consumer	hew-mir/src/dataflow.rs	1	stage-3	composed owner retirement path
-owner-retirement-path	join-owner-consumer	hew-mir/src/dump.rs	1	stage-3	composed owner retirement path
-owner-retirement-path	join-owner-consumer	hew-mir/src/lower/drop_plan.rs	2	stage-3	composed owner retirement path
-owner-retirement-path	join-owner-consumer	hew-mir/src/lower/mod.rs	1	stage-3	composed owner retirement path
-owner-retirement-path	join-owner-consumer	hew-mir/src/lower/suspend_places.rs	2	stage-3	production Join source/escape consumers; the removed third consumer belonged to the now test-only legacy escape dataflow
-owner-retirement-path	join-owner-consumer	hew-mir/src/lower/temp_drop.rs	1	stage-3	composed owner retirement path
-owner-retirement-path	join-owner-path	hew-mir/src/lower/task.rs	1	stage-3	composed owner retirement path
-runtime-call-authority	runtime-call-family-consumer	hew-hir/src/verify.rs	1	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-use	hew-hir/src/lower.rs	7	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-use	hew-hir/src/verify.rs	7	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/closure_gen.rs	3	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/vec_index.rs	2	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	3	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	16	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	230	stage-4	typed runtime-family dispatch carrier including structural formatting
-semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining owner-shortening sink
-signature-application	apply_instantiated_call_signature_with_assoc	hew-types/src/check/calls.rs	3	stage-1	THE call-signature application authority: the one place a generic callee's type parameters are freshened, inferred, and recorded as an instantiation
-signature-application	check_actor_field_defaults	hew-types/src/check/items.rs	1	stage-1	actor field default initialisers checked against declared field types
-signature-application	check_against_inner	hew-types/src/check/expressions.rs	18	stage-1	general expression checking against an expected type; the recursive spine of the primitive itself, no signature involved
-signature-application	check_binary_op	hew-types/src/check/expressions.rs	2	stage-1	operand checking against the operator's own expected operand type
-signature-application	check_block	hew-types/src/check/statements.rs	1	stage-1	block tail checked against the block's expected type
-signature-application	check_call	hew-types/src/check/calls.rs	6	stage-1	call-shape paths that check a callee value or constructor operand, not a named signature's parameters
-signature-application	check_call_against_expected_constructor	hew-types/src/check/calls.rs	4	stage-1	constructor payloads checked against the expected enum or record shape
-signature-application	check_call_with_type	hew-types/src/check/calls.rs	3	stage-1	explicitly annotated call operands checked against the annotation
-signature-application	check_collection_args	hew-types/src/check/methods.rs	1	stage-1	builtin collection arguments checked against an ArgTemplate instantiated from the receiver, which binds no user signature
-signature-application	check_const	hew-types/src/check/items.rs	1	stage-1	const initialiser checked against the declared const type
-signature-application	check_discarded_if_chain	hew-types/src/check/statements.rs	1	stage-1	discarded if-chain arms checked against unit
-signature-application	check_duplex_method	hew-types/src/check/methods.rs	2	stage-1	builtin Duplex arguments checked against the channel's payload type
-signature-application	check_expr_with_expected	hew-types/src/check/expressions.rs	1	stage-1	the primitive's own thin entry point, delegating to the expression spine
-signature-application	check_hashmap_method	hew-types/src/check/methods.rs	2	stage-1	builtin HashMap key/value arguments checked against the receiver's own K/V
-signature-application	check_hashset_element_arg	hew-types/src/check/methods.rs	1	stage-1	builtin HashSet element argument checked against the receiver's element type
-signature-application	check_lambda	hew-types/src/check/expressions.rs	2	stage-1	lambda body and parameter checking against the lambda's own declared shape
-signature-application	check_lambda_pid_method	hew-types/src/check/methods.rs	1	stage-1	lambda-actor send/ask arguments checked against the lambda's declared parameter type
-signature-application	check_machine_exhaustiveness	hew-types/src/check/registration.rs	2	stage-1	machine transition arms checked against the declared state type
-signature-application	check_match_expr	hew-types/src/check/expressions.rs	2	stage-1	match arm bodies checked against the match's expected result type
-signature-application	check_match_stmt	hew-types/src/check/statements.rs	1	stage-1	match-statement arms checked against the statement's expected type
-signature-application	check_method_call_inner	hew-types/src/check/methods.rs	7	stage-1	method-dispatch paths that check a receiver or operand shape, not a named signature's parameters
-signature-application	check_return_operand	hew-types/src/check/statements.rs	1	stage-1	return operand checked against the enclosing function's declared return type
-signature-application	check_runtime_vec_method_from_source	hew-types/src/check/methods.rs	1	stage-1	source-derived Vec method arguments checked against the receiver's element type
-signature-application	check_send_half_method	hew-types/src/check/methods.rs	2	stage-1	builtin Sender arguments checked against the channel's payload type
-signature-application	check_spawn_constructor_args	hew-types/src/check/expressions.rs	1	stage-1	spawn constructor arguments checked against actor init parameter types, which carry no generic callee signature
-signature-application	check_stmt	hew-types/src/check/statements.rs	4	stage-1	statement operands checked against their declared or inferred types
-signature-application	check_stmt_as_expr	hew-types/src/check/statements.rs	1	stage-1	tail statement checked against the block's expected type
-signature-application	check_stream_method	hew-types/src/check/methods.rs	2	stage-1	builtin Stream arguments checked against the receiver's element type
-signature-application	check_struct_init	hew-types/src/check/expressions.rs	2	stage-1	record field initialisers checked against declared field types
-signature-application	check_vec_method	hew-types/src/check/methods.rs	7	stage-1	builtin Vec arguments checked against the receiver's element type
-signature-application	record_concrete_integer_operand	hew-types/src/check/expressions.rs	1	stage-1	integer literal re-checked against its settled concrete width
-signature-application	synthesize_array_literal	hew-types/src/check/expressions.rs	1	stage-1	array elements unified against the literal's element type
-signature-application	synthesize_array_repeat	hew-types/src/check/expressions.rs	1	stage-1	array-repeat element checked against the annotated element type
-signature-application	synthesize_concurrency	hew-types/src/check/expressions.rs	4	stage-1	concurrency-block operands checked against their awaited shapes
-signature-application	synthesize_index	hew-types/src/check/expressions.rs	12	stage-1	index operands and results checked against the indexing surface's declared types
-signature-application	synthesize_inner	hew-types/src/check/expressions.rs	1	stage-1	expected-type propagation inside the synthesize spine
-signature-application	synthesize_map_literal	hew-types/src/check/expressions.rs	2	stage-1	map literal keys and values checked against the literal's declared key/value types
-signature-application	synthesize_unary_op	hew-types/src/check/expressions.rs	1	stage-1	unary operand checked against the operator's expected type
-signature-application	synthesize_yield	hew-types/src/check/expressions.rs	1	stage-1	yielded value checked against the generator's declared element type
-signature-application	try_record_fn_field_call	hew-types/src/check/methods.rs	1	stage-1	record function-typed field invoked as a value; its parameters come from the field's fn type, not a signature
-string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-analysis/src/signature_help.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/layout.rs	20	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm.rs	114	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm/identity.rs	6	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	64	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	11	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	3	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	32	stage-1	reviewed compatibility-key factory for unique imported tagged-union constructors and `?` checker payload mismatch diagnostics; exact source owner remains the authority
-string-method-identity	qualified-format-macro	hew-hir/src/node.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	6	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/lower/consts.rs	2	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/lower/control_flow.rs	3	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan.rs	2	stage-3	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan/typed_resource_close_authority.rs	1	stage-5	reviewed typed-resource close test identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/lower/expr.rs	2	stage-5	A315 S7 retired source-facing scoped diagnostic spellings
-string-method-identity	qualified-format-macro	hew-mir/src/lower/machine_synth.rs	16	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/lower/pattern.rs	6	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/thunk_requirements.rs	1	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/actor_protocol.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	3	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	2	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	8	stage-1	reviewed qualified string identity construction; adds dotted module-qualified unit-constructor resolution (module.Type.Variant); plus the single join of nominal+method into a fn_sigs key in record_generic_application, which every generic application funnels through so dispatch sites never build method identity themselves
-string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	9	stage-1	A315 S7 retired source-facing scoped diagnostic spellings
-string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	25	stage-1	retired source-facing scoped diagnostic spellings
-string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	22	stage-1	retired source-facing scoped diagnostic spellings plus file-indexed imported trait binding publication; plus the single shadow-report declaration-key builder shared by the impl, trait and type-body registration paths
-string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	6	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/type_members.rs	4	stage-1	reviewed dotted qualified identity construction
-string-method-identity	qualified-format-macro	hew-types/src/method_resolution.rs	3	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/resolved_ty.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority.rs	5	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority/codegen.rs	3	stage-1	reviewed qualified string identity construction
-suspend-authority	suspend-kind-consumer	hew-codegen-rs/src/llvm.rs	18	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-consumer	hew-mir/src/dump.rs	12	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-consumer	hew-mir/src/lower/mod.rs	1	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-consumer	hew-mir/src/lower/suspend_places.rs	14	stage-3	production suspend source and generator-yield consumers; three legacy escape-only match groups moved behind cfg(test)
-suspend-authority	suspend-kind-use	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-use	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-use	hew-mir/src/lower/task.rs	5	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-variant	hew-mir/src/model.rs	12	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-writer	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-writer	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-writer	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-writer	hew-mir/src/lower/task.rs	5	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-consumer	hew-codegen-rs/src/llvm.rs	5	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-consumer	hew-mir/src/dump.rs	4	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/drop_plan.rs	1	stage-3	one production exit-plan consumer remains; three secondary obligation-successor consumers are test-only and the retired closure-pair escape consumer was removed
-suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/mod.rs	7	stage-3	canonical CFG successor redirection now handles Suspend, scope-deadline, and suspending-select edges directly, adding three explicit production consumers
-suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/suspend_places.rs	4	stage-3	production source/yield consumers remain; two legacy terminator-escape consumers moved behind cfg(test) with the retired secondary dataflow
-suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/temp_drop.rs	5	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-consumer	hew-mir/src/model.rs	5	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-use	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-use	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-use	hew-mir/src/lower/task.rs	7	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-variant	hew-mir/src/model.rs	3	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-writer	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-writer	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-writer	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-writer	hew-mir/src/lower/task.rs	7	stage-3	composed suspend authority carrier
+group	form	path	retirement_stage	reason
+call-target-authority	call-target-consumer	hew-hir/src/lower.rs	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-hir/src/lower.rs	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/calls.rs	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/dispatch.rs	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/methods.rs	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/type_members.rs	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-variant	hew-types/src/check/dispatch.rs	stage-4	exact checker-selected executable identity carrier
+checker-hir-fact-relation	checker-relation-consumer	hew-types/src/check/expressions.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	checker-relation-consumer	hew-types/src/check/mod.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	checker-relation-use	hew-hir/src/lower.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	checker-relation-use	hew-types/src/check/expressions.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	checker-relation-use	hew-types/src/check/mod.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	checker-relation-variant	hew-types/src/check/types.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-use	hew-hir/src/lower.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	stage-2	real checker/HIR produced-value carrier inventory; +3 for the subsumption-spine guardrail (Subsumes/Identity edge-skip check publishing CheckerBoundaryViolation)
+checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	stage-2	real checker/HIR produced-value carrier inventory plus exact projection-source lookup for completing an owned temporary parent behind a runtime-borrowed string field
+checker-hir-fact-relation	hir-relation-variant	hew-hir/src/node.rs	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	stage-2	real checker/HIR produced-value carrier inventory plus interpolation Display-selection identity
+checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	stage-2	RC1 syntax-node authority inventory
+checker-hir-publication	checker-insert-call	hew-types/src/check/methods.rs	stage-2	RC1 syntax-node authority inventory
+checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	stage-2	RC1 syntax-node authority inventory; +1 for the range-bound identifier declaration-site expr_types re-record
+checker-hir-publication	checker-insert-call	hew-types/src/check/types.rs	stage-2	RC1 syntax-node authority inventory
+legacy-heap-reader	heap-reader-call	hew-codegen-rs/src/llvm.rs	stage-5	RC1 syntax-node authority inventory
+legacy-heap-reader	heap-reader-call	hew-mir/src/model.rs	stage-5	RC1 syntax-node authority inventory
+legacy-heap-reader	heap-reader-call	hew-mir/src/ownership.rs	stage-4	RC1 syntax-node authority inventory
+lifecycle-identity-authority	lifecycle-candidate-field	hew-types/src/check/types.rs	stage-2	canonical checker lifecycle identity carrier
+lifecycle-identity-authority	lifecycle-conflict-use	hew-types/src/check/registration.rs	stage-2	canonical checker lifecycle identity carrier
+lifecycle-identity-authority	lifecycle-conflict-variant	hew-types/src/check/types.rs	stage-2	canonical checker lifecycle identity carrier
+mir-ownership-sink	ownership-classify-call	hew-mir/src/lower/ownership.rs	stage-4	reviewed cleanup-shape classification sites, including destination classification when an exact source OwnerId generation transfers into a newly bound local
+mir-ownership-sink	ownership-classify-call	hew-mir/src/ownership.rs	stage-4	RC1 syntax-node authority inventory
+owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/closure_gen.rs	stage-3	composed owner retirement path
+owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/drop_plan.rs	stage-3	composed owner retirement path
+owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/mod.rs	stage-3	composed owner retirement path
+owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/temp_drop.rs	stage-3	composed owner retirement path
+owner-retirement-path	crash-cleanup-owner-path	hew-codegen-rs/src/llvm.rs	stage-3	composed owner retirement path
+owner-retirement-path	crash-cleanup-owner-path	hew-mir/src/lower/machine_synth.rs	stage-3	composed owner retirement path
+owner-retirement-path	join-owner-consumer	hew-codegen-rs/src/llvm.rs	stage-3	composed owner retirement path
+owner-retirement-path	join-owner-consumer	hew-mir/src/dataflow.rs	stage-3	composed owner retirement path
+owner-retirement-path	join-owner-consumer	hew-mir/src/dump.rs	stage-3	composed owner retirement path
+owner-retirement-path	join-owner-consumer	hew-mir/src/lower/drop_plan.rs	stage-3	composed owner retirement path
+owner-retirement-path	join-owner-consumer	hew-mir/src/lower/mod.rs	stage-3	composed owner retirement path
+owner-retirement-path	join-owner-consumer	hew-mir/src/lower/suspend_places.rs	stage-3	production Join source/escape consumers; the removed third consumer belonged to the now test-only legacy escape dataflow
+owner-retirement-path	join-owner-consumer	hew-mir/src/lower/temp_drop.rs	stage-3	composed owner retirement path
+owner-retirement-path	join-owner-path	hew-mir/src/lower/task.rs	stage-3	composed owner retirement path
+runtime-call-authority	runtime-call-family-consumer	hew-hir/src/verify.rs	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-use	hew-hir/src/lower.rs	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-use	hew-hir/src/verify.rs	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/closure_gen.rs	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/vec_index.rs	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	stage-4	typed runtime-family dispatch carrier including structural formatting
+semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	stage-1	reviewed remaining owner-shortening sink
+signature-application	apply_instantiated_call_signature_with_assoc	hew-types/src/check/calls.rs	stage-1	THE call-signature application authority: the one place a generic callee's type parameters are freshened, inferred, and recorded as an instantiation
+signature-application	check_actor_field_defaults	hew-types/src/check/items.rs	stage-1	actor field default initialisers checked against declared field types
+signature-application	check_against_inner	hew-types/src/check/expressions.rs	stage-1	general expression checking against an expected type; the recursive spine of the primitive itself, no signature involved
+signature-application	check_binary_op	hew-types/src/check/expressions.rs	stage-1	operand checking against the operator's own expected operand type
+signature-application	check_block	hew-types/src/check/statements.rs	stage-1	block tail checked against the block's expected type
+signature-application	check_call	hew-types/src/check/calls.rs	stage-1	call-shape paths that check a callee value or constructor operand, not a named signature's parameters
+signature-application	check_call_against_expected_constructor	hew-types/src/check/calls.rs	stage-1	constructor payloads checked against the expected enum or record shape
+signature-application	check_call_with_type	hew-types/src/check/calls.rs	stage-1	explicitly annotated call operands checked against the annotation
+signature-application	check_collection_args	hew-types/src/check/methods.rs	stage-1	builtin collection arguments checked against an ArgTemplate instantiated from the receiver, which binds no user signature
+signature-application	check_const	hew-types/src/check/items.rs	stage-1	const initialiser checked against the declared const type
+signature-application	check_discarded_if_chain	hew-types/src/check/statements.rs	stage-1	discarded if-chain arms checked against unit
+signature-application	check_duplex_method	hew-types/src/check/methods.rs	stage-1	builtin Duplex arguments checked against the channel's payload type
+signature-application	check_expr_with_expected	hew-types/src/check/expressions.rs	stage-1	the primitive's own thin entry point, delegating to the expression spine
+signature-application	check_hashmap_method	hew-types/src/check/methods.rs	stage-1	builtin HashMap key/value arguments checked against the receiver's own K/V
+signature-application	check_hashset_element_arg	hew-types/src/check/methods.rs	stage-1	builtin HashSet element argument checked against the receiver's element type
+signature-application	check_lambda	hew-types/src/check/expressions.rs	stage-1	lambda body and parameter checking against the lambda's own declared shape
+signature-application	check_lambda_pid_method	hew-types/src/check/methods.rs	stage-1	lambda-actor send/ask arguments checked against the lambda's declared parameter type
+signature-application	check_machine_exhaustiveness	hew-types/src/check/registration.rs	stage-1	machine transition arms checked against the declared state type
+signature-application	check_match_expr	hew-types/src/check/expressions.rs	stage-1	match arm bodies checked against the match's expected result type
+signature-application	check_match_stmt	hew-types/src/check/statements.rs	stage-1	match-statement arms checked against the statement's expected type
+signature-application	check_method_call_inner	hew-types/src/check/methods.rs	stage-1	method-dispatch paths that check a receiver or operand shape, not a named signature's parameters
+signature-application	check_return_operand	hew-types/src/check/statements.rs	stage-1	return operand checked against the enclosing function's declared return type
+signature-application	check_runtime_vec_method_from_source	hew-types/src/check/methods.rs	stage-1	source-derived Vec method arguments checked against the receiver's element type
+signature-application	check_send_half_method	hew-types/src/check/methods.rs	stage-1	builtin Sender arguments checked against the channel's payload type
+signature-application	check_spawn_constructor_args	hew-types/src/check/expressions.rs	stage-1	spawn constructor arguments checked against actor init parameter types, which carry no generic callee signature
+signature-application	check_stmt	hew-types/src/check/statements.rs	stage-1	statement operands checked against their declared or inferred types
+signature-application	check_stmt_as_expr	hew-types/src/check/statements.rs	stage-1	tail statement checked against the block's expected type
+signature-application	check_stream_method	hew-types/src/check/methods.rs	stage-1	builtin Stream arguments checked against the receiver's element type
+signature-application	check_struct_init	hew-types/src/check/expressions.rs	stage-1	record field initialisers checked against declared field types
+signature-application	check_vec_method	hew-types/src/check/methods.rs	stage-1	builtin Vec arguments checked against the receiver's element type
+signature-application	record_concrete_integer_operand	hew-types/src/check/expressions.rs	stage-1	integer literal re-checked against its settled concrete width
+signature-application	synthesize_array_literal	hew-types/src/check/expressions.rs	stage-1	array elements unified against the literal's element type
+signature-application	synthesize_array_repeat	hew-types/src/check/expressions.rs	stage-1	array-repeat element checked against the annotated element type
+signature-application	synthesize_concurrency	hew-types/src/check/expressions.rs	stage-1	concurrency-block operands checked against their awaited shapes
+signature-application	synthesize_index	hew-types/src/check/expressions.rs	stage-1	index operands and results checked against the indexing surface's declared types
+signature-application	synthesize_inner	hew-types/src/check/expressions.rs	stage-1	expected-type propagation inside the synthesize spine
+signature-application	synthesize_map_literal	hew-types/src/check/expressions.rs	stage-1	map literal keys and values checked against the literal's declared key/value types
+signature-application	synthesize_unary_op	hew-types/src/check/expressions.rs	stage-1	unary operand checked against the operator's expected type
+signature-application	synthesize_yield	hew-types/src/check/expressions.rs	stage-1	yielded value checked against the generator's declared element type
+signature-application	try_record_fn_field_call	hew-types/src/check/methods.rs	stage-1	record function-typed field invoked as a value; its parameters come from the field's fn type, not a signature
+string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-analysis/src/signature_help.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/layout.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm/identity.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	stage-1	reviewed compatibility-key factory for unique imported tagged-union constructors and `?` checker payload mismatch diagnostics; exact source owner remains the authority
+string-method-identity	qualified-format-macro	hew-hir/src/node.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/lower/consts.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/lower/control_flow.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan.rs	stage-3	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan/typed_resource_close_authority.rs	stage-5	reviewed typed-resource close test identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/lower/expr.rs	stage-5	A315 S7 retired source-facing scoped diagnostic spellings
+string-method-identity	qualified-format-macro	hew-mir/src/lower/machine_synth.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/lower/pattern.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/thunk_requirements.rs	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/actor_protocol.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	stage-1	reviewed qualified string identity construction; adds dotted module-qualified unit-constructor resolution (module.Type.Variant); plus the single join of nominal+method into a fn_sigs key in record_generic_application, which every generic application funnels through so dispatch sites never build method identity themselves
+string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	stage-1	A315 S7 retired source-facing scoped diagnostic spellings
+string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	stage-1	retired source-facing scoped diagnostic spellings
+string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	stage-1	retired source-facing scoped diagnostic spellings plus file-indexed imported trait binding publication; plus the single shadow-report declaration-key builder shared by the impl, trait and type-body registration paths
+string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/type_members.rs	stage-1	reviewed dotted qualified identity construction
+string-method-identity	qualified-format-macro	hew-types/src/method_resolution.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/resolved_ty.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority.rs	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority/codegen.rs	stage-1	reviewed qualified string identity construction
+suspend-authority	suspend-kind-consumer	hew-codegen-rs/src/llvm.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-consumer	hew-mir/src/dump.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-consumer	hew-mir/src/lower/mod.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-consumer	hew-mir/src/lower/suspend_places.rs	stage-3	production suspend source and generator-yield consumers; three legacy escape-only match groups moved behind cfg(test)
+suspend-authority	suspend-kind-use	hew-mir/src/lower/actor.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-use	hew-mir/src/lower/closure_gen.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-use	hew-mir/src/lower/expr.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-use	hew-mir/src/lower/task.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-variant	hew-mir/src/model.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/actor.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/closure_gen.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/expr.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/task.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-consumer	hew-codegen-rs/src/llvm.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-consumer	hew-mir/src/dump.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/drop_plan.rs	stage-3	one production exit-plan consumer remains; three secondary obligation-successor consumers are test-only and the retired closure-pair escape consumer was removed
+suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/mod.rs	stage-3	canonical CFG successor redirection now handles Suspend, scope-deadline, and suspending-select edges directly, adding three explicit production consumers
+suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/suspend_places.rs	stage-3	production source/yield consumers remain; two legacy terminator-escape consumers moved behind cfg(test) with the retired secondary dataflow
+suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/temp_drop.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-consumer	hew-mir/src/model.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/actor.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/closure_gen.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/expr.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/task.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-variant	hew-mir/src/model.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/actor.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/closure_gen.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/expr.rs	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/task.rs	stage-3	composed suspend authority carrier

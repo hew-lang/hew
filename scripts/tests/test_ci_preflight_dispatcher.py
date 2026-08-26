@@ -2574,7 +2574,6 @@ def test_counterfactual_rosters_follow_shared_artifact_requirements() -> None:
 
     assert requirements == {
         "test-leak-oracle-selftest": "shared-artifacts",
-        "dogfood-compile-measure": "shared-artifacts",
     }
     assert set(requirements) <= roster
     assert "COUNTERFACTUAL_GATE_REQUIREMENTS_FILE" in dispatcher

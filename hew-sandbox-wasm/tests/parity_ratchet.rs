@@ -61,6 +61,10 @@ use hew_sandbox_wasm::{compile_to_sandbox_bytecode, CompileOutput, REQUIRED_PARI
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
+#[cfg(windows)]
+const NPM: &str = "npm.cmd";
+#[cfg(not(windows))]
+const NPM: &str = "npm";
 
 /// How the live profile+emitter+VM treats a probed construct. Every value is
 /// cross-checked against the real gate by the tests below.
@@ -1981,7 +1985,7 @@ fn run_sandbox_inline(bytecode_json: &str) -> Output {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let bytecode_path = tempdir.path().join("bytecode.json");
     std::fs::write(&bytecode_path, bytecode_json).expect("write bytecode");
-    assert_cmd::Command::new("npm")
+    assert_cmd::Command::new(NPM)
         .arg("--prefix")
         .arg(repo_root().join("hew-sandbox-vm"))
         .arg("run")
@@ -2005,7 +2009,7 @@ fn ensure_parity_runner_built() {
             vm_dir.join("node_modules").is_dir(),
             "hew-sandbox-vm dependencies are not installed; run `make sandbox-parity`"
         );
-        let output = std::process::Command::new("npm")
+        let output = std::process::Command::new(NPM)
             .arg("--prefix")
             .arg(&vm_dir)
             .arg("run")

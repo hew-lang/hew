@@ -9,6 +9,10 @@ use serde::Deserialize;
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
+#[cfg(windows)]
+const NPM: &str = "npm.cmd";
+#[cfg(not(windows))]
+const NPM: &str = "npm";
 const CONTEXT_DEPENDENT_QUICK_REFERENCES: &[&str] = &[
     "await-future",
     "machine-step",
@@ -317,7 +321,7 @@ fn run_sandbox(bytecode: &SandboxBytecodePackage, id: &str) -> Output {
     std::fs::write(&bytecode_path, bytecode_json)
         .unwrap_or_else(|err| panic!("failed to write bytecode for {id}: {err}"));
 
-    Command::new("npm")
+    Command::new(NPM)
         .arg("--prefix")
         .arg(repo_root().join("hew-sandbox-vm"))
         .arg("run")
@@ -353,7 +357,7 @@ fn ensure_parity_runner_built() {
         );
         run_bootstrap_command(
             "npm --prefix hew-sandbox-vm run -s build",
-            std::process::Command::new("npm")
+            std::process::Command::new(NPM)
                 .arg("--prefix")
                 .arg(&vm_dir)
                 .arg("run")

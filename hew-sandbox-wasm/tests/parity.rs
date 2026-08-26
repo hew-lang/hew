@@ -8,10 +8,6 @@ use hew_sandbox_wasm::{compile_to_sandbox_bytecode, Diagnostic, REQUIRED_PARITY_
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
-#[cfg(windows)]
-const NPM: &str = "npm.cmd";
-#[cfg(not(windows))]
-const NPM: &str = "npm";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
@@ -522,6 +518,9 @@ fn sandbox_graduation_corpus_is_fully_covered() {
     );
 }
 
+// This integration test executes the Node sandbox VM. Windows CI covers the
+// native toolchain and WASI target separately; Linux owns this VM contract.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn playground_sources_match_native_or_catalogued_divergence() {
     set_test_hewpath();
@@ -574,7 +573,7 @@ fn assert_case(case: &ParityCase) {
         .unwrap_or_else(|err| panic!("failed to write bytecode for {}: {err}", case.test_name));
 
     let sandbox = run_sandbox(&bytecode_path);
-    assert_termination_parity(case, &native, &sandbox);
+    assert_exit_code_parity(case, &native, &sandbox);
     assert_stdout_parity(case, &native, &sandbox);
     assert_exact_stdout(case, &native);
 }
@@ -643,11 +642,11 @@ fn assert_no_error_diagnostics(case: &ParityCase, diagnostics: &[Diagnostic]) {
     );
 }
 
-fn assert_termination_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
+fn assert_exit_code_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
     assert_eq!(
-        sandbox.status.success(),
-        native.status.success(),
-        "{} termination mismatch\nnative:\n{}\nsandbox:\n{}",
+        sandbox.status.code(),
+        native.status.code(),
+        "{} exit-code mismatch\nnative:\n{}\nsandbox:\n{}",
         case.test_name,
         describe_output(native),
         describe_output(sandbox)
@@ -678,7 +677,7 @@ fn run_native(source_path: &Path) -> Output {
 }
 
 fn run_sandbox(bytecode_path: &Path) -> Output {
-    Command::new(NPM)
+    Command::new("npm")
         .arg("--prefix")
         .arg(repo_root().join("hew-sandbox-vm"))
         .arg("run")
@@ -714,7 +713,7 @@ fn ensure_parity_runner_built() {
         );
         run_bootstrap_command(
             "npm --prefix hew-sandbox-vm run -s build",
-            std::process::Command::new(NPM)
+            std::process::Command::new("npm")
                 .arg("--prefix")
                 .arg(&vm_dir)
                 .arg("run")

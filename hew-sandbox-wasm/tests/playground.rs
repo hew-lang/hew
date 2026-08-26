@@ -11,10 +11,6 @@ const RUNNABLE: &str = "runnable";
 const UNSUPPORTED_NATIVE_ONLY: &str = "unsupported_native_only";
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
-#[cfg(windows)]
-const NPM: &str = "npm.cmd";
-#[cfg(not(windows))]
-const NPM: &str = "npm";
 
 const REQUIRED_SANDBOX_EXAMPLES: &[&str] = &[
     "basics/hello_world",
@@ -40,6 +36,10 @@ struct Capabilities {
 
 // Windows parity enforcement is tracked in #1823; Windows runners do not yet
 // provision the hew-sandbox-vm npm toolchain for this harness. Excluded from
+// generic nextest runs on every platform via `binary(playground)` in
+// .config/nextest.toml; `make sandbox-parity` runs it directly on a
+// provisioned Linux CI runner.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn playground_manifest_sources_run_at_native_sandbox_parity() {
     set_test_hewpath();
@@ -210,7 +210,7 @@ fn run_sandbox(bytecode: &hew_sandbox_wasm::SandboxBytecodePackage, id: &str) ->
     std::fs::write(&bytecode_path, bytecode_json)
         .unwrap_or_else(|err| panic!("failed to write bytecode for {id}: {err}"));
 
-    Command::new(NPM)
+    Command::new("npm")
         .arg("--prefix")
         .arg(repo_root().join("hew-sandbox-vm"))
         .arg("run")
@@ -246,7 +246,7 @@ fn ensure_parity_runner_built() {
         );
         run_bootstrap_command(
             "npm --prefix hew-sandbox-vm run -s build",
-            std::process::Command::new(NPM)
+            std::process::Command::new("npm")
                 .arg("--prefix")
                 .arg(&vm_dir)
                 .arg("run")

@@ -1005,21 +1005,6 @@ jobs:
           tools: nextest@0.9.120
           cache-shared-key: build-test-windows
 
-      # The sandbox parity integration tests execute the checked-in Node VM.
-      # Keep its locked dependencies available on Windows too, rather than
-      # silently skipping the native-to-sandbox comparison on this platform.
-      - name: Setup Node.js for sandbox parity
-        if: env.RUN_CODE_PATH == 'true'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: hew-sandbox-vm/package-lock.json
-
-      - name: Install sandbox VM dependencies
-        if: env.RUN_CODE_PATH == 'true'
-        run: npm --prefix hew-sandbox-vm ci
-
       - name: Build Rust crates
         if: env.RUN_CODE_PATH == 'true'
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
@@ -1033,16 +1018,6 @@ jobs:
       - name: Build shared Rust test artifact
         if: env.RUN_CODE_PATH == 'true'
         run: make stdlib
-
-      - name: Run native-to-sandbox parity
-        if: env.RUN_CODE_PATH == 'true'
-        env:
-          HEW_TEST_NO_BUILD: "1"
-        # Equivalent to the test portion of `make sandbox-parity`.  Windows
-        # runners do not provide GNU make, while each test builds the VM from
-        # the lockfile-installed dependencies above and builds its native
-        # artefacts through hew-testutil's cross-process authority.
-        run: cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground
 
       - name: Verify Windows CodeView PDB emission
         if: env.RUN_CODE_PATH == 'true'

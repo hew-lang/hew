@@ -61,10 +61,6 @@ use hew_sandbox_wasm::{compile_to_sandbox_bytecode, CompileOutput, REQUIRED_PARI
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
-#[cfg(windows)]
-const NPM: &str = "npm.cmd";
-#[cfg(not(windows))]
-const NPM: &str = "npm";
 
 /// How the live profile+emitter+VM treats a probed construct. Every value is
 /// cross-checked against the real gate by the tests below.
@@ -962,6 +958,9 @@ fn runnable_coverage_does_not_shrink() {
 ///   "admitted + runs-clean + unparited".
 /// - `RejectedByProfile` probe: must produce NO bytecode and carry the declared
 ///   diagnostic kind. A profile change that begins admitting it trips this.
+// This ratchet runs the Node sandbox VM; it is owned by the Linux sandbox
+// parity lane rather than the Windows-native build lane.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn live_gate_matches_declared_coverage() {
     ensure_parity_runner_built();
@@ -1985,7 +1984,7 @@ fn run_sandbox_inline(bytecode_json: &str) -> Output {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let bytecode_path = tempdir.path().join("bytecode.json");
     std::fs::write(&bytecode_path, bytecode_json).expect("write bytecode");
-    assert_cmd::Command::new(NPM)
+    assert_cmd::Command::new("npm")
         .arg("--prefix")
         .arg(repo_root().join("hew-sandbox-vm"))
         .arg("run")
@@ -2009,7 +2008,7 @@ fn ensure_parity_runner_built() {
             vm_dir.join("node_modules").is_dir(),
             "hew-sandbox-vm dependencies are not installed; run `make sandbox-parity`"
         );
-        let output = std::process::Command::new(NPM)
+        let output = std::process::Command::new("npm")
             .arg("--prefix")
             .arg(&vm_dir)
             .arg("run")

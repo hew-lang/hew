@@ -548,12 +548,13 @@ def test_pull_requests_restore_the_cache_but_never_save_it() -> None:
     save_if = str(swatinem[0].get("with", {}).get("save-if", ""))
     assert save_if == "${{ github.ref == 'refs/heads/main' }}", save_if
 
-    # sccache's GHA backend has no read-only mode, so "restore but do not
-    # write" is not expressible for it: the only PR-side options are run it
-    # (and evict) or do not run it. Every sccache step, and the export that
-    # turns the wrapper on, must therefore carry the same branch guard --
-    # exporting RUSTC_WRAPPER without installing sccache would make every
-    # rustc invocation fail to exec its wrapper.
+    # sccache carries the same policy, but through its MODE rather than its
+    # presence. "Restore but do not write" used to be inexpressible for the
+    # GHA backend, so every sccache step was branch-gated and a pull request
+    # got no compilation cache at all. sccache 0.16.0 added
+    # SCCACHE_GHA_RW_MODE, so the steps now run on every ref and only the
+    # default branch is READ_WRITE. Re-gating them on the branch would restore
+    # the cold-PR behaviour this replaced, so it is rejected here.
     guard = "github.ref == 'refs/heads/main'"
     sccache_steps = [
         step
@@ -566,12 +567,26 @@ def test_pull_requests_restore_the_cache_but_never_save_it() -> None:
         )
     ]
     assert sccache_steps, "no sccache steps found; the guard would be vacuous"
-    ungated = [
+    gated = [
         str(step.get("name") or step.get("id") or step.get("uses"))
         for step in sccache_steps
-        if guard not in str(step.get("if", ""))
+        if guard in str(step.get("if", ""))
     ]
-    assert not ungated, f"sccache steps run on pull requests: {ungated}"
+    assert not gated, (
+        f"sccache steps are branch-gated again: {gated}; a pull request would "
+        "install nothing and read nothing"
+    )
+
+    exports = [
+        step
+        for step in sccache_steps
+        if "SCCACHE_GHA_RW_MODE" in str(step.get("run", ""))
+    ]
+    assert len(exports) == 1, "one step decides the sccache read/write mode"
+    mode = str(exports[0].get("env", {}).get("SCCACHE_RW_MODE", ""))
+    assert mode == (
+        "${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}"
+    ), mode
 
 
 # ── contract: every scheduled workflow reports to an owner ───────────────────

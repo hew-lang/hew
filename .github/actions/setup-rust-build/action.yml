@@ -97,7 +97,7 @@ runs:
       with:
         tool: ${{ inputs.tools }}
 
-    # ── sccache: workspace-crate compilation cache, MAIN ONLY ─────────────
+    # ── sccache: workspace-crate compilation cache ────────────────────────
     # Promotes the .cargo/config.toml opt-in annotation to CI reality.
     # Uses the GitHub Actions cache backend (content-addressed, no blob
     # expansion — the ENOSPC cause that led to dropping target/ caching in
@@ -107,22 +107,27 @@ runs:
     # invocations; Swatinem caches the registry.  SCCACHE_CACHE_SIZE bounds
     # the on-disk buffer; the GHA cache has its own 10 GB/repo ceiling.
     #
-    # Why `github.ref == 'refs/heads/main'` on every step below: the repo
-    # cache budget is 10 GB and a SINGLE open pull request had taken 10.47 GB
-    # of it, because every PR job wrote per-object sccache entries scoped to
-    # that PR's own ref -- readable by no other branch, and evicting main's.
-    # `refs/heads/main` retained 0.01 GB, so every PR restored from a cold
-    # layer, which is the mechanism behind the 26m-vs-76m spread between
-    # otherwise comparable runs.
+    # READ_WRITE on main, READ_ONLY everywhere else. The repo cache budget is
+    # 10 GB and a SINGLE open pull request had taken 10.47 GB of it, because
+    # every PR job wrote per-object sccache entries scoped to that PR's own ref
+    # -- readable by no other branch, and evicting main's. `refs/heads/main`
+    # retained 0.01 GB, so every PR restored from a cold layer, which is the
+    # mechanism behind the 26m-vs-76m spread between otherwise comparable runs.
     #
-    # The obvious fix -- restore-only on PRs -- is not expressible.
-    # SCCACHE_GHA_ENABLED is a boolean; the GHA backend has no read-only
-    # mode. Read-only exists only on backends this repository does not
-    # provision (S3 credentials, SCCACHE_GCS_RW_MODE, a webdav token). So the
-    # choice is write or nothing, and nothing is what stops the eviction.
-    # Swatinem below still RESTORES on pull requests: default-branch cache
-    # entries are readable from any branch, which is the half of the benefit
-    # that survives.
+    # Restore-only on pull requests USED to be inexpressible: SCCACHE_GHA_ENABLED
+    # is a boolean and, at the v0.10.0 this action installed, the GHA backend
+    # had no read-only mode -- so the previous revision of this file disabled
+    # sccache entirely off main, which fixed the eviction by giving pull
+    # requests nothing. sccache 0.16.0 added SCCACHE_GHA_RW_MODE (READ_ONLY |
+    # READ_WRITE, default READ_WRITE; docs/GHA.md), so the cache now runs
+    # everywhere and only main writes to it. GHA cache entries saved on the
+    # default branch are readable from every branch, so a pull request gets the
+    # hits without creating the ref-scoped objects that caused the eviction.
+    #
+    # Pinned at 0.16.0 rather than the current 0.17.0 deliberately: 0.16.0 is
+    # the first release carrying the read-only mode this file depends on, and
+    # 0.17.0 ships a new client-side execution architecture. Take the
+    # capability, not the architecture change, in the same commit.
     #
     # Retried up to 3x for the same reason as install-tools above: the
     # 2026-08-08/2026-08-12 incidents showed this action's own sccache
@@ -132,28 +137,24 @@ runs:
     # (node action, dist/setup/index.js), so the retry wraps the step.
     - id: sccache-attempt-1
       uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
-      if: github.ref == 'refs/heads/main'
       continue-on-error: true
       with:
-        # Always pull the latest released sccache binary unless we need to
-        # pin for a specific fix.  The action itself is SHA-pinned above.
-        version: "v0.10.0"
+        version: "v0.16.0"
 
     - name: Wait before retrying sccache setup
-      if: github.ref == 'refs/heads/main' && steps.sccache-attempt-1.outcome == 'failure'
+      if: steps.sccache-attempt-1.outcome == 'failure'
       shell: bash
       run: sleep 15
 
     - id: sccache-attempt-2
       uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
-      if: github.ref == 'refs/heads/main' && steps.sccache-attempt-1.outcome == 'failure'
+      if: steps.sccache-attempt-1.outcome == 'failure'
       continue-on-error: true
       with:
-        version: "v0.10.0"
+        version: "v0.16.0"
 
     - name: Wait before final sccache setup attempt
       if: >-
-        github.ref == 'refs/heads/main' &&
         steps.sccache-attempt-1.outcome == 'failure' &&
         steps.sccache-attempt-2.outcome == 'failure'
       shell: bash
@@ -161,17 +162,21 @@ runs:
 
     - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
       if: >-
-        github.ref == 'refs/heads/main' &&
         steps.sccache-attempt-1.outcome == 'failure' &&
         steps.sccache-attempt-2.outcome == 'failure'
       with:
-        version: "v0.10.0"
+        version: "v0.16.0"
 
     - name: Export sccache environment variables
-      if: github.ref == 'refs/heads/main'
       shell: bash
+      env:
+        # One expression, one place. A step that recomputed `github.ref ==
+        # 'refs/heads/main'` for itself is a second policy authority, and the
+        # two disagree the moment one of them is edited.
+        SCCACHE_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       run: |
         echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "SCCACHE_GHA_RW_MODE=${SCCACHE_RW_MODE}" >> "$GITHUB_ENV"
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
         echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
         # RUSTC_WRAPPER is exported job-wide, so every compile in the job --
@@ -181,6 +186,67 @@ runs:
         # check had run. A cache that cannot be reached must degrade to a cold
         # compile; it is a cache.
         echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "$GITHUB_ENV"
+        echo "sccache mode: ${SCCACHE_RW_MODE} (ref ${GITHUB_REF})"
+
+    # The cache is a cost input, so its behaviour is reported where the run's
+    # other cost telemetry is read. It asserts nothing: a cold cache is a slow
+    # run, never a wrong one. `--stats-format=json` because the human table has
+    # no total-writes row, and a hand-summed table is a second parser.
+    #
+    # Reading the row off a pull request: `writes` must be 0 and `write errors`
+    # equals the miss count, because READ_ONLY refuses each store and sccache
+    # counts a refused store as a write error while still returning the
+    # compiler's own successful output. That is the mode working, not a defect.
+    - name: Report sccache cache behaviour
+      if: always()
+      shell: bash
+      env:
+        SCCACHE_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      run: |
+        set -uo pipefail
+        {
+          echo "### sccache — ${{ inputs.cache-shared-key }}"
+          echo ""
+          echo "- mode: \`${SCCACHE_RW_MODE}\` (ref \`${GITHUB_REF}\`)"
+        } >> "$GITHUB_STEP_SUMMARY"
+        if ! command -v sccache > /dev/null 2>&1; then
+          echo "- sccache is not on PATH; this job compiled cold." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        if ! stats_json="$(sccache --show-stats --stats-format=json 2>/dev/null)"; then
+          echo "- sccache could not report; this job compiled cold." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        # Held in a variable, never a file: a scratch file written into the
+        # checkout is an untracked path no gate declares, which makes the
+        # change router fail closed to comprehensive on every run.
+        printf '%s' "$stats_json" | python3 -c '
+        import json, sys
+
+        stats = json.load(sys.stdin)["stats"]
+        counters = (
+            "compile_requests",
+            "cache_hits",
+            "cache_misses",
+            "cache_writes",
+            "cache_write_errors",
+        )
+
+
+        def total(key):
+            value = stats.get(key)
+            if isinstance(value, dict):
+                return sum(value.get("counts", {}).values())
+            return value or 0
+
+
+        print(
+            "- requests: `{}`  hits: `{}`  misses: `{}`"
+            "  writes: `{}`  write errors: `{}`".format(
+                *[total(key) for key in counters]
+            )
+        )
+        ' >> "$GITHUB_STEP_SUMMARY"
 
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
       with:

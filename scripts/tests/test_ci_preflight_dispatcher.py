@@ -3547,6 +3547,189 @@ def test_dotted_import_module_fails_closed() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Routing truth table: what an EMPTY change set means, and what --comprehensive
+# means.  Every row here is a fail-closed property, not a per-path restatement.
+#
+# The defect these exist for: the dispatcher used to print "No changed files
+# detected." and exit 0 unconditionally, so a CI run whose base derivation
+# collapsed to a self-diff reported success having run no gate at all
+# (LESSONS.md preflight-base-ref-on-branch).  "Narrow" is never the right
+# answer to an empty diff and neither is "pass".
+# ---------------------------------------------------------------------------
+
+
+def _empty_diff_repo(root: Path) -> Path:
+    """A committed, clean git repository whose change set is genuinely empty.
+
+    Built rather than borrowed: running these rows against the real worktree
+    would make them pass or fail on whatever the developer happens to have
+    edited, which is the opposite of a counterfactual.
+
+    Every source path is derived from a module constant rather than spelled as
+    a literal. A literal would put `scripts/…​.sh` inside a recovered argv, and
+    the compile-walk in this same file follows recovered argvs one script deep
+    — a test fixture must not teach the walk that the harness gate compiles.
+    """
+    repo = root / "repo"
+    (repo / "scripts" / "lib").mkdir(parents=True)
+    lib = ROOT / "scripts" / "lib"
+    for source in (SCRIPT, lib / "gate_inputs.py", lib / "timeout.sh"):
+        if source.exists():
+            (repo / source.relative_to(ROOT)).write_bytes(source.read_bytes())
+    (repo / "Makefile").write_text(".PHONY: noop\nnoop:\n\t@:\n", encoding="utf-8")
+    (repo / "README.md").write_text("probe\n", encoding="utf-8")
+    for command in (
+        ["git", "init", "-q", "."],
+        ["git", "config", "user.email", "harness@example.invalid"],
+        ["git", "config", "user.name", "harness"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-q", "-m", "seed"],
+    ):
+        subprocess.run(command, cwd=repo, check=True, capture_output=True, text=True)
+    return repo
+
+
+def _run_in_empty_repo(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryDirectory() as raw:
+        repo = _empty_diff_repo(Path(raw))
+        home = Path(raw) / "home"
+        home.mkdir(exist_ok=True)
+        dispatcher = repo / SCRIPT.relative_to(ROOT)
+        return subprocess.run(
+            ["bash", str(dispatcher), "--dry-run", *args],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_hermetic_env(home, env),
+        )
+
+
+def test_empty_change_set_under_ci_is_an_error() -> None:
+    """A CI run with nothing to test has a broken base, not a fast lane."""
+    result = _run_in_empty_repo(env={"CI": "1"})
+    assert result.returncode != 0, result.stdout
+    assert "empty change set under CI" in result.stderr, result.stderr
+    assert "Selected profile:" not in result.stdout, result.stdout
+
+
+def test_empty_change_set_under_github_actions_is_an_error() -> None:
+    """GITHUB_ACTIONS alone is enough; CI is not the only spelling of a runner."""
+    result = _run_in_empty_repo(env={"GITHUB_ACTIONS": "true"})
+    assert result.returncode != 0, result.stdout
+    assert "empty change set under CI" in result.stderr, result.stderr
+
+
+def test_empty_change_set_against_an_explicit_base_is_an_error() -> None:
+    """--base is a claim about what this branch is measured against.
+
+    An empty result falsifies the claim.  Passing would launder a wrong base
+    into a green check, which is the same false pass one layer up.
+    """
+    result = _run_in_empty_repo("--base", "HEAD")
+    assert result.returncode != 0, result.stdout
+    assert "explicit base" in result.stderr, result.stderr
+
+
+def test_empty_change_set_locally_without_a_base_still_exits_zero() -> None:
+    """Today's local behaviour is preserved: a human asking with no base is fine."""
+    result = _run_in_empty_repo()
+    assert result.returncode == 0, result.stderr
+    assert "No changed files detected." in result.stdout, result.stdout
+
+
+def test_allow_empty_is_the_only_intentional_spelling_locally() -> None:
+    result = _run_in_empty_repo("--base", "HEAD", "--allow-empty")
+    assert result.returncode == 0, result.stderr
+    assert "--allow-empty was given" in result.stdout, result.stdout
+
+
+def test_allow_empty_is_unreachable_from_ci() -> None:
+    """LESSONS.md preflight-gate-no-bypass: no env-shaped escape from a gate.
+
+    Were --allow-empty honoured under CI it would be exactly that escape — a
+    flag a job could add to make an unproven run green.
+    """
+    for runner in ({"CI": "1"}, {"GITHUB_ACTIONS": "true"}):
+        result = _run_in_empty_repo("--allow-empty", env=runner)
+        assert result.returncode != 0, (runner, result.stdout)
+        assert "refused under CI" in result.stderr, (runner, result.stderr)
+
+
+def test_comprehensive_flag_routes_by_policy_without_deriving_a_diff() -> None:
+    """push->main and workflow_dispatch prove the integrated tree.
+
+    The gate set must come from policy, not from a diff that happens to be
+    empty — the distinction between a decision and an accident.
+    """
+    result = _run_dispatcher_process(
+        ["bash", str(SCRIPT), "--dry-run", "--comprehensive"]
+    )
+    assert result.returncode == 0, result.stderr
+    assert is_comprehensive(result), result.stdout
+    assert "Source: policy (--comprehensive)" in result.stdout, result.stdout
+    assert "comprehensive by policy" in result.stdout, result.stdout
+    assert "Changed files: not consulted" in result.stdout, result.stdout
+
+
+def test_comprehensive_flag_is_comprehensive_in_an_empty_repository_too() -> None:
+    """The empty-diff error must not fire when no diff was ever requested.
+
+    The probe repository has no gate declarations, so the routing stops once it
+    has proved the point: the run got past the empty-change-set refusal and
+    asked the selector for the whole set.
+    """
+    result = _run_in_empty_repo("--comprehensive", env={"CI": "1"})
+    assert "empty change set" not in result.stderr, result.stderr
+    assert "Source: policy (--comprehensive)" in result.stdout or (
+        "check-counterfactual-output-artifacts" in result.stderr
+    ), (result.stdout, result.stderr)
+
+
+def test_comprehensive_selection_is_a_superset_of_every_narrow_selection() -> None:
+    """Monotonicity: policy-comprehensive cannot select fewer gates than a diff.
+
+    A --comprehensive route that quietly dropped a gate would be worse than the
+    accidental fallback it replaces, because nothing downstream would notice.
+    """
+    policy = _run_dispatcher_process(
+        ["bash", str(SCRIPT), "--dry-run", "--comprehensive"]
+    )
+    assert policy.returncode == 0, policy.stderr
+    everything = selected_gates(policy)
+    assert everything, policy.stdout
+    for narrow_path in (
+        "hew-parser/src/lib.rs",
+        "scripts/structural-authority-audit.py",
+        ".github/workflows/ci.yml",
+    ):
+        narrow = run_dispatcher(narrow_path)
+        assert narrow.returncode == 0, narrow.stderr
+        missing = selected_gates(narrow) - everything
+        assert not missing, (narrow_path, sorted(missing))
+
+
+def test_comprehensive_refuses_to_share_the_decision_with_a_diff() -> None:
+    """Two authorities answering "what runs?" is a wrong-green generator."""
+    for conflicting in (
+        ["--comprehensive", "--base", "HEAD"],
+        ["--comprehensive", "--allow-empty"],
+        ["--comprehensive", "--classify"],
+    ):
+        result = _run_dispatcher_process(
+            ["bash", str(SCRIPT), "--dry-run", *conflicting]
+        )
+        assert result.returncode != 0, (conflicting, result.stdout)
+        assert "--comprehensive" in result.stderr, (conflicting, result.stderr)
+
+    with_paths = run_dispatcher("Makefile", extra_args=["--comprehensive"])
+    assert with_paths.returncode != 0, with_paths.stdout
+    assert "explicit paths" in with_paths.stderr, with_paths.stderr
+
+
 def _discover_tests() -> list:
     """Every test function defined in this module, resolved at RUN time.
 

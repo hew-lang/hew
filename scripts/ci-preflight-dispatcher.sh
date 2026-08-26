@@ -528,6 +528,16 @@ CLASSIFY_ONLY=0
 CHECK_COUNTERFACTUAL_OUTPUT=0
 SHARED_ARTIFACT_GATES=0
 BASE_REF=""
+# 1 when --base was spelled on the command line.  An explicit base is a claim
+# that the caller knows what this diff is measured against; an empty result
+# then means the claim is wrong, not that there is nothing to do.
+EXPLICIT_BASE=0
+# 1 when --allow-empty was given.  Local affordance only: rejected under CI.
+ALLOW_EMPTY=0
+# 1 when --comprehensive was given.  The whole gate set runs by policy, with no
+# diff derived at all.  This is how push->main and workflow_dispatch spell
+# "prove the integrated tree" without routing through a self-diff.
+FORCE_COMPREHENSIVE=0
 EXPLICIT_PATHS=0
 LANE_REASON=""
 CHANGED_FILES=()
@@ -545,6 +555,7 @@ PREFLIGHT_SUMMARY_FILE="${PREFLIGHT_SUMMARY_FILE:-.tmp/preflight-summary.md}"
 usage() {
     cat <<'EOF'
 Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--shard K/N]
+                                         [--comprehensive] [--allow-empty]
                                          [--shard-plan N] [--profile-json <path>]
                                          [--github-output <path>] [--] [path...]
 
@@ -554,6 +565,15 @@ Dispatch a conservative local CI preflight based on changed files.
 - With no paths, the script inspects committed, staged, unstaged, and untracked changes.
 - By default, all selected commands run and failures are reported together at the end.
 - --fail-fast           Stop after the first failed command.
+- --comprehensive      Run every participating gate by policy, deriving no diff at all.
+                        This is the correct spelling for push->main and workflow_dispatch:
+                        those tiers prove the integrated tree, so "what changed" is not
+                        the question they ask.  Mutually exclusive with --base and with
+                        explicit paths.
+- --allow-empty        Permit an empty change set to exit 0.  LOCAL ONLY: rejected when
+                        CI or GITHUB_ACTIONS is set, because a CI run with nothing to
+                        test has a broken base derivation, and a green no-op is the
+                        false pass that hides it.
 - --classify            Print '<path>\t<gate,gate,...>' for each path and exit. With no
                         paths, reads newline-separated paths from stdin.
 - Routing rule: a changed path selects every gate whose declared `# inputs:` it matches,
@@ -1024,6 +1044,15 @@ while [[ $# -gt 0 ]]; do
             shift
             [[ $# -gt 0 ]] || die "--base requires a ref"
             BASE_REF="$1"
+            EXPLICIT_BASE=1
+            shift
+            ;;
+        --comprehensive)
+            FORCE_COMPREHENSIVE=1
+            shift
+            ;;
+        --allow-empty)
+            ALLOW_EMPTY=1
             shift
             ;;
         --check-counterfactual-output)
@@ -1086,6 +1115,24 @@ if [[ -n "$BASE_REF" ]] && ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1;
     die "unknown base ref: $BASE_REF"
 fi
 
+# `--allow-empty` is a local affordance and nothing else.  Reachable from a CI
+# invocation it would be an env-shaped bypass of the very gate below
+# (LESSONS.md preflight-gate-no-bypass): a run that proves nothing would report
+# success, which is exactly the false pass the empty-diff rule exists to stop.
+if (( ALLOW_EMPTY == 1 )) && [[ -n "${CI:-}${GITHUB_ACTIONS:-}" ]]; then
+    die "--allow-empty is a local affordance and is refused under CI; a CI run with an empty change set has a broken base derivation"
+fi
+
+# --comprehensive asks a different question ("is the integrated tree sound?")
+# than a diff-derived route ("is this change sound?").  Accepting both at once
+# would make the answer depend on which one won, so refuse the ambiguity.
+if (( FORCE_COMPREHENSIVE == 1 )); then
+    (( EXPLICIT_BASE == 0 )) || die "--comprehensive derives no diff; do not also pass --base"
+    (( EXPLICIT_PATHS == 0 )) || die "--comprehensive derives no diff; do not also pass explicit paths"
+    (( CLASSIFY_ONLY == 0 )) || die "--comprehensive and --classify are mutually exclusive"
+    (( ALLOW_EMPTY == 0 )) || die "--comprehensive never consults a change set, so --allow-empty is meaningless with it"
+fi
+
 if (( SHARD_PLAN_ONLY == 1 && SHARD_INDEX != 0 )); then
     die "--shard and --shard-plan are mutually exclusive"
 fi
@@ -1101,7 +1148,7 @@ fi
 
 ci_preflight_base_unresolved=0
 
-if (( EXPLICIT_PATHS == 0 && CLASSIFY_ONLY == 0 )); then
+if (( EXPLICIT_PATHS == 0 && CLASSIFY_ONLY == 0 && FORCE_COMPREHENSIVE == 0 )); then
     if [[ -z "$BASE_REF" ]]; then
         if [[ -n "${CI_PREFLIGHT_BASE:-}" ]]; then
             if git rev-parse --verify "$CI_PREFLIGHT_BASE" >/dev/null 2>&1; then
@@ -1150,13 +1197,39 @@ if (( CLASSIFY_ONLY == 1 )); then
     exit 0
 fi
 
-if ! has_changed_files; then
+if ! has_changed_files && (( FORCE_COMPREHENSIVE == 0 )); then
     echo "==> Hew CI preflight dispatcher"
     echo "No changed files detected."
+    # An empty change set is only ever benign when a human asked a local
+    # question with no base to answer it against.  Two other spellings reach
+    # here and both are defects:
+    #
+    #   * under CI, an empty set means the run has nothing to prove.  The
+    #     dispatcher used to exit 0 here, so a push->main whose base derivation
+    #     collapsed to a self-diff went green having run no gate at all
+    #     (LESSONS.md preflight-base-ref-on-branch records exactly that false
+    #     pass).  Narrowing is never the right answer to an empty diff, and
+    #     neither is passing.
+    #   * with an explicit --base, the caller asserted what this diff is
+    #     measured against.  An empty result falsifies the assertion; reporting
+    #     success would launder a wrong base into a green check.
+    #
+    # Both fail closed.  --allow-empty is the only intentional spelling of "I
+    # mean it", and it is refused under CI above.
+    if (( ALLOW_EMPTY == 1 )); then
+        echo "Empty change set accepted: --allow-empty was given."
+        exit 0
+    fi
+    if [[ -n "${CI:-}${GITHUB_ACTIONS:-}" ]]; then
+        die "empty change set under CI: nothing would be proven. The base derivation is wrong, or this tier should pass --comprehensive."
+    fi
+    if (( EXPLICIT_BASE == 1 )); then
+        die "empty change set against the explicit base '$BASE_REF': that base cannot be what this branch should be measured against."
+    fi
     exit 0
 fi
 
-for path in "${CHANGED_FILES[@]}"; do
+for path in "${CHANGED_FILES[@]+"${CHANGED_FILES[@]}"}"; do
     # Nearest ancestor carrying a Cargo.toml, so nested workspace members
     # (std/encoding/binary, std/text/template) reach the closure below.
     crate_dir="${path%/*}"
@@ -1170,7 +1243,16 @@ for path in "${CHANGED_FILES[@]}"; do
     done
 done
 
-select_gates selected "${CHANGED_FILES[@]}"
+if (( FORCE_COMPREHENSIVE == 1 )); then
+    # No diff is consulted: the selector is asked for the whole participating
+    # gate set directly.  This is the difference between "comprehensive because
+    # policy says so" and the old "comprehensive because an undeclared path
+    # fell out of a diff nobody meant to take" — same command list, but one is
+    # a decision and the other is an accident.
+    select_gates comprehensive
+else
+    select_gates selected "${CHANGED_FILES[@]}"
+fi
 
 AFFECTED_PACKAGE_ARGS=""
 if [[ ${CHANGED_CRATE_DIRS[0]+set} == set ]]; then
@@ -1378,7 +1460,9 @@ if (( SHARD_INDEX > 0 )); then
 fi
 
 echo "==> Hew CI preflight dispatcher"
-if (( EXPLICIT_PATHS == 1 )); then
+if (( FORCE_COMPREHENSIVE == 1 )); then
+    echo "Source: policy (--comprehensive); no diff was derived"
+elif (( EXPLICIT_PATHS == 1 )); then
     echo "Source: explicit paths"
 else
     if [[ -n "$BASE_REF" ]]; then
@@ -1401,6 +1485,8 @@ fi
 if (( ${#UNDECLARED_PATHS[@]} > 0 )); then
     LANE_REASON="comprehensive: $(printf 'undeclared: %s; ' "${UNDECLARED_PATHS[@]}")"
     LANE_REASON="${LANE_REASON%; }"
+elif (( FORCE_COMPREHENSIVE == 1 )); then
+    LANE_REASON="comprehensive by policy: this tier proves the integrated tree, not a diff"
 elif (( ${#GLOBAL_PATHS[@]} > 0 )); then
     LANE_REASON="comprehensive: a global input changed, which parameterises every gate — ${GLOBAL_PATHS[*]}"
 elif (( COMPREHENSIVE == 1 )); then
@@ -1479,10 +1565,14 @@ else
 fi
 print_timeout_scaling
 echo "Reason: $LANE_REASON"
-echo "Changed files:"
-for path in "${CHANGED_FILES[@]}"; do
-    echo "  - $path"
-done
+if (( FORCE_COMPREHENSIVE == 1 )); then
+    echo "Changed files: not consulted (--comprehensive)"
+else
+    echo "Changed files:"
+    for path in "${CHANGED_FILES[@]}"; do
+        echo "  - $path"
+    done
+fi
 
 if [[ -n "$SHARD_PLAN_LINES" ]]; then
     print_shard_plan

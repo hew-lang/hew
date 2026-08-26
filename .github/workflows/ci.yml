@@ -237,7 +237,7 @@ jobs:
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
         with:
           components: rustfmt
-          cache-shared-key: docs-scripts-gates
+          cache-shared-key: linux
 
       - name: Provision pinned ast-grep toolchain
         if: needs.changes.outputs.selected_compile != 'true' && needs.changes.outputs.scripts == 'true'
@@ -280,7 +280,7 @@ jobs:
         with:
           components: 'clippy, rustfmt'
           targets: wasm32-wasip1
-          cache-shared-key: lint
+          cache-shared-key: linux
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         uses: ./.github/actions/setup-llvm
@@ -462,7 +462,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          cache-shared-key: deny
+          cache-shared-key: linux
 
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked --version 0.19.6
@@ -499,7 +499,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           targets: wasm32-unknown-unknown
-          cache-shared-key: playground-wasm
+          cache-shared-key: linux
 
       - name: Install wasm-pack v0.13.1 and Binaryen 117
         uses: ./.github/actions/setup-wasm-pack
@@ -548,7 +548,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          cache-shared-key: compiled-hew-linux
+          cache-shared-key: linux-mold
 
       - name: Assert the developer compiler profile
         if: env.RUN_CODE_PATH == 'true'
@@ -834,7 +834,7 @@ jobs:
         with:
           targets: 'wasm32-unknown-unknown, wasm32-wasip1'
           tools: nextest@0.9.120
-          cache-shared-key: build-test-linux
+          cache-shared-key: linux-mold
 
       - name: Install WASI target
         if: env.RUN_CODE_PATH == 'true'
@@ -1009,7 +1009,7 @@ jobs:
         with:
           targets: wasm32-wasip1
           tools: nextest@0.9.120
-          cache-shared-key: build-test-windows
+          cache-shared-key: windows
 
       - name: Build Rust crates
         if: env.RUN_CODE_PATH == 'true'
@@ -1200,7 +1200,7 @@ jobs:
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1'
           tools: nextest@0.9.120
-          cache-shared-key: build-test-macos
+          cache-shared-key: macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'

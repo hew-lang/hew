@@ -301,6 +301,278 @@ def test_the_extraction_rule_accepts_a_destination_the_router_cannot_see() -> No
         assert not offending_extractions([("j", "s", allowed)], "fixture"), allowed
 
 
+# ── contract: cache keys follow the rustc fingerprint ────────────────────────
+
+# The mold rustflag changes the rustc invocation, so a job that links with mold
+# and a job that does not are compiling different programs as far as a cache is
+# concerned. Two facts follow, and they are the whole contract:
+#
+#   * a job may declare the mold rustflag only if it INSTALLS mold. The flag is
+#     scoped per job rather than hoisted to workflow level or .cargo/config.toml
+#     precisely because `lint`, `license-check`, `docs-and-scripts` and
+#     `playground-wasm-build` do not install mold and would fail to link their
+#     host build scripts.
+#   * the `linux-mold` cache key belongs to exactly the jobs that declare the
+#     flag. release-gate and coverage-nightly shared `build-test-linux` with
+#     ci.yml's mold job while running WITHOUT mold: a key shared across
+#     fingerprints, which is a guaranteed-miss restore in both directions.
+#
+# Keys name the fingerprint, never the job, so the set is closed and small.
+MOLD_RUSTFLAG = "-fuse-ld=mold"
+MOLD_KEY = "linux-mold"
+FINGERPRINT_KEYS = {"linux", MOLD_KEY, "windows", "macos"}
+
+
+def _job_strings(job: object) -> list[str]:
+    """Every string a job declares: env values, run bodies, `with` values."""
+    parts: list[str] = []
+
+    def flatten(value: object) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                flatten(item)
+        elif isinstance(value, list):
+            for item in value:
+                flatten(item)
+        elif isinstance(value, str):
+            parts.append(value)
+
+    flatten(job)
+    return parts
+
+
+def _declared_cache_keys(job: object) -> list[str]:
+    """Every cache-shared-key a job passes, read off the parsed `with:` block.
+
+    Read structurally rather than by grepping the job's text: a key spelled in
+    a comment is not a key, and a key nested in a `with:` mapping is one even
+    though the flattened text loses its name.
+    """
+    keys: list[str] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, dict):
+            for name, item in value.items():
+                if name == "cache-shared-key" and isinstance(item, str):
+                    keys.append(item.strip())
+                else:
+                    walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(job)
+    return sorted(set(keys))
+
+
+def cache_key_findings(document: dict) -> list[str]:
+    findings: list[str] = []
+    for name, job in jobs(document).items():
+        declared = _job_strings(job)
+        body = "\n".join(
+            line
+            for value in declared
+            for line in value.splitlines()
+            if not line.strip().startswith("#")
+        )
+        declares_flag = MOLD_RUSTFLAG in body
+        installs_mold = re.search(r"apt-get install[^\n]*\bmold\b", body) is not None
+        keys = _declared_cache_keys(job)
+
+        if declares_flag and not installs_mold:
+            findings.append(
+                f"{name}: declares {MOLD_RUSTFLAG} without installing mold; "
+                "every link in the job would fail"
+            )
+        if installs_mold and not declares_flag:
+            findings.append(
+                f"{name}: installs mold but never uses it; the install is dead cost"
+            )
+        for key in keys:
+            if key not in FINGERPRINT_KEYS:
+                findings.append(
+                    f"{name}: cache key '{key}' is not one of "
+                    f"{sorted(FINGERPRINT_KEYS)}; keys name the rustc "
+                    "fingerprint, not the job"
+                )
+            elif key == MOLD_KEY and not declares_flag:
+                findings.append(
+                    f"{name}: uses the '{MOLD_KEY}' cache key without declaring "
+                    f"{MOLD_RUSTFLAG}; that key restores from a different "
+                    "fingerprint and can never hit"
+                )
+            elif key != MOLD_KEY and declares_flag:
+                findings.append(
+                    f"{name}: declares {MOLD_RUSTFLAG} but caches under '{key}'; "
+                    f"its artefacts belong under '{MOLD_KEY}'"
+                )
+    return findings
+
+
+def test_the_cache_key_enumeration_is_not_empty() -> None:
+    """A rule that finds no keys to judge is a rule that judges nothing.
+
+    LESSONS.md enumeration-gate-floors: a floor, not an asserted count.
+    """
+    seen: set[str] = set()
+    for path in workflow_files():
+        for job in jobs(load(path)).values():
+            seen.update(_declared_cache_keys(job))
+    assert seen, "no cache-shared-key declarations found; the rule is vacuous"
+    assert seen <= FINGERPRINT_KEYS, sorted(seen - FINGERPRINT_KEYS)
+
+
+def test_cache_keys_follow_the_rustc_fingerprint() -> None:
+    findings: list[str] = []
+    for path in workflow_files():
+        for finding in cache_key_findings(load(path)):
+            findings.append(f"{path.name} {finding}")
+    assert not findings, "cache key / link-flag mismatch:\n  " + "\n  ".join(findings)
+
+
+def _fixture(**job_bodies: str) -> dict:
+    return parse_yaml(
+        "on: push\njobs:\n"
+        + "".join(
+            f"  {name}:\n    runs-on: ubuntu-24.04\n{body}"
+            for name, body in job_bodies.items()
+        ),
+        "fixture",
+    )
+
+
+def test_the_cache_key_rule_rejects_each_mismatch() -> None:
+    """Falsifiability: mutate the invariant in every direction it can break."""
+    flag_env = (
+        "    env:\n"
+        '      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"\n'
+    )
+    install = (
+        "    steps:\n"
+        "      - run: sudo apt-get install -y -qq mold\n"
+        "      - uses: ./.github/actions/setup-rust-build\n"
+    )
+
+    # 1. flag without the install: every link in the job fails.
+    findings = cache_key_findings(
+        _fixture(
+            j=flag_env
+            + "    steps:\n"
+            + "      - uses: ./.github/actions/setup-rust-build\n"
+            + "        with:\n"
+            + "          cache-shared-key: linux-mold\n"
+        )
+    )
+    assert any("without installing mold" in f for f in findings), findings
+
+    # 2. mold key without the flag: restores from another fingerprint, never hits.
+    findings = cache_key_findings(
+        _fixture(
+            j="    steps:\n"
+            "      - uses: ./.github/actions/setup-rust-build\n"
+            "        with:\n"
+            "          cache-shared-key: linux-mold\n"
+        )
+    )
+    assert any("without declaring" in f for f in findings), findings
+
+    # 3. flag with a non-mold key: writes mold artefacts into the shared layer.
+    findings = cache_key_findings(
+        _fixture(
+            j=flag_env + install + "        with:\n          cache-shared-key: linux\n"
+        )
+    )
+    assert any("belong under" in f for f in findings), findings
+
+    # 4. a job-shaped key: the eight-way split this replaces.
+    findings = cache_key_findings(
+        _fixture(
+            j="    steps:\n"
+            "      - uses: ./.github/actions/setup-rust-build\n"
+            "        with:\n"
+            "          cache-shared-key: build-test-linux\n"
+        )
+    )
+    assert any("not one of" in f for f in findings), findings
+
+    # 5. an install nobody uses: dead provisioning cost.
+    findings = cache_key_findings(
+        _fixture(j=install + "        with:\n          cache-shared-key: linux\n")
+    )
+    assert any("never uses it" in f for f in findings), findings
+
+
+def test_the_cache_key_rule_accepts_both_correct_shapes() -> None:
+    """Not vacuous: a mold job and a plain job must both pass."""
+    mold_job = (
+        "    env:\n"
+        '      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"\n'
+        "    steps:\n"
+        "      - run: sudo apt-get install -y -qq mold\n"
+        "      - uses: ./.github/actions/setup-rust-build\n"
+        "        with:\n"
+        "          cache-shared-key: linux-mold\n"
+    )
+    plain_job = (
+        "    steps:\n"
+        "      - uses: ./.github/actions/setup-rust-build\n"
+        "        with:\n"
+        "          cache-shared-key: linux\n"
+    )
+    assert not cache_key_findings(_fixture(mold=mold_job, plain=plain_job))
+
+
+# ── contract: pull requests read the cache and do not write it ───────────────
+
+
+def test_pull_requests_restore_the_cache_but_never_save_it() -> None:
+    """One open pull request held 10.47 GB of a 10 GB repo budget.
+
+    Every PR job wrote entries scoped to its own ref -- readable by no other
+    branch -- and evicted main's, which retained 0.01 GB. So every PR restored
+    from a cold layer it had just displaced. Saving is now the default
+    branch's job alone; restoring still works everywhere, because a
+    main-saved entry is readable from any branch.
+    """
+    action = ACTIONS / "setup-rust-build" / "action.yml"
+    document = parse_yaml(action.read_text(encoding="utf-8"), action.name)
+    steps = document["runs"]["steps"]
+
+    swatinem = [
+        step
+        for step in steps
+        if isinstance(step, dict) and "Swatinem/rust-cache@" in str(step.get("uses"))
+    ]
+    assert len(swatinem) == 1, "one dependency-cache layer, one save policy"
+    save_if = str(swatinem[0].get("with", {}).get("save-if", ""))
+    assert save_if == "${{ github.ref == 'refs/heads/main' }}", save_if
+
+    # sccache's GHA backend has no read-only mode, so "restore but do not
+    # write" is not expressible for it: the only PR-side options are run it
+    # (and evict) or do not run it. Every sccache step, and the export that
+    # turns the wrapper on, must therefore carry the same branch guard --
+    # exporting RUSTC_WRAPPER without installing sccache would make every
+    # rustc invocation fail to exec its wrapper.
+    guard = "github.ref == 'refs/heads/main'"
+    sccache_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and (
+            "sccache-action@" in str(step.get("uses"))
+            or "sccache" in str(step.get("name", "")).lower()
+            or "SCCACHE_GHA_ENABLED" in str(step.get("run", ""))
+        )
+    ]
+    assert sccache_steps, "no sccache steps found; the guard would be vacuous"
+    ungated = [
+        str(step.get("name") or step.get("id") or step.get("uses"))
+        for step in sccache_steps
+        if guard not in str(step.get("if", ""))
+    ]
+    assert not ungated, f"sccache steps run on pull requests: {ungated}"
+
+
 def _discover_tests() -> list:
     return [
         value

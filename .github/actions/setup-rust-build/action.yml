@@ -31,8 +31,14 @@ inputs:
     default: ''
   cache-shared-key:
     description: >
-      Swatinem/rust-cache shared-key that scopes the cache to the calling
-      job class (e.g. 'lint', 'build-test-linux', 'coverage').
+      Swatinem/rust-cache shared-key naming the RUSTC FINGERPRINT this job
+      compiles under, not the job. Four values exist: `linux-mold` (x86_64
+      Linux with `-C link-arg=-fuse-ld=mold`), `linux` (x86_64 Linux without
+      it), `windows`, `macos`. Two jobs share a key when and only when their
+      compilations are interchangeable; eight job-shaped keys split a 10 GB
+      repo budget eight ways along a boundary that was not the fingerprint,
+      so keys that should have been separate were shared and keys that could
+      have been shared were separate.
     required: true
   cache-prefix-key:
     description: >
@@ -91,7 +97,7 @@ runs:
       with:
         tool: ${{ inputs.tools }}
 
-    # ── sccache: workspace-crate compilation cache ─────────────────────────
+    # ── sccache: workspace-crate compilation cache, MAIN ONLY ─────────────
     # Promotes the .cargo/config.toml opt-in annotation to CI reality.
     # Uses the GitHub Actions cache backend (content-addressed, no blob
     # expansion — the ENOSPC cause that led to dropping target/ caching in
@@ -101,6 +107,23 @@ runs:
     # invocations; Swatinem caches the registry.  SCCACHE_CACHE_SIZE bounds
     # the on-disk buffer; the GHA cache has its own 10 GB/repo ceiling.
     #
+    # Why `github.ref == 'refs/heads/main'` on every step below: the repo
+    # cache budget is 10 GB and a SINGLE open pull request had taken 10.47 GB
+    # of it, because every PR job wrote per-object sccache entries scoped to
+    # that PR's own ref -- readable by no other branch, and evicting main's.
+    # `refs/heads/main` retained 0.01 GB, so every PR restored from a cold
+    # layer, which is the mechanism behind the 26m-vs-76m spread between
+    # otherwise comparable runs.
+    #
+    # The obvious fix -- restore-only on PRs -- is not expressible.
+    # SCCACHE_GHA_ENABLED is a boolean; the GHA backend has no read-only
+    # mode. Read-only exists only on backends this repository does not
+    # provision (S3 credentials, SCCACHE_GCS_RW_MODE, a webdav token). So the
+    # choice is write or nothing, and nothing is what stops the eviction.
+    # Swatinem below still RESTORES on pull requests: default-branch cache
+    # entries are readable from any branch, which is the half of the benefit
+    # that survives.
+    #
     # Retried up to 3x for the same reason as install-tools above: the
     # 2026-08-08/2026-08-12 incidents showed this action's own sccache
     # binary fetch failing with "socket hang up". The action already retries
@@ -109,6 +132,7 @@ runs:
     # (node action, dist/setup/index.js), so the retry wraps the step.
     - id: sccache-attempt-1
       uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+      if: github.ref == 'refs/heads/main'
       continue-on-error: true
       with:
         # Always pull the latest released sccache binary unless we need to
@@ -116,28 +140,35 @@ runs:
         version: "v0.10.0"
 
     - name: Wait before retrying sccache setup
-      if: steps.sccache-attempt-1.outcome == 'failure'
+      if: github.ref == 'refs/heads/main' && steps.sccache-attempt-1.outcome == 'failure'
       shell: bash
       run: sleep 15
 
     - id: sccache-attempt-2
       uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
-      if: steps.sccache-attempt-1.outcome == 'failure'
+      if: github.ref == 'refs/heads/main' && steps.sccache-attempt-1.outcome == 'failure'
       continue-on-error: true
       with:
         version: "v0.10.0"
 
     - name: Wait before final sccache setup attempt
-      if: steps.sccache-attempt-1.outcome == 'failure' && steps.sccache-attempt-2.outcome == 'failure'
+      if: >-
+        github.ref == 'refs/heads/main' &&
+        steps.sccache-attempt-1.outcome == 'failure' &&
+        steps.sccache-attempt-2.outcome == 'failure'
       shell: bash
       run: sleep 30
 
     - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
-      if: steps.sccache-attempt-1.outcome == 'failure' && steps.sccache-attempt-2.outcome == 'failure'
+      if: >-
+        github.ref == 'refs/heads/main' &&
+        steps.sccache-attempt-1.outcome == 'failure' &&
+        steps.sccache-attempt-2.outcome == 'failure'
       with:
         version: "v0.10.0"
 
     - name: Export sccache environment variables
+      if: github.ref == 'refs/heads/main'
       shell: bash
       run: |
         echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
@@ -153,6 +184,11 @@ runs:
 
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
       with:
+        # Restore everywhere, save only from the default branch. The GHA cache
+        # scope makes a main-saved entry readable from every branch, so a pull
+        # request still gets a warm dependency layer -- it just stops evicting
+        # the layer it is reading.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
         prefix-key: ${{ inputs.cache-prefix-key }}
         shared-key: ${{ inputs.cache-shared-key }}
         # Keep the dependency layer stable across ordinary source and

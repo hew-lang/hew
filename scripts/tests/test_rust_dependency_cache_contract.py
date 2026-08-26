@@ -46,6 +46,15 @@ class RustDependencyCacheContractTests(unittest.TestCase):
         self.assertIn('cache-workspace-crates: "false"', self.action)
         self.assertIn('cache-bin: "false"', self.action)
 
+    def test_only_the_default_branch_writes_the_dependency_cache(self) -> None:
+        """Restoring is for everyone; saving is main's alone.
+
+        Without this, every pull request job wrote entries scoped to its own
+        ref, readable by no other branch, evicting the default-branch layer it
+        was itself trying to read.
+        """
+        self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", self.action)
+
 
 if __name__ == "__main__":
     unittest.main()

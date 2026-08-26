@@ -152,7 +152,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           tools: nextest@0.9.120
-          cache-shared-key: build-test-linux
+          cache-shared-key: linux
 
       - name: Build all release crates
         run: |
@@ -302,7 +302,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           tools: nextest@0.9.120
-          cache-shared-key: build-test-linux
+          cache-shared-key: linux
 
       - name: Build all release crates
         run: |
@@ -401,7 +401,7 @@ jobs:
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
           tools: nextest@0.9.120
-          cache-shared-key: build-test-macos
+          cache-shared-key: macos
 
       - name: Install LLVM
         run: |
@@ -509,7 +509,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           tools: nextest@0.9.120
-          cache-shared-key: build-test-windows
+          cache-shared-key: windows
 
       - name: Install LLVM 22
         uses: ./.github/actions/setup-llvm

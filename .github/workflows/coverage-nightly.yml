@@ -48,7 +48,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           components: llvm-tools
-          cache-shared-key: runtime-e2e-coverage
+          cache-shared-key: linux
 
       - name: Free runner disk
         run: |
@@ -114,7 +114,7 @@ jobs:
         with:
           components: llvm-tools
           tools: nextest@0.9.120,cargo-llvm-cov@0.8.7
-          cache-shared-key: coverage
+          cache-shared-key: linux
 
       - name: Free runner disk
         # cargo-llvm-cov instruments the full workspace and writes a separate
@@ -314,7 +314,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           tools: nextest@0.9.120
-          cache-shared-key: build-test-windows
+          cache-shared-key: windows
 
       - name: Build Rust crates
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
@@ -416,7 +416,7 @@ jobs:
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
           tools: nextest@0.9.120
-          cache-shared-key: build-test-macos
+          cache-shared-key: macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         uses: ./.github/actions/setup-llvm

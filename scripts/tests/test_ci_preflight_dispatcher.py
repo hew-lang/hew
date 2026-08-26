@@ -1940,8 +1940,25 @@ def test_every_job_waits_for_a_green_main() -> None:
         needs = [needs] if isinstance(needs, str) else needs
         return "main-health" in needs or any(waits(dep) for dep in needs)
 
-    ungated = sorted(name for name in jobs if name != "main-health" and not waits(name))
-    assert not ungated, ungated
+    # One deliberate exception, and it is not a waiver -- it is the whole
+    # point of the job. `nightly-freshness` asserts that the SCHEDULED tier is
+    # still producing verdicts. Hanging it off `main-health` (through
+    # `changes`, as every other job does) would let a stranded trunk-health
+    # check skip it at exactly the moment nightly rot most needs reporting,
+    # and rot is not a property of anyone's branch. The broadcast cost that
+    # justifies the gate elsewhere does not apply: this job is one minute of
+    # API reads, not a full runner re-discovering a trunk defect.
+    #
+    # Asserted as EQUALITY so a future job cannot quietly join the exception.
+    exempt = {"nightly-freshness"}
+    ungated = {name for name in jobs if name != "main-health" and not waits(name)}
+    assert ungated == exempt, {
+        "unexpectedly ungated": sorted(ungated - exempt),
+        "expected an exemption that no longer exists": sorted(exempt - ungated),
+    }
+    assert not (jobs["nightly-freshness"].get("needs") or []), (
+        "nightly-freshness must have no needs at all"
+    )
 
 
 def test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts() -> None:
@@ -3830,6 +3847,98 @@ def test_every_ci_preflight_invocation_goes_through_the_route_helper() -> None:
     assert (
         "PREFLIGHT_BASE_SHA: ${{ github.event.pull_request.base.sha }}" in workflow
     ), "the base SHA expression must be written once, at workflow level"
+
+
+# ---------------------------------------------------------------------------
+# Platform tier: ONE authority for "does this change need Windows and macOS".
+#
+# The properties are monotonicity and fail-closed. Deliberately NOT a
+# per-path table: that would restate the glob list in a second place, and two
+# statements of the same rule is the failure this authority replaces.
+# ---------------------------------------------------------------------------
+
+
+def platform_tier(*paths: str) -> str:
+    result = _run_dispatcher_process(
+        [
+            "python3",
+            str(ROOT / "scripts" / "lib" / "gate_inputs.py"),
+            "platform-tier",
+            str(ROOT),
+        ],
+        input="\n".join(paths) + ("\n" if paths else ""),
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_the_platform_tier_is_monotone_over_the_change_set() -> None:
+    """One native path escalates the whole run, whatever it is mixed with.
+
+    A tier that depended on the order or the company of the paths would let a
+    native change ride along with a docs change and skip both platforms.
+    """
+    docs = "docs/guide.md"
+    ordinary = "hew-parser/src/lib.rs"
+    native = "hew-runtime/src/lib.rs"
+
+    assert platform_tier(docs) == "none"
+    assert platform_tier(ordinary) == "smoke"
+    assert platform_tier(native) == "full"
+
+    assert platform_tier(docs, ordinary) == "smoke"
+    assert platform_tier(ordinary, docs) == "smoke"
+    assert platform_tier(docs, native) == "full"
+    assert platform_tier(native, docs) == "full"
+    assert platform_tier(ordinary, native) == "full"
+    assert platform_tier(native, ordinary) == "full"
+
+
+def test_an_unclassified_path_forces_the_full_platform_tier() -> None:
+    """Fail closed: a path nobody has reasoned about gets the widest answer."""
+    assert platform_tier("unclassified/foo.txt") == "full"
+    assert platform_tier("docs/guide.md", "unclassified/foo.txt") == "full"
+
+
+def test_an_empty_change_set_forces_the_full_platform_tier() -> None:
+    """An empty enumeration is a defect upstream, not evidence of nothing to do."""
+    assert platform_tier() == "full"
+
+
+def test_a_setup_action_change_runs_the_full_platform_tier() -> None:
+    """The wrong-green this authority exists to close.
+
+    `.github/actions/setup-llvm/action.yml` carries the LLVM asset SHA256
+    pins. Under the two non-nested dorny filters it computed
+    platform_full=true with platform_smoke=false; both platform jobs gate
+    every step on platform_smoke, so both required checks reported green
+    having built nothing -- at exactly the moment the policy said a full
+    workspace run was required.
+    """
+    for action in (
+        ".github/actions/setup-llvm/action.yml",
+        ".github/actions/setup-msvc/action.yml",
+        ".github/actions/setup-rust-build/action.yml",
+        ".github/actions/setup-wasm-pack/action.yml",
+    ):
+        assert platform_tier(action) == "full", action
+
+
+def test_the_platform_tier_emits_only_the_three_declared_values() -> None:
+    """A fourth value would be an unhandled branch in every consumer."""
+    seen = {
+        platform_tier(path)
+        for path in (
+            "docs/guide.md",
+            "hew-parser/src/lib.rs",
+            "hew-runtime/src/lib.rs",
+            "unclassified/foo.txt",
+            "Cargo.lock",
+            "scripts/structural-authority-audit.py",
+        )
+    }
+    assert seen <= {"none", "smoke", "full"}, seen
+    assert len(seen) == 3, f"the tier is vacuous: only {seen} reachable"
 
 
 def _discover_tests() -> list:

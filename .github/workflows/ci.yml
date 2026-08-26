@@ -110,14 +110,23 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      # platform_smoke drives the Windows/macOS build+smoke required checks;
-      # platform_full additionally promotes those platform jobs to the full
-      # workspace nextest when a change can touch native linking / ABI /
-      # toolchain. playground drives the browser WASM job.
-      # The lightweight docs/scripts gate is always reported, and its steps
-      # select coverage from these two outputs.
-      platform_smoke: ${{ steps.filter.outputs.platform_smoke }}
-      platform_full: ${{ steps.filter.outputs.platform_full }}
+      # ONE platform authority. `platform_tier` is `none | smoke | full`,
+      # monotone by construction, computed by
+      # scripts/lib/gate_inputs.py platform-tier and fail-closed on an
+      # unclassified path.
+      #
+      # It replaces two NON-NESTED dorny filters, `platform_smoke` and
+      # `platform_full`. Because they were independent sets, a change touching
+      # only `.github/actions/setup-llvm/action.yml` -- where the LLVM asset
+      # SHA256 pins live -- computed platform_full=true with
+      # platform_smoke=false; both platform jobs gate every step on
+      # platform_smoke, so both required checks reported green having built
+      # nothing, at exactly the moment the routing policy said a full
+      # workspace run was required.
+      #
+      # dorny survives for `playground` and `docs`, which are ordinary path
+      # questions with no nesting relationship to answer wrongly.
+      platform_tier: ${{ steps.selector.outputs.platform_tier }}
       playground: ${{ steps.filter.outputs.playground }}
       docs: ${{ steps.filter.outputs.docs }}
       scripts: ${{ steps.filter.outputs.scripts }}
@@ -131,54 +140,6 @@ jobs:
         id: filter
         with:
           filters: |
-            # Rule 4 (platform parity, weak set): any Rust change or CI/toolchain
-            # change runs the platform build + smoke on Windows/macOS. A Rust change
-            # anywhere can change native linking, paths, or process behaviour, so
-            # platform build/link coverage stays fail-closed.
-            platform_smoke:
-              - '**/*.rs'
-              - 'tests/**'
-              - 'std/**'
-              - 'examples/**'
-              - 'hew-sandbox-vm/**'
-              - 'hew-sandbox-wasm/**'
-              - 'hew-runtime-testkit/**'
-              - 'hew-testutil/**'
-              - 'tools/**'
-              - 'xtask/**'
-              - '.config/nextest.toml'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'Cargo.toml'
-              - '**/Cargo.toml'
-              - 'Cargo.lock'
-              - '**/Cargo.lock'
-              - 'Makefile'
-            # Rule 4 (platform parity, strong set): native linking / LLVM / C ABI
-            # / runtime scheduling / process / filesystem / networking / codegen
-            # paths force the FULL workspace nextest on Windows/macOS (not just
-            # smoke). Toolchain/dependency changes also force full, since they can
-            # shift the linked surface on any platform. Anything narrower than the
-            # smoke set but in this set runs full; everything else runs smoke.
-            platform_full:
-              - 'hew-runtime/**'
-              - 'hew-lib/**'
-              - 'hew-cabi/**'
-              - 'hew-codegen-rs/**'
-              - 'hew-compile/**'
-              - 'hew-cli/**'
-              - 'hew-pkg/**'
-              - 'hew-capability-gen/**'
-              - 'std/net/**'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'Cargo.toml'
-              - '**/Cargo.toml'
-              - 'Cargo.lock'
-              - '**/Cargo.lock'
-              - '.github/actions/setup-llvm/**'
-              - '.github/actions/setup-msvc/**'
-              - '.github/actions/setup-rust-build/**'
             playground:
               - 'hew-wasm/**'
               - 'hew-analysis/**'
@@ -769,17 +730,13 @@ jobs:
       # coverage-nightly, sanitizers) that run on runners without mold are
       # unaffected.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
-      # platform_smoke gates the whole Linux build+test required check, same
-      # boundary Windows/macOS already use (ci.yml:547-548,647-648) — it
-      # covers every glob that can affect Linux behaviour ('**/*.rs',
-      # 'tests/**', 'std/**', 'examples/**', 'Cargo.*', 'Makefile', workflow
-      # files), so a docs/comment-only PR (matching none of those globs)
-      # skips this job's ~51-90 min of work. STEP-LEVEL gating, not a
-      # job-level `if:` — a job whose `if:` is false reports skipped/missing,
-      # not a satisfied required context (LESSONS.md
-      # ci-required-gate-sequencing), so every step below carries its own
-      # `if: env.RUN_CODE_PATH == 'true'` and the no-op step below still
-      # reports a green required check on skip.
+      # The router's own compile selection gates this job's work: a
+      # docs/comment-only pull request selects no compiling gate and skips
+      # ~51-90 min. STEP-LEVEL gating, not a job-level `if:` — a job whose
+      # `if:` is false reports skipped/missing, not a satisfied required
+      # context (LESSONS.md ci-required-gate-sequencing), so every step below
+      # carries its own `if: env.RUN_CODE_PATH == 'true'` and the no-op step
+      # below still reports a green required check on skip.
       RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
     steps:
       - name: No-op for docs-only changes
@@ -974,7 +931,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.platform_smoke }}
+      # The router's compile selection, not a platform output: this job
+      # aggregates LINUX gates. It read `platform_smoke` before, which is a
+      # different question and, once that output was deleted, would have
+      # evaluated to the empty string and silently taken the no-op branch
+      # forever.
+      RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'
@@ -1016,14 +978,18 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      # platform_smoke gates the whole Windows build+smoke required check;
-      # platform_full additionally promotes the test step to the full workspace
-      # nextest. Linux owns full correctness on every code change — Windows is a
-      # platform build/link/smoke gate, with the full duplicated workspace
-      # nextest reserved for platform/toolchain/ABI changes here and the nightly
-      # cross-platform matrix.
-      RUN_CODE_PATH: ${{ needs.changes.outputs.platform_smoke }}
-      RUN_FULL_NEXTEST: ${{ needs.changes.outputs.platform_full }}
+      # ONE tier, three monotone values: none | smoke | full. Linux owns full
+      # correctness on every code change; Windows proves what only a
+      # windows-msvc runner can (linking, path separators, process spawning,
+      # calling convention, CodeView), and escalates to the whole workspace
+      # when the change can move the linked surface.
+      #
+      # RUN_CODE_PATH and RUN_FULL_NEXTEST previously came from two
+      # INDEPENDENT dorny filters that were not nested, so a change to
+      # `.github/actions/setup-llvm/action.yml` set full=true and smoke=false
+      # -- and because every step gated on smoke, this required check reported
+      # green having built nothing.
+      PLATFORM_TIER: ${{ needs.changes.outputs.platform_tier }}
       # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
       # NASM on windows-msvc; the documented escape consumes the crate's
       # pregenerated assembly objects, so the test-time hew-lib bootstrap links
@@ -1042,48 +1008,48 @@ jobs:
       CARGO_BUILD_JOBS: "2"
     steps:
       - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
+        if: env.PLATFORM_TIER == 'none'
         run: echo "No code changes detected; skipping heavy Windows CI while satisfying the required check."
         shell: pwsh
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
 
       - name: Setup MSVC environment
         # lld-link needs the MSVC and UCRT library paths exported by vcvarsall;
         # the LLVM prefix is configured in the following setup-llvm step.
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         uses: ./.github/actions/setup-msvc
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         with:
           targets: wasm32-wasip1
           tools: nextest@0.9.120
           cache-shared-key: windows
 
       - name: Build Rust crates
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
         run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
 
       - name: Build Hew runtime library for PDB e2e
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: cargo build -p hew-lib --release
 
       - name: Build shared Rust test artifact
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: make stdlib
 
       - name: Verify Windows CodeView PDB emission
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         shell: pwsh
         run: |
           $pdbutil = Get-Command llvm-pdbutil -ErrorAction SilentlyContinue
@@ -1125,7 +1091,7 @@ jobs:
         # the runner from the same pinned WASMTIME_VERSION the other two jobs
         # use, and prove it runs inside this step: a broken install must fail
         # the job here, not resurface as "not found" inside a test.
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1164,33 +1130,58 @@ jobs:
       - name: Build hew-runtime for wasm32-wasip1 (debug)
         # Mirrors the macOS job. The WASI tests run as debug binaries and only
         # verify this archive, so it must exist before nextest starts.
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
       - name: Build hew-std for wasm32-wasip1 (debug)
         # bootstrap_wasi_runner verifies this archive too.
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: cargo build -p hew-std --target wasm32-wasip1
 
-      - name: Run platform smoke tests
-        # Default Windows path: prove the platform build links and the
-        # platform-sensitive crates pass on windows-msvc, without re-running the
-        # whole 9500-test workspace that Linux already owns. The smoke set is the
-        # native/ABI/codegen/CLI surface where Windows-specific breakage lives
-        # (linking, path separators, process spawning).
-        # hew-cabi excluded — its #[no_mangle] symbols conflict with hew-runtime
-        # when both link into a test binary.
-        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
+      - name: Assert the platform behaviour suite is not empty
+        # LESSONS.md enumeration-gate-floors -- see the macOS job for why this
+        # is a floor and never an asserted count.
+        if: env.PLATFORM_TIER == 'smoke'
+        shell: pwsh
+        env:
+          HEW_TEST_NO_BUILD: "1"
+        run: |
+          $listing = Join-Path $env:RUNNER_TEMP "platform-selection.txt"
+          cargo nextest list --workspace --exclude hew-wasm --exclude hew-cabi --profile platform --list-type full > $listing
+          if ($LASTEXITCODE -ne 0) { throw "cargo nextest list failed with exit code $LASTEXITCODE" }
+          $selected = (Get-Content $listing | Where-Object { $_.Trim() -ne '' }).Count
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Platform behaviour suite: $selected test(s) selected"
+          if ($selected -eq 0) {
+            throw "the platform nextest profile selected no tests; a suite that runs nothing cannot report a platform regression"
+          }
+
+      - name: Run the platform behaviour suite
+        # NARROWED from the five-crate smoke set (hew-runtime, hew-codegen-rs,
+        # hew-compile, hew-cli, hew-lib -- 6,046 tests), not deleted. The
+        # `platform` nextest profile selects the surfaces where a windows-msvc
+        # runner can observe something Linux cannot: linker driver, cross-target
+        # selection, process spawn and exit codes, trap-to-crash abort paths,
+        # MSVC-vs-SysV calling convention and dispatch, CodeView/DWARF debug
+        # info, and the concurrent link + shared-artifact-path contract. 732
+        # tests, and it ADDS hew-testutil's link-race and shared-artifact
+        # binaries, which the old smoke set did not run on either platform.
+        #
+        # What stopped running here is the ordinary in-process logic those same
+        # crates also contain. It runs on Linux, once.
+        #
+        # The floor step above proves the selection is non-empty. This step
+        # never asserts a count: a filterset selecting nothing is a green job
+        # proving nothing, while an exact count is a change-detector that fires
+        # on every new test.
+        if: env.PLATFORM_TIER == 'smoke'
         env:
           HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run
-          -p hew-runtime
-          -p hew-codegen-rs
-          -p hew-compile
-          -p hew-cli
-          -p hew-lib
-          --profile ci
+          --workspace
+          --exclude hew-wasm
+          --exclude hew-cabi
+          --profile platform
 
       - name: Run full Rust workspace tests
         # Platform/toolchain/ABI change: run the full workspace nextest on
@@ -1203,7 +1194,7 @@ jobs:
         # C-ABI step below is its coverage.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
-        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
+        if: env.PLATFORM_TIER == 'full'
         env:
           HEW_TEST_NO_BUILD: "1"
         run: >-
@@ -1217,14 +1208,14 @@ jobs:
         # Standalone because the workspace run above must exclude hew-cabi.
         # Unconditional on the code path: the crate is 82 fast tests and it is
         # the only place the C-ABI ownership contract is exercised on Windows.
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: make test-cabi
 
       - name: Upload test reports
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always() && env.PLATFORM_TIER != 'none'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/nextest/platform/junit.xml"
           check_name: Test Results (Windows)
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -1236,53 +1227,50 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 60
     env:
-      # platform_smoke gates the whole macOS build+smoke required check;
-      # platform_full additionally promotes the test step to the full workspace
-      # nextest. Linux owns full correctness; macOS proves the Apple Silicon
-      # linker/WASI prerequisites + platform-sensitive crates per-PR, with the
-      # full duplicated nextest reserved for platform/toolchain/ABI changes and
-      # the nightly cross-platform matrix.
-      RUN_CODE_PATH: ${{ needs.changes.outputs.platform_smoke }}
-      RUN_FULL_NEXTEST: ${{ needs.changes.outputs.platform_full }}
+      # Same single tier authority as the Windows job. Linux owns full
+      # correctness; macOS proves the Apple Silicon linker, the release-binary
+      # ABI path, and the platform behaviour surface, and escalates to the
+      # whole workspace when the change can move the linked surface.
+      PLATFORM_TIER: ${{ needs.changes.outputs.platform_tier }}
     steps:
       - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
+        if: env.PLATFORM_TIER == 'none'
         run: echo "No code changes detected; skipping heavy macOS arm64 CI while satisfying the required check."
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
 
       - uses: ./.github/actions/setup-rust-build
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1'
           tools: nextest@0.9.120
           cache-shared-key: macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - name: Set macOS deployment target
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
       - name: Build release libhew.a (runtime + stdlib)
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: cargo build -p hew-lib --release
 
       - name: Build shared Rust test artifact
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: make stdlib
 
       - name: Build frontend (release)
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: cargo build -p hew-cli --release
 
       - name: Smoke test the release binary
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         # Drives a trivial program through `hew compile` with the RELEASE
         # binary. Guards the ABI-mismatch abort class (#1606): a release build
         # that crashes at process exit while every debug test passes, because
@@ -1290,7 +1278,7 @@ jobs:
         run: make test-release-binary
 
       - name: Install WASI runner prerequisites
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
         # Extracted under RUNNER_TEMP, not the checkout: see the Linux job's
@@ -1311,45 +1299,69 @@ jobs:
           wasm-ld --version
 
       - name: Build hew-runtime for wasm32-wasip1 (release)
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
       - name: Build hew-runtime for wasm32-wasip1 (debug)
         # The platform smoke tests run as debug binaries (cargo nextest run, no
         # --release). bootstrap_wasi_runner derives the build profile from the
         # test binary path and verifies that profile's libhew_runtime.a.
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
       - name: Build hew-std for wasm32-wasip1 (debug)
         # Pre-build the stdlib WASI archive for the same verify-only contract.
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: cargo build -p hew-std --target wasm32-wasip1
 
-      - name: Run platform smoke tests
-        # Default macOS path: prove the Apple Silicon build links and the
-        # platform-sensitive crates pass, without re-running the whole
-        # 9500-test workspace that Linux already owns. The smoke set is the
-        # native/ABI/codegen/CLI surface where macOS-specific breakage lives
-        # (linker, dylib, WASI prereqs, process spawning).
-        # hew-cabi excluded — its #[no_mangle] symbols conflict with hew-runtime
-        # when both link into a test binary.
-        # Oracle integration binaries are intentionally excluded from ordinary
-        # hosted jobs, including release-gate, for runner cost/reliability.
-        # The macOS leak-oracle authority is explicit local macOS validation
-        # before release; Linux supplies structural/ASan coverage where applicable.
-        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
+      - name: Assert the platform behaviour suite is not empty
+        # LESSONS.md enumeration-gate-floors. A `default-filter` that selects
+        # nothing produces a green nextest run, a green job, and a green
+        # required check, having executed no test at all -- the exact vacuity
+        # this whole program exists to remove. The floor is NON-EMPTY, never an
+        # exact count: a count is a change-detector that fires on every added
+        # test and tells a reviewer nothing.
+        if: env.PLATFORM_TIER == 'smoke'
+        env:
+          HEW_TEST_NO_BUILD: "1"
+        run: |
+          set -euo pipefail
+          # The enumeration is written out first and counted second: a cargo
+          # command inside a command substitution is unreadable to the
+          # gate-reachability tokeniser, and a command it cannot read is a
+          # command whose test filters it cannot check.
+          cargo nextest list \
+            --workspace --exclude hew-wasm --exclude hew-cabi \
+            --profile platform --list-type full \
+            > "$RUNNER_TEMP/platform-selection.txt"
+          selected=$(grep -c . "$RUNNER_TEMP/platform-selection.txt" || true)
+          echo "Platform behaviour suite: ${selected} test(s) selected" \
+            >> "$GITHUB_STEP_SUMMARY"
+          if [ "${selected}" -eq 0 ]; then
+            echo "::error::the platform nextest profile selected no tests; a suite that runs nothing cannot report a platform regression"
+            exit 1
+          fi
+
+      - name: Run the platform behaviour suite
+        # Same narrowed selection as the Windows job: see that job's step for
+        # what the `platform` profile covers and what moved to Linux-once.
+        #
+        # The macOS leak oracles stay OFF hosted CI. The old step spelled that
+        # as `-E 'not binary(~oracle)'`; the profile makes it structural
+        # instead -- no oracle binary is in its selection at all, and
+        # scripts/tests/test_ci_workflow_contract.py asserts that, so the
+        # policy cannot be undone by a filter edit nobody reads. Those oracles
+        # remain an explicit local-macOS authority before release; this program
+        # does not restore them and does not claim their coverage.
+        if: env.PLATFORM_TIER == 'smoke'
         env:
           HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run
-          -p hew-runtime
-          -p hew-codegen-rs
-          -p hew-compile
-          -p hew-cli
-          -p hew-lib
-          --profile ci
-          -E 'not binary(~oracle)'
+          --workspace
+          --exclude hew-wasm
+          --exclude hew-cabi
+          --profile platform
 
       - name: Run full Rust workspace tests
         # Platform/toolchain/ABI change: run the full workspace nextest on
@@ -1362,7 +1374,7 @@ jobs:
         # hosted jobs, including release-gate, for runner cost/reliability.
         # The macOS leak-oracle authority is explicit local macOS validation
         # before release; Linux supplies structural/ASan coverage where applicable.
-        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
+        if: env.PLATFORM_TIER == 'full'
         env:
           HEW_TEST_NO_BUILD: "1"
         run: >-
@@ -1377,7 +1389,7 @@ jobs:
         # Standalone because the workspace run above must exclude hew-cabi.
         # Unconditional on the code path so Apple Silicon keeps C-ABI coverage
         # even when the full workspace nextest is deduped off this job.
-        if: env.RUN_CODE_PATH == 'true'
+        if: env.PLATFORM_TIER != 'none'
         run: make test-cabi
 
       - name: Upload test reports
@@ -1385,8 +1397,86 @@ jobs:
         # as inline PR annotations; this job produces them too but never
         # surfaced them — a macOS-only failure was readable only by
         # scrolling raw step logs.
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always() && env.PLATFORM_TIER != 'none'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/nextest/platform/junit.xml"
           check_name: Test Results (macOS)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Platform gates — ONE always-reporting required context for both platforms
+  # ─────────────────────────────────────────────────────────────────────────
+  #
+  # `Build & test (Windows)` and `Build & test (macOS arm64)` are directly
+  # required today, and that is what makes the platform wrong-green possible:
+  # a job whose steps all skip still reports its context as satisfied. An
+  # aggregate that runs `if: always()` and ASSERTS `needs.*.result` cannot be
+  # satisfied by a skip -- a stranded upstream is a RED here, not a pending or
+  # a quiet pass (this is the R4 trap `linux-required` must not inherit).
+  #
+  # `skipped` is accepted only where it is the deliberate answer: platform tier
+  # `none` means every changed path is classified prose, so neither platform
+  # job needed to run and the aggregator says so. Any other skip is a defect.
+  platform-required:
+    name: Platform gates
+    needs: [changes, build-and-test-windows, build-and-test-macos]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both platform gates
+        env:
+          CHANGE_RESULT: ${{ needs.changes.result }}
+          WINDOWS_RESULT: ${{ needs.build-and-test-windows.result }}
+          MACOS_RESULT: ${{ needs.build-and-test-macos.result }}
+          PLATFORM_TIER: ${{ needs.changes.outputs.platform_tier }}
+        run: |
+          set -euo pipefail
+
+          # The routing job itself must have produced an answer. Without this,
+          # a failed `changes` leaves PLATFORM_TIER empty and every branch
+          # below would be reasoning about a value nobody computed.
+          if [ "$CHANGE_RESULT" != success ]; then
+            echo "::error::change detection did not succeed (${CHANGE_RESULT}); the platform tier is unknown"
+            exit 1
+          fi
+
+          case "$PLATFORM_TIER" in
+            none | smoke | full) ;;
+            *)
+              echo "::error::platform tier is '${PLATFORM_TIER}', which is not one of none|smoke|full"
+              exit 1
+              ;;
+          esac
+
+          echo "Platform tier: ${PLATFORM_TIER}"
+          echo "Windows: ${WINDOWS_RESULT}; macOS: ${MACOS_RESULT}"
+          echo "Platform tier \`${PLATFORM_TIER}\` — Windows ${WINDOWS_RESULT}, macOS ${MACOS_RESULT}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          status=0
+          for platform in Windows:"$WINDOWS_RESULT" macOS:"$MACOS_RESULT"; do
+            name="${platform%%:*}"
+            result="${platform#*:}"
+            case "$result" in
+              success) ;;
+              skipped)
+                # A job-level skip is only legitimate when the tier says the
+                # platform had nothing to prove. Note both platform jobs use
+                # STEP-level no-ops, so at tier `none` they still report
+                # success; a job-level `skipped` here means something upstream
+                # stranded them.
+                if [ "$PLATFORM_TIER" = none ]; then
+                  echo "${name}: skipped, and the platform tier is none — that is the correct answer"
+                else
+                  echo "::error::${name} was skipped at platform tier ${PLATFORM_TIER}; a skip is not a pass"
+                  status=1
+                fi
+                ;;
+              *)
+                echo "::error::${name} reported '${result}'"
+                status=1
+                ;;
+            esac
+          done
+          exit "$status"

@@ -1526,10 +1526,26 @@ if [[ ${WARMUP_COMMANDS[0]+set} == set ]]; then
 fi
 
 if [[ -n "$GITHUB_OUTPUT_PATH" ]]; then
+    # The platform tier comes from the same declarations the gate selection
+    # does, so "does this need Windows?" has exactly one answer. Under
+    # --comprehensive no diff exists and the tier is `full`, which is the
+    # correct policy answer for the default-branch tier as well as the
+    # fail-closed one.
+    if (( FORCE_COMPREHENSIVE == 1 )); then
+        PLATFORM_TIER="$(printf '' | python3 "$REPO_ROOT/scripts/lib/gate_inputs.py" platform-tier "$REPO_ROOT")"
+    else
+        PLATFORM_TIER="$(printf '%s\n' "${CHANGED_FILES[@]+"${CHANGED_FILES[@]}"}" | python3 "$REPO_ROOT/scripts/lib/gate_inputs.py" platform-tier "$REPO_ROOT")"
+    fi
+    case "$PLATFORM_TIER" in
+        none | smoke | full) ;;
+        *) die "platform-tier emitted an unusable value: '$PLATFORM_TIER'" ;;
+    esac
     {
         printf 'profile=%s\n' "$PROFILE_LABEL"
         printf 'requires_compile=%s\n' "$REQUIRES_COMPILE"
+        printf 'platform_tier=%s\n' "$PLATFORM_TIER"
     } >> "$GITHUB_OUTPUT_PATH"
+    echo "Platform tier: $PLATFORM_TIER"
 fi
 
 # Job annotations for the routing decision: the selected profile, and every

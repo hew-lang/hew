@@ -847,6 +847,97 @@ def likely_no_gate_inputs(
     return contradictions
 
 
+# ── platform tier ────────────────────────────────────────────────────────────
+#
+# ONE authority for "does this change need Windows and macOS, and how much of
+# them". Two authorities answering that question is a wrong-green generator,
+# and the repository had two: `dorny/paths-filter` computed `platform_smoke`
+# and `platform_full` as INDEPENDENT, NON-NESTED sets, while the dispatcher
+# computed compile selection separately. Because the two dorny sets were not
+# nested, a change touching only `.github/actions/setup-llvm/action.yml` --
+# where the LLVM asset SHA256 pins live -- produced `platform_full=true,
+# platform_smoke=false`. Both platform jobs gate every step on
+# `platform_smoke`, so both required checks reported GREEN having built
+# nothing, at exactly the moment the policy said a full workspace run was
+# required.
+#
+# Three levels, monotone by construction: full implies smoke implies none.
+# The value is the MAXIMUM over the changed paths, so one native change
+# escalates the whole run and no ordering of the diff can change the answer.
+
+PLATFORM_TIERS = ("none", "smoke", "full")
+
+# Native linking, LLVM, C ABI, runtime scheduling, process, filesystem,
+# networking, codegen, and anything that moves the toolchain or the linked
+# surface. A change here can behave differently on windows-msvc or
+# darwin-arm64 in a way Linux cannot observe, so the whole workspace runs on
+# both.
+PLATFORM_FULL_GLOBS = (
+    "hew-runtime/**",
+    "hew-lib/**",
+    "hew-cabi/**",
+    "hew-codegen-rs/**",
+    "hew-compile/**",
+    "hew-cli/**",
+    "hew-pkg/**",
+    "hew-capability-gen/**",
+    "hew-testutil/**",
+    "std/net/**",
+    "std/os/**",
+    ".cargo/**",
+    ".config/nextest.toml",
+    "rust-toolchain.toml",
+    "Cargo.toml",
+    "**/Cargo.toml",
+    "Cargo.lock",
+    "**/Cargo.lock",
+    # Every setup action, not just the three that happened to be listed
+    # before. This glob is the direct fix for the wrong-green above: an
+    # action.yml that provisions the toolchain decides what gets linked.
+    ".github/actions/**",
+)
+
+# Prose. A change confined to these cannot alter any program's behaviour on
+# any platform, so neither platform job needs to run -- and the aggregator
+# reports green saying so, rather than reporting a skip.
+PLATFORM_DOCS_GLOBS = (
+    "docs/**",
+    "*.md",
+    "**/*.md",
+    "LICENSE",
+    "LICENSE-*",
+    "THIRD-PARTY-LICENSES*",
+    ".github/ISSUE_TEMPLATE/**",
+    ".github/PULL_REQUEST_TEMPLATE*",
+)
+
+
+def platform_tier(paths: list[str], declarations: Declarations) -> str:
+    """`none`, `smoke`, or `full` for a changed-path set.
+
+    Fail closed twice over: a path no gate declares routes to `full`, because
+    an unclassified path is a path nobody has reasoned about; and an EMPTY
+    path set routes to `full`, because an empty enumeration is a defect in
+    whatever produced it, not evidence that nothing needs proving.
+    """
+    if not paths:
+        return "full"
+    tier = "none"
+    for path in paths:
+        if any(matches(glob, path) for glob in PLATFORM_FULL_GLOBS):
+            return "full"
+        declared_anywhere = any(
+            gate.reads_specifically(path) for gate in declarations.gates
+        ) or any(matches(glob, path) for glob in declarations.global_globs)
+        inert = any(matches(glob, path) for glob in declarations.no_gate_globs)
+        if not declared_anywhere and not inert:
+            return "full"
+        if any(matches(glob, path) for glob in PLATFORM_DOCS_GLOBS):
+            continue
+        tier = "smoke"
+    return tier
+
+
 # ── command line ─────────────────────────────────────────────────────────────
 
 
@@ -873,6 +964,10 @@ def main(argv: list[str]) -> int:
                 print(f"{path}\tno-gate")
             else:
                 print(f"{path}\tundeclared")
+        return 0
+
+    if mode == "platform-tier":
+        print(platform_tier(paths, declarations))
         return 0
 
     if mode != "select":

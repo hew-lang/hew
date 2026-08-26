@@ -247,7 +247,17 @@ def host_release_authority_is_ported(
 
 # Nextest profiles CI is allowed to run. Anything else would let a fast local
 # iteration tier (which excludes most of the corpus) stand in for the CI tier.
-CI_ALLOWED_NEXTEST_PROFILES = {"ci"}
+#
+# `platform` is allowed for one reason, and it is not "it is also a CI
+# profile": everything it does not select is COMPENSATED by the Linux
+# `--profile ci` workspace run in the same pull request. It exists so Windows
+# and macOS prove the process/path/link/ABI/debug-info surface that only a
+# non-Linux runner can observe, instead of re-running 6,046 platform-neutral
+# tests Linux already owns. It is a per-platform FLOOR, never a substitute for
+# the CI tier: escalating to platform tier `full` still runs the whole
+# workspace on both platforms, and the job asserts the selection is non-empty
+# so the profile cannot decay into a green no-op.
+CI_ALLOWED_NEXTEST_PROFILES = {"ci", "platform"}
 
 # GitHub workflow triggers this checker understands. An unknown key under `on:`
 # is a parse failure, not a shrug: a trigger nobody modelled could be one that
@@ -1519,6 +1529,10 @@ OUTPUT_ONLY_FLAGS = ("--message-format", "--color", "--quiet", "-q", "--verbose"
 # about whether the run is filtered.
 _VALUE_FLAGS = {
     "--profile",
+    # `cargo nextest list --list-type full` enumerates a profile's
+    # selection for the platform suite's non-empty floor; without this
+    # classification `full` reads as a positional test-name filter.
+    "--list-type",
     "--test",
     "--bin",
     "--example",

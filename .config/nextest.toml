@@ -313,6 +313,59 @@ slow-timeout = { period = "100s", terminate-after = 3 }
 [profile.ci-focused.junit]
 path = "junit.xml"
 
+[profile.platform]
+# The Windows and macOS PER-PULL-REQUEST surface: process, path, link, ABI,
+# debug-info, and shared-artifact behaviour. Ordinary platform-neutral
+# correctness runs on Linux, once.
+#
+# This NARROWS the five-crate smoke set the platform jobs ran
+# (`-p hew-runtime -p hew-codegen-rs -p hew-compile -p hew-cli -p hew-lib`);
+# it does not delete it. Deleting it would drop real coverage: the measured
+# inventory of platform-conditional tests spans linker driver
+# (hew-cli/src/link.rs), cross-target selection, process spawn and exit-code
+# handling, trap-to-crash abort paths, MSVC-vs-SysV calling convention and
+# dispatch, DWARF/CodeView debug info, coroutine stack behaviour, and the
+# concurrent link + shared-artifact-path contract. Every one of those is
+# selected below. What stopped running on Windows and macOS is the ordinary
+# in-process logic those crates also contain, and it runs on Linux, once.
+#
+# Escalation is unchanged: at platform tier `full` both jobs still run the
+# whole workspace. This profile is the FLOOR, not the ceiling.
+#
+# The step asserts the selection is NON-EMPTY and prints the count into the
+# job summary. The count is reported, never asserted equal: a filterset that
+# selects nothing is a green job proving nothing (LESSONS.md
+# enumeration-gate-floors), while an exact count is a change-detector that
+# fires on any new test.
+#
+# Timeouts and test groups are inherited from the file-level defaults and the
+# `profile.ci` overrides that apply by filter; nothing about the hang ceilings
+# changes here.
+default-filter = """
+    binary_id(hew-cli::cross_target_e2e)
+    + binary_id(hew-cli::run_e2e)
+    + binary_id(hew-cli::dwarf_debugger_locals_e2e)
+    + binary_id(hew-cli::compile_links_runtime)
+    + binary_id(hew-cli::ffi_link_e2e)
+    + binary_id(hew-cli::bin/hew)
+    + binary_id(hew-runtime::overflow_trap_as_actor_crash)
+    + binary_id(hew-codegen-rs::abi)
+    + binary_id(hew-codegen-rs::exec)
+    + binary_id(hew-testutil::libhew_link_race)
+    + binary_id(hew-testutil::shared_artifact_contract)
+"""
+slow-timeout = { period = "100s", terminate-after = 3 }
+
+[[profile.platform.overrides]]
+# Same oversubscription cap the ci profile applies: each of these spawns the
+# full hew binary.
+filter = "binary_id(hew-cli::run_e2e) + binary_id(hew-cli::cross_target_e2e) + binary_id(hew-cli::dwarf_debugger_locals_e2e)"
+test-group = "subprocess-intensive"
+slow-timeout = { period = "300s", terminate-after = 3 }
+
+[profile.platform.junit]
+path = "junit.xml"
+
 [profile.smoke]
 # Smoke profile: curated deterministic in-process oracle only.  Designed to
 # give a pass/fail signal before committing to the full Rust workspace body.

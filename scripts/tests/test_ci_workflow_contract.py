@@ -791,6 +791,116 @@ def test_the_freshness_job_is_standalone_required_and_scoped() -> None:
     assert required.get("if") == "always()", required.get("if")
 
 
+# ── contract: the platform aggregator cannot be satisfied by a skip ──────────
+
+
+def _aggregator_body(job_name: str, needle: str) -> str:
+    ci = load(WORKFLOWS / "ci.yml")
+    job = jobs(ci)[job_name]
+    bodies = [
+        str(step["run"])
+        for step in steps(job)
+        if isinstance(step.get("run"), str) and needle in str(step["run"])
+    ]
+    assert len(bodies) == 1, (job_name, len(bodies))
+    return bodies[0]
+
+
+def _run_aggregator(body: str, env: dict[str, str]) -> int:
+    return subprocess.run(
+        ["bash", "-c", body],
+        env={"PATH": "/usr/bin:/bin", "GITHUB_STEP_SUMMARY": "/dev/null", **env},
+        capture_output=True,
+        text=True,
+    ).returncode
+
+
+def test_the_platform_aggregator_reports_rather_than_skips() -> None:
+    """`Platform gates` must be a verdict, never a satisfied absence.
+
+    `Build & test (Windows)` and `Build & test (macOS arm64)` are directly
+    required today, which is what makes the platform wrong-green reachable: a
+    job whose steps all skip still reports its context as satisfied. An
+    aggregate that runs `if: always()` and asserts `needs.*.result` cannot be.
+
+    Driven by executing the aggregator's own shell body against stubbed job
+    results, not by reading its text.
+    """
+    ci = load(WORKFLOWS / "ci.yml")
+    job = jobs(ci)["platform-required"]
+    assert job.get("if") == "always()", job.get("if")
+    needs = job.get("needs") or []
+    assert set(needs) == {
+        "changes",
+        "build-and-test-windows",
+        "build-and-test-macos",
+    }, needs
+
+    body = _aggregator_body("platform-required", "PLATFORM_TIER")
+    cases = [
+        (("success", "success", "success", "smoke"), 0, "both green at smoke"),
+        (("success", "success", "success", "full"), 0, "both green at full"),
+        (("success", "skipped", "skipped", "none"), 0, "docs-only: skips are right"),
+        (
+            ("success", "skipped", "success", "smoke"),
+            1,
+            "a skip at smoke is not a pass",
+        ),
+        (("success", "success", "skipped", "full"), 1, "a skip at full is not a pass"),
+        (("success", "failure", "success", "smoke"), 1, "a red platform is red"),
+        (("success", "cancelled", "success", "full"), 1, "a cancel is not a pass"),
+        (("success", "success", "success", ""), 1, "an unusable tier is red"),
+        (("failure", "skipped", "skipped", ""), 1, "stranded routing is red"),
+    ]
+    for (change, windows, macos, tier), expected, why in cases:
+        code = _run_aggregator(
+            body,
+            {
+                "CHANGE_RESULT": change,
+                "WINDOWS_RESULT": windows,
+                "MACOS_RESULT": macos,
+                "PLATFORM_TIER": tier,
+            },
+        )
+        assert (code == 0) == (expected == 0), (why, code, expected)
+
+
+def test_no_workflow_still_reads_the_deleted_platform_outputs() -> None:
+    """A dangling `needs.*.outputs.X` evaluates to the empty string.
+
+    It does not fail. `linux-required` read `platform_smoke`, so deleting that
+    output without sweeping its consumers would have left the required Linux
+    aggregate permanently on its no-op branch -- green, forever, having
+    asserted nothing.
+    """
+    dangling: list[str] = []
+    for path in workflow_files():
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            if line.lstrip().startswith("#"):
+                continue
+            for name in ("platform_smoke", "platform_full"):
+                if f"outputs.{name}" in line:
+                    dangling.append(f"{path.name}:{number}: {line.strip()}")
+    assert not dangling, "reads a deleted output:\n  " + "\n  ".join(dangling)
+
+
+def test_the_platform_profile_keeps_the_macos_oracles_off_hosted_ci() -> None:
+    """The exclusion is structural now, not a filter flag nobody reads.
+
+    The macOS leak oracles are a deliberate pre-release local-macOS authority.
+    The old step spelled that as `-E 'not binary(~oracle)'`; the platform
+    profile simply does not select any oracle binary, and this asserts it, so
+    the policy cannot be undone by an edit to a filter expression.
+    """
+    config = (ROOT / ".config" / "nextest.toml").read_text(encoding="utf-8")
+    start = config.index("[profile.platform]")
+    end = config.index("[profile.smoke]")
+    selectors = re.findall(r"binary_id\(([^)]+)\)", config[start:end])
+    assert selectors, "the platform profile selects nothing"
+    offenders = [name for name in selectors if "oracle" in name]
+    assert not offenders, offenders
+
+
 def _discover_tests() -> list:
     return [
         value

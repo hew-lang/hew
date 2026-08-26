@@ -10917,6 +10917,19 @@ fn deduplicate_ownership_spines(blocks: &mut [BasicBlock], builder: &mut Builder
         let mut seen = Vec::<Instr>::new();
         let mut removals = Vec::new();
         for (index, instruction) in block.instructions.iter().enumerate() {
+            if index > 0
+                && matches!(
+                    instruction,
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Release { .. })
+                )
+                && block.instructions[index - 1] == *instruction
+            {
+                // The first event ends this exact owner generation, so an
+                // immediately repeated release can only be a duplicated
+                // logical half of the same physical cleanup.
+                removals.push(index);
+                continue;
+            }
             if relocation_duplicates_prior_adoption(block, index) {
                 removals.push(index);
                 if let Some(neutralize) = duplicate_neutralize_before_relocation(block, index) {

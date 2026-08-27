@@ -925,6 +925,14 @@ fn sir_canonicalizes_direct_constant_cfg_before_strict_lowering() {
         "the unreachable source arm must be gone from canonical SIR:\n{main}",
     );
 
+    let shadow = raw_mir_dump(&source, Some("--sir-shadow"));
+    assert_success(&shadow, "canonical SIR shadow evidence must succeed");
+    assert!(
+        String::from_utf8_lossy(&shadow.stderr).contains("SIR shadow: verified"),
+        "shadow must consume the same verified canonical SIR module:\n{}",
+        describe_output(&shadow),
+    );
+
     let lowered = raw_mir_dump(&source, Some("--sir-lower"));
     assert_success(&lowered, "canonical strict SIR raw dump must succeed");
     let lowered_stderr = String::from_utf8_lossy(&lowered.stderr);

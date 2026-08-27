@@ -206,15 +206,32 @@ pub fn compute_dominators(function: &SemFunction) -> Dominators {
             if block.id == function.entry {
                 continue;
             }
-            let mut next = if cfg.predecessors_of(block.id).is_empty() {
+            if !cfg.is_reachable(block.id) {
+                // No executable path reaches this block, so every known block
+                // vacuously dominates it. Leaving its initial `all` set intact
+                // keeps verifier-after-rewrite valid until the following CFG
+                // compaction removes the dead block.
+                continue;
+            }
+            // Dominance is a property of paths that can execute from the
+            // entry. A structurally present predecessor from an unreachable
+            // block must not invalidate a definition that dominates this
+            // reachable block on every executable path. This matters after
+            // CFG rewrites, where dead blocks can still point at a live join
+            // until compaction removes them.
+            let reachable_predecessors = cfg
+                .predecessors_of(block.id)
+                .iter()
+                .filter(|predecessor| cfg.is_reachable(predecessor.source));
+            let mut next = if reachable_predecessors.clone().next().is_none() {
                 BTreeSet::new()
             } else {
                 let mut result = all.clone();
-                for predecessor in cfg.predecessors_of(block.id) {
+                for predecessor in reachable_predecessors {
                     result = result
                         .intersection(
                             sets.get(&predecessor.source)
-                                .expect("predecessor must be a block"),
+                                .expect("reachable predecessor must be a block"),
                         )
                         .copied()
                         .collect();
@@ -421,7 +438,7 @@ mod tests {
     use hew_hir::ItemId;
     use hew_types::{DefId, ResolvedTy};
 
-    use super::{build_cfg_index, EdgeRef};
+    use super::{build_cfg_index, compute_dominators, EdgeRef};
     use crate::{
         BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemFunction,
         SemTerminator, SuccessorSlot, UseMode, ValueId,
@@ -592,5 +609,36 @@ mod tests {
         assert_eq!(index.reachable, BTreeSet::from([BlockId(0)]));
         assert!(!index.is_reachable(BlockId(9)));
         assert_eq!(index.rpo(), &[BlockId(0)]);
+    }
+
+    #[test]
+    fn dominators_ignore_unreachable_predecessors_of_reachable_blocks() {
+        let mut function = function(vec![
+            block(0, SemTerminator::Goto(edge(1))),
+            block(
+                1,
+                SemTerminator::Return {
+                    value: Some(read(0)),
+                },
+            ),
+            // This structural predecessor cannot execute from the entry and
+            // must not make the entry parameter appear non-dominating at
+            // bb1. CFG simplification commonly creates this shape briefly
+            // before compaction removes the dead block.
+            block(2, SemTerminator::Goto(edge(1))),
+        ]);
+        function.return_ty = ResolvedTy::Bool;
+
+        assert!(crate::verify_function(&function).is_empty());
+        let index = build_cfg_index(&function);
+        assert_eq!(index.reachable(), &BTreeSet::from([BlockId(0), BlockId(1)]));
+        assert_eq!(index.rpo(), &[BlockId(0), BlockId(1)]);
+        assert!(!index.is_reachable(BlockId(2)));
+
+        let dominators = compute_dominators(&function);
+        assert_eq!(
+            dominators.sets.get(&BlockId(1)),
+            Some(&BTreeSet::from([BlockId(0), BlockId(1)]))
+        );
     }
 }

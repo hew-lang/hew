@@ -58,7 +58,8 @@ pub fn canonicalize_constant_cfg(
     }
 
     let mut candidate = function.clone();
-    let report = canonicalize_verified_function(&mut candidate);
+    let report = canonicalize_verified_function(&mut candidate)
+        .map_err(SirOptimizationError::InvalidOutput)?;
     let diagnostics = verify_function(&candidate);
     if !diagnostics.is_empty() {
         return Err(SirOptimizationError::InvalidOutput(diagnostics));
@@ -87,11 +88,12 @@ pub fn canonicalize_module_constant_cfg(
     }
 
     let mut candidate = module.clone();
-    let reports = candidate
-        .functions
-        .iter_mut()
-        .map(|function| (function.callable, canonicalize_verified_function(function)))
-        .collect::<Vec<_>>();
+    let mut reports = Vec::with_capacity(candidate.functions.len());
+    for function in &mut candidate.functions {
+        let report = canonicalize_verified_function(function)
+            .map_err(SirOptimizationError::InvalidOutput)?;
+        reports.push((function.callable, report));
+    }
     let diagnostics = verify_module(&candidate);
     if !diagnostics.is_empty() {
         return Err(SirOptimizationError::InvalidOutput(diagnostics));
@@ -101,7 +103,9 @@ pub fn canonicalize_module_constant_cfg(
     Ok(reports)
 }
 
-fn canonicalize_verified_function(function: &mut SemFunction) -> CfgCanonicalizationReport {
+fn canonicalize_verified_function(
+    function: &mut SemFunction,
+) -> Result<CfgCanonicalizationReport, Vec<SirDiagnostic>> {
     let constants = direct_bool_constants(function);
     let initial_cfg = build_cfg_index(function);
     let mut folded_branches = 0;
@@ -134,13 +138,26 @@ fn canonicalize_verified_function(function: &mut SemFunction) -> CfgCanonicaliza
         }
     }
 
+    // Keep the verifier boundary at the actual CFG rewrite, not only at the
+    // public call boundary. This deliberately makes dead-block compaction a
+    // separate audited transformation: later passes can follow this shape
+    // without inventing a second validation convention.
+    let diagnostics = verify_function(function);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+
     let post_fold_cfg = build_cfg_index(function);
     let (removed_blocks, block_remap) = compact_unreachable(function, post_fold_cfg.reachable());
-    CfgCanonicalizationReport {
+    let diagnostics = verify_function(function);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+    Ok(CfgCanonicalizationReport {
         folded_branches,
         removed_blocks,
         block_remap,
-    }
+    })
 }
 
 fn direct_bool_constants(function: &SemFunction) -> BTreeMap<ValueId, bool> {

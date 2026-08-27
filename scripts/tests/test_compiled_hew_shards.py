@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 from pathlib import Path
 import re
@@ -31,25 +32,21 @@ sys.modules.setdefault("check_gate_reachability", _reachability)
 _reachability_spec.loader.exec_module(_reachability)
 parse_yaml = _reachability.parse_yaml
 
-# The certified producer: packages the bundle the archive `linux-nextest-
-# archive` already built. It compiles nothing itself.
+# The compiled-Hew graph: `linux-nextest-archive` builds, `compiled-hew-linux`
+# packages the certified bundle, and the shard matrix and the aggregate consume
+# it. Every assertion below compares one side's published interface against the
+# other side's requested one, so a rename or a miswire on either side fails.
+ARCHIVE_JOB = "linux-nextest-archive"
 PRODUCER_JOB = "compiled-hew-linux"
-BUILD_AUTHORITY_JOB = "linux-nextest-archive"
-CONSUMER_JOBS = ("compiled-hew-shards", "compiled-hew-aggregate")
-ARTIFACT_NAME = "compiled-hew-linux-${{ github.sha }}"
-
-# A consumer running any of these would mean the one-producer contract is
-# decorative: the job could still build its own bundle instead of consuming
-# the certified one.
-_REBUILD_FRAGMENTS = (
-    "compiled-hew-artifact.py pack",
-    "cargo nextest archive",
-    "make hew-native",
-    "make hew-profile-check",
-)
+SHARD_JOB = "compiled-hew-shards"
+AGGREGATE_JOB = "compiled-hew-aggregate"
+UPLOAD = "actions/upload-artifact@"
+DOWNLOAD = "actions/download-artifact@"
+CODE_PATH_GATE = "${{ needs.changes.outputs.selected_compile }}"
+MATRIX_SHARD = r"\$\{\{\s*matrix\.shard\s*\}\}"
 
 
-def _workflow_jobs(text: str) -> dict[str, dict]:
+def _jobs(text: str) -> dict[str, dict]:
     document = parse_yaml(text, "ci.yml")
     assert isinstance(document, dict), "workflow is not a mapping"
     found = document.get("jobs") or {}
@@ -57,96 +54,190 @@ def _workflow_jobs(text: str) -> dict[str, dict]:
     return {name: body for name, body in found.items() if isinstance(body, dict)}
 
 
-def _job_steps(job: dict) -> list[dict]:
-    found = job.get("steps") or []
-    return [step for step in found if isinstance(step, dict)]
-
-
-def _job_needs(job: dict) -> list[str]:
+def _needs(job: dict) -> list[str]:
     found = job.get("needs")
-    if found is None:
-        return []
-    if isinstance(found, str):
-        return [found]
-    assert isinstance(found, list), f"needs: is neither a scalar nor a list: {found!r}"
+    found = [found] if isinstance(found, str) else (found or [])
     return [item for item in found if isinstance(item, str)]
 
 
-def _run_bodies(job: dict) -> list[str]:
-    return [step["run"] for step in _job_steps(job) if isinstance(step.get("run"), str)]
+def _steps(job: dict) -> list[dict]:
+    return [step for step in (job.get("steps") or []) if isinstance(step, dict)]
 
 
-def _artifact_names(job: dict, action_prefix: str) -> list[str]:
-    names = []
-    for step in _job_steps(job):
-        uses = step.get("uses")
-        if isinstance(uses, str) and uses.startswith(action_prefix):
-            with_ = step.get("with") or {}
-            name = with_.get("name") if isinstance(with_, dict) else None
-            if isinstance(name, str):
-                names.append(name)
-    return names
+def _runs(job: dict) -> list[str]:
+    return [step["run"] for step in _steps(job) if isinstance(step.get("run"), str)]
 
 
-def assert_one_certified_producer_feeds_every_consumer(text: str) -> None:
-    """Exactly one certified compiled-Hew artifact producer/build authority.
+def _inputs(job: dict, action: str) -> list[dict]:
+    """The `with:` mapping of every step in `job` that uses `action`."""
+    return [
+        step["with"]
+        for step in _steps(job)
+        if str(step.get("uses", "")).startswith(action)
+        and isinstance(step.get("with"), dict)
+    ]
 
-    `compiled-hew-linux` packages the bundle from the archive
-    `linux-nextest-archive` already built; it compiles nothing itself. The
-    four-way shard matrix and the aggregate are the consumers: both depend
-    on and download that one certified bundle rather than building or
-    repackaging their own.
-    """
-    jobs = _workflow_jobs(text)
 
-    producer = jobs.get(PRODUCER_JOB)
-    assert producer is not None, f"no {PRODUCER_JOB!r} job"
-    assert BUILD_AUTHORITY_JOB in _job_needs(producer), (
-        f"{PRODUCER_JOB} does not depend on {BUILD_AUTHORITY_JOB!r}; it would "
-        "have no certified build to package and would have to compile its own"
+def _artifacts(jobs: dict[str, dict], name: str, action: str) -> list[str]:
+    """Every artifact name a job uploads or downloads, matrix expanded."""
+    job = jobs.get(name) or {}
+    matrix = ((job.get("strategy") or {}).get("matrix") or {}).get("shard") or [""]
+    return [
+        re.sub(MATRIX_SHARD, str(shard), str(w.get("name") or w.get("pattern") or ""))
+        for w in _inputs(job, action)
+        for shard in matrix
+    ]
+
+
+def _strings(value: object) -> list[str]:
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, list):
+        return [found for item in value for found in _strings(item)]
+    return [value] if isinstance(value, str) else []
+
+
+def _only(bodies: list[str], pattern: str) -> str:
+    """The one run body matching `pattern`; any other count is a miswiring."""
+    found = [body for body in bodies if re.search(pattern, body)]
+    assert len(found) == 1, f"{len(found)} run steps match {pattern!r}, not one"
+    return found[0]
+
+
+def _flag(body: str, flag: str) -> str:
+    """The value of `--flag X`, `--flag "X"` or `NAME="X"`; "" when absent."""
+    found = re.search(rf"{re.escape(flag)}(?:=|\s+)(?:\"([^\"]*)\"|(\S+))", body)
+    if found is None:
+        return ""
+    return found.group(1) if found.group(1) is not None else found.group(2)
+
+
+def _clean(path: str) -> str:
+    return path.strip().strip('"').removeprefix("./").rstrip("/")
+
+
+def _covers(published: object, produced: str) -> bool:
+    """Whether an upload `path:` publishes what a step wrote to `produced`."""
+    produced = _clean(produced)
+    return bool(produced) and any(
+        fnmatch.fnmatchcase(produced, glob)
+        or fnmatch.fnmatchcase(produced, f"{glob}/*")
+        for glob in map(_clean, str(published or "").splitlines())
+        if glob
     )
 
-    # Exactly one step, in exactly one job, packages the certified bundle.
+
+def assert_compiled_hew_wiring(text: str) -> None:
+    """Every compiled-Hew interface matches the interface on its other side."""
+    jobs = _jobs(text)
+    for name in (ARCHIVE_JOB, PRODUCER_JOB, SHARD_JOB, AGGREGATE_JOB):
+        assert name in jobs, f"no {name!r} job"
+    producer = jobs[PRODUCER_JOB]
+    shards = jobs[SHARD_JOB]
+    aggregate = jobs[AGGREGATE_JOB]
+
+    # Every artifact these jobs download -- the archive the producer packages,
+    # the bundle both consumers unpack, the shard reports the aggregate
+    # collects -- is uploaded under that same name by a job they declare in
+    # `needs:`. A rename on either side, or a dropped edge, leaves it unmatched.
+    for name in (PRODUCER_JOB, SHARD_JOB, AGGREGATE_JOB):
+        supply = [
+            artifact
+            for upstream in _needs(jobs[name])
+            for artifact in _artifacts(jobs, upstream, UPLOAD)
+        ]
+        wanted = _artifacts(jobs, name, DOWNLOAD)
+        assert wanted, f"{name} downloads nothing"
+        for want in wanted:
+            assert [have for have in supply if fnmatch.fnmatchcase(have, want)], (
+                f"{name} downloads {want!r}; its needs publish {supply}"
+            )
+
+    # The producer uploads the file it packed, under one name: the bundle.
+    # Nothing else packs -- a consumer that can rebuild makes the certified
+    # bundle decorative.
     packers = [
         name
         for name, job in jobs.items()
-        for body in _run_bodies(job)
-        if "compiled-hew-artifact.py pack" in body
+        if any("compiled-hew-artifact.py pack" in body for body in _runs(job))
     ]
-    assert packers == [PRODUCER_JOB], (
-        "expected exactly one packaging step, owned by "
-        f"{PRODUCER_JOB!r}, found: {packers}"
+    assert packers == [PRODUCER_JOB], f"jobs that pack a bundle: {packers}"
+    pack = _only(_runs(producer), r"compiled-hew-artifact\.py pack")
+    packed = _flag(pack, "--output")
+    bundles = [w for w in _inputs(producer, UPLOAD) if _covers(w.get("path"), packed)]
+    assert len(bundles) == 1, f"no single upload publishes the packed {packed!r}"
+    bundle = str(bundles[0].get("name"))
+
+    # This job's matrix -- not another job's -- covers the whole partition
+    # space, and the denominator the shard runs with is that matrix's size.
+    matrix = ((shards.get("strategy") or {}).get("matrix") or {}).get("shard")
+    partitions = [str(value) for value in matrix or []]
+    assert partitions == [str(n) for n in range(1, SHARDS + 1)], (
+        f"{SHARD_JOB} runs partitions {partitions}, not 1..{SHARDS}"
+    )
+    shard_run = _only(_runs(shards), r"compiled-hew-shards\.py run")
+    partition = _flag(shard_run, "--partition")
+    assert "matrix.shard" in partition, f"{partition!r} ignores the shard matrix"
+    assert partition.rsplit("/", 1)[-1] == str(SHARDS), (
+        f"{partition!r} partitions against {SHARDS} matrix shards"
     )
 
-    # Exactly one job uploads the certified bundle under its one name.
-    uploaders = [
-        name
-        for name, job in jobs.items()
-        if ARTIFACT_NAME in _artifact_names(job, "actions/upload-artifact@")
-    ]
-    assert uploaders == [PRODUCER_JOB], (
-        f"expected exactly one uploader of {ARTIFACT_NAME!r}, found: {uploaders}"
+    # The shard uploads the reports it wrote, and each consumer lands the
+    # bundle where its own unpack reads it and runs out of what that wrote.
+    reports = [w for w in _inputs(shards, UPLOAD) if w.get("name") != bundle]
+    assert len(reports) == 1, f"{SHARD_JOB} uploads {len(reports)} report artifacts"
+    assert _covers(reports[0].get("path"), _flag(shard_run, "--output-dir")), (
+        f"{SHARD_JOB} writes its reports outside the path it uploads"
+    )
+    unpacked = {}
+    for name in (SHARD_JOB, AGGREGATE_JOB):
+        bodies = _runs(jobs[name])
+        landings = [w for w in _inputs(jobs[name], DOWNLOAD) if w.get("name") == bundle]
+        assert len(landings) == 1, f"{name} does not download {bundle!r}"
+        landing = str(landings[0].get("path", "")).rstrip("/")
+        unpack = _only(bodies, r"compiled-hew-artifact\.py unpack")
+        assert _flag(unpack, "--input").startswith(f"{landing}/"), (
+            f"{name} lands the bundle in {landing!r} and unpacks something else"
+        )
+        unpacked[name] = _flag(unpack, "--destination")
+        assert any(unpacked[name] in body for body in bodies if body is not unpack), (
+            f"{name} runs nothing out of {unpacked[name]!r}"
+        )
+
+    # The aggregate's `needs:` covers every job it reads a result or output of.
+    read = {
+        found
+        for value in _strings(aggregate)
+        for found in re.findall(r"needs\.([\w-]+)\.(?:result|outputs)", value)
+    }
+    assert SHARD_JOB in _needs(aggregate), f"{AGGREGATE_JOB} skips {SHARD_JOB}"
+    assert read <= set(_needs(aggregate)), (
+        f"{AGGREGATE_JOB} reads {sorted(read - set(_needs(aggregate)))} without "
+        "depending on it"
     )
 
-    for name in CONSUMER_JOBS:
-        job = jobs.get(name)
-        assert job is not None, f"no {name!r} consumer job"
-        assert PRODUCER_JOB in _job_needs(job), (
-            f"{name} does not depend on {PRODUCER_JOB!r}; a missing bundle "
-            "would look like an ordinary cold start rather than a failed gate"
+    # It reports, lists its own inventory with the certified compiler, and runs
+    # both ratchet gates over the reports it actually downloaded.
+    bodies = _runs(aggregate)
+    patterns = [w for w in _inputs(aggregate, DOWNLOAD) if w.get("pattern")]
+    assert len(patterns) == 1, f"{AGGREGATE_JOB} has {len(patterns)} pattern downloads"
+    collected = str(patterns[0].get("path", "")).rstrip("/")
+    report = _only(bodies, r"compiled-hew-shards\.py report")
+    assert _flag(report, "--reports-dir").rstrip("/") == collected, (
+        f"the failure reporter reads outside {collected!r}"
+    )
+    for target in ("test-hew-ratchet", "test-o2-differential"):
+        gate = _only(bodies, rf"make\s+{re.escape(target)}(?:\s|$)")
+        inventory = _flag(gate, "HEW_FULL_INVENTORY")
+        assert _flag(gate, "HEW_SHARD_REPORT_DIR").rstrip("/") == collected and _flag(
+            gate, "HEW_SHARD_COUNT"
+        ) == str(SHARDS), (
+            f"make {target} does not gate {collected!r} over {SHARDS} shards"
         )
-        assert ARTIFACT_NAME in _artifact_names(job, "actions/download-artifact@"), (
-            f"{name} never downloads {ARTIFACT_NAME!r}"
+        writer = _only(bodies, rf">\s*\"{re.escape(inventory)}\"")
+        assert unpacked[AGGREGATE_JOB] in writer, (
+            f"{inventory!r} is not listed by the certified compiler"
         )
-        assert any(
-            "compiled-hew-artifact.py unpack" in body for body in _run_bodies(job)
-        ), f"{name} downloads the bundle but never unpacks/verifies it"
-        for body in _run_bodies(job):
-            for fragment in _REBUILD_FRAGMENTS:
-                assert fragment not in body, (
-                    f"{name} runs {fragment!r}; a consumer that can still "
-                    "build defeats the one-producer contract silently"
-                )
 
 
 def identity(index: int) -> str:
@@ -308,133 +399,32 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    def test_one_certified_producer_feeds_every_consumer(self) -> None:
-        assert_one_certified_producer_feeds_every_consumer(self.workflow)
+    def test_the_compiled_hew_jobs_agree_on_every_interface(self) -> None:
+        assert_compiled_hew_wiring(self.workflow)
 
-        # The four-way shard matrix is exhaustive and disjoint: one hash
-        # partition per shard index, covering the whole `/4` space.
-        self.assertIn("shard: [1, 2, 3, 4]", self.workflow)
-        self.assertIn('--partition "hash:${{ matrix.shard }}/4"', self.workflow)
+    def test_all_three_compiled_hew_jobs_ride_the_same_code_path_gate(self) -> None:
+        for name in (PRODUCER_JOB, SHARD_JOB, AGGREGATE_JOB):
+            job = _jobs(self.workflow)[name]
+            env = job.get("env") or {}
+            self.assertEqual(env.get("RUN_CODE_PATH"), CODE_PATH_GATE)
 
-        for job in (
-            "compiled-hew-linux",
-            "compiled-hew-shards",
-            "compiled-hew-aggregate",
-        ):
-            start = self.workflow.index(f"  {job}:\n")
-            following = re.search(
-                r"^  [a-zA-Z0-9_-]+:\n", self.workflow[start + 1 :], re.MULTILINE
-            )
-            end = (
-                len(self.workflow)
-                if following is None
-                else start + 1 + following.start()
-            )
-            section = self.workflow[start:end]
-            self.assertIn(
-                "RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}",
-                section,
-            )
-
-    def test_the_producer_consumer_contract_rejects_removal_or_miswiring(
-        self,
-    ) -> None:
-        text = self.workflow
-
-        def rejects(mutated: str) -> None:
-            self.assertNotEqual(
-                mutated, text, "the mutation matched nothing; the test is vacuous"
-            )
-            try:
-                assert_one_certified_producer_feeds_every_consumer(mutated)
-            except AssertionError:
-                return
-            raise AssertionError("a broken producer/consumer contract was accepted")
-
-        # Deleting the pack step leaves no producer at all.
-        rejects(
-            text.replace(
-                "          python3 scripts/compiled-hew-artifact.py pack \\\n"
-                '            --source-debug-dir "$root/target/debug" \\\n'
-                '            --source-revision "$GITHUB_SHA" \\\n'
-                "            --output compiled-hew-linux.tar.gz\n",
-                "",
-            )
+    def test_the_wiring_contract_rejects_a_mismatched_interface(self) -> None:
+        """One mutation per family of comparison the contract exists to make:
+        an artifact name, a produced-against-published path, and this job's
+        own shard matrix.
+        """
+        mutations = (
+            (PRODUCER_JOB, "name: compiled-hew-linux-$", "name: renamed-$"),
+            (PRODUCER_JOB, "--output compiled-hew-linux", "--output other-bundle"),
+            (SHARD_JOB, "shard: [1, 2, 3, 4]", "shard: [1, 2, 3]"),
         )
-
-        # Renaming the producer job strands both consumers' `needs:` and the
-        # bundle they expect to download.
-        rejects(
-            text.replace(
-                "  compiled-hew-linux:\n", "  compiled-hew-linux-renamed:\n", 1
-            )
-        )
-
-        # Dropping the producer's own dependency on the build authority would
-        # let it compile a second build that happened to agree.
-        rejects(
-            text.replace(
-                "    needs: [changes, linux-nextest-archive]\n",
-                "    needs: changes\n",
-                1,
-            )
-        )
-
-        # Un-gating a shard consumer from the producer's `needs:` turns a
-        # missing bundle into an ordinary cold start instead of a failed gate.
-        rejects(
-            text.replace(
-                "    needs: [changes, compiled-hew-linux]\n"
-                "    runs-on: ubuntu-24.04\n"
-                "    timeout-minutes: 60\n",
-                "    needs: [changes]\n"
-                "    runs-on: ubuntu-24.04\n"
-                "    timeout-minutes: 60\n",
-                1,
-            )
-        )
-
-        # Miswiring the shard matrix's download to a different artifact name
-        # hides a bundle that no longer matches what the producer certified.
-        rejects(
-            text.replace(
-                "      - name: Download compiled Hew bundle\n"
-                "        if: env.RUN_CODE_PATH == 'true'\n"
-                "        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1\n"
-                "        with:\n"
-                "          name: compiled-hew-linux-${{ github.sha }}\n",
-                "      - name: Download compiled Hew bundle\n"
-                "        if: env.RUN_CODE_PATH == 'true'\n"
-                "        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1\n"
-                "        with:\n"
-                "          name: compiled-hew-linux-old-${{ github.sha }}\n",
-                1,
-            )
-        )
-
-        # A consumer that still packages its own bundle defeats the contract
-        # even while every wire and download stays intact.
-        rejects(
-            text.replace(
-                "          python3 scripts/compiled-hew-shards.py run\n",
-                "          python3 scripts/compiled-hew-artifact.py pack "
-                '--source-debug-dir target/debug --source-revision "$GITHUB_SHA" '
-                "--output compiled-hew-linux.tar.gz\n"
-                "          python3 scripts/compiled-hew-shards.py run\n",
-                1,
-            )
-        )
-
-    def test_aggregate_uses_an_independent_full_inventory_and_both_gates(self) -> None:
-        self.assertIn("for fixture in tests/hew/*.hew; do", self.workflow)
-        self.assertIn('test "$fixture" --list --allow-empty', self.workflow)
-        self.assertIn(
-            'LC_ALL=C sort > "${{ runner.temp }}/compiled-hew-full.txt"',
-            self.workflow,
-        )
-        self.assertIn("make test-hew-ratchet", self.workflow)
-        self.assertIn("make test-o2-differential", self.workflow)
-        self.assertEqual(self.workflow.count("HEW_SHARD_COUNT=4"), 2)
+        for job, old, new in mutations:
+            with self.subTest(f"{job}: {old}"):
+                head, marker, tail = self.workflow.partition(f"  {job}:\n")
+                mutated = head + marker + tail.replace(old, new, 1)
+                self.assertNotEqual(mutated, self.workflow, "mutation matched nothing")
+                with self.assertRaises(AssertionError):
+                    assert_compiled_hew_wiring(mutated)
 
     def test_failure_reporter_runs_before_the_aggregate_gates(self) -> None:
         report = self.workflow.index("Report compiled Hew shard failures")

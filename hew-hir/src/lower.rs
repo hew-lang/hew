@@ -19040,8 +19040,8 @@ impl LowerCtx {
                 // Lower the inner supervised-child accessor (a `FieldAccess`);
                 // its `site` keys `supervisor_child_slots` with the (supervisor,
                 // slot) discriminator MIR re-reads to emit `SuspendKind::RestartWait`.
-                // The result type is the child's `LocalPid<ChildType>` (the checker
-                // assigned this expr the same re-fetched-live type as the accessor).
+                // The result type is the child's stable `ChildRef<ChildType>` (the
+                // checker assigned this expression the same type as the accessor).
                 let child = self.lower_expr(inner, IntentKind::Read);
                 let result_ty = self
                     .expr_types

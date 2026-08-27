@@ -7,8 +7,8 @@
 //      registers it via hew_supervisor_add_child_supervisor_with_init.
 //   2. `root.sub` lowers through hew_supervisor_nested_get, returning the
 //      child supervisor pointer as a LocalPid<Inner>.
-//   3. `inner.leaf` lowers through hew_supervisor_child_get on that nested
-//      supervisor, returning a LocalPid<Worker>.
+//   3. `inner.leaf` creates a stable ChildRef<Worker> owned by that nested
+//      supervisor.
 //   4. `leaf.echo(42)` asks the leaf actor, which replies with its argument.
 //   5. `main` returns the reply as the process exit code; exit 42 proves the
 //      nested + leaf accessor chain and the cross-actor ask all went through.

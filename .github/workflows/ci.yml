@@ -129,10 +129,9 @@ jobs:
   # executable bits nor dotfiles, and consumers need
   # `.ast-grep/tool/bin/ast-grep` to be a dotfile that runs.
   #
-  # There is deliberately NO job-level `if:`. A skipped job is not a satisfied
+  # There is deliberately NO job-level `if:`: a skipped job is not a satisfied
   # dependency, so gating the job would strand three required contexts on
-  # docs-only changes. The gate is on the steps, and its answer is published
-  # as an output so a dependant can ask rather than re-derive it.
+  # docs-only changes. The gate is on the steps, published as an output.
   # ─────────────────────────────────────────────────────────────────────────
   ast-grep-toolchain:
     name: Build ast-grep toolchain
@@ -278,10 +277,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      # This job structural-lints on every route, including the docs-only one
-      # where nothing is shared and the producer no-opped -- hence the fall
-      # back to installing, keyed on the producer's own output rather than a
-      # re-derived route.
+      # Structural-lints on every route, including the docs-only one where
+      # the producer no-opped -- hence the fall back to installing, keyed on
+      # the producer's own output rather than a re-derived route.
       - name: Provision pinned ast-grep toolchain
         uses: ./.github/actions/setup-ast-grep
         with:
@@ -936,11 +934,11 @@ jobs:
 
       - name: Give Cargo its own output directory
         if: env.RUN_CODE_PATH == 'true'
-        # FIRST step of the job, before the checkout and before any action can
-        # consume Cargo's default: this job materializes the archive at the
-        # checkout's own `target/`. Swatinem/rust-cache resolves what it caches
-        # as `<workspace>/target` and never reads CARGO_TARGET_DIR, so
-        # `cache-targets: 'false'` below is the other half of this decision.
+        # FIRST step, before the checkout and before any action consumes
+        # Cargo's default: this job materializes the archive at the checkout's
+        # own `target/`. Swatinem/rust-cache resolves what it caches as
+        # `<workspace>/target` and never reads CARGO_TARGET_DIR, so
+        # `cache-targets: 'false'` below is the other half of this.
         run: |
           set -euo pipefail
           cargo_target="$RUNNER_TEMP/ci-cargo-target"
@@ -1070,28 +1068,24 @@ jobs:
 
       - name: Materialize the Linux test archive
         if: env.RUN_CODE_PATH == 'true'
-        # The archive's `target/` is materialized AT `$GITHUB_WORKSPACE/target`,
-        # the exact absolute path the producer compiled under, because an
-        # archived test binary carries absolute paths no remap reaches: a baked
-        # `env!("CARGO_BIN_EXE_hew")`, and a `current_exe()`-relative walk up
-        # `<target>/<profile>/deps/`.
+        # Materialized AT `$GITHUB_WORKSPACE/target`, the exact path the
+        # producer compiled under, because an archived test binary carries
+        # absolute paths no remap reaches: a baked `env!("CARGO_BIN_EXE_hew")`
+        # and a `current_exe()`-relative walk up `<target>/<profile>/deps/`.
         #
-        # Staged extraction, the freeze, and Cargo's separate directory are
-        # each enforced below rather than trusted. Rationale:
-        # docs/dev/ci-tiers-and-routing.md, "Build once, run four times".
+        # Staged extraction, the freeze and Cargo's separate directory are
+        # enforced below, not trusted. See docs/dev/ci-tiers-and-routing.md.
         #
         # Every check below is an interface assertion, not a second identity
-        # system: it says what a consumer needs to find, never which commit
-        # produced it. A failure here is fatal before any gate runs.
+        # system: what a consumer must find, never which commit produced it.
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/ci-linux-nextest-download/ci-linux-nextest.tar.zst"
           staging="$RUNNER_TEMP/ci-linux-nextest-staging"
           target="$GITHUB_WORKSPACE/target"
           test -s "$archive"
-          # The two authorities, asserted rather than assumed: if the first
-          # step of the job did not run, Cargo's default IS this target and
-          # the freeze below would break every compiling gate.
+          # Asserted, not assumed: without the first step Cargo's default IS
+          # this target, and the freeze would break every compiling gate.
           test "${CARGO_TARGET_DIR:-}" = "$RUNNER_TEMP/ci-cargo-target"
           if [ -n "${ARCHIVE_TRANSFER_START:-}" ]; then
             download_seconds="$(( $(date +%s) - ARCHIVE_TRANSFER_START ))s"
@@ -1100,9 +1094,7 @@ jobs:
           fi
 
           # A populated checkout target means something else claimed Cargo's
-          # default path -- a restored cache, a re-run of this step -- and
-          # merging that with the archive would produce a tree nobody
-          # certified. Refuse, and say what is in the way.
+          # default path; merging it with the archive certifies nothing.
           if [ -e "$target" ] && [ -n "$(ls -A "$target")" ]; then
             echo "::error::$target is already populated; the Linux test archive cannot be materialized over it"
             ls -A "$target"
@@ -1122,8 +1114,7 @@ jobs:
             > "$RUNNER_TEMP/ci-linux-nextest-binaries.json"
           extract_seconds=$(( SECONDS - start ))
 
-          # nextest's archive carries exactly one top-level entry, `target/`.
-          # Asserting it keeps this a move of one known tree rather than a
+          # Exactly one top-level entry: a move of one known tree, not a
           # merge of whatever an archive happened to contain.
           extracted="$(ls -A "$staging")"
           if [ "$extracted" != "target" ]; then
@@ -1145,8 +1136,8 @@ jobs:
           test -s "$target/wasm32-wasip1/debug/libhew_runtime.a"
           test -s "$target/wasm32-wasip1/debug/libhew_std.a"
 
-          # Directories keep +x so the tree stays traversable; test binaries
-          # and the compiler keep +r+x. Then the two named exceptions.
+          # Directories keep +x so the tree stays traversable. Then the two
+          # named exceptions.
           chmod -R a-w "$target"
           chmod u+w "$target" "$target/nextest"
 

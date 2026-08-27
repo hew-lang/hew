@@ -470,44 +470,77 @@ def test_pointing_cargo_at_the_archive_is_rejected() -> None:
 
 PROJECT = ROOT / "scripts" / "ci-project-shared-artifacts.sh"
 
+# Reordered keys, an omitted policy, and a path holding a space and the
+# character a delimiter-based reader would split on.
+PROJECTION_MANIFEST = """
+[profile.ci]
+archive.include = [
+  { path = "debug/hew", relative-to = "target", on-missing = "error" },
+  { on-missing = "error", path = "debug/odd | name.a" },
+  { path = "debug/plain.a" },
+  { path = "cross/libhew.a", on-missing = "ignore" },
+]
+"""
+REQUIRED = ["debug/hew", "debug/odd | name.a", "debug/plain.a"]
+OPTIONAL = "cross/libhew.a"
+
 
 def test_the_projection_honours_on_missing_and_always_verifies_its_gate() -> None:
-    """Absence is a policy read from the inventory, and verify cannot be skipped."""
-    inventory = archive_includes((ROOT / ".config" / "nextest.toml").read_text())
-    required = [e["path"] for e in inventory if e.get("on-missing") != "ignore"]
-
-    def run(root: Path, *argv: str) -> int:
-        return subprocess.run(
-            [str(PROJECT), argv[0], str(root / "art"), str(root / "cargo"), *argv[1:]],
-            capture_output=True,
-            text=True,
-        ).returncode
+    """Absence is a policy read from real TOML, and verify cannot be skipped."""
 
     def fixture(work: Path, omit: str = "") -> Path:
-        for source in (work / "art" / p for p in required if p != omit):
+        (work / "scripts").mkdir(parents=True)
+        (work / "scripts" / PROJECT.name).symlink_to(PROJECT)
+        (work / "scripts" / "lib").symlink_to(ROOT / "scripts" / "lib")
+        (work / ".config").mkdir()
+        (work / ".config" / "nextest.toml").write_text(PROJECTION_MANIFEST)
+        for source in (work / "art" / p for p in REQUIRED if p != omit):
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text("certified")
-        (work / "cargo").mkdir()
+        (work / "cargo" / OPTIONAL).parent.mkdir(parents=True)
         return work
 
-    with tempfile.TemporaryDirectory() as raw:
-        # Only an `on-missing = "ignore"` source may be absent -- none of the
-        # rows above are, so a complete fixture is one that omits just those.
-        good = fixture(Path(raw) / "good")
-        assert run(good, "link") == 0 and run(good, "verify") == 0
-        gone = fixture(Path(raw) / "gone", omit=required[0])
-        assert run(gone, "link") and run(gone, "verify"), f"{required[0]} was optional"
+    def run(root: Path, *argv: str) -> subprocess.CompletedProcess[str]:
+        roots = (str(root / "art"), str(root / "cargo"))
+        cmd = [str(root / "scripts" / PROJECT.name), argv[0], *roots, *argv[1:]]
+        return subprocess.run(cmd, capture_output=True, text=True)
 
-        # Status precedence, and a verification that runs however the gate ends.
-        drop = f"rm {good / 'cargo' / required[0]}"
-        for command, code in (
-            ("true", 0),
-            ("exit 3", 3),
-            (drop, 1),
-            (f"{drop};exit 3", 3),
+    with tempfile.TemporaryDirectory() as raw:
+        # Absent optional, no destination: green; and the awkward path
+        # survived the reader exactly, as a link rather than a copy.
+        good = fixture(Path(raw) / "good")
+        assert run(good, "link").returncode == 0, run(good, "link").stderr
+        assert run(good, "verify").returncode == 0
+        odd = good / "cargo" / REQUIRED[1]
+        assert odd.is_symlink() and os.readlink(odd) == str(good / "art" / REQUIRED[1])
+
+        # An omitted `on-missing` defaults to error, so that entry is required.
+        gone = fixture(Path(raw) / "gone", omit="debug/plain.a")
+        for verb in ("link", "verify"):
+            assert run(gone, verb).returncode, f"a missing required source {verb}ed"
+
+        # Absent by policy means absent on both sides.
+        spare = fixture(Path(raw) / "spare")
+        stray = spare / "cargo" / OPTIONAL
+        for plant in (
+            lambda: stray.write_text("cargo"),
+            lambda: stray.symlink_to(spare / "art" / OPTIONAL),
         ):
-            assert run(good, "gate", command) == code, command
+            plant()
+            for verb in ("link", "verify"):
+                assert run(spare, verb).returncode, f"a stray {verb}ed green"
+            stray.unlink()
+
+        # Status precedence, and a verifier that runs however the gate ended.
+        drop = f"rm '{good / 'cargo' / REQUIRED[0]}'"
+        for command, code in (("true", 0), ("exit 3", 3), (drop, 1)):
+            assert run(good, "gate", command).returncode == code, command
             run(good, "link")
+        both = run(good, "gate", f"{drop}; exit 3")
+        assert both.returncode == 3, both.stderr
+        assert "is gone; the projection" in both.stderr, (
+            f"the verifier did not run after a failing gate: {both.stderr!r}"
+        )
 
 
 def test_the_makefile_reads_the_archive_and_writes_somewhere_else() -> None:

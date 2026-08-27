@@ -3,8 +3,8 @@ description: >
   Provision the pinned ast-grep binary and the Hew tree-sitter grammar into
   .ast-grep/, either by building it (source: install) or by unpacking the
   toolchain artifact another job already built (source: artifact). Both paths
-  end at the same verification, so a consumer cannot accept a tree the
-  producer would have rejected.
+  end at the same verification, so a consumer cannot accept a tree the producer
+  would have rejected.
 
 inputs:
   source:
@@ -19,14 +19,11 @@ inputs:
 runs:
   using: composite
   steps:
-    # Keyed on every input the build consumes: the pinned lock, the two scripts
-    # that assemble the tree, and the dialect patch. The grammar is a native
-    # shared object, so OS and arch are part of the key.
-    #
-    # Restore everywhere, save only from the default branch and only after a
-    # miss: a pull request writing ref-scoped entries evicts the one every
-    # branch could read, and two jobs saving one key race. The save reuses the
-    # restore's primary key so the halves cannot drift.
+    # Keyed on every input the build consumes; the grammar is a native shared
+    # object, so OS and arch are in the key. Restore everywhere, save only from
+    # the default branch and only after a miss: a pull request writing
+    # ref-scoped entries evicts the one every branch could read, and two jobs
+    # saving one key race.
     - name: Restore pinned ast-grep toolchain
       id: cache
       if: inputs.source == 'install'
@@ -35,9 +32,8 @@ runs:
         path: .ast-grep
         key: ast-grep-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ast-grep.lock', 'tools/tree-sitter-hew-consume-parameter.patch', 'scripts/ast-grep-lint.sh', 'scripts/build-ast-grep-lang.sh') }}
 
-    # The bootstrap re-checks the installed binary's --version against
-    # tools/ast-grep.lock and the grammar archive's SHA-256 on every
-    # invocation, so a stale cache is rebuilt rather than trusted.
+    # Re-checks --version against tools/ast-grep.lock and the grammar
+    # archive's SHA-256 every time, so a stale cache is rebuilt not trusted.
     - name: Bootstrap pinned ast-grep toolchain
       if: inputs.source == 'install'
       shell: bash
@@ -50,8 +46,7 @@ runs:
         name: ${{ inputs.artifact-name }}
         path: ${{ runner.temp }}/ast-grep-toolchain
 
-    # The tarball is rooted inside .ast-grep, so nothing it holds lands
-    # outside that directory.
+    # The tarball is rooted inside .ast-grep, so nothing lands outside it.
     - name: Unpack the pinned ast-grep toolchain
       if: inputs.source == 'artifact'
       shell: bash

@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 #
-# Project the certified shared test artefacts into Cargo's output directory.
-#
-# A gate that COMPILES its own test binary resolves shared artefacts under
-# Cargo's root -- hew-testutil walks `<target>/<profile>/deps/` upwards from
-# `current_exe()` -- while the archive populates the other. Symlink, never
-# copy, derived from the `archive.include` the producer packs. Rationale:
-# docs/dev/ci-tiers-and-routing.md, "The projection".
+# Project the certified shared test artefacts into Cargo's output directory: a
+# gate that COMPILES its own test binary resolves them under Cargo's root --
+# hew-testutil walks `<target>/<profile>/deps/` up from `current_exe()` --
+# while the archive populates the other. Symlink, never copy, derived from the
+# `archive.include` the producer packs.
 set -euo pipefail
 
 die() {
@@ -26,9 +24,8 @@ esac
 [ "$artefact_root" != "$cargo_root" ] ||
     die "both roots are $cargo_root; there is nothing to project"
 
-# One process, so a failing gate cannot skip the verification the way a second
-# recipe line can. The functional result wins the exit status; a clean run that
-# corrupted the projection reports the corruption.
+# One process, so a failing gate cannot skip the verification a second recipe
+# line would. The functional result wins the exit status.
 if [ "$action" = gate ]; then
     "$0" link "$artefact_root" "$cargo_root"
     functional=0
@@ -39,28 +36,47 @@ if [ "$action" = gate ]; then
     exit "$verify"
 fi
 
-manifest="$(cd "$(dirname "$0")/.." && pwd)/.config/nextest.toml"
-# Absence is a policy read from the entry, not assumed: only an explicit
-# `on-missing = "ignore"` may be absent. Anything else missing means the
-# archive did not carry what it promised.
-inventory="$(
-    sed -n '/^archive\.include = \[/,/^]/p' "$manifest" |
-        sed -n '/path = "/{
-            s/.*path = "\([^"]*\)".*on-missing = "\([^"]*\)".*/\1|\2/
-            t emit
-            s/.*path = "\([^"]*\)".*/\1|error/
-            :emit
-            p
-        }'
-)"
-[ -n "$inventory" ] || die "no archive.include paths in $manifest"
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+manifest="$repo_root/.config/nextest.toml"
+# Real TOML -- inline tables, any key order, escapes -- so the repository's own
+# reader parses it. Records are NUL-delimited through a file: a path may hold
+# anything but NUL, and a pipe would hide the reader's exit status.
+records="$(mktemp "${TMPDIR:-/tmp}/shared-artefacts.XXXXXX")"
+cleanup() { rm -f -- "$records"; }
+trap cleanup EXIT
+python3 - "$repo_root" "$manifest" >"$records" <<'PARSE' ||
+import sys
 
-while IFS='|' read -r relative policy; do
+sys.path.insert(0, sys.argv[1] + "/scripts/lib")
+import toml_compat
+
+with open(sys.argv[2], "rb") as handle:
+    include = toml_compat.load(handle)["profile"]["ci"]["archive"]["include"]
+if not isinstance(include, list) or not include:
+    sys.exit("profile.ci.archive.include is not a non-empty array")
+for entry in include:
+    if not isinstance(entry, dict):
+        sys.exit(f"archive.include entry is not a table: {entry!r}")
+    path, policy = entry.get("path"), entry.get("on-missing", "error")
+    if not isinstance(path, str) or not path:
+        sys.exit(f"archive.include entry has no usable path: {entry!r}")
+    if policy not in ("error", "ignore"):
+        sys.exit(f"{path}: unsupported on-missing policy {policy!r}")
+    sys.stdout.buffer.write(path.encode() + b"\0" + policy.encode() + b"\0")
+PARSE
+    die "could not read the archive inventory from $manifest"
+[ -s "$records" ] || die "no archive.include entries in $manifest"
+
+while IFS= read -r -d '' relative && IFS= read -r -d '' policy; do
     source_path="$artefact_root/$relative"
     destination="$cargo_root/$relative"
     if [ ! -e "$source_path" ]; then
         [ "$policy" = ignore ] ||
             die "$source_path is missing and its on-missing policy is '$policy'"
+        # Absent by policy means absent on BOTH sides: a leftover file or a
+        # dangling symlink is a path a test resolves to something uncertified.
+        { [ ! -e "$destination" ] && [ ! -L "$destination" ]; } ||
+            die "$source_path is absent by policy but $destination still exists"
         continue
     fi
 
@@ -79,4 +95,4 @@ Cargo wrote over the projection"
     fi
 
     [ -f "$destination" ] || die "$destination does not resolve to a file"
-done <<<"$inventory"
+done <"$records"

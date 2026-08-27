@@ -296,13 +296,12 @@ So the tree is materialized at **`$GITHUB_WORKSPACE/target`**, the producer's
 own absolute path, which GitHub gives every job in a run. What the `RUNNER_TEMP`
 rule protected still holds: the router reads `git ls-files --others
 --exclude-standard`, and `target/` is `.gitignore`d, so an ignored path is as
-invisible to it as an out-of-tree one. Extraction still stages under
-`RUNNER_TEMP` (nextest wants an empty root) and only the archive's own `target/`
-moves into place. Cargo is sent to `$RUNNER_TEMP/ci-cargo-target` in the job's
-**first step**, because `Swatinem/rust-cache` resolves what it caches as
-`<workspace>/target` and never reads `CARGO_TARGET_DIR` — hence
-`cache-targets: 'false'` on the shards. The tree is then made **read-only** and
-is deliberately **not** Cargo's output directory.
+invisible as an out-of-tree one. Extraction still stages under `RUNNER_TEMP`
+(nextest wants an empty root) and only the archive's `target/` moves in. Cargo
+is sent to `$RUNNER_TEMP/ci-cargo-target` in the job's **first step**, because
+`Swatinem/rust-cache` resolves what it caches as `<workspace>/target` and never
+reads `CARGO_TARGET_DIR` — hence `cache-targets: 'false'` on the shards. The
+tree is then made **read-only** and is deliberately **not** Cargo's output.
 
 Those are the same decision from two directions. The archive's contents are
 certified — `libhew.a` carries a freshness certificate binding it to the
@@ -330,13 +329,10 @@ executable's `<target>/<profile>/deps/` position, so an *archived* binary finds
 the archive. A gate that COMPILES a fresh test binary produces one under
 *Cargo's* root instead, where nothing had put those artefacts.
 `scripts/ci-project-shared-artifacts.sh` closes it by symlinking, never copying,
-the set parsed from `.config/nextest.toml`'s `archive.include` — the producer's
-own pack list, each entry's `on-missing` policy included, so only a row marked
-`ignore` may be absent. Its `gate` verb projects, runs the command and
-re-verifies in one process, because separate recipe lines would skip the
-verification exactly when the gate failed; the functional result still wins the
-exit status. Sources stay read-only, so a Cargo build that replaced a link is
-red. Prebuilt mode only.
+the set read from `.config/nextest.toml`'s `archive.include` — the producer's own
+pack list, `on-missing` policies included. Its `gate` verb projects, runs and
+re-verifies in one process, so a failing gate cannot skip the check. Prebuilt
+mode only.
 
 JUnit is unaffected: nextest writes its store under the remapped *workspace*
 root, so `target/nextest/<profile>/junit.xml` stays where the upload step
@@ -579,28 +575,26 @@ they get better; the projection does not spend it in advance.
 | **measured (`33028214259`)** | **353.7** | **65.3 min** |
 
 The archive works: 2.03 GiB transferred, and the **archived nextest surface
-issued zero rebuilds** in all four shards. Not "zero compile requests per
-shard" — the shards still compile what the archive cannot carry.
+issued zero rebuilds** in all four shards — not "zero compile requests per
+shard", since the shards still compile what the archive cannot carry.
 
 The 11.7 job-minute gap to projection is one shard: shard 2 ran 13.7 minutes
 longer than its weighted plan. Its failures — ownership/MIR, SIGSEGV fuzz and
-stream fixtures, compiled-Hew O0, MIR/LLVM drift, Windows and macOS full-suite
-— have signatures that also appear on `main`, and several were reproduced
-against base sources during discovery. That is **not** a reproduction of this
-shard's overrun on base `be7c624d6`, which was not done, and source identity is
-never proof of causation. So 353.7 / 65.3 is the number; a ~340 / ~61
-counterfactual is conditional on an unproven attribution. Either way those
-failures are real and stay red.
+stream fixtures, compiled-Hew O0, MIR/LLVM drift, Windows and macOS full-suite —
+have signatures that also appear on `main`, and several were reproduced against
+base sources during discovery; the overrun itself was **not** reproduced on base
+`be7c624d6`. So 353.7 / 65.3 is the number, and a ~340 / ~61 counterfactual is
+conditional on an unproven attribution. Those failures are real and stay red.
 
-The cache was cold and correctly so — first pull request run, and caches now
-save only from `main` — so these are the pessimistic setup costs.
+The cache was cold and correctly so (first pull request run, and caches now
+save only from `main`), so these are the pessimistic setup costs.
 
 Two defects this run priced, both fixed in the revision that follows it: the
 archive's materialization path (above), and ast-grep provisioned five times on
 the compiled route, ~17.9 runner-minutes of which four installs are duplicates.
 That is now one producer job uploading a tarball every consumer unpacks through
 the same fail-closed bootstrap, plus a cache split into pinned `restore`/`save`
-so only `main` writes and no two jobs race one key.
+so only `main` writes and no two jobs race a key.
 
 ### Retained expensive gates, and why
 

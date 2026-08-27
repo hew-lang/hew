@@ -223,10 +223,9 @@ endif
 # with a forced-cancel-test build before a single gate ran. Every later gate in
 # that shard would then have linked against a runtime nobody selected.
 #
-# WHICH directory is which is the workflow's choice, not this file's: the
-# shards give the ARCHIVE the checkout's own `target/`, because its binaries
-# carry the producer's absolute paths. Here only the difference matters, which
-# is why both roots are read from the environment.
+# WHICH directory is which is the workflow's choice: the shards give the
+# ARCHIVE the checkout's own `target/`, because its binaries carry the
+# producer's absolute paths. Here only the difference matters.
 #
 # Splitting the authorities removes the whole class, not that one command: a
 # feature-specific build, a `cargo run`, a plain `cargo test`, or anything a
@@ -466,9 +465,8 @@ endef
 
 # Gates that compile their own test binary resolve shared artefacts under
 # Cargo's root; the archive populates the other. `gate` projects, runs and
-# re-verifies in ONE process -- separate recipe lines would skip the
-# verification exactly when the gate failed. Locally this expands to the bare
-# command: the two roots are one directory and there is nothing to project.
+# re-verifies in ONE process -- separate recipe lines would skip the check
+# exactly when the gate failed. Locally this expands to the bare command.
 ifeq ($(HEW_CI_PREBUILT),1)
 projected_gate = @scripts/ci-project-shared-artifacts.sh gate "$(ARTIFACT_ROOT)" "$(CARGO_TARGET_ROOT)" '$(1)'
 else

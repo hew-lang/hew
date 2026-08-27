@@ -891,10 +891,9 @@ impl Builder {
     /// exit drains them permanently.
     ///
     /// Q205-B: mutable vars observe their final value at this program point
-    /// because the defer bodies are lowered inline here. Moved/consumed
-    /// bindings are caught by the MIR move-checker at the materialization
-    /// site — a use-after-move in the defer body produces a checker-stream
-    /// violation exactly as it would at a normal scope exit.
+    /// because the defer bodies are lowered inline here. The type checker's
+    /// defer replay validates captured bindings against this return edge's
+    /// move-state before HIR reaches this lowering step.
     pub(crate) fn emit_defers_for_return(&mut self) {
         // Walk from innermost scope to outermost (reverse of push order).
         for i in (0..self.active_scopes.len()).rev() {

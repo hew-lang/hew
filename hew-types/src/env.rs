@@ -4,7 +4,7 @@
 //! supporting let/var declarations and shadowing.
 
 use crate::ty::Ty;
-use hew_parser::ast::Span;
+use hew_parser::ast::{Expr, Span, Spanned};
 use std::collections::HashMap;
 
 /// Checker-local identity for a lexical binding.
@@ -220,6 +220,10 @@ pub enum ScopeWarningKind {
 #[derive(Debug, Clone, Default)]
 pub struct TypeEnv {
     scopes: Vec<HashMap<String, Binding>>,
+    /// Deferred bodies registered in each lexical scope, parallel to `scopes`.
+    deferred_scopes: Vec<Vec<Spanned<Expr>>>,
+    /// Lexical scope floors for active loops, paired with their optional labels.
+    loop_scope_floors: Vec<(Option<String>, usize)>,
     next_binding_id: u32,
 }
 
@@ -229,6 +233,8 @@ impl TypeEnv {
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
+            deferred_scopes: vec![Vec::new()],
+            loop_scope_floors: Vec::new(),
             next_binding_id: 0,
         }
     }
@@ -245,6 +251,7 @@ impl TypeEnv {
     /// Push a new scope onto the stack.
     pub fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.deferred_scopes.push(Vec::new());
     }
 
     /// Pop the current scope from the stack.
@@ -253,6 +260,82 @@ impl TypeEnv {
     /// Panics if there are no scopes to pop.
     pub fn pop_scope(&mut self) {
         self.scopes.pop().expect("cannot pop empty scope stack");
+        self.deferred_scopes
+            .pop()
+            .expect("cannot pop empty defer-scope stack");
+    }
+
+    /// Register a deferred body in the current lexical scope.
+    ///
+    /// Returns `false` only if the environment's scope stacks are inconsistent;
+    /// callers turn that invariant failure into a fail-closed diagnostic.
+    pub fn register_defer(&mut self, body: Spanned<Expr>) -> bool {
+        let Some(scope) = self.deferred_scopes.last_mut() else {
+            return false;
+        };
+        scope.push(body);
+        true
+    }
+
+    /// Deferred bodies materialized by the current scope's normal exit, in
+    /// runtime order (innermost registration first).
+    #[must_use]
+    pub fn current_scope_defers(&self) -> Vec<Spanned<Expr>> {
+        self.deferred_scopes
+            .last()
+            .into_iter()
+            .flat_map(|scope| scope.iter().rev().cloned())
+            .collect()
+    }
+
+    /// Deferred bodies materialized by a function-return edge, in runtime
+    /// order: innermost scope first, LIFO within each scope.
+    #[must_use]
+    pub fn return_edge_defers(&self) -> Vec<Spanned<Expr>> {
+        self.deferred_scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.iter().rev().cloned())
+            .collect()
+    }
+
+    /// Record the lexical scope depth immediately before a loop body opens.
+    pub fn enter_loop(&mut self, label: Option<&str>) {
+        self.loop_scope_floors
+            .push((label.map(str::to_string), self.deferred_scopes.len()));
+    }
+
+    /// Retire the innermost loop boundary.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no loop boundary is active, which indicates an unbalanced
+    /// checker traversal.
+    pub fn exit_loop(&mut self) {
+        self.loop_scope_floors
+            .pop()
+            .expect("cannot exit loop with no active loop boundary");
+    }
+
+    /// Deferred bodies materialized by a `break` or `continue` edge.
+    ///
+    /// An unlabeled edge targets the innermost loop. A labeled edge targets the
+    /// nearest active loop carrying that label. `None` fails closed when the
+    /// source checker cannot identify the loop boundary.
+    #[must_use]
+    pub fn loop_edge_defers(&self, label: Option<&str>) -> Option<Vec<Spanned<Expr>>> {
+        let (_, floor) = self
+            .loop_scope_floors
+            .iter()
+            .rev()
+            .find(|(candidate, _)| label.is_none() || candidate.as_deref() == label)?;
+        Some(
+            self.deferred_scopes[*floor..]
+                .iter()
+                .rev()
+                .flat_map(|scope| scope.iter().rev().cloned())
+                .collect(),
+        )
     }
 
     /// Define a variable in the current scope (synthetic, no source span — not warned about).
@@ -589,6 +672,9 @@ impl TypeEnv {
     )]
     pub fn pop_scope_with_warnings(&mut self) -> Vec<ScopeWarning> {
         let scope = self.scopes.pop().expect("cannot pop empty scope stack");
+        self.deferred_scopes
+            .pop()
+            .expect("cannot pop empty defer-scope stack");
         let mut warnings = Vec::new();
         for (name, binding) in &scope {
             let Some(span) = &binding.def_span else {

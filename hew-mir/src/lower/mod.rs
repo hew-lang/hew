@@ -1577,10 +1577,9 @@ struct Builder {
     /// `emit_pending_defers(scope_id)` drains and lowers them in LIFO
     /// (reverse registration) order at every exit from that scope.
     ///
-    /// Q205-B: bindings inside defer bodies resolve by lexical reference
-    /// at execution time — mutable vars observe their final value;
-    /// moved/consumed bindings are rejected by the move-checker at the
-    /// materialization site.
+    /// Q205-B: bindings inside defer bodies resolve at registration, while the
+    /// type checker replays their move-state checks on every materialization
+    /// edge. Lowering then reads live mutable bindings at execution time.
     pub(crate) pending_defers: HashMap<ScopeId, Vec<HirExpr>>,
     /// W3.031 Stage 1: per-binding `TraitObjectStorage` ledger for
     /// `dyn Trait` locals. Populated at the binding's introducing

@@ -1406,6 +1406,95 @@ def test_every_job_that_runs_the_router_declares_lint_ownership() -> None:
     )
 
 
+# ── contract: the compiled-Hew producer/consumer graph ───────────────────────
+
+# Only the wiring BETWEEN the jobs is asserted. A renamed artifact, a dropped
+# `needs:` edge or a matrix resized under a fixed denominator leaves each side
+# internally valid, and GitHub reports the mismatch as a skip or an empty
+# string, never a failure. Transport, paths and step order are proved by the
+# run: `if-no-files-found: error`, and an unpack that verifies the revision.
+ARCHIVE_JOB = "linux-nextest-archive"
+PRODUCER_JOB = "compiled-hew-linux"
+SHARD_JOB = "compiled-hew-shards"
+AGGREGATE_JOB = "compiled-hew-aggregate"
+REQUIRED_JOB = "linux-required"
+_UPLOAD = "actions/upload-artifact@"
+_DOWNLOAD = "actions/download-artifact@"
+
+
+def _needs(job: dict) -> list[str]:
+    found = job.get("needs")
+    found = [found] if isinstance(found, str) else (found or [])
+    return [name for name in found if isinstance(name, str)]
+
+
+def _artifacts(job: dict, action: str) -> list[str]:
+    """Names a job publishes or requests, `matrix.shard` globbed so the shard
+    upload template compares against the pattern the aggregate collects with."""
+    found: list[str] = []
+    for step in steps(job):
+        inputs = step.get("with") or {}
+        if str(step.get("uses", "")).startswith(action) and isinstance(inputs, dict):
+            name = inputs.get("name") or inputs.get("pattern")
+            if isinstance(name, str):
+                found.append(re.sub(r"\$\{\{\s*matrix\.shard\s*\}\}", "*", name))
+    return sorted(found)
+
+
+def test_the_compiled_hew_jobs_agree_on_their_graph_and_artifacts() -> None:
+    """Every edge, artifact name and partition size, read off both sides."""
+    all_jobs = jobs(load(WORKFLOWS / "ci.yml"))
+    text = {name: "\n".join(_job_strings(job)) for name, job in all_jobs.items()}
+    assert {ARCHIVE_JOB} <= set(_needs(all_jobs[PRODUCER_JOB])), PRODUCER_JOB
+    assert {PRODUCER_JOB} <= set(_needs(all_jobs[SHARD_JOB])), SHARD_JOB
+    consumed = set(_needs(all_jobs[AGGREGATE_JOB]))
+    assert {PRODUCER_JOB, SHARD_JOB} <= consumed, consumed
+    assert {AGGREGATE_JOB} <= set(_needs(all_jobs[REQUIRED_JOB])), REQUIRED_JOB
+
+    archive = _artifacts(all_jobs[ARCHIVE_JOB], _UPLOAD)
+    bundle = _artifacts(all_jobs[PRODUCER_JOB], _UPLOAD)
+    reports = _artifacts(all_jobs[SHARD_JOB], _UPLOAD)
+    collected = _artifacts(all_jobs[AGGREGATE_JOB], _DOWNLOAD)
+    assert _artifacts(all_jobs[PRODUCER_JOB], _DOWNLOAD) == archive != [], archive
+    assert _artifacts(all_jobs[SHARD_JOB], _DOWNLOAD) == bundle != [], bundle
+    assert collected == sorted(bundle + reports) != bundle, (collected, reports)
+
+    packs = "compiled-hew-artifact.py pack"
+    packers = {name for name, body in text.items() if packs in body}
+    assert packers == {PRODUCER_JOB}, packers
+
+    matrix = (all_jobs[SHARD_JOB].get("strategy") or {}).get("matrix") or {}
+    shards = [str(value) for value in matrix.get("shard") or []]
+    total = len(shards)
+    assert total >= 2 and shards == [str(n) for n in range(1, total + 1)], shards
+    ran = re.search(r"--partition[^\n]*matrix\.shard[^\n]*?/(\d+)", text[SHARD_JOB])
+    assert ran and ran.group(1) == str(total), (ran and ran.group(0), shards)
+    counts = re.findall(
+        r"(?:--shard-count\s+|HEW_SHARD_COUNT=)(\d+)", text[AGGREGATE_JOB]
+    )
+    assert counts and set(counts) == {str(total)}, (counts, total)
+
+
+def test_every_needs_expression_names_a_declared_dependency() -> None:
+    """An undeclared `needs.<job>.*` resolves to "", so its reader is guessing."""
+    stranded: list[str] = []
+    for name, job in jobs(load(WORKFLOWS / "ci.yml")).items():
+        read: set[str] = set()
+        for value in _job_strings(job):
+            read |= set(re.findall(r"needs\.([\w-]+)\.(?:result|outputs)", value))
+        stranded += [f"{name} reads needs.{miss}" for miss in read - set(_needs(job))]
+    assert not stranded, sorted(stranded)
+
+
+def test_the_required_linux_check_cannot_pass_without_a_compiled_hew_verdict() -> None:
+    """Executed, not read: `set -e` is the shell GitHub runs a `run:` block under."""
+    body = "set -e\n" + _aggregator_body(REQUIRED_JOB, "COMPILED_HEW_RESULT")
+    green = {"CHANGE_RESULT": "success", "RUST_GATES_RESULT": "success"}
+    for value in ("success", "failure", "cancelled", "skipped", ""):
+        code = _run_aggregator(body, {**green, "COMPILED_HEW_RESULT": value})
+        assert (code == 0) is (value == "success"), (value or "<empty>", code)
+
+
 def _discover_tests() -> list:
     return [
         value

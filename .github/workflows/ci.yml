@@ -161,7 +161,7 @@ jobs:
           test -x .ast-grep/tool/bin/ast-grep
           test -f .ast-grep/hew-lang.so
           # Rooted INSIDE .ast-grep so a consumer unpacks into that one
-          # ignored directory rather than over its checkout.
+          # ignored directory, not over its checkout.
           tar --zstd -cf "$RUNNER_TEMP/ast-grep-toolchain.tar.zst" -C .ast-grep .
           {
             echo "### ast-grep toolchain (producer)"
@@ -176,8 +176,7 @@ jobs:
         with:
           name: ast-grep-toolchain-${{ github.sha }}
           path: ${{ runner.temp }}/ast-grep-toolchain.tar.zst
-          # Already a Zstandard tarball; re-deflating it is runner minutes
-          # spent to grow the upload.
+          # Already a Zstandard tarball; re-deflating grows the upload.
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -1128,9 +1127,9 @@ jobs:
           test -s "$target/wasm32-wasip1/debug/libhew_runtime.a"
           test -s "$target/wasm32-wasip1/debug/libhew_std.a"
 
-          # Precreated so the freeze can be total: with `$target` itself
-          # read-only, no gate can unlink or rename a certified tree. The third
-          # leaf is forced-cancel's own target dir, which it hardcodes.
+          # Precreated so the freeze can be total: a read-only `$target` lets
+          # no gate unlink or rename a certified tree. The third leaf is
+          # forced-cancel's own target dir, which it hardcodes.
           mkdir -p "$target/nextest/ci" "$target/nextest/ci-cabi" "$target/forced-cancel-gate"
           chmod -R a-w "$target"
           chmod u+w "$target/nextest/ci" "$target/nextest/ci-cabi" "$target/forced-cancel-gate"

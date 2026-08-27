@@ -439,10 +439,10 @@ def assert_the_archive_is_not_cargos_output_directory(text: str) -> None:
         "the extracted tree stays writable; the separation would be trusted "
         "rather than enforced"
     )
-    thawed = re.search(r"chmod u\+w (.*)", body).group(1)
+    widen = " ".join(re.findall(r"chmod [^\n]*\+w (.*)", body))
     leaves = ["/nextest/ci", "/nextest/ci-cabi", "/forced-cancel-gate"]
-    assert re.findall(r'"\$target(/[^"]*)?"', thawed) == leaves, (
-        f"only leaf directories may be thawed; a writable root is fatal: {thawed}"
+    assert re.findall(r'"\$target(/[^"]*)?"', widen) == leaves, (
+        f"exactly these leaves may be thawed, once: {widen}"
     )
     for exported in ("HEW_CI_NEXTEST_TARGET_DIR=", "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"):
         assert exported in body, f"{exported} is never exported to the gates"
@@ -464,6 +464,7 @@ def test_pointing_cargo_at_the_archive_is_rejected() -> None:
         ),
         text.replace('          chmod -R a-w "$target"\n', ""),
         text.replace("chmod u+w ", 'chmod u+w "$target" '),
+        text.replace('.probe"\n', '.probe"\n          chmod u+w "$target"\n', 1),
     ):
         assert mutation != text, "the mutation matched nothing; the test is vacuous"
         try:

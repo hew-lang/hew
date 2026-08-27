@@ -440,8 +440,9 @@ def assert_the_archive_is_not_cargos_output_directory(text: str) -> None:
         "rather than enforced"
     )
     thawed = re.search(r"chmod u\+w (.*)", body).group(1)
-    assert '"$target/nextest"' not in thawed, (
-        f"a writable $target/nextest lets a gate replace its metadata: {thawed}"
+    leaves = ["/nextest/ci", "/nextest/ci-cabi", "/forced-cancel-gate"]
+    assert re.findall(r'"\$target(/[^"]*)?"', thawed) == leaves, (
+        f"only leaf directories may be thawed; a writable root is fatal: {thawed}"
     )
     for exported in ("HEW_CI_NEXTEST_TARGET_DIR=", "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"):
         assert exported in body, f"{exported} is never exported to the gates"
@@ -462,7 +463,7 @@ def test_pointing_cargo_at_the_archive_is_rejected() -> None:
             '            echo "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"',
         ),
         text.replace('          chmod -R a-w "$target"\n', ""),
-        text.replace('chmod u+w "$target" "$t', 'chmod u+w "$target/nextest" "$t'),
+        text.replace("chmod u+w ", 'chmod u+w "$target" '),
     ):
         assert mutation != text, "the mutation matched nothing; the test is vacuous"
         try:
@@ -538,9 +539,10 @@ def test_the_projection_honours_on_missing_and_always_verifies_its_gate() -> Non
         # An entry anchored elsewhere, or resolving outside `target/`, is a
         # manifest error before a single source is touched.
         anchored = '{{ path = "{}", relative-to = "target" }}'
+        outside = ("/etc/shadow", "//etc/shadow", "../etc", "a/../../b", ".")
         for n, bad in enumerate(
             ['{ path = "debug/hew" }', '{ path = "debug/hew", relative-to = "x" }']
-            + [anchored.format(p) for p in ("/etc/shadow", "../etc", "a/../../b", ".")]
+            + [anchored.format(p) for p in outside]
         ):
             bent = Path(raw) / f"bent{n}"
             fixture(bent, manifest=f"[profile.ci]\narchive.include = [{bad}]\n")

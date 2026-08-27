@@ -122,15 +122,14 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # ast-grep toolchain — built once, read by every job that structural-lints.
-  # Cost and history: docs/dev/ci-tiers-and-routing.md.
-  #
+  # ast-grep toolchain — built once, read by every job that structural-lints;
+  # cost and history in docs/dev/ci-tiers-and-routing.md.
   # A tarball rather than the directory: `upload-artifact` preserves neither
   # executable bits nor dotfiles, and consumers need
   # `.ast-grep/tool/bin/ast-grep` to be a dotfile that runs. There is
   # deliberately NO job-level `if:`: a skipped job is not a satisfied
-  # dependency, so gating the job would strand three required contexts on
-  # docs-only changes. The gate is on the steps, published as an output.
+  # dependency, so gating it would strand three required contexts on docs-only
+  # changes. The gate is on the steps, published as an output.
   # ─────────────────────────────────────────────────────────────────────────
   ast-grep-toolchain:
     name: Build ast-grep toolchain
@@ -277,8 +276,8 @@ jobs:
         run: cargo fmt --all -- --check
 
       # Structural-lints on every route, including the docs-only one where
-      # the producer no-opped -- hence the fall back to installing, keyed on
-      # the producer's own output rather than a re-derived route.
+      # the producer no-opped -- hence the fall back, keyed on the producer's
+      # own output rather than a re-derived route.
       - name: Provision pinned ast-grep toolchain
         uses: ./.github/actions/setup-ast-grep
         with:
@@ -936,8 +935,8 @@ jobs:
         # FIRST step, before the checkout and before any action consumes
         # Cargo's default: this job materializes the archive at the checkout's
         # own `target/`. Swatinem/rust-cache resolves what it caches as
-        # `<workspace>/target` and never reads CARGO_TARGET_DIR, so
-        # `cache-targets: 'false'` below is the other half of this.
+        # `<workspace>/target` and never reads CARGO_TARGET_DIR, hence
+        # `cache-targets: 'false'` below.
         run: |
           set -euo pipefail
           cargo_target="$RUNNER_TEMP/ci-cargo-target"
@@ -1129,13 +1128,14 @@ jobs:
           test -s "$target/wasm32-wasip1/debug/libhew_runtime.a"
           test -s "$target/wasm32-wasip1/debug/libhew_std.a"
 
-          # JUnit dirs made before the freeze so `$target/nextest` stays
-          # read-only: its metadata cannot then be unlinked and replaced.
-          mkdir -p "$target/nextest/ci" "$target/nextest/ci-cabi"
+          # Precreated so the freeze can be total: with `$target` itself
+          # read-only, no gate can unlink or rename a certified tree. The third
+          # leaf is forced-cancel's own target dir, which it hardcodes.
+          mkdir -p "$target/nextest/ci" "$target/nextest/ci-cabi" "$target/forced-cancel-gate"
           chmod -R a-w "$target"
-          chmod u+w "$target" "$target/nextest/ci" "$target/nextest/ci-cabi"
-          touch "$target/nextest/ci/.probe" "$target/nextest/ci-cabi/.probe"
-          rm "$target/nextest/ci/.probe" "$target/nextest/ci-cabi/.probe"
+          chmod u+w "$target/nextest/ci" "$target/nextest/ci-cabi" "$target/forced-cancel-gate"
+          touch "$target/nextest/ci/.probe" "$target/nextest/ci-cabi/.probe" "$target/forced-cancel-gate/.probe"
+          rm "$target/nextest/ci/.probe" "$target/nextest/ci-cabi/.probe" "$target/forced-cancel-gate/.probe"
 
           {
             echo "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"

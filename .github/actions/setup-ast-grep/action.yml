@@ -2,9 +2,8 @@ name: Setup pinned ast-grep
 description: >
   Provision the pinned ast-grep binary and the Hew tree-sitter grammar into
   .ast-grep/, either by building it (source: install) or by unpacking the
-  toolchain artifact another job already built (source: artifact). Both paths
-  end at the same verification, so a consumer cannot accept a tree the producer
-  would have rejected.
+  toolchain artifact another job built (source: artifact). Both end at the same
+  verification, so a consumer cannot accept a tree the producer would reject.
 
 inputs:
   source:

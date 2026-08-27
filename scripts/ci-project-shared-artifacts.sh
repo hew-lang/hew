@@ -58,8 +58,8 @@ for entry in include:
     if not isinstance(entry, dict):
         sys.exit(f"archive.include entry is not a table: {entry!r}")
     path, policy = entry.get("path"), entry.get("on-missing", "error")
-    parts = pathlib.PurePosixPath(path).parts if isinstance(path, str) else ()
-    if not parts or parts[0] == "/" or ".." in parts:
+    posix = pathlib.PurePosixPath(path if isinstance(path, str) else "")
+    if not posix.parts or posix.is_absolute() or ".." in posix.parts:
         sys.exit(f"archive.include entry has no usable relative path: {entry!r}")
     if entry.get("relative-to") != "target":
         sys.exit(f"relative-to must be \"target\": {entry!r}")

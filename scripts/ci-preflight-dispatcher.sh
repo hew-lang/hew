@@ -1852,8 +1852,23 @@ fi
 # The fast-tier members need no compiler build, so they are proved FIRST, before
 # warm-up, and only for the gates this lane actually runs; scripts/baselines.py
 # owns both the membership and the regen command it prints for a stale artefact.
-BASELINE_LANE_FILE=".tmp/preflight-lane.txt"
-BASELINE_PRECHECK="make baselines-check BASELINE_TIER=fast BASELINE_GATES=$BASELINE_LANE_FILE"
+#
+# The lane list is a PER-INVOCATION temporary file, not a fixed path in the
+# repository.  It used to be `.tmp/preflight-lane.txt`, which made every
+# concurrent dispatcher share one mutable file: the comprehensive lane runs its
+# gates in parallel, and `make ci-preflight-*` gates — plus the dispatcher's own
+# self-tests and counterfactuals — nest further dispatchers inside them.  The
+# last writer won, so a lane could be checked against a sibling's gate list.
+# That reproduces only under concurrency, which is why it survived every serial
+# local run and appeared as Ubuntu-only baseline-selection failures.
+#
+# The command STRING is a fixed literal that names the variable rather than the
+# path, for two reasons: `command_timeout` and the profile corpus are keyed by
+# the command text, so a per-run path would fragment both; and the executing
+# shell expands it with proper quoting, so a temporary directory containing
+# spaces still resolves to one argument.
+# shellcheck disable=SC2016  # deliberate: the executing shell expands this.
+BASELINE_PRECHECK='make baselines-check BASELINE_TIER=fast BASELINE_GATES="$PREFLIGHT_BASELINE_LANE_FILE"'
 RUN_BASELINE_PRECHECK=1
 if (( SHARD_INDEX > 1 )); then
     RUN_BASELINE_PRECHECK=0
@@ -1861,6 +1876,10 @@ fi
 if (( RUN_BASELINE_PRECHECK == 1 )); then
     echo "Baseline precheck:"
     echo "  - $BASELINE_PRECHECK"
+    # The command line names a variable, so say what goes in it.  A reader of a
+    # dry run needs the lane the baselines are scoped to, not the file it is
+    # spelled in.
+    echo "    lane file: per-invocation temporary listing ${#BASELINE_COMMANDS[@]} gate(s)"
 else
     echo "Baseline precheck: runs in shard 1/$SHARD_COUNT before warm-up."
 fi
@@ -2090,8 +2109,16 @@ PREFLIGHT_PRECHECK_ELAPSED=0
 if (( RUN_BASELINE_PRECHECK == 1 )); then
     # Shard 1 owns this once-per-lane check and uses the pre-sharded command
     # list, so baseline members covered by another shard are still checked first.
-    mkdir -p "$(dirname "$REPO_ROOT/$BASELINE_LANE_FILE")"
-    printf '%s\n' "${BASELINE_COMMANDS[@]}" > "$REPO_ROOT/$BASELINE_LANE_FILE"
+    #
+    # The lane list is private to THIS invocation and removed on exit however
+    # this script ends, including the failure paths: a dispatcher nested inside
+    # a gate of another dispatcher must not be able to observe, overwrite, or
+    # leak the outer lane's selection.
+    PREFLIGHT_BASELINE_LANE_FILE="$(mktemp "${TMPDIR:-/tmp}/preflight-lane.XXXXXX")"
+    export PREFLIGHT_BASELINE_LANE_FILE
+    # shellcheck disable=SC2064  # expand the path now; the variable is reused.
+    trap "rm -f -- '$PREFLIGHT_BASELINE_LANE_FILE'" EXIT
+    printf '%s\n' "${BASELINE_COMMANDS[@]}" > "$PREFLIGHT_BASELINE_LANE_FILE"
     if ! run_timed_command "$BASELINE_PRECHECK" precheck; then
         PREFLIGHT_PRECHECK_STATUS=1
         PREFLIGHT_FAILURES+=("baseline precheck")

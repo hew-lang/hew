@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,9 +17,11 @@ SCRIPT = ROOT / "scripts" / "ci-preflight-dispatcher.sh"
 # The dispatcher proves the fast-tier derived baselines are current BEFORE it
 # warms anything, so a baseline that drifted when main moved fails in seconds
 # instead of at the far end of the lane. Its command line is fixed so the
-# profile and summary rows stay comparable across runs.
+# profile and summary rows stay comparable across runs -- which is why it names
+# a variable rather than the per-invocation temporary path that variable holds.
 PRECHECK = (
-    "make baselines-check BASELINE_TIER=fast BASELINE_GATES=.tmp/preflight-lane.txt"
+    "make baselines-check BASELINE_TIER=fast "
+    'BASELINE_GATES="$PREFLIGHT_BASELINE_LANE_FILE"'
 )
 
 
@@ -30,6 +33,11 @@ def _hermetic_env(
     for key in tuple(run_env):
         if (
             key == "CI"
+            # The Linux CI shards export this so Cargo writes somewhere other
+            # than the materialized test archive. It is a real setting of a
+            # real job, and it must not reach a dispatcher unit test, where it
+            # would silently relocate every build these gates describe.
+            or key == "CARGO_TARGET_DIR"
             or key == "COMPILED_HEW_GATE_OWNER"
             or key == "PLAYGROUND_GATE_OWNER"
             or key.startswith("GITHUB_")
@@ -532,6 +540,100 @@ def test_baseline_precheck_is_scoped_to_selection() -> None:
     assert members == ["wasm-capability"], scoped.stdout
 
 
+def test_concurrent_dispatchers_cannot_corrupt_each_others_baseline_lane() -> None:
+    """Two overlapping invocations each check their OWN gates.
+
+    The lane list used to be one fixed file in the repository. The
+    comprehensive lane runs its gates concurrently and several of them nest a
+    further dispatcher, so the last writer won and a lane could be checked
+    against a sibling's gate list -- Ubuntu-only baseline-selection failures
+    that every serial local run missed.
+
+    The barrier below is what makes this a proof rather than a timing hope:
+    neither invocation reads its lane until BOTH have written one, so a shared
+    path would deterministically hand at least one of them the other's gates.
+    """
+    with tempfile.TemporaryDirectory() as raw:
+        scratch = Path(raw)
+        rendezvous = scratch / "rendezvous"
+        rendezvous.mkdir()
+        record = scratch / "record.tsv"
+        record.touch()
+        fake_bin = scratch / "bin"
+        fake_bin.mkdir()
+
+        # Stands in for `make baselines-check` and records what the lane file
+        # actually said at the moment this invocation read it.
+        fake_make = fake_bin / "make"
+        fake_make.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'case "$*" in *baselines-check*) ;; *) exit 0 ;; esac\n'
+            'lane=""\n'
+            'for arg in "$@"; do\n'
+            '  case "$arg" in BASELINE_GATES=*) lane="${arg#BASELINE_GATES=}" ;; esac\n'
+            "done\n"
+            ': > "$PREFLIGHT_RENDEZVOUS/$PREFLIGHT_TAG.ready"\n'
+            "waited=0\n"
+            'while [ "$waited" -lt 400 ]; do\n'
+            '  set -- "$PREFLIGHT_RENDEZVOUS"/*.ready\n'
+            '  [ "$#" -lt 2 ] || break\n'
+            "  sleep 0.05\n"
+            "  waited=$((waited + 1))\n"
+            "done\n"
+            'printf \'%s\\t%s\\t%s\\n\' "$PREFLIGHT_TAG" "$lane" '
+            '"$(tr \'\\n\' \',\' < "$lane")" >> "$PREFLIGHT_RECORD"\n',
+            encoding="utf-8",
+        )
+        fake_make.chmod(0o755)
+
+        def invoke(tag: str) -> subprocess.CompletedProcess[str]:
+            return _run_dispatcher_process(
+                ["bash", str(SCRIPT), "--", "Makefile"],
+                env={
+                    "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                    "PREFLIGHT_TEST_COMMANDS": f"printf '%s' {tag} >/dev/null\n",
+                    "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
+                    "PREFLIGHT_TAG": tag,
+                    "PREFLIGHT_RENDEZVOUS": str(rendezvous),
+                    "PREFLIGHT_RECORD": str(record),
+                },
+                path_prefix=(fake_bin,),
+                timeout=120,
+            )
+
+        tags = ("LANE_ONE", "LANE_TWO")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = dict(zip(tags, pool.map(invoke, tags)))
+        transcript = record.read_text(encoding="utf-8")
+
+    for tag, result in results.items():
+        assert result.returncode == 0, f"{tag}: {result.stdout}{result.stderr}"
+
+    rows = [line.split("\t") for line in transcript.splitlines() if line]
+    assert len(rows) == 2, rows
+    seen = {tag: (lane, contents) for tag, lane, contents in rows}
+    assert set(seen) == set(tags), rows
+
+    for tag, (_lane, contents) in seen.items():
+        assert contents == f"printf '%s' {tag} >/dev/null,", (
+            f"{tag} checked baselines against another lane's gates: {rows}"
+        )
+    for tag, (lane, _contents) in seen.items():
+        assert not lane.startswith(str(ROOT) + os.sep), (
+            f"{tag} wrote its lane into the repository at {lane}; a shared "
+            "path is the defect this test exists for"
+        )
+
+    one_lane, two_lane = (seen[tag][0] for tag in tags)
+    assert one_lane != two_lane, rows
+    for lane in (one_lane, two_lane):
+        assert not Path(lane).exists(), f"{lane} outlived the invocation that made it"
+    assert not (ROOT / ".tmp" / "preflight-lane.txt").exists(), (
+        "the shared lane file is back"
+    )
+
+
 def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:
     """Compile profiles warm artifacts before their watchdog-timed commands."""
     result = run_dispatcher(
@@ -663,6 +765,21 @@ def _selected_commands(stdout: str) -> list[str]:
             break
         commands.append(line[len("  - ") :].split("  (budget:")[0])
     return commands
+
+
+def _position(commands: list[str] | str, needle: str, transcript: str) -> int:
+    """`index` that says which command is missing instead of raising ValueError.
+
+    An ordering assertion whose subject was never selected is a selection
+    defect, and it must read as one. A bare `.index` turns it into an uncaught
+    ValueError with the transcript nowhere in sight.
+    """
+    if needle not in commands:
+        raise AssertionError(
+            f"{needle!r} was never selected, so nothing can be ordered "
+            f"against it.\nstdout:\n{transcript}"
+        )
+    return commands.index(needle)
 
 
 def _warmup_commands(stdout: str) -> list[str]:
@@ -1664,9 +1781,11 @@ def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
     assert "make lint" in commands, result.stdout
     assert "make test" in commands, result.stdout
 
-    fmt_pos = commands.index("cargo fmt --all -- --check")
-    clippy_pos = commands.index("cargo clippy --workspace --tests -- -D warnings")
-    test_pos = commands.index("make test")
+    fmt_pos = _position(commands, "cargo fmt --all -- --check", result.stdout)
+    clippy_pos = _position(
+        commands, "cargo clippy --workspace --tests -- -D warnings", result.stdout
+    )
+    test_pos = _position(commands, "make test", result.stdout)
     assert fmt_pos < clippy_pos < test_pos, result.stdout
 
     makefile = (ROOT / "Makefile").read_text()
@@ -1747,9 +1866,9 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     # Ratchets must appear after make test (Rust suite runs first).
     # The budget annotation "(budget: Xs)" may appear on the same line in dry-run.
     commands = _selected_commands(result.stdout)
-    test_pos = commands.index("make test")
-    hew_pos = commands.index("make test-hew-ratchet")
-    stdlib_pos = commands.index("make test-stdlib-ratchet")
+    test_pos = _position(commands, "make test", result.stdout)
+    hew_pos = _position(commands, "make test-hew-ratchet", result.stdout)
+    stdlib_pos = _position(commands, "make test-stdlib-ratchet", result.stdout)
     assert test_pos < hew_pos, (
         f"Expected make test before make test-hew-ratchet.\nstdout:\n{result.stdout}"
     )

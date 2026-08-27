@@ -788,11 +788,13 @@ licenses-check:
 #
 # BASELINE_TIER=fast restricts to members that need no compiler build (what the
 # preflight dispatcher runs before its warm-up).  BASELINE_GATES=<file> further
-# restricts to members whose gate appears in that file's command list.
+# restricts to members whose gate appears in that file's command list.  The
+# dispatcher passes a per-invocation temporary path, so the value is quoted:
+# nothing here may assume the runner's scratch directory has no spaces in it.
 BASELINE_TIER ?=
 BASELINE_GATES ?=
 BASELINE_SELECT = $(if $(BASELINE_TIER),--tier $(BASELINE_TIER),)
-BASELINE_SCOPE = $(if $(BASELINE_GATES),--relevant-to-file $(BASELINE_GATES),)
+BASELINE_SCOPE = $(if $(BASELINE_GATES),--relevant-to-file "$(BASELINE_GATES)",)
 
 baselines:
 	python3 scripts/baselines.py regen $(BASELINE_SELECT)

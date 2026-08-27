@@ -242,6 +242,47 @@ def assert_materialization_precedes_every_gate(text: str) -> None:
         assert exported in step, f"{exported} is never exported to the gates"
 
 
+def assert_materialization_extracts_at_the_same_root_it_remaps(text: str) -> None:
+    """Same-root extraction, not a staging directory and a later `mv`.
+
+    `cargo nextest list` recreates `$GITHUB_WORKSPACE/target` while it
+    resolves the workspace, before any later `mv` in the step body would run,
+    so a staging directory plus `mv "$staging/target" "$target"` finds a
+    directory already at the destination and nests one level down
+    (`target/target/...`) instead of replacing it. Every path the step checks
+    next then reads nothing, and every bare `test` under `set -e` exits
+    silently -- the defect this asserts against. Extracting straight into the
+    same root `--workspace-remap` names, with `--extract-overwrite` for a
+    rerun, is the one shape with no second path for the tree to land at.
+    """
+    step = step_named(jobs(text)[CONSUMER_JOB], "Materialize the Linux test archive")
+    body = "\n".join(
+        line for line in step.splitlines() if not line.strip().startswith("#")
+    )
+    assert '--extract-to "$GITHUB_WORKSPACE"' in body, (
+        "the archive is not extracted straight into $GITHUB_WORKSPACE"
+    )
+    assert '--workspace-remap "$GITHUB_WORKSPACE"' in body, (
+        "the workspace remap no longer names $GITHUB_WORKSPACE"
+    )
+    assert "--extract-overwrite" in body, (
+        "a rerun of this step would fail on the leftover tree from the last one"
+    )
+    for reintroduced in ("staging", 'mv "', "rmdir "):
+        assert reintroduced not in body, (
+            f"the staging-directory-then-{reintroduced!r} topology returned; "
+            "cargo nextest list recreates $GITHUB_WORKSPACE/target before any "
+            "later mv runs, and POSIX mv nests the tree instead of replacing it"
+        )
+    assert "::error::the Linux test archive is missing" in body, (
+        "a missing archive member reports nothing actionable"
+    )
+    for path in REQUIRED_ARCHIVE_PATHS:
+        assert f'"$target/{path}' in body, (
+            f"the diagnostic loop no longer checks {path}"
+        )
+
+
 def assert_the_two_target_authorities_are_separate(text: str) -> None:
     """The archive lands on the producer's path; Cargo writes somewhere else.
 
@@ -297,6 +338,7 @@ def test_the_workflow_builds_once_and_fails_closed() -> None:
     assert_producer_gates_the_shards(text)
     assert_transport_is_fail_closed(text)
     assert_materialization_precedes_every_gate(text)
+    assert_materialization_extracts_at_the_same_root_it_remaps(text)
     assert_the_two_target_authorities_are_separate(text)
     assert_no_target_directory_transfer(text)
     assert_the_summary_reports_the_cost(text)
@@ -359,6 +401,38 @@ def test_each_workflow_property_rejects_its_own_defect() -> None:
     rejects(
         text.replace('echo "- extract: \\`${extract_seconds}s\\`"', "true"),
         assert_the_summary_reports_the_cost,
+    )
+    rejects(
+        text.replace(
+            '            --extract-to "$GITHUB_WORKSPACE" \\\n'
+            "            --extract-overwrite \\\n",
+            '            --extract-to "$RUNNER_TEMP/ci-linux-nextest-staging" \\\n',
+        ),
+        assert_materialization_extracts_at_the_same_root_it_remaps,
+    )
+    rejects(
+        text.replace("            --extract-overwrite \\\n", ""),
+        assert_materialization_extracts_at_the_same_root_it_remaps,
+    )
+    rejects(
+        text.replace(
+            '          rm -rf "$target"\n',
+            '          staging="$RUNNER_TEMP/ci-linux-nextest-staging"\n'
+            '          rm -rf "$target" "$staging"\n'
+            '          mkdir -p "$staging"\n',
+        ),
+        assert_materialization_extracts_at_the_same_root_it_remaps,
+    )
+    rejects(
+        text.replace(
+            '            echo "::error::the Linux test archive is missing $kind at $path"\n',
+            "",
+        ),
+        assert_materialization_extracts_at_the_same_root_it_remaps,
+    )
+    rejects(
+        text.replace('            "$target/debug/libhew_runtime.a:f" \\\n', ""),
+        assert_materialization_extracts_at_the_same_root_it_remaps,
     )
 
 

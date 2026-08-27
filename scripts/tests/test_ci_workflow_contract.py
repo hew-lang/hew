@@ -177,6 +177,25 @@ def _resolve(destination: str, assignments: dict[str, str], depth: int = 0) -> s
     return text
 
 
+_WORKSPACE_ROOT = re.compile(
+    r"^\$(?:\{)?(?:env:)?GITHUB_WORKSPACE\}?"
+    r"|^\$\{\{\s*github\.workspace\s*\}\}"
+)
+
+
+def _workspace_relative(text: str) -> str | None:
+    """The remainder after `$GITHUB_WORKSPACE`, or `None` if it names no root.
+
+    A workspace-rooted destination is not automatically outside the router's
+    view the way `$RUNNER_TEMP` is: it names the checkout itself, so this
+    only strips the root; the caller still asks Git about what follows it.
+    """
+    match = _WORKSPACE_ROOT.match(text)
+    if not match:
+        return None
+    return text[match.end() :].lstrip("/")
+
+
 def _visible_to_git(destination: str) -> bool:
     """True when the router would see an artefact written here."""
     text = destination.strip().strip('"').strip("'")
@@ -191,7 +210,10 @@ def _visible_to_git(destination: str) -> bool:
         or re.match(r"^[A-Za-z]:[\\/]", text)
     ):
         return False
-    if text.startswith("$"):
+    workspace_relative = _workspace_relative(text)
+    if workspace_relative is not None:
+        text = workspace_relative
+    elif text.startswith("$"):
         # An unresolved variable is an unanswerable question, and an
         # unanswerable question about workspace cleanliness fails closed.
         return True
@@ -210,14 +232,35 @@ def _visible_to_git(destination: str) -> bool:
     )
 
 
-def extraction_destinations(body: str) -> list[tuple[str, str | None]]:
-    """(command, resolved destination) for every archive extraction in a body.
+def _nextest_visible_to_git(destination: str) -> bool:
+    """True when a `cargo nextest list --extract-to DESTINATION` is seen.
+
+    An archive built at this repository's default `CARGO_TARGET_DIR` stores
+    every path relative to the workspace root under a single `target/`
+    subtree, so `--extract-to DEST` always lands there, never at `DEST`
+    itself. A destination naming the checkout root is only as visible as
+    `DEST/target`, which `.gitignore` already owns.
+    """
+    workspace_relative = _workspace_relative(destination.strip().strip('"').strip("'"))
+    if workspace_relative is None:
+        return _visible_to_git(destination)
+    combined = f"{workspace_relative}/target" if workspace_relative else "target"
+    return _visible_to_git(combined)
+
+
+def extraction_destinations(
+    body: str,
+) -> list[tuple[str, str | None, str]]:
+    """(command, resolved destination, kind) for every extraction in a body.
 
     `None` means the command named no destination at all, which is the same
-    defect as naming the checkout — worse, because it is invisible.
+    defect as naming the checkout — worse, because it is invisible. `kind`
+    distinguishes `nextest`, whose destination is a workspace root the tool
+    writes a `target/` subtree under, from a plain archive extractor, whose
+    destination is where its contents land directly.
     """
     assignments = _assignments(body)
-    found: list[tuple[str, str | None]] = []
+    found: list[tuple[str, str | None, str]] = []
     for raw in body.splitlines():
         line = raw.strip()
         if line.startswith("#"):
@@ -225,24 +268,35 @@ def extraction_destinations(body: str) -> list[tuple[str, str | None]]:
         if _TAR_EXTRACT.search(line):
             match = _TAR_DESTINATION.search(line)
             found.append(
-                (line, _resolve(match.group(1), assignments) if match else None)
+                (line, _resolve(match.group(1), assignments) if match else None, "tar")
             )
         for command in _EXPAND_ARCHIVE.findall(line):
             match = _EXPAND_DESTINATION.search(command)
             found.append(
-                (command, _resolve(match.group(1), assignments) if match else None)
+                (
+                    command,
+                    _resolve(match.group(1), assignments) if match else None,
+                    "tar",
+                )
             )
         nextest = _NEXTEST_EXTRACT.search(line)
         if nextest:
-            found.append((line, _resolve(nextest.group(1), assignments)))
+            found.append((line, _resolve(nextest.group(1), assignments), "nextest"))
     return found
 
 
 def offending_extractions(bodies: list[tuple[str, str, str]], origin: str) -> list[str]:
     offences = []
     for job_name, step_name, body in bodies:
-        for command, destination in extraction_destinations(body):
-            if destination is not None and not _visible_to_git(destination):
+        for command, destination, kind in extraction_destinations(body):
+            visible = (
+                _nextest_visible_to_git(destination)
+                if kind == "nextest" and destination is not None
+                else _visible_to_git(destination)
+                if destination is not None
+                else True
+            )
+            if not visible:
                 continue
             offences.append(
                 f"{origin} {job_name} / {step_name}: {command} "
@@ -254,8 +308,9 @@ def offending_extractions(bodies: list[tuple[str, str, str]], origin: str) -> li
 def test_every_archive_extraction_names_a_destination_the_router_cannot_see() -> None:
     """Four wasmtime unpacks in `$PWD` made every run report `undeclared: …`.
 
-    Extraction calls only: the Linux archive reaches `target/` by `mv` from
-    staging, and where it lands is the prebuilt path contract's business.
+    Extraction calls only: the Linux archive reaches `target/` directly, at
+    the same root `--workspace-remap` names, and `target/` is where the
+    prebuilt path contract's business starts.
     """
     offences: list[str] = []
     for path in workflow_files():
@@ -317,6 +372,41 @@ def test_the_extraction_rule_accepts_a_destination_the_router_cannot_see() -> No
         "tar -xf a.tar.gz -C dist/test-tarball",
     ):
         assert not offending_extractions([("j", "s", allowed)], "fixture"), allowed
+
+
+def test_the_nextest_extraction_rule_reads_a_workspace_root_by_its_target_subtree() -> (
+    None
+):
+    """`--extract-to $GITHUB_WORKSPACE` lands under `target/`, which is ignored.
+
+    Falsifiability the other way: naming the checkout root with a plain
+    `tar`, which carries no such guarantee about where its contents land,
+    must still read red for the exact same destination string.
+    """
+    same_root = 'cargo nextest list --extract-to "$GITHUB_WORKSPACE" --workspace-remap "$GITHUB_WORKSPACE"'
+    assert not offending_extractions([("j", "s", same_root)], "fixture"), same_root
+
+    braced = 'cargo nextest list --extract-to "${GITHUB_WORKSPACE}"'
+    assert not offending_extractions([("j", "s", braced)], "fixture"), braced
+
+    tar_into_workspace_root = 'tar -xzf a.tar.gz -C "$GITHUB_WORKSPACE"'
+    assert offending_extractions([("j", "s", tar_into_workspace_root)], "fixture"), (
+        "a plain tar extraction straight into $GITHUB_WORKSPACE was accepted; "
+        "the target/ exemption is a nextest-specific fact, not a blanket one"
+    )
+
+    # Same subdirectory, two tools: nextest still lands its bytes at
+    # `<dest>/target`, which stays invisible; a plain tar extraction has no
+    # such guarantee and puts its bytes at `<dest>` itself, which does not.
+    nextest_into_subdir = 'cargo nextest list --extract-to "$GITHUB_WORKSPACE/scripts"'
+    assert not offending_extractions([("j", "s", nextest_into_subdir)], "fixture"), (
+        nextest_into_subdir
+    )
+
+    tar_into_same_subdir = 'tar -xzf a.tar.gz -C "$GITHUB_WORKSPACE/scripts"'
+    assert offending_extractions([("j", "s", tar_into_same_subdir)], "fixture"), (
+        "a tar extraction into a tracked subdirectory of $GITHUB_WORKSPACE was accepted"
+    )
 
 
 # ── contract: cache keys follow the rustc fingerprint ────────────────────────

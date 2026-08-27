@@ -1076,7 +1076,6 @@ jobs:
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/ci-linux-nextest-download/ci-linux-nextest.tar.zst"
-          staging="$RUNNER_TEMP/ci-linux-nextest-staging"
           target="$GITHUB_WORKSPACE/target"
           test -s "$archive"
           # Asserted, not assumed: without the first step Cargo's default IS
@@ -1093,13 +1092,24 @@ jobs:
             ls -A "$target"
             exit 1
           fi
-          rm -rf "$target" "$staging"
-          mkdir -p "$staging"
+          rm -rf "$target"
 
+          # `--extract-to` and `--workspace-remap` name the SAME root. A
+          # staging directory plus a `mv "$staging/target" "$target"` was
+          # tried and rejected: `cargo nextest list` itself recreates
+          # `$GITHUB_WORKSPACE/target` while it resolves the workspace before
+          # the `mv` ever runs, so POSIX `mv` finds a directory already at the
+          # destination and nests one level down (`target/target/...`)
+          # instead of replacing it. Every path under `$target` in the checks
+          # below then reads nothing and every `test` exits silently, four
+          # shards at once. Extracting straight into `$GITHUB_WORKSPACE`
+          # (with `--extract-overwrite` for a rerun) is the one shape with no
+          # second path for the tree to land at.
           start=$SECONDS
           cargo nextest list \
             --archive-file "$archive" \
-            --extract-to "$staging" \
+            --extract-to "$GITHUB_WORKSPACE" \
+            --extract-overwrite \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile ci \
             --list-type binaries-only \
@@ -1107,25 +1117,44 @@ jobs:
             > "$RUNNER_TEMP/ci-linux-nextest-binaries.json"
           extract_seconds=$(( SECONDS - start ))
 
-          extracted="$(ls -A "$staging")"
-          if [ "$extracted" != "target" ]; then
-            echo "::error::the archive extracted [$extracted], not a single target/ tree"
+          if [ ! -s "$RUNNER_TEMP/ci-linux-nextest-binaries.json" ]; then
+            echo "::error::cargo nextest list produced no JSON listing at $RUNNER_TEMP/ci-linux-nextest-binaries.json"
             exit 1
           fi
-          mv "$staging/target" "$target"
-          rmdir "$staging"
 
-          test -s "$RUNNER_TEMP/ci-linux-nextest-binaries.json"
-          test -s "$target/nextest/binaries-metadata.json"
-          test -s "$target/nextest/cargo-metadata.json"
-          test -x "$target/debug/hew"
-          test -s "$target/debug/libhew.a"
-          test -s "$target/debug/libhew_runtime.a"
-          test -s "$target/debug/.hew-libhew-freshness-v1"
-          test -x "$target/release-lib/hew"
-          test -s "$target/release-lib/libhew.a"
-          test -s "$target/wasm32-wasip1/debug/libhew_runtime.a"
-          test -s "$target/wasm32-wasip1/debug/libhew_std.a"
+          # One diagnostic per required archive member, not one bare `test`
+          # per line: a bare `test -x "$target/debug/hew"` under `set -e`
+          # names nothing when it exits, which is exactly how the nested
+          # `target/target/...` defect above went silent. `mode` is `f` for a
+          # non-empty regular file, `x` for one that must also be executable.
+          for entry in \
+            "$target/nextest/binaries-metadata.json:f" \
+            "$target/nextest/cargo-metadata.json:f" \
+            "$target/debug/hew:x" \
+            "$target/debug/libhew.a:f" \
+            "$target/debug/libhew_runtime.a:f" \
+            "$target/debug/.hew-libhew-freshness-v1:f" \
+            "$target/release-lib/hew:x" \
+            "$target/release-lib/libhew.a:f" \
+            "$target/wasm32-wasip1/debug/libhew_runtime.a:f" \
+            "$target/wasm32-wasip1/debug/libhew_std.a:f"
+          do
+            path="${entry%:*}"
+            mode="${entry##*:}"
+            if [ "$mode" = x ] && [ -x "$path" ]; then
+              continue
+            fi
+            if [ "$mode" = f ] && [ -s "$path" ]; then
+              continue
+            fi
+            kind="a non-empty file"
+            [ "$mode" = x ] && kind="an executable file"
+            echo "::error::the Linux test archive is missing $kind at $path"
+            parent="$(dirname "$path")"
+            echo "contents of $parent:"
+            ls -la "$parent" 2>&1 || echo "$parent does not exist"
+            exit 1
+          done
 
           # Precreated so the freeze can be total: a read-only `$target` lets
           # no gate unlink or rename a certified tree. The third leaf is

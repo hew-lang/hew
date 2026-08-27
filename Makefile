@@ -465,15 +465,14 @@ define require_prebuilt
 endef
 
 # Gates that compile their own test binary resolve shared artefacts under
-# Cargo's root; the archive populates the other. Project across, and re-verify
-# after so a Cargo build that replaced a link is red. See the script. Prebuilt
-# mode only; locally the two roots are one directory.
+# Cargo's root; the archive populates the other. `gate` projects, runs and
+# re-verifies in ONE process -- separate recipe lines would skip the
+# verification exactly when the gate failed. Locally this expands to the bare
+# command: the two roots are one directory and there is nothing to project.
 ifeq ($(HEW_CI_PREBUILT),1)
-PROJECT_SHARED_ARTIFACTS = @scripts/ci-project-shared-artifacts.sh link "$(ARTIFACT_ROOT)" "$(CARGO_TARGET_ROOT)"
-VERIFY_SHARED_ARTIFACTS = @scripts/ci-project-shared-artifacts.sh verify "$(ARTIFACT_ROOT)" "$(CARGO_TARGET_ROOT)"
+projected_gate = @scripts/ci-project-shared-artifacts.sh gate "$(ARTIFACT_ROOT)" "$(CARGO_TARGET_ROOT)" '$(1)'
 else
-PROJECT_SHARED_ARTIFACTS = @:
-VERIFY_SHARED_ARTIFACTS = @:
+projected_gate = $(1)
 endif
 
 DEBUG_RUNTIME_LIB := $(DEBUG_DIR)/$(if $(filter Windows_NT,$(OS)),hew_runtime.lib,libhew_runtime.a)
@@ -588,9 +587,7 @@ observe:
 
 # inputs: hew-observe/* hew-runtime/src/*.rs
 observe-functional-test: hew-native observe $(LIBHEW_READY)
-	$(PROJECT_SHARED_ARTIFACTS)
-	$(TEST_RUN_ENV) cargo test -p hew-observe --test functional -- --ignored --nocapture
-	$(VERIFY_SHARED_ARTIFACTS)
+	$(call projected_gate,$(TEST_RUN_ENV) cargo test -p hew-observe --test functional -- --ignored --nocapture)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 observe-functional-test-build: hew-native observe $(LIBHEW_READY)
@@ -618,9 +615,7 @@ mqtt-broker-e2e-build: hew-native $(LIBHEW_READY)
 # observe-functional-test above.
 # inputs: hew-testutil/* hew-lib/* hew-runtime/src/*.rs
 libhew-link-race-test: hew-native $(LIBHEW_READY)
-	$(PROJECT_SHARED_ARTIFACTS)
-	$(TEST_RUN_ENV) cargo test -p hew-testutil --test libhew_link_race -- --ignored --nocapture --test-threads=1
-	$(VERIFY_SHARED_ARTIFACTS)
+	$(call projected_gate,$(TEST_RUN_ENV) cargo test -p hew-testutil --test libhew_link_race -- --ignored --nocapture --test-threads=1)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 libhew-link-race-test-build: hew-native $(LIBHEW_READY)
@@ -844,10 +839,7 @@ sandbox-vm-deps:
 # silently skipped anywhere.
 # inputs: hew-sandbox-vm/* hew-sandbox-wasm/* hew-std/src/*.rs examples/playground/*
 sandbox-parity: wasm-runtime hew-native sandbox-vm-deps $(LIBHEW_READY)
-	$(PROJECT_SHARED_ARTIFACTS)
-	npm --prefix hew-sandbox-vm run conformance
-	$(TEST_RUN_ENV) cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
-	$(VERIFY_SHARED_ARTIFACTS)
+	$(call projected_gate,npm --prefix hew-sandbox-vm run conformance && $(TEST_RUN_ENV) cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 sandbox-parity-build: wasm-runtime hew-native sandbox-vm-deps $(LIBHEW_READY)

@@ -331,9 +331,12 @@ the archive. A gate that COMPILES a fresh test binary produces one under
 *Cargo's* root instead, where nothing had put those artefacts.
 `scripts/ci-project-shared-artifacts.sh` closes it by symlinking, never copying,
 the set parsed from `.config/nextest.toml`'s `archive.include` — the producer's
-own pack list. The three gates project before and re-verify after; `verify`
-accepts only the exact link `link` made and the sources stay read-only, so a
-Cargo build that replaced one is red at that gate. Prebuilt mode only.
+own pack list, each entry's `on-missing` policy included, so only a row marked
+`ignore` may be absent. Its `gate` verb projects, runs the command and
+re-verifies in one process, because separate recipe lines would skip the
+verification exactly when the gate failed; the functional result still wins the
+exit status. Sources stay read-only, so a Cargo build that replaced a link is
+red. Prebuilt mode only.
 
 JUnit is unaffected: nextest writes its store under the remapped *workspace*
 root, so `target/nextest/<profile>/junit.xml` stays where the upload step

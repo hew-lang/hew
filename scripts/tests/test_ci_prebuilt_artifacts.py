@@ -468,6 +468,48 @@ def test_pointing_cargo_at_the_archive_is_rejected() -> None:
         raise AssertionError("a writable archive under Cargo's output was accepted")
 
 
+PROJECT = ROOT / "scripts" / "ci-project-shared-artifacts.sh"
+
+
+def test_the_projection_honours_on_missing_and_always_verifies_its_gate() -> None:
+    """Absence is a policy read from the inventory, and verify cannot be skipped."""
+    inventory = archive_includes((ROOT / ".config" / "nextest.toml").read_text())
+    required = [e["path"] for e in inventory if e.get("on-missing") != "ignore"]
+
+    def run(root: Path, *argv: str) -> int:
+        return subprocess.run(
+            [str(PROJECT), argv[0], str(root / "art"), str(root / "cargo"), *argv[1:]],
+            capture_output=True,
+            text=True,
+        ).returncode
+
+    def fixture(work: Path, omit: str = "") -> Path:
+        for source in (work / "art" / p for p in required if p != omit):
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("certified")
+        (work / "cargo").mkdir()
+        return work
+
+    with tempfile.TemporaryDirectory() as raw:
+        # Only an `on-missing = "ignore"` source may be absent -- none of the
+        # rows above are, so a complete fixture is one that omits just those.
+        good = fixture(Path(raw) / "good")
+        assert run(good, "link") == 0 and run(good, "verify") == 0
+        gone = fixture(Path(raw) / "gone", omit=required[0])
+        assert run(gone, "link") and run(gone, "verify"), f"{required[0]} was optional"
+
+        # Status precedence, and a verification that runs however the gate ends.
+        drop = f"rm {good / 'cargo' / required[0]}"
+        for command, code in (
+            ("true", 0),
+            ("exit 3", 3),
+            (drop, 1),
+            (f"{drop};exit 3", 3),
+        ):
+            assert run(good, "gate", command) == code, command
+            run(good, "link")
+
+
 def test_the_makefile_reads_the_archive_and_writes_somewhere_else() -> None:
     """One path-authority split, not a list of patched targets.
 

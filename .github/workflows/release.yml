@@ -1705,6 +1705,9 @@ jobs:
           - target: darwin-aarch64
             vscode_target: darwin-arm64
             binary: hew-lsp
+          - target: darwin-x86_64
+            vscode_target: darwin-x64
+            binary: hew-lsp
           - target: windows-x86_64
             vscode_target: win32-x64
             binary: hew-lsp.exe

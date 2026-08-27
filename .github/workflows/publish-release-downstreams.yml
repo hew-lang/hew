@@ -1,0 +1,160 @@
+name: Publish release downstreams
+
+# Recovery path for a release whose canonical artifacts were published but
+# whose post-release jobs did not run (for example, a timed-out optional target).
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag whose artifacts and images are being distributed
+        required: true
+        type: string
+      release_run_id:
+        description: Actions run containing the platform hew-lsp artifacts
+        required: true
+        type: string
+      extension_ref:
+        description: vscode-hew ref containing the distribution version
+        required: true
+        default: main
+        type: string
+      publish_docker:
+        description: Publish the GHCR compiler image
+        required: true
+        default: true
+        type: boolean
+      publish_vscode:
+        description: Publish platform VSIX packages to the Marketplace
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  authority:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ inputs.release_tag }}
+      - id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" == v* ]]
+          test "$(git describe --tags --exact-match HEAD)" = "${RELEASE_TAG}"
+          VERSION="${RELEASE_TAG#v}"
+          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)" = "${VERSION}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+  docker:
+    needs: authority
+    if: inputs.publish_docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ inputs.release_tag }}
+      - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          file: installers/docker/Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ needs.authority.outputs.version }}
+          tags: ghcr.io/hew-lang/hew:${{ needs.authority.outputs.version }}
+
+  vscode-extension:
+    needs: authority
+    if: inputs.publish_vscode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            vscode_target: linux-x64
+            binary: hew-lsp
+          - target: linux-aarch64
+            vscode_target: linux-arm64
+            binary: hew-lsp
+          - target: darwin-x86_64
+            vscode_target: darwin-x64
+            binary: hew-lsp
+          - target: darwin-aarch64
+            vscode_target: darwin-arm64
+            binary: hew-lsp
+          - target: windows-x86_64
+            vscode_target: win32-x64
+            binary: hew-lsp.exe
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: hew-lsp-${{ matrix.target }}
+          path: lsp-binary
+          repository: hew-lang/hew
+          run-id: ${{ inputs.release_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          repository: hew-lang/vscode-hew
+          ref: ${{ inputs.extension_ref }}
+          path: extension
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      - run: npm ci
+        working-directory: extension
+      - name: Bundle rc2 language server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p extension/server
+          install -m 755 "lsp-binary/${{ matrix.binary }}" "extension/server/${{ matrix.binary }}"
+      - name: Package extension
+        working-directory: extension
+        run: npx vsce package --target ${{ matrix.vscode_target }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: vsix-${{ matrix.vscode_target }}
+          path: extension/*.vsix
+
+  vscode-publish:
+    needs: vscode-extension
+    if: inputs.publish_vscode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: vsix-*
+          path: vsix
+          merge-multiple: true
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 24
+      - run: npm install --global @vscode/vsce
+      - name: Publish platform packages
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: vsce publish --skip-duplicate --packagePath vsix/*.vsix

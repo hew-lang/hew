@@ -1839,6 +1839,19 @@ run_accept_expect_status_and_stdout "supervisor_fungible_dead_child" 1
 # setup status was treated as process-fatal and trapped (exit 133), even though
 # the tell + single-shot ask siblings already fail-closed.
 run_accept_expect_status_and_stdout "supervisor_fungible_dead_child_select" 1
+# ChildRef value-flow/state matrix: six flow positions (inline, parameter,
+# return, record, Vec, closure) x four referent states (live, restarting,
+# budget-exhausted, permanently stopped). Every cell asks, and every shape also
+# tells; a terminal static-pool member is exercised through a held value,
+# indexing, and get(). Exit 1 is the ordinary unrecovered-root-fault class from
+# the intentionally exhausted supervisors, not a signal-derived hardware-fault
+# status. The sentinel proves every recoverable branch and tell continuation ran.
+run_accept_expect_status "supervisor_childref_value_flow_states" 1
+if ! grep -qxF -- "CHILDREF_FLOW_STATE_MATRIX_OK" "${stdout_output}"; then
+  echo "supervisor_childref_value_flow_states: sentinel missing" >&2
+  cat "${stdout_output}" >&2
+  exit 1
+fi
 
 # Lifecycle-under-supervision: a supervised actor's init() / #[on(start)] must
 # fire on BOTH the initial supervised spawn AND a supervisor-triggered restart.

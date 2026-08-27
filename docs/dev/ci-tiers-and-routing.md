@@ -283,14 +283,13 @@ which revision produced it.
 **How a consumer uses it — and where the tree has to land.** A compiled binary
 carries absolute paths nothing remaps after the fact: `env!("CARGO_BIN_EXE_hew")`
 is a literal rustc baked in at the producer, and `current_exe()`-relative stdlib
-discovery walks `<target>/<profile>/deps/` upwards at run time. Run
-`33028214259` materialized the tree under `RUNNER_TEMP` and priced that: about
-**1069 failures on the archived nextest surface**, plus the three gates that
-compile a fresh test binary in the shard (`observe-functional-test`,
-`libhew-link-race-test`, `sandbox-parity`). `mqtt-broker-e2e` failed in that run
-too and is **not** one of them — it runs the archive's compiler by absolute path
-and compiles no test binary, so its failure is behavioural and stays red on its
-own merits.
+discovery walks `<target>/<profile>/deps/` upwards at run time. Run `33028214259`
+materialized the tree under `RUNNER_TEMP` and priced that: about **1069 failures
+on the archived nextest surface**, plus the three gates that compile a fresh test
+binary in the shard (`observe-functional-test`, `libhew-link-race-test`,
+`sandbox-parity`). `mqtt-broker-e2e` failed too and is **not** one of them — it
+runs the archive's compiler by absolute path and compiles no test binary, so its
+failure is behavioural and stays red on its own merits.
 
 So the tree is materialized at **`$GITHUB_WORKSPACE/target`**, the producer's
 own absolute path, which GitHub gives every job in a run. What the `RUNNER_TEMP`

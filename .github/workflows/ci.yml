@@ -127,9 +127,8 @@ jobs:
   #
   # A tarball rather than the directory: `upload-artifact` preserves neither
   # executable bits nor dotfiles, and consumers need
-  # `.ast-grep/tool/bin/ast-grep` to be a dotfile that runs.
-  #
-  # There is deliberately NO job-level `if:`: a skipped job is not a satisfied
+  # `.ast-grep/tool/bin/ast-grep` to be a dotfile that runs. There is
+  # deliberately NO job-level `if:`: a skipped job is not a satisfied
   # dependency, so gating the job would strand three required contexts on
   # docs-only changes. The gate is on the steps, published as an output.
   # ─────────────────────────────────────────────────────────────────────────
@@ -996,8 +995,8 @@ jobs:
           cache-shared-key: linux-mold
           # `<workspace>/target` belongs to the archive here, and it is the
           # only directory rust-cache can cache: restoring would populate the
-          # path the archive must occupy, and saving on main would store the
-          # 2.03 GiB archive as the shared `linux-mold` dependency layer.
+          # path the archive must occupy, and saving on main would store 2.03
+          # GiB of archive as the shared `linux-mold` dependency layer.
           cache-targets: 'false'
 
       - name: Install WASI target
@@ -1073,8 +1072,6 @@ jobs:
         # absolute paths no remap reaches: a baked `env!("CARGO_BIN_EXE_hew")`
         # and a `current_exe()`-relative walk up `<target>/<profile>/deps/`.
         #
-        # Staged extraction, the freeze and Cargo's separate directory are
-        # enforced below, not trusted. See docs/dev/ci-tiers-and-routing.md.
         #
         # Every check below is an interface assertion, not a second identity
         # system: what a consumer must find, never which commit produced it.
@@ -1136,7 +1133,7 @@ jobs:
           test -s "$target/wasm32-wasip1/debug/libhew_runtime.a"
           test -s "$target/wasm32-wasip1/debug/libhew_std.a"
 
-          # Directories keep +x so the tree stays traversable. Then the two
+          # Directories keep +x so the tree stays traversable, then the two
           # named exceptions.
           chmod -R a-w "$target"
           chmod u+w "$target" "$target/nextest"

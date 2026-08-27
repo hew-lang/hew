@@ -61,6 +61,11 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         run: |
           sudo mkdir -p /etc/apt/keyrings
@@ -121,6 +126,11 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
 
       - name: Free runner disk
         # The full gate (release crates + debug test workspace + WASM + the
@@ -274,6 +284,11 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
       - name: Free runner disk
         # arm64 hosted runners ship with less free disk than x86_64; the LLVM
         # toolchain (~6 GB extracted) plus a full debug workspace build hit
@@ -395,6 +410,11 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
       - uses: ./.github/actions/setup-rust-build
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
@@ -497,6 +517,11 @@ jobs:
       AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
 
       - name: Setup MSVC environment
         # lld-link needs the MSVC and UCRT library paths exported by vcvarsall;
@@ -609,7 +634,7 @@ jobs:
             # alternative is building wasmtime from source inside a VM step that
             # already runs near its time limit. Every other runner takes the pinned
             # release asset.
-            pkg install -y -r FreeBSD llvm22 gdb rustup-init python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rustup-init python312 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
             pw useradd -n hew-ci -m -s /bin/sh
 
           run: |
@@ -640,7 +665,7 @@ jobs:
             # executables instead of depending on the SSH login environment.
             export PATH="$HOME/.cargo/bin:/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
             export CARGO="$HOME/.cargo/bin/cargo"
-            export PYTHON=/usr/local/bin/python3
+            export PYTHON=/usr/local/bin/python3.12
             test -x "$CARGO"
             test -x "$PYTHON"
             rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
@@ -769,7 +794,7 @@ jobs:
             # alternative is building wasmtime from source inside a VM step that
             # already runs near its time limit. Every other runner takes the pinned
             # release asset.
-            pkg install -y -r FreeBSD llvm22 gdb rust python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rust python312 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -782,7 +807,7 @@ jobs:
             # future scope expansion cannot regress to SSH profile discovery.
             export PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
             export CARGO=/usr/local/bin/cargo
-            export PYTHON=/usr/local/bin/python3
+            export PYTHON=/usr/local/bin/python3.12
             test -x "$CARGO"
             test -x "$PYTHON"
             /usr/local/llvm22/bin/llvm-config --version

@@ -4012,7 +4012,20 @@ pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
                 Ok(None)
             }
         }
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            if *builtin == Some(BuiltinType::ChildRef) {
+                return Ok(Some(resolve_ty(
+                    fn_ctx.ctx,
+                    fn_ctx.target_data,
+                    elem_ty,
+                    fn_ctx.record_layouts,
+                )?));
+            }
             // An indirect enum is heap-allocated: every element slot holds an
             // 8-byte pointer, so it rides the pointer ABI (`hew_vec_*_ptr`) —
             // the same routing the checker (`vec_authority` pointer ABI) and

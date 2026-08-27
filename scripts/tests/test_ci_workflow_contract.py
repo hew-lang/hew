@@ -178,8 +178,9 @@ def _resolve(destination: str, assignments: dict[str, str], depth: int = 0) -> s
 
 
 _WORKSPACE_ROOT = re.compile(
-    r"^\$(?:\{)?(?:env:)?GITHUB_WORKSPACE\}?"
-    r"|^\$\{\{\s*github\.workspace\s*\}\}"
+    r"^\$\{(?:env:)?GITHUB_WORKSPACE\}(?=/|$)"
+    r"|^\$(?:env:)?GITHUB_WORKSPACE(?=/|$)"
+    r"|^\$\{\{\s*github\.workspace\s*\}\}(?=/|$)"
 )
 
 
@@ -189,6 +190,9 @@ def _workspace_relative(text: str) -> str | None:
     A workspace-rooted destination is not automatically outside the router's
     view the way `$RUNNER_TEMP` is: it names the checkout itself, so this
     only strips the root; the caller still asks Git about what follows it.
+    Each alternative requires the recognized spelling to end at the string's
+    end or a `/`: `$GITHUB_WORKSPACEdist` is a different variable, not
+    `$GITHUB_WORKSPACE` plus a suffix, and must never resolve as one.
     """
     match = _WORKSPACE_ROOT.match(text)
     if not match:
@@ -406,6 +410,13 @@ def test_the_nextest_extraction_rule_reads_a_workspace_root_by_its_target_subtre
     tar_into_same_subdir = 'tar -xzf a.tar.gz -C "$GITHUB_WORKSPACE/scripts"'
     assert offending_extractions([("j", "s", tar_into_same_subdir)], "fixture"), (
         "a tar extraction into a tracked subdirectory of $GITHUB_WORKSPACE was accepted"
+    )
+
+    # `$GITHUB_WORKSPACEdist` is a different variable, not the checkout root
+    # plus a suffix; the exemption above must never fire for it.
+    nextest_into_lookalike = 'cargo nextest list --extract-to "$GITHUB_WORKSPACEdist"'
+    assert offending_extractions([("j", "s", nextest_into_lookalike)], "fixture"), (
+        "a prefix variable, $GITHUB_WORKSPACEdist, was read as $GITHUB_WORKSPACE"
     )
 
 

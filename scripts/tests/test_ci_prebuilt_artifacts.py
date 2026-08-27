@@ -252,8 +252,14 @@ def assert_materialization_extracts_at_the_same_root_it_remaps(text: str) -> Non
     (`target/target/...`) instead of replacing it. Every path the step checks
     next then reads nothing, and every bare `test` under `set -e` exits
     silently -- the defect this asserts against. Extracting straight into the
-    same root `--workspace-remap` names, with `--extract-overwrite` for a
-    rerun, is the one shape with no second path for the tree to land at.
+    same root `--workspace-remap` names is the one shape with no second path
+    for the tree to land at.
+
+    `--extract-overwrite` guards the same recreation, not a rerun: the
+    preceding `rm -rf` leaves `$target` empty, but this one `cargo nextest
+    list` invocation repopulates it itself while resolving the remap, before
+    its own archive extraction runs, so the flag is required for this single
+    invocation to succeed at all.
     """
     step = step_named(jobs(text)[CONSUMER_JOB], "Materialize the Linux test archive")
     body = "\n".join(
@@ -266,7 +272,9 @@ def assert_materialization_extracts_at_the_same_root_it_remaps(text: str) -> Non
         "the workspace remap no longer names $GITHUB_WORKSPACE"
     )
     assert "--extract-overwrite" in body, (
-        "a rerun of this step would fail on the leftover tree from the last one"
+        "cargo nextest list recreates $GITHUB_WORKSPACE/target while resolving "
+        "the remap, before its own extraction runs; without this flag it "
+        "refuses to extract onto the directory it just repopulated"
     )
     for reintroduced in ("staging", 'mv "', "rmdir "):
         assert reintroduced not in body, (

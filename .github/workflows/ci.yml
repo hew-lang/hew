@@ -1102,9 +1102,15 @@ jobs:
           # destination and nests one level down (`target/target/...`)
           # instead of replacing it. Every path under `$target` in the checks
           # below then reads nothing and every `test` exits silently, four
-          # shards at once. Extracting straight into `$GITHUB_WORKSPACE`
-          # (with `--extract-overwrite` for a rerun) is the one shape with no
-          # second path for the tree to land at.
+          # shards at once. Extracting straight into `$GITHUB_WORKSPACE` is
+          # the one shape with no second path for the tree to land at.
+          #
+          # `--extract-overwrite` is required for that same reason, not for a
+          # rerun: the `rm -rf` above leaves `$target` empty, but this one
+          # `cargo nextest list` invocation recreates it itself while
+          # resolving the workspace remap, before its own archive extraction
+          # runs. Without the flag it refuses to extract onto the directory
+          # it just repopulated.
           start=$SECONDS
           cargo nextest list \
             --archive-file "$archive" \

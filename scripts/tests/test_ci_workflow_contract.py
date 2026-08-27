@@ -195,7 +195,12 @@ def _visible_to_git(destination: str) -> bool:
         # An unresolved variable is an unanswerable question, and an
         # unanswerable question about workspace cleanliness fails closed.
         return True
-    relative = text.lstrip("./") or "."
+    # `str.lstrip` takes a character SET, not a prefix, so it must not be used
+    # here: it turns `.ast-grep` into `ast-grep`, a path Git has no rule for,
+    # and the ignored destination reads as a tracked one.
+    relative = text
+    while relative.startswith("./"):
+        relative = relative[2:]
     if relative in (".", ""):
         return True
     return (
@@ -315,8 +320,18 @@ def test_the_extraction_rule_accepts_a_destination_the_router_cannot_see() -> No
         "Expand-Archive -Path $zip -DestinationPath $dest -Force",
         # `dist/` is already ignored, so the router never sees it.
         "tar -xf a.tar.gz -C dist/test-tarball",
+        # And a DOTTED ignored destination, which a character-set strip would
+        # have mangled into a path Git has no rule for.
+        "tar --zstd -xf a.tar.zst -C .ast-grep",
+        "tar -xf a.tar.gz -C ./.ast-grep",
     ):
         assert not offending_extractions([("j", "s", allowed)], "fixture"), allowed
+
+    # Still red the moment the destination stops being ignored: a dotted name
+    # is not a licence, the `.gitignore` entry is.
+    assert offending_extractions(
+        [("j", "s", "tar --zstd -xf a.tar.zst -C .config")], "fixture"
+    ), "an extraction into the tracked .config/ was accepted"
 
 
 # ── contract: cache keys follow the rustc fingerprint ────────────────────────
@@ -604,6 +619,194 @@ def test_pull_requests_restore_the_cache_but_never_save_it() -> None:
     assert mode == (
         "${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}"
     ), mode
+
+
+# ── contract: one job builds ast-grep; the rest read what it built ───────────
+
+AST_GREP_ACTION = "./.github/actions/setup-ast-grep"
+AST_GREP_ARTIFACT = "ast-grep-toolchain-${{ github.sha }}"
+AST_GREP_PRODUCER = "ast-grep-toolchain"
+
+
+def _ci_jobs() -> dict[str, dict]:
+    return jobs(load(WORKFLOWS / "ci.yml"))
+
+
+def _uses_the_setup_action(job: dict) -> list[dict]:
+    return [step for step in steps(job) if str(step.get("uses")) == AST_GREP_ACTION]
+
+
+def _downloads_the_toolchain(job: dict) -> list[dict]:
+    return [
+        step
+        for step in steps(job)
+        if "download-artifact@" in str(step.get("uses"))
+        and str(step.get("with", {}).get("name")) == AST_GREP_ARTIFACT
+    ]
+
+
+def test_one_job_builds_the_ast_grep_toolchain_for_the_whole_run() -> None:
+    """Six jobs installed it; now one builds it and the rest read the tarball.
+
+    On a warm cache that was six cache downloads. On a COLD one -- every first
+    run of a pull request, because the cache is saved only from main -- it was
+    six independent `cargo install` builds of ast-grep and the tree-sitter
+    CLI: about 17-18 runner-minutes of run 33028214259 for one tree that is
+    byte-identical in all six.
+
+    The invariant is single OWNERSHIP, not a step count: exactly one job
+    uploads the toolchain, and every other job that needs it downloads that
+    upload.
+    """
+    ci = _ci_jobs()
+    uploaders = [
+        name
+        for name, job in ci.items()
+        for step in steps(job)
+        if "upload-artifact@" in str(step.get("uses"))
+        and str(step.get("with", {}).get("name")) == AST_GREP_ARTIFACT
+    ]
+    assert uploaders == [AST_GREP_PRODUCER], (
+        f"the ast-grep toolchain has {len(uploaders)} producers: {uploaders}"
+    )
+
+    consumers = sorted(
+        name for name, job in ci.items() if _downloads_the_toolchain(job)
+    )
+    assert consumers == ["build-and-test", "docs-and-scripts", "lint"], consumers
+
+    for name in consumers:
+        needs = ci[name].get("needs")
+        declared = [needs] if isinstance(needs, str) else list(needs or [])
+        assert AST_GREP_PRODUCER in declared, (
+            f"{name} downloads the toolchain without depending on the job "
+            f"that uploads it; it would race the producer. needs: {declared}"
+        )
+
+    # Every consumer verifies rather than trusts the transfer, through the
+    # same fail-closed bootstrap the setup action runs.
+    for name in consumers:
+        unpack = [
+            step
+            for step in steps(ci[name])
+            if "ast-grep-toolchain.tar.zst" in str(step.get("run", ""))
+        ]
+        assert len(unpack) == 1, f"{name} has {len(unpack)} unpack steps"
+        body = str(unpack[0]["run"])
+        assert "make structural-lint-bootstrap-install" in body, (
+            f"{name} trusts the transferred toolchain instead of re-verifying "
+            "its pinned version and grammar checksum"
+        )
+        assert ".ast-grep/tool/bin/ast-grep --version" in body, name
+
+
+def test_the_producer_cannot_strand_the_jobs_that_depend_on_it() -> None:
+    """A skipped job is not a satisfied dependency.
+
+    Three required contexts depend on this producer, and a docs-only change
+    shares nothing -- so the gate is on the STEPS, with a published output,
+    never on the job.
+    """
+    ci = _ci_jobs()
+    producer = ci[AST_GREP_PRODUCER]
+    assert "if" not in producer, (
+        "the producer carries a job-level `if:`; on the branch where it is "
+        "false every dependant is skipped, and a required context that never "
+        "runs never turns green"
+    )
+    assert str(producer.get("outputs", {}).get("available", "")), (
+        "the producer publishes no availability output, so a dependant must "
+        "re-derive the route and the two answers can disagree"
+    )
+
+    # `lint` structural-lints on EVERY route, including the docs-only one the
+    # producer no-ops on, so it alone keeps a fallback -- and the two paths
+    # must be mutually exclusive on the producer's own answer.
+    lint = ci["lint"]
+    fallback = _uses_the_setup_action(lint)
+    assert len(fallback) == 1, "lint has no single ast-grep fallback"
+    download = _downloads_the_toolchain(lint)
+    assert len(download) == 1
+    available = f"needs.{AST_GREP_PRODUCER}.outputs.available"
+    assert str(download[0].get("if")) == f"{available} == 'true'", download[0].get("if")
+    assert str(fallback[0].get("if")) == f"{available} != 'true'", fallback[0].get("if")
+
+
+def test_no_pull_request_installs_ast_grep_more_than_once() -> None:
+    """The duplication this removed must not creep back in job by job."""
+    ci = _ci_jobs()
+    installers = sorted(name for name, job in ci.items() if _uses_the_setup_action(job))
+    assert installers == [AST_GREP_PRODUCER, "lint"], (
+        f"{installers} invoke the ast-grep setup action; only the producer "
+        "and lint's docs-only fallback may, and they are mutually exclusive "
+        "within a run"
+    )
+    for name in installers:
+        assert len(_uses_the_setup_action(ci[name])) == 1, f"{name} installs twice"
+
+    # The release gate is a different workflow with no producer to read, so it
+    # keeps the direct action. Asserted so a future sweep does not "unify" it
+    # into a dependency on a job that workflow does not have.
+    release = jobs(load(WORKFLOWS / "release-gate.yml"))
+    direct = [name for name, job in release.items() if _uses_the_setup_action(job)]
+    assert direct, "release-gate no longer provisions ast-grep at all"
+
+
+def test_the_ast_grep_cache_is_restored_everywhere_and_saved_only_on_main() -> None:
+    """Same policy as the Rust dependency layer, for the same budget.
+
+    A combined restore+save step made every pull request write ref-scoped
+    entries that no other branch can read and that evict the entry every
+    branch could -- and let whichever of the six installing jobs finished
+    first reserve the key while the rest logged a conflict. Restore is for
+    everyone; saving is main's alone, after a miss, once.
+    """
+    action = ACTIONS / "setup-ast-grep" / "action.yml"
+    document = parse_yaml(action.read_text(encoding="utf-8"), action.name)
+    action_steps = document["runs"]["steps"]
+
+    combined = [
+        step
+        for step in action_steps
+        if re.search(r"actions/cache@", str(step.get("uses")))
+    ]
+    assert not combined, (
+        "the combined restore+save cache step is back; it saves from every "
+        "ref and races itself across jobs"
+    )
+
+    restores = [
+        step
+        for step in action_steps
+        if "actions/cache/restore@" in str(step.get("uses"))
+    ]
+    saves = [
+        step for step in action_steps if "actions/cache/save@" in str(step.get("uses"))
+    ]
+    assert len(restores) == 1 and len(saves) == 1, (restores, saves)
+
+    assert str(restores[0].get("if", "")) == "", (
+        "the restore is conditional; a branch that cannot read the cache "
+        "rebuilds the toolchain from source"
+    )
+    assert saves[0]["if"] == (
+        "github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'"
+    ), saves[0]["if"]
+
+    # One key authority: the save reuses the restore's own primary key rather
+    # than repeating a hashFiles expression that could drift from it.
+    restore_id = restores[0]["id"]
+    assert saves[0]["with"]["key"] == (
+        "${{ steps." + restore_id + ".outputs.cache-primary-key }}"
+    ), saves[0]["with"]["key"]
+    assert restores[0]["with"]["path"] == saves[0]["with"]["path"] == ".ast-grep"
+
+    # And the save happens after the verification, so what is stored has
+    # already proved its pinned version and grammar checksum.
+    names = [str(step.get("name") or step.get("uses")) for step in action_steps]
+    assert names.index("Verify pinned ast-grep runs") < names.index(
+        "Save pinned ast-grep toolchain"
+    ), names
 
 
 # ── contract: every scheduled workflow reports to an owner ───────────────────

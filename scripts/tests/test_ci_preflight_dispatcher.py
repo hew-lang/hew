@@ -206,10 +206,19 @@ def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() ->
     assert re.search(r"^lint:.*\$\$\(LINT_GATES\)", makefile, re.MULTILINE), makefile
 
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert re.search(
-        r"name: Provision pinned ast-grep toolchain\s+uses: ./\.github/actions/setup-ast-grep",
-        workflow,
-    ), "hosted CI must explicitly provision the pinned toolchain"
+    # The toolchain is built once per run and read from a tarball by the jobs
+    # that need it, so this no longer asks whether a named step provisions it
+    # -- `scripts/tests/test_ci_workflow_contract.py` owns that ownership
+    # invariant. What matters here is that the job running the labelled
+    # command ends up holding the toolchain on EVERY route: the shared tarball
+    # when the producer built one, the setup action when a docs-only run meant
+    # nobody else needed it.
+    assert "uses: ./.github/actions/setup-ast-grep" in workflow, (
+        "hosted CI must explicitly provision the pinned toolchain"
+    )
+    lint = workflow.split("\n  lint:\n", 1)[1].split("\n  license-check:\n", 1)[0]
+    assert "name: Unpack and verify the pinned ast-grep toolchain" in lint, lint
+    assert "uses: ./.github/actions/setup-ast-grep" in lint, lint
     assert re.search(
         r"name: Verify structural lint bootstrap contract\s+run: make test-ast-grep-contract test-structural-lint-bootstrap",
         workflow,

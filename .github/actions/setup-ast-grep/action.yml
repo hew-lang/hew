@@ -17,8 +17,25 @@ runs:
     # compiled grammar is a native shared object, so the runner OS and arch
     # are part of the key. A miss costs the cargo installs; a hit costs the
     # verification only.
-    - name: Cache pinned ast-grep toolchain
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+    #
+    # RESTORE everywhere, SAVE only from the default branch and only after a
+    # miss. Three things follow from that split, and each of them was a real
+    # cost:
+    #   * A pull request no longer writes cache entries scoped to its own ref,
+    #     which no other branch can read and which evict the entry every branch
+    #     could. Same policy the Rust dependency layer and sccache already run
+    #     under, for the same 10 GB repository budget.
+    #   * Two jobs in one run can no longer race to save the same key. The
+    #     combined restore+save step this replaces reserved the key from
+    #     whichever of the six installing jobs finished first and logged a
+    #     conflict for the rest.
+    #   * A hit is never re-saved, so a warm main run does no cache write at
+    #     all.
+    # The save reuses the restore's own primary key rather than repeating the
+    # expression, so the two halves cannot drift apart.
+    - name: Restore pinned ast-grep toolchain
+      id: cache
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
       with:
         path: .ast-grep
         key: ast-grep-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ast-grep.lock', 'tools/tree-sitter-hew-consume-parameter.patch', 'scripts/ast-grep-lint.sh', 'scripts/build-ast-grep-lang.sh') }}
@@ -41,3 +58,12 @@ runs:
         set -euo pipefail
         .ast-grep/tool/bin/ast-grep --version
         test -f .ast-grep/hew-lang.so
+
+    # After the verification, never before it: what gets stored is a tree that
+    # has already proved its version and checksum.
+    - name: Save pinned ast-grep toolchain
+      if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: .ast-grep
+        key: ${{ steps.cache.outputs.cache-primary-key }}

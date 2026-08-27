@@ -122,11 +122,96 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
 
   # ─────────────────────────────────────────────────────────────────────────
+  # ast-grep toolchain — built once, read by every job that structural-lints.
+  #
+  # Six jobs used to run `setup-ast-grep` for themselves: `lint`, the
+  # script-only half of `docs-and-scripts`, and all four Linux shards. On a
+  # warm cache that is six cache downloads; on a COLD one -- which is every
+  # first run of a pull request, because the cache is saved only from main --
+  # it is six independent `cargo install` builds of ast-grep and the
+  # tree-sitter CLI. Run 33028214259 spent about 17-18 runner-minutes that
+  # way, for one tree that is byte-identical in all six.
+  #
+  # This job builds it once and hands the others a tarball. A tarball rather
+  # than the directory: `upload-artifact` does not preserve executable bits
+  # and skips dotfiles, and every consumer needs `.ast-grep/tool/bin/ast-grep`
+  # to be a dotfile that runs.
+  #
+  # There is deliberately NO job-level `if:`. A skipped job is not a satisfied
+  # dependency, so gating the job itself would strand three required contexts
+  # on docs-only changes. The gate is on the steps, and its answer is
+  # published as an output so a dependant can ask rather than re-derive it.
+  # ─────────────────────────────────────────────────────────────────────────
+  ast-grep-toolchain:
+    name: Build ast-grep toolchain
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      available: ${{ steps.publish.outputs.available }}
+    env:
+      # The two routes that reach a structural-lint gate: compiled changes
+      # (`lint` plus the four shards) and script changes (`docs-and-scripts`).
+      # A docs-only run reaches only `lint`, which is one install either way,
+      # so nothing is shared and this job does nothing.
+      NEEDED: ${{ needs.changes.outputs.selected_compile == 'true' || needs.changes.outputs.scripts == 'true' }}
+    steps:
+      - name: No-op when no job shares this toolchain
+        if: env.NEEDED != 'true'
+        run: echo "No compiled or script changes; the ast-grep toolchain is not shared this run."
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        if: env.NEEDED == 'true'
+
+      - name: Provision pinned ast-grep toolchain
+        if: env.NEEDED == 'true'
+        # The one invocation of the shared action on the compiled path. It
+        # restores the cache, then runs the idempotent bootstrap, which
+        # re-reads tools/ast-grep.lock and re-checks the pinned version and
+        # the grammar archive's SHA-256 even on a hit.
+        uses: ./.github/actions/setup-ast-grep
+
+      - name: Pack the toolchain
+        if: env.NEEDED == 'true'
+        run: |
+          set -euo pipefail
+          test -x .ast-grep/tool/bin/ast-grep
+          test -f .ast-grep/hew-lang.so
+          # Rooted INSIDE .ast-grep so a consumer unpacks into that one
+          # ignored directory rather than over its checkout.
+          tar --zstd -cf "$RUNNER_TEMP/ast-grep-toolchain.tar.zst" -C .ast-grep .
+          {
+            echo "### ast-grep toolchain (producer)"
+            echo ""
+            echo "- version: \`$(.ast-grep/tool/bin/ast-grep --version)\`"
+            echo "- packed size: \`$(du -h "$RUNNER_TEMP/ast-grep-toolchain.tar.zst" | cut -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the toolchain
+        if: env.NEEDED == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ast-grep-toolchain-${{ github.sha }}
+          path: ${{ runner.temp }}/ast-grep-toolchain.tar.zst
+          # Already a Zstandard tarball; re-deflating it is runner minutes
+          # spent to grow the upload.
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Publish whether the toolchain was shared
+        id: publish
+        # No `if:` -- the output must exist on both paths, because a consumer
+        # reads it to choose between downloading and provisioning for itself.
+        # Placed after the upload so `true` means the artifact is really there.
+        run: echo "available=$NEEDED" >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Lightweight docs/scripts coverage — required signal for narrow PRs.
   # ─────────────────────────────────────────────────────────────────────────
   docs-and-scripts:
     name: Docs & scripts gates
-    needs: changes
+    needs: [changes, ast-grep-toolchain]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -145,9 +230,36 @@ jobs:
           components: rustfmt
           cache-shared-key: linux
 
-      - name: Provision pinned ast-grep toolchain
+      - name: Download the pinned ast-grep toolchain
         if: needs.changes.outputs.selected_compile != 'true' && needs.changes.outputs.scripts == 'true'
-        uses: ./.github/actions/setup-ast-grep
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ast-grep-toolchain-${{ github.sha }}
+          path: ${{ runner.temp }}/ast-grep-toolchain
+          digest-mismatch: error
+
+      - name: Unpack and verify the pinned ast-grep toolchain
+        if: needs.changes.outputs.selected_compile != 'true' && needs.changes.outputs.scripts == 'true'
+        # >>> AST-GREP-CONSUMER
+        # Unpacked into `.ast-grep` itself, not over the checkout: the tarball
+        # is rooted INSIDE that directory, so nothing it contains can land on
+        # a source file, and `.gitignore` already covers the destination, so
+        # the change router still reads the author's diff rather than an
+        # unpacked toolchain (LESSONS.md preflight-perf-discipline).
+        #
+        # Then verified rather than trusted. The bootstrap is idempotent and
+        # fail-closed: it re-reads tools/ast-grep.lock, re-checks the binary's
+        # --version and the grammar archive's SHA-256, and REBUILDS anything
+        # that does not match. A transferred tree that arrived wrong costs
+        # this job an install; it never costs a wrong lint verdict.
+        run: |
+          set -euo pipefail
+          mkdir -p .ast-grep
+          tar --zstd -xf "$RUNNER_TEMP/ast-grep-toolchain/ast-grep-toolchain.tar.zst" -C .ast-grep
+          make structural-lint-bootstrap-install
+          .ast-grep/tool/bin/ast-grep --version
+          test -f .ast-grep/hew-lang.so
+        # <<< AST-GREP-CONSUMER
 
       - name: Run change-scoped checks
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
@@ -165,7 +277,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   lint:
     name: Clippy & format
-    needs: changes
+    needs: [changes, ast-grep-toolchain]
     runs-on: ubuntu-24.04
     env:
       RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
@@ -204,10 +316,46 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      # Keep this consumer on the shared cache-backed provisioning action.
-      # The structural-lint target still verifies the pinned toolchain before
-      # it scans, so local and CI entry points retain the same safety checks.
+      # This job runs `make structural-lint` and the bootstrap counterfactuals
+      # unconditionally, so it needs the toolchain on every route -- including
+      # the docs-only one, where nothing else does and the producer therefore
+      # no-opped. The two steps below are mutually exclusive on that answer:
+      # take the shared tarball when it exists, provision for itself when it
+      # does not. Reading the producer's output rather than re-deriving the
+      # route keeps one authority for "was it built?".
+      - name: Download the pinned ast-grep toolchain
+        if: needs.ast-grep-toolchain.outputs.available == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ast-grep-toolchain-${{ github.sha }}
+          path: ${{ runner.temp }}/ast-grep-toolchain
+          digest-mismatch: error
+
+      - name: Unpack and verify the pinned ast-grep toolchain
+        if: needs.ast-grep-toolchain.outputs.available == 'true'
+        # >>> AST-GREP-CONSUMER
+        # Unpacked into `.ast-grep` itself, not over the checkout: the tarball
+        # is rooted INSIDE that directory, so nothing it contains can land on
+        # a source file, and `.gitignore` already covers the destination, so
+        # the change router still reads the author's diff rather than an
+        # unpacked toolchain (LESSONS.md preflight-perf-discipline).
+        #
+        # Then verified rather than trusted. The bootstrap is idempotent and
+        # fail-closed: it re-reads tools/ast-grep.lock, re-checks the binary's
+        # --version and the grammar archive's SHA-256, and REBUILDS anything
+        # that does not match. A transferred tree that arrived wrong costs
+        # this job an install; it never costs a wrong lint verdict.
+        run: |
+          set -euo pipefail
+          mkdir -p .ast-grep
+          tar --zstd -xf "$RUNNER_TEMP/ast-grep-toolchain/ast-grep-toolchain.tar.zst" -C .ast-grep
+          make structural-lint-bootstrap-install
+          .ast-grep/tool/bin/ast-grep --version
+          test -f .ast-grep/hew-lang.so
+        # <<< AST-GREP-CONSUMER
+
       - name: Provision pinned ast-grep toolchain
+        if: needs.ast-grep-toolchain.outputs.available != 'true'
         uses: ./.github/actions/setup-ast-grep
 
       # Keep the bootstrap counterfactuals on the required job after moving
@@ -810,8 +958,11 @@ jobs:
     # producer fails, these shards do not run, `linux-required` sees a
     # non-success matrix result, and the required context is RED. There is no
     # per-shard rebuild fallback: a fallback would turn a producer defect into
-    # four slow green runs and nobody would find it.
-    needs: [changes, linux-nextest-archive]
+    # four slow green runs and nobody would find it. `ast-grep-toolchain` is a
+    # hard dependency for the same reason: four shards downloading one built
+    # tree is the point, and a fallback would quietly restore the four
+    # duplicate installs it exists to remove.
+    needs: [changes, ast-grep-toolchain, linux-nextest-archive]
     runs-on: ubuntu-24.04
     # Four shards of the selected preflight profile. The dispatcher partitions
     # the profile's command list into four duration-balanced groups and each
@@ -969,9 +1120,36 @@ jobs:
           cache: npm
           cache-dependency-path: hew-sandbox-vm/package-lock.json
 
-      - name: Provision pinned ast-grep toolchain
+      - name: Download the pinned ast-grep toolchain
         if: env.RUN_CODE_PATH == 'true'
-        uses: ./.github/actions/setup-ast-grep
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ast-grep-toolchain-${{ github.sha }}
+          path: ${{ runner.temp }}/ast-grep-toolchain
+          digest-mismatch: error
+
+      - name: Unpack and verify the pinned ast-grep toolchain
+        if: env.RUN_CODE_PATH == 'true'
+        # >>> AST-GREP-CONSUMER
+        # Unpacked into `.ast-grep` itself, not over the checkout: the tarball
+        # is rooted INSIDE that directory, so nothing it contains can land on
+        # a source file, and `.gitignore` already covers the destination, so
+        # the change router still reads the author's diff rather than an
+        # unpacked toolchain (LESSONS.md preflight-perf-discipline).
+        #
+        # Then verified rather than trusted. The bootstrap is idempotent and
+        # fail-closed: it re-reads tools/ast-grep.lock, re-checks the binary's
+        # --version and the grammar archive's SHA-256, and REBUILDS anything
+        # that does not match. A transferred tree that arrived wrong costs
+        # this job an install; it never costs a wrong lint verdict.
+        run: |
+          set -euo pipefail
+          mkdir -p .ast-grep
+          tar --zstd -xf "$RUNNER_TEMP/ast-grep-toolchain/ast-grep-toolchain.tar.zst" -C .ast-grep
+          make structural-lint-bootstrap-install
+          .ast-grep/tool/bin/ast-grep --version
+          test -f .ast-grep/hew-lang.so
+        # <<< AST-GREP-CONSUMER
 
       - name: Mark the archive transfer start
         if: env.RUN_CODE_PATH == 'true'

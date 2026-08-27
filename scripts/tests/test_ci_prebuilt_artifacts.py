@@ -429,7 +429,8 @@ def test_each_workflow_property_rejects_its_own_defect() -> None:
 
     rejects(
         text.replace(
-            f"    needs: [changes, {PRODUCER_JOB}]\n    runs-on: ubuntu-24.04",
+            f"    needs: [changes, ast-grep-toolchain, {PRODUCER_JOB}]\n"
+            "    runs-on: ubuntu-24.04",
             "    needs: changes\n    runs-on: ubuntu-24.04",
         ),
         assert_producer_gates_the_shards,

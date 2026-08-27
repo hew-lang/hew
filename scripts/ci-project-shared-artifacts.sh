@@ -45,7 +45,7 @@ records="$(mktemp "${TMPDIR:-/tmp}/shared-artefacts.XXXXXX")"
 cleanup() { rm -f -- "$records"; }
 trap cleanup EXIT
 python3 - "$repo_root" "$manifest" >"$records" <<'PARSE' ||
-import sys
+import pathlib, sys
 
 sys.path.insert(0, sys.argv[1] + "/scripts/lib")
 import toml_compat
@@ -58,8 +58,11 @@ for entry in include:
     if not isinstance(entry, dict):
         sys.exit(f"archive.include entry is not a table: {entry!r}")
     path, policy = entry.get("path"), entry.get("on-missing", "error")
-    if not isinstance(path, str) or not path:
-        sys.exit(f"archive.include entry has no usable path: {entry!r}")
+    parts = pathlib.PurePosixPath(path).parts if isinstance(path, str) else ()
+    if not parts or parts[0] == "/" or ".." in parts:
+        sys.exit(f"archive.include entry has no usable relative path: {entry!r}")
+    if entry.get("relative-to") != "target":
+        sys.exit(f"relative-to must be \"target\": {entry!r}")
     if policy not in ("error", "ignore"):
         sys.exit(f"{path}: unsupported on-missing policy {policy!r}")
     sys.stdout.buffer.write(path.encode() + b"\0" + policy.encode() + b"\0")

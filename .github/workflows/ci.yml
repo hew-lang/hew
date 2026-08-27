@@ -140,7 +140,7 @@ jobs:
     outputs:
       available: ${{ steps.publish.outputs.available }}
     env:
-      # The two routes that reach a structural-lint gate. A docs-only run
+      # The two routes reaching a structural-lint gate; a docs-only run
       # reaches only `lint`, one install either way, so nothing is shared.
       NEEDED: ${{ needs.changes.outputs.selected_compile == 'true' || needs.changes.outputs.scripts == 'true' }}
     steps:
@@ -185,9 +185,9 @@ jobs:
 
       - name: Publish whether the toolchain was shared
         id: publish
-        # No `if:` -- the output must exist on both paths, because a consumer
-        # reads it to choose between downloading and provisioning for itself.
-        # Placed after the upload so `true` means the artifact is really there.
+        # No `if:` -- a consumer reads this to choose between downloading and
+        # provisioning, so it must exist on both paths. After the upload, so
+        # `true` means the artifact is really there.
         run: echo "available=$NEEDED" >> "$GITHUB_OUTPUT"
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -993,10 +993,10 @@ jobs:
           targets: 'wasm32-unknown-unknown, wasm32-wasip1'
           tools: nextest@0.9.120
           cache-shared-key: linux-mold
-          # `<workspace>/target` belongs to the archive here, and it is the
-          # only directory rust-cache can cache: restoring would populate the
-          # path the archive must occupy, and saving on main would store 2.03
-          # GiB of archive as the shared `linux-mold` dependency layer.
+          # `<workspace>/target` belongs to the archive here and is the only
+          # directory rust-cache can cache: restoring would populate the path
+          # the archive must occupy, and saving on main would store 2.03 GiB
+          # of archive as the shared `linux-mold` dependency layer.
           cache-targets: 'false'
 
       - name: Install WASI target
@@ -1090,8 +1090,6 @@ jobs:
             download_seconds="unknown"
           fi
 
-          # A populated checkout target means something else claimed Cargo's
-          # default path; merging it with the archive certifies nothing.
           if [ -e "$target" ] && [ -n "$(ls -A "$target")" ]; then
             echo "::error::$target is already populated; the Linux test archive cannot be materialized over it"
             ls -A "$target"
@@ -1111,8 +1109,6 @@ jobs:
             > "$RUNNER_TEMP/ci-linux-nextest-binaries.json"
           extract_seconds=$(( SECONDS - start ))
 
-          # Exactly one top-level entry: a move of one known tree, not a
-          # merge of whatever an archive happened to contain.
           extracted="$(ls -A "$staging")"
           if [ "$extracted" != "target" ]; then
             echo "::error::the archive extracted [$extracted], not a single target/ tree"
@@ -1133,10 +1129,13 @@ jobs:
           test -s "$target/wasm32-wasip1/debug/libhew_runtime.a"
           test -s "$target/wasm32-wasip1/debug/libhew_std.a"
 
-          # Directories keep +x so the tree stays traversable, then the two
-          # named exceptions.
+          # JUnit dirs made before the freeze so `$target/nextest` stays
+          # read-only: its metadata cannot then be unlinked and replaced.
+          mkdir -p "$target/nextest/ci" "$target/nextest/ci-cabi"
           chmod -R a-w "$target"
-          chmod u+w "$target" "$target/nextest"
+          chmod u+w "$target" "$target/nextest/ci" "$target/nextest/ci-cabi"
+          touch "$target/nextest/ci/.probe" "$target/nextest/ci-cabi/.probe"
+          rm "$target/nextest/ci/.probe" "$target/nextest/ci-cabi/.probe"
 
           {
             echo "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"

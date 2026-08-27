@@ -251,13 +251,11 @@ def offending_extractions(bodies: list[tuple[str, str, str]], origin: str) -> li
     return offences
 
 
-def test_no_workflow_step_extracts_an_archive_into_the_checkout() -> None:
-    """The router reads the working tree; CI must not write to it.
+def test_every_archive_extraction_names_a_destination_the_router_cannot_see() -> None:
+    """Four wasmtime unpacks in `$PWD` made every run report `undeclared: …`.
 
-    Four downloaded wasmtime paths in `$PWD` were enough to make every hosted
-    run report `comprehensive: undeclared: …`, on a push to main whose real
-    diff was empty. The gate is on the extraction call because that is where
-    the decision is made.
+    Extraction calls only: the Linux archive reaches `target/` by `mv` from
+    staging, and where it lands is the prebuilt path contract's business.
     """
     offences: list[str] = []
     for path in workflow_files():

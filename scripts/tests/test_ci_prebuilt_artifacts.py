@@ -247,8 +247,7 @@ def assert_the_two_target_authorities_are_separate(text: str) -> None:
 
     An archived binary carries absolute paths nothing remaps -- a baked
     `env!("CARGO_BIN_EXE_hew")`, a `current_exe()`-relative walk -- so any
-    other path names a directory no consumer has: ~1069 failures of the
-    archived nextest surface on run 33028214259.
+    other path names a directory no consumer has: ~1069 failures on 33028214259.
     """
     consumer = jobs(text)[CONSUMER_JOB]
     body = step_named(consumer, "Materialize the Linux test archive")
@@ -440,6 +439,10 @@ def assert_the_archive_is_not_cargos_output_directory(text: str) -> None:
         "the extracted tree stays writable; the separation would be trusted "
         "rather than enforced"
     )
+    thawed = re.search(r"chmod u\+w (.*)", body).group(1)
+    assert '"$target/nextest"' not in thawed, (
+        f"a writable $target/nextest lets a gate replace its metadata: {thawed}"
+    )
     for exported in ("HEW_CI_NEXTEST_TARGET_DIR=", "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"):
         assert exported in body, f"{exported} is never exported to the gates"
 
@@ -459,6 +462,7 @@ def test_pointing_cargo_at_the_archive_is_rejected() -> None:
             '            echo "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"',
         ),
         text.replace('          chmod -R a-w "$target"\n', ""),
+        text.replace('chmod u+w "$target" "$t', 'chmod u+w "$target/nextest" "$t'),
     ):
         assert mutation != text, "the mutation matched nothing; the test is vacuous"
         try:
@@ -472,13 +476,13 @@ PROJECT = ROOT / "scripts" / "ci-project-shared-artifacts.sh"
 
 # Reordered keys, an omitted policy, and a path holding a space and the
 # character a delimiter-based reader would split on.
-PROJECTION_MANIFEST = """
+MANIFEST = """
 [profile.ci]
 archive.include = [
   { path = "debug/hew", relative-to = "target", on-missing = "error" },
-  { on-missing = "error", path = "debug/odd | name.a" },
-  { path = "debug/plain.a" },
-  { path = "cross/libhew.a", on-missing = "ignore" },
+  { on-missing = "error", relative-to = "target", path = "debug/odd | name.a" },
+  { path = "debug/plain.a", relative-to = "target" },
+  { path = "cross/libhew.a", relative-to = "target", on-missing = "ignore" },
 ]
 """
 REQUIRED = ["debug/hew", "debug/odd | name.a", "debug/plain.a"]
@@ -488,12 +492,12 @@ OPTIONAL = "cross/libhew.a"
 def test_the_projection_honours_on_missing_and_always_verifies_its_gate() -> None:
     """Absence is a policy read from real TOML, and verify cannot be skipped."""
 
-    def fixture(work: Path, omit: str = "") -> Path:
+    def fixture(work: Path, omit: str = "", manifest: str = MANIFEST) -> Path:
         (work / "scripts").mkdir(parents=True)
         (work / "scripts" / PROJECT.name).symlink_to(PROJECT)
         (work / "scripts" / "lib").symlink_to(ROOT / "scripts" / "lib")
         (work / ".config").mkdir()
-        (work / ".config" / "nextest.toml").write_text(PROJECTION_MANIFEST)
+        (work / ".config" / "nextest.toml").write_text(manifest)
         for source in (work / "art" / p for p in REQUIRED if p != omit):
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text("certified")
@@ -530,6 +534,20 @@ def test_the_projection_honours_on_missing_and_always_verifies_its_gate() -> Non
             for verb in ("link", "verify"):
                 assert run(spare, verb).returncode, f"a stray {verb}ed green"
             stray.unlink()
+
+        # An entry anchored elsewhere, or resolving outside `target/`, is a
+        # manifest error before a single source is touched.
+        anchored = '{{ path = "{}", relative-to = "target" }}'
+        for n, bad in enumerate(
+            ['{ path = "debug/hew" }', '{ path = "debug/hew", relative-to = "x" }']
+            + [anchored.format(p) for p in ("/etc/shadow", "../etc", "a/../../b", ".")]
+        ):
+            bent = Path(raw) / f"bent{n}"
+            fixture(bent, manifest=f"[profile.ci]\narchive.include = [{bad}]\n")
+            for verb in ("link", "verify"):
+                # The inventory diagnostic, not merely non-zero: a bad path is
+                # also an absent source, which fails for the wrong reason.
+                assert "inventory" in run(bent, verb).stderr, f"{bad} was accepted"
 
         # Status precedence, and a verifier that runs however the gate ended.
         drop = f"rm '{good / 'cargo' / REQUIRED[0]}'"

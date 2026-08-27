@@ -2,19 +2,11 @@
 #
 # Project the certified shared test artefacts into Cargo's output directory.
 #
-# The Linux shards have two target directories. A test binary that ARRIVED in
-# the nextest archive resolves shared artefacts under the archive's root; one
-# the shard COMPILES resolves them under Cargo's, because hew-testutil derives
-# the authority by walking `<target>/<profile>/deps/` upwards from
-# `current_exe()` -- and nothing ever put them there.
-#
-# So project, never copy: one symlink per artefact, pointing at the read-only
-# certified original, DERIVED from the same `[profile.ci] archive.include` the
-# producer packs. `verify` accepts only the exact link `link` made, and runs
-# before and after each affected gate, so a Cargo build that replaced one is
-# red there rather than silently resolving to something nobody certified.
-#
-# Full mechanism: docs/dev/ci-tiers-and-routing.md, "The projection".
+# A gate that COMPILES its own test binary resolves shared artefacts under
+# Cargo's root, because hew-testutil walks `<target>/<profile>/deps/` upwards
+# from `current_exe()`, while the archive populates the other root. Symlink,
+# never copy, derived from the same `archive.include` the producer packs.
+# Rationale: docs/dev/ci-tiers-and-routing.md, "The projection".
 set -euo pipefail
 
 die() {

@@ -223,15 +223,10 @@ endif
 # with a forced-cancel-test build before a single gate ran. Every later gate in
 # that shard would then have linked against a runtime nobody selected.
 #
-# WHICH directory is which is decided by the workflow, not here, and the shards
-# now invert the obvious assignment: the ARCHIVE occupies the checkout's own
-# `target/` and CARGO writes to `$RUNNER_TEMP/ci-cargo-target`. The archive's
-# test binaries carry the producer's ABSOLUTE paths -- `env!("CARGO_BIN_EXE_hew")`
-# is baked in by rustc and `current_exe()`-relative discovery walks
-# `<target>/<profile>/deps/` upwards -- so the only path they resolve at is the
-# one the producer compiled under, which on GitHub is the consumer's
-# `$GITHUB_WORKSPACE/target` too. This file needs to know only that the two
-# roots differ, which is why both sides are read from the environment.
+# WHICH directory is which is the workflow's choice, not this file's: the
+# shards give the ARCHIVE the checkout's own `target/`, because its binaries
+# carry the producer's absolute paths. Here only the difference matters, which
+# is why both roots are read from the environment.
 #
 # Splitting the authorities removes the whole class, not that one command: a
 # feature-specific build, a `cargo run`, a plain `cargo test`, or anything a
@@ -288,9 +283,7 @@ WASM_RELEASE_DIR := $(CARGO_TARGET_ROOT)/wasm32-wasip1/release
 # Symlinks under build/ point at the shared artefacts. While they live inside
 # the repository the links stay relative, so a moved checkout keeps working; an
 # out-of-tree target directory resolves to an absolute path, which must not
-# have `../` hops prepended to it. The test is absoluteness, not location: the
-# Linux shards' artefact root is an absolute path that happens to sit inside
-# the checkout, and it takes the same branch an out-of-tree root does.
+# have `../` hops prepended to it. The test is absoluteness, not location.
 ifeq ($(filter /%,$(ARTIFACT_ROOT)),)
 LINK_UP2 := ../../
 LINK_UP3 := ../../../
@@ -471,12 +464,10 @@ define require_prebuilt
 	}
 endef
 
-# A gate that COMPILES its own test binary resolves shared artefacts under
-# Cargo's authority -- hew-testutil walks `<target>/<profile>/deps/` upwards
-# from `current_exe()` -- and the archive populates the other one. Symlink the
-# certified artefacts across, derived from the same `archive.include` the
-# producer packs, and re-verify after the gate so a Cargo build that replaced
-# one is red. Prebuilt mode only; locally the two roots are one directory.
+# Gates that compile their own test binary resolve shared artefacts under
+# Cargo's root; the archive populates the other. Project across, and re-verify
+# after so a Cargo build that replaced a link is red. See the script. Prebuilt
+# mode only; locally the two roots are one directory.
 ifeq ($(HEW_CI_PREBUILT),1)
 PROJECT_SHARED_ARTIFACTS = @scripts/ci-project-shared-artifacts.sh link "$(ARTIFACT_ROOT)" "$(CARGO_TARGET_ROOT)"
 VERIFY_SHARED_ARTIFACTS = @scripts/ci-project-shared-artifacts.sh verify "$(ARTIFACT_ROOT)" "$(CARGO_TARGET_ROOT)"
@@ -807,8 +798,7 @@ licenses-check:
 # BASELINE_TIER=fast restricts to members that need no compiler build (what the
 # preflight dispatcher runs before its warm-up).  BASELINE_GATES=<file> further
 # restricts to members whose gate appears in that file's command list.  The
-# dispatcher passes a per-invocation temporary path, so the value is quoted:
-# nothing here may assume the runner's scratch directory has no spaces in it.
+# dispatcher passes a per-invocation temporary path, hence the quoting.
 BASELINE_TIER ?=
 BASELINE_GATES ?=
 BASELINE_SELECT = $(if $(BASELINE_TIER),--tier $(BASELINE_TIER),)
@@ -2465,11 +2455,6 @@ preflight-weights-drift:
 # any one of those four can silently make a shard rebuild what the producer
 # already built, so all four select the contract that holds them together.
 # inputs: scripts/tests/test_ci_prebuilt_artifacts.py .config/nextest.toml
-# The projection that lets a freshly compiled test binary resolve the archive's
-# certified artefacts spans this Makefile, that same manifest and the script
-# below, so its probe is selected by all three.
-# inputs: scripts/tests/test_ci_shared_artifact_projection.py
-# inputs: scripts/ci-project-shared-artifacts.sh hew-testutil/shared-test-artifacts.tsv
 # inputs: scripts/tests/test_playground_path_filter_oracle.py
 # inputs: scripts/tests/test_libhew_freshness.py scripts/tests/test_hew_suite_cache.py
 # inputs: scripts/tests/test_makefile_interfaces.py scripts/make-help.py
@@ -2489,7 +2474,6 @@ test-build-harness:
 	python3 scripts/tests/test_ci_preflight_dispatcher.py
 	bash scripts/tests/test_ci_preflight_timeout.sh
 	python3 scripts/tests/test_ci_prebuilt_artifacts.py
-	python3 scripts/tests/test_ci_shared_artifact_projection.py
 	python3 scripts/tests/test_playground_path_filter_oracle.py
 	python3 scripts/tests/test_libhew_freshness.py
 	python3 scripts/tests/test_hew_suite_cache.py

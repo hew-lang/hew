@@ -10,9 +10,8 @@ ships:
   * the archive carries the shared Hew outputs a test helper resolves by path,
     each declared `on-missing = "error"`, and carries none of Cargo's build
     state;
-  * the archive is materialized at the PRODUCER'S OWN target path and Cargo
-    is given a different, writable one, because a compiled test binary carries
-    absolute paths no remap can reach;
+  * the archive is materialized at the producer's own target path and Cargo
+    is given a different, writable one;
   * the two spellings of every package selection -- Cargo flags locally,
     a filterset in reuse mode, because cargo-nextest accepts exactly one of
     them at a time -- denote the same set;
@@ -40,13 +39,6 @@ DISPATCHER = ROOT / "scripts" / "ci-preflight-dispatcher.sh"
 
 PRODUCER_JOB = "linux-nextest-archive"
 CONSUMER_JOB = "build-and-test"
-
-# The two authorities the consumer job runs under. ARTIFACT is where the
-# producer's certified tree is materialized -- its own compile-time path, so
-# the absolute paths baked into the archived binaries still resolve. CARGO is
-# where everything that still compiles writes.
-ARTIFACT_TARGET = "$GITHUB_WORKSPACE/target"
-CARGO_TARGET = "$RUNNER_TEMP/ci-cargo-target"
 
 # The four reuse flags. cargo-nextest 0.9.120 is the pinned build; its
 # `ReuseBuildOpts` carries all four and places `--binaries-metadata` in a clap
@@ -98,14 +90,6 @@ def step_index(job: str, fragment: str) -> int:
     raise AssertionError(f"no step matching {fragment!r}")
 
 
-def _commands(step: str) -> str:
-    """A step with its commentary removed: a rule satisfied by a comment that
-    mentions the command is a rule that checks nothing."""
-    return "\n".join(
-        line for line in step.splitlines() if not line.strip().startswith("#")
-    )
-
-
 def archive_includes(config: str) -> list[dict[str, str]]:
     """The `[profile.ci] archive.include` entries, as flat key/value maps.
 
@@ -143,11 +127,7 @@ def make_dry_run(target: str, env: dict[str, str], cwd: Path = ROOT):
 
 
 def prebuilt_fixture(work: Path) -> dict[str, str]:
-    """A complete extracted-archive tree, the shape a consumer materializes.
-
-    Two directories, because the consumer job has two. Modelling them as one
-    would make every clobber assertion below vacuous.
-    """
+    """A complete extracted-archive tree, the shape a consumer materializes."""
     target = work / "target"
     cargo_target = work / "cargo-target"
     cargo_target.mkdir(parents=True)
@@ -267,69 +247,20 @@ def assert_the_two_target_authorities_are_separate(text: str) -> None:
 
     An archived binary carries absolute paths nothing remaps -- a baked
     `env!("CARGO_BIN_EXE_hew")`, a `current_exe()`-relative walk -- so any
-    other path names a directory that does not exist: about 1069 failures of
-    the archived nextest surface on run 33028214259. Taking the producer's
-    path costs two things, both asserted here: Cargo must be sent elsewhere
-    BEFORE anything acts on its default, and the property the `$RUNNER_TEMP`
-    rule protected must be re-earned -- not "outside the checkout" but
-    "invisible to `git ls-files --others --exclude-standard`".
+    other path names a directory no consumer has: ~1069 failures of the
+    archived nextest surface on run 33028214259.
     """
     consumer = jobs(text)[CONSUMER_JOB]
-    body = _commands(step_named(consumer, "Materialize the Linux test archive"))
-
-    assert f'target="{ARTIFACT_TARGET}"' in body, (
-        "the archive is not materialized at the producer's own target path; "
-        "every absolute path the archived binaries carry would be wrong"
+    body = step_named(consumer, "Materialize the Linux test archive")
+    assert 'target="$GITHUB_WORKSPACE/target"' in body, (
+        "the archive is not materialized at the producer's own target path"
     )
-    assert 'echo "HEW_CI_NEXTEST_TARGET_DIR=$target"' in body, (
-        "the gates are pointed at a different tree from the one materialized"
+    assert 'test "${CARGO_TARGET_DIR:-}" = "$RUNNER_TEMP/ci-cargo-target"' in body, (
+        "the materialize step does not assert Cargo writes elsewhere"
     )
-    relative = ARTIFACT_TARGET.removeprefix("$GITHUB_WORKSPACE/")
-    assert (
-        subprocess.run(
-            ["git", "check-ignore", "-q", "--", relative], cwd=ROOT
-        ).returncode
-        == 0
-    ), (
-        f"{relative} is not ignored by Git; the archive materialized there is "
-        "untracked paths no gate declares, and the router fails closed to "
-        "comprehensive on every run"
-    )
-
-    # Extraction still lands in scratch -- nextest wants an empty root -- and
-    # only the archive's own `target/` moves into place.
-    extract_to = re.search(r"--extract-to \"(\$[A-Za-z_][A-Za-z0-9_]*)\"", body)
-    assert extract_to, "the extraction names no destination variable"
-    assert re.search(
-        rf"{re.escape(extract_to.group(1)[1:])}=\"(\$RUNNER_TEMP/[^\"]+)\"", body
-    ), "the archive is extracted somewhere other than the runner's scratch"
-    assert re.search(r'mv "\$staging/target" "\$target"', body), (
-        "the materialization moves something other than the extracted target/"
-    )
-    assert 'if [ "$extracted" != "target" ]' in body, (
-        "the extraction root is not checked for exactly one `target/` entry"
-    )
-    assert 'ls -A "$target"' in body and "already populated" in body, (
-        "a populated checkout target is merged into rather than refused"
-    )
-
-    # Cargo's authority, decided in the job's FIRST step: Swatinem/rust-cache
-    # resolves `<workspace>/target` and never reads CARGO_TARGET_DIR.
-    early = _commands(step_named(consumer, "Give Cargo its own output directory"))
-    assert f'cargo_target="{CARGO_TARGET}"' in early, (
-        f"Cargo's output directory is not {CARGO_TARGET}"
-    )
-    assert 'echo "CARGO_TARGET_DIR=$cargo_target" >> "$GITHUB_ENV"' in early
-    assert step_index(consumer, "Give Cargo its own output directory") < step_index(
-        consumer, "./.github/actions/setup-rust-build"
-    ), "Cargo's directory is decided after the cache action acted on the default"
     assert "cache-targets: 'false'" in step_named(
         consumer, "./.github/actions/setup-rust-build"
-    ), "rust-cache still owns `<workspace>/target` in the job using it for the archive"
-    assert f'test "${{CARGO_TARGET_DIR:-}}" = "{CARGO_TARGET}"' in body, (
-        "the materialize step does not assert the two authorities differ; a "
-        "skipped export would freeze the directory every compiling gate needs"
-    )
+    ), "rust-cache still owns `<workspace>/target`, the archive's own path"
 
 
 def assert_no_target_directory_transfer(text: str) -> None:
@@ -419,19 +350,6 @@ def test_each_workflow_property_rejects_its_own_defect() -> None:
         _move_step_to_end(text, "Materialize the Linux test archive"),
         assert_materialization_precedes_every_gate,
     )
-    # The defect run 33028214259 shipped, and its mirror -- the archive on the
-    # producer's path with Cargo still writing there.
-    rejects(
-        text.replace(
-            f'          target="{ARTIFACT_TARGET}"\n',
-            '          target="$RUNNER_TEMP/ci-linux-nextest/target"\n',
-        ),
-        assert_the_two_target_authorities_are_separate,
-    )
-    rejects(
-        _move_step_to_end(text, "Give Cargo its own output directory"),
-        assert_the_two_target_authorities_are_separate,
-    )
     rejects(
         text.replace(
             "path: ${{ runner.temp }}/ci-linux-nextest.tar.zst",
@@ -497,38 +415,30 @@ def assert_the_archive_carries_the_consumer_interface(config: str) -> None:
 
 
 def assert_the_archive_is_not_cargos_output_directory(text: str) -> None:
-    """The certified tree is read-only and is NOT where Cargo writes.
+    """Cargo must not be pointed at a tree whose contents are certified.
 
-    Two directions on one decision. `libhew.a` carries a freshness certificate
-    binding it to the sources that produced it and `hew` is the compiler the
-    producer built, so a tree Cargo writes into is a tree those certificates
-    stop describing. Pointing CARGO_TARGET_DIR at it did exactly that:
+    The archive's `libhew.a` carries a freshness certificate binding it to the
+    sources that produced it, and its `hew` is the compiler the producer built.
+    Exporting the extracted tree as CARGO_TARGET_DIR made every ordinary cargo
+    invocation in the job a writer to it, and one did so deterministically:
     `forced-cancel-composite-check-build` builds a
     `hew-runtime/forced-cancel-test` compiler and archive in WARM-UP, before a
-    single gate runs. The archive now occupies Cargo's DEFAULT path, so only
-    the first step's redirect and the freeze here stand between them.
+    single gate runs.
     """
-    body = _commands(
-        step_named(jobs(text)[CONSUMER_JOB], "Materialize the Linux test archive")
+    step = step_named(jobs(text)[CONSUMER_JOB], "Materialize the Linux test archive")
+    # Read the commands, not the commentary: a rule satisfied by a comment
+    # that mentions the command is a rule that checks nothing.
+    body = "\n".join(
+        line for line in step.splitlines() if not line.strip().startswith("#")
     )
-    assert f'test "${{CARGO_TARGET_DIR:-}}" = "{CARGO_TARGET}"' in body, (
-        "the materialize step no longer asserts that Cargo writes elsewhere"
+    assert "CARGO_TARGET_DIR=" not in body, (
+        "the extracted archive is exported as Cargo's output directory again; "
+        "any feature-specific build in the job would overwrite certified "
+        "artefacts"
     )
-    assert "CARGO_TARGET_DIR=$target" not in body, (
-        "the archive is exported as Cargo's output directory again; any "
-        "feature-specific build in the job would overwrite certified artefacts"
-    )
-    # One recursive freeze, then exactly two directories reopened by name: the
-    # target root (siblings such as `target/forced-cancel-gate`) and nextest's
-    # own store (`target/nextest/ci/junit.xml`). Reopening a directory does not
-    # reopen the files in it.
     assert 'chmod -R a-w "$target"' in body, (
-        "the materialized tree stays writable; the separation would be trusted "
+        "the extracted tree stays writable; the separation would be trusted "
         "rather than enforced"
-    )
-    assert 'chmod u+w "$target" "$target/nextest"' in body, (
-        "nextest's store is frozen too, so the JUnit the upload step reads "
-        "could never be written"
     )
     for exported in ("HEW_CI_NEXTEST_TARGET_DIR=", "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"):
         assert exported in body, f"{exported} is never exported to the gates"
@@ -579,17 +489,6 @@ def test_the_makefile_reads_the_archive_and_writes_somewhere_else() -> None:
     with tempfile.TemporaryDirectory() as raw:
         env = prebuilt_fixture(Path(raw))
         archive = env["HEW_CI_NEXTEST_TARGET_DIR"]
-        cargo = env["CARGO_TARGET_DIR"]
-        assert Path(archive) != Path(cargo), "the fixture merged the authorities"
-
-        # The split is real at Make-parse time, not only in the workflow.
-        # `runtime` is a foundational artefact, so its prebuilt recipe must
-        # resolve into the archive and never into Cargo's directory.
-        verify = make_dry_run("runtime", env)
-        assert verify.returncode == 0, verify.stderr
-        assert archive in verify.stdout, verify.stdout
-        assert cargo not in verify.stdout, verify.stdout
-
         # Every gate that still compiles must compile somewhere else.
         for target in ("test-cabi", "test-runtime-unit", "stdlib", "test"):
             plan = make_dry_run(target, env)

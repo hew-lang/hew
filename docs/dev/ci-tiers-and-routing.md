@@ -280,60 +280,35 @@ merely expensive. `scripts/compiled-hew-artifact.py` keeps its manifest for the
 different problem it solves: a compact binary pair whose consumer must know
 which revision produced it.
 
-**How a consumer uses it — and where the tree has to land.** The archive is a
-set of **already compiled** binaries, and a compiled binary carries absolute
-paths that nothing can remap after the fact: `env!("CARGO_BIN_EXE_hew")` is a
-string literal rustc baked in at the producer, and `current_exe()`-relative
-stdlib discovery resolves `<target>/<profile>/deps/<bin>` upwards at run time.
-Neither `--workspace-remap` nor `--target-dir-remap` reaches either one.
+**How a consumer uses it — and where the tree has to land.** A compiled binary
+carries absolute paths nothing remaps after the fact: `env!("CARGO_BIN_EXE_hew")`
+is a literal rustc baked in at the producer, and `current_exe()`-relative stdlib
+discovery walks `<target>/<profile>/deps/` upwards at run time. Run
+`33028214259` materialized the tree under `RUNNER_TEMP` and priced that: about
+**1069 failures on the archived nextest surface**, plus the three gates that
+compile a fresh test binary in the shard (`observe-functional-test`,
+`libhew-link-race-test`, `sandbox-parity`). `mqtt-broker-e2e` failed in that run
+too and is **not** one of them — it runs the archive's compiler by absolute path
+and compiles no test binary, so its failure is behavioural and stays red on its
+own merits.
 
-The first hosted revision materialized the tree under `RUNNER_TEMP`, on the
-theory that an unpacked archive in the checkout is untracked paths no gate
-declares. Run `33028214259` priced that theory: about **1069 failures on the
-archived nextest surface** — binaries looking for a directory that exists on no
-consumer — plus the three gates that compile a fresh test binary in the shard
-(`observe-functional-test`, `libhew-link-race-test`, `sandbox-parity`).
-`mqtt-broker-e2e` failed in that run too and is **not** on this list: it runs
-the archive's compiler by absolute path and compiles no test binary, so it
-resolves nothing through the rule below. Its failure is behavioural and stays
-red on its own merits.
+So the tree is materialized at **`$GITHUB_WORKSPACE/target`**, the producer's
+own absolute path, which GitHub gives every job in a run. What the `RUNNER_TEMP`
+rule protected still holds: the router reads `git ls-files --others
+--exclude-standard`, and `target/` is `.gitignore`d, so an ignored path is as
+invisible to it as an out-of-tree one. Extraction still stages under
+`RUNNER_TEMP` (nextest wants an empty root) and only the archive's own `target/`
+moves into place. Cargo is sent to `$RUNNER_TEMP/ci-cargo-target` in the job's
+**first step**, because `Swatinem/rust-cache` resolves what it caches as
+`<workspace>/target` and never reads `CARGO_TARGET_DIR` — hence
+`cache-targets: 'false'` on the shards. The tree is then made **read-only** and
+is deliberately **not** Cargo's output directory.
 
-So the tree is materialized at **`$GITHUB_WORKSPACE/target`** — the producer's
-own absolute path, which GitHub gives every job in a run — and
-`--target-dir-remap` becomes an identity. The property the `RUNNER_TEMP` rule
-actually protected still holds: the change router reads
-`git ls-files --others --exclude-standard`, and `target/` is `.gitignore`d, so
-an ignored path is exactly as invisible to it as an out-of-tree one.
-
-Three mechanics follow, and each is enforced rather than trusted:
-
-* **Extraction is staged.** nextest requires an empty extraction root and a
-  checkout is not one, so the archive unpacks into a private staging directory
-  under `RUNNER_TEMP`, is checked to hold exactly one `target/` entry, and only
-  that tree is moved into place. No archive content is ever unpacked over a
-  source file. A populated checkout target is refused, with the obstruction
-  printed, rather than merged into.
-* **Cargo gets its own directory, decided first.** `CARGO_TARGET_DIR` is set to
-  `$RUNNER_TEMP/ci-cargo-target` in the **first step of the job**, before the
-  checkout and before `setup-rust-build`. `Swatinem/rust-cache` resolves the
-  directory it caches as `<workspace>/target` and does not read
-  `CARGO_TARGET_DIR` at all, so the export alone would not keep it away: the
-  shards pass `cache-targets: 'false'`, and the producer keeps that layer and
-  owns it. Otherwise a restore would populate the path the archive must occupy,
-  and a save on main would store two gigabytes of extracted archive as the
-  shared `linux-mold` dependency layer.
-* **The tree is frozen.** One recursive `chmod -R a-w`, then exactly two
-  directories reopened by name: `target/` itself, because gates legitimately
-  build siblings in it (`target/forced-cancel-gate`, `target/sanitizer-*`), and
-  `target/nextest/`, nextest's own store and where the JUnit upload step reads.
-  Reopening a directory does not reopen the files inside it, so the archive's
-  metadata stays read-only inside a writable store.
-
-The freeze and the split are the same decision from two directions. The
-archive's contents are certified — `libhew.a` carries a freshness certificate
-binding it to the sources that produced it, `hew` is the compiler the producer
-built — so a tree Cargo writes into is a tree those certificates stop
-describing. Pointing `CARGO_TARGET_DIR` at it did exactly that:
+Those are the same decision from two directions. The archive's contents are
+certified — `libhew.a` carries a freshness certificate binding it to the
+sources that produced it, `hew` is the compiler the producer built — so a tree
+Cargo writes into is a tree those certificates stop describing. Pointing
+`CARGO_TARGET_DIR` at it did exactly that:
 `forced-cancel-composite-check-build` runs
 `cargo build -p hew-cli -p hew-lib --features hew-runtime/forced-cancel-test`
 in warm-up, before any gate, and overwrote both. Every later gate in that shard
@@ -345,39 +320,24 @@ they are the same directory and nothing changes. In prebuilt mode
 `ARTIFACT_ROOT` is the archive — `DEBUG_DIR`, `RELEASE_LIB_DIR`,
 `WASM_DEBUG_DIR`, `LIBHEW` and `check-libhew-fresh.sh` follow it — while every
 `cargo build`, `cargo run`, `cargo test` and feature-specific build writes to
-Cargo's own directory. Which of the two sits inside the checkout is the
-workflow's choice, not the Makefile's; the Makefile needs only that they
-differ, which is why both sides are read from the environment.
+Cargo's own directory. `chmod -R a-w` on the extracted tree makes that
+separation enforced rather than trusted: a stray write fails at the writer with
+a permission error instead of surfacing as a wrong link an hour later. There is
+no repair path and no self-heal message, because there is nothing to repair.
 
-**The projection, for gates that compile.** `hew-testutil` resolves a shared
-artefact from its own test executable's `<target>/<profile>/deps/` position, so
-an **archived** test binary finds the archive. A gate that COMPILES a fresh
-test binary produces one under *Cargo's* authority instead, and
-`HEW_TEST_NO_BUILD=1` makes the lookup verify-only — so it looked for
-`libhew.a` where nothing had put it. Three gates do that:
-`observe-functional-test`, `libhew-link-race-test`, `sandbox-parity`.
-
-`scripts/ci-project-shared-artifacts.sh` closes it by **symlinking**, never
-copying: one link per certified artefact, pointing at the read-only original,
-in all three shapes `hew-testutil` derives (`<profile>/x`,
-`wasm32-wasip1/<profile>/x`, `<triple>/<profile>/x`). The set comes from
-`.config/nextest.toml`'s `[profile.ci] archive.include` — the same list the
-producer packs — so an artefact added there is projected without a second list
-learning about it. Links rather than a copy because the archive is 2.03 GiB and
-a copy would be a second thing to certify.
-
-It runs only under `HEW_CI_PREBUILT`; locally both hooks are `@:`. The three
-gates project **before** and re-verify **after**, `verify` accepts only the
-exact link `link` made, a non-matching destination is refused rather than
-overwritten, and the sources stay read-only throughout — so a Cargo build that
-replaced a projected path is red at that gate.
-`scripts/tests/test_ci_shared_artifact_projection.py` drives the real script
-over a real two-root tree: red before, green after, red again on the
-replacement counterfactual.
+**The projection.** `hew-testutil` resolves a shared artefact from its own test
+executable's `<target>/<profile>/deps/` position, so an *archived* binary finds
+the archive. A gate that COMPILES a fresh test binary produces one under
+*Cargo's* root instead, where nothing had put those artefacts.
+`scripts/ci-project-shared-artifacts.sh` closes it by symlinking, never copying,
+the set parsed from `.config/nextest.toml`'s `archive.include` — the producer's
+own pack list. The three gates project before and re-verify after; `verify`
+accepts only the exact link `link` made and the sources stay read-only, so a
+Cargo build that replaced one is red at that gate. Prebuilt mode only.
 
 JUnit is unaffected: nextest writes its store under the remapped *workspace*
-root — not under `CARGO_TARGET_DIR` — so `target/nextest/<profile>/junit.xml`
-stays where the upload step reads it.
+root, so `target/nextest/<profile>/junit.xml` stays where the upload step
+reads it.
 
 **Two spellings of one selection.** `--binaries-metadata` and every Cargo
 package/target flag are one clap group in cargo-nextest; passing both is
@@ -609,51 +569,35 @@ they get better; the projection does not spend it in advance.
 
 ### Measured: hosted run `33028214259`
 
-The first full hosted run of this branch. Read it against the 413 job-minute /
-69.1 minute wall baseline above, and against the ~342 job-minute / ~59 minute
-projection.
-
 | | job-minutes | wall |
 |---|---:|---:|
 | baseline (`32966803389`) | 413 | 69.1 min |
 | projected | ~342 | ~59 min |
 | **measured (`33028214259`)** | **353.7** | **65.3 min** |
 
-**The archive works.** 2.03 GiB transferred, and the **archived nextest
-surface issued zero rebuilds** in all four shards. Note the exact scope: the
-archived surface, not the shard. The shards still compile what the archive
-deliberately cannot carry (see "What still builds" above), so "zero compile
-requests per shard" would be the wrong claim.
+The archive works: 2.03 GiB transferred, and the **archived nextest surface
+issued zero rebuilds** in all four shards. Not "zero compile requests per
+shard" — the shards still compile what the archive cannot carry.
 
-**The 11.7 job-minute gap to projection is one shard, and its cause is not
-established here.** Shard 2 ran **13.7 minutes longer** than its weighted plan.
-Its failures — ownership/MIR, SIGSEGV in the fuzz and stream fixtures,
-compiled-Hew O0, MIR/LLVM drift, Windows and macOS full-suite — have signatures
-that also appear on `main`, and several were reproduced against base sources
-during discovery. That is **not** the same as reproducing this shard's overrun
-on base `be7c624d6`, which was not done: a matching signature says a failure of
-that shape exists on base, not that base explains these 13.7 minutes, and
-source identity is never proof of causation.
+The 11.7 job-minute gap to projection is one shard: shard 2 ran 13.7 minutes
+longer than its weighted plan. Its failures — ownership/MIR, SIGSEGV fuzz and
+stream fixtures, compiled-Hew O0, MIR/LLVM drift, Windows and macOS full-suite
+— have signatures that also appear on `main`, and several were reproduced
+against base sources during discovery. That is **not** a reproduction of this
+shard's overrun on base `be7c624d6`, which was not done, and source identity is
+never proof of causation. So 353.7 / 65.3 is the number; a ~340 / ~61
+counterfactual is conditional on an unproven attribution. Either way those
+failures are real and stay red.
 
-So **353.7 job-minutes / 65.3 minutes wall is the number**. If the overrun is
-entirely base's the counterfactual is near 340 / 61 — an estimate conditional
-on an unproven attribution, not a figure to quote. Settling it needs a run of
-the same shard on `be7c624d6`. Either way those failures are real and stay red;
-a CI-shape change may not baseline or expected-failure a correctness regression
-it merely ran alongside.
+The cache was cold and correctly so — first pull request run, and caches now
+save only from `main` — so these are the pessimistic setup costs.
 
-**The cache was cold, and correctly so.** First pull request run of the branch,
-and caches are now saved only from `main`: every layer restored from whatever
-`main` had and wrote nothing back. Intended steady state, not a defect — but it
-makes these the *pessimistic* setup costs, and a second run on the same branch
-is the number to compare future work against.
-
-**Two defects this run priced, both fixed in the revision that follows it:**
-the archive materialized under `RUNNER_TEMP` instead of the producer's own
-target path (~1069 failures on the archived nextest surface, plus three gates
-that compile — "Build once, run four times" above), and ast-grep provisioned
-five times on the compiled route, ~17.9 runner-minutes of which four installs
-are duplicates ("Resolved: ast-grep provisioning" below).
+Two defects this run priced, both fixed in the revision that follows it: the
+archive's materialization path (above), and ast-grep provisioned five times on
+the compiled route, ~17.9 runner-minutes of which four installs are duplicates.
+That is now one producer job uploading a tarball every consumer unpacks through
+the same fail-closed bootstrap, plus a cache split into pinned `restore`/`save`
+so only `main` writes and no two jobs race one key.
 
 ### Retained expensive gates, and why
 
@@ -688,35 +632,3 @@ are duplicates ("Resolved: ast-grep provisioning" below).
 * **More shards** — after the compiler-pipeline gate goes, the makespan is
   bounded by `make test` itself, so a fifth shard buys about a minute of wall
   for roughly twelve runner-minutes of setup. Not worth it.
-
-### Resolved: ast-grep provisioning
-
-Left on the table after `32966803389` on the theory that the read-only cache
-change might resolve it. Run `33028214259` answered that: it did not. Six jobs
-can reach `setup-ast-grep` — `lint`, the script-only half of `docs-and-scripts`,
-and the four Linux shards — and the compiled route runs **five** of them. On a
-cold cache, which is every first run of a pull request now that saving belongs
-to `main`, that is five independent `cargo install` builds of ast-grep and the
-tree-sitter CLI: about **17.9 runner-minutes** for a byte-identical tree. One
-is the build; the other **four are duplicates**, and they are what this
-removes.
-
-Two changes remove it, from different directions:
-
-* **One producer.** `ast-grep-toolchain` builds it once and uploads a tarball
-  the other jobs unpack into `.ast-grep` and re-verify through the same
-  idempotent, fail-closed bootstrap. A tarball rather than the directory
-  because `upload-artifact` preserves neither executable bits nor dotfiles, and
-  every consumer needs `.ast-grep/tool/bin/ast-grep` to be a dotfile that runs.
-  The job carries no job-level `if:` — a skipped job is not a satisfied
-  dependency, and three required contexts depend on it — so the gate is on the
-  steps and its answer is published as an output. A docs-only run shares
-  nothing, so it no-ops and `lint` provisions for itself; that is one install
-  either way.
-* **Restore everywhere, save on `main` after a miss.** The combined
-  restore+save step let every pull request write ref-scoped entries no other
-  branch can read, and let whichever installing job finished first reserve the
-  key while the rest logged `Unable to reserve cache with key …`. Split into
-  pinned `actions/cache/restore` + `/save`, with the save reusing the restore's
-  own primary key, both the eviction and the race are gone by construction —
-  the same policy the Rust dependency layer and sccache already run under.

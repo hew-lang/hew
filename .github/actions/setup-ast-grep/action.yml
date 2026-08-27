@@ -1,57 +1,67 @@
 name: Setup pinned ast-grep
 description: >
   Provision the pinned ast-grep binary and the Hew tree-sitter grammar into
-  .ast-grep/, the way setup-llvm and the wasmtime install provision their
-  toolchains: cache the built tree, then run the idempotent bootstrap, which
-  re-verifies the pinned version and archive checksum even on a cache hit.
-  Jobs that run gates reading .ast-grep/tool/bin/ast-grep (the opaque-resource
-  lifecycle evidence) use this instead of making the install a make-time
-  prerequisite of a test target.
+  .ast-grep/, either by building it (source: install) or by unpacking the
+  toolchain artifact another job already built (source: artifact). Both paths
+  end at the same verification, so a consumer cannot accept a tree the
+  producer would have rejected.
+
+inputs:
+  source:
+    description: "install (build, cache-backed) or artifact (unpack a built tree)"
+    required: false
+    default: install
+  artifact-name:
+    description: "Artifact to unpack when source is artifact"
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
-    # Keyed on every input the build consumes: the pinned lock (ast-grep and
-    # tree-sitter-cli versions, grammar revision and archive digest, ABI), the
-    # two scripts that assemble the tree, and the source dialect patch. The
-    # compiled grammar is a native shared object, so the runner OS and arch
-    # are part of the key. A miss costs the cargo installs; a hit costs the
-    # verification only.
+    # Keyed on every input the build consumes: the pinned lock, the two scripts
+    # that assemble the tree, and the dialect patch. The grammar is a native
+    # shared object, so OS and arch are part of the key.
     #
-    # RESTORE everywhere, SAVE only from the default branch and only after a
-    # miss. Three things follow from that split, and each of them was a real
-    # cost:
-    #   * A pull request no longer writes cache entries scoped to its own ref,
-    #     which no other branch can read and which evict the entry every branch
-    #     could. Same policy the Rust dependency layer and sccache already run
-    #     under, for the same 10 GB repository budget.
-    #   * Two jobs in one run can no longer race to save the same key. The
-    #     combined restore+save step this replaces reserved the key from
-    #     whichever of the six installing jobs finished first and logged a
-    #     conflict for the rest.
-    #   * A hit is never re-saved, so a warm main run does no cache write at
-    #     all.
-    # The save reuses the restore's own primary key rather than repeating the
-    # expression, so the two halves cannot drift apart.
+    # Restore everywhere, save only from the default branch and only after a
+    # miss: a pull request writing ref-scoped entries evicts the one every
+    # branch could read, and two jobs saving one key race. The save reuses the
+    # restore's primary key so the halves cannot drift.
     - name: Restore pinned ast-grep toolchain
       id: cache
+      if: inputs.source == 'install'
       uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
       with:
         path: .ast-grep
         key: ast-grep-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ast-grep.lock', 'tools/tree-sitter-hew-consume-parameter.patch', 'scripts/ast-grep-lint.sh', 'scripts/build-ast-grep-lang.sh') }}
 
-    # Fail-closed by construction: the bootstrap re-checks the installed
-    # binary's --version against tools/ast-grep.lock and the cached grammar
-    # archive's SHA-256 on every invocation, so a corrupted or stale cache is
-    # rebuilt rather than trusted. --install-only stops before the authority
-    # scan, which stays owned by the lint job's `make structural-lint`.
+    # The bootstrap re-checks the installed binary's --version against
+    # tools/ast-grep.lock and the grammar archive's SHA-256 on every
+    # invocation, so a stale cache is rebuilt rather than trusted.
     - name: Bootstrap pinned ast-grep toolchain
+      if: inputs.source == 'install'
       shell: bash
       run: make structural-lint-bootstrap-install
 
-    # The consumers read this exact path. Prove it exists and runs here,
-    # where the diagnostic is "provisioning failed", rather than several
-    # steps later as "bootstrap pinned ast-grep before lifecycle fact test".
+    - name: Download the pinned ast-grep toolchain
+      if: inputs.source == 'artifact'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/ast-grep-toolchain
+
+    # The tarball is rooted inside .ast-grep, so nothing it holds lands
+    # outside that directory.
+    - name: Unpack the pinned ast-grep toolchain
+      if: inputs.source == 'artifact'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p .ast-grep
+        tar --zstd -xf "$RUNNER_TEMP/ast-grep-toolchain/ast-grep-toolchain.tar.zst" -C .ast-grep
+
+    # Both paths land here. Consumers read this exact path, so prove it runs
+    # where the diagnostic is still "provisioning failed".
     - name: Verify pinned ast-grep runs
       shell: bash
       run: |
@@ -59,10 +69,9 @@ runs:
         .ast-grep/tool/bin/ast-grep --version
         test -f .ast-grep/hew-lang.so
 
-    # After the verification, never before it: what gets stored is a tree that
-    # has already proved its version and checksum.
+    # After the verification, never before it.
     - name: Save pinned ast-grep toolchain
-      if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+      if: inputs.source == 'install' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
       with:
         path: .ast-grep

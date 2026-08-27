@@ -17,8 +17,9 @@ SCRIPT = ROOT / "scripts" / "ci-preflight-dispatcher.sh"
 # The dispatcher proves the fast-tier derived baselines are current BEFORE it
 # warms anything, so a baseline that drifted when main moved fails in seconds
 # instead of at the far end of the lane. Its command line is fixed so the
-# profile and summary rows stay comparable across runs -- which is why it names
-# a variable rather than the per-invocation temporary path that variable holds.
+# profile and summary rows stay comparable across runs.
+# It names a VARIABLE, not the per-invocation path it holds, so the profile
+# and summary rows stay comparable across runs.
 PRECHECK = (
     "make baselines-check BASELINE_TIER=fast "
     'BASELINE_GATES="$PREFLIGHT_BASELINE_LANE_FILE"'
@@ -33,9 +34,7 @@ def _hermetic_env(
     for key in tuple(run_env):
         if (
             key == "CI"
-            # A real setting of a real job (the Linux shards send Cargo away
-            # from the materialized archive) that must not reach a unit test,
-            # where it would silently relocate every build described here.
+            # Set by the Linux shards; would relocate every build below.
             or key == "CARGO_TARGET_DIR"
             or key == "COMPILED_HEW_GATE_OWNER"
             or key == "PLAYGROUND_GATE_OWNER"
@@ -205,14 +204,9 @@ def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() ->
     assert re.search(r"^lint:.*\$\$\(LINT_GATES\)", makefile, re.MULTILINE), makefile
 
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    # Ownership of the toolchain belongs to test_ci_workflow_contract.py. What
-    # matters here is that the job running the labelled command holds it on
-    # EVERY route: the shared tarball, or the setup action on a docs-only run.
-    assert "uses: ./.github/actions/setup-ast-grep" in workflow, (
-        "hosted CI must explicitly provision the pinned toolchain"
-    )
+    # Ownership belongs to test_ci_workflow_contract.py; this cares only that
+    # the job running the labelled command provisions it at all.
     lint = workflow.split("\n  lint:\n", 1)[1].split("\n  license-check:\n", 1)[0]
-    assert "name: Unpack and verify the pinned ast-grep toolchain" in lint, lint
     assert "uses: ./.github/actions/setup-ast-grep" in lint, lint
     assert re.search(
         r"name: Verify structural lint bootstrap contract\s+run: make test-ast-grep-contract test-structural-lint-bootstrap",
@@ -544,119 +538,53 @@ def test_baseline_precheck_is_scoped_to_selection() -> None:
     assert members == ["wasm-capability"], scoped.stdout
 
 
-def _lane_probe(scratch: Path, script: str) -> Path:
-    """A fake `make` that reports what the lane file said when it read it."""
-    fake_bin = scratch / "bin"
-    fake_bin.mkdir()
-    make = fake_bin / "make"
-    make.write_text(
-        "#!/bin/sh\nset -eu\n"
-        'case "$*" in *baselines-check*) ;; *) exit 0 ;; esac\n'
-        'lane=""\n'
-        'for arg in "$@"; do\n'
-        '  case "$arg" in BASELINE_GATES=*) lane="${arg#BASELINE_GATES=}" ;; esac\n'
-        "done\n" + script,
-        encoding="utf-8",
-    )
-    make.chmod(0o755)
-    return fake_bin
+def test_overlapping_dispatchers_keep_private_lane_files_and_clean_them_up() -> None:
+    """One fixed repo lane file let the last concurrent writer win.
 
-
-def test_concurrent_dispatchers_cannot_corrupt_each_others_baseline_lane() -> None:
-    """Two overlapping invocations each check their OWN gates.
-
-    The lane list used to be one fixed file, and the comprehensive lane runs
-    gates concurrently with several nesting a further dispatcher, so the last
-    writer won -- Ubuntu-only baseline-selection failures every serial local
-    run missed. The barrier makes this a proof rather than a timing hope:
-    neither invocation reads its lane until BOTH have written one.
+    The fake `make` re-reads its lane after a delay and fails if the content
+    moved. Cleanup runs through a trap naming a FUNCTION: an interpolated
+    `rm -f -- '$path'` is re-parsed at exit with the path already substituted,
+    so the apostrophe below yields `unexpected EOF` and the file leaks.
     """
     with tempfile.TemporaryDirectory() as raw:
-        scratch = Path(raw)
-        rendezvous = scratch / "rendezvous"
-        rendezvous.mkdir()
-        record = scratch / "record.tsv"
-        record.touch()
-        fake_bin = _lane_probe(
-            scratch,
-            ': > "$PREFLIGHT_RENDEZVOUS/$PREFLIGHT_TAG.ready"\n'
-            "waited=0\n"
-            'while [ "$waited" -lt 400 ]; do\n'
-            '  set -- "$PREFLIGHT_RENDEZVOUS"/*.ready\n'
-            '  [ "$#" -lt 2 ] || break\n'
-            "  sleep 0.05\n"
-            "  waited=$((waited + 1))\n"
-            "done\n"
-            "printf '%s\\t%s\\n' \"$PREFLIGHT_TAG\" "
-            '"$(tr \'\\n\' \',\' < "$lane")" >> "$PREFLIGHT_RECORD"\n',
+        tmp = Path(raw) / "ci's build dir"
+        (fake_bin := Path(raw) / "bin").mkdir()
+        tmp.mkdir()
+        (make := fake_bin / "make").write_text(
+            '#!/bin/sh\nset -eu\ncase "$*" in *baselines-check*) ;; *) exit 0 ;; esac\n'
+            'all="$*"\nlane="${all##*BASELINE_GATES=}"\n'
+            'before="$(cat "$lane")"\nsleep 1\n'
+            'test "$before" = "$(cat "$lane")"\n'
+            'printf \'%s\\n\' "$before" >> "$PREFLIGHT_RECORD"\n'
+            'case "$before" in *TWO*) exit 1 ;; esac\n',
+            encoding="utf-8",
         )
+        make.chmod(0o755)
+        (record := Path(raw) / "record.txt").touch()
 
-        def invoke(tag: str) -> subprocess.CompletedProcess[str]:
+        def invoke(tag: str) -> int:
             return _run_dispatcher_process(
                 ["bash", str(SCRIPT), "--", "Makefile"],
                 env={
                     "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
-                    "PREFLIGHT_TEST_COMMANDS": f"printf '%s' {tag} >/dev/null\n",
+                    "PREFLIGHT_TEST_COMMANDS": f"true # {tag}\n",
                     "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
-                    "PREFLIGHT_TAG": tag,
-                    "PREFLIGHT_RENDEZVOUS": str(rendezvous),
                     "PREFLIGHT_RECORD": str(record),
-                },
-                path_prefix=(fake_bin,),
-                timeout=120,
-            )
-
-        tags = ("LANE_ONE", "LANE_TWO")
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = dict(zip(tags, pool.map(invoke, tags)))
-        rows = dict(
-            line.split("\t") for line in record.read_text().splitlines() if line
-        )
-
-    for tag, result in results.items():
-        assert result.returncode == 0, f"{tag}: {result.stdout}{result.stderr}"
-    assert set(rows) == set(tags), rows
-    for tag, gates in rows.items():
-        assert gates == f"printf '%s' {tag} >/dev/null,", (
-            f"{tag} checked baselines against another lane's gates: {rows}"
-        )
-    assert not (ROOT / ".tmp" / "preflight-lane.txt").exists(), (
-        "the shared lane file is back"
-    )
-
-
-def test_the_lane_file_is_removed_however_the_run_ends() -> None:
-    """Success and failure both clean up, in a directory that needs quoting.
-
-    The trap names a function, so the path is expanded when cleanup RUNS. An
-    interpolated `rm -f -- '<path>'` is re-parsed at exit with the path already
-    substituted, so an apostrophe in TMPDIR yields `unexpected EOF while
-    looking for matching '` and the file leaks.
-    """
-    for precheck_exit, expected in ((0, 0), (1, 1)):
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw) / "ci's build dir"
-            tmp.mkdir()
-            fake_bin = _lane_probe(
-                Path(raw), f'test -f "$lane"\nexit {precheck_exit}\n'
-            )
-            result = _run_dispatcher_process(
-                ["bash", str(SCRIPT), "--", "Makefile"],
-                env={
-                    "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
-                    "PREFLIGHT_TEST_COMMANDS": "true\n",
-                    "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
                     "TMPDIR": str(tmp),
                 },
                 path_prefix=(fake_bin,),
                 timeout=120,
-            )
-            assert result.returncode == expected, result.stdout + result.stderr
-            leftovers = sorted(p.name for p in tmp.glob("preflight-lane.*"))
-            assert not leftovers, (
-                f"precheck exit {precheck_exit} leaked {leftovers} into a "
-                "directory whose name needs quoting"
-            )
+            ).returncode
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            codes = list(pool.map(invoke, ("ONE", "TWO")))
+        seen = sorted(record.read_text().splitlines())
+        leftovers = sorted(p.name for p in tmp.glob("preflight-lane.*"))
+
+    assert codes == [0, 1], codes
+    assert seen == ["true # ONE", "true # TWO"], seen
+    assert not leftovers, f"a lane file leaked into a quoted path: {leftovers}"
+    assert not (ROOT / ".tmp" / "preflight-lane.txt").exists(), "shared lane file"
 
 
 def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:

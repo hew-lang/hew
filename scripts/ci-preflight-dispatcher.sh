@@ -1853,17 +1853,12 @@ fi
 # warm-up, and only for the gates this lane actually runs; scripts/baselines.py
 # owns both the membership and the regen command it prints for a stale artefact.
 #
-# The lane list is a PER-INVOCATION temporary file.  It used to be
-# `.tmp/preflight-lane.txt`, one mutable file shared by every concurrent
-# dispatcher — the comprehensive lane runs gates in parallel and several of
-# them nest a further dispatcher — so the last writer won and a lane could be
-# checked against a sibling's gates.  That reproduces only under concurrency,
-# which is why it survived every serial local run and surfaced as Ubuntu-only
-# baseline-selection failures.
-#
-# The command STRING stays a fixed literal naming the variable: `command_timeout`
-# and the profile corpus are keyed by the command text, so a per-run path would
-# fragment both, and the executing shell expands it with proper quoting.
+# The lane list is a PER-INVOCATION temporary file.  One shared
+# `.tmp/preflight-lane.txt` let concurrent dispatchers — the comprehensive lane
+# runs gates in parallel, several nesting a further dispatcher — check a lane
+# against a sibling's gates, which surfaced as Ubuntu-only failures no serial
+# run reproduced.  The command STRING stays a literal naming the variable:
+# `command_timeout` and the profile corpus are keyed by the command text.
 # shellcheck disable=SC2016  # deliberate: the executing shell expands this.
 BASELINE_PRECHECK='make baselines-check BASELINE_TIER=fast BASELINE_GATES="$PREFLIGHT_BASELINE_LANE_FILE"'
 RUN_BASELINE_PRECHECK=1
@@ -1873,9 +1868,7 @@ fi
 if (( RUN_BASELINE_PRECHECK == 1 )); then
     echo "Baseline precheck:"
     echo "  - $BASELINE_PRECHECK"
-    # The command line names a variable, so say what goes in it.  A reader of a
-    # dry run needs the lane the baselines are scoped to, not the file it is
-    # spelled in.
+    # The command line names a variable, so say what goes in it.
     echo "    lane file: per-invocation temporary listing ${#BASELINE_COMMANDS[@]} gate(s)"
 else
     echo "Baseline precheck: runs in shard 1/$SHARD_COUNT before warm-up."
@@ -2107,13 +2100,10 @@ if (( RUN_BASELINE_PRECHECK == 1 )); then
     # Shard 1 owns this once-per-lane check and uses the pre-sharded command
     # list, so baseline members covered by another shard are still checked first.
     #
-    # Private to THIS invocation and removed however the script ends.  The trap
-    # names a FUNCTION, not an interpolated path: an interpolated
+    # Private to THIS invocation.  The trap names a FUNCTION: an interpolated
     # `rm -f -- '$path'` is re-parsed at exit with the path already
     # substituted, so a `TMPDIR` holding an apostrophe yields
-    # `unexpected EOF while looking for matching '` and the file leaks.  A
-    # function expands the variable at invocation, where quoting is the
-    # shell's job rather than a string's.
+    # `unexpected EOF while looking for matching '` and the file leaks.
     _remove_baseline_lane_file() {
         if [[ -n ${PREFLIGHT_BASELINE_LANE_FILE:-} ]]; then
             rm -f -- "$PREFLIGHT_BASELINE_LANE_FILE"

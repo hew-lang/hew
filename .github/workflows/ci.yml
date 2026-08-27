@@ -123,20 +123,16 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # ast-grep toolchain — built once, read by every job that structural-lints.
-  #
-  # The compiled route of run 33028214259 paid five cold `cargo install`
-  # provisions of one byte-identical tree, ~17.9 runner-minutes; four were
-  # duplicates. See "Resolved: ast-grep provisioning" in
-  # docs/dev/ci-tiers-and-routing.md.
+  # Cost and history: docs/dev/ci-tiers-and-routing.md.
   #
   # A tarball rather than the directory: `upload-artifact` preserves neither
   # executable bits nor dotfiles, and consumers need
   # `.ast-grep/tool/bin/ast-grep` to be a dotfile that runs.
   #
   # There is deliberately NO job-level `if:`. A skipped job is not a satisfied
-  # dependency, so gating the job itself would strand three required contexts
-  # on docs-only changes. The gate is on the steps, and its answer is
-  # published as an output so a dependant can ask rather than re-derive it.
+  # dependency, so gating the job would strand three required contexts on
+  # docs-only changes. The gate is on the steps, and its answer is published
+  # as an output so a dependant can ask rather than re-derive it.
   # ─────────────────────────────────────────────────────────────────────────
   ast-grep-toolchain:
     name: Build ast-grep toolchain
@@ -146,10 +142,8 @@ jobs:
     outputs:
       available: ${{ steps.publish.outputs.available }}
     env:
-      # The two routes that reach a structural-lint gate: compiled changes
-      # (`lint` plus the four shards) and script changes (`docs-and-scripts`).
-      # A docs-only run reaches only `lint`, which is one install either way,
-      # so nothing is shared and this job does nothing.
+      # The two routes that reach a structural-lint gate. A docs-only run
+      # reaches only `lint`, one install either way, so nothing is shared.
       NEEDED: ${{ needs.changes.outputs.selected_compile == 'true' || needs.changes.outputs.scripts == 'true' }}
     steps:
       - name: No-op when no job shares this toolchain
@@ -222,29 +216,12 @@ jobs:
           components: rustfmt
           cache-shared-key: linux
 
-      - name: Download the pinned ast-grep toolchain
+      - name: Provision pinned ast-grep toolchain
         if: needs.changes.outputs.selected_compile != 'true' && needs.changes.outputs.scripts == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: ./.github/actions/setup-ast-grep
         with:
-          name: ast-grep-toolchain-${{ github.sha }}
-          path: ${{ runner.temp }}/ast-grep-toolchain
-          digest-mismatch: error
-
-      - name: Unpack and verify the pinned ast-grep toolchain
-        if: needs.changes.outputs.selected_compile != 'true' && needs.changes.outputs.scripts == 'true'
-        # The tarball is rooted INSIDE `.ast-grep`, so nothing it holds can
-        # land on a source file and the ignored destination keeps the change
-        # router reading the author's diff (LESSONS.md
-        # preflight-perf-discipline). Then verified, not trusted: the
-        # bootstrap is idempotent and fail-closed, so a tree that arrived
-        # wrong costs an install, never a wrong lint verdict.
-        run: |
-          set -euo pipefail
-          mkdir -p .ast-grep
-          tar --zstd -xf "$RUNNER_TEMP/ast-grep-toolchain/ast-grep-toolchain.tar.zst" -C .ast-grep
-          make structural-lint-bootstrap-install
-          .ast-grep/tool/bin/ast-grep --version
-          test -f .ast-grep/hew-lang.so
+          source: artifact
+          artifact-name: ast-grep-toolchain-${{ github.sha }}
 
       - name: Run change-scoped checks
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
@@ -302,31 +279,14 @@ jobs:
         run: cargo fmt --all -- --check
 
       # This job structural-lints on every route, including the docs-only one
-      # where nothing is shared and the producer no-opped. The two steps below
-      # are mutually exclusive on the producer's own output, so there is one
-      # authority for "was it built?" rather than a re-derived route.
-      - name: Download the pinned ast-grep toolchain
-        if: needs.ast-grep-toolchain.outputs.available == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: ast-grep-toolchain-${{ github.sha }}
-          path: ${{ runner.temp }}/ast-grep-toolchain
-          digest-mismatch: error
-
-      - name: Unpack and verify the pinned ast-grep toolchain
-        if: needs.ast-grep-toolchain.outputs.available == 'true'
-        # Same unpack-and-verify as `docs-and-scripts`; see the comment there.
-        run: |
-          set -euo pipefail
-          mkdir -p .ast-grep
-          tar --zstd -xf "$RUNNER_TEMP/ast-grep-toolchain/ast-grep-toolchain.tar.zst" -C .ast-grep
-          make structural-lint-bootstrap-install
-          .ast-grep/tool/bin/ast-grep --version
-          test -f .ast-grep/hew-lang.so
-
+      # where nothing is shared and the producer no-opped -- hence the fall
+      # back to installing, keyed on the producer's own output rather than a
+      # re-derived route.
       - name: Provision pinned ast-grep toolchain
-        if: needs.ast-grep-toolchain.outputs.available != 'true'
         uses: ./.github/actions/setup-ast-grep
+        with:
+          source: ${{ needs.ast-grep-toolchain.outputs.available == 'true' && 'artifact' || 'install' }}
+          artifact-name: ast-grep-toolchain-${{ github.sha }}
 
       # Keep the bootstrap counterfactuals on the required job after moving
       # provisioning into the shared action.
@@ -1080,24 +1040,12 @@ jobs:
           cache: npm
           cache-dependency-path: hew-sandbox-vm/package-lock.json
 
-      - name: Download the pinned ast-grep toolchain
+      - name: Provision pinned ast-grep toolchain
         if: env.RUN_CODE_PATH == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: ./.github/actions/setup-ast-grep
         with:
-          name: ast-grep-toolchain-${{ github.sha }}
-          path: ${{ runner.temp }}/ast-grep-toolchain
-          digest-mismatch: error
-
-      - name: Unpack and verify the pinned ast-grep toolchain
-        if: env.RUN_CODE_PATH == 'true'
-        # Same unpack-and-verify as `docs-and-scripts`; see the comment there.
-        run: |
-          set -euo pipefail
-          mkdir -p .ast-grep
-          tar --zstd -xf "$RUNNER_TEMP/ast-grep-toolchain/ast-grep-toolchain.tar.zst" -C .ast-grep
-          make structural-lint-bootstrap-install
-          .ast-grep/tool/bin/ast-grep --version
-          test -f .ast-grep/hew-lang.so
+          source: artifact
+          artifact-name: ast-grep-toolchain-${{ github.sha }}
 
       - name: Mark the archive transfer start
         if: env.RUN_CODE_PATH == 'true'
@@ -1126,19 +1074,11 @@ jobs:
         # the exact absolute path the producer compiled under, because an
         # archived test binary carries absolute paths no remap reaches: a baked
         # `env!("CARGO_BIN_EXE_hew")`, and a `current_exe()`-relative walk up
-        # `<target>/<profile>/deps/`. Under `$RUNNER_TEMP` both named a
-        # directory no consumer has -- about 1069 failures of the archived
-        # nextest surface on run 33028214259.
+        # `<target>/<profile>/deps/`.
         #
-        # Three mechanics follow, each enforced below rather than trusted:
-        # staged extraction (nextest wants an empty root, the checkout is not
-        # one, and only the archive's own `target/` may move into place); the
-        # freeze, one recursive `a-w` with exactly two directories reopened by
-        # name; and Cargo's separate directory, decided in this job's first
-        # step. Why each, why `target/` being `.gitignore`d preserves what the
-        # `$RUNNER_TEMP` rule protected, and why `mqtt-broker-e2e` is NOT one
-        # of the path-broken gates: docs/dev/ci-tiers-and-routing.md,
-        # "Build once, run four times".
+        # Staged extraction, the freeze, and Cargo's separate directory are
+        # each enforced below rather than trusted. Rationale:
+        # docs/dev/ci-tiers-and-routing.md, "Build once, run four times".
         #
         # Every check below is an interface assertion, not a second identity
         # system: it says what a consumer needs to find, never which commit

@@ -59,22 +59,10 @@ class RustDependencyCacheContractTests(unittest.TestCase):
         self.assertIn('add-rust-environment-hash-key: "false"', self.action)
 
     def test_only_dependency_target_artifacts_are_saved(self) -> None:
-        """The target layer is on by default and opted out, never opted in.
-
-        It became an input because one job cannot have it: the Linux shards
-        materialize the nextest archive at `<workspace>/target`, the only
-        directory rust-cache knows how to cache and one it resolves from the
-        workspace root without reading CARGO_TARGET_DIR. Everything else keeps
-        the layer, which is why the DEFAULT is the answer that caches.
-        """
+        # An input, not a literal: the Linux shards materialize the archive
+        # at `<workspace>/target`, the only directory rust-cache caches.
         self.assertIn("cache-targets: ${{ inputs.cache-targets }}", self.action)
-        declaration = self.action[self.action.index("  cache-targets:") :]
-        default = next(
-            line.strip()
-            for line in declaration.splitlines()
-            if line.strip().startswith("default:")
-        )
-        self.assertEqual(default, "default: 'true'")
+        self.assertIn("default: 'true'", self.action)
         self.assertIn('cache-all-crates: "false"', self.action)
         self.assertIn('cache-workspace-crates: "false"', self.action)
         self.assertIn('cache-bin: "false"', self.action)

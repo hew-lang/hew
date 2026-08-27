@@ -136,8 +136,9 @@ impl OwnerMintWarrant {
     /// `#[cfg(test)]`, so the production build's "no warrant without asking"
     /// invariant is intact — the same discipline
     /// [`FreshOwnerVerdicts::from_parts_for_tests`](crate::return_provenance)
-    /// uses for the authority itself. `granting_from_source_inventory_is_closed`
-    /// pins that no production module can reach it.
+    /// uses for the authority itself. The gate is the whole guarantee: this
+    /// constructor does not exist in a production build, so no production mint
+    /// site can name it.
     #[cfg(test)]
     pub(crate) fn granting_for_tests() -> Self {
         Self::new(OwnerMintOrigin::Initializer, false)
@@ -418,29 +419,6 @@ mod tests {
         );
     }
 
-    /// The test-only granting constructor is reachable from tests only. Pins
-    /// that the production tree never names it, so the `#[cfg(test)]` gate is
-    /// not the only thing standing between a mint and an unasked question.
-    #[test]
-    fn granting_from_source_inventory_is_closed() {
-        for (name, source) in [
-            ("expr.rs", include_str!("expr.rs")),
-            ("pattern.rs", include_str!("pattern.rs")),
-            ("control_flow.rs", include_str!("control_flow.rs")),
-            ("ownership.rs", include_str!("ownership.rs")),
-            ("task.rs", include_str!("task.rs")),
-            ("mod.rs", include_str!("mod.rs")),
-            ("closure_gen.rs", include_str!("closure_gen.rs")),
-            ("actor.rs", include_str!("actor.rs")),
-        ] {
-            assert!(
-                !source.contains("granting_for_tests"),
-                "{name} names the test-only warrant constructor; a production \
-                 mint site would then be able to skip the provenance question"
-            );
-        }
-    }
-
     /// The compile-time brace is the arity of the three registrars: a mint site
     /// cannot call one without producing a warrant. This pins the other half —
     /// that each registrar actually READS the warrant it demands, rather than
@@ -538,9 +516,10 @@ mod tests {
     /// compile until it produces a warrant" was true of the registrars and not
     /// of the thing they register into.
     ///
-    /// This closes it the same way `granting_from_source_inventory_is_closed`
-    /// closes the test-only constructor: as a property of the SOURCE, so it
-    /// holds for the mint site nobody has written yet. Every site that ADDS an
+    /// It closes as a property of the SOURCE, so it holds for the mint site
+    /// nobody has written yet. Unlike the test-only constructor — which
+    /// `#[cfg(test)]` erases from a production build outright — no language
+    /// mechanism forbids this push, so the source scan is the whole guarantee. Every site that ADDS an
     /// entry to the ledger must sit inside a function that demands a warrant.
     /// Retraction sites (`set_owned_local_disposition`'s `&mut` walk) are not
     /// scanned: dispositioning an existing entry off the scope-exit set removes

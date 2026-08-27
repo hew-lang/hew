@@ -432,7 +432,8 @@ def static_source() -> dict[str, dict[str, dict[str, str]]]:
             symbol, type_name = match.groups()
             if not symbol.startswith(("hew_", "HEW_")):
                 continue
-            signature = f"static {symbol}: {re.sub(r'\\s+', ' ', type_name).strip()}"
+            collapsed_type = re.sub(r"\\s+", " ", type_name).strip()
+            signature = f"static {symbol}: {collapsed_type}"
             definitions[symbol] = (
                 signature,
                 f"{path.relative_to(ROOT)}:{line_at(source, match.start())}",

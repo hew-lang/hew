@@ -23921,7 +23921,7 @@ impl LowerCtx {
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
-        if builtin == Some(BuiltinType::LocalPid) {
+        if matches!(builtin, Some(BuiltinType::ChildRef | BuiltinType::LocalPid)) {
             if let [ResolvedTy::Named {
                 name: actor_name, ..
             }] = args.as_mut_slice()
@@ -38350,13 +38350,13 @@ impl Widget {
 
         #[test]
         fn non_owning_actor_references_are_not_transfers() {
-            // `LocalPid` and its raw runtime word carry the `Resource` marker
-            // for drop elaboration but free nothing, and supervisors
-            // legitimately hand one child's pid to several peers.
-            assert!(!transfers(&builtin_handle(
-                "LocalPid",
-                BuiltinType::LocalPid
-            )));
+            // ChildRef, LocalPid, and the raw runtime word free nothing.
+            for (name, kind) in [
+                ("ChildRef", BuiltinType::ChildRef),
+                ("LocalPid", BuiltinType::LocalPid),
+            ] {
+                assert!(!transfers(&builtin_handle(name, kind)));
+            }
             assert!(!transfers(&builtin_handle(
                 "HewActor",
                 BuiltinType::HewActor

@@ -647,7 +647,7 @@ pub(super) fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
     match ty {
         ResolvedTy::Named {
             args,
-            builtin: Some(BuiltinType::LocalPid),
+            builtin: Some(BuiltinType::LocalPid | BuiltinType::ChildRef),
             ..
         } if args.len() == 1 => match &args[0] {
             ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),

@@ -535,9 +535,6 @@ struct Builder {
     /// are sole owners, not projection aliases, so a later consuming direct
     /// call transfers them exactly once instead of preparing another clone.
     prepared_owned_call_sources: HashSet<Place>,
-    /// Send block -> (pre-liveness-branch preparation block, recover block) for
-    /// fungible child tells.
-    fungible_outbound_edges: HashMap<u32, (u32, u32)>,
     /// Completed basic blocks in construction order. Block id `0` is the
     /// function's entry block; subsequent ids are monotone in allocation
     /// order. The currently-being-built block (`current_block_id` /
@@ -778,29 +775,6 @@ struct Builder {
     /// carrying `(source, destination)` bindings. Finalized MIR decides whether
     /// the source is used after the copy (genuine co-owner) or handed off.
     pub(crate) string_local_share_sites: HashMap<SiteId, (BindingId, BindingId)>,
-    /// F-04 fungible supervisor-child reference table. Maps the handle local id
-    /// produced by `lower_supervisor_child_get` (`Place::ActorHandle(N)`) to the
-    /// stable `(supervisor, slot)` reference it stands for.
-    ///
-    /// A supervised child handle is FUNGIBLE: it names a ROLE (the slot), not a
-    /// specific actor instance. The supervisor frees and replaces the underlying
-    /// actor on restart, so a snapshotted `*mut HewActor` dangles across a yield.
-    /// Rather than snapshot the resolved pointer, the handle carries this
-    /// reference and each use re-resolves the current live child. Legacy
-    /// single sends/asks use `hew_supervisor_child_get(sup, slot)`; select/join
-    /// carriers retain the stable supervisor token plus slot and codegen uses
-    /// `hew_local_pid_supervisor_child_get` immediately before submission. Both
-    /// resolvers are race-free under `children_lock`. The reference never owns
-    /// a child pointer, so the stale-handle-across-yield UAF dissolves by
-    /// construction and a use of a not-live child fail-closes as a recoverable
-    /// error rather than a program-killing trap.
-    ///
-    /// Keyed by the handle local id because `let a = sup.w` binds `a` directly to
-    /// the same `Place::ActorHandle(N)` (no copy — see the `Let` arm), so both
-    /// `sup.w.tick()` and `let a = sup.w; …; a.tick()` resolve their receiver to
-    /// the same local and find the same ref here. Function-scoped (fresh per
-    /// builder via `Default`), matching `binding_locals`.
-    pub(crate) fungible_child_refs: HashMap<u32, FungibleChildRef>,
     pub(crate) decisions: Vec<DecisionFact>,
     /// NEW-6b: maps the id of a basic block that ends in `Terminator::SuspendingAsk`
     /// to the constant deadline (nanoseconds) of an `await … | after d` combinator.
@@ -5158,19 +5132,8 @@ fn prepare_outbound_actor_payloads(
     resolved: &HashMap<u32, Vec<ResolvedOutboundSite>>,
     projection_tainted: &HashSet<u32>,
 ) {
-    struct FungibleEdgeInsertion {
-        prepare_block: u32,
-        live_block: u32,
-        live_insert_at: usize,
-        recover_block: u32,
-        prepare: Vec<Instr>,
-        live: Vec<Instr>,
-        recover: Vec<Instr>,
-    }
-
     let record_layouts = outbound_record_layouts(builder);
-    let (owner_entries, owner_exits) = drop_plan::exact_owner_states(blocks);
-    let mut edge_insertions = Vec::new();
+    let (owner_entries, _) = drop_plan::exact_owner_states(blocks);
     for block in blocks.iter_mut() {
         let Some(sites) = resolved.get(&block.id) else {
             continue;
@@ -5213,13 +5176,7 @@ fn prepare_outbound_actor_payloads(
             };
 
             let mut prep = Vec::new();
-            let mut live_edge_prep = Vec::new();
-            let mut recover_drops = Vec::new();
             let mut prepared = Vec::with_capacity(args.len());
-            let fungible_edges = matches!(site.target, PendingOutboundTarget::Direct)
-                .then(|| builder.fungible_outbound_edges.get(&block.id).copied())
-                .flatten()
-                .filter(|_| args.iter().all(|arg| !ty_contains_channel_handle(&arg.ty)));
             let insert_at = if args.len() > 1 {
                 block
                     .instructions
@@ -5231,13 +5188,8 @@ fn prepare_outbound_actor_payloads(
             } else {
                 block.instructions.len()
             };
-            let mut exact_owners = if let Some((prepare_block, _)) = fungible_edges {
-                owner_exits.get(&prepare_block).cloned().unwrap_or_default()
-            } else {
-                let mut state = owner_entries.get(&block.id).cloned().unwrap_or_default();
-                drop_plan::apply_exact_owner_ops(&block.instructions[..insert_at], &mut state);
-                state
-            };
+            let mut exact_owners = owner_entries.get(&block.id).cloned().unwrap_or_default();
+            drop_plan::apply_exact_owner_ops(&block.instructions[..insert_at], &mut exact_owners);
             for arg in args {
                 match arg.mode {
                     SendAliasMode::SnapshotBitCopy => prepared.push(arg.source),
@@ -5255,11 +5207,6 @@ fn prepare_outbound_actor_payloads(
                                 (*place == arg.source).then_some((*owner, *place))
                             })
                             .collect::<Vec<_>>();
-                        let path_local_actor_message_transfer = fungible_edges.is_some()
-                            && matches!(transferring_owners.as_slice(), [(owner, _)]
-                                if builder
-                                    .actor_message_cow_drop_flags
-                                    .contains_key(&owner.binding));
                         let mut transfer_prep = Vec::new();
                         for (owner, _) in &transferring_owners {
                             let Some(entry) = builder
@@ -5331,34 +5278,7 @@ fn prepare_outbound_actor_payloads(
                         });
                         transfer_prep.extend(ownership_operations);
                         drop_plan::apply_exact_owner_ops(&transfer_prep, &mut exact_owners);
-                        if path_local_actor_message_transfer {
-                            // A fungible child may be absent. Commit the
-                            // actor-message transfer only on the live branch;
-                            // the recover branch keeps the source generation
-                            // and reaches the shared guard-zero cleanup.
-                            live_edge_prep.extend(transfer_prep);
-                        } else {
-                            prep.extend(transfer_prep);
-                        }
-                        if !path_local_actor_message_transfer {
-                            if let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
-                                &arg.ty,
-                                &record_layouts,
-                                &builder.enum_layouts,
-                                &builder.opaque_handle_names,
-                                &builder.lifecycle_registry,
-                            ) {
-                                if !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
-                                    recover_drops.push(Instr::ValueSnapshotDrop {
-                                        value: dest,
-                                        ty: arg.ty.clone(),
-                                        plan,
-                                        boundary: crate::model::PreparedCarrierBoundary::Actor,
-                                        guard: None,
-                                    });
-                                }
-                            }
-                        }
+                        prep.extend(transfer_prep);
                         prepared.push(dest);
                     }
                     SendAliasMode::SnapshotRetain | SendAliasMode::SnapshotMaterialize => {
@@ -5401,28 +5321,19 @@ fn prepare_outbound_actor_payloads(
                                 guard: None,
                             });
                         }
-                        recover_drops.push(Instr::ValueSnapshotDrop {
-                            value: dest,
-                            ty: arg.ty.clone(),
-                            plan,
-                            boundary: crate::model::PreparedCarrierBoundary::Actor,
-                            guard: None,
-                        });
                         prepared.push(dest);
                     }
                 }
             }
 
-            if fungible_edges.is_none() {
-                for (offset, instr) in prep.iter().cloned().enumerate() {
-                    let at = insert_at + offset;
-                    cfg_util::shift_instr_spans_on_insert(
-                        &mut builder.instr_spans,
-                        block.id,
-                        u32::try_from(at).unwrap_or(u32::MAX),
-                    );
-                    block.instructions.insert(at, instr);
-                }
+            for (offset, instr) in prep.iter().cloned().enumerate() {
+                let at = insert_at + offset;
+                cfg_util::shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(at).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(at, instr);
             }
 
             let prepared_payload = match prepared.as_slice() {
@@ -5504,65 +5415,6 @@ fn prepare_outbound_actor_payloads(
                         }
                     }
                 }
-            }
-            if let Some((prepare_block, recover_block)) = fungible_edges {
-                edge_insertions.push(FungibleEdgeInsertion {
-                    prepare_block,
-                    live_block: block.id,
-                    live_insert_at: insert_at,
-                    recover_block,
-                    prepare: prep,
-                    live: live_edge_prep,
-                    recover: recover_drops,
-                });
-            }
-        }
-    }
-
-    for insertion in edge_insertions {
-        if let Some(block) = blocks
-            .iter_mut()
-            .find(|block| block.id == insertion.prepare_block)
-        {
-            let insert_at = block.instructions.len();
-            for (offset, instr) in insertion.prepare.into_iter().enumerate() {
-                let at = insert_at + offset;
-                cfg_util::shift_instr_spans_on_insert(
-                    &mut builder.instr_spans,
-                    block.id,
-                    u32::try_from(at).unwrap_or(u32::MAX),
-                );
-                block.instructions.insert(at, instr);
-            }
-        }
-        if let Some(block) = blocks
-            .iter_mut()
-            .find(|block| block.id == insertion.live_block)
-        {
-            let insert_at = insertion.live_insert_at.min(block.instructions.len());
-            for (offset, instr) in insertion.live.into_iter().enumerate() {
-                let at = insert_at + offset;
-                cfg_util::shift_instr_spans_on_insert(
-                    &mut builder.instr_spans,
-                    block.id,
-                    u32::try_from(at).unwrap_or(u32::MAX),
-                );
-                block.instructions.insert(at, instr);
-            }
-        }
-        if let Some(block) = blocks
-            .iter_mut()
-            .find(|block| block.id == insertion.recover_block)
-        {
-            let insert_at = block.instructions.len();
-            for (offset, instr) in insertion.recover.into_iter().enumerate() {
-                let at = insert_at + offset;
-                cfg_util::shift_instr_spans_on_insert(
-                    &mut builder.instr_spans,
-                    block.id,
-                    u32::try_from(at).unwrap_or(u32::MAX),
-                );
-                block.instructions.insert(at, instr);
             }
         }
     }
@@ -13866,30 +13718,6 @@ struct ScopeInfoEntry {
     parent: Option<ScopeId>,
     min_start: u32,
     max_end: u32,
-}
-
-/// A stable, fungible supervisor-child reference: `(supervisor, slot)`.
-///
-/// Stands in for a specific child INSTANCE the way OTP's `{via, Sup, Name}`
-/// does — it identifies the slot/role, and the current occupant is re-resolved
-/// at each use. Carries no actor pointer, so it is yield-safe to hold: after a
-/// restart the next use re-resolves to the fresh child, and there is never a
-/// dangling child pointer to dereference. Select/join retain only the stable
-/// supervisor token and slot across their suspension boundary; `sup_place` is
-/// kept solely for the existing immediate single send/ask path.
-#[derive(Debug, Clone, Copy)]
-struct FungibleChildRef {
-    /// The supervisor handle place (`Place::ActorHandle(M)` for the
-    /// `LocalPid<Supervisor>`). Supervisors are not restarted under the caller,
-    /// so this place stays valid for the binding's lifetime — re-loadable at
-    /// each send site.
-    sup_place: Place,
-    /// Stable target-word supervisor identity captured while `sup_place` is
-    /// known live. Select/join carry this token, never `sup_place`, across the
-    /// lowering/codegen boundary.
-    supervisor_token: Place,
-    /// The static child slot index within `HewSupervisor.children[]`.
-    slot_index: u32,
 }
 
 /// How an owned local's release obligation is dispositioned within the

@@ -7331,6 +7331,7 @@ mod nested_fresh_string_temp_drop_admission {
                 0,
                 vec![concat(0, 1, 2)],
                 Terminator::Send {
+                    stable_role: None,
                     actor: Place::Local(8),
                     msg_type: 0,
                     value: Place::Local(2),
@@ -8426,6 +8427,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                 1,
                 vec![],
                 Terminator::Send {
+                    stable_role: None,
                     actor: Place::Local(6),
                     msg_type: 0,
                     value: Place::Local(2),

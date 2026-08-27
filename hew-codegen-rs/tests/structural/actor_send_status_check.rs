@@ -42,6 +42,7 @@ fn send_status_pipeline() -> IrPipeline {
             statements: vec![],
             instructions: vec![],
             terminator: Terminator::Send {
+                stable_role: None,
                 actor: Place::ActorHandle(0),
                 msg_type: 1,
                 value: Place::Local(1),

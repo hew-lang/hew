@@ -10609,7 +10609,7 @@ mod close_obligated_borrow_alias_tests {
 /// creates the two-free hazard this gate guards.
 ///
 /// Deliberately EXCLUDES the NON-OWNING actor-pid leaves
-/// (`Pid`/`LocalPid`) and the inline `RemotePid` identity aggregate. None has
+/// (`Pid`/`LocalPid`/`ChildRef`) and the inline `RemotePid` identity aggregate. None has
 /// drop glue: local pid handles do not own actor lifetime, while `RemotePid` is
 /// `BitCopy`. They can NEVER alias a second free in ANY context (call-arg,
 /// actor-state field, tuple, return, re-aggregation). Gating them over-refuses
@@ -14347,6 +14347,7 @@ pub(super) fn enumerate_exits(
             ),
             Terminator::Send {
                 actor: _,
+                stable_role: _,
                 msg_type: _,
                 value: _,
                 next,

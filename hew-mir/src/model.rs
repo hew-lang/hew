@@ -2307,7 +2307,10 @@ fn ty_contains_unclonable_opaque_inner(
             //    walks the type args and finds any opaque payload. Only a real
             //    builtin handle (stamped `builtin: Some(LocalPid)` by the
             //    checker) earns the bit-copy skip.
-            if matches!(builtin, Some(hew_types::BuiltinType::LocalPid)) {
+            if matches!(
+                builtin,
+                Some(hew_types::BuiltinType::ChildRef | hew_types::BuiltinType::LocalPid)
+            ) {
                 return false;
             }
             // 5. Type arguments (generic builtins with no layout: Vec<T>,
@@ -3964,6 +3967,9 @@ pub enum Terminator {
     ///
     Send {
         actor: Place,
+        /// Present for `ChildRef<T>` receivers. Carries the supervisor role
+        /// directly from the value into owner-scoped runtime submission.
+        stable_role: Option<StableActorRole>,
         msg_type: i32,
         value: Place,
         next: u32,
@@ -4208,14 +4214,13 @@ pub struct SelectArm {
 
 /// Stable identity for a fungible supervisor-child role.
 ///
-/// `supervisor_token` is the target-word identity captured while the source
-/// supervisor binding is live. `slot_index` is the compile-time static child
-/// slot. Codegen resolves this pair immediately before request submission and
-/// never dereferences either the supervisor or a previous child allocation.
+/// Both words are extracted from a `ChildRef<T>` value at its use site. This
+/// makes parameters, aggregate fields, collection elements, returns, and
+/// closure captures share one representation-driven path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StableActorRole {
     pub supervisor_token: Place,
-    pub slot_index: u32,
+    pub slot_index: Place,
 }
 
 /// The four sealed arm forms mirrored from HIR. The MIR layer carries

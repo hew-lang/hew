@@ -1848,7 +1848,8 @@ fn classify_named(
     if matches!(
         builtin,
         Some(
-            hew_types::BuiltinType::LocalPid
+            hew_types::BuiltinType::ChildRef
+                | hew_types::BuiltinType::LocalPid
                 | hew_types::BuiltinType::RemotePid
                 | hew_types::BuiltinType::HewActor
         )
@@ -1978,24 +1979,9 @@ fn classify_named(
 
     // ── Typed builtin arms ───────────────────────────────────────────
 
-    // Actor-reference handle types are bit-copyable per audit §1 +
-    // plan §4.5 A. Codegen sizing of `HewActorRef` is target-dependent
-    // (see Pointer note above) so `size_bytes` is `0`; Stage 3's
-    // wholesale memcpy handles the bytes, and per-field synthesis is
-    // nil for this arm.
-    //
-    // Uses the `builtin` identity discriminator (authoritative) rather
-    // than the name string: a user-declared `type LocalPid<T>` without
-    // an emitted generic instantiation layout has `builtin: None` and
-    // must NOT collapse to BitCopy — its type args must be inspected for
-    // opaques. Only a real builtin handle (stamped
-    // `builtin: Some(LocalPid)` by the checker) earns the bit-copy skip.
-    // Generic user shadows with no layout reach this arm only with
-    // `builtin: None`; the discriminator closes that gap without requiring
-    // the layout to exist.
-    if matches!(builtin, Some(hew_types::BuiltinType::LocalPid)) {
-        return Ok(StateFieldCloneKind::BitCopy { size_bytes: 0 });
-    }
+    // Actor-reference handles were classified above from their builtin
+    // identity. ChildRef's two scalar words therefore use the same target-sized
+    // BitCopy plan without being mistaken for a source record.
 
     // `instant` is a monotonic i64-nanos timestamp. The actor-state field-type
     // producer surfaces it as `Named { builtin: Instant }` (not the canonical
@@ -2663,27 +2649,29 @@ mod tests {
     }
 
     #[test]
-    fn local_pid_classifies_as_bitcopy() {
-        // A `LocalPid<T>` lowers to the `#[repr(C)]` bit-copyable runtime handle
-        // word, NOT a refcount-bump. The classifier routes on the `builtin`
-        // discriminator the checker stamps, so a real `LocalPid<T>` must reach
-        // the bit-copy skip regardless of its name string.
-        let mut v = HashSet::new();
-        let ty = ResolvedTy::Named {
-            name: "LocalPid".to_string(),
-            args: vec![ResolvedTy::Named {
-                name: "SomeActor".to_string(),
-                args: vec![],
-                builtin: None,
+    fn actor_pid_handles_classify_as_bitcopy() {
+        for builtin in [
+            hew_types::BuiltinType::ChildRef,
+            hew_types::BuiltinType::LocalPid,
+        ] {
+            let mut visited = HashSet::new();
+            let ty = ResolvedTy::Named {
+                name: builtin.canonical_name().to_string(),
+                args: vec![ResolvedTy::Named {
+                    name: "SomeActor".to_string(),
+                    args: vec![],
+                    builtin: None,
+                    is_opaque: false,
+                }],
+                builtin: Some(builtin),
                 is_opaque: false,
-            }],
-            builtin: Some(hew_types::BuiltinType::LocalPid),
-            is_opaque: false,
-        };
-        assert_eq!(
-            classify_state_field(&ty, &no_records(), &mut v).unwrap(),
-            StateFieldCloneKind::BitCopy { size_bytes: 0 },
-        );
+            };
+            assert_eq!(
+                classify_state_field(&ty, &no_records(), &mut visited).unwrap(),
+                StateFieldCloneKind::BitCopy { size_bytes: 0 },
+                "{builtin:?} is a value-carried non-owning actor reference",
+            );
+        }
     }
 
     #[test]

@@ -2222,7 +2222,7 @@ impl Checker {
                     kind: crate::check::types::PoolAccessorKind::Index,
                 },
             );
-            return Ty::local_pid(child_ty.clone());
+            return Ty::child_ref(child_ty.clone());
         }
         if let Ty::TraitObject { traits } = &resolved_obj {
             for bound in traits {
@@ -7068,7 +7068,7 @@ impl Checker {
                                     child_ty,
                                 );
                             }
-                            return Ty::local_pid(child_ty);
+                            return Ty::child_ref(child_ty);
                         }
                         // The supervisor is known but this child name is not declared.
                         // Emit a clear diagnostic and stop — the fallthrough branch

@@ -1,11 +1,11 @@
 use super::{
     actor_name_from_handle_ty, actor_name_from_remote_pid_ty, is_self_expr,
     is_unit_close_error_result, is_unit_send_error_result, method_name_from_id,
-    recv_result_payload_ty, ty_contains_channel_handle, ActorLayout, ActorMethodInfo, Builder,
-    CmpPred, FieldOffset, FloatWidth, FungibleChildRef, HashMap, HirExpr, HirExprKind, Instr,
-    MirDiagnostic, MirDiagnosticKind, PendingOutboundArg, PendingOutboundSite, Place,
-    ReleaseSymbolVerdict, ResolvedTy, RuntimeCallContext, StableActorRole, SuspendKind, Terminator,
-    CHILD_LOOKUP_RESULT_TY_NAME, RECEIVE_GEN_STREAM_CAPACITY,
+    recv_result_payload_ty, ActorLayout, ActorMethodInfo, Builder, CmpPred, FieldOffset,
+    FloatWidth, HashMap, HirExpr, HirExprKind, Instr, MirDiagnostic, MirDiagnosticKind,
+    PendingOutboundArg, PendingOutboundSite, Place, ResolvedTy, RuntimeCallContext,
+    StableActorRole, SuspendKind, Terminator, CHILD_LOOKUP_RESULT_TY_NAME,
+    RECEIVE_GEN_STREAM_CAPACITY,
 };
 
 impl Builder {
@@ -597,47 +597,12 @@ impl Builder {
     /// Emit the MIR sequence for a static supervisor child-slot access (F-04
     /// fungible reference).
     ///
-    /// Called from the `HirExprKind::FieldAccess` intercept arm after the
-    /// checker has confirmed the LHS is a supervisor with a static child at
-    /// `slot_index`. The result is a FUNGIBLE child reference: it names the
-    /// `(supervisor, slot)` role, not a specific actor instance, and the current
-    /// occupant is RE-RESOLVED at each send/ask (see `emit_fungible_reresolve`).
-    /// The accessor itself no longer traps on a not-live slot — liveness is the
-    /// send's concern, surfaced there as a recoverable error.
+    /// Lower a static supervised-child accessor to its stable role value.
     ///
-    /// Produces:
-    ///
-    /// ```text
-    /// entry_bb (current)
-    ///   [lower object → sup_place]
-    ///   ConstI64 { dest: idx_place, value: slot_index }
-    ///   CallRuntimeAbi { "hew_supervisor_child_get",
-    ///                    args: [sup_place, idx_place],
-    ///                    dest: result_place }
-    ///   RecordFieldLoad { record: result_place, field_offset: 1, dest: raw_handle }  -- i64 handle
-    ///   Move { dest: handle_place (ActorHandle(N)), src: raw_handle }
-    ///   [cursor stays here for subsequent lowering]
-    /// ```
-    ///
-    /// The initial child-get seeds the alloca so an immediate same-expression use
-    /// (`sup.w.tick()`) and the eventual binding (`let a = sup.w`) both have a
-    /// well-formed handle. The crucial change vs. the snapshot model is that the
-    /// handle local is recorded in `fungible_child_refs`, so a later send through
-    /// it re-resolves rather than reusing this seed pointer. On a not-live slot at
-    /// the accessor the handle is seeded with the (null) wire value; the send
-    /// re-resolve is what decides liveness, so the seed value is never trusted as
-    /// the send target.
-    ///
-    /// Returns `Some(handle_place)`. `handle_place` is `Place::ActorHandle(N)`
-    /// where N is the backing local index of a freshly allocated
-    /// `LocalPid<ChildActor>` local (typed as `result_ty` from the checker — the
-    /// checker is the authority on the child actor type).
-    ///
-    /// S3 codegen interprets `CallRuntimeAbi` with a `__HewChildLookupResult`-typed
-    /// dest as a struct-return call, emitting `{ i64, ptr }` in LLVM IR and storing
-    /// the struct into the alloca slot. `RecordFieldLoad` at index 1 extracts the
-    /// handle pointer (reinterpreted as i64 at the MIR layer; S3 emits `ptrtoint`
-    /// when writing to the handle alloca).
+    /// `ChildRef<T>` contains only the supervisor token and static child slot.
+    /// Access never snapshots an actor pointer and never depends on liveness;
+    /// every later send or ask resolves the current incarnation from these two
+    /// value-carried fields.
     pub(crate) fn lower_supervisor_child_get(
         &mut self,
         object: &HirExpr,
@@ -645,68 +610,20 @@ impl Builder {
         result_ty: &ResolvedTy,
         _site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Lower the supervisor object expression to get the supervisor PID place.
         let sup_place = self.lower_value(object)?;
         let supervisor_token = self.capture_supervisor_token(sup_place);
-
-        // Allocate the final ActorHandle place typed as `result_ty`
-        // (the checker-authority `LocalPid<ChildActor>` type for this site).
-        let handle_local = self.alloc_local(result_ty.clone());
-        let Place::Local(handle_id) = handle_local else {
-            unreachable!("alloc_local always returns Place::Local");
-        };
-        let handle_place = Place::ActorHandle(handle_id);
-
-        // Record the fungible reference BEFORE seeding so a re-resolve at any
-        // send through `handle_place` knows the `(sup, slot)` to re-fetch.
-        self.fungible_child_refs.insert(
-            handle_id,
-            FungibleChildRef {
-                sup_place,
-                supervisor_token,
-                slot_index,
-            },
-        );
-
-        // Seed the alloca with one resolve (no trap, no liveness branch — the
-        // send re-resolves and is the sole liveness authority).
-        self.emit_child_get_into(sup_place, slot_index, handle_place);
-
-        // The `instr_places` function in lower.rs surfaces `handle_place` to the
-        // dataflow seed pass, maintaining the same bookkeeping invariant as
-        // `lower_spawn_actor`.
-
-        Some(handle_place)
+        Some(self.make_static_child_ref(supervisor_token, slot_index, result_ty))
     }
 
-    /// Lower `await_restart sup.child` to `SuspendKind::RestartWait`.
-    ///
-    /// The supervisor analogue of `lower_await_task`: park the current actor on
-    /// the supervisor restart observer until the static child slot is Live again,
-    /// then resume re-fetching the now-Live `LocalPid<ChildType>`. Modelled on
-    /// the `TaskAwait` suspend ramp; the resume edge re-resolves the slot through
-    /// the SAME fungible-reference machinery a static child send uses
-    /// (`emit_child_get_into` + `fungible_child_refs`), so the resumed handle is
-    /// never a pointer cached across the suspend (LESSONS
-    /// `replaceable-resource-handle-is-fungible-reference`, R6).
-    ///
-    /// `child` is the inner supervised-child accessor (a `FieldAccess`); its
-    /// `site` keys `supervisor_child_slots` with the `(supervisor, slot)`
-    /// discriminator. The checker already proved the operand is a static child,
-    /// so a missing slot here is a lowering invariant break — fail closed.
-    ///
-    /// A `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
-    /// continuation, so it lowers the accessor seed only (the runtime observer's
-    /// READY/immediate-Dead path resumes it through the same edge once codegen's
-    /// blocking fallback lands); the suspend flip fires only for a caller that
-    /// carries an execution context, exactly like `lower_await_task`.
+    /// Lower `await_restart sup.child` by waiting on the stable supervisor role.
+    /// The returned value is the same pointer-free `ChildRef<T>` descriptor used
+    /// by ordinary child access; waiting changes readiness, never representation.
     pub(crate) fn lower_await_restart(
         &mut self,
         child: &HirExpr,
         result_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // The inner accessor's site carries the (supervisor, slot) discriminator.
         let Some(slot) = self.supervisor_child_slots.get(&child.site).cloned() else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -719,59 +636,30 @@ impl Builder {
             });
             return None;
         };
-
-        // The accessor's object is the supervisor PID. Extract + lower it (NOT the
-        // whole FieldAccess, which would emit a child_get of its own).
         let HirExprKind::FieldAccess { object, .. } = &child.kind else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "await_restart operand is not a field access".to_string(),
                     site,
                 },
-                note:
-                    "await_restart expects `sup.child`; its operand lowered to a non-FieldAccess \
-                       HIR node"
-                        .to_string(),
+                note: "await_restart expects `sup.child`; its operand lowered to a \
+                       non-FieldAccess HIR node"
+                    .to_string(),
             });
             return None;
         };
         let sup_place = self.lower_value(object)?;
         let supervisor_token = self.capture_supervisor_token(sup_place);
-
-        // Translate the checker's combined-static index to the kind-partitioned
-        // runtime slot index (the accessor reads the same partitioned space).
         let slot_index =
             self.partitioned_static_slot_index(&slot.supervisor, &slot.child_name, false);
+        let child_ref = self.make_static_child_ref(supervisor_token, slot_index, result_ty);
 
-        // Allocate the re-fetched handle local, typed as the child's
-        // `LocalPid<ChildType>` (the checker authority on this expr's type).
-        let handle_local = self.alloc_local(result_ty.clone());
-        let Place::Local(handle_id) = handle_local else {
-            unreachable!("alloc_local always returns Place::Local");
-        };
-        let handle_place = Place::ActorHandle(handle_id);
-
-        // Record the fungible reference BEFORE the suspend so a send through the
-        // resumed handle re-resolves the `(sup, slot)` at send time rather than
-        // trusting any pointer captured across the suspension point.
-        self.fungible_child_refs.insert(
-            handle_id,
-            FungibleChildRef {
-                sup_place,
-                supervisor_token,
-                slot_index,
-            },
-        );
-
-        // Suspendable-caller flip: a caller that carries the execution context
-        // (actor handler / closure / task entry) SUSPENDS on the restart observer
-        // instead of spinning. The resume edge re-fetches the now-Live handle.
         if self.current_function_call_conv.carries_execution_context() {
             let next = self.alloc_block();
             self.record_suspend_kind(SuspendKind::RestartWait {
                 sup_place,
                 slot_index,
-                result_dest: handle_place,
+                result_dest: child_ref,
                 deadline_result_dest: None,
             });
             self.finish_current_block(Terminator::Suspend {
@@ -780,20 +668,9 @@ impl Builder {
                 is_final: false,
             });
             self.start_block(next);
-            // On resume the child slot is Live (notify_restart fires AFTER
-            // store_child_slot); re-fetch it through the fungible re-resolve so
-            // the handle reflects the new incarnation, never a stale snapshot.
-            self.emit_child_get_into(sup_place, slot_index, handle_place);
-            return Some(handle_place);
+            return Some(child_ref);
         }
 
-        // Contextless caller (`main` / free fn): no parkable continuation, so
-        // BLOCK the calling thread on the supervisor restart Condvar until the
-        // child is Live or permanently Dead, then re-fetch. Safe to thread-block
-        // here: `main` runs off the cooperative scheduler that fires the restart
-        // (no self-deadlock), exactly as a contextless `await` blocks on its ask.
-        // The R4 fail-closed contract holds: a permanent-Dead slot returns from
-        // the blocking wait and the re-fetch surfaces the dead slot recoverably.
         let idx_place = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::ConstI64 {
             dest: idx_place,
@@ -807,8 +684,7 @@ impl Builder {
             )
             .expect("hew_supervisor_restart_await_blocking is an allowlisted runtime symbol"),
         ));
-        self.emit_child_get_into(sup_place, slot_index, handle_place);
-        Some(handle_place)
+        Some(child_ref)
     }
 
     /// Translate a supervisor child's combined-static checker index into its
@@ -946,14 +822,9 @@ impl Builder {
         Some(handle_place)
     }
 
-    /// Lower a static-pool accessor through a first-class
-    /// `SupervisorPool<S, T>` receiver.
-    ///
-    /// - `Index` → `hew_supervisor_pool_child_get(sup, key, i)`; tag != 0 (not
-    ///   Live) traps `SupervisorChildUnavailable` (`Vec[i]` OOB parity).
-    /// - `Len`   → `hew_supervisor_pool_len(sup, key)` → `i64`.
-    /// - `Get`   → same `child_get`; tag 0 → `Some(handle)`, tag != 0 → `None`
-    ///   (a drop-safe `Option<LocalPid<T>>`, never a sentinel dressed as live).
+    /// Lower a static-pool accessor through the same `ChildRef<T>` descriptor
+    /// used by a named static child. The pool lookup resolves only the stable
+    /// static slot; child liveness is checked later by the send or ask.
     pub(crate) fn lower_pool_accessor(
         &mut self,
         expr: &HirExpr,
@@ -1021,14 +892,10 @@ impl Builder {
                 Some(dest)
             }
             PoolAccessorKind::Index => {
-                let index_expr = index_expr?;
-                let idx_place = self.lower_value(index_expr)?;
-                Some(self.lower_pool_index(
-                    sup_place,
-                    key_place,
-                    idx_place,
-                    &self.subst_ty(&expr.ty),
-                ))
+                let idx_place = self.lower_value(index_expr?)?;
+                let supervisor_token = self.capture_supervisor_token(sup_place);
+                let lookup = self.emit_pool_child_ref_get(supervisor_token, key_place, idx_place);
+                Some(self.lower_pool_index(supervisor_token, lookup, &self.subst_ty(&expr.ty)))
             }
             PoolAccessorKind::Get => {
                 let Some(index_expr) = index_expr else {
@@ -1036,7 +903,8 @@ impl Builder {
                     return None;
                 };
                 let idx_place = self.lower_value(index_expr)?;
-                let lookup = self.emit_pool_child_get(sup_place, key_place, idx_place);
+                let supervisor_token = self.capture_supervisor_token(sup_place);
+                let lookup = self.emit_pool_child_ref_get(supervisor_token, key_place, idx_place);
                 let result = self.alloc_local(self.subst_ty(&expr.ty));
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
@@ -1044,7 +912,7 @@ impl Builder {
                     authority: crate::CallAuthority::Compiler(
                         crate::CompilerCallKind::SupervisorPoolGetOption,
                     ),
-                    args: vec![lookup],
+                    args: vec![lookup, supervisor_token],
                     dest: Some(result),
                     next,
                 });
@@ -1054,11 +922,9 @@ impl Builder {
         }
     }
 
-    /// Emit `hew_supervisor_pool_child_get(sup, pool_key, index)` and return the
-    /// `__HewChildLookupResult` result place (tag in field 0, handle in field 1).
-    fn emit_pool_child_get(
+    fn emit_pool_child_ref_get(
         &mut self,
-        sup_place: Place,
+        supervisor_token: Place,
         key_place: Place,
         idx_place: Place,
     ) -> Place {
@@ -1070,27 +936,23 @@ impl Builder {
         });
         self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new(
-                "hew_supervisor_pool_child_get",
-                vec![sup_place, key_place, idx_place],
+                "hew_local_pid_supervisor_pool_child_ref_get",
+                vec![supervisor_token, key_place, idx_place],
                 Some(result_place),
             )
-            .expect("hew_supervisor_pool_child_get is an allowlisted runtime symbol"),
+            .expect("stable pool ChildRef lookup is an allowlisted runtime symbol"),
         ));
         result_place
     }
 
-    /// Lower `sup.pool[i]` (the trapping member accessor): call
-    /// `pool_child_get`, then trap `SupervisorChildUnavailable` on a not-Live
-    /// tag (OOB / mid-restart) and bind the Live handle into a `LocalPid<T>`
-    /// (`Vec[i]` OOB parity — the index access is the sole liveness authority).
+    /// Lower `sup.pool[i]`: invalid indices trap like `Vec[i]`; a valid member
+    /// produces a `ChildRef` even when its current incarnation is unavailable.
     fn lower_pool_index(
         &mut self,
-        sup_place: Place,
-        key_place: Place,
-        idx_place: Place,
+        supervisor_token: Place,
+        result_place: Place,
         result_ty: &ResolvedTy,
     ) -> Place {
-        let result_place = self.emit_pool_child_get(sup_place, key_place, idx_place);
         let tag = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::RecordFieldLoad {
             record: result_place,
@@ -1102,43 +964,32 @@ impl Builder {
             dest: zero,
             value: 0,
         });
-        let is_live = self.alloc_local(ResolvedTy::Bool);
+        let is_valid = self.alloc_local(ResolvedTy::Bool);
         self.push_instr(Instr::IntCmp {
-            dest: is_live,
+            dest: is_valid,
             pred: CmpPred::Eq,
             lhs: tag,
             rhs: zero,
         });
-        let live_bb = self.alloc_block();
+        let valid_bb = self.alloc_block();
         let trap_bb = self.alloc_block();
         self.finish_current_block(Terminator::Branch {
-            cond: is_live,
-            then_target: live_bb,
+            cond: is_valid,
+            then_target: valid_bb,
             else_target: trap_bb,
         });
-        // OOB / not-live → trap (fail-closed, mirrors the static accessor).
         self.start_block(trap_bb);
         self.finish_current_block(Terminator::Trap {
             kind: crate::model::TrapKind::SupervisorChildUnavailable,
         });
-        // Live → extract the handle into a typed LocalPid local.
-        self.start_block(live_bb);
-        let handle_local = self.alloc_local(result_ty.clone());
-        let Place::Local(handle_id) = handle_local else {
-            unreachable!("alloc_local always returns Place::Local");
-        };
-        let handle_place = Place::ActorHandle(handle_id);
-        let raw_handle = self.alloc_local(ResolvedTy::I64);
+        self.start_block(valid_bb);
+        let slot_place = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::RecordFieldLoad {
             record: result_place,
             field_offset: FieldOffset(1),
-            dest: raw_handle,
+            dest: slot_place,
         });
-        self.push_instr(Instr::Move {
-            dest: handle_place,
-            src: raw_handle,
-        });
-        handle_place
+        self.make_child_ref(supervisor_token, slot_place, result_ty)
     }
 
     /// Record a fail-closed shape error for a malformed pool accessor (the
@@ -1155,60 +1006,75 @@ impl Builder {
         });
     }
 
-    /// Emit a `hew_supervisor_child_get(sup, slot)` call and store the resolved
-    /// `*mut HewActor` (field 1) into `handle_place`, with NO liveness branch.
-    ///
-    /// On a not-live slot the runtime returns a null handle (field 1 == null);
-    /// the caller (the accessor seed, or `emit_fungible_reresolve`) is responsible
-    /// for whatever liveness handling is required. This is the shared "resolve the
-    /// current child pointer into the handle slot" primitive.
-    pub(crate) fn emit_child_get_into(
+    fn make_static_child_ref(
         &mut self,
-        sup_place: Place,
+        supervisor_token: Place,
         slot_index: u32,
-        handle_place: Place,
-    ) {
-        // Emit a constant for the static slot index.
-        let idx_place = self.alloc_local(ResolvedTy::I64);
+        result_ty: &ResolvedTy,
+    ) -> Place {
+        let slot_place = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::ConstI64 {
-            dest: idx_place,
+            dest: slot_place,
             value: i64::from(slot_index),
         });
+        self.make_child_ref(supervisor_token, slot_place, result_ty)
+    }
 
-        // Allocate a local typed as the opaque `__HewChildLookupResult` record.
-        // S3 codegen recognises this type name and emits a struct-return LLVM call.
-        let result_place = self.alloc_local(ResolvedTy::Named {
-            name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
-            args: vec![],
-            builtin: None,
-            is_opaque: false,
+    fn make_child_ref(
+        &mut self,
+        supervisor_token: Place,
+        slot_place: Place,
+        result_ty: &ResolvedTy,
+    ) -> Place {
+        let child_ref = self.alloc_local(result_ty.clone());
+        self.push_instr(Instr::RecordInit {
+            ty: result_ty.clone(),
+            fields: vec![
+                (FieldOffset(0), supervisor_token),
+                (FieldOffset(1), slot_place),
+            ],
+            dest: child_ref,
         });
+        child_ref
+    }
 
-        // Emit the runtime call. The dest carries the 16-byte struct return value.
-        self.push_instr(Instr::CallRuntimeAbi(
-            crate::model::RuntimeCall::new(
-                "hew_supervisor_child_get",
-                vec![sup_place, idx_place],
-                Some(result_place),
-            )
-            .expect("hew_supervisor_child_get is an allowlisted runtime symbol"),
-        ));
-
-        // Extract the handle pointer (field 1, i64 at MIR level).
-        // S3 emits a `ptrtoint`/`inttoptr` as needed for the wire representation.
-        let raw_handle = self.alloc_local(ResolvedTy::I64);
+    /// Extract the stable role carried by a `ChildRef<T>` value.
+    ///
+    /// This is representation-driven: the same two field loads apply to a
+    /// local, parameter, return value, record field, Vec element, or closure
+    /// capture. No function-local provenance table participates.
+    pub(crate) fn child_ref_role_of(
+        &mut self,
+        ty: &ResolvedTy,
+        child_ref: Place,
+    ) -> Option<StableActorRole> {
+        let ty = self.subst_ty(ty);
+        if !matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::ChildRef),
+                ref args,
+                ..
+            } if args.len() == 1
+        ) {
+            return None;
+        }
+        let supervisor_token = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::RecordFieldLoad {
-            record: result_place,
+            record: child_ref,
+            field_offset: FieldOffset(0),
+            dest: supervisor_token,
+        });
+        let slot_index = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: child_ref,
             field_offset: FieldOffset(1),
-            dest: raw_handle,
+            dest: slot_index,
         });
-
-        // Move the i64 wire value into the typed ActorHandle slot.
-        // S3 emits the appropriate cast; at MIR level they are the same storage.
-        self.push_instr(Instr::Move {
-            dest: handle_place,
-            src: raw_handle,
-        });
+        Some(StableActorRole {
+            supervisor_token,
+            slot_index,
+        })
     }
 
     /// Capture the stable direct identity for a live supervisor binding.
@@ -1929,206 +1795,6 @@ impl Builder {
         })
     }
 
-    /// Returns the `(sup, slot)` fungible reference for `place` if it is a
-    /// supervisor-child handle, else `None`.
-    pub(crate) fn fungible_child_ref_of(&self, place: Place) -> Option<FungibleChildRef> {
-        match place {
-            Place::ActorHandle(id) => self.fungible_child_refs.get(&id).copied(),
-            _ => None,
-        }
-    }
-
-    /// F-04: re-resolve a fungible child reference into its handle alloca at the
-    /// send site, branching on the current liveness of the slot.
-    ///
-    /// Emits `hew_supervisor_child_get(sup, slot)`, stores the fresh `*mut
-    /// HewActor` into `handle_place`, and branches:
-    /// - Live (`tag == 0`)  → continues in the returned `live_bb` (cursor parked
-    ///   there) with `handle_place` holding the CURRENT live child pointer.
-    /// - not-Live (`tag != 0`) → branches to `recover_bb` (the caller wires the
-    ///   recoverable fail-closed path there — the tell releases its undelivered
-    ///   payload values and skips the Send).
-    ///
-    /// Because the pointer is fetched fresh under the slot lock at the instant of
-    /// the send and used immediately in the same turn, the "valid only within the
-    /// current scheduler turn" borrow contract is honoured structurally rather
-    /// than by user discipline — the stale-handle UAF cannot arise.
-    ///
-    /// Returns `(live_bb, recover_bb)`. The current block is finished with the
-    /// liveness branch; NEITHER block is started — the caller fills `recover_bb`
-    /// first, then `start_block(live_bb)` to continue with the send (this mirrors
-    /// the trap-block-then-success-block ordering the old accessor used, keeping
-    /// the `start_block` empty-buffer invariant satisfied).
-    fn emit_fungible_reresolve(
-        &mut self,
-        child_ref: FungibleChildRef,
-        handle_place: Place,
-    ) -> (u32, u32) {
-        let FungibleChildRef {
-            sup_place,
-            supervisor_token: _,
-            slot_index,
-        } = child_ref;
-
-        // Re-fetch into the same opaque struct so we can read BOTH the tag and
-        // the handle. We reuse the result place for both extracts.
-        let idx_place = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::ConstI64 {
-            dest: idx_place,
-            value: i64::from(slot_index),
-        });
-        let result_place = self.alloc_local(ResolvedTy::Named {
-            name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
-            args: vec![],
-            builtin: None,
-            is_opaque: false,
-        });
-        self.push_instr(Instr::CallRuntimeAbi(
-            crate::model::RuntimeCall::new(
-                "hew_supervisor_child_get",
-                vec![sup_place, idx_place],
-                Some(result_place),
-            )
-            .expect("hew_supervisor_child_get is an allowlisted runtime symbol"),
-        ));
-
-        // Store the fresh handle pointer (field 1) into the handle alloca so the
-        // Send terminator delivers to the CURRENT child.
-        let raw_handle = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::RecordFieldLoad {
-            record: result_place,
-            field_offset: FieldOffset(1),
-            dest: raw_handle,
-        });
-        self.push_instr(Instr::Move {
-            dest: handle_place,
-            src: raw_handle,
-        });
-
-        // Extract the tag (field 0) and branch on liveness.
-        let tag_place = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::RecordFieldLoad {
-            record: result_place,
-            field_offset: FieldOffset(0),
-            dest: tag_place,
-        });
-        let zero_place = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::ConstI64 {
-            dest: zero_place,
-            value: 0,
-        });
-        let is_live_flag = self.alloc_local(ResolvedTy::Bool);
-        self.push_instr(Instr::IntCmp {
-            pred: CmpPred::Eq,
-            lhs: tag_place,
-            rhs: zero_place,
-            dest: is_live_flag,
-        });
-
-        let live_bb = self.alloc_block();
-        let recover_bb = self.alloc_block();
-        self.finish_current_block(Terminator::Branch {
-            cond: is_live_flag,
-            then_target: live_bb,
-            else_target: recover_bb,
-        });
-        (live_bb, recover_bb)
-    }
-
-    /// Release one undelivered actor-tell payload value on the not-live
-    /// recover edge of a fungible supervisor-child send (#2126).
-    ///
-    /// The delivered edge's `Terminator::Send` is the payload's one consumer:
-    /// the mailbox takes ownership of the value's bytes (heap pointers
-    /// included), and the checker marks every send argument moved at the
-    /// boundary, so no scope-exit drop covers the value. When the liveness
-    /// branch takes the recover edge instead, the Send never runs — this
-    /// helper stands in for it, releasing exactly the ownership the delivered
-    /// edge would have consumed. The two edges are exclusive per send
-    /// execution, so the release runs exactly once.
-    ///
-    /// Shape dispatch, routed through the drop authorities:
-    /// - a type that does not seed drop elaboration
-    ///   (`binding_seeds_drop_elaboration` — the `BitCopy` spine) owns nothing;
-    ///   no instruction is emitted.
-    /// - a Wired leaf (`project_field_inline_drop_symbol`: `string`, `bytes`,
-    ///   `Vec` with a wired element release, `HashMap`, `HashSet`, generator
-    ///   handles) releases through one whole-value `Instr::Drop` — the same
-    ///   inline release the overwrite path emits for these shapes. A static
-    ///   string literal is safe here: it is absent from the exact managed-string
-    ///   provenance registry, so `hew_string_drop` treats it as borrowed.
-    /// - an Unwired `Vec` (element release protocol unwired) is refused fail
-    ///   closed, per the picker contract ("a `Wired`-gated pre-flight can no
-    ///   longer admit the buffer-only free"). Unreachable today: a receive
-    ///   handler parameter of such a type is already rejected by the
-    ///   scope-exit element scan in the handler's own body, so no tell can
-    ///   target one — defence in depth, not a live diagnostic.
-    /// - everything else returns with no instruction. The seed gate already
-    ///   excluded `BitCopy`, so this arm is a View/handle shape with no release
-    ///   obligation at this seam (e.g. an actor pid) — or an owned aggregate:
-    ///   SHIM(F-04 recover-path aggregate payload): an owned-aggregate
-    ///   payload (user record / tuple / enum with heap fields) has no inline
-    ///   whole-value release — its drop kinds (`RecordInPlace` /
-    ///   `TupleInPlace` / `EnumInPlace`) are function-scope drop-plan
-    ///   entries, not inline `Instr::Drop`s — so an undelivered aggregate
-    ///   payload still leaks its heap fields on the not-live edge. WHY: the
-    ///   leak is bounded to restart/shutdown windows and refusing the shape
-    ///   would reject every record tell through a supervisor child. WHEN
-    ///   obsolete: when the type-directed drop-table consolidation gives
-    ///   aggregates a whole-value release emittable at an arbitrary
-    ///   instruction position. WHAT: route this arm through that whole-value
-    ///   drop instead of returning empty-handed.
-    fn emit_undelivered_send_payload_release(
-        &mut self,
-        place: Place,
-        ty: &ResolvedTy,
-        site: hew_hir::SiteId,
-    ) -> Option<()> {
-        let ty = self.subst_ty(ty);
-        if !self.binding_seeds_drop_elaboration(&ty) {
-            return Some(());
-        }
-        match self.project_field_inline_drop_symbol(&ty) {
-            ReleaseSymbolVerdict::Wired(symbol) => {
-                self.push_instr(Instr::Drop {
-                    place,
-                    ty,
-                    drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
-                });
-                Some(())
-            }
-            ReleaseSymbolVerdict::Unwired(_) => {
-                let elem = self
-                    .unsupported_vec_element_in_ty(&ty)
-                    .unwrap_or_else(|| format!("`{}`", ty.user_facing()));
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: format!(
-                            "actor tell payload: a `Vec` whose element is {elem} has no \
-                             per-element release protocol, so a send skipped at a \
-                             not-live supervisor child would leak its heap nodes"
-                        ),
-                        site,
-                    },
-                    note: "a `Vec` of `bytes` or of an indirect-enum element cannot yet \
-                           be released element-by-element, and a fungible-child tell \
-                           must free an undelivered payload on the not-live recover \
-                           edge. This construction is rejected at compile rather than \
-                           silently leaked, and becomes available once the per-element \
-                           release is wired."
-                        .to_string(),
-                });
-                None
-            }
-            // `WiredInPlace` is the yield/recv picker's composite verdict;
-            // `project_field_inline_drop_symbol` never returns it (owned
-            // aggregates stay `NoDropPath` here — the F-04 SHIM above). Kept
-            // as an explicit arm so admitting composites at THIS seam is a
-            // deliberate decision, not an accidental fall-through.
-            ReleaseSymbolVerdict::WiredInPlace(_) | ReleaseSymbolVerdict::NoDropPath => Some(()),
-        }
-    }
-
     /// True iff an `ActorHandler`-convention `lower_params` routes a message
     /// parameter of this argument's type through owned-local registration.
     ///
@@ -2172,10 +1838,6 @@ impl Builder {
         site: hew_hir::SiteId,
     ) -> Option<Place> {
         let info = self.actor_method_info(&receiver.ty, method_id, site)?;
-        // `ActorMethodKind::Fire` is only produced by `record_actor_method_dispatch`
-        // when `reply_ty == Ty::Unit`, so every `ActorSend` HIR node refers to a
-        // unit-returning handler by construction.  The arity check below is the
-        // remaining structural guard.
         if info.param_tys.len() != args.len() {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -2190,85 +1852,25 @@ impl Builder {
             });
             return None;
         }
-        // U3 tail — the mailbox hand-off MOVES every argument out of this frame
-        // and the delivered copy is minted a scope-exit owner inside the actor
-        // handler, from the parameter's type (`lower_params`, the
-        // `FunctionCallConv::ActorHandler` arms). That frame cannot ask; this one
-        // can. Preflighted before the receiver is lowered so a refusal leaves no
-        // partial MIR.
         if self.reject_proven_foreign_actor_message_args(args) {
             return None;
         }
         let actor = self.lower_value(receiver)?;
-        let child_ref = self.fungible_child_ref_of(actor);
-        let mut fungible_edges = None;
-        // Argument evaluation stays HERE, in the pre-branch block: an argument
-        // expression's effects are user-visible and must run whether or not a
-        // fungible child is live — the liveness branch below decides DELIVERY,
-        // never evaluation.
+        let stable_role = self.child_ref_role_of(&receiver.ty, actor);
         let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len());
         for arg in args {
-            let place = self.lower_value_for_move(arg)?;
-            let ty = self.subst_ty(&arg.ty);
-            lowered.push((place, ty));
+            lowered.push((self.lower_value_for_move(arg)?, self.subst_ty(&arg.ty)));
         }
-        // The payload Place. Zero args: a unit local (owns nothing). One arg:
-        // the argument's own place — no pack exists. Multi-arg: the packed
-        // anonymous record; through a FUNGIBLE child reference the pack is
-        // deferred into `live_bb` below, so the packed temp — whose bytes the
-        // `Send` alone consumes — is never built on the discard path.
-        let mut value = match &lowered[..] {
-            [] => Some(self.alloc_local(ResolvedTy::Unit)),
-            [(place, _)] => Some(*place),
-            _ => None,
-        };
-        if value.is_none() && child_ref.is_none() {
-            let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
-                lowered.iter().cloned().unzip();
-            value = Some(self.pack_actor_payload_from_places(field_places, field_tys));
-        }
-        let next = self.alloc_block();
-        // F-04: a fire-and-forget send through a FUNGIBLE supervisor-child
-        // reference re-resolves the current live child at the send site. On a
-        // not-live slot (mid-restart or permanently down) the send fail-closes as
-        // a recoverable no-op (the message is dropped, NOT a program-killing
-        // trap) — the tell's contract is best-effort delivery, so dropping into a
-        // restart window is the correct recoverable behaviour. The `recover_bb`
-        // releases the undelivered payload values (#2126) and joins straight to
-        // `next` so control flow continues normally; `live_bb` becomes the
-        // current cursor where the multi-arg pack (if any) is built and the Send
-        // terminator is emitted with the freshly-resolved child pointer.
-        if let Some(child_ref) = child_ref {
-            let prepare_block = self.current_block_id;
-            let (live_bb, recover_bb) = self.emit_fungible_reresolve(child_ref, actor);
-            // recover_bb: not-live → the Send is skipped, so nothing consumes
-            // the already-evaluated argument values. Release each one exactly
-            // as the delivered edge would have consumed it (the two edges are
-            // exclusive, so the release runs exactly once), then continue.
-            self.start_block(recover_bb);
-            for (place, ty) in &lowered {
-                if ty_contains_channel_handle(ty) {
-                    self.emit_undelivered_send_payload_release(*place, ty, site)?;
-                }
-            }
-            self.finish_current_block(Terminator::Goto { target: next });
-            // live_bb: the freshly-resolved current child; the Send below
-            // targets it. The multi-arg pack is built here, on the delivery
-            // edge only (pure MIR construction over the pre-branch argument
-            // places — no user effect moves across the branch).
-            self.start_block(live_bb);
-            fungible_edges = Some((prepare_block, recover_bb));
-            if value.is_none() {
+        let value = match &lowered[..] {
+            [] => self.alloc_local(ResolvedTy::Unit),
+            [(place, _)] => *place,
+            _ => {
                 let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
                     lowered.iter().cloned().unzip();
-                value = Some(self.pack_actor_payload_from_places(field_places, field_tys));
+                self.pack_actor_payload_from_places(field_places, field_tys)
             }
-        }
-        let value = value.expect("payload place is populated for every arity above");
-        if let Some(edges) = fungible_edges {
-            self.fungible_outbound_edges
-                .insert(self.current_block_id, edges);
-        }
+        };
+        let next = self.alloc_block();
         self.record_pending_outbound_args(
             self.current_block_id,
             lowered
@@ -2286,6 +1888,7 @@ impl Builder {
             .unwrap_or_default();
         self.finish_current_block(Terminator::Send {
             actor,
+            stable_role,
             msg_type: info.msg_type,
             value,
             next,
@@ -2358,6 +1961,7 @@ impl Builder {
         self.reject_unproven_generator_fn_args(args);
 
         let actor = self.lower_value(receiver)?;
+        let stable_role = self.child_ref_role_of(&receiver.ty, actor);
         let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len() + 1);
         for arg in args {
             let place = self.lower_value_for_move(arg)?;
@@ -2387,6 +1991,7 @@ impl Builder {
         );
         self.finish_current_block(Terminator::Send {
             actor,
+            stable_role,
             msg_type: info.msg_type,
             value,
             next,
@@ -2538,23 +2143,10 @@ impl Builder {
             return None;
         }
         let actor = self.lower_value(receiver)?;
-        // F-04: an ask through a FUNGIBLE supervisor-child reference carries
-        // the stable role (supervisor token + slot) into the ask terminator;
-        // codegen submits through the OWNER-SCOPED role ask
-        // (`hew_supervisor_role_ask` / `hew_supervisor_role_ask_with_channel`),
-        // which resolves the current incarnation and submits under the
-        // runtime's liveness protocol. The former shape re-resolved to a raw
-        // `*mut HewActor` here (`emit_child_get_into`) and dereferenced it at
-        // the ask site — an UNPINNED pointer a restart could free between the
-        // lookup and the deref (use-after-free, not a refusal). A not-live or
-        // retired slot now fails closed to `Err(AskError::ActorStopped)` with
-        // the slot state classified in the error slot.
-        let stable_role = self
-            .fungible_child_ref_of(actor)
-            .map(|child_ref| StableActorRole {
-                supervisor_token: child_ref.supervisor_token,
-                slot_index: child_ref.slot_index,
-            });
+        // ChildRef carries the stable role into the ask terminator. Codegen
+        // resolves its current incarnation under the supervisor's liveness
+        // protocol, so a missing or retired role fails closed as ActorStopped.
+        let stable_role = self.child_ref_role_of(&receiver.ty, actor);
         let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len());
         for arg in args {
             lowered.push((self.lower_value_for_move(arg)?, self.subst_ty(&arg.ty)));

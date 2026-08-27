@@ -2833,7 +2833,7 @@ fn pipeline_with_join_branches(
     pipeline
 }
 
-/// A fungible stable-role join branch submits through the OWNER-SCOPED
+/// A ChildRef stable-role join branch submits through the OWNER-SCOPED
 /// runtime op — supervisor token + slot index + payload in ONE call — and
 /// emits NO trace of the racy lookup-token-then-send pair
 /// (`hew_local_pid_supervisor_child_get` → `hew_local_pid_ask_with_channel`),
@@ -2845,7 +2845,7 @@ fn join_stable_role_branch_submits_owner_scoped() {
         actor: Place::DuplexHandle(0),
         stable_role: Some(hew_mir::StableActorRole {
             supervisor_token: Place::Local(2),
-            slot_index: 0,
+            slot_index: Place::Local(2),
         }),
         method: "score".to_string(),
         args: Vec::new(),
@@ -3176,7 +3176,7 @@ fn select_actor_ask_plus_after_timer_emits_deadline() {
     );
 }
 
-/// A fungible stable-role select arm submits through the OWNER-SCOPED
+/// A ChildRef stable-role select arm submits through the OWNER-SCOPED
 /// runtime op, mirroring the join cutover: no lookup-token-then-send pair
 /// survives on the select ask path either.
 #[test]
@@ -3187,7 +3187,7 @@ fn select_stable_role_arm_submits_owner_scoped() {
                 actor: Place::DuplexHandle(0),
                 stable_role: Some(hew_mir::StableActorRole {
                     supervisor_token: Place::Local(2),
-                    slot_index: 1,
+                    slot_index: Place::Local(2),
                 }),
                 method: "ping".to_string(),
                 args: Vec::new(),

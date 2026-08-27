@@ -473,6 +473,7 @@ fn render_terminator(term: &Terminator) -> String {
         }
         Terminator::Send {
             actor,
+            stable_role: _,
             msg_type,
             value,
             next,

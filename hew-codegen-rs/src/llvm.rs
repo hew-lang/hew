@@ -1311,6 +1311,7 @@ fn wasm_excluded_call_family(
         | F::LocalPidSupervisorChildGet
         | F::SupervisorNestedGet
         | F::SupervisorPoolChildGet
+        | F::LocalPidSupervisorPoolChildRefGet
         | F::SupervisorPoolLen
         | F::SupervisorStop
         | F::SupervisorRestartAwaitBlocking => Some(wasm_capability_ids::SUPERVISION_TREES),
@@ -3464,6 +3465,17 @@ pub(crate) fn resolve_ty<'ctx>(
                 ],
                 false,
             )
+            .into());
+    }
+    if matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::ChildRef),
+            ..
+        }
+    ) {
+        return Ok(ctx
+            .struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false)
             .into());
     }
     if let ResolvedTy::Named {
@@ -15811,6 +15823,18 @@ pub(crate) fn record_struct_for<'ctx>(
             builtin,
             ..
         } => {
+            if *builtin == Some(BuiltinType::ChildRef) {
+                if args.len() != 1 {
+                    return Err(CodegenError::FailClosed(format!(
+                        "ChildRef record must carry 1 actor type argument, got {}",
+                        args.len()
+                    )));
+                }
+                return Ok(fn_ctx.ctx.struct_type(
+                    &[fn_ctx.ctx.i64_type().into(), fn_ctx.ctx.i64_type().into()],
+                    false,
+                ));
+            }
             if *builtin == Some(BuiltinType::SupervisorPool) {
                 if args.len() != 2 {
                     return Err(CodegenError::FailClosed(format!(
@@ -32100,6 +32124,7 @@ fn lower_terminator<'ctx>(
         }
         Terminator::Send {
             actor,
+            stable_role,
             msg_type,
             value,
             next,
@@ -32107,16 +32132,8 @@ fn lower_terminator<'ctx>(
             cleanup_plan,
         } => {
             validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
-            let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
-            let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
             let (payload_ptr, payload_size) =
                 actor_payload_ptr_size(fn_ctx, *value, "actor_send_payload")?;
-            let send = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_actor_send_by_id",
-            )?;
             // `payload_size` is built as i64; the `size` param is `usize`/
             // `size_t` (i32 on wasm32). Reconcile to the target-correct width.
             let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
@@ -32138,27 +32155,81 @@ fn lower_terminator<'ctx>(
             // serialize path (that is the `RemotePid<T>` `emit_remote_pid_send_call`
             // spine). So the `(dispatch, msg_type)` codec key is irrelevant here —
             // pass a null dispatch, which the local send path ignores.
-            let null_dispatch = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
-            let send_status = fn_ctx
-                .builder
-                .build_call(
-                    send,
-                    &[
-                        actor_id.into(),
-                        null_dispatch.into(),
-                        msg_type.into(),
-                        payload_ptr.into(),
-                        payload_size.into(),
-                    ],
-                    "hew_actor_send_by_id_call",
-                )
-                .llvm_ctx("hew_actor_send_by_id call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_actor_send_by_id returned void".into())
-                })?
-                .into_int_value();
+            let send_status = if let Some(role) = stable_role {
+                let i64_ty = fn_ctx.ctx.i64_type();
+                let supervisor_token = load_int_arg(
+                    fn_ctx,
+                    role.supervisor_token,
+                    i64_ty,
+                    "actor_send_role_supervisor_token",
+                )?;
+                let slot_word =
+                    load_int_arg(fn_ctx, role.slot_index, i64_ty, "actor_send_role_slot")?;
+                let slot_index = fn_ctx
+                    .builder
+                    .build_int_truncate(
+                        slot_word,
+                        fn_ctx.ctx.i32_type(),
+                        "actor_send_role_slot_i32",
+                    )
+                    .llvm_ctx("actor send role slot truncate")?;
+                let send = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_supervisor_role_send",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        send,
+                        &[
+                            supervisor_token.into(),
+                            slot_index.into(),
+                            msg_type.into(),
+                            payload_ptr.into(),
+                            payload_size.into(),
+                        ],
+                        "hew_supervisor_role_send_call",
+                    )
+                    .llvm_ctx("hew_supervisor_role_send call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_supervisor_role_send returned void".into())
+                    })?
+                    .into_int_value()
+            } else {
+                let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
+                let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
+                let send = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_actor_send_by_id",
+                )?;
+                let null_dispatch = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
+                fn_ctx
+                    .builder
+                    .build_call(
+                        send,
+                        &[
+                            actor_id.into(),
+                            null_dispatch.into(),
+                            msg_type.into(),
+                            payload_ptr.into(),
+                            payload_size.into(),
+                        ],
+                        "hew_actor_send_by_id_call",
+                    )
+                    .llvm_ctx("hew_actor_send_by_id call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_actor_send_by_id returned void".into())
+                    })?
+                    .into_int_value()
+            };
 
             // Delivery is the payload's ONE consumer: on `Ok` the mailbox owns
             // the copied bytes (heap pointers included) and the checker has
@@ -32277,10 +32348,12 @@ fn lower_terminator<'ctx>(
                     i64_ty,
                     "actor_ask_role_supervisor_token",
                 )?;
+                let slot_word =
+                    load_int_arg(fn_ctx, role.slot_index, i64_ty, "actor_ask_role_slot")?;
                 let slot_idx = fn_ctx
-                    .ctx
-                    .i32_type()
-                    .const_int(u64::from(role.slot_index), false);
+                    .builder
+                    .build_int_truncate(slot_word, fn_ctx.ctx.i32_type(), "actor_ask_role_slot_i32")
+                    .llvm_ctx("actor ask role slot truncate")?;
                 let role_ask = intern_runtime_decl(
                     fn_ctx.ctx,
                     fn_ctx.llvm_mod,

@@ -8565,7 +8565,7 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::I64);
                     }
-                    Ty::option(Ty::local_pid(child_ty.clone()))
+                    Ty::option(Ty::child_ref(child_ty.clone()))
                 }
                 crate::check::types::PoolAccessorKind::Index => {
                     unreachable!("index access does not enter method checking")
@@ -9113,18 +9113,22 @@ impl Checker {
                     }
                 }
             }
-            // LocalPid<T> methods — first check LocalPid's own impl methods,
-            // then fall through to actor receive-fn dispatch on the inner type T.
+            // Local actor-reference methods first check the concrete reference
+            // type's own impl, then fall through to actor receive-fn dispatch.
             //
-            // Own methods (e.g. `send`) are declared in
-            // `impl LocalPid<T>` in std/builtins.hew and registered in type_defs /
-            // fn_sigs as `"LocalPid::{method}"`.  Actor receive-fn dispatch
-            // (e.g. `pid.greet(arg)`) remains the local actor-dispatch path.
-            (resolved, _) if resolved.as_local_pid().is_some() => {
+            // `ChildRef<T>` and `LocalPid<T>` are distinct value representations;
+            // their own methods are registered under their respective nominal
+            // owners. Named receive handlers share the local dispatch path.
+            (resolved, _) if resolved.as_local_actor_ref().is_some() => {
+                let actor_ref_builtin = if resolved.as_child_ref().is_some() {
+                    crate::BuiltinType::ChildRef
+                } else {
+                    crate::BuiltinType::LocalPid
+                };
                 // A user handler named `send` is actor dispatch; otherwise
-                // `send` resolves through LocalPid's own fire-and-forget method.
+                // `send` resolves through the reference type's own method.
                 let has_user_send_handler = if method == "send" {
-                    resolved.as_local_pid().and_then(|inner| {
+                    resolved.as_local_actor_ref().and_then(|inner| {
                         if let Ty::Named { name, .. } = inner {
                             Some(name.clone())
                         } else {
@@ -9162,7 +9166,7 @@ impl Checker {
                         self.synthesize(expr, sp);
                     }
                     let actor_hint = resolved
-                        .as_local_pid()
+                        .as_local_actor_ref()
                         .and_then(|inner| {
                             if let Ty::Named { name, .. } = inner {
                                 Some(name.clone())
@@ -9190,7 +9194,7 @@ impl Checker {
                     } = resolved
                     {
                         if let Some(sig) = self.lookup_named_method_sig(
-                            crate::BuiltinType::LocalPid.canonical_name(),
+                            actor_ref_builtin.canonical_name(),
                             receiver_args,
                             method,
                         ) {
@@ -9204,7 +9208,7 @@ impl Checker {
                                 },
                                 true,
                                 Some(GenericCallee::Method {
-                                    type_name: crate::BuiltinType::LocalPid.canonical_name(),
+                                    type_name: actor_ref_builtin.canonical_name(),
                                     method,
                                     owner_type_args: receiver_args,
                                 }),
@@ -9219,7 +9223,7 @@ impl Checker {
                     }
                 }
                 // Fall through to actor receive-fn dispatch on the inner type.
-                let inner = resolved.as_local_pid().unwrap();
+                let inner = resolved.as_local_actor_ref().unwrap();
                 if let Ty::Named {
                     name: actor_name, ..
                 } = inner

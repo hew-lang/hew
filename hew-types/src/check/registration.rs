@@ -9346,6 +9346,7 @@ impl Checker {
                     builtin,
                     BuiltinType::Generator
                         | BuiltinType::AsyncGenerator
+                        | BuiltinType::ChildRef
                         | BuiltinType::LocalPid
                         | BuiltinType::RemotePid
                 )
@@ -9368,6 +9369,7 @@ impl Checker {
                         builtin,
                         BuiltinType::VecIter
                             | BuiltinType::HashMapIter
+                            | BuiltinType::ChildRef
                             | BuiltinType::LocalPid
                             | BuiltinType::RemotePid
                     )
@@ -9375,7 +9377,7 @@ impl Checker {
                 .map(|builtin| match builtin {
                     BuiltinType::VecIter => "std.builtins.VecIter".to_string(),
                     BuiltinType::HashMapIter => "std.builtins.HashMapIter".to_string(),
-                    BuiltinType::LocalPid | BuiltinType::RemotePid => {
+                    BuiltinType::ChildRef | BuiltinType::LocalPid | BuiltinType::RemotePid => {
                         builtin.canonical_name().to_string()
                     }
                     _ => unreachable!("filter admits only compiler carrier builtins"),

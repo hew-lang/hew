@@ -14,6 +14,14 @@
 pub type LocalPid<T> {
 }
 
+/// A stable reference to a supervised actor role.
+///
+/// Unlike `LocalPid<T>`, a `ChildRef<T>` never snapshots an actor allocation.
+/// Each operation resolves the role's current incarnation through its owning
+/// supervisor and returns an error while the child is unavailable or stopped.
+pub type ChildRef<T> {
+}
+
 /// Stable key-derived node identity.
 pub type NodeId {
 }
@@ -217,6 +225,13 @@ impl<T: ActorMsg> LocalPid<T> {
     }
 }
 
+impl<T: ActorMsg> ChildRef<T> {
+    /// Send a message to the currently live actor in this supervised role.
+    fn send(child: ChildRef<T>, msg: T.Msg) -> Result<(), SendError> {
+        Err(SendError.Closed)
+    }
+}
+
 impl<T> RemotePid<T> {
     /// Return the complete carried actor location.
     #[extern_symbol(hew_remote_pid_location)]
@@ -299,6 +314,13 @@ impl<T: ActorMsg> Pid for LocalPid<T> {
     type Msg = T.Msg;
     fn send(pid: LocalPid<T>, msg: Self.Msg) -> Result<(), SendError> {
         pid.send(msg)
+    }
+}
+
+impl<T: ActorMsg> Pid for ChildRef<T> {
+    type Msg = T.Msg;
+    fn send(child: ChildRef<T>, msg: Self.Msg) -> Result<(), SendError> {
+        child.send(msg)
     }
 }
 

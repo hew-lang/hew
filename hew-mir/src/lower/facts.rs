@@ -3790,7 +3790,7 @@ fn push_unknown_type_diagnostics(
 fn is_phantom_arg_pid(builtin: Option<BuiltinType>) -> bool {
     matches!(
         builtin,
-        Some(BuiltinType::LocalPid | BuiltinType::RemotePid)
+        Some(BuiltinType::ChildRef | BuiltinType::LocalPid | BuiltinType::RemotePid)
     )
 }
 /// Named-type components codegen's layout graph must be able to resolve.

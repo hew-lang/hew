@@ -5064,7 +5064,11 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
             i64_ty,
             "suspending_ask_role_supervisor_token",
         )?;
-        let slot_idx = i32_ty.const_int(u64::from(role.slot_index), false);
+        let slot_word = load_int_arg(fn_ctx, role.slot_index, i64_ty, "suspending_ask_role_slot")?;
+        let slot_idx = fn_ctx
+            .builder
+            .build_int_truncate(slot_word, i32_ty, "suspending_ask_role_slot_i32")
+            .llvm_ctx("suspending ask role slot truncate")?;
         let role_ask_fn = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -10223,7 +10227,20 @@ fn emit_select_arm_setup<'ctx>(
                         i64_ty,
                         &format!("select_role_{slot_idx}_supervisor_token"),
                     )?;
-                    let slot_const = i32_ty.const_int(u64::from(role.slot_index), false);
+                    let slot_word = load_int_arg(
+                        fn_ctx,
+                        role.slot_index,
+                        i64_ty,
+                        &format!("select_role_{slot_idx}_slot"),
+                    )?;
+                    let slot_const = fn_ctx
+                        .builder
+                        .build_int_truncate(
+                            slot_word,
+                            i32_ty,
+                            &format!("select_role_{slot_idx}_slot_i32"),
+                        )
+                        .llvm_ctx("select role slot truncate")?;
                     fn_ctx
                         .builder
                         .build_call(
@@ -11601,7 +11618,16 @@ pub(crate) fn emit_join_terminator<'ctx>(
                 i64_ty,
                 &format!("join_role_{i}_supervisor_token"),
             )?;
-            let slot_idx = i32_ty.const_int(u64::from(role.slot_index), false);
+            let slot_word = load_int_arg(
+                fn_ctx,
+                role.slot_index,
+                i64_ty,
+                &format!("join_role_{i}_slot"),
+            )?;
+            let slot_idx = fn_ctx
+                .builder
+                .build_int_truncate(slot_word, i32_ty, &format!("join_role_{i}_slot_i32"))
+                .llvm_ctx("join role slot truncate")?;
             fn_ctx
                 .builder
                 .build_call(

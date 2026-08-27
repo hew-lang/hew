@@ -3135,3 +3135,117 @@ mod embedded_stdlib_tests {
         ));
     }
 }
+
+/// Driver-boundary coverage for the single canonical SIR module shared by
+/// inspection, shadow evidence, and strict lowering.
+///
+/// Keep this at the private driver boundary rather than making production
+/// reports carry pass statistics solely for test observability.  The report
+/// already retains the exact SIR module passed into each SIR-backed lane.
+#[cfg(test)]
+mod sir_driver_tests {
+    use super::{compile, lower_verified_hir_to_pipeline, target, SirLaneRealization};
+    use hew_hir::{lower_program_host_target, ResolutionCtx};
+    use hew_sir::{SemOpKind, SemTerminator};
+    use hew_types::{module_registry::ModuleRegistry, Checker};
+
+    const DIRECT_CONSTANT_CFG: &str = r"
+        fn main() -> i64 {
+            if true {
+                0
+            } else {
+                1
+            }
+        }
+    ";
+
+    #[test]
+    fn shadow_and_strict_receive_the_same_canonical_sir_module() {
+        let parsed = hew_parser::parse(DIRECT_CONSTANT_CFG);
+        assert!(
+            parsed.errors.is_empty(),
+            "constant CFG fixture must parse: {:#?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+        let type_check = checker.check_program(&parsed.program);
+        assert!(
+            type_check.errors.is_empty(),
+            "constant CFG fixture must type-check: {:#?}",
+            type_check.errors
+        );
+        let lowered = lower_program_host_target(&parsed.program, &type_check, &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "constant CFG fixture must lower to HIR: {:#?}",
+            lowered.diagnostics
+        );
+        let target = target::TargetSpec::from_requested(None)
+            .expect("host target must be available to the driver test");
+
+        let (shadow_pipeline, shadow_report) = lower_verified_hir_to_pipeline(
+            &lowered.module,
+            &type_check,
+            &target,
+            compile::SirMode::Shadow,
+        )
+        .expect("shadow lane must accept the scalar constant CFG");
+        let shadow_report = shadow_report.expect("shadow lane must retain its SIR report");
+        assert!(matches!(
+            &shadow_report.realization,
+            SirLaneRealization::Shadow(_)
+        ));
+
+        let (strict_pipeline, strict_report) = lower_verified_hir_to_pipeline(
+            &lowered.module,
+            &type_check,
+            &target,
+            compile::SirMode::Lower,
+        )
+        .expect("strict lane must accept the scalar constant CFG");
+        let strict_report = strict_report.expect("strict lane must retain its SIR report");
+        assert!(matches!(
+            &strict_report.realization,
+            SirLaneRealization::Strict { .. }
+        ));
+
+        // The shadow artifact intentionally remains legacy MIR, whereas the
+        // strict artifact is SIR-owned. The retained semantic input must be
+        // identical in both cases: it is the canonical CFG passed to the
+        // candidate bridge or strict component, not an inspector-only copy.
+        assert_eq!(shadow_report.sir.module, strict_report.sir.module);
+        let main = shadow_report
+            .sir
+            .module
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("constant CFG fixture must retain its SIR main body");
+        assert!(
+            matches!(&main.blocks[0].terminator, SemTerminator::Goto(_)),
+            "the direct constant branch must be canonicalized before both lanes: {main:#?}"
+        );
+        assert!(
+            main.blocks
+                .iter()
+                .all(|block| !matches!(&block.terminator, SemTerminator::Branch { .. })),
+            "canonical SIR must contain no remaining branch for a direct constant: {main:#?}"
+        );
+        assert!(
+            main.blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .all(|operation| { !matches!(&operation.kind, SemOpKind::ConstI64(1)) }),
+            "the unselected arm must be compacted before the SIR-backed lanes: {main:#?}"
+        );
+
+        assert!(
+            shadow_pipeline
+                .raw_mir
+                .iter()
+                .any(|function| function.name == "main"),
+            "shadow must retain the established main body as its emitted artifact"
+        );
+        assert_eq!(strict_pipeline.raw_mir.len(), 1);
+    }
+}

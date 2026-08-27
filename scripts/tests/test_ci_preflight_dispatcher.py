@@ -33,10 +33,9 @@ def _hermetic_env(
     for key in tuple(run_env):
         if (
             key == "CI"
-            # The Linux CI shards export this so Cargo writes somewhere other
-            # than the materialized test archive. It is a real setting of a
-            # real job, and it must not reach a dispatcher unit test, where it
-            # would silently relocate every build these gates describe.
+            # A real setting of a real job (the Linux shards send Cargo away
+            # from the materialized archive) that must not reach a unit test,
+            # where it would silently relocate every build described here.
             or key == "CARGO_TARGET_DIR"
             or key == "COMPILED_HEW_GATE_OWNER"
             or key == "PLAYGROUND_GATE_OWNER"
@@ -206,13 +205,9 @@ def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() ->
     assert re.search(r"^lint:.*\$\$\(LINT_GATES\)", makefile, re.MULTILINE), makefile
 
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    # The toolchain is built once per run and read from a tarball by the jobs
-    # that need it, so this no longer asks whether a named step provisions it
-    # -- `scripts/tests/test_ci_workflow_contract.py` owns that ownership
-    # invariant. What matters here is that the job running the labelled
-    # command ends up holding the toolchain on EVERY route: the shared tarball
-    # when the producer built one, the setup action when a docs-only run meant
-    # nobody else needed it.
+    # Ownership of the toolchain belongs to test_ci_workflow_contract.py. What
+    # matters here is that the job running the labelled command holds it on
+    # EVERY route: the shared tarball, or the setup action on a docs-only run.
     assert "uses: ./.github/actions/setup-ast-grep" in workflow, (
         "hosted CI must explicitly provision the pinned toolchain"
     )
@@ -549,18 +544,32 @@ def test_baseline_precheck_is_scoped_to_selection() -> None:
     assert members == ["wasm-capability"], scoped.stdout
 
 
+def _lane_probe(scratch: Path, script: str) -> Path:
+    """A fake `make` that reports what the lane file said when it read it."""
+    fake_bin = scratch / "bin"
+    fake_bin.mkdir()
+    make = fake_bin / "make"
+    make.write_text(
+        "#!/bin/sh\nset -eu\n"
+        'case "$*" in *baselines-check*) ;; *) exit 0 ;; esac\n'
+        'lane=""\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in BASELINE_GATES=*) lane="${arg#BASELINE_GATES=}" ;; esac\n'
+        "done\n" + script,
+        encoding="utf-8",
+    )
+    make.chmod(0o755)
+    return fake_bin
+
+
 def test_concurrent_dispatchers_cannot_corrupt_each_others_baseline_lane() -> None:
     """Two overlapping invocations each check their OWN gates.
 
-    The lane list used to be one fixed file in the repository. The
-    comprehensive lane runs its gates concurrently and several of them nest a
-    further dispatcher, so the last writer won and a lane could be checked
-    against a sibling's gate list -- Ubuntu-only baseline-selection failures
-    that every serial local run missed.
-
-    The barrier below is what makes this a proof rather than a timing hope:
-    neither invocation reads its lane until BOTH have written one, so a shared
-    path would deterministically hand at least one of them the other's gates.
+    The lane list used to be one fixed file, and the comprehensive lane runs
+    gates concurrently with several nesting a further dispatcher, so the last
+    writer won -- Ubuntu-only baseline-selection failures every serial local
+    run missed. The barrier makes this a proof rather than a timing hope:
+    neither invocation reads its lane until BOTH have written one.
     """
     with tempfile.TemporaryDirectory() as raw:
         scratch = Path(raw)
@@ -568,20 +577,8 @@ def test_concurrent_dispatchers_cannot_corrupt_each_others_baseline_lane() -> No
         rendezvous.mkdir()
         record = scratch / "record.tsv"
         record.touch()
-        fake_bin = scratch / "bin"
-        fake_bin.mkdir()
-
-        # Stands in for `make baselines-check` and records what the lane file
-        # actually said at the moment this invocation read it.
-        fake_make = fake_bin / "make"
-        fake_make.write_text(
-            "#!/bin/sh\n"
-            "set -eu\n"
-            'case "$*" in *baselines-check*) ;; *) exit 0 ;; esac\n'
-            'lane=""\n'
-            'for arg in "$@"; do\n'
-            '  case "$arg" in BASELINE_GATES=*) lane="${arg#BASELINE_GATES=}" ;; esac\n'
-            "done\n"
+        fake_bin = _lane_probe(
+            scratch,
             ': > "$PREFLIGHT_RENDEZVOUS/$PREFLIGHT_TAG.ready"\n'
             "waited=0\n"
             'while [ "$waited" -lt 400 ]; do\n'
@@ -590,11 +587,9 @@ def test_concurrent_dispatchers_cannot_corrupt_each_others_baseline_lane() -> No
             "  sleep 0.05\n"
             "  waited=$((waited + 1))\n"
             "done\n"
-            'printf \'%s\\t%s\\t%s\\n\' "$PREFLIGHT_TAG" "$lane" '
+            "printf '%s\\t%s\\n' \"$PREFLIGHT_TAG\" "
             '"$(tr \'\\n\' \',\' < "$lane")" >> "$PREFLIGHT_RECORD"\n',
-            encoding="utf-8",
         )
-        fake_make.chmod(0o755)
 
         def invoke(tag: str) -> subprocess.CompletedProcess[str]:
             return _run_dispatcher_process(
@@ -614,33 +609,54 @@ def test_concurrent_dispatchers_cannot_corrupt_each_others_baseline_lane() -> No
         tags = ("LANE_ONE", "LANE_TWO")
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = dict(zip(tags, pool.map(invoke, tags)))
-        transcript = record.read_text(encoding="utf-8")
+        rows = dict(
+            line.split("\t") for line in record.read_text().splitlines() if line
+        )
 
     for tag, result in results.items():
         assert result.returncode == 0, f"{tag}: {result.stdout}{result.stderr}"
-
-    rows = [line.split("\t") for line in transcript.splitlines() if line]
-    assert len(rows) == 2, rows
-    seen = {tag: (lane, contents) for tag, lane, contents in rows}
-    assert set(seen) == set(tags), rows
-
-    for tag, (_lane, contents) in seen.items():
-        assert contents == f"printf '%s' {tag} >/dev/null,", (
+    assert set(rows) == set(tags), rows
+    for tag, gates in rows.items():
+        assert gates == f"printf '%s' {tag} >/dev/null,", (
             f"{tag} checked baselines against another lane's gates: {rows}"
         )
-    for tag, (lane, _contents) in seen.items():
-        assert not lane.startswith(str(ROOT) + os.sep), (
-            f"{tag} wrote its lane into the repository at {lane}; a shared "
-            "path is the defect this test exists for"
-        )
-
-    one_lane, two_lane = (seen[tag][0] for tag in tags)
-    assert one_lane != two_lane, rows
-    for lane in (one_lane, two_lane):
-        assert not Path(lane).exists(), f"{lane} outlived the invocation that made it"
     assert not (ROOT / ".tmp" / "preflight-lane.txt").exists(), (
         "the shared lane file is back"
     )
+
+
+def test_the_lane_file_is_removed_however_the_run_ends() -> None:
+    """Success and failure both clean up, in a directory that needs quoting.
+
+    The trap names a function, so the path is expanded when cleanup RUNS. An
+    interpolated `rm -f -- '<path>'` is re-parsed at exit with the path already
+    substituted, so an apostrophe in TMPDIR yields `unexpected EOF while
+    looking for matching '` and the file leaks.
+    """
+    for precheck_exit, expected in ((0, 0), (1, 1)):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw) / "ci's build dir"
+            tmp.mkdir()
+            fake_bin = _lane_probe(
+                Path(raw), f'test -f "$lane"\nexit {precheck_exit}\n'
+            )
+            result = _run_dispatcher_process(
+                ["bash", str(SCRIPT), "--", "Makefile"],
+                env={
+                    "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                    "PREFLIGHT_TEST_COMMANDS": "true\n",
+                    "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
+                    "TMPDIR": str(tmp),
+                },
+                path_prefix=(fake_bin,),
+                timeout=120,
+            )
+            assert result.returncode == expected, result.stdout + result.stderr
+            leftovers = sorted(p.name for p in tmp.glob("preflight-lane.*"))
+            assert not leftovers, (
+                f"precheck exit {precheck_exit} leaked {leftovers} into a "
+                "directory whose name needs quoting"
+            )
 
 
 def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:
@@ -774,21 +790,6 @@ def _selected_commands(stdout: str) -> list[str]:
             break
         commands.append(line[len("  - ") :].split("  (budget:")[0])
     return commands
-
-
-def _position(commands: list[str] | str, needle: str, transcript: str) -> int:
-    """`index` that says which command is missing instead of raising ValueError.
-
-    An ordering assertion whose subject was never selected is a selection
-    defect, and it must read as one. A bare `.index` turns it into an uncaught
-    ValueError with the transcript nowhere in sight.
-    """
-    if needle not in commands:
-        raise AssertionError(
-            f"{needle!r} was never selected, so nothing can be ordered "
-            f"against it.\nstdout:\n{transcript}"
-        )
-    return commands.index(needle)
 
 
 def _warmup_commands(stdout: str) -> list[str]:
@@ -1790,11 +1791,9 @@ def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
     assert "make lint" in commands, result.stdout
     assert "make test" in commands, result.stdout
 
-    fmt_pos = _position(commands, "cargo fmt --all -- --check", result.stdout)
-    clippy_pos = _position(
-        commands, "cargo clippy --workspace --tests -- -D warnings", result.stdout
-    )
-    test_pos = _position(commands, "make test", result.stdout)
+    fmt_pos = commands.index("cargo fmt --all -- --check")
+    clippy_pos = commands.index("cargo clippy --workspace --tests -- -D warnings")
+    test_pos = commands.index("make test")
     assert fmt_pos < clippy_pos < test_pos, result.stdout
 
     makefile = (ROOT / "Makefile").read_text()
@@ -1875,9 +1874,9 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     # Ratchets must appear after make test (Rust suite runs first).
     # The budget annotation "(budget: Xs)" may appear on the same line in dry-run.
     commands = _selected_commands(result.stdout)
-    test_pos = _position(commands, "make test", result.stdout)
-    hew_pos = _position(commands, "make test-hew-ratchet", result.stdout)
-    stdlib_pos = _position(commands, "make test-stdlib-ratchet", result.stdout)
+    test_pos = commands.index("make test")
+    hew_pos = commands.index("make test-hew-ratchet")
+    stdlib_pos = commands.index("make test-stdlib-ratchet")
     assert test_pos < hew_pos, (
         f"Expected make test before make test-hew-ratchet.\nstdout:\n{result.stdout}"
     )

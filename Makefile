@@ -223,10 +223,20 @@ endif
 # with a forced-cancel-test build before a single gate ran. Every later gate in
 # that shard would then have linked against a runtime nobody selected.
 #
+# WHICH directory is which is decided by the workflow, not here, and the shards
+# now invert the obvious assignment: the ARCHIVE occupies the checkout's own
+# `target/` and CARGO writes to `$RUNNER_TEMP/ci-cargo-target`. The archive's
+# test binaries carry the producer's ABSOLUTE paths -- `env!("CARGO_BIN_EXE_hew")`
+# is baked in by rustc and `current_exe()`-relative discovery walks
+# `<target>/<profile>/deps/` upwards -- so the only path they resolve at is the
+# one the producer compiled under, which on GitHub is the consumer's
+# `$GITHUB_WORKSPACE/target` too. This file needs to know only that the two
+# roots differ, which is why both sides are read from the environment.
+#
 # Splitting the authorities removes the whole class, not that one command: a
 # feature-specific build, a `cargo run`, a plain `cargo test`, or anything a
 # future gate adds writes to Cargo's own directory and cannot reach the
-# archive. The workflow additionally makes the extracted tree read-only, so the
+# archive. The workflow additionally makes the artefact tree read-only, so the
 # separation is enforced by the filesystem rather than trusted.
 ifeq ($(strip $(HEW_CI_PREBUILT_TEST_ARTIFACTS)),1)
 HEW_CI_PREBUILT := 1
@@ -277,9 +287,10 @@ WASM_RELEASE_DIR := $(CARGO_TARGET_ROOT)/wasm32-wasip1/release
 
 # Symlinks under build/ point at the shared artefacts. While they live inside
 # the repository the links stay relative, so a moved checkout keeps working; an
-# out-of-tree target directory -- or the extracted archive, which is always
-# out of tree -- resolves to an absolute path, which must not have `../` hops
-# prepended to it.
+# out-of-tree target directory resolves to an absolute path, which must not
+# have `../` hops prepended to it. The test is absoluteness, not location: the
+# Linux shards' artefact root is an absolute path that happens to sit inside
+# the checkout, and it takes the same branch an out-of-tree root does.
 ifeq ($(filter /%,$(ARTIFACT_ROOT)),)
 LINK_UP2 := ../../
 LINK_UP3 := ../../../

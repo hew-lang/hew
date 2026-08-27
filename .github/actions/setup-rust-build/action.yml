@@ -46,6 +46,17 @@ inputs:
       LLVM version changes.
     required: false
     default: 'v2-deps-llvm22'
+  cache-targets:
+    description: >
+      Whether Swatinem/rust-cache restores and saves `<workspace>/target`.
+      The action resolves that directory from the workspace root and does NOT
+      read CARGO_TARGET_DIR, so a job that owns `<workspace>/target` for
+      something else -- the Linux shards materialize the nextest archive there
+      -- must say 'false' here, or the restore collides with the archive and a
+      save on main stores the archive as a dependency layer. The registry
+      layer, sccache and every other behaviour are unaffected.
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -288,7 +299,7 @@ runs:
         # second copy of the source-sensitive sccache layer above.
         add-rust-environment-hash-key: "false"
         key: deps-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
-        cache-targets: "true"
+        cache-targets: ${{ inputs.cache-targets }}
         cache-all-crates: "false"
         cache-workspace-crates: "false"
         cache-bin: "false"

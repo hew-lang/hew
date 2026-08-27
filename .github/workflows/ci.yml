@@ -854,6 +854,24 @@ jobs:
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy Linux CI while satisfying the required check."
 
+      - name: Give Cargo its own output directory
+        if: env.RUN_CODE_PATH == 'true'
+        # FIRST step of the job, before the checkout and before any action can
+        # consume Cargo's default. This job materializes the producer's archive
+        # at the checkout's own `target/` -- see the materialize step below for
+        # why that path and no other -- so Cargo needs somewhere else to write,
+        # and it needs it decided before anything acts on the old answer.
+        #
+        # Swatinem/rust-cache resolves the directory it caches as
+        # `<workspace>/target` and does not read CARGO_TARGET_DIR at all, so
+        # this export alone would not keep it away: `cache-targets: 'false'` on
+        # the setup step below is the other half of the same decision.
+        run: |
+          set -euo pipefail
+          cargo_target="$RUNNER_TEMP/ci-cargo-target"
+          mkdir -p "$cargo_target"
+          echo "CARGO_TARGET_DIR=$cargo_target" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
         with:
@@ -903,6 +921,15 @@ jobs:
           targets: 'wasm32-unknown-unknown, wasm32-wasip1'
           tools: nextest@0.9.120
           cache-shared-key: linux-mold
+          # `<workspace>/target` belongs to the archive in this job, and that
+          # is the only directory rust-cache knows how to cache. Restoring
+          # into it would populate the path the archive must occupy; saving
+          # from it on main would store two gigabytes of extracted archive as
+          # a dependency layer that every `linux-mold` job then restores. The
+          # producer keeps `cache-targets` on and owns that layer; this job
+          # takes the registry half and compiles its own fallbacks into
+          # CARGO_TARGET_DIR, where sccache serves them.
+          cache-targets: 'false'
 
       - name: Install WASI target
         if: env.RUN_CODE_PATH == 'true'
@@ -969,29 +996,55 @@ jobs:
 
       - name: Materialize the Linux test archive
         if: env.RUN_CODE_PATH == 'true'
-        # `cargo nextest list --extract-to` is nextest's own extractor; it runs
-        # no test. Extraction lands under RUNNER_TEMP, never the checkout: an
-        # archive unpacked into $PWD is untracked paths no gate declares, which
-        # makes the router fail closed to comprehensive on every run
-        # (LESSONS.md preflight-perf-discipline).
+        # The archive's `target/` is materialized AT `$GITHUB_WORKSPACE/target`
+        # -- the exact absolute path the producer compiled under.
         #
-        # The extracted tree is made READ-ONLY and is NOT exported as
-        # CARGO_TARGET_DIR. Those are the same decision from two directions.
-        # Its `libhew.a` carries a freshness certificate binding it to the
-        # sources that produced it and its `hew` is the compiler the producer
-        # built; if Cargo wrote here, any ordinary or feature-specific build
-        # would silently replace them. One did, deterministically:
-        # `forced-cancel-composite-check-build` builds a
-        # `hew-runtime/forced-cancel-test` compiler and archive in warm-up,
-        # before any gate runs. The Makefile reads shared artefacts from
-        # HEW_CI_NEXTEST_TARGET_DIR while Cargo keeps writing to its own
-        # directory, and `chmod -R a-w` makes a clobber impossible rather than
-        # merely unlikely -- a write here fails loudly at the writer instead of
-        # surfacing as a wrong link hours later.
+        # That is a correctness requirement, not a preference. A compiled test
+        # binary carries absolute paths no remap can reach:
+        # `env!("CARGO_BIN_EXE_hew")` is a string literal rustc baked in at the
+        # producer, and `current_exe()`-relative stdlib discovery resolves
+        # `<target>/<profile>/deps/<bin>` upwards at run time. Materializing
+        # under `$RUNNER_TEMP` left both pointing at directories that exist on
+        # no consumer; run 33028214259 is what that costs -- about 1069 test
+        # failures plus the observe, libhew and sandbox gates. GitHub gives
+        # every job in a run the same `$GITHUB_WORKSPACE`, so the producer's
+        # path is available here; taking it makes `--target-dir-remap` an
+        # identity and the baked paths true again.
         #
-        # JUnit is unaffected: nextest writes its store under the remapped
-        # WORKSPACE root, so target/nextest/<profile>/junit.xml stays where the
-        # upload step reads it.
+        # nextest requires an EMPTY extraction root and the checkout is not
+        # empty, so the archive is extracted into a private staging directory
+        # under RUNNER_TEMP and only its `target/` tree is moved into place.
+        # No archive content is ever unpacked over a source file, and both
+        # endpoints are refused if something already populated them.
+        #
+        # `target/` is `.gitignore`d, so the router still reads the author's
+        # diff rather than an unpacked archive (LESSONS.md
+        # preflight-perf-discipline) -- the property that mattered was always
+        # invisibility to `git ls-files --others --exclude-standard`, which an
+        # ignored path satisfies exactly as a path outside the checkout does.
+        #
+        # The materialized tree is then FROZEN: one recursive `a-w`, and
+        # exactly two directories reopened by name.
+        #   * `target/` itself, because gates legitimately create siblings in
+        #     it -- `forced-cancel-composite-check` builds under
+        #     `target/forced-cancel-gate`, the sanitizer targets under
+        #     `target/sanitizer-*`.
+        #   * `target/nextest/`, because that is nextest's own store, and
+        #     `target/nextest/ci/junit.xml` is what the upload step at the end
+        #     of this job reads. Reopening a directory does not reopen the
+        #     files in it, so the archive's two metadata documents stay
+        #     read-only inside a writable store.
+        # Everything else -- `debug/`, `release-lib/`, `wasm32-wasip1/` --
+        # carries the producer's certificates: `libhew.a` has a freshness
+        # certificate binding it to the sources that built it, `hew` is the
+        # compiler the producer built. A write to any of it fails at the
+        # writer instead of surfacing as a wrong link hours later. Cargo
+        # cannot reach it at all: CARGO_TARGET_DIR was pointed at
+        # `$RUNNER_TEMP/ci-cargo-target` by the first step of this job, so a
+        # feature-specific build such as
+        # `forced-cancel-composite-check-build`'s
+        # `hew-runtime/forced-cancel-test` compiler lands there and nowhere
+        # near a certified artefact.
         #
         # Every check below is an interface assertion, not a second identity
         # system: it says what a consumer needs to find, never which commit
@@ -999,19 +1052,35 @@ jobs:
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/ci-linux-nextest-download/ci-linux-nextest.tar.zst"
-          root="$RUNNER_TEMP/ci-linux-nextest"
+          staging="$RUNNER_TEMP/ci-linux-nextest-staging"
+          target="$GITHUB_WORKSPACE/target"
           test -s "$archive"
+          # The two authorities, asserted rather than assumed: if the first
+          # step of the job did not run, Cargo's default IS this target and
+          # the freeze below would break every compiling gate.
+          test "${CARGO_TARGET_DIR:-}" = "$RUNNER_TEMP/ci-cargo-target"
           if [ -n "${ARCHIVE_TRANSFER_START:-}" ]; then
             download_seconds="$(( $(date +%s) - ARCHIVE_TRANSFER_START ))s"
           else
             download_seconds="unknown"
           fi
-          mkdir -p "$root"
+
+          # A populated checkout target means something else claimed Cargo's
+          # default path -- a restored cache, a re-run of this step -- and
+          # merging that with the archive would produce a tree nobody
+          # certified. Refuse, and say what is in the way.
+          if [ -e "$target" ] && [ -n "$(ls -A "$target")" ]; then
+            echo "::error::$target is already populated; the Linux test archive cannot be materialized over it"
+            ls -A "$target"
+            exit 1
+          fi
+          rm -rf "$target" "$staging"
+          mkdir -p "$staging"
+
           start=$SECONDS
           cargo nextest list \
             --archive-file "$archive" \
-            --extract-to "$root" \
-            --extract-overwrite \
+            --extract-to "$staging" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile ci \
             --list-type binaries-only \
@@ -1019,7 +1088,17 @@ jobs:
             > "$RUNNER_TEMP/ci-linux-nextest-binaries.json"
           extract_seconds=$(( SECONDS - start ))
 
-          target="$root/target"
+          # nextest's archive carries exactly one top-level entry, `target/`.
+          # Asserting it keeps this a move of one known tree rather than a
+          # merge of whatever an archive happened to contain.
+          extracted="$(ls -A "$staging")"
+          if [ "$extracted" != "target" ]; then
+            echo "::error::the archive extracted [$extracted], not a single target/ tree"
+            exit 1
+          fi
+          mv "$staging/target" "$target"
+          rmdir "$staging"
+
           test -s "$RUNNER_TEMP/ci-linux-nextest-binaries.json"
           test -s "$target/nextest/binaries-metadata.json"
           test -s "$target/nextest/cargo-metadata.json"
@@ -1032,9 +1111,10 @@ jobs:
           test -s "$target/wasm32-wasip1/debug/libhew_runtime.a"
           test -s "$target/wasm32-wasip1/debug/libhew_std.a"
 
-          # Directories keep +x so the tree stays traversable; nothing in it
-          # stays writable. Test binaries and the compiler keep +r+x.
-          chmod -R a-w "$root"
+          # Directories keep +x so the tree stays traversable; test binaries
+          # and the compiler keep +r+x. Then the two named exceptions.
+          chmod -R a-w "$target"
+          chmod u+w "$target" "$target/nextest"
 
           {
             echo "HEW_CI_PREBUILT_TEST_ARTIFACTS=1"
@@ -1048,6 +1128,8 @@ jobs:
             echo "- archive size: \`$(du -h "$archive" | cut -f1)\`"
             echo "- download: \`${download_seconds}\`"
             echo "- extract: \`${extract_seconds}s\`"
+            echo "- artefact target (read, frozen): \`$target\`"
+            echo "- Cargo target (write): \`$CARGO_TARGET_DIR\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the shared Rust test artefacts

@@ -59,10 +59,58 @@ class RustDependencyCacheContractTests(unittest.TestCase):
         self.assertIn('add-rust-environment-hash-key: "false"', self.action)
 
     def test_only_dependency_target_artifacts_are_saved(self) -> None:
-        self.assertIn('cache-targets: "true"', self.action)
+        """The target layer is on by default and opted out, never opted in.
+
+        It became an input because one job cannot have it: the Linux shards
+        materialize the nextest archive at `<workspace>/target`, which is the
+        only directory rust-cache knows how to cache and which it resolves
+        from the workspace root without reading CARGO_TARGET_DIR. A restore
+        there would collide with the archive and a save on main would store
+        the archive as a dependency layer. Everything else keeps the layer,
+        which is why the DEFAULT is the answer that caches.
+        """
+        self.assertIn("cache-targets: ${{ inputs.cache-targets }}", self.action)
+        declaration = self.action[self.action.index("  cache-targets:") :]
+        default = next(
+            line.strip()
+            for line in declaration.splitlines()
+            if line.strip().startswith("default:")
+        )
+        self.assertEqual(default, "default: 'true'")
         self.assertIn('cache-all-crates: "false"', self.action)
         self.assertIn('cache-workspace-crates: "false"', self.action)
         self.assertIn('cache-bin: "false"', self.action)
+
+    def test_the_target_layer_is_declined_only_where_the_archive_owns_it(
+        self,
+    ) -> None:
+        """Falsifiability for the opt-out: it is not a general escape hatch.
+
+        A job may decline the target layer only if it also materializes the
+        Linux test archive into `<workspace>/target`. Any other job declining
+        it is silently dropping a cache layer for no stated reason.
+        """
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        body = workflow[workflow.index("\njobs:\n") :]
+        starts = list(
+            re.finditer(r"^  (?P<name>[A-Za-z0-9_-]+):\s*$", body, re.MULTILINE)
+        )
+        decliners = []
+        for index, start in enumerate(starts):
+            end = starts[index + 1].start() if index + 1 < len(starts) else len(body)
+            job = body[start.start() : end]
+            if "cache-targets: 'false'" in job:
+                decliners.append((start.group("name"), job))
+        self.assertTrue(decliners, "nothing declines the layer; the rule is vacuous")
+        for name, job in decliners:
+            self.assertIn(
+                'target="$GITHUB_WORKSPACE/target"',
+                job,
+                f"{name} declines the target cache layer without owning "
+                "`<workspace>/target` for the test archive",
+            )
 
     def test_only_the_default_branch_writes_the_dependency_cache(self) -> None:
         """Restoring is for everyone; saving is main's alone.

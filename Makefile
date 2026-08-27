@@ -471,6 +471,20 @@ define require_prebuilt
 	}
 endef
 
+# A gate that COMPILES its own test binary resolves shared artefacts under
+# Cargo's authority -- hew-testutil walks `<target>/<profile>/deps/` upwards
+# from `current_exe()` -- and the archive populates the other one. Symlink the
+# certified artefacts across, derived from the same `archive.include` the
+# producer packs, and re-verify after the gate so a Cargo build that replaced
+# one is red. Prebuilt mode only; locally the two roots are one directory.
+ifeq ($(HEW_CI_PREBUILT),1)
+PROJECT_SHARED_ARTIFACTS = @scripts/ci-project-shared-artifacts.sh link "$(ARTIFACT_ROOT)" "$(CARGO_TARGET_ROOT)"
+VERIFY_SHARED_ARTIFACTS = @scripts/ci-project-shared-artifacts.sh verify "$(ARTIFACT_ROOT)" "$(CARGO_TARGET_ROOT)"
+else
+PROJECT_SHARED_ARTIFACTS = @:
+VERIFY_SHARED_ARTIFACTS = @:
+endif
+
 DEBUG_RUNTIME_LIB := $(DEBUG_DIR)/$(if $(filter Windows_NT,$(OS)),hew_runtime.lib,libhew_runtime.a)
 WASM_RUNTIME_LIB := $(WASM_DEBUG_DIR)/libhew_runtime.a
 WASM_STD_LIB := $(WASM_DEBUG_DIR)/libhew_std.a
@@ -583,7 +597,9 @@ observe:
 
 # inputs: hew-observe/* hew-runtime/src/*.rs
 observe-functional-test: hew-native observe $(LIBHEW_READY)
+	$(PROJECT_SHARED_ARTIFACTS)
 	$(TEST_RUN_ENV) cargo test -p hew-observe --test functional -- --ignored --nocapture
+	$(VERIFY_SHARED_ARTIFACTS)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 observe-functional-test-build: hew-native observe $(LIBHEW_READY)
@@ -611,7 +627,9 @@ mqtt-broker-e2e-build: hew-native $(LIBHEW_READY)
 # observe-functional-test above.
 # inputs: hew-testutil/* hew-lib/* hew-runtime/src/*.rs
 libhew-link-race-test: hew-native $(LIBHEW_READY)
+	$(PROJECT_SHARED_ARTIFACTS)
 	$(TEST_RUN_ENV) cargo test -p hew-testutil --test libhew_link_race -- --ignored --nocapture --test-threads=1
+	$(VERIFY_SHARED_ARTIFACTS)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 libhew-link-race-test-build: hew-native $(LIBHEW_READY)
@@ -836,8 +854,10 @@ sandbox-vm-deps:
 # silently skipped anywhere.
 # inputs: hew-sandbox-vm/* hew-sandbox-wasm/* hew-std/src/*.rs examples/playground/*
 sandbox-parity: wasm-runtime hew-native sandbox-vm-deps $(LIBHEW_READY)
+	$(PROJECT_SHARED_ARTIFACTS)
 	npm --prefix hew-sandbox-vm run conformance
 	$(TEST_RUN_ENV) cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
+	$(VERIFY_SHARED_ARTIFACTS)
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 sandbox-parity-build: wasm-runtime hew-native sandbox-vm-deps $(LIBHEW_READY)
@@ -2445,6 +2465,11 @@ preflight-weights-drift:
 # any one of those four can silently make a shard rebuild what the producer
 # already built, so all four select the contract that holds them together.
 # inputs: scripts/tests/test_ci_prebuilt_artifacts.py .config/nextest.toml
+# The projection that lets a freshly compiled test binary resolve the archive's
+# certified artefacts spans this Makefile, that same manifest and the script
+# below, so its probe is selected by all three.
+# inputs: scripts/tests/test_ci_shared_artifact_projection.py
+# inputs: scripts/ci-project-shared-artifacts.sh hew-testutil/shared-test-artifacts.tsv
 # inputs: scripts/tests/test_playground_path_filter_oracle.py
 # inputs: scripts/tests/test_libhew_freshness.py scripts/tests/test_hew_suite_cache.py
 # inputs: scripts/tests/test_makefile_interfaces.py scripts/make-help.py
@@ -2464,6 +2489,7 @@ test-build-harness:
 	python3 scripts/tests/test_ci_preflight_dispatcher.py
 	bash scripts/tests/test_ci_preflight_timeout.sh
 	python3 scripts/tests/test_ci_prebuilt_artifacts.py
+	python3 scripts/tests/test_ci_shared_artifact_projection.py
 	python3 scripts/tests/test_playground_path_filter_oracle.py
 	python3 scripts/tests/test_libhew_freshness.py
 	python3 scripts/tests/test_hew_suite_cache.py

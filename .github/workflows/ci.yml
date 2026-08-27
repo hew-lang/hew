@@ -390,7 +390,7 @@ jobs:
         run: make unsafe-pattern-audit
 
       - name: Verify C ABI surface and JIT host ABI classification
-        run: make cabi-surface-check test-cabi-surface verify-ffi test-verify-ffi test-python310-toml-compat
+        run: make cabi-surface-check test-cabi-surface verify-ffi test-verify-ffi
 
       - name: Legacy path syntax lint
         run: make legacy-path-syntax-lint

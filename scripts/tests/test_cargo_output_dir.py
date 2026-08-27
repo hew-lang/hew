@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the dependency-free Cargo config fallback."""
+"""Regression tests for Cargo config parsing."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,38 +38,29 @@ def counterfactual(label: str) -> Iterator[None]:
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "scripts" / "cargo-output-dir.py"
-os.environ["HEW_FORCE_TOML_FALLBACK"] = "1"
 SPEC = importlib.util.spec_from_file_location("cargo_output_dir", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 cargo_output_dir = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cargo_output_dir)
 
 
-def parse_with_python310_path(text: str) -> str:
-    """Exercise the production fallback branch used when tomllib is absent."""
+def parse_config(text: str) -> str:
+    """Parse Cargo configuration through the production TOML path."""
     path = Path(".cargo/config.toml")
-    stdlib_tomllib = cargo_output_dir.tomllib
-    cargo_output_dir.tomllib = None
-    try:
-        config = cargo_output_dir._load_toml(text, path)
-        return cargo_output_dir._configured_target(config, path) or ""
-    finally:
-        cargo_output_dir.tomllib = stdlib_tomllib
+    config = cargo_output_dir._load_toml(text, path)
+    return cargo_output_dir._configured_target(config, path) or ""
 
 
 def test_build_table_string() -> None:
-    assert cargo_output_dir.toml_compat._stdlib_tomllib is None, (
-        "test must exercise the dependency-free TOML reader"
-    )
     assert (
-        parse_with_python310_path('[build]\ntarget = "aarch64-apple-darwin"\n')
+        parse_config('[build]\ntarget = "aarch64-apple-darwin"\n')
         == "aarch64-apple-darwin"
     )
 
 
 def test_root_dotted_key() -> None:
     assert (
-        parse_with_python310_path("build.target = 'x86_64-unknown-freebsd'\n")
+        parse_config("build.target = 'x86_64-unknown-freebsd'\n")
         == "x86_64-unknown-freebsd"
     )
 
@@ -80,27 +72,23 @@ target = [
     "wasm32-wasip1", # the selected target
 ]
 """
-    assert parse_with_python310_path(text) == "wasm32-wasip1"
+    assert parse_config(text) == "wasm32-wasip1"
 
 
 def test_hash_inside_target_is_not_a_comment() -> None:
     assert (
-        parse_with_python310_path('[build]\ntarget = "custom#target" # comment\n')
-        == "custom#target"
+        parse_config('[build]\ntarget = "custom#target" # comment\n') == "custom#target"
     )
 
 
 def test_literal_string_backslash_is_not_a_python_escape() -> None:
-    assert (
-        parse_with_python310_path("[build]\ntarget = 'custom\\target'\n")
-        == "custom\\target"
-    )
+    assert parse_config("[build]\ntarget = 'custom\\target'\n") == "custom\\target"
 
 
 def test_quoted_build_table() -> None:
-    assert parse_with_python310_path(
-        '["build"]\ntarget = "aarch64-apple-darwin"\n'
-    ) == ("aarch64-apple-darwin")
+    assert parse_config('["build"]\ntarget = "aarch64-apple-darwin"\n') == (
+        "aarch64-apple-darwin"
+    )
 
 
 def test_malformed_config_fails_closed() -> None:
@@ -111,20 +99,15 @@ def test_malformed_config_fails_closed() -> None:
     )
     for source in malformed:
         try:
-            parse_with_python310_path(source)
-        except (SystemExit, ValueError):
+            parse_config(source)
+        except tomllib.TOMLDecodeError:
             pass
         else:
             raise AssertionError(f"malformed Cargo config was accepted: {source!r}")
 
 
 def test_missing_build_target() -> None:
-    assert (
-        parse_with_python310_path(
-            '[target.x86_64-pc-windows-msvc]\nlinker = "lld-link"\n'
-        )
-        == ""
-    )
+    assert parse_config('[target.x86_64-pc-windows-msvc]\nlinker = "lld-link"\n') == ""
 
 
 def test_metadata_failure_fails_closed() -> None:

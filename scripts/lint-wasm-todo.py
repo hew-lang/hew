@@ -8,13 +8,10 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
-
-sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-import toml_compat
-
 
 TOKEN = "WASM-TODO"
 ID_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
@@ -98,8 +95,8 @@ def _required_string(row: object, field: str, index: int) -> str:
 
 def parse_authority(path: Path) -> BacklogAuthority:
     try:
-        data = toml_compat.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, toml_compat.TOMLDecodeError) as err:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as err:
         raise LintError(f"cannot parse {path}: {err}") from err
 
     manifest_version = data.get("manifest_version")

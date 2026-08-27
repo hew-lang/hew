@@ -30,19 +30,9 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
-
-sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-import toml_compat  # noqa: E402
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    # Python 3.10 is still the system Python on supported macOS builders.
-    # Use the repository's dependency-free, fail-closed TOML reader rather
-    # than adding a package download to release validation.
-    tomllib = None
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -77,11 +67,6 @@ def _configured_target(config: dict[str, Any], path: Path) -> str | None:
 
 
 def _load_toml(text: str, path: Path) -> dict[str, Any]:
-    if tomllib is None:
-        try:
-            return toml_compat.loads(text)
-        except toml_compat.TOMLDecodeError as err:
-            raise ValueError(f"cannot parse {path}: {err}") from err
     return tomllib.loads(text)
 
 

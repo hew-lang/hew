@@ -145,13 +145,12 @@
 .PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-unsafe-clippy runtime-unsafe-geiger unsafe-pattern-audit runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check test-build-harness forced-cancel-composite-check
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean stdlib-user-build-clean-build
-.PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check test-python310-toml-compat
+.PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
 # Repository files consumed by commands evaluated while this Makefile is
 # parsed. Tests that stage a Makefile copy read this declaration to reproduce
 # the complete parse environment.
 MAKEFILE_PARSE_INPUTS := \
 	scripts/cargo-output-dir.py \
-	scripts/lib/toml_compat.py \
 	scripts/libhew-inputs.py \
 	hew-testutil/shared-test-artifacts.tsv
 
@@ -2562,18 +2561,6 @@ test-cabi-surface:
 
 # Python only; no artifacts.
 test-cabi-surface-build:
-	@:
-
-LINT_GATES += test-python310-toml-compat
-# The release macOS validator uses Python 3.10, which has no stdlib tomllib.
-# Force the dependency-free parser even on newer CI interpreters and run every
-# production consumer of repository TOML policy/configuration.
-# inputs: scripts/tests/test_toml_compat.py
-test-python310-toml-compat:
-	HEW_FORCE_TOML_FALLBACK=1 $(PYTHON) scripts/tests/test_toml_compat.py
-
-# Python only; no artifacts.
-test-python310-toml-compat-build:
 	@:
 
 LINT_GATES += verify-sys-lane-closure

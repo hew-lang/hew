@@ -29,10 +29,8 @@ import sys
 import hashlib
 import json
 import re
+import tomllib
 from typing import NoReturn
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
-import toml_compat
 
 ROOT_INPUT_CRATE = "hew-lib"
 INPUT_FILE_NAMES = ("Cargo.toml", "build.rs")
@@ -60,7 +58,7 @@ def sibling_crate_name(path: str, manifest: str) -> str:
 
 def path_dependencies(manifest: str) -> list[str]:
     with open(manifest, "rb") as handle:
-        table = toml_compat.load(handle)
+        table = tomllib.load(handle)
 
     tables = [table]
     tables.extend(
@@ -329,7 +327,7 @@ def dependency_package_name(name: str, spec: object) -> str:
 def non_dev_dependency_names(manifest: str) -> set[str]:
     """The direct non-dev dependency package names of one local crate."""
     with open(manifest, "rb") as handle:
-        table = toml_compat.load(handle)
+        table = tomllib.load(handle)
     tables = [table]
     tables.extend(
         cfg for cfg in table.get("target", {}).values() if isinstance(cfg, dict)
@@ -384,7 +382,7 @@ def relevant_lock_packages(crates: list[str]) -> list[dict[str, object]]:
     """
     lock_path = os.path.join(REPO_ROOT, "Cargo.lock")
     with open(lock_path, "rb") as handle:
-        lock = toml_compat.load(handle)
+        lock = tomllib.load(handle)
     raw_packages = lock.get("package", [])
     if not isinstance(raw_packages, list):
         die("Cargo.lock has no package list")

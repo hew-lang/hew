@@ -332,6 +332,9 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # LLVM 22 development libraries
 brew install llvm
+
+# Repository scripts and Makefile gates
+brew install python@3.12
 ```
 
 ### Build
@@ -378,7 +381,7 @@ These are only needed for specific workflows:
 | wasmtime             | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run the WASI end-to-end tests (`make playground-wasi-check`, and the `wasi_run_e2e` / `eval_wasm_*` cases inside `make test`) |
 | wasm32-wasip1 target | `rustup target add wasm32-wasip1`                   | Build WASM runtime (`make wasm-runtime`)       |
 | wasm-pack            | `cargo install wasm-pack`                           | Build browser analysis bindings (`make wasm`, `make playground-check`) |
-| Python 3             | system package manager                              | Playground manifest + other scripts (`scripts/`) |
+| Python 3.12+         | system package manager                              | Required for Makefile gates and repository scripts (`scripts/`) |
 | cargo-fuzz           | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)            |
 
 ## License

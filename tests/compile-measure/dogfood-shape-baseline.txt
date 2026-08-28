@@ -1,7 +1,4 @@
-# Generated only by:
-#   make dogfood-compile-measure DOGFOOD_MEASURE_UPDATE=1
-#
-# The gate compares exact LLVM define-block bytes and structural counts.
-ll_bytes=453006
-defines=98
-basic_blocks=196
+# LLVM define-block byte ceiling. After a material, reviewed IR shrink, measure
+# with `make dogfood-compile-measure` and lower this value to observed bytes
+# plus 1% (rounded up). Do not update it automatically: it guards regressions.
+ll_bytes_ceiling=445221

@@ -9006,11 +9006,17 @@ fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &m
                 _ => None,
             })
             .collect::<HashSet<_>>();
-        let carries = exit
+        let mut carries = exit
             .iter()
             .filter(|(owner, place)| !existing.contains(&(**owner, **place)))
             .map(|(owner, place)| (*owner, *place))
             .collect::<Vec<_>>();
+        // `ExactOwnerState` is a HashMap because transfer replay needs keyed
+        // mutation, but its randomized iteration order must not become MIR
+        // instruction order. OwnerId follows source binding declaration order
+        // and then the binding's ownership generation, so it is the semantic
+        // order for the exact generations carried across this source edge.
+        carries.sort_by_key(|(owner, _)| *owner);
         for (owner, place) in carries {
             let insert_at = block.instructions.len();
             block.instructions.push(Instr::OwnershipEvent(

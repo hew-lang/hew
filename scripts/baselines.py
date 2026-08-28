@@ -225,11 +225,11 @@ REGISTRY: tuple[Baseline, ...] = (
     ),
     Baseline(
         id="dogfood-compile-measure",
-        summary="dogfood-shaped LLVM IR byte and structural count baseline",
+        summary="dogfood-shaped LLVM IR byte-size regression ceiling",
         tier="compiler",
         paths=("tests/compile-measure/dogfood-shape-baseline.txt",),
         gates=("dogfood-compile-measure",),
-        regen="make dogfood-compile-measure DOGFOOD_MEASURE_UPDATE=1",
+        regen="measure with make dogfood-compile-measure, then lower the reviewed ceiling manually",
         check="make dogfood-compile-measure",
         explicit_only=True,
     ),

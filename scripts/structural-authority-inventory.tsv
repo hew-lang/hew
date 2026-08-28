@@ -155,16 +155,16 @@ string-method-identity	qualified-format-macro	hew-types/src/method_resolution.rs
 string-method-identity	qualified-format-macro	hew-types/src/resolved_ty.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority/codegen.rs	3	stage-1	reviewed qualified string identity construction
-suspend-authority	suspend-kind-consumer	hew-codegen-rs/src/llvm.rs	18	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-consumer	hew-mir/src/dump.rs	12	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-consumer	hew-codegen-rs/src/llvm.rs	20	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-consumer	hew-mir/src/dump.rs	13	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-consumer	hew-mir/src/lower/mod.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-consumer	hew-mir/src/lower/suspend_places.rs	14	stage-3	production suspend source and generator-yield consumers; three legacy escape-only match groups moved behind cfg(test)
-suspend-authority	suspend-kind-use	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-use	hew-mir/src/lower/actor.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-use	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-use	hew-mir/src/lower/task.rs	5	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-variant	hew-mir/src/model.rs	12	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-writer	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-variant	hew-mir/src/model.rs	13	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/actor.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-writer	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-writer	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-writer	hew-mir/src/lower/task.rs	5	stage-3	composed suspend authority carrier
@@ -175,12 +175,12 @@ suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/mod.rs	7	stag
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/suspend_places.rs	4	stage-3	production source/yield consumers remain; two legacy terminator-escape consumers moved behind cfg(test) with the retired secondary dataflow
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/temp_drop.rs	5	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-consumer	hew-mir/src/model.rs	5	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-use	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/actor.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/task.rs	7	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-variant	hew-mir/src/model.rs	3	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-writer	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/actor.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-writer	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-writer	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-writer	hew-mir/src/lower/task.rs	7	stage-3	composed suspend authority carrier

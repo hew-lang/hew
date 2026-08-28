@@ -7557,6 +7557,93 @@ fn missing_checked_owner_recipe_cannot_materialize_a_destructor() {
 }
 
 #[test]
+fn final_elaboration_preserves_moved_record_field_and_sibling_cleanup() {
+    let source = r"
+type Pair {
+    moved: Vec<i64>;
+    sibling: Vec<i64>;
+}
+
+fn main() {
+    let pair = Pair {
+        moved: [1],
+        sibling: [2],
+    };
+    let moved = pair.moved;
+}
+";
+    let module = crate::return_provenance::tests::lower_source(source);
+    let pipeline = crate::lower_hir_module(&module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "fixture must lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("checked main");
+    let sibling_drops = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                Instr::RecordFieldDrop {
+                    field_offset: FieldOffset(1),
+                    ty: ResolvedTy::Named {
+                        builtin: Some(hew_types::BuiltinType::Vec),
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        sibling_drops, 1,
+        "the remaining owned sibling must have one field-addressed release"
+    );
+
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("elaborated main");
+    let terminal_drops = elaborated
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+        .flat_map(|(_, plan)| &plan.drops)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        terminal_drops
+            .iter()
+            .filter(|drop| {
+                matches!(
+                    drop.ty,
+                    ResolvedTy::Named {
+                        builtin: Some(hew_types::BuiltinType::Vec),
+                        ..
+                    }
+                )
+            })
+            .count(),
+        1,
+        "the extracted Vec owner must have exactly one terminal destructor"
+    );
+    assert!(
+        terminal_drops
+            .iter()
+            .all(|drop| drop.kind != DropKind::RecordInPlace),
+        "final recipe reconstruction must not revive the transferred parent record"
+    );
+}
+
+#[test]
 fn exact_overwrite_releases_old_generation_before_store() {
     use crate::model::{NeutralizeAuthority, OwnerDropRecipe, OwnerId, OwnershipEvent};
 

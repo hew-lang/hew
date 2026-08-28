@@ -1011,6 +1011,31 @@ fn run_for_in_array_literal_return_native_exit_zero() {
     );
 }
 
+#[test]
+fn run_move_owned_record_field_sibling_cleanup_native() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let fixture = "move_owned_record_field_sibling_cleanup";
+    let bin_path = compile_vertical_slice_fixture_to_native(fixture, dir.path());
+    let expected = std::fs::read_to_string(
+        repo_root().join(format!("tests/vertical-slice/accept/{fixture}.expected")),
+    )
+    .expect("read moved-field sibling-cleanup expectation");
+
+    let output = Command::new(&bin_path)
+        .output()
+        .unwrap_or_else(|error| panic!("run {fixture} native binary: {error}"));
+    assert!(
+        output.status.success(),
+        "{fixture} must release the extracted owner and sibling once; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {fixture}");
+}
+
 /// #1929 Stage 3 / #1565: generic `println` / `print` / `to_string` of a value
 /// typed by a `T: Display` type parameter. The builtin print surfaces no longer
 /// re-derive a monomorphic overload from the concrete argument type; instead

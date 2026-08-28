@@ -797,6 +797,8 @@ pub mod stdio;
 
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod bridge;
+/// Target-neutral COW mailbox payload envelope lifecycle.
+pub mod cow_envelope;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod crash;
 #[cfg(not(target_arch = "wasm32"))]

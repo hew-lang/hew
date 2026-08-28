@@ -2994,11 +2994,12 @@ impl Builder {
                         } else if self.vec_iter_drop_flags.contains_key(id) {
                             // Updated above even when a value-producing
                             // if/match arm retained HIR Read intent.
-                        } else if let Some(flag) = self.affine_release_flags.get(id).copied() {
-                            self.instructions.push(Instr::ConstI64 {
-                                dest: flag,
-                                value: 1,
-                            });
+                        } else if self.affine_release_flags.contains_key(id) {
+                            self.set_owned_local_consumed(
+                                *id,
+                                None,
+                                super::DischargeSite::BindingMoved,
+                            );
                         } else if let Some(flag) = self.collection_drop_flags.get(id).copied() {
                             // #2418 — an owned collection local with a
                             // path-sensitive drop-flag is KEPT in

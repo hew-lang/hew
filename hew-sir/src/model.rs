@@ -103,6 +103,18 @@ pub struct Operand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OperandSlot(pub u32);
 
+/// Stable position of an outgoing semantic CFG edge within one terminator.
+///
+/// A successor slot names the edge's *role*, rather than its target. This is
+/// important because a branch may legitimately carry two distinct edges to
+/// the same target block. The initial terminator vocabulary assigns slot `0`
+/// to a `goto` edge and slots `0` and `1` to the then and else edges of a
+/// branch, respectively. Future terminators with several resume edges must
+/// extend this deterministic ordinal convention instead of identifying an
+/// edge by its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SuccessorSlot(pub u32);
+
 /// Concrete, deterministic identity of one semantic SSA use.
 ///
 /// A value's use site is either an operation operand, identified by its stable
@@ -799,36 +811,101 @@ impl SemTerminator {
         }
     }
 
-    /// Visit CFG successors without exposing terminator shape to each caller.
-    pub fn visit_successors(&self, mut visit: impl FnMut(&Edge)) {
+    /// Visit CFG successors together with their stable structural slots.
+    ///
+    /// A slot identifies one edge within this terminator, not the target
+    /// block. This preserves the distinction between duplicate edges such as
+    /// `branch %condition, bb1, bb1`, which later CFG rewrites must be able
+    /// to redirect independently.
+    pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
             Self::Return { .. } | Self::Unreachable => {}
-            Self::Goto(edge) => visit(edge),
+            Self::Goto(edge) => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
                 else_target,
                 ..
             } => {
-                visit(then_target);
-                visit(else_target);
+                visit(SuccessorSlot(0), then_target);
+                visit(SuccessorSlot(1), else_target);
             }
         }
     }
 
-    /// Mutable counterpart to [`Self::visit_successors`].
-    pub fn visit_successors_mut(&mut self, mut visit: impl FnMut(&mut Edge)) {
+    /// Mutable counterpart to [`Self::visit_successors_with_slots`].
+    pub fn visit_successors_with_slots_mut(
+        &mut self,
+        mut visit: impl FnMut(SuccessorSlot, &mut Edge),
+    ) {
         match self {
             Self::Return { .. } | Self::Unreachable => {}
-            Self::Goto(edge) => visit(edge),
+            Self::Goto(edge) => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
                 else_target,
                 ..
             } => {
-                visit(then_target);
-                visit(else_target);
+                visit(SuccessorSlot(0), then_target);
+                visit(SuccessorSlot(1), else_target);
             }
         }
+    }
+
+    /// Return the edge at one stable successor slot, if this terminator owns
+    /// that slot.
+    ///
+    /// The slot is intentionally structural: callers can distinguish and
+    /// inspect duplicate edges without comparing targets.
+    #[must_use]
+    pub fn successor(&self, slot: SuccessorSlot) -> Option<&Edge> {
+        match self {
+            Self::Goto(edge) if slot == SuccessorSlot(0) => Some(edge),
+            Self::Branch {
+                then_target,
+                else_target,
+                ..
+            } => match slot.0 {
+                0 => Some(then_target),
+                1 => Some(else_target),
+                _ => None,
+            },
+            Self::Return { .. } | Self::Goto(_) | Self::Unreachable => None,
+        }
+    }
+
+    /// Mutable counterpart to [`Self::successor`].
+    #[must_use]
+    pub fn successor_mut(&mut self, slot: SuccessorSlot) -> Option<&mut Edge> {
+        match self {
+            Self::Goto(edge) if slot == SuccessorSlot(0) => Some(edge),
+            Self::Branch {
+                then_target,
+                else_target,
+                ..
+            } => match slot.0 {
+                0 => Some(then_target),
+                1 => Some(else_target),
+                _ => None,
+            },
+            Self::Return { .. } | Self::Goto(_) | Self::Unreachable => None,
+        }
+    }
+
+    /// Visit CFG successors without exposing terminator shape to each caller.
+    ///
+    /// This compatibility visitor deliberately delegates to
+    /// [`Self::visit_successors_with_slots`]. New CFG analyses should retain
+    /// the slot so they can distinguish duplicate edges.
+    pub fn visit_successors(&self, mut visit: impl FnMut(&Edge)) {
+        self.visit_successors_with_slots(|_, edge| visit(edge));
+    }
+
+    /// Mutable counterpart to [`Self::visit_successors`].
+    ///
+    /// This compatibility visitor deliberately delegates to
+    /// [`Self::visit_successors_with_slots_mut`].
+    pub fn visit_successors_mut(&mut self, mut visit: impl FnMut(&mut Edge)) {
+        self.visit_successors_with_slots_mut(|_, edge| visit(edge));
     }
 
     /// Human-readable role of one operand slot, for exact verifier

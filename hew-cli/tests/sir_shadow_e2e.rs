@@ -106,6 +106,19 @@ fn main() -> i64 {
 }
 ";
 
+/// The first SIR optimization proof: both semantic branch arms are initially
+/// present, but the direct `true` condition lets SIR retain only the selected
+/// CFG edge before any Raw MIR representation is chosen.
+const CONSTANT_CFG_CANONICALIZATION: &str = r"
+fn main() -> i64 {
+    if true {
+        0
+    } else {
+        1
+    }
+}
+";
+
 const REACHABLE_UNSUPPORTED_CALL: &str = r"
 fn main() -> i64 {
     effectful()
@@ -885,6 +898,72 @@ fn sir_dump_preserves_short_circuit_control_flow() {
     assert!(
         !or_body.contains("Binary { op: Or"),
         "|| must not survive as an eager SIR binary operation:\n{or_body}",
+    );
+}
+
+/// `--dump-sir`, shadow evidence, and strict lowering must all consume the
+/// same canonical semantic CFG. This proves the first actual SIR pass is not
+/// an inspector-only transformation or a second compiler lane.
+#[test]
+fn sir_canonicalizes_direct_constant_cfg_before_strict_lowering() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_constant_cfg.hew");
+    fs::write(&source, CONSTANT_CFG_CANONICALIZATION).expect("write constant SIR CFG fixture");
+
+    let inspected = sir_dump(&source);
+    assert_success(&inspected, "canonical SIR inspection must succeed");
+    let dump = String::from_utf8_lossy(&inspected.stdout);
+    let main = function_section(&dump, "main");
+    assert!(
+        main.contains("goto") && !main.contains("branch"),
+        "a direct constant branch must become one semantic edge:\n{main}",
+    );
+    assert!(
+        !main.contains("const 1"),
+        "the unreachable source arm must be gone from canonical SIR:\n{main}",
+    );
+
+    let shadow = raw_mir_dump(&source, Some("--sir-shadow"));
+    assert_success(&shadow, "canonical SIR shadow evidence must succeed");
+    assert!(
+        String::from_utf8_lossy(&shadow.stderr).contains("SIR shadow: verified"),
+        "shadow must consume the same verified canonical SIR module:\n{}",
+        describe_output(&shadow),
+    );
+
+    let lowered = raw_mir_dump(&source, Some("--sir-lower"));
+    assert_success(&lowered, "canonical strict SIR raw dump must succeed");
+    let lowered_stderr = String::from_utf8_lossy(&lowered.stderr);
+    assert!(
+        lowered_stderr.contains("no legacy MIR bodies were lowered"),
+        "strict canonicalization must remain on the SIR body path:\n{}",
+        describe_output(&lowered),
+    );
+
+    let mut compile = Command::new(hew_binary());
+    compile
+        .arg("compile")
+        .arg("--sir-lower")
+        .arg("--emit-dir")
+        .arg(dir.path())
+        .arg(&source)
+        .current_dir(repo_root());
+    let compiled = support::run_bounded_command(compile, "compile canonical constant SIR CFG");
+    assert_success(
+        &compiled,
+        "canonical SIR CFG must compile through Raw/Checked/Elaborated MIR and LLVM",
+    );
+
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "sir_constant_cfg");
+    let executed = support::run_bounded_command(
+        Command::new(&binary),
+        format!("run canonical constant SIR CFG {}", binary.display()),
+    );
+    assert_success(
+        &executed,
+        "canonical SIR CFG executable must preserve behavior",
     );
 }
 

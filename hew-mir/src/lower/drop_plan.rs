@@ -4296,10 +4296,21 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     }),
                 }
             }
-            for (owner, place) in required {
-                if matched.contains(&owner) {
-                    continue;
-                }
+            let mut unmatched_required = required
+                .into_iter()
+                .filter(|(owner, _)| !matched.contains(owner))
+                .collect::<Vec<_>>();
+            // `ExactOwnerState` is a HashMap because ownership replay needs
+            // keyed mutation, but its randomized iteration order must not
+            // become diagnostic order. The binding SiteId is the diagnostic's
+            // source anchor; order those anchors as HIR encountered them, then
+            // use declaration/generation-based OwnerId for multiple owners at
+            // the same source site. Missing source metadata sorts last.
+            unmatched_required.sort_by_key(|(owner, _)| {
+                let site = binding_metadata.get(&owner.binding).map(|(_, site)| *site);
+                (site.is_none(), site.unwrap_or(SiteId(u32::MAX)), *owner)
+            });
+            for (owner, place) in unmatched_required {
                 let ty = owner_types
                     .get(&owner)
                     .map_or_else(|| "<unknown>".to_owned(), ToString::to_string);
@@ -7561,6 +7572,83 @@ fn missing_checked_owner_recipe_cannot_materialize_a_destructor() {
     assert!(validate_ownership_events(&checked)
         .iter()
         .any(|finding| matches!(finding, MirCheck::ObligationUnderReleased { .. })));
+}
+
+#[test]
+fn missing_owner_diagnostics_follow_source_binding_order() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let later_owner = OwnerId {
+        binding: BindingId(81),
+        generation: 0,
+    };
+    let earlier_owner = OwnerId {
+        binding: BindingId(82),
+        generation: 0,
+    };
+    let blocks = vec![BasicBlock {
+        id: ENTRY_BLOCK_ID,
+        statements: vec![
+            MirStatement::Bind {
+                binding: later_owner.binding,
+                name: "later".to_owned(),
+                site: SiteId(9),
+                ty: ResolvedTy::String,
+            },
+            MirStatement::Bind {
+                binding: earlier_owner.binding,
+                name: "earlier".to_owned(),
+                site: SiteId(3),
+                ty: ResolvedTy::String,
+            },
+        ],
+        // Deliberately mint in the opposite order from the source anchors.
+        instructions: vec![
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: later_owner,
+                place: Place::Local(1),
+                ty: ResolvedTy::String,
+            }),
+            Instr::OwnershipEvent(OwnershipEvent::Mint {
+                owner: earlier_owner,
+                place: Place::Local(2),
+                ty: ResolvedTy::String,
+            }),
+        ],
+        terminator: Terminator::Return,
+    }];
+    let checked = CheckedMirFunction {
+        name: "source_order".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        blocks,
+        decisions: vec![],
+        checks: vec![],
+        cooperate_sites: vec![],
+        ownership_elaboration: Some(Box::new(ElaboratedMirFunction {
+            name: "source_order".to_owned(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return {
+                    block: ENTRY_BLOCK_ID,
+                },
+                DropPlan::default(),
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        })),
+    };
+
+    let sites = validate_ownership_events(&checked)
+        .into_iter()
+        .filter_map(|finding| match finding {
+            MirCheck::ObligationUnderReleased { site, .. } => Some(site),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sites, [SiteId(3), SiteId(9)]);
 }
 
 #[test]

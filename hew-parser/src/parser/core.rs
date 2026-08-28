@@ -713,7 +713,6 @@ impl<'src> Parser<'src> {
         match tok {
             Token::Actor => Some("actor"),
             Token::Machine => Some("machine"),
-            Token::Record => Some("record"),
             Token::Enum => Some("enum"),
             Token::Supervisor => Some("supervisor"),
             Token::Type => Some("type"),
@@ -859,7 +858,6 @@ impl<'src> Parser<'src> {
                 | Token::Trait
                 | Token::Impl
                 | Token::Import
-                | Token::Record
                 | Token::Enum
                 | Token::Machine
                 | Token::Supervisor

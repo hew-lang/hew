@@ -493,7 +493,7 @@ impl<'a> Formatter<'a> {
         self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
         self.write_visibility(decl.visibility);
-        self.write("record ");
+        self.write("type ");
         self.write(&decl.name);
         self.format_opt_type_params(decl.type_params.as_ref());
         self.format_opt_where_clause(decl.where_clause.as_ref());
@@ -5436,7 +5436,7 @@ impl<T> Vec<T> {
     #[test]
     fn supervisor_config_param_roundtrips() {
         let src = "\
-record AppConfig { size: i64, label: string }
+type AppConfig { size: i64, label: string }
 
 actor Cache {
     var capacity: i64;

@@ -1,35 +1,10 @@
-//! S3 codegen test: LLVM emission for `hew_supervisor_child_get`.
+//! S3 codegen tests for stable supervisor `ChildRef` values.
 //!
-//! Drives the full HIR → checker → MIR → codegen pipeline on a minimal
-//! supervisor source program that accesses a static child field, then asserts
-//! on the emitted textual LLVM IR that the R5 ABI classifier emits the
-//! per-target canonical `@hew_supervisor_child_get` (the `_raw` out-pointer
-//! twin is removed):
-//!
-//! - On SysV/AAPCS (linux / aarch64-darwin) the 16-byte `ChildLookupResult` is
-//!   a register pair: the symbol is declared `[2 x i64] (ptr, i32)` and called
-//!   by value — NO sret, NO `_raw`.
-//! - On Windows x64 MSVC the aggregate is returned INDIRECTLY: the symbol is
-//!   declared `void (ptr noalias sret(...), ptr, i32)` and the caller allocates
-//!   the result slot. This is the correct ABI the `_raw` out-pointer twin used
-//!   to fake; the `sret(T)` attribute makes the canonical symbol right on MSVC.
-//! - The WASM classification guard (`uses_wasm_excluded_symbol`) correctly
-//!   marks `hew_supervisor_child_get` as a WASM-excluded symbol when it
-//!   appears in the MIR.
-//!
-//! Trap-206 regression guard: the historical trap 206 was declaring the
-//! field-accurate struct WITHOUT a matching ABI attribute, letting LLVM pick
-//! indirect-sret on MSVC while the caller read a register pair. The SysV
-//! register-pair assertion + the MSVC sret assertion together pin the declared
-//! carrier and the attribute to AGREE on every target.
-//!
-//! LESSONS applied:
-//! - `boundary-fail-closed` (P0): the classifier must not silently fall through
-//!   for `hew_supervisor_child_get`.
-//! - `aggregate-abi-by-classifier-not-per-symbol` (P0): one classifier keyed on
-//!   `(type, target)`, not a hand-encoded register-pair plus a `_raw` twin.
-//! - `parity-or-tracked-gap` (P1): `hew_supervisor_child_get` is excluded
-//!   from WASM emission via `uses_wasm_excluded_symbol`; tested here.
+//! A static child accessor constructs the pointer-free `(supervisor token,
+//! slot)` role directly. It must not snapshot the current child through
+//! `hew_supervisor_child_get` on any target. Pool lookup is the separate dynamic
+//! case and uses the owner-scoped `hew_local_pid_supervisor_pool_child_ref_get`
+//! ABI before materialising `Option<ChildRef<T>>`.
 
 use std::path::Path;
 
@@ -38,7 +13,8 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 /// Minimal Hew source with a supervisor, one static child, and a function that
-/// accesses the child via a supervisor-typed `LocalPid`.
+/// accesses the child via a supervisor-typed `LocalPid` and returns the stable
+/// `ChildRef` role value.
 const STATIC_CHILD_ACCESS: &str = r"
 actor Worker {
     receive fn ping() {}
@@ -49,27 +25,15 @@ supervisor App {
     child worker: Worker
 }
 
-fn get_worker(app: LocalPid<App>) -> LocalPid<Worker> {
+fn get_worker(app: LocalPid<App>) -> ChildRef<Worker> {
     app.worker
 }
 ";
 
-/// The SysV/AAPCS triple the register-pair assertions classify against.
-///
-/// PINNED, not host (`None`): the register-pair ABI is the SysV/AAPCS shape,
-/// which is NOT the host shape on the Windows MSVC runner (there the 16-byte
-/// aggregate classifies `Indirect`/sret). A host-naive `None` made these tests
-/// silently target whatever the runner's host ABI was — green on Linux/macOS,
-/// red on the Windows runner where the host is `x86_64-pc-windows-msvc`. The
-/// textual `.ll` is classified against the requested triple (the diagnostic IR
-/// matches the object emission's ABI), so pinning SysV asserts the SysV shape
-/// on every host. The MSVC shape has its own triple-pinned test below.
+/// Pin the textual IR target so these assertions are host-independent.
 const SYSV_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 
-/// Compile `STATIC_CHILD_ACCESS` for an explicit SysV/AAPCS target and return
-/// the emitted textual LLVM IR string. SysV is pinned (not host) so the
-/// register-pair assertions hold on every CI host, including the Windows MSVC
-/// runner whose host ABI returns the 16-byte aggregate indirectly.
+/// Compile `STATIC_CHILD_ACCESS` for the pinned SysV target.
 fn emit_child_access_ir(slug: &str) -> String {
     emit_child_access_ir_for(slug, Some(SYSV_TRIPLE))
 }
@@ -129,98 +93,54 @@ fn emit_child_access_ir_for(slug: &str, target_triple: Option<&str>) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// On SysV/AAPCS (pinned `x86_64-unknown-linux-gnu`) the canonical
-/// `@hew_supervisor_child_get` is declared with the classified register-pair
-/// ABI: `[2 x i64] (ptr, i32)`. The removed `_raw` out-pointer twin must NOT
-/// appear.
-///
-/// ABI rationale:
-///   The 16-byte `ChildLookupResult` aggregate classifies `RegisterPair` on
-///   SysV/AAPCS, so LLVM returns it in `x0:x1` (aarch64) / `rax:rdx` (x86_64)
-///   as a `[2 x i64]` — exactly the shape the `#[repr(C)]` Rust callee returns.
-///   The classifier replaces the old hand-encoded `{ i64, i64 }` decl plus the
-///   `_raw` out-pointer twin with one classified declaration.
 #[test]
-fn supervisor_child_get_declares_register_pair_abi_on_sysv() {
+fn static_child_ref_uses_value_representation_on_sysv() {
     let ir = emit_child_access_ir("declares-abi");
-    // The removed `_raw` twin must be absent everywhere.
     assert!(
-        !ir.contains("hew_supervisor_child_get_raw"),
-        "the removed _raw twin must NOT appear in emitted IR;\ngot:\n{ir}"
+        ir.contains("define internal { i64, i64 } @get_worker(ptr"),
+        "ChildRef must use its two-word value representation;\ngot:\n{ir}"
     );
-    // Register-pair declaration: `[2 x i64] (ptr, i32)` — no sret, by-value.
     assert!(
-        ir.contains("declare [2 x i64] @hew_supervisor_child_get(ptr, i32)"),
-        "expected `declare [2 x i64] @hew_supervisor_child_get(ptr, i32)`;\ngot:\n{ir}"
+        ir.contains("@hew_supervisor_direct_id("),
+        "ChildRef construction must capture the stable supervisor token;\ngot:\n{ir}"
     );
-    // NEGATIVE: the SysV declaration must NOT be an sret (that would be the
-    // MSVC shape leaking onto a register-pair target — the trap-206 mismatch).
     assert!(
-        !ir.contains("sret") || !ir.contains("@hew_supervisor_child_get(ptr noalias sret"),
-        "SysV target must NOT emit an sret return for hew_supervisor_child_get;\ngot:\n{ir}"
+        !ir.contains("@hew_supervisor_child_get("),
+        "static ChildRef construction must not snapshot a live child;\ngot:\n{ir}"
     );
 }
 
-/// A by-value call to the register-pair `@hew_supervisor_child_get` must appear
-/// in the body of the compiled `get_worker` function — the codegen routes the
-/// MIR symbol through the classified canonical symbol, not the removed twin.
 #[test]
-fn supervisor_child_get_call_emitted_in_function_body() {
+fn static_child_ref_materialises_token_and_slot_in_function_body() {
     let ir = emit_child_access_ir("call-in-body");
     assert!(
-        !ir.contains("hew_supervisor_child_get_raw"),
-        "the removed _raw twin must NOT be called;\ngot:\n{ir}"
+        ir.contains("%field_0_init_ptr = getelementptr")
+            && ir.contains("%field_1_init_ptr = getelementptr")
+            && ir.contains("store i64 0, ptr %local_2"),
+        "static ChildRef construction must materialise its token and slot zero;\ngot:\n{ir}"
     );
     assert!(
-        ir.contains("invoke [2 x i64] @hew_supervisor_child_get("),
-        "expected an unwind-capable register-pair invocation of \
-         @hew_supervisor_child_get;\ngot:\n{ir}"
+        !ir.contains("@hew_supervisor_child_get(")
+            && !ir.contains("@hew_local_pid_supervisor_child_get("),
+        "static ChildRef construction must carry the role without either lookup ABI;\ngot:\n{ir}"
     );
 }
 
-/// On Windows x64 MSVC the 16-byte aggregate classifies `Indirect`, so the
-/// canonical `@hew_supervisor_child_get` is declared `void` with a leading
-/// `sret(...) noalias` pointer parameter and the caller allocates the result
-/// slot. This is the correct MSVC ABI the `_raw` twin used to fake — the
-/// register-pair (SysV) + sret (MSVC) pair is the trap-206 regression guard.
 #[test]
-fn supervisor_child_get_declares_sret_abi_on_windows_msvc() {
+fn static_child_ref_remains_pointer_free_on_windows_msvc() {
     let ir = emit_child_access_ir_for("declares-abi-msvc", Some("x86_64-pc-windows-msvc"));
-    // No removed twin on MSVC either.
     assert!(
-        !ir.contains("hew_supervisor_child_get_raw"),
-        "the removed _raw twin must NOT appear on MSVC;\ngot:\n{ir}"
+        ir.contains("define internal { i64, i64 } @get_worker(ptr"),
+        "ChildRef must remain a two-word value on MSVC;\ngot:\n{ir}"
     );
-    // Indirect declaration: void return, leading `ptr noalias sret(...)` param.
     assert!(
-        ir.contains(
-            "declare void @hew_supervisor_child_get(ptr noalias sret({ i8, i8, [6 x i8], ptr }), ptr, i32)"
-        ),
-        "expected the MSVC sret declaration of @hew_supervisor_child_get;\ngot:\n{ir}"
-    );
-    // The caller must allocate the result slot and pass it by sret.
-    assert!(
-        ir.contains("call void @hew_supervisor_child_get(ptr %child_result_sret"),
-        "expected the MSVC sret call passing the caller-allocated result slot;\ngot:\n{ir}"
-    );
-    // NEGATIVE: MSVC must NOT emit the register-pair return shape (the
-    // historical trap-206 mismatch where the caller read a stale register pair).
-    assert!(
-        !ir.contains("[2 x i64] @hew_supervisor_child_get"),
-        "MSVC must NOT emit the register-pair return for hew_supervisor_child_get;\ngot:\n{ir}"
+        ir.contains("@hew_supervisor_direct_id(") && !ir.contains("@hew_supervisor_child_get("),
+        "MSVC ChildRef construction must capture only the stable supervisor token;\ngot:\n{ir}"
     );
 }
 
-/// The `uses_wasm_excluded_symbol` guard must classify `hew_supervisor_child_get`
-/// as WASM-excluded. Verify at the MIR level: when the pipeline contains a
-/// `CallRuntimeAbi("hew_supervisor_child_get", ...)`, the pipeline's
-/// `uses_wasm_excluded_symbol` scan returns `Some("hew_supervisor_child_get")`.
-///
-/// This is the mechanism by which codegen emits `WasmUnsupportedSubstrate`
-/// instead of reaching a linker error on WASM targets
-/// (WASM-TODO(supervision): add cooperative restart machinery).
 #[test]
-fn supervisor_child_get_classified_as_wasm_excluded() {
+fn static_child_ref_wasm_failure_names_the_actual_substrate() {
     let parsed = hew_parser::parse(STATIC_CHILD_ACCESS);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -254,11 +174,11 @@ fn supervisor_child_get_classified_as_wasm_excluded() {
         source_path: None,
     };
     let err = emit_module(&pipeline, &options)
-        .expect_err("WASM emission with hew_supervisor_child_get must fail closed");
+        .expect_err("WASM emission with supervisor substrate must fail closed");
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("hew_supervisor_child_get") || msg.contains("WasmUnsupported"),
-        "fail-closed error must name hew_supervisor_child_get or WasmUnsupported; got: {msg}"
+        msg.contains("hew_supervisor_direct_id") && !msg.contains("hew_supervisor_child_get"),
+        "fail-closed error must name the token lookup, not the removed child snapshot; got: {msg}"
     );
 }
 
@@ -320,16 +240,16 @@ fn supervisor_pool_get_materialises_option_and_bound_pool_view() {
         .expect("emit_module must populate ll_path");
     let ir = std::fs::read_to_string(ll_path).expect("read emitted .ll");
     assert!(
-        ir.contains("invoke [2 x i64] @hew_supervisor_pool_child_get("),
-        "pool get must invoke the canonical aggregate-return runtime ABI:\n{ir}"
+        ir.contains("invoke [2 x i64] @hew_local_pid_supervisor_pool_child_ref_get(i64"),
+        "pool get must invoke the owner-scoped ChildRef lookup ABI:\n{ir}"
     );
     assert!(
         ir.contains("pool_get_some") && ir.contains("pool_get_none"),
         "pool get must branch to exact Some/None construction blocks:\n{ir}"
     );
     assert!(
-        ir.contains("pool_get_handle_ptr_value = inttoptr i64"),
-        "the live handle must populate the LocalPid payload through inttoptr:\n{ir}"
+        ir.contains("pool_get_child_ref_token") && ir.contains("pool_get_child_ref_slot"),
+        "a valid pool member must populate both ChildRef role words:\n{ir}"
     );
     assert!(
         ir.contains("store i8 0") && ir.contains("store i8 1"),

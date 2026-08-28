@@ -1,0 +1,21 @@
+// MIR-corpus fixture: a stable ChildRef lookup through a static pool view.
+//
+// The indexed member is resolved by supervisor token, pool key, and member
+// index. The raw MIR call covers the owner-scoped
+// hew_local_pid_supervisor_pool_child_ref_get runtime family.
+actor Worker {
+    receive fn ping() {}
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one,
+    pool workers: Worker(count: 2)
+}
+
+fn inspect(sup: LocalPid<Pool>) -> i64 {
+    let workers = sup.workers;
+    match workers.get(0) {
+        .Some(_) => workers.len(),
+        .None => -1,
+    }
+}

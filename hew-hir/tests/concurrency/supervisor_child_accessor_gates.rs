@@ -38,7 +38,7 @@ fn static_child_access_compiles_cleanly() {
             child worker: Worker
         }
 
-        fn get_worker(app: LocalPid<App>) -> LocalPid<Worker> {
+        fn get_worker(app: LocalPid<App>) -> ChildRef<Worker> {
             app.worker
         }
         ",
@@ -92,7 +92,7 @@ fn nested_supervisor_chained_accessor_lowers_cleanly() {
             child sub: SubSupervisor
         }
 
-        fn get_nested_worker(root: LocalPid<RootSupervisor>) -> LocalPid<Worker> {
+        fn get_nested_worker(root: LocalPid<RootSupervisor>) -> ChildRef<Worker> {
             root.sub.worker
         }
         ",

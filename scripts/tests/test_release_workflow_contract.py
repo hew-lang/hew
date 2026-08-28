@@ -2,6 +2,7 @@
 
 import ast
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -1999,23 +2000,9 @@ def test_rc3_to_final_release_boundary_is_complete() -> None:
 
 def test_contract_oracle_runs_in_required_ci() -> None:
     ci = CI_WORKFLOW.read_text()
-    assert "'.github/workflows/release.yml'" in ci
-    assert 'scripts/ci-preflight-dispatcher.sh "${args[@]}"' in ci
-    assert 'args=(--base "${base_ref}")' in ci
-    dispatched = subprocess.run(
-        [
-            "bash",
-            str(ROOT / "scripts/ci-preflight-dispatcher.sh"),
-            "--dry-run",
-            "--",
-            ".github/workflows/release.yml",
-        ],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    assert "make test-release-workflow-contract" in dispatched, dispatched
+    assert "python3 scripts/ci-gate-shards.py run ${{ matrix.shard }}" in ci
+    assignment = (ROOT / "scripts" / "ci-gate-shards.tsv").read_text()
+    assert "make test-release-workflow-contract" in assignment, assignment
 
 
 def assert_deploy_docs_provisions_pinned_llvm_before_build(text: str) -> None:
@@ -2269,7 +2256,7 @@ def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
 
     indirect_test_entries = {
         "lint": "make test-ast-grep-contract test-structural-lint-bootstrap",
-        "build-and-test": 'scripts/ci-preflight-dispatcher.sh "${args[@]}"',
+        "build-and-test": "python3 scripts/ci-gate-shards.py run ${{ matrix.shard }}",
     }
     jobs = workflow_jobs(ci)
     for name, entry in indirect_test_entries.items():
@@ -2471,8 +2458,8 @@ def test_ci_verify_only_scope_mutations_are_rejected() -> None:
     ci = CI_WORKFLOW.read_text()
     mutations = (
         ci.replace(
-            "    env:\n      RUN_CODE_PATH:",
-            '    env:\n      HEW_TEST_NO_BUILD: "1"\n      RUN_CODE_PATH:',
+            "    env:\n      # mold is installed",
+            '    env:\n      HEW_TEST_NO_BUILD: "1"\n      # mold is installed',
             1,
         ),
         ci.replace(
@@ -2494,16 +2481,122 @@ def test_ci_verify_only_scope_mutations_are_rejected() -> None:
         )
 
 
-def test_docs_and_scripts_uses_the_selector_diff_base() -> None:
+def _ci_document() -> dict:
+    spec = importlib.util.spec_from_file_location(
+        "check_gate_reachability", ROOT / "scripts" / "check-gate-reachability.py"
+    )
+    assert spec and spec.loader
+    reachability = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = reachability
+    spec.loader.exec_module(reachability)
+    return reachability.parse_yaml(CI_WORKFLOW.read_text(), "ci.yml")
+
+
+def _trunk_health_step() -> str:
+    steps = _ci_document()["jobs"]["main-health"]["steps"]
+    bodies = [step["run"] for step in steps if "run" in step]
+    assert len(bodies) == 1, bodies
+    return bodies[0]
+
+
+def _run_trunk_health(
+    gh_stdout: str, gh_status: int, labels: str = "[]"
+) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryDirectory() as work:
+        bin_dir = Path(work) / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "gh"
+        stub.write_text(
+            f"#!/bin/sh\ncat <<'STUB_JSON'\n{gh_stdout}\nSTUB_JSON\nexit {gh_status}\n"
+        )
+        stub.chmod(0o755)
+        script = Path(work) / "step.sh"
+        script.write_text(_trunk_health_step())
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        env["GITHUB_REPOSITORY"] = "hew-lang/hew"
+        env["PR_LABELS"] = labels
+        return subprocess.run(
+            ["bash", str(script)],
+            cwd=work,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+
+_RED_MAIN = (
+    '{"workflow_runs":[{"conclusion":"failure","head_sha":"deadbeef",'
+    '"html_url":"https://example.invalid/run"}]}'
+)
+_GREEN_MAIN = (
+    '{"workflow_runs":[{"conclusion":"success","head_sha":"cafebabe",'
+    '"html_url":"https://example.invalid/run"}]}'
+)
+
+
+def test_trunk_health_blocks_on_a_confirmed_red_main() -> None:
+    result = _run_trunk_health(_RED_MAIN, 0)
+    assert result.returncode == 1, result.stdout
+    assert "main is red at deadbeef" in result.stdout, result.stdout
+
+
+def test_trunk_health_passes_on_a_green_main() -> None:
+    result = _run_trunk_health(_GREEN_MAIN, 0)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_trunk_health_fails_open_when_the_api_call_fails() -> None:
+    result = _run_trunk_health("gh: not found", 1)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "could not read main's CI status" in result.stdout, result.stdout
+
+
+def test_trunk_health_fails_open_on_an_unreadable_response() -> None:
+    result = _run_trunk_health("<html>502 Bad Gateway</html>", 0)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_labelled_fix_for_main_runs_against_a_red_main() -> None:
+    result = _run_trunk_health(_RED_MAIN, 0, labels='["fix-main"]')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "labelled fix-main" in result.stdout, result.stdout
+
+
+def test_every_job_waits_for_a_green_main() -> None:
+    workflow_text = CI_WORKFLOW.read_text()
+    assert "main is red at ${head_sha}; fix main first" in workflow_text
+    assert "failure|timed_out" in workflow_text
+    jobs = _ci_document()["jobs"]
+    assert "main-health" in jobs, sorted(jobs)
+
+    def waits(name: str) -> bool:
+        needs = jobs[name].get("needs") or []
+        needs = [needs] if isinstance(needs, str) else needs
+        return "main-health" in needs or any(waits(dependency) for dependency in needs)
+
+    ungated = sorted(name for name in jobs if name != "main-health" and not waits(name))
+    assert not ungated, ungated
+
+
+def test_ci_pipeline_is_unconditional() -> None:
     ci = CI_WORKFLOW.read_text()
-    selector = workflow_job(ci, "changes")
-    lightweight = workflow_job(ci, "docs-and-scripts")
-    for job in (selector, lightweight):
-        assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in job
-        assert 'base_ref="${BASE_SHA}"' in job
-        assert "base_ref=HEAD^" in job
-    assert '--dry-run --base "${base_ref}"' in selector
-    assert 'args=(--base "${base_ref}")' in lightweight
+    for forbidden in (
+        "  changes:\n",
+        "  docs-and-scripts:\n",
+        "needs.changes",
+        "RUN_CODE_PATH",
+        "RUN_FULL_NEXTEST",
+        "dorny/paths-filter",
+        "ci-preflight-dispatcher",
+    ):
+        assert forbidden not in ci, forbidden
+    assert "python3 scripts/ci-gate-shards.py run ${{ matrix.shard }}" in ci
+    for job_name in ("build-and-test-windows", "build-and-test-macos"):
+        job = workflow_job(ci, job_name)
+        assert "Run full Rust workspace tests" in job
+        assert "Run platform smoke tests" not in job
 
 
 def assert_binaryen_downloader_contract(downloader: str) -> None:
@@ -2548,7 +2641,7 @@ def test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen() -> None:
         (
             workflow_job(CI_WORKFLOW.read_text(), "build-and-test"),
             "uses: ./.github/actions/setup-wasm-pack",
-            "scripts/ci-preflight-dispatcher.sh",
+            "python3 scripts/ci-gate-shards.py run",
         ),
         (
             workflow_job(RELEASE_GATE.read_text(), "gate-linux"),

@@ -14,7 +14,7 @@ Fixtures for `make leak-scan` (`scripts/lint-orchestration-leak.sh`).
 tracked source and exits 1 on any hit.  It is wired into:
 
 - `make lint` (the `lint` dependency chain)
-- `scripts/ci-preflight-dispatcher.sh` fallback lane
+- `scripts/ci-gate-shards.tsv` (the unconditional Linux assignment)
 
 ## Why this fixture exists
 

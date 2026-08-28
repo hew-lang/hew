@@ -1,42 +1,30 @@
 #!/usr/bin/env python3
-"""Single authority for the preflight's gate-input declarations.
+"""Single authority for CI gate-input declarations.
 
-Two readers consume these facts: scripts/ci-preflight-dispatcher.sh, which
-selects the gates a diff touches, and scripts/check-gate-reachability.py, which
-asserts the declarations stay honest. They share the declaration parser and
-glob semantics. The consumer scan can never narrow a routing decision. Its
-missing-input discoveries are advisory, while any discovered consumer relation
-that matches the positive no-gate allowlist is a failing contradiction.
+The static Linux shard checker uses these facts to require every participating
+gate exactly once, and scripts/check-gate-reachability.py asserts that the
+declarations stay honest. Its missing-input discoveries are advisory.
 
 # The declarations
 
 Each gate names the paths it reads on an `# inputs:` line above its recipe in
-the Makefile.  Two file-level declarations sit in the Makefile header:
-`# global-input:` for paths that parameterise every gate, and a small positive
-`# no-gate:` allowlist for inert path categories. A gate may add
-`# preflight: never|comprehensive-only|comprehensive-only-no-direct` with a reason.
+the Makefile. A gate that runs in a different venue, or that is an aggregate
+of other gates, may add `# preflight: never` with a reason.
 
 # Consumer scan
 
 Rust, Python, shell, and Make recipe sources declared or executed by a gate are
 scanned for tracked path literals, and Rust includes are resolved to tracked
 assets. Static analysis cannot enumerate every way a consumer constructs a
-path, so a missing-input discovery is reported as advisory. The one safe failing
-direction is an allowlisted path with any discovered consumer relation: inert
-routing authority and a concrete consumer cannot both be true. This includes
-gate-source literals and Rust assets compiled with `include_str!`/
-`include_bytes!`. Only an explicit `# inputs:`, `# global-input:`, or positive
-`# no-gate:` entry can keep a changed path out of the comprehensive profile.
+path, so a missing-input discovery is reported as advisory. Rust assets
+compiled with `include_str!`/`include_bytes!` are checked separately so their
+paths cannot silently leave the tracked tree.
 
 # Glob syntax
 
 `*` matches any characters INCLUDING `/`; `?` matches one character.  So
 `hew-runtime/src/*.rs` covers nested modules and `*.hew` covers the corpus.
 
-# Usage
-
-  gate_inputs.py select <repo-root> [--mode comprehensive]   # paths on stdin
-  gate_inputs.py classify <repo-root>                        # paths on stdin
 """
 
 from __future__ import annotations
@@ -46,7 +34,7 @@ import hashlib
 import json
 import re
 import subprocess
-import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,11 +54,6 @@ class Gate:
 
     def participates(self) -> bool:
         return not self.preflight.startswith("never")
-
-    def narrow_selectable(self) -> bool:
-        return self.participates() and not self.preflight.startswith(
-            "comprehensive-only"
-        )
 
     def includes(self) -> tuple[str, ...]:
         return tuple(glob for glob in self.globs if not glob.startswith("!"))
@@ -159,9 +142,8 @@ def parse_makefile(text: str) -> tuple[list[Gate], list[str], list[str]]:
             continue
         match = TARGET_RE.match(line)
         if match and pending:
-            # A `<gate>-build` rule is a WARM-UP form, not a gate: the
-            # dispatcher derives it from the gate it warms and never selects it
-            # in its own right, so it declares no inputs of its own.
+            # A `<gate>-build` rule prepares artifacts and is not a gate in its
+            # own right, so it declares no inputs of its own.
             if not match.group(1).endswith("-build"):
                 gates.append(Gate(match.group(1), tuple(pending), preflight))
         pending = []
@@ -512,8 +494,7 @@ def expand_gates(root: Path, gates: list[Gate], makefile_text: str) -> list[Gate
         closure = source_closure(root, seeds)
         # Retain duplicates here. The expanded declarations are advisory-only,
         # and the suffix after the explicit declarations is the exact literal
-        # evidence used to reject a contradictory no-gate entry even when the
-        # same path was also declared explicitly.
+        # evidence found by the consumer scan.
         extra = literal_inputs(root, closure, recipe_text)
         expanded.append(Gate(gate.target, gate.globs + tuple(extra), gate.preflight))
     return expanded
@@ -719,7 +700,7 @@ def _tree_digest(root: Path) -> str:
 
 
 def declared(root: Path) -> Declarations:
-    """Return only explicit Makefile declarations used for routing."""
+    """Return only explicit Makefile gate declarations."""
     text = (root / "Makefile").read_text()
     gates, global_globs, no_gate_globs = parse_makefile(text)
     return Declarations(
@@ -745,8 +726,8 @@ def load(root: Path) -> Declarations:
     """Return cached advisory consumer-scan results.
 
     The scan reads every file in every gate's closure, which is most of the
-    tree. Its cache is an optimisation for lint diagnostics only; the selector
-    never reads these results.
+    tree. Its cache is an optimisation for lint diagnostics only; the static
+    shard assignment never reads these results.
     """
     digest = _tree_digest(root)
     cache = root / CACHE_PATH
@@ -812,127 +793,3 @@ def likely_undeclared_inputs(
         if missing:
             likely[gate.target] = missing
     return likely
-
-
-def likely_no_gate_inputs(
-    root: Path, scanned: Declarations | None = None
-) -> dict[str, list[str]]:
-    """Discovered consumers that contradict the positive no-gate allowlist."""
-    base = declared(root)
-    scanned = scanned or load(root)
-    explicit = {gate.target: gate for gate in base.gates}
-    contradictions: dict[str, list[str]] = {}
-    for gate in scanned.gates:
-        declared_gate = explicit.get(gate.target)
-        if declared_gate is None:
-            continue
-        literal_paths = gate.globs[len(declared_gate.globs) :]
-        overlap = sorted(
-            {
-                path
-                for path in literal_paths
-                if any(matches(glob, path) for glob in base.no_gate_globs)
-            }
-        )
-        if overlap:
-            contradictions[gate.target] = overlap
-    for path, crates in scanned.embeds.items():
-        if not any(matches(glob, path) for glob in base.no_gate_globs):
-            continue
-        for crate in crates:
-            consumer = f"{crate} (embedded asset)"
-            contradictions.setdefault(consumer, []).append(path)
-    for consumer, paths in contradictions.items():
-        contradictions[consumer] = sorted(set(paths))
-    return contradictions
-
-
-# ── command line ─────────────────────────────────────────────────────────────
-
-
-def _covered(path: str, declarations: Declarations) -> list[str]:
-    return [gate.target for gate in declarations.gates if gate.reads_specifically(path)]
-
-
-def main(argv: list[str]) -> int:
-    mode = argv[1]
-    root = Path(argv[2])
-    paths = [line.strip() for line in sys.stdin if line.strip()]
-
-    declarations = declared(root)
-
-    if mode == "classify":
-        for path in paths:
-            if any(matches(glob, path) for glob in declarations.global_globs):
-                print(f"{path}\tglobal")
-                continue
-            hits = _covered(path, declarations)
-            if hits:
-                print(path + "\t" + ",".join(sorted(hits)))
-            elif any(matches(glob, path) for glob in declarations.no_gate_globs):
-                print(f"{path}\tno-gate")
-            else:
-                print(f"{path}\tundeclared")
-        return 0
-
-    if mode != "select":
-        print(f"unknown mode: {mode}", file=sys.stderr)
-        return 2
-
-    comprehensive = "--mode" in argv and "comprehensive" in argv
-    records: list[tuple[str, str]] = []
-    selected: set[str] = set()
-    needs_rust = False
-    directly_selected_non_rust: set[str] = set()
-    rust_globs = ("*.rs", "*/Cargo.toml", "Cargo.toml")
-
-    for path in paths:
-        if any(matches(glob, path) for glob in rust_globs):
-            needs_rust = True
-        if any(matches(glob, path) for glob in declarations.global_globs):
-            records.append(("GLOBAL", path))
-            comprehensive = True
-            continue
-        covered = False
-        for gate in declarations.gates:
-            if gate.reads(path):
-                selected.add(gate.target)
-            if gate.reads_specifically(path):
-                if not any(matches(glob, path) for glob in rust_globs):
-                    directly_selected_non_rust.add(gate.target)
-                covered = True
-        if not covered and not any(
-            matches(glob, path) for glob in declarations.no_gate_globs
-        ):
-            records.append(("UNDECLARED", path))
-            comprehensive = True
-
-    print("MODE", "comprehensive" if comprehensive else "selected")
-    print("RUSTCLOSURE", "1" if needs_rust else "0")
-    for kind, value in records:
-        print(kind, value)
-    for gate in declarations.gates:
-        # Comprehensive-only Rust gates normally defer to the package closure. A
-        # declared non-Rust asset has no package directory to seed, so its owning
-        # gate must run directly rather than producing a test-free route.
-
-        if comprehensive:
-            if gate.participates():
-                print("GATE", gate.target)
-        elif gate.target in selected and (
-            gate.narrow_selectable()
-            or (
-                gate.target in directly_selected_non_rust
-                and not gate.preflight.startswith("comprehensive-only-no-direct")
-            )
-        ):
-            print("GATE", gate.target)
-    # The reader requires this sentinel: a stream that stops early — a crash
-    # mid-write, a truncated pipe — would otherwise read as a short but valid
-    # selection and narrow the preflight.
-    print("END")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv))

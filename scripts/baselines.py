@@ -39,9 +39,8 @@ fixed.
 
 Tiers
 -----
-``fast``     needs no ``hew`` compiler build.  The preflight dispatcher runs the
-             relevant fast members BEFORE its warm-up, so drift is a
-             sub-minute failure instead of an hour-deep one.
+``fast``     needs no ``hew`` compiler build. Static shard 1 runs the fast tier
+             first, so drift is a sub-minute failure instead of an hour-deep one.
 ``compiler`` needs ``target/debug/hew``; its gate already builds the compiler,
              so checking it early buys nothing and costs a full build.
 """
@@ -453,6 +452,12 @@ NO_BASELINE_FILES: tuple[tuple[str, str], ...] = (
         "index of intent, not derived output",
     ),
     (
+        "scripts/ci-gate-shards.tsv",
+        "the reviewed assignment of every unconditional Linux gate to one static "
+        "shard; it is validated for exhaustive, disjoint coverage but deliberately "
+        "balanced by hand rather than regenerated from timings",
+    ),
+    (
         "tests/ownership-balance/baseline.tsv",
         "exact per-fixture ownership-diagnostic expectations plus the runtime mode "
         "each fixture is executed under (`clean` must report zero leaks, `leaks` "
@@ -522,10 +527,6 @@ EXEMPT_GATES: dict[str, str] = {
     "fuzz-smoke-bootstrap-install": (
         "provisions the libFuzzer toolchain; it compares nothing"
     ),
-    "pre-release": (
-        "validates built release artefacts against the release contract, not the tree "
-        "against a committed file"
-    ),
     "lint-wasm-todo": (
         "validates the repository's WASM backlog markers against a hand-authored "
         "authority; that authority is written by people, not derived from the tree"
@@ -533,10 +534,6 @@ EXEMPT_GATES: dict[str, str] = {
     "test-o2-differential": (
         "compares two runs of the same program (-O0 against -O2). The oracle is "
         "self-referential; there is no committed artefact to regenerate"
-    ),
-    "forced-cancel-composite-check": (
-        "checks emitted IR and live probe behaviour; it reads no committed derived "
-        "artefact"
     ),
     # The four entries below share one reason, and it is the strongest reason a
     # comparison can have for staying outside the registry: their expectations
@@ -1155,7 +1152,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="PATH",
-        help="same, reading one command per line (how the dispatcher passes its lane)",
+        help="same, reading one command per line",
     )
     check.set_defaults(func=cmd_check)
 

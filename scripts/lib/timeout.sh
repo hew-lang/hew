@@ -106,7 +106,7 @@ run_with_timeout() {
 # Runs <cmd_string> via "bash -lc" in a dedicated process group, with a
 # SIGTERM-then-SIGKILL watchdog implemented in a single Perl process.
 #
-# Designed for the dispatcher's use case: bash -lc forks cargo/make/ctest
+# Designed for command trees where bash -lc forks cargo/make/ctest
 # grandchildren that must all die on timeout.  kill(-$pgid) reaches every
 # process in the tree simultaneously, preventing artifact-lock contention
 # from orphaned cargo processes.
@@ -122,10 +122,6 @@ run_with_timeout() {
 #   Signal exits are surfaced raw — no translation to 124/137.
 #   SIGTERM kill → 143 (128+15)   SIGKILL fallback → 137 (128+9)
 #
-# Three independent assertions lock this contract and must not be relaxed:
-#   scripts/tests/test_ci_preflight_timeout.sh (Test 5): exit ∈ {143, 137}
-#   scripts/tests/test_ci_preflight_dispatcher.py:       JSON status ∈ {137, 143}
-#   scripts/ci-preflight-dispatcher.sh:                  ==> TIMEOUT: keyed on 137||143
 run_in_pgroup_with_timeout() {
     local seconds="$1"
     local cmd_string="$2"
@@ -174,7 +170,7 @@ run_in_pgroup_with_timeout() {
             exit 1;
         }
         # Surface raw signal exit codes.  Do NOT translate to 124/137 as
-        # run_with_timeout does: the dispatcher and its tests key on 143/137.
+        # run_with_timeout does: callers key on the raw signal status.
         if ($? & 127) {
             exit 128 + ($? & 127);
         }

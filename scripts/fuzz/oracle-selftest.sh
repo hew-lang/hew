@@ -45,13 +45,11 @@ mkdir -p "${EMPTY_DIR}"
 # Counterfactual marker.  Every invocation below drives the REAL oracle against
 # deliberately broken input, so this self-test PASSES while its output carries
 # "ORACLE gate: FAIL", "UNEXPECTED FAILURES" and "error: ...".  Anything that
-# reads a log for the first concrete failure line — the preflight dispatcher
-# reduces a 6-7 MB failed-step log to one annotation exactly that way — would
-# report this bait instead of a real defect.  run_counterfactual replays the
+# reads a log for the first concrete failure line could report this bait instead
+# of a real defect. run_counterfactual replays the
 # provoked output behind the marker so it stays readable and unmistakable, and
 # preserves the exit code the assertions below depend on.
-# `ci-preflight-dispatcher.sh --check-counterfactual-output` fails if a rostered
-# gate stops doing this.
+# Keep the prefix on every provoked line.
 COUNTERFACTUAL_MARKER="CF-"
 
 run_counterfactual() {

@@ -342,20 +342,16 @@ brew install python@3.12
 ```bash
 make          # Build everything (debug)
 make release  # Build everything (optimized)
-make preflight     # Diff-routed, fail-fast pre-PR gate
+make preflight     # Unconditional, fail-fast pre-PR gate
 make test     # Run Rust + native codegen tests
 make lint     # cargo clippy
 ```
 
 See the [Makefile](Makefile) header for all targets.
 
-Use `make preflight ARGS="--dry-run"` to inspect the selected commands before
-running them. The standard pre-PR gate is diff-routed and fails fast after the
-first failed command. Reserve `make ci-preflight` for integration and release
-moments, when the run-all failure policy and full timing summary are useful.
-The first slice stays conservative: known docs/parser/types/CLI diffs get
-narrower checks, and everything else falls back to broader local preflight
-commands.
+The standard pre-PR gate runs the same exhaustive static assignment as Linux CI
+and fails fast after the first failed command. Reserve `make ci-preflight` for
+integration and release moments, when reporting every failure is useful.
 
 ### Browser / Playground Validation
 

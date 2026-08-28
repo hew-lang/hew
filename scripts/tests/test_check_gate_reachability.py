@@ -536,21 +536,8 @@ def test_real_ci_reaches_the_complete_test_prerequisite_graph() -> None:
     known = set(prereqs) | phony
     workflows = gate.load_workflows()
     commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
-    if "ci-preflight-dispatcher.sh" in commands:
-        fallback = subprocess.run(
-            [
-                "bash",
-                str(gate.DISPATCHER),
-                "--dry-run",
-                "--",
-                "some-unclassified-root-file.txt",
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        commands += "\n" + fallback.stdout
+    if "ci-gate-shards.py run" in commands:
+        commands += "\n" + "\n".join(gate.static_shard_commands())
     roots = gate.make_targets_in(commands, known)
     reached = gate.close_over_makefile(roots, prereqs, recipes, known)
     required = {
@@ -570,9 +557,10 @@ def test_real_ci_reaches_the_complete_test_prerequisite_graph() -> None:
 #
 # A `parity-cmd` annotation is metadata for the separate preflight-parity
 # checker, not an executable CI edge. Honouring the marker here would make a
-# YAML comment plus a dispatcher entry sufficient to declare a target reached.
-# The real workflow now executes `make test`; keep this counterfactual so a
-# future inline replacement cannot recover reachability through a comment.
+# YAML comment plus a static assignment entry is not enough by itself to make a
+# disabled step reachable. The real workflow executes the shard runner; keep
+# this counterfactual so a future inline replacement cannot recover
+# reachability through a comment.
 
 
 def test_a_parity_cmd_marker_is_not_an_edge() -> None:
@@ -692,7 +680,7 @@ def test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_autho
         oracle = next(
             (index, run)
             for index, run in enumerate(runnable)
-            if "make mqtt-broker-e2e" in run or "ci-preflight-dispatcher.sh" in run
+            if "make mqtt-broker-e2e" in run or "ci-gate-shards.py run" in run
         )
         assert "mosquitto_pub" in provision[1] and "mosquitto_sub" in provision[1], (
             f"{path.name}:{job_name} must verify both MQTT client commands"
@@ -700,21 +688,8 @@ def test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_autho
         assert provision[0] < oracle[0], (
             f"{path.name}:{job_name} must provision clients before the MQTT oracle"
         )
-        if "ci-preflight-dispatcher.sh" in oracle[1]:
-            selected = subprocess.run(
-                [
-                    "bash",
-                    str(gate.DISPATCHER),
-                    "--dry-run",
-                    "--",
-                    "some-unclassified-root-file.txt",
-                ],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            assert "make mqtt-broker-e2e" in selected.stdout
+        if "ci-gate-shards.py run" in oracle[1]:
+            assert "make mqtt-broker-e2e" in gate.static_shard_commands()
     workflows = gate.load_workflows()
     commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
     assert "macos-leak-oracle" not in gate.make_targets_in(
@@ -1048,7 +1023,7 @@ def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
     assert result.returncode == 0, result.stderr
 
 
-# ── A11: harness self-tests under scripts/tests/ are invoked ──────────────────
+# ── A10: harness self-tests under scripts/tests/ are invoked ──────────────────
 
 
 def _synthetic_repo(tmp: str) -> Path:
@@ -1225,7 +1200,7 @@ def test_every_real_harness_test_is_invoked() -> None:
 # The runner enumerates this module rather than reading a hand-maintained list.
 # The list form had already lost four tests: they were defined, never listed,
 # and never run — a self-test file quietly asserting less than it appeared to,
-# which is the same defect A11 exists to catch one level out. Discovery cannot
+# which is the same defect A10 exists to catch one level out. Discovery cannot
 # drift.
 def _tests() -> list:
     return [

@@ -18,11 +18,14 @@ libraries and headers are available; set `LLVM_PREFIX` (or
 `LLVM_SYS_221_PREFIX`) to point at the install.
 
 Use the Makefile from the repository root rather than invoking `cargo build
--p hew-cli` directly.  The compiler driver is not enough for `hew build`: the
-native `hew-lib` staticlib must be built in the same Cargo profile so the link
-step can find `target/debug/libhew.a` (Unix) or `target/debug/hew.lib`
-(Windows).  For a narrow local build, use `make hew-native`; for the full
-artifact set, use `make` / `make release`.
+-p hew-cli` directly. The compiler driver is not enough for `hew build`: the
+native `hew-lib` staticlib must be built alongside it. `make hew-native` pairs
+the debug driver and host archive for compiler development. `make` and
+`make release` additionally build the consumer-linkable `release-lib` archive
+for each native architecture supported by the host (when the matching Linux
+multiarch sysroot exists, or for the opposite architecture on macOS), then
+publish it under `build/lib/<triple>/`. This is the same layout `make install`
+uses, so a source-built compiler can cross-compile without a test-only setup.
 
 ## Linux x86_64
 
@@ -48,8 +51,8 @@ Use `make` from the repository root. It builds the Rust workspace and links
 `hew-codegen-rs` into the `hew` binary through Cargo:
 
 ```bash
-make           # debug build
-make release   # release build
+make           # developer toolchain: release-lib compiler + debug support + target libraries
+make release   # optimized install/package toolchain
 ```
 
 ## Linux aarch64
@@ -154,7 +157,7 @@ export LLVM_SYS_221_PREFIX=/usr/local/llvm22
 
 Do **not** add this to a `.cargo/config.toml` `[env]` section — that would
 attempt to use `/usr/local/llvm22` on Linux and macOS where the path does not
-exist.  Set it in your shell profile (`~/.profile` or `~/.zshenv`) on the
+exist. Set it in your shell profile (`~/.profile` or `~/.zshenv`) on the
 FreeBSD host, or pass it directly to make:
 
 ```sh
@@ -299,17 +302,18 @@ $env:LLVM_SYS_221_PREFIX = 'P:\llvm22'
 $env:Path = 'P:\llvm22\bin;' + $env:Path
 
 make hew-native    # debug: target\debug\hew.exe + target\debug\hew.lib
-make release       # release: target\release\hew.exe + target\release\hew.lib
+make release-host  # release compiler + target\release-lib\hew.lib
 ```
 
 `cargo build -p hew-cli` by itself is intentionally not the build recipe for a
 working source checkout: it does not build `hew-lib`, and `hew build` needs the
 fresh `hew.lib` next to `hew.exe`. If `make` is unavailable, use the equivalent
-single Cargo invocation:
+Cargo commands:
 
 ```powershell
 cargo build -p hew-cli -p hew-lib
-cargo build --release -p hew-cli -p hew-lib
+cargo build --release -p hew-cli -p hew-lsp -p hew-observe
+cargo build -p hew-lib --profile release-lib
 ```
 
 ### Smoke test
@@ -328,33 +332,16 @@ Remove-Item -Force .\_smoke.hew, .\_smoke.exe
 Expect `smoke-ok` on stdout. This verifies that the built `hew.exe` can still
 compile and run a program through `hew-codegen-rs`, not just print `--version`.
 
-## Duplicate Symbol Errors When Linking stdlib Packages
-
-When linking programs that use stdlib packages (e.g. `std::encoding::json`),
-both `libhew_runtime.a` and `libhew_std_*.a` contain symbols from the shared
-`hew-cabi` dependency. Cargo bakes all dependencies into each staticlib,
-causing duplicate symbol errors at link time.
-
-The linker is configured to tolerate this:
-
-- **Linux:** `--allow-multiple-definition` (passed via `-Wl,` when stdlib
-  packages are linked)
-- **macOS:** `-multiply_defined,suppress` (passed via `-Wl,` when stdlib
-  packages are linked)
-
-This is handled automatically in `hew-cli/src/link.rs` when `extra_libs` is
-non-empty.
-
 ## Quick Reference
 
 For a full build of `hew`, prefer `make` / `make release`. The table below
 summarizes the LLVM install shape expected by local release validation.
 
-| Platform       | LLVM discovery                                        | Extra packages |
-| -------------- | ----------------------------------------------------- | -------------- |
-| Linux x86_64   | `llvm-config-22` on `PATH` or prefix                 | n/a            |
-| Linux aarch64  | `llvm-config-22` on `PATH` or prefix                 | n/a            |
-| macOS x86_64   | `LLVM_PREFIX="$(brew --prefix llvm)"`                | n/a            |
-| macOS aarch64  | `LLVM_PREFIX="$(brew --prefix llvm)"`                | n/a            |
-| FreeBSD x86_64 | `LLVM_SYS_221_PREFIX=/usr/local/llvm22` (host env)   | `pkg install llvm22` |
-| Windows        | `LLVM_PREFIX=C:\llvm-22`                             | `cmake`, `ninja` only if building LLVM locally |
+| Platform       | LLVM discovery                                     | Extra packages                                 |
+| -------------- | -------------------------------------------------- | ---------------------------------------------- |
+| Linux x86_64   | `llvm-config-22` on `PATH` or prefix               | n/a                                            |
+| Linux aarch64  | `llvm-config-22` on `PATH` or prefix               | n/a                                            |
+| macOS x86_64   | `LLVM_PREFIX="$(brew --prefix llvm)"`              | n/a                                            |
+| macOS aarch64  | `LLVM_PREFIX="$(brew --prefix llvm)"`              | n/a                                            |
+| FreeBSD x86_64 | `LLVM_SYS_221_PREFIX=/usr/local/llvm22` (host env) | `pkg install llvm22`                           |
+| Windows        | `LLVM_PREFIX=C:\llvm-22`                           | `cmake`, `ninja` only if building LLVM locally |

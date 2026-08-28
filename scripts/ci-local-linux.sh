@@ -27,20 +27,20 @@
 #                       user's filesystem avoids small or quota-limited /tmp.
 set -euo pipefail
 
-STEP="${1:-${STEP:-all}}"
+STEP="${1:-${STEP:-preflight}}"
 HOST="${CI_LINUX_HOST:-}"
 REMOTE_REL="${HEW_CI_REMOTE_REL:-projects/hew-lang/hew}"
 LLVM_PREFIX="${HEW_CI_LLVM_PREFIX:-/usr/lib/llvm-22}"
 
 if [[ -z "${HOST}" ]]; then
-  echo "error: set CI_LINUX_HOST=<user@host> (a native x86_64 Linux box)" >&2
-  exit 2
+    echo "error: set CI_LINUX_HOST=<user@host> (a native x86_64 Linux box)" >&2
+    exit 2
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="$(git -C "${ROOT}" rev-parse --abbrev-ref HEAD)"
 SHA="$(git -C "${ROOT}" rev-parse --short HEAD)"
-SLUG="ci-local-$(printf '%s' "${BRANCH}" | tr '/:' '--')"   # slash-safe ref/worktree name
+SLUG="ci-local-$(printf '%s' "${BRANCH}" | tr '/:' '--')" # slash-safe ref/worktree name
 REF="refs/hew-ci/${SLUG}"
 WT_REL="${HEW_CI_REMOTE_WORKTREE_REL:-.cache/hew-ci/${SLUG}}"
 
@@ -73,22 +73,11 @@ fi
 export CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run"
 
 case "$STEP" in
-  wasm)            cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib ;;
-  workspace)       cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi --profile ci --no-fail-fast ;;
-  vertical-slice)  make test-vertical-slice ;;
-  pkg-import)      make test-pkg-import ;;
-  hew-ratchet)     make test-hew-ratchet ;;
-  stdlib-ratchet)  make test-stdlib-ratchet ;;
-  sandbox)         make sandbox-parity ;;
-  all)
-    cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
-    cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi --profile ci --no-fail-fast
-    make test-vertical-slice
-    make test-pkg-import
-    make test-hew-ratchet
-    make test-stdlib-ratchet
-    make sandbox-parity ;;
-  *) echo "unknown STEP=$STEP (wasm|workspace|vertical-slice|pkg-import|hew-ratchet|stdlib-ratchet|sandbox|all)" >&2; exit 2 ;;
+  all) TARGET=preflight ;;
+  preflight|lint|ci-shard-1|ci-shard-2|ci-shard-3|test-vertical-slice|test-pkg-import|test-hew-ratchet|test-stdlib-ratchet|sandbox-parity)
+    TARGET="$STEP" ;;
+  *) echo "unknown STEP=$STEP (preflight|lint|ci-shard-1|ci-shard-2|ci-shard-3 or a focused listed gate)" >&2; exit 2 ;;
 esac
+make "$TARGET"
 echo "CI_LOCAL_LINUX_OK host=$(hostname) step=$STEP"
 REMOTE

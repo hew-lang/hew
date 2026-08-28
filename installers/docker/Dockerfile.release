@@ -56,8 +56,8 @@ COPY . .
 RUN cargo build --release \
     -p hew-cli \
     -p hew-lsp \
-    -p hew-observe \
-    -p hew-lib
+    -p hew-observe
+RUN cargo build -p hew-lib --profile release-lib
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Stage 2: Minimal runtime image
@@ -80,7 +80,7 @@ COPY --from=rust-builder /src/target/release/hew-lsp /usr/local/bin/hew-lsp
 COPY --from=rust-builder /src/target/release/hew-observe /usr/local/bin/hew-observe
 
 # Combined runtime + stdlib library
-COPY --from=rust-builder /src/target/release/libhew.a /usr/local/lib/hew/libhew.a
+COPY --from=rust-builder /src/target/release-lib/libhew.a /usr/local/lib/hew/libhew.a
 
 # Standard library Hew source files
 COPY std/ /usr/local/share/hew/std/

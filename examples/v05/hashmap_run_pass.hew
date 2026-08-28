@@ -20,8 +20,8 @@
 //     (catalogued in `hew-hir/src/stdlib_catalog.rs`).
 // `hew run examples/v05/hashmap_run_pass.hew` must complete successfully.
 type Point {
-    x: i64,
-    y: i64
+    x: i64;
+    y: i64;
 }
 
 fn main() {

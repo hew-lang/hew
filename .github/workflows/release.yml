@@ -44,7 +44,7 @@ on:
         type: string
 
 permissions:
-  contents: read    # default minimum; release and docker jobs override below
+  contents: read # default minimum; release and docker jobs override below
 
 env:
   LLVM_VERSION: "22"
@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout release source
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
       - name: Assert release tag matches Cargo version
@@ -79,6 +79,36 @@ jobs:
             echo "::error::release tag ${RELEASE_TAG} does not match Cargo version ${cargo_version} (expected ${expected_tag}); refusing to build"
             exit 1
           fi
+
+  # WASI libraries are platform-independent. Build them once and place the
+  # same proved artifacts in every published toolchain archive.
+  build-portable-release-libs:
+    needs: validate-release-version
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - id: rust-toolchain
+        name: Read repository Rust toolchain
+        run: |
+          channel=$(awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' rust-toolchain.toml)
+          test -n "${channel}"
+          echo "channel=${channel}" >> "$GITHUB_OUTPUT"
+      - name: Install Rust WASI target
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          targets: wasm32-wasip1
+      - name: Build and stage portable libraries
+        run: make stage-portable-release-libs
+      - name: Upload portable libraries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portable-release-libs
+          path: build/portable-release-libs/
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────
   # Cross-built release libraries — proved by their target-native consumers
@@ -107,12 +137,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Checkout release machinery
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.sha }}
           path: release-machinery
@@ -124,21 +154,21 @@ jobs:
 
       - name: Install Rust target
         if: ${{ !matrix.build_std }}
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: "1.96.0"
           targets: ${{ matrix.rust_target }}
 
       - name: Install Rust sources
         if: matrix.build_std
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: "1.96.0"
           components: rust-src
 
       - name: Install Zig
         if: matrix.builder == 'zig'
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29  # v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
 
@@ -204,7 +234,7 @@ jobs:
           fi
 
       - name: Upload cross-built archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: libhew-${{ matrix.rust_target }}
           path: cross-release-libs/${{ matrix.rust_target }}/
@@ -214,7 +244,7 @@ jobs:
   # Build — macOS and Windows release artifacts
   # ─────────────────────────────────────────────────────────────────────────
   build:
-    needs: build-cross-release-libs
+    needs: [build-cross-release-libs, build-portable-release-libs]
     strategy:
       fail-fast: false
       matrix:
@@ -237,22 +267,28 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Checkout release machinery
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.sha }}
           path: release-machinery
 
       - name: Download cross-built release library (Windows)
         if: startsWith(matrix.target, 'windows')
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: libhew-${{ matrix.rust_target }}
           path: cross-release-libs/${{ matrix.rust_target }}
+
+      - name: Download portable release libraries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: portable-release-libs
+          path: portable-release-libs
 
       # ── LLVM toolchain installation ─────────────────────────────────────
 
@@ -396,14 +432,14 @@ jobs:
       # ── Rust toolchain ──────────────────────────────────────────────────
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: stable
           targets: ${{ matrix.rust_target }}
 
       - name: Cache Rust artifacts (Darwin)
         if: startsWith(matrix.target, 'darwin')
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             ~/.cargo/bin/
@@ -416,7 +452,7 @@ jobs:
 
       - name: Cache Rust artifacts
         if: ${{ !startsWith(matrix.target, 'darwin') }}
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             ~/.cargo/bin/
@@ -501,6 +537,7 @@ jobs:
           # on installed native targets before falling back to the flat path.
           mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
           cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
+          cp -r portable-release-libs/wasm32-wasip1 "${ARCHIVE_NAME}/lib/"
 
           # Standard library sources (all .hew files, including subdirectories)
           cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -570,6 +607,7 @@ jobs:
           # lookup chooses the proved archive before the native fallback.
           New-Item -ItemType Directory -Path "${ArchiveName}/lib/${{ matrix.rust_target }}" -Force | Out-Null
           Copy-Item "${ReleaseLibDir}/hew.lib" "${ArchiveName}/lib/${{ matrix.rust_target }}/"
+          Copy-Item "portable-release-libs/wasm32-wasip1" "${ArchiveName}/lib/" -Recurse
 
           # Standard library sources (all .hew files, including subdirectories)
           Copy-Item "std" "${ArchiveName}/std" -Recurse
@@ -759,42 +797,42 @@ jobs:
 
       - name: Upload artifact (Unix)
         if: "!startsWith(matrix.target, 'windows')"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_NAME }}.tar.gz
 
       - name: Upload artifact (Windows)
         if: startsWith(matrix.target, 'windows')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_NAME }}.zip
 
       - name: Upload hew-lsp standalone (Unix)
         if: "!startsWith(matrix.target, 'windows')"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hew-lsp-${{ matrix.target }}
           path: target/${{ matrix.rust_target }}/release/hew-lsp
 
       - name: Upload hew-observe standalone (Unix)
         if: "!startsWith(matrix.target, 'windows')"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hew-observe-${{ matrix.target }}
           path: target/${{ matrix.rust_target }}/release/hew-observe
 
       - name: Upload hew-lsp standalone (Windows)
         if: startsWith(matrix.target, 'windows')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hew-lsp-${{ matrix.target }}
           path: target/${{ matrix.rust_target }}/release/hew-lsp.exe
 
       - name: Upload hew-observe standalone (Windows)
         if: startsWith(matrix.target, 'windows')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hew-observe-${{ matrix.target }}
           path: target/${{ matrix.rust_target }}/release/hew-observe.exe
@@ -803,7 +841,7 @@ jobs:
   # Linux build — glibc baseline artifacts built inside Ubuntu 22.04
   # ─────────────────────────────────────────────────────────────────────────
   build-linux:
-    needs: validate-release-version
+    needs: [validate-release-version, build-portable-release-libs]
     strategy:
       fail-fast: false
       matrix:
@@ -829,15 +867,21 @@ jobs:
             libssl-dev zlib1g-dev libzstd-dev libffi-dev libxml2-dev
 
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Checkout release machinery
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.sha }}
           path: release-machinery
+
+      - name: Download portable release libraries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: portable-release-libs
+          path: portable-release-libs
 
       - name: Trust the workspace checkout
         # The container user differs from the checkout owner; without this
@@ -856,13 +900,13 @@ jobs:
           version: ${{ env.LLVM_FULL_VERSION }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: stable
           targets: ${{ matrix.rust_target }}
 
       - name: Cache Rust artifacts
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             ~/.cargo/bin/
@@ -926,6 +970,7 @@ jobs:
           cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
           mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
           cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
+          cp -r portable-release-libs/wasm32-wasip1 "${ARCHIVE_NAME}/lib/"
 
           cp -r std/. "${ARCHIVE_NAME}/std/"
 
@@ -964,19 +1009,19 @@ jobs:
           echo "${output}" | grep -q "pkg-smoke-ok"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_NAME }}.tar.gz
 
       - name: Upload hew-lsp standalone
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hew-lsp-${{ matrix.target }}
           path: target/${{ matrix.rust_target }}/release/hew-lsp
 
       - name: Upload hew-observe standalone
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hew-observe-${{ matrix.target }}
           path: target/${{ matrix.rust_target }}/release/hew-observe
@@ -985,18 +1030,18 @@ jobs:
   # FreeBSD build — x86_64 via QEMU VM (tier-1, required release gate)
   # ─────────────────────────────────────────────────────────────────────────
   build-freebsd:
-    needs: build-cross-release-libs
+    needs: [build-cross-release-libs, build-portable-release-libs]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Checkout release machinery
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.sha }}
           path: release-machinery
@@ -1009,13 +1054,19 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Download cross-built release library
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: libhew-x86_64-unknown-freebsd
           path: cross-release-libs/x86_64-unknown-freebsd
 
+      - name: Download portable release libraries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: portable-release-libs
+          path: portable-release-libs
+
       - name: Build on FreeBSD
-        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
+        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a # v1.4.6
         with:
           release: "15.0"
           mem: 8192
@@ -1079,6 +1130,7 @@ jobs:
             mkdir -p "${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd"
             cp cross-release-libs/x86_64-unknown-freebsd/libhew.a \
               "${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd/"
+            cp -r portable-release-libs/wasm32-wasip1 "${ARCHIVE_NAME}/lib/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -1121,7 +1173,7 @@ jobs:
             echo "${output}" | grep -q "pkg-smoke-ok"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.archive.outputs.name }}
           path: ${{ steps.archive.outputs.name }}.tar.gz
@@ -1134,18 +1186,18 @@ jobs:
   # locally; CI is the proving gate for this toolchain asset.
   # ─────────────────────────────────────────────────────────────────────────
   build-freebsd-aarch64:
-    needs: build-cross-release-libs
+    needs: [build-cross-release-libs, build-portable-release-libs]
     runs-on: ubuntu-24.04
     timeout-minutes: 300
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Checkout release machinery
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.sha }}
           path: release-machinery
@@ -1158,13 +1210,19 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Download cross-built release library
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: libhew-aarch64-unknown-freebsd
           path: cross-release-libs/aarch64-unknown-freebsd
 
+      - name: Download portable release libraries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: portable-release-libs
+          path: portable-release-libs
+
       - name: Build on FreeBSD aarch64
-        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
+        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a # v1.4.6
         with:
           release: "15.0"
           arch: aarch64
@@ -1227,6 +1285,7 @@ jobs:
             mkdir -p "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd"
             cp cross-release-libs/aarch64-unknown-freebsd/libhew.a \
               "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd/"
+            cp -r portable-release-libs/wasm32-wasip1 "${ARCHIVE_NAME}/lib/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -1269,7 +1328,7 @@ jobs:
             echo "${output}" | grep -q "pkg-smoke-ok"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.archive.outputs.name }}
           path: ${{ steps.archive.outputs.name }}.tar.gz
@@ -1301,12 +1360,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Download Linux tarball
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: ${{ matrix.artifact_pattern }}
           path: dist/
@@ -1343,7 +1402,7 @@ jobs:
             --only "${FORMATS}"
 
       - name: Upload Linux packages
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-packages-${{ matrix.arch }}
           path: |
@@ -1379,12 +1438,12 @@ jobs:
     if: ${{ !cancelled() && needs.build-linux.result != 'failure' }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Download Linux release artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: hew-v*-${{ matrix.target }}
           path: artifacts
@@ -1411,29 +1470,37 @@ jobs:
   # Release — download all artifacts, generate checksums, publish
   # ─────────────────────────────────────────────────────────────────────────
   release:
-    needs: [build, build-linux, build-freebsd, build-freebsd-aarch64, linux-packages, docker-clean-room-test]
+    needs:
+      [
+        build,
+        build-linux,
+        build-freebsd,
+        build-freebsd-aarch64,
+        linux-packages,
+        docker-clean-room-test,
+      ]
     runs-on: ubuntu-24.04
     # Requires successful macOS, Windows, Linux, FreeBSD x86_64, FreeBSD
     # aarch64, package, and clean-room validation jobs. Alpine/musl assets are
     # deferred until the llvm-alpine:22 toolchain is repaired.
     if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-linux.result == 'success' && needs.build-freebsd.result == 'success' && needs.build-freebsd-aarch64.result == 'success' && (needs.linux-packages.result == 'success' || needs.linux-packages.result == 'skipped') && needs.docker-clean-room-test.result == 'success' }}
     permissions:
-      contents: write   # create/update the GitHub Release and upload release assets
+      contents: write # create/update the GitHub Release and upload release assets
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: "hew-v*"
           path: artifacts
           merge-multiple: true
 
       - name: Download linux package artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: "linux-packages-*"
           path: artifacts
@@ -1480,7 +1547,7 @@ jobs:
           mv checksums.txt "hew-v${VERSION}-checksums.txt"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3.0.0
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           body_path: docs/releases/${{ env.RELEASE_TAG }}.md
@@ -1509,23 +1576,23 @@ jobs:
     # builds + a manifest push are the faster path when iterating.
     timeout-minutes: 180
     permissions:
-      packages: write   # push multi-arch image to ghcr.io
-      contents: read    # checkout for Dockerfile
+      packages: write # push multi-arch image to ghcr.io
+      contents: read # checkout for Dockerfile
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Log in to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1550,7 +1617,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push multi-arch image
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
           file: installers/docker/Dockerfile.release
@@ -1646,7 +1713,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Checkout release machinery
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.sha }}
           path: release-machinery
@@ -1714,7 +1781,7 @@ jobs:
 
     steps:
       - name: Download hew-lsp binary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: hew-lsp-${{ matrix.target }}
           path: lsp-binary/
@@ -1730,7 +1797,7 @@ jobs:
 
       - name: Setup Node.js
         if: steps.download.outcome == 'success'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: npm
@@ -1755,7 +1822,7 @@ jobs:
 
       - name: Upload .vsix artifact
         if: steps.download.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vsix-${{ matrix.vscode_target }}
           path: extension/*.vsix
@@ -1769,14 +1836,14 @@ jobs:
 
     steps:
       - name: Download all .vsix packages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: "vsix-*"
           path: vsix/
           merge-multiple: true
 
       - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
 

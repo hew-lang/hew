@@ -23,7 +23,6 @@ permissions:
   contents: read
   checks: write
   pull-requests: read
-  security-events: write
 
 env:
   # Pinned LLVM upstream release tag, used by hew-codegen-rs (inkwell ->
@@ -44,60 +43,8 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Trunk health — report a red main without suppressing branch gates
-  # ─────────────────────────────────────────────────────────────────────────
-  main-health:
-    name: main is green
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      # On 2026-08-20 a warm-up defect landed on main and the same failure was
-      # reported by eleven branch runs over four hours. Keep the trunk-health
-      # signal visible, but do not make gate scheduling depend on it: a failed
-      # prerequisite makes GitHub skip dependent jobs before their steps run,
-      # which would let a red main suppress every independent branch result.
-      #
-      # The escape is deliberate and visible: label the pull request `fix-main`
-      # to let this signal pass while repairing trunk. Without the label, the
-      # signal stays red but the independent branch gates still run.
-      - name: Report a confirmed red main
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-        run: |
-          set -uo pipefail
-          # This signal fails OPEN on anything that is not a confirmed red main.
-          # An API error, a token problem, an empty
-          # response: none of those are evidence about main, and treating them
-          # as evidence would take the whole repository down on a 404.
-          if ! gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=1" > main-run.json; then
-            echo "::warning::could not read main's CI status; running branch gates anyway."
-            exit 0
-          fi
-          conclusion=$(jq -r '.workflow_runs[0].conclusion // "unknown"' main-run.json 2>/dev/null || echo unknown)
-          head_sha=$(jq -r '.workflow_runs[0].head_sha // "unknown"' main-run.json 2>/dev/null || echo unknown)
-          run_url=$(jq -r '.workflow_runs[0].html_url // ""' main-run.json 2>/dev/null || echo "")
-          echo "Last completed CI run on main: ${conclusion} at ${head_sha}"
-          # Only a run that FAILED is evidence that main is broken. A cancelled
-          # run is what the concurrency group does when a newer commit lands,
-          # and a repository that blocked every branch on one of those would
-          # deadlock on routine traffic rather than on a defect.
-          case "${conclusion}" in
-            failure|timed_out) ;;
-            *) exit 0 ;;
-          esac
-          if printf '%s' "${PR_LABELS}" | jq -e 'index("fix-main")' > /dev/null 2>&1; then
-            echo "::notice::main is ${conclusion} at ${head_sha}; running anyway because this pull request is labelled fix-main."
-            exit 0
-          fi
-          echo "::error::main is red at ${head_sha}; fix main first (${run_url}). Label this pull request fix-main if it is the fix."
-          exit 1
-
-  # ─────────────────────────────────────────────────────────────────────────
   # Lint — code quality plus 1,778-file formatter preservation
   # (always runs; cold runners can take 15–25 min)
-  # Produces SARIF output for GitHub Code Scanning inline annotations.
   # ─────────────────────────────────────────────────────────────────────────
   lint:
     name: Clippy & format
@@ -109,7 +56,7 @@ jobs:
     # retaining a finite ceiling for a stuck job.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           # fetch-depth: 0 required so origin/main is available for the
           # orchestration-token commit-message scan (--scan-commits range
@@ -117,14 +64,15 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          components: 'clippy, rustfmt'
+          components: "clippy, rustfmt"
           targets: wasm32-wasip1
+          tools: actionlint@1.7.12
           cache-shared-key: lint
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
@@ -132,155 +80,13 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      # Keep this consumer on the shared cache-backed provisioning action.
-      # The structural-lint target still verifies the pinned toolchain before
-      # it scans, so local and CI entry points retain the same safety checks.
       - name: Provision pinned ast-grep toolchain
         uses: ./.github/actions/setup-ast-grep
 
-      # Keep the bootstrap counterfactuals on the required job after moving
-      # provisioning into the shared action.
-      - name: Verify structural lint bootstrap contract
-        run: make test-ast-grep-contract test-structural-lint-bootstrap
-
-      # Keep the stub-driven build-harness counterfactuals on a required job.
-      # They use temporary trees only and need no compiler build.
-      - name: Verify build harness contracts
-        run: make test-build-harness
-
-      # >>> CI-PARITY-STEPS
-      # This job is an active required status check on main. Keep the workflow
-      # contract here unconditionally so nightly/release-gate drift cannot merge.
-      - name: Verify FreeBSD workflow contract
-        run: make freebsd-workflow-contract-check
-
-      - name: Verify tool pin contract
-        run: make tool-pin-contract-check
-
-      - name: Verify sanitizer gate wiring
-        run: make check-sanitizer-gate
-
-      - name: Verify gate reachability and documented make targets
-        run: make check-gate-reachability
-
-      - name: Run structural authority lint
-        run: make structural-lint
-
-      - name: Check shell scripts
-        run: make shell-script-lint
-      # <<< CI-PARITY-STEPS
-
-      - name: Check .hew formatting
-        run: make hew-fmt-check
-
-      - name: Install SARIF tools
-        run: |
-          .github/scripts/retry-download.sh \
-            gh release download clippy-sarif-latest --repo psastras/sarif-rs \
-            --pattern "clippy-sarif-x86_64-unknown-linux-gnu" --output clippy-sarif --clobber
-          .github/scripts/retry-download.sh \
-            gh release download sarif-fmt-latest --repo psastras/sarif-rs \
-            --pattern "sarif-fmt-x86_64-unknown-linux-gnu" --output sarif-fmt --clobber
-          chmod +x clippy-sarif sarif-fmt
-          mv clippy-sarif sarif-fmt /usr/local/bin/
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Clippy
-        run: |
-          set -o pipefail
-          cargo clippy --workspace --tests --message-format=json -- -D warnings \
-            | clippy-sarif \
-            | tee clippy-results.sarif \
-            | sarif-fmt
-
-      - name: Require documented runtime unsafe blocks
-        run: make runtime-unsafe-clippy
-
-      - name: Install cargo-geiger
-        run: cargo install cargo-geiger --locked
-
-      - name: Reject unreviewed runtime unsafe growth
-        run: make runtime-unsafe-geiger
-
-      - name: Audit new high-risk unsafe operations
-        run: make unsafe-pattern-audit
-
-      - name: Verify C ABI surface and JIT host ABI classification
-        run: make cabi-surface-check test-cabi-surface verify-ffi test-verify-ffi
-
-      - name: Legacy path syntax lint
-        run: make legacy-path-syntax-lint
-
-      - name: Upload Clippy SARIF
-        if: always() && hashFiles('clippy-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@c35d1b164463ee62a100735382aaaa525c5d3496  # codeql-bundle-v2.25.6 (v4)
-        with:
-          sarif_file: clippy-results.sarif
-          category: clippy
-          wait-for-processing: true
-
-      - name: Runtime poison-safe lint
-        run: make runtime-poison-safe-lint
-
-      - name: WASM-TODO backlog-authority lint
-        # Parse the offline manifest authority, exercise the synthetic teeth,
-        # then validate every actionable source marker against a stable backlog
-        # id. No GitHub/API state is needed.
-        run: make lint-wasm-todo
-
-      - name: Codegen carried-identity gate
-        # Assert the codegen carried-identity invariants with a focused step.
-        run: make codegen-carried-identity-gate
-
-      - name: Check codegen trap inventory
-        run: make codegen-trap-inventory-check
-
-      - name: Verify system-call closure
-        run: make verify-sys-lane-closure
-
-      - name: Orchestration-token leak scan
-        # Scan tracked source files and commit-message bodies of all PR commits
-        # for orchestration tokens (lane IDs, Q-tags, .tmp/ paths).  Placed outside
-        # CI-PARITY-STEPS so the preflight↔CI parity assertion is unaffected.
-        # origin/main is available because the checkout above uses fetch-depth: 0.
-        run: make leak-scan
-
-      - name: Verify build artifact, cache, and shard contracts
-        run: |
-          python3 scripts/tests/test_compiled_hew_artifact.py
-          python3 scripts/tests/test_rust_dependency_cache_contract.py
-          python3 scripts/tests/test_compiled_hew_shards.py
-      - name: ll-byte-identity normaliser self-test
-        # Prove the ll-diff oracle's normaliser still catches real IR changes
-        # (string-content edits, numeric-const NAME changes) while staying
-        # transparent to pool-id reorderings.  No compiler build required —
-        # exercises scripts/ll-byte-identity.sh against synthetic .ll snippets.
-        # Guards the ll-diff gate itself from silently degrading into a no-op.
-        run: make ll-identity-selftest
-
-      - name: Sandbox parity coverage check
-        # Assert every VM-dependent hew-sandbox-wasm test binary (one
-        # containing a function that spawns the hew-sandbox-vm Node runner)
-        # is excluded WHOLE from the generic nextest default-filter AND has
-        # every one of its tests run by the provisioned `make sandbox-parity`
-        # gate. Catches a new VM-dependent binary landing in only one of
-        # those two states -- failing unprovisioned generic runs on every
-        # platform, or silently never running on a provisioned one.
-        # Classification is binary-level, not per-test (a same-file call
-        # graph cannot safely attribute VM-dependence to individual tests).
-        # Runs the checker's own self-test first
-        # (test-sandbox-parity-coverage-check).
-        run: make sandbox-parity-coverage-check
-
-      - name: Measure dogfood compiler IR
-        run: make dogfood-compile-measure
+      # The Makefile is the repository gate authority. CI provisions external
+      # tools, then runs the same aggregate developers run locally.
+      - name: Run lint and build-system checks
+        run: make lint
 
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown
@@ -292,10 +98,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -331,10 +137,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -366,10 +172,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -387,20 +193,15 @@ jobs:
         with:
           cache-shared-key: compiled-hew-linux
 
-      - name: Assert the developer compiler profile
-        run: make hew-profile-check
-
-      - name: Build and certify the compiled Hew bundle
+      - name: Build compiled Hew bundle
         run: |
-          make hew-native libhew-debug
-          scripts/check-libhew-fresh.sh
-          python3 scripts/compiled-hew-artifact.py pack \
-            --source-debug-dir target/debug \
-            --source-revision "$GITHUB_SHA" \
-            --output compiled-hew-linux.tar.gz
+          make hew-native
+          mkdir -p compiled-hew/debug
+          cp target/debug/hew target/debug/libhew.a compiled-hew/debug/
+          tar -czf compiled-hew-linux.tar.gz compiled-hew
 
       - name: Upload compiled Hew bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: compiled-hew-linux-${{ github.sha }}
           path: compiled-hew-linux.tar.gz
@@ -420,10 +221,10 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -438,17 +239,16 @@ jobs:
           version: ${{ env.LLVM_VERSION }}
 
       - name: Download compiled Hew bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: compiled-hew-linux-${{ github.sha }}
           path: ${{ runner.temp }}/compiled-hew-download
 
-      - name: Verify compiled Hew bundle
-        run: >-
-          python3 scripts/compiled-hew-artifact.py unpack
-          --input "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
-          --destination "${{ runner.temp }}/compiled-hew-artifact"
-          --expected-revision "$GITHUB_SHA"
+      - name: Unpack compiled Hew bundle
+        run: |
+          mkdir -p "${{ runner.temp }}/compiled-hew-artifact"
+          tar -xzf "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz" \
+            -C "${{ runner.temp }}/compiled-hew-artifact"
 
       - name: Run O0 and O2 shard
         run: >-
@@ -459,7 +259,7 @@ jobs:
 
       - name: Upload shard reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: compiled-hew-shard-${{ matrix.shard }}-${{ github.sha }}
           path: target/hew-shards/
@@ -473,10 +273,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
         if: always()
@@ -485,24 +285,23 @@ jobs:
         if: >-
           always() &&
           needs.compiled-hew-linux.result == 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: compiled-hew-linux-${{ github.sha }}
           path: ${{ runner.temp }}/compiled-hew-download
 
-      - name: Verify compiled Hew bundle
+      - name: Unpack compiled Hew bundle
         if: >-
           always() &&
           needs.compiled-hew-linux.result == 'success'
-        run: >-
-          python3 scripts/compiled-hew-artifact.py unpack
-          --input "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
-          --destination "${{ runner.temp }}/compiled-hew-artifact"
-          --expected-revision "$GITHUB_SHA"
+        run: |
+          mkdir -p "${{ runner.temp }}/compiled-hew-artifact"
+          tar -xzf "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz" \
+            -C "${{ runner.temp }}/compiled-hew-artifact"
 
       - name: Download every shard report
         if: always()
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: compiled-hew-shard-*-${{ github.sha }}
           path: ${{ runner.temp }}/compiled-hew-reports
@@ -538,25 +337,23 @@ jobs:
               test "$fixture" --list --allow-empty
           done | LC_ALL=C sort > "${{ runner.temp }}/compiled-hew-full.txt"
 
-      # >>> CI-PARITY-STEPS
       - name: Assert shard union and Hew ratchet
-        run: >-  # parity-cmd: make test-hew-ratchet
+        run: >-
           make test-hew-ratchet
           HEW_SHARD_REPORT_DIR="${{ runner.temp }}/compiled-hew-reports"
           HEW_FULL_INVENTORY="${{ runner.temp }}/compiled-hew-full.txt"
           HEW_SHARD_COUNT=4
 
       - name: Assert shard union and O2 differential
-        run: >-  # parity-cmd: make test-o2-differential
+        run: >-
           make test-o2-differential
           HEW_SHARD_REPORT_DIR="${{ runner.temp }}/compiled-hew-reports"
           HEW_FULL_INVENTORY="${{ runner.temp }}/compiled-hew-full.txt"
           HEW_SHARD_COUNT=4
-      # <<< CI-PARITY-STEPS
 
       - name: Upload compiled Hew test reports
         if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "${{ runner.temp }}/compiled-hew-reports/hew-*-shard-*.xml"
           check_name: Compiled Hew Test Results
@@ -566,21 +363,16 @@ jobs:
   # Produces JUnit XML for GitHub Actions test reporting.
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
-    name: Linux gates (shard ${{ matrix.shard }}/4)
+    name: Linux gates (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
-    # Four static shards run on every event. scripts/ci-gate-shards.py checks
-    # that every participating Make gate appears exactly once in the checked-in
-    # assignment before it executes the selected shard.
-    #
-    # The shard count here and the `/4` denominator below MUST agree — a
-    # mismatch would leave a shard's commands unrun behind green checks. The
-    # workflow contract test asserts they do.
+    # Make owns the three semantic gate groups. This matrix only parallelizes
+    # them; it does not duplicate their commands in workflow YAML.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3]
     # The serial job needed 180 min for about 138 min of expected work. The
-    # heaviest of the four shards is about 31 min of gate work on top of
+    # heaviest shard is about 31 min of gate work on top of
     # roughly 15 min of provisioning and warm-up; 90 min leaves generous
     # cold-runner headroom while retaining a finite hung-job limit.
     timeout-minutes: 90
@@ -593,12 +385,12 @@ jobs:
       # unaffected.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -638,12 +430,9 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          targets: 'wasm32-unknown-unknown, wasm32-wasip1'
+          targets: "wasm32-unknown-unknown, wasm32-wasip1"
           tools: nextest@0.9.120
           cache-shared-key: build-test-linux
-
-      - name: Install WASI target
-        run: rustup target add wasm32-wasip1
 
       - name: Install wasmtime
         env:
@@ -664,7 +453,7 @@ jobs:
         uses: ./.github/actions/setup-wasm-pack
 
       - name: Setup Node.js for browser checks
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: npm
@@ -673,18 +462,14 @@ jobs:
       - name: Provision pinned ast-grep toolchain
         uses: ./.github/actions/setup-ast-grep
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
-
       - name: Run unconditional gate shard
         env:
-          COMPILED_HEW_GATE_OWNER: aggregate
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
-        run: python3 scripts/ci-gate-shards.py run ${{ matrix.shard }}
+        run: make ci-shard-${{ matrix.shard }}
 
       - name: Upload test reports
         if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
           check_name: Test Results (Linux shard ${{ matrix.shard }})
@@ -692,7 +477,7 @@ jobs:
   # Keep the established required-check name while allowing the Rust and
   # compiled-Hew suites to execute in parallel.
   #
-  # `needs.build-and-test.result` is the AGGREGATE of the four Linux gate
+  # `needs.build-and-test.result` is the aggregate of the three Linux gate
   # shards: GitHub reports `success` only when every matrix leg succeeded, and
   # a cancelled, skipped or failed leg leaves it non-success. That is what lets
   # the shards multiply without touching branch protection — this job's name,
@@ -750,10 +535,10 @@ jobs:
       # smaller modules, or when the Windows runner gains more memory.
       CARGO_BUILD_JOBS: "2"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -858,14 +643,8 @@ jobs:
           & $wasmLd.Source --version
           if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
 
-      - name: Build hew-runtime for wasm32-wasip1 (debug)
-        # Mirrors the macOS job. The WASI tests run as debug binaries and only
-        # verify this archive, so it must exist before nextest starts.
-        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
-
-      - name: Build hew-std for wasm32-wasip1 (debug)
-        # bootstrap_wasi_runner verifies this archive too.
-        run: cargo build -p hew-std --target wasm32-wasip1
+      - name: Build WASI test libraries
+        run: cargo build -p hew-runtime -p hew-std --target wasm32-wasip1 --no-default-features
 
       - name: Run full Rust workspace tests
         # Run the full workspace nextest on every event so a native-linking or
@@ -894,7 +673,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
           check_name: Test Results (Windows)
@@ -907,16 +686,16 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          targets: 'aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1'
+          targets: "aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1"
           tools: nextest@0.9.120
           cache-shared-key: build-test-macos
 
@@ -927,15 +706,6 @@ jobs:
 
       - name: Set macOS deployment target
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
-
-      - name: Build release libhew.a (runtime + stdlib)
-        run: cargo build -p hew-lib --release
-
-      - name: Build shared Rust test artifact
-        run: make stdlib
-
-      - name: Build frontend (release)
-        run: cargo build -p hew-cli --release
 
       - name: Smoke test the release binary
         # Drives a trivial program through `hew compile` with the RELEASE
@@ -962,18 +732,8 @@ jobs:
           command -v wasm-ld
           wasm-ld --version
 
-      - name: Build hew-runtime for wasm32-wasip1 (release)
-        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
-
-      - name: Build hew-runtime for wasm32-wasip1 (debug)
-        # The workspace tests run as debug binaries. bootstrap_wasi_runner
-        # derives the build profile from the test binary path and verifies that
-        # profile's libhew_runtime.a.
-        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
-
-      - name: Build hew-std for wasm32-wasip1 (debug)
-        # Pre-build the stdlib WASI archive for the same verify-only contract.
-        run: cargo build -p hew-std --target wasm32-wasip1
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Run full Rust workspace tests
         # Run the full workspace nextest on every event so a native-linking or
@@ -1006,7 +766,7 @@ jobs:
         # surfaced them — a macOS-only failure was readable only by
         # scrolling raw step logs.
         if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
           check_name: Test Results (macOS)

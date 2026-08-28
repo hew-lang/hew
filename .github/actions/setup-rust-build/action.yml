@@ -14,21 +14,21 @@ inputs:
       (e.g. 'clippy, rustfmt' for lint; 'llvm-tools' for coverage).
       Omit or leave empty to install no extra components.
     required: false
-    default: ''
+    default: ""
   targets:
     description: >
       Comma-separated target triples to pass to dtolnay/rust-toolchain
       (e.g. 'aarch64-apple-darwin, x86_64-apple-darwin' for macOS cross).
       Omit or leave empty to add no extra targets.
     required: false
-    default: ''
+    default: ""
   tools:
     description: >
       Comma-separated tool names for taiki-e/install-action
       (e.g. 'nextest', 'nextest,cargo-llvm-cov').
       The install-action step is SKIPPED entirely when this input is empty.
     required: false
-    default: ''
+    default: ""
   cache-shared-key:
     description: >
       Swatinem/rust-cache shared-key that scopes the cache to the calling
@@ -39,55 +39,28 @@ inputs:
       Swatinem/rust-cache prefix-key.  Bump to invalidate on toolchain or
       LLVM version changes.
     required: false
-    default: 'v2-deps-llvm22'
+    default: "v2-deps-llvm22"
 
 runs:
   using: composite
   steps:
-    - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+    - id: rust-toolchain
+      name: Read repository Rust toolchain
+      shell: bash
+      run: |
+        channel=$(awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' rust-toolchain.toml)
+        test -n "${channel}"
+        echo "channel=${channel}" >> "$GITHUB_OUTPUT"
+
+    - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
       with:
-        toolchain: stable
+        toolchain: ${{ steps.rust-toolchain.outputs.channel }}
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
-    # Retried up to 3x: 2026-08-08/2026-08-12 CI incidents showed
-    # taiki-e/install-action's own binary fetch (cargo-nextest et al., from
-    # GitHub release assets) failing with curl exit 52 "Empty reply from
-    # server" while GitHub's status page reported operational. The action is
-    # a third-party `uses:` step with no exposed retry-count input, so the
-    # retry lives at this composite-action level rather than inside it.
-    - id: install-tools-attempt-1
-      uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+    - name: Install cargo tools
+      uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
       if: inputs.tools != ''
-      continue-on-error: true
-      with:
-        tool: ${{ inputs.tools }}
-
-    - name: Wait before retrying tool install
-      if: inputs.tools != '' && steps.install-tools-attempt-1.outcome == 'failure'
-      shell: bash
-      run: sleep 15
-
-    - id: install-tools-attempt-2
-      uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-      if: inputs.tools != '' && steps.install-tools-attempt-1.outcome == 'failure'
-      continue-on-error: true
-      with:
-        tool: ${{ inputs.tools }}
-
-    - name: Wait before final tool install attempt
-      if: >-
-        inputs.tools != '' &&
-        steps.install-tools-attempt-1.outcome == 'failure' &&
-        steps.install-tools-attempt-2.outcome == 'failure'
-      shell: bash
-      run: sleep 30
-
-    - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-      if: >-
-        inputs.tools != '' &&
-        steps.install-tools-attempt-1.outcome == 'failure' &&
-        steps.install-tools-attempt-2.outcome == 'failure'
       with:
         tool: ${{ inputs.tools }}
 
@@ -101,41 +74,11 @@ runs:
     # invocations; Swatinem caches the registry.  SCCACHE_CACHE_SIZE bounds
     # the on-disk buffer; the GHA cache has its own 10 GB/repo ceiling.
     #
-    # Retried up to 3x for the same reason as install-tools above: the
-    # 2026-08-08/2026-08-12 incidents showed this action's own sccache
-    # binary fetch failing with "socket hang up". The action already retries
-    # twice internally before giving up; this outer loop covers an egress
-    # blip that outlasts its built-in window. No exposed retry-count input
-    # (node action, dist/setup/index.js), so the retry wraps the step.
-    - id: sccache-attempt-1
-      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
-      continue-on-error: true
+    - name: Install sccache
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       with:
-        # Always pull the latest released sccache binary unless we need to
-        # pin for a specific fix.  The action itself is SHA-pinned above.
-        version: "v0.10.0"
-
-    - name: Wait before retrying sccache setup
-      if: steps.sccache-attempt-1.outcome == 'failure'
-      shell: bash
-      run: sleep 15
-
-    - id: sccache-attempt-2
-      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
-      if: steps.sccache-attempt-1.outcome == 'failure'
-      continue-on-error: true
-      with:
-        version: "v0.10.0"
-
-    - name: Wait before final sccache setup attempt
-      if: steps.sccache-attempt-1.outcome == 'failure' && steps.sccache-attempt-2.outcome == 'failure'
-      shell: bash
-      run: sleep 30
-
-    - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
-      if: steps.sccache-attempt-1.outcome == 'failure' && steps.sccache-attempt-2.outcome == 'failure'
-      with:
-        version: "v0.10.0"
+        # Pin the compiler-cache binary as well as the action.
+        version: "v0.17.0"
 
     - name: Export sccache environment variables
       shell: bash
@@ -143,6 +86,10 @@ runs:
         echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
         echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
+        # sccache 0.17's recommended workstation/CI mode performs hashing and
+        # compilation in each client process, avoiding a daemon bottleneck;
+        # the daemon still owns the GHA backend and aggregates job statistics.
+        echo "SCCACHE_CLIENT_SIDE=1" >> "$GITHUB_ENV"
         # The action's post step emits the cache hit and write-error counters,
         # but sccache normally stops its server after 600 idle seconds. Test
         # execution can outlast compilation by much longer, which otherwise
@@ -150,27 +97,19 @@ runs:
         # per-runner daemon alive until GitHub tears the runner down so those
         # counters describe the work this job actually performed.
         echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
-        # RUSTC_WRAPPER is exported job-wide, so every compile in the job --
-        # including `cargo install` of a tool -- goes through sccache. Without
-        # this, an unreachable Actions cache service is a hard rustc failure:
-        # a DNS blip took out `Install cargo-deny` on 2026-08-21 before a single
-        # check had run. A cache that cannot be reached must degrade to a cold
-        # compile; it is a cache.
+        # Later compilation steps use the wrapper. A cache that cannot be
+        # reached must degrade to a cold compile; it is a cache.
         echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "$GITHUB_ENV"
 
-    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       with:
         prefix-key: ${{ inputs.cache-prefix-key }}
         shared-key: ${{ inputs.cache-shared-key }}
-        # Keep the dependency layer stable across ordinary source and
-        # workspace-manifest edits. Cargo's fingerprints still reject an
-        # incompatible restored artifact, while a lock/toolchain/config change
-        # rotates the exact cache key. The action removes workspace crates
-        # before saving, so this stores third-party compilation rather than a
-        # second copy of the source-sensitive sccache layer above.
+        # Cache Cargo downloads only. Compiled outputs belong to sccache; saving
+        # target/ here would restore a second overlapping compilation cache.
         add-rust-environment-hash-key: "false"
         key: deps-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
-        cache-targets: "true"
+        cache-targets: "false"
         cache-all-crates: "false"
         cache-workspace-crates: "false"
         cache-bin: "false"

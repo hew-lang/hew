@@ -16,7 +16,6 @@
 #   --skip-build        Skip `make release` and package build; use existing dist/
 #   --only LIST         Comma-separated subset: debian,ubuntu,ubuntu22,rpm,fedora,arch,alpine
 #   --arch ARCH         Target arch: x86_64 (default) or aarch64
-#   --build-timeout N   Timeout in seconds for `make release` (default: 1800)
 #   --package-timeout N Timeout in seconds for package assembly (default: 900)
 #   --test-timeout N    Timeout in seconds per Docker distribution test (default: 300)
 #   -h / --help         Show this help
@@ -47,7 +46,6 @@ VERSION=""
 TARGET_ARCH="$(uname -m)"
 SKIP_BUILD=false
 ONLY=""
-BUILD_TIMEOUT=1800
 PACKAGE_TIMEOUT=900
 TEST_TIMEOUT=300
 
@@ -68,10 +66,6 @@ while [[ $# -gt 0 ]]; do
         ;;
     --arch)
         TARGET_ARCH="$2"
-        shift 2
-        ;;
-    --build-timeout)
-        BUILD_TIMEOUT="$2"
         shift 2
         ;;
     --package-timeout)
@@ -151,11 +145,8 @@ step "Building packages"
 if $SKIP_BUILD; then
     info "mode" "skip-build — using existing packages in dist/"
 else
-    info "building" "release binaries (make release)..."
-    info "timeout" "${BUILD_TIMEOUT}s make release / ${PACKAGE_TIMEOUT}s package build"
-    run_with_timeout "${BUILD_TIMEOUT}" make -C "${REPO_DIR}" release
-
-    info "building" "all package formats (installers/build-packages.sh)..."
+    info "building" "release and all package formats (installers/build-packages.sh)..."
+    info "timeout" "${PACKAGE_TIMEOUT}s package build"
     run_with_timeout "${PACKAGE_TIMEOUT}" "${REPO_DIR}/installers/build-packages.sh" \
         --version "${VERSION}" \
         --arch "${TARGET_ARCH}" \

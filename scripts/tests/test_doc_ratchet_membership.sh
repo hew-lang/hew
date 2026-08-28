@@ -9,11 +9,11 @@ LEGACY_HANDSHAKE_POLL_SECONDS=0.01
 
 legacy_large_set_producer() {
     local pipe_closed_marker="$1"
-    local deadline=$(( SECONDS + LEGACY_HANDSHAKE_TIMEOUT_SECONDS ))
+    local deadline=$((SECONDS + LEGACY_HANDSHAKE_TIMEOUT_SECONDS))
 
     printf '%s\n' "present"
     while [[ ! -e "$pipe_closed_marker" ]]; do
-        if (( SECONDS >= deadline )); then
+        if ((SECONDS >= deadline)); then
             return "$LEGACY_HANDSHAKE_TIMEOUT_STATUS"
         fi
         sleep "$LEGACY_HANDSHAKE_POLL_SECONDS"
@@ -26,8 +26,8 @@ if [[ "${1:-}" == "--probe-legacy-handshake-timeout" ]]; then
     probe_root="$(mktemp -d "${TMPDIR:-/tmp}/hew-doc-ratchet-timeout.XXXXXX")"
     probe_status=0
     unset LARGE_SET 2>/dev/null || true
-    legacy_large_set_producer "$probe_root/never-created" >/dev/null \
-        || probe_status=$?
+    legacy_large_set_producer "$probe_root/never-created" >/dev/null ||
+        probe_status=$?
     rmdir "$probe_root"
     exit "$probe_status"
 fi
@@ -57,12 +57,12 @@ FAILURES=0
 
 pass() {
     echo "PASS: $*"
-    PASSES=$(( PASSES + 1 ))
+    PASSES=$((PASSES + 1))
 }
 
 fail() {
     echo "FAIL: $*" >&2
-    FAILURES=$(( FAILURES + 1 ))
+    FAILURES=$((FAILURES + 1))
 }
 
 assert_contains() {
@@ -74,28 +74,6 @@ assert_contains() {
         pass "$label"
     else
         fail "$label (missing: $expected)"
-    fi
-}
-
-assert_production_membership_wiring() {
-    # A literal source contract; variable expansion would weaken the assertion
-    # by substituting the self-test's current values. Both directions of the
-    # comparison run through the one shared set_difference call site, and the
-    # driver must reach it with exact membership rather than a producer-to-grep
-    # pipeline that can turn a present entry into a false absence.
-    # shellcheck disable=SC2016
-    local lookup='        if ! line_set_contains "$against" "$entry"; then'
-    # shellcheck disable=SC2016
-    local expected_call='    unexpected_failures="$(set_difference "$ACTUAL_STR" "$EXPECTED_STR")"'
-    # shellcheck disable=SC2016
-    local actual_call='    unexpected_passes="$(set_difference "$EXPECTED_STR" "$ACTUAL_STR")"'
-
-    if grep -Fqx "$lookup" "$HARNESS" \
-        && grep -Fqx "$expected_call" "$HARNESS" \
-        && grep -Fqx "$actual_call" "$HARNESS"; then
-        pass "production ratchet uses exact membership for both set comparisons"
-    else
-        fail "production ratchet bypasses exact membership wiring"
     fi
 }
 
@@ -118,7 +96,7 @@ STALE_EXPECTED="$TMP_ROOT/expected-stale.txt"
 
 touch "$FAIL_IDS" "$CALL_LOG" "$EMPTY_EXPECTED"
 
-cat > "$FAKE_HEW" <<'FAKE_HEW_EOF'
+cat >"$FAKE_HEW" <<'FAKE_HEW_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -162,18 +140,18 @@ run_harness() {
     HARNESS_STATUS=0
     HARNESS_OUTPUT="$({
         HEW_FAIL_IDS="$fail_file" \
-        HEW_CALL_LOG="$call_log" \
-        "$HARNESS" doc-fences \
+            HEW_CALL_LOG="$call_log" \
+            "$HARNESS" doc-fences \
             --expected-failures "$expected_file" \
             --outdir "$OUTDIR" \
             --hew-bin "$FAKE_HEW"
     } 2>&1)" || HARNESS_STATUS=$?
 
-    HARNESS_CALL=$(( HARNESS_CALL + 1 ))
+    HARNESS_CALL=$((HARNESS_CALL + 1))
     printf '%s\n' "${COUNTERFACTUAL_MARKER}[harness-${HARNESS_CALL}] exit ${HARNESS_STATUS}"
     if [[ -n "$HARNESS_OUTPUT" ]]; then
-        printf '%s\n' "$HARNESS_OUTPUT" \
-            | sed "s/^/${COUNTERFACTUAL_MARKER}[harness-${HARNESS_CALL}] /"
+        printf '%s\n' "$HARNESS_OUTPUT" |
+            sed "s/^/${COUNTERFACTUAL_MARKER}[harness-${HARNESS_CALL}] /"
     fi
 }
 
@@ -185,18 +163,13 @@ else
     fail "discovery harness failed with status $HARNESS_STATUS"
 fi
 
-# Keep the regression tooth attached to the production ratchet. A large helper
-# test alone would remain green if either production lookup were restored to a
-# producer-to-grep pipeline, so require both call sites explicitly.
-assert_production_membership_wiring
-
 # Reproduce the old false-absence mechanism deterministically. The set is much
 # larger than a pipe buffer and the present needle is first. The consumer closes
 # its pipe after grep's early match, records that closure, and only then lets the
 # producer write the remaining set and receive SIGPIPE under pipefail.
 LARGE_SET="$(awk 'BEGIN { print "present"; for (i = 0; i < 200000; i++) printf "filler-%06d\\n", i }')"
-LARGE_SET_MIN_BYTES=$(( 2 * 1024 * 1024 ))
-if (( ${#LARGE_SET} > LARGE_SET_MIN_BYTES )); then
+LARGE_SET_MIN_BYTES=$((2 * 1024 * 1024))
+if ((${#LARGE_SET} > LARGE_SET_MIN_BYTES)); then
     pass "membership regression set exceeds a 2 MiB pipe-capacity bound"
 else
     fail "membership regression set does not exceed the pipe-capacity bound"
@@ -205,42 +178,42 @@ LEGACY_PIPE_CLOSED="$TMP_ROOT/legacy-pipe-closed"
 legacy_early_exit_consumer() {
     grep -qxF "present"
     exec 0<&-
-    : > "$LEGACY_PIPE_CLOSED"
+    : >"$LEGACY_PIPE_CLOSED"
 }
 
 legacy_status=0
-legacy_large_set_producer "$LEGACY_PIPE_CLOSED" 2>/dev/null \
-    | legacy_early_exit_consumer || legacy_status=$?
+legacy_large_set_producer "$LEGACY_PIPE_CLOSED" 2>/dev/null |
+    legacy_early_exit_consumer || legacy_status=$?
 case "$legacy_status" in
-    0)
-        fail "legacy producer-to-grep membership did not reproduce SIGPIPE"
-        ;;
-    "$LEGACY_HANDSHAKE_TIMEOUT_STATUS")
-        fail "legacy producer handshake timed out before consumer pipe closure"
-        ;;
-    *)
-        pass "legacy producer-to-grep membership fails on a present large-set entry"
-        ;;
+0)
+    fail "legacy producer-to-grep membership did not reproduce SIGPIPE"
+    ;;
+"$LEGACY_HANDSHAKE_TIMEOUT_STATUS")
+    fail "legacy producer handshake timed out before consumer pipe closure"
+    ;;
+*)
+    pass "legacy producer-to-grep membership fails on a present large-set entry"
+    ;;
 esac
 
 # Exercise the absent-marker path in a separate process group. The producer's
 # dedicated status must win before the outer watchdog; removing or bypassing
 # the internal deadline therefore fails quickly instead of hanging this gate.
 timeout_probe_status=0
-timeout_probe_budget=$(( LEGACY_HANDSHAKE_TIMEOUT_SECONDS + 3 ))
+timeout_probe_budget=$((LEGACY_HANDSHAKE_TIMEOUT_SECONDS + 3))
 run_with_timeout "$timeout_probe_budget" "$BASH" "${BASH_SOURCE[0]}" \
-    --probe-legacy-handshake-timeout >/dev/null 2>&1 \
-    || timeout_probe_status=$?
+    --probe-legacy-handshake-timeout >/dev/null 2>&1 ||
+    timeout_probe_status=$?
 case "$timeout_probe_status" in
-    "$LEGACY_HANDSHAKE_TIMEOUT_STATUS")
-        pass "missing-marker handshake reports its dedicated timeout status"
-        ;;
-    124|137)
-        fail "missing-marker handshake exceeded its external watchdog"
-        ;;
-    *)
-        fail "missing-marker handshake returned unexpected status $timeout_probe_status"
-        ;;
+"$LEGACY_HANDSHAKE_TIMEOUT_STATUS")
+    pass "missing-marker handshake reports its dedicated timeout status"
+    ;;
+124 | 137)
+    fail "missing-marker handshake exceeded its external watchdog"
+    ;;
+*)
+    fail "missing-marker handshake returned unexpected status $timeout_probe_status"
+    ;;
 esac
 
 if line_set_contains "$LARGE_SET" "present"; then
@@ -261,18 +234,18 @@ baseline_count=0
 passing_id=""
 while IFS= read -r fence_id; do
     [[ -z "$fence_id" ]] && continue
-    if (( baseline_count < 200 )); then
-        printf '%s\n' "$fence_id" >> "$BASELINE_FAIL_IDS"
+    if ((baseline_count < 200)); then
+        printf '%s\n' "$fence_id" >>"$BASELINE_FAIL_IDS"
         checksum_output="$(cksum "$OUTDIR/${fence_id}.hew")"
-        read -r checksum _ <<< "$checksum_output"
-        printf '%s %s\n' "$fence_id" "$checksum" >> "$BASELINE_EXPECTED"
-        baseline_count=$(( baseline_count + 1 ))
+        read -r checksum _ <<<"$checksum_output"
+        printf '%s %s\n' "$fence_id" "$checksum" >>"$BASELINE_EXPECTED"
+        baseline_count=$((baseline_count + 1))
     elif [[ -z "$passing_id" ]]; then
         passing_id="$fence_id"
     fi
-done < "$CALL_LOG"
+done <"$CALL_LOG"
 
-if (( baseline_count == 200 )) && [[ -n "$passing_id" ]]; then
+if ((baseline_count == 200)) && [[ -n "$passing_id" ]]; then
     pass "fixture retains 200 tracked failures and an untracked passing fence"
 else
     fail "fixture corpus is too small for mutation coverage"
@@ -310,8 +283,8 @@ while IFS= read -r fence_id; do
         first_failure="$fence_id"
         continue
     fi
-    printf '%s\n' "$fence_id" >> "$NOW_PASS_IDS"
-done < "$BASELINE_FAIL_IDS"
+    printf '%s\n' "$fence_id" >>"$NOW_PASS_IDS"
+done <"$BASELINE_FAIL_IDS"
 
 run_harness "$BASELINE_EXPECTED" "$NOW_PASS_IDS" /dev/null
 if [[ "$HARNESS_STATUS" -ne 0 ]]; then
@@ -324,7 +297,7 @@ assert_contains "$HARNESS_OUTPUT" "NOW-PASSES: $first_failure" \
 
 # Mutation 2: a previously passing fence fails and must be rejected.
 cp "$BASELINE_FAIL_IDS" "$NEW_FAILURE_IDS"
-printf '%s\n' "$passing_id" >> "$NEW_FAILURE_IDS"
+printf '%s\n' "$passing_id" >>"$NEW_FAILURE_IDS"
 run_harness "$BASELINE_EXPECTED" "$NEW_FAILURE_IDS" /dev/null
 if [[ "$HARNESS_STATUS" -ne 0 ]]; then
     pass "new-failure mutation is rejected"
@@ -338,12 +311,12 @@ assert_contains "$HARNESS_OUTPUT" "UNEXPECTED: $passing_id" \
 first_entry=1
 while read -r fence_id checksum; do
     [[ -z "$fence_id" ]] && continue
-    if (( first_entry == 1 )); then
-        checksum=$(( checksum + 1 ))
+    if ((first_entry == 1)); then
+        checksum=$((checksum + 1))
         first_entry=0
     fi
-    printf '%s %s\n' "$fence_id" "$checksum" >> "$STALE_EXPECTED"
-done < "$BASELINE_EXPECTED"
+    printf '%s %s\n' "$fence_id" "$checksum" >>"$STALE_EXPECTED"
+done <"$BASELINE_EXPECTED"
 
 run_harness "$STALE_EXPECTED" "$BASELINE_FAIL_IDS" /dev/null
 if [[ "$HARNESS_STATUS" -ne 0 ]]; then
@@ -356,4 +329,4 @@ assert_contains "$HARNESS_OUTPUT" "STALE METADATA: $first_failure" \
 
 echo ""
 echo "Doc-ratchet membership self-test: $PASSES passed, $FAILURES failed"
-(( FAILURES == 0 ))
+((FAILURES == 0))

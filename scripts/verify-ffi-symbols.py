@@ -611,8 +611,7 @@ def validate_ownership_contracts(
             errors.append(
                 f"unclassified ownership contracts: expected "
                 f"{expected_unclassified}, found {actual_unclassified}; "
-                f"re-record with `make baselines` "
-                f"(python3 scripts/baselines.py regen --only ffi-ownership-ratchet)"
+                f"re-record with `make ffi-ownership-ratchet-record`"
             )
         elif actual_unclassified > expected_unclassified:
             # The regen half of the ratchet, and its one refusal. More

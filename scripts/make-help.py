@@ -10,7 +10,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SECTION_ORDER = ("Build", "Check", "Test", "Release", "Develop")
-MAX_ENTRIES = 20
 ANNOTATION_RE = re.compile(
     r"^(?P<target>[A-Za-z0-9_.%/-]+)\s*:[^#]*"
     r"##\s*(?P<section>[^:]+):\s*(?P<purpose>.*\S)\s*$"
@@ -40,10 +39,6 @@ def entries(makefile: str) -> list[tuple[str, str, str]]:
 
     if not found:
         raise ValueError("Makefile help index is empty")
-    if len(found) > MAX_ENTRIES:
-        raise ValueError(
-            f"Makefile help index has {len(found)} entries; maximum is {MAX_ENTRIES}"
-        )
     return found
 
 

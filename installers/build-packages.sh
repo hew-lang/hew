@@ -183,15 +183,11 @@ build_tarball() {
     step "Building from source"
     cd "${REPO_DIR}"
 
-    info "cargo" "hew-cli hew-lsp hew-observe (release)..."
-    cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-    info "cargo" "hew-lib (release-lib)..."
-    cargo build -p hew-lib --profile release-lib
+    info "make" "release compiler and target libraries..."
+    make release
 
     local release_dir
-    local release_lib_dir
     release_dir="$(_cargo_output_dir --native --profile release)"
-    release_lib_dir="$(_cargo_output_dir --native --profile release-lib)"
 
     step "Assembling tarball"
     local staging_root="${DIST_DIR}/.staging-$$"
@@ -208,18 +204,16 @@ build_tarball() {
         fi
     done
 
-    if [[ -f "${release_lib_dir}/libhew.a" ]]; then
-        cp "${release_lib_dir}/libhew.a" "${staging}/lib/"
-    else
-        warn "libhew.a not found: ${release_lib_dir}/libhew.a"
-    fi
+    # `make release` owns the complete library product: the flat native
+    # fallback, target-specific native archives, and portable WASI archives.
+    cp -LR "${REPO_DIR}/build/lib/." "${staging}/lib/"
 
     # Standard library sources (all .hew files, including subdirectories)
     cp -r "${REPO_DIR}/std/." "${staging}/std/"
 
     # Generate shell completions from built binaries
     for shell in bash zsh fish; do
-        "${staging}/bin/hew" completions "${shell}" > "${staging}/completions/hew.${shell}"
+        "${staging}/bin/hew" completions "${shell}" >"${staging}/completions/hew.${shell}"
     done
 
     cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \
@@ -499,7 +493,7 @@ build_alpine() {
 
         # Generate shell completions from built binaries
         for shell in bash zsh fish; do
-            "${staging}/bin/hew" completions "${shell}" > "${staging}/completions/hew.${shell}"
+            "${staging}/bin/hew" completions "${shell}" >"${staging}/completions/hew.${shell}"
         done
 
         cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \

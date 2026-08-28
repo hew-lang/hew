@@ -4,7 +4,7 @@
 #
 # Output: dist/test-tarball/ — a directory with the tarball layout:
 #   bin/hew
-#   lib/libhew.a
+#   lib/libhew.a and target-specific libraries
 #   std/**/*.hew
 
 set -euo pipefail
@@ -14,8 +14,8 @@ STAGING="${REPO_DIR}/dist/test-tarball"
 
 echo "==> Assembling test tarball at ${STAGING}"
 
-if [ ! -f "${REPO_DIR}/target/release/libhew.a" ]; then
-    echo "Error: target/release/libhew.a not found. Run 'make release' first." >&2
+if [ ! -x "${REPO_DIR}/build/bin/hew" ] || [ ! -f "${REPO_DIR}/build/lib/libhew.a" ]; then
+    echo "Error: staged release artifacts not found. Run 'make release' first." >&2
     exit 1
 fi
 
@@ -23,10 +23,10 @@ rm -rf "${STAGING}"
 mkdir -p "${STAGING}/bin" "${STAGING}/lib" "${STAGING}/std"
 
 # Binaries (codegen is embedded in the hew binary)
-install -m755 "${REPO_DIR}/target/release/hew" "${STAGING}/bin/hew"
+install -m755 "${REPO_DIR}/build/bin/hew" "${STAGING}/bin/hew"
 
-# Combined Hew library (runtime + all stdlib packages)
-install -m644 "${REPO_DIR}/target/release/libhew.a" "${STAGING}/lib/libhew.a"
+# Complete release library layout, including WASI and native target subtrees.
+cp -LR "${REPO_DIR}/build/lib/." "${STAGING}/lib/"
 echo "    libhew.a: $(du -h "${STAGING}/lib/libhew.a" | cut -f1)"
 
 # Standard library sources (all .hew files, including subdirectories)

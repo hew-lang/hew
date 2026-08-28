@@ -260,12 +260,9 @@ def run_runtime_evidence(evidence: dict[str, dict], profile: str) -> None:
         executed += 1
         key = tuple(command)
         if key not in completed:
-            env = os.environ.copy()
-            env["RUSTC_WRAPPER"] = ""
             completed[key] = run_bounded(
                 command,
                 cwd=ROOT,
-                env=env,
                 timeout_seconds=600,
                 memory_mb=16384,
             )

@@ -15,8 +15,8 @@ import std.os;
 
 // `record` is Serializable (required for RemotePid messaging).
 type KvPut {
-    key: string,
-    val: string
+    key: string;
+    val: string;
 }
 
 enum KvReq {

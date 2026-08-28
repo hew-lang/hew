@@ -22,7 +22,9 @@ def tracked_shell_scripts(root: Path) -> tuple[str, ...]:
         sorted(
             path.decode("utf-8")
             for path in result.stdout.split(b"\0")
-            if path and path.endswith(b".sh")
+            if path
+            and path.endswith(b".sh")
+            and (root / path.decode("utf-8")).is_file()
         )
     )
 

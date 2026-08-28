@@ -309,6 +309,16 @@ pub(super) fn derive_elaboration(
             _ => None,
         })
         .collect();
+    let transfer_destination_cleanup_bindings: HashSet<BindingId> = ownership_transfers
+        .iter()
+        .filter_map(|event| match event {
+            crate::model::OwnershipEvent::Transfer {
+                to_owner: Some(owner),
+                ..
+            } => Some(owner.binding),
+            _ => None,
+        })
+        .collect();
     let mir_consumed_project_binder_locals: HashSet<u32> = blocks
         .iter()
         .flat_map(|block| &block.instructions)
@@ -1023,12 +1033,33 @@ pub(super) fn derive_elaboration(
     // type. Extending every allow-set made a plain `Vec<i64>` match the earlier
     // owned-element arm and call the wrong destructor on exceptional paths.
     for (binding, _name, ty) in &owned_locals_snapshot {
+        let is_explicit_transfer_generation = path_local_transfer_cleanup_bindings
+            .contains(binding)
+            || return_move_chain_cleanup_bindings.contains(binding)
+            || transfer_destination_cleanup_bindings.contains(binding)
+            || builder
+                .typed_produced_value_owner_bindings
+                .contains(binding)
+            || builder.scrutinee_payload_owner_bindings.contains(binding);
+        let is_owned_actor_message_ingress = builder.current_function_call_conv
+            == crate::model::FunctionCallConv::ActorHandler
+            && ownership_binding_locals
+                .get(binding)
+                .and_then(|place| base_local(*place))
+                .is_some_and(|local| builder.parameter_locals.contains(&local));
         // The template is a type/layout catalogue, not a whole-function
-        // liveness verdict.  Every explicit owner generation needs its one
-        // correctly-typed destructor available for an earlier unwind; the
-        // exact Checked-MIR owner state below decides whether that generation
-        // is live at each exit.  Global "consumed somewhere" removal leaked
-        // values on calls preceding a later aggregate/return handoff.
+        // liveness verdict. Existing leaf/collection cleanup keeps its
+        // generation-aware unwind coverage; the exact Checked-MIR owner state
+        // below decides whether that generation is live at each exit. Owned
+        // records are different: their fail-closed sole-owner exclusion must
+        // survive unless an explicit transfer event requires pre-handoff
+        // cleanup for that exact generation, a typed produced-value verdict
+        // published a fresh synthetic owner, or a provenance-checked
+        // scrutinee-payload warrant minted the record owner after a projection
+        // load made the structural scan conservative. An actor handler's
+        // registered message parameter is also explicit ingress ownership;
+        // admitting its recipe covers suspension before any later field
+        // handoff, while exact owner replay suppresses it after a transfer.
         if matches!(ty, ResolvedTy::String) {
             cow_drop_allowed.insert(*binding);
         }
@@ -1055,7 +1086,9 @@ pub(super) fn derive_elaboration(
         if builder.binding_ty_is_plain_vec(ty) {
             plain_vec_drop_allowed.insert(*binding);
         }
-        if is_owned_record(ty) {
+        if is_owned_record(ty)
+            && (is_explicit_transfer_generation || is_owned_actor_message_ingress)
+        {
             owned_record_drop_allowed.insert(*binding);
         }
         if ty_is_heap_owning_tuple(
@@ -2917,6 +2950,34 @@ fn stream_send_composite_abandon_drops(builder: &Builder, exit: &ExitPath) -> Ve
         .collect()
 }
 
+/// Whether final owner-recipe replay may materialize a destructor on this exit.
+///
+/// A guarded owner can be absent from the exact-state intersection at a join:
+/// one predecessor transferred it and set the guard while another still owns
+/// it. The guard is explicit generation authority for that conditional drop.
+/// An unguarded record still needs the provisional per-exit plan to have
+/// admitted it, preserving the fail-closed moved-field parent exclusion.
+fn owner_recipe_admitted_on_exit(
+    plan: &DropPlan,
+    builder: &Builder,
+    owner: crate::model::OwnerId,
+    place: Place,
+    kind: DropKind,
+    is_guarded: bool,
+) -> bool {
+    if kind != DropKind::RecordInPlace || is_guarded {
+        return true;
+    }
+    let binding_place = builder.binding_locals.get(&owner.binding).copied();
+    plan.drops
+        .iter()
+        .any(|drop| drop.place == place || Some(drop.place) == binding_place)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "recipe replay, generation selection, guard attachment, ordering, and exit synchronization form one atomic reconstruction pass"
+)]
 fn rebuild_drop_plans_from_owner_recipes(
     blocks: &[BasicBlock],
     decisions: &[super::DecisionFact],
@@ -2963,6 +3024,13 @@ fn rebuild_drop_plans_from_owner_recipes(
     let (maybe_entries, maybe_exits) = maybe_owner_states(blocks);
     let entry_parameter_owners = entry_cancel_parameter_owners(blocks, decisions);
     for (exit, plan) in &mut elaboration.drop_plans {
+        // Recipe replay refines cleanup already admitted on this exact exit
+        // with the live generation, place, and guard; it must not invent
+        // admission. This keeps a source covered on pre-transfer unwind while
+        // preserving its terminal sole-owner exclusion after handoff.
+        // Function-entry cancellation is the sole exception: parameter storage
+        // is live before MIR's leading Mint and is admitted by typed boundary
+        // facts below.
         let is_entry_cancel =
             matches!(exit, ExitPath::Cancel { block } if *block == ENTRY_BLOCK_ID);
         let required = if is_entry_cancel {
@@ -2981,7 +3049,20 @@ fn rebuild_drop_plans_from_owner_recipes(
         let mut synthesized = required
             .iter()
             .filter_map(|(owner, place)| {
-                recipes.get(owner).map(|recipe| {
+                let recipe = recipes.get(owner)?;
+                if !is_entry_cancel
+                    && !owner_recipe_admitted_on_exit(
+                        plan,
+                        builder,
+                        *owner,
+                        *place,
+                        recipe.kind,
+                        guarded_owners.contains(owner),
+                    )
+                {
+                    return None;
+                }
+                Some({
                     (
                         recipe.declaration_order,
                         *owner,
@@ -7403,7 +7484,15 @@ fn checked_owner_recipe_rebuilds_the_exact_exit_without_builder_state() {
             ExitPath::Return {
                 block: ENTRY_BLOCK_ID,
             },
-            DropPlan::default(),
+            DropPlan {
+                drops: vec![ElabDrop {
+                    place,
+                    ty: ResolvedTy::String,
+                    drop_fn: None,
+                    kind: drop_kind_for(place, &ResolvedTy::String, None),
+                    guard: None,
+                }],
+            },
         )],
         coroutine: None,
         lambda_captures: vec![],
@@ -7472,6 +7561,93 @@ fn missing_checked_owner_recipe_cannot_materialize_a_destructor() {
     assert!(validate_ownership_events(&checked)
         .iter()
         .any(|finding| matches!(finding, MirCheck::ObligationUnderReleased { .. })));
+}
+
+#[test]
+fn final_elaboration_preserves_moved_record_field_and_sibling_cleanup() {
+    let source = r"
+type Pair {
+    moved: Vec<i64>;
+    sibling: Vec<i64>;
+}
+
+fn main() {
+    let pair = Pair {
+        moved: [1],
+        sibling: [2],
+    };
+    let moved = pair.moved;
+}
+";
+    let module = crate::return_provenance::tests::lower_source(source);
+    let pipeline = crate::lower_hir_module(&module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "fixture must lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("checked main");
+    let sibling_drops = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                Instr::RecordFieldDrop {
+                    field_offset: FieldOffset(1),
+                    ty: ResolvedTy::Named {
+                        builtin: Some(hew_types::BuiltinType::Vec),
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        sibling_drops, 1,
+        "the remaining owned sibling must have one field-addressed release"
+    );
+
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("elaborated main");
+    let terminal_drops = elaborated
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+        .flat_map(|(_, plan)| &plan.drops)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        terminal_drops
+            .iter()
+            .filter(|drop| {
+                matches!(
+                    drop.ty,
+                    ResolvedTy::Named {
+                        builtin: Some(hew_types::BuiltinType::Vec),
+                        ..
+                    }
+                )
+            })
+            .count(),
+        1,
+        "the extracted Vec owner must have exactly one terminal destructor"
+    );
+    assert!(
+        terminal_drops
+            .iter()
+            .all(|drop| drop.kind != DropKind::RecordInPlace),
+        "final recipe reconstruction must not revive the transferred parent record"
+    );
 }
 
 #[test]
@@ -9418,7 +9594,8 @@ fn suspend_resume_mint_places(kind: &SuspendKind) -> Vec<Place> {
         } => std::iter::once(*result_dest)
             .chain(deadline_result_dest.iter().copied())
             .collect(),
-        SuspendKind::StreamSend { .. }
+        SuspendKind::ActorSend { .. }
+        | SuspendKind::StreamSend { .. }
         | SuspendKind::Sleep { .. }
         | SuspendKind::SleepUntil { .. } => Vec::new(),
     }
@@ -10609,7 +10786,7 @@ mod close_obligated_borrow_alias_tests {
 /// creates the two-free hazard this gate guards.
 ///
 /// Deliberately EXCLUDES the NON-OWNING actor-pid leaves
-/// (`Pid`/`LocalPid`) and the inline `RemotePid` identity aggregate. None has
+/// (`Pid`/`LocalPid`/`ChildRef`) and the inline `RemotePid` identity aggregate. None has
 /// drop glue: local pid handles do not own actor lifetime, while `RemotePid` is
 /// `BitCopy`. They can NEVER alias a second free in ANY context (call-arg,
 /// actor-state field, tuple, return, re-aggregation). Gating them over-refuses
@@ -14347,11 +14524,13 @@ pub(super) fn enumerate_exits(
             ),
             Terminator::Send {
                 actor: _,
+                stable_role: _,
                 msg_type: _,
                 value: _,
                 next,
                 arg_modes: _,
                 cleanup_plan: _,
+                result_dest: _,
             } => (
                 // `actor` is a Place; the ExitPath::Send slot carries
                 // the callee name. Spine has no Send construction

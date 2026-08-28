@@ -2,7 +2,6 @@
 
 import re
 import shlex
-import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -50,7 +49,7 @@ X86_64_FREEBSD_TOOL_PACKAGES = (
     "llvm22",
     "gdb",
     "rustup-init",
-    "python3",
+    "python312",
     "cmake",
     "ninja",
     "git",
@@ -71,7 +70,7 @@ AARCH64_FREEBSD_TOOL_PACKAGES = (
     "llvm22",
     "gdb",
     "rust",
-    "python3",
+    "python312",
     "cmake",
     "ninja",
     "git",
@@ -155,7 +154,7 @@ EXPECTED_PKG_RUST_PATH_ENV = (
 )
 EXPECTED_RUSTUP_CARGO_ENV = ("export", "CARGO=$HOME/.cargo/bin/cargo")
 EXPECTED_PKG_RUST_CARGO_ENV = ("export", "CARGO=/usr/local/bin/cargo")
-EXPECTED_PYTHON_ENV = ("export", "PYTHON=/usr/local/bin/python3")
+EXPECTED_PYTHON_ENV = ("export", "PYTHON=/usr/local/bin/python3.12")
 EXPECTED_CARGO_PROBE = ("test", "-x", "$CARGO")
 EXPECTED_PYTHON_PROBE = ("test", "-x", "$PYTHON")
 EXPECTED_RUSTC_PIN_PROBE = (
@@ -167,7 +166,7 @@ EXPECTED_RUSTC_PIN_PROBE = (
     "|",
     "grep",
     "-q",
-    rf"^rustc 1\.96\.0 ",
+    r"^rustc 1\.96\.0 ",
 )
 EXPECTED_WASI_TARGET_PROBE = (
     "rustup",
@@ -772,24 +771,12 @@ def test_required_clippy_job_runs_contract_unconditionally() -> None:
     _assert_required_ci_path(CI_WORKFLOW.read_text())
 
 
-def test_dispatcher_copy_cannot_mask_required_job_mutation() -> None:
+def test_static_shard_copy_cannot_mask_required_job_mutation() -> None:
     workflow = CI_WORKFLOW.read_text()
     job = _job_block(workflow, REQUIRED_CI_JOB)
     assert job.count(f"run: {CONTRACT_COMMAND}") == 1
-    dispatched = subprocess.run(
-        [
-            "bash",
-            str(ROOT / "scripts/ci-preflight-dispatcher.sh"),
-            "--dry-run",
-            "--",
-            ".github/workflows/freebsd.yml",
-        ],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    assert CONTRACT_COMMAND in dispatched, dispatched
+    assignment = (ROOT / "scripts" / "ci-gate-shards.tsv").read_text()
+    assert CONTRACT_COMMAND in assignment, assignment
     mutated_job = job.replace(
         f"run: {CONTRACT_COMMAND}",
         "run: echo contract-check-removed",
@@ -1302,7 +1289,7 @@ _TESTS = (
     test_all_freebsd_jobs_provision_and_probe_wasi_tools,
     test_x86_64_wasi_target_setup_matches_repository_toolchain,
     test_required_clippy_job_runs_contract_unconditionally,
-    test_dispatcher_copy_cannot_mask_required_job_mutation,
+    test_static_shard_copy_cannot_mask_required_job_mutation,
     test_required_job_parity_marker_drift_is_rejected,
     test_added_nightly_exclusion_is_rejected,
     test_nightly_bash_package_removal_is_rejected,

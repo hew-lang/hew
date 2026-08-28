@@ -77,7 +77,7 @@ runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/closure_gen.rs	
 runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/vec_index.rs	2	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	3	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	16	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	230	stage-4	typed runtime-family dispatch carrier including structural formatting
+runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	231	stage-4	typed runtime-family dispatch carrier including structural formatting
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining owner-shortening sink
 signature-application	apply_instantiated_call_signature_with_assoc	hew-types/src/check/calls.rs	3	stage-1	THE call-signature application authority: the one place a generic callee's type parameters are freshened, inferred, and recorded as an instantiation
 signature-application	check_actor_field_defaults	hew-types/src/check/items.rs	1	stage-1	actor field default initialisers checked against declared field types
@@ -123,7 +123,7 @@ string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-
 string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/signature_help.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/layout.rs	20	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm.rs	114	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm.rs	114	stage-5	reviewed qualified string identity construction; Raw virtual-value semantic admission belongs to the canonical hew-mir verifier, leaving LLVM realization diagnostics only
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm/identity.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	64	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	11	stage-5	reviewed qualified string identity construction
@@ -139,6 +139,7 @@ string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan/typed_
 string-method-identity	qualified-format-macro	hew-mir/src/lower/expr.rs	2	stage-5	A315 S7 retired source-facing scoped diagnostic spellings
 string-method-identity	qualified-format-macro	hew-mir/src/lower/machine_synth.rs	16	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/pattern.rs	6	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/raw_values.rs	2	stage-5	canonical Raw virtual-value verifier reports the verified Raw/Checked/Elaborated ladder boundary
 string-method-identity	qualified-format-macro	hew-mir/src/thunk_requirements.rs	1	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/actor_protocol.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	3	stage-1	reviewed qualified string identity construction
@@ -155,16 +156,16 @@ string-method-identity	qualified-format-macro	hew-types/src/method_resolution.rs
 string-method-identity	qualified-format-macro	hew-types/src/resolved_ty.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority/codegen.rs	3	stage-1	reviewed qualified string identity construction
-suspend-authority	suspend-kind-consumer	hew-codegen-rs/src/llvm.rs	18	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-consumer	hew-mir/src/dump.rs	12	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-consumer	hew-codegen-rs/src/llvm.rs	20	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-consumer	hew-mir/src/dump.rs	13	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-consumer	hew-mir/src/lower/mod.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-consumer	hew-mir/src/lower/suspend_places.rs	14	stage-3	production suspend source and generator-yield consumers; three legacy escape-only match groups moved behind cfg(test)
-suspend-authority	suspend-kind-use	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-use	hew-mir/src/lower/actor.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-use	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-use	hew-mir/src/lower/task.rs	5	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-variant	hew-mir/src/model.rs	12	stage-3	composed suspend authority carrier
-suspend-authority	suspend-kind-writer	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-variant	hew-mir/src/model.rs	13	stage-3	composed suspend authority carrier
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/actor.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-writer	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-writer	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
 suspend-authority	suspend-kind-writer	hew-mir/src/lower/task.rs	5	stage-3	composed suspend authority carrier
@@ -175,12 +176,12 @@ suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/mod.rs	7	stag
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/suspend_places.rs	4	stage-3	production source/yield consumers remain; two legacy terminator-escape consumers moved behind cfg(test) with the retired secondary dataflow
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/temp_drop.rs	5	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-consumer	hew-mir/src/model.rs	5	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-use	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/actor.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/task.rs	7	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-variant	hew-mir/src/model.rs	3	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-writer	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/actor.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-writer	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-writer	hew-mir/src/lower/expr.rs	6	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-writer	hew-mir/src/lower/task.rs	7	stage-3	composed suspend authority carrier

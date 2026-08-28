@@ -2004,7 +2004,7 @@ impl Checker {
                             let i = *idx as usize;
                             if i < statics.len() {
                                 let child_type = &statics[i].1;
-                                return Ty::local_pid(Ty::Named {
+                                return Ty::child_ref(Ty::Named {
                                     builtin: None,
                                     // Canonicalize the raw user-spelled child
                                     // type (`bank.Account`) to the registered
@@ -2016,10 +2016,10 @@ impl Checker {
                             }
                         }
                         // Non-constant index: fresh type var
-                        return Ty::local_pid(Ty::Var(TypeVar::fresh()));
+                        return Ty::child_ref(Ty::Var(TypeVar::fresh()));
                     }
                 }
-                return Ty::local_pid(Ty::Var(TypeVar::fresh()));
+                return Ty::child_ref(Ty::Var(TypeVar::fresh()));
             }
             _ => {}
         }

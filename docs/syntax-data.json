@@ -211,10 +211,10 @@
     "repeated": "Wire field qualifier",
     "coalesce": "Mailbox overflow policy",
     "fallback": "Mailbox overflow fallback",
-    "drop_new": "Overflow policy: drop new messages",
-    "drop_old": "Overflow policy: drop old messages",
+    "drop_new": "Overflow policy: discard incoming work and return MessageLost",
+    "drop_old": "Overflow policy: evict queued work and return MessageLost",
     "block": "Overflow policy: block sender",
-    "fail": "Overflow policy: fail actor"
+    "fail": "Overflow policy: reject the send with Full"
   },
   "operators": {
     "arithmetic": [

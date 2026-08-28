@@ -37,6 +37,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::HashMapIter
             | BuiltinType::Task
             | BuiltinType::SupervisorPool
+            | BuiltinType::ChildRef
             | BuiltinType::StreamPair
             | BuiltinType::Generator
             | BuiltinType::AsyncGenerator
@@ -880,6 +881,12 @@ impl Ty {
         Self::builtin_named(BuiltinType::Result, vec![ok, err])
     }
 
+    /// Construct `ChildRef<inner>` — a stable supervised actor role.
+    #[must_use]
+    pub fn child_ref(inner: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::ChildRef, vec![inner])
+    }
+
     /// Construct `LocalPid<inner>` — actor pid in this process, returned by `spawn`.
     #[must_use]
     pub fn local_pid(inner: Ty) -> Ty {
@@ -1165,6 +1172,19 @@ impl Ty {
         }
     }
 
+    /// If this is `ChildRef<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_child_ref(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named {
+                builtin: Some(BuiltinType::ChildRef),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
     /// If this is `LocalPid<T>`, return `Some(&T)`.
     #[must_use]
     pub fn as_local_pid(&self) -> Option<&Ty> {
@@ -1189,6 +1209,13 @@ impl Ty {
             } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
+    }
+
+    /// If this is a local actor reference (`ChildRef<T>` or `LocalPid<T>`),
+    /// return the referenced actor type.
+    #[must_use]
+    pub fn as_local_actor_ref(&self) -> Option<&Ty> {
+        self.as_child_ref().or_else(|| self.as_local_pid())
     }
 
     /// If this is a local actor handle (`LocalPid<T>`), return `Some(&T)`.

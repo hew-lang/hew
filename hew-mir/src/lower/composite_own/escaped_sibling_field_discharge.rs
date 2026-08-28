@@ -158,6 +158,7 @@ fn apply_with(
         owned_field_list,
         &owned_tuple_fields,
         &dischargeable,
+        &|_, _, _| None,
         &mut instr_spans,
     );
 }
@@ -664,6 +665,7 @@ fn uncoverable_sibling_keeps_leak_while_coverable_discharges() {
         &three_fields,
         &owned_tuple_fields,
         &dischargeable,
+        &|_, _, _| None,
         &mut instr_spans,
     );
     let ops: Vec<_> = blocks[0]

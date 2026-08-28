@@ -1,0 +1,7 @@
+actor Worker {
+    mailbox 1 overflow coalesce(value) fallback block;
+
+    receive fn work(value: i64) {}
+}
+
+fn main() {}

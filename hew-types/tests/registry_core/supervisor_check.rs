@@ -74,7 +74,7 @@ fn simple_one_for_one_with_pool_accepted() {
 
 /// `await_restart sup.child` on a STATIC supervised child type-checks cleanly:
 /// the operand is a static child accessor, so the keyword is well-formed and the
-/// re-fetched handle keeps the child's `LocalPid<ChildType>` type.
+/// stable handle keeps the child's `ChildRef<ChildType>` type.
 #[test]
 fn await_restart_on_static_child_accepted() {
     let output = typecheck(
@@ -92,7 +92,7 @@ fn await_restart_on_static_child_accepted() {
 
         fn main() {
             let sup = spawn App;
-            let _w = await_restart sup.w;
+            let _w: ChildRef<Worker> = await_restart sup.w;
         }
         ",
     );

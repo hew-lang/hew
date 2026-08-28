@@ -5,6 +5,7 @@ use super::{
     base_local, BuiltinType, ClosureEnvFieldOwnership, HirExpr, HirExprKind, HirStmt, HirStmtKind,
     Instr, Place, ResolvedTy, SelectArm, SelectArmKind, SuspendKind, Terminator,
 };
+use crate::{raw_virtual_operation_class, RawVirtualClass};
 
 /// The *source* (read) operands of an instruction — every `Place` whose
 /// value the instruction consumes, excluding the destination(s) it writes.
@@ -34,10 +35,20 @@ use super::{
 pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // No operands at all.
+        Instr::Value(operation) => match raw_virtual_operation_class(operation) {
+            Some(
+                RawVirtualClass::Integer | RawVirtualClass::Bool | RawVirtualClass::Tuple,
+            )
+            | None => Vec::new(),
+        },
         Instr::OwnershipEvent(_)
         | Instr::EnterContext
         | Instr::ExitContext
         | Instr::CheckCancellation
+        // Raw value operations are deliberately disjoint from `Place`; the
+        // ReturnAbi materialization has a virtual source rather than a
+        // place-source, so neither can alias a storage owner out of scope.
+        | Instr::MaterializeValue { .. }
         | Instr::ContextField { .. }
         | Instr::ConstI64 { .. }
         | Instr::StringLit { .. }
@@ -258,8 +269,27 @@ fn select_arm_source_places(arms: &[SelectArm]) -> Vec<Place> {
 #[must_use]
 pub fn suspend_kind_source_places(kind: &SuspendKind) -> Vec<Place> {
     match kind {
-        // `actor` + `value` are the reads; result/reply/error dests are writes.
-        SuspendKind::Ask { actor, value, .. } => vec![*actor, *value],
+        // The receiver descriptor and payload are reads. A ChildRef carrier
+        // additionally reads the two extracted stable-role words used by
+        // owner-scoped submission.
+        SuspendKind::ActorSend {
+            actor,
+            stable_role,
+            value,
+            ..
+        }
+        | SuspendKind::Ask {
+            actor,
+            stable_role,
+            value,
+            ..
+        } => {
+            let mut places = vec![*actor, *value];
+            if let Some(role) = stable_role {
+                places.extend([role.supervisor_token, role.slot_index]);
+            }
+            places
+        }
         // `conn` is the read source; `result_dest` is a resume-edge write.
         SuspendKind::Read { conn, .. } => vec![*conn],
         // `listener` is the accept source; `result_dest` is a resume-edge write.
@@ -336,10 +366,26 @@ pub fn terminator_source_places(
         Terminator::Suspend { .. } => {
             suspend_kind.map_or_else(Vec::new, suspend_kind_source_places)
         }
-        Terminator::Send { actor, value, .. } => vec![*actor, *value],
+        Terminator::Send {
+            actor,
+            stable_role,
+            value,
+            ..
+        }
         // `reply_dest` is the slot the reply is written into — a write, not
         // a source.
-        Terminator::Ask { actor, value, .. } => vec![*actor, *value],
+        | Terminator::Ask {
+            actor,
+            stable_role,
+            value,
+            ..
+        } => {
+            let mut places = vec![*actor, *value];
+            if let Some(role) = stable_role {
+                places.extend([role.supervisor_token, role.slot_index]);
+            }
+            places
+        }
         // The ten pure-{resume,cleanup} suspension carriers collapsed onto the
         // bare `Suspend` arm above, which recovers their source operands from the
         // `SuspendKind` side-table via `suspend_kind_source_places`.
@@ -573,6 +619,8 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::EnterContext
         | Instr::ExitContext
         | Instr::CheckCancellation
+        | Instr::Value(_)
+        | Instr::MaterializeValue { .. }
         | Instr::ContextField { .. }
         | Instr::ConstI64 { .. }
         | Instr::IntAdd { .. }
@@ -669,7 +717,8 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
 /// analogue of the per-carrier arms in [`generator_yield_terminator_escapes`].
 fn suspend_kind_yield_escapes(kind: &SuspendKind, local: u32) -> bool {
     match kind {
-        SuspendKind::Ask { value, .. }
+        SuspendKind::ActorSend { value, .. }
+        | SuspendKind::Ask { value, .. }
         | SuspendKind::StreamSend { value, .. }
         | SuspendKind::RemoteAsk { value, .. } => place_refs_local(*value, local),
         // Handle reads + result-binding carriers transfer no yielded value out.
@@ -922,7 +971,8 @@ pub(super) fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 #[cfg(test)]
 fn suspend_kind_escape_places(kind: &SuspendKind) -> Vec<Place> {
     match kind {
-        SuspendKind::Ask { value, .. }
+        SuspendKind::ActorSend { value, .. }
+        | SuspendKind::Ask { value, .. }
         | SuspendKind::StreamSend { value, .. }
         | SuspendKind::RemoteAsk { value, .. } => vec![*value],
         SuspendKind::CallClosure { args, .. } => args.clone(),
@@ -1542,12 +1592,14 @@ mod f1_suspending_escape_poison {
             statements: vec![],
             instructions: vec![],
             terminator: Terminator::Send {
+                stable_role: None,
                 actor: Place::Local(9),
                 msg_type: 0,
                 value: Place::Local(1),
                 next: 1,
                 arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
                 cleanup_plan: None,
+                result_dest: None,
             },
         };
         let allowed = derive_local_bytes_drop_allowed(

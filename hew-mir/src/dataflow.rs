@@ -80,6 +80,7 @@ use crate::model::{
     BasicBlock, CooperateKind, CooperateSite, Instr, MirCheck, MirStatement, Place, RawMirFunction,
     Terminator,
 };
+use crate::{raw_virtual_operation_class, RawVirtualClass};
 
 /// Per-binding state in the four-state lattice. `Uninit` is the
 /// implicit default — a binding not present in the state map is
@@ -657,6 +658,14 @@ impl ContextFlowState {
 )]
 pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>, Vec<Place>) {
     match instr {
+        // Raw value operations use a disjoint virtual-value namespace. They
+        // neither read nor write addressable MIR places; the explicit ABI
+        // materialization below is the sole storage boundary in this slice.
+        Instr::Value(operation) => match raw_virtual_operation_class(operation) {
+            Some(RawVirtualClass::Integer | RawVirtualClass::Bool | RawVirtualClass::Tuple)
+            | None => (vec![], vec![], vec![]),
+        },
+        Instr::MaterializeValue { dest, .. } => (vec![], vec![*dest], vec![]),
         Instr::OwnershipEvent(_)
         | Instr::EnterContext
         | Instr::ExitContext
@@ -969,9 +978,9 @@ pub fn terminator_write_places(term: &Terminator) -> Vec<Place> {
         | Terminator::Trap { .. }
         | Terminator::Branch { .. }
         | Terminator::Yield { .. }
-        | Terminator::Send { .. }
         | Terminator::Suspend { .. }
         | Terminator::SuspendingScopeDeadline { .. } => Vec::new(),
+        Terminator::Send { result_dest, .. } => result_dest.iter().copied().collect(),
         Terminator::Call { dest, .. } => dest.iter().copied().collect(),
         Terminator::MakeGenerator { dest, .. } | Terminator::MakeLambdaActor { dest, .. } => {
             vec![*dest]
@@ -1056,7 +1065,8 @@ pub fn suspend_kind_write_places(kind: &crate::SuspendKind) -> Vec<Place> {
         | crate::SuspendKind::TaskAwait { result_dest, .. } => {
             result_dest.iter().copied().collect()
         }
-        crate::SuspendKind::StreamSend { .. }
+        crate::SuspendKind::ActorSend { .. }
+        | crate::SuspendKind::StreamSend { .. }
         | crate::SuspendKind::RestartWait { .. }
         | crate::SuspendKind::Sleep { .. }
         | crate::SuspendKind::SleepUntil { .. } => Vec::new(),

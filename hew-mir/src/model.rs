@@ -2307,7 +2307,10 @@ fn ty_contains_unclonable_opaque_inner(
             //    walks the type args and finds any opaque payload. Only a real
             //    builtin handle (stamped `builtin: Some(LocalPid)` by the
             //    checker) earns the bit-copy skip.
-            if matches!(builtin, Some(hew_types::BuiltinType::LocalPid)) {
+            if matches!(
+                builtin,
+                Some(hew_types::BuiltinType::ChildRef | hew_types::BuiltinType::LocalPid)
+            ) {
                 return false;
             }
             // 5. Type arguments (generic builtins with no layout: Vec<T>,
@@ -2728,6 +2731,18 @@ pub struct ThirFunction {
 /// [`RawMirFunction::await_deadline_ns`] keyed by the same block id.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SuspendKind {
+    /// A bounded actor mailbox with `overflow block`: register the prepared
+    /// message and park the sending continuation when the mailbox is full.
+    ActorSend {
+        actor: Place,
+        /// Present for a blocking send through `ChildRef<T>`. The cooperative
+        /// registration resolves and pins the current supervised incarnation.
+        stable_role: Option<StableActorRole>,
+        msg_type: i32,
+        value: Place,
+        arg_modes: Vec<SendAliasMode>,
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
+    },
     /// Non-blocking `await actor.method(value)` (`SuspendingAsk`).
     Ask {
         actor: Place,
@@ -2802,15 +2817,15 @@ pub enum SuspendKind {
     },
     /// Non-blocking `await_restart sup.child` — park the current actor on the
     /// supervisor restart observer until the static child at `slot_index`
-    /// becomes Live again (it restarted), then resume re-fetching the now-Live
-    /// `LocalPid<ChildType>` into `result_dest`. The supervisor analogue of
+    /// becomes Live again (it restarted), then resume with the same stable
+    /// `ChildRef<ChildType>` in `result_dest`. The supervisor analogue of
     /// `TaskAwait`: lowered through the SAME cooperative-suspension machinery,
     /// parking against the supervisor's `restart_notify` (NOT the thread-blocking
     /// `hew_supervisor_wait_restart`). A permanently-Dead child fails closed
     /// (resumes immediately) rather than hanging forever.
     ///
     /// `deadline_result_dest` is RESERVED for the future bounded form
-    /// (`await_restart sup.w within: 5.seconds → Option<LocalPid<T>>`), mirroring
+    /// (`await_restart sup.w within: 5.seconds → Option<ChildRef<T>>`), mirroring
     /// the deadline slot on `Read`/`Accept`/`StreamNext`; the bare form leaves
     /// it `None`.
     RestartWait {
@@ -3964,6 +3979,9 @@ pub enum Terminator {
     ///
     Send {
         actor: Place,
+        /// Present for `ChildRef<T>` receivers. Carries the supervisor role
+        /// directly from the value into owner-scoped runtime submission.
+        stable_role: Option<StableActorRole>,
         msg_type: i32,
         value: Place,
         next: u32,
@@ -3972,6 +3990,9 @@ pub enum Terminator {
         /// Whole prepared-carrier drop witness used only when transport retains
         /// caller ownership on an error edge.
         cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
+        /// Destination for a policy-sensitive `Result<(), SendError>`.
+        /// `None` preserves the ergonomic unit-typed lossless send path.
+        result_dest: Option<Place>,
     },
     /// Actor ask: send `value` to `actor` on a caller-owned reply
     /// channel and resume at `next` once the reply has been received.
@@ -4208,14 +4229,13 @@ pub struct SelectArm {
 
 /// Stable identity for a fungible supervisor-child role.
 ///
-/// `supervisor_token` is the target-word identity captured while the source
-/// supervisor binding is live. `slot_index` is the compile-time static child
-/// slot. Codegen resolves this pair immediately before request submission and
-/// never dereferences either the supervisor or a previous child allocation.
+/// Both words are extracted from a `ChildRef<T>` value at its use site. This
+/// makes parameters, aggregate fields, collection elements, returns, and
+/// closure captures share one representation-driven path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StableActorRole {
     pub supervisor_token: Place,
-    pub slot_index: u32,
+    pub slot_index: Place,
 }
 
 /// The four sealed arm forms mirrored from HIR. The MIR layer carries
@@ -4932,6 +4952,70 @@ pub enum OwnershipEvent {
     },
 }
 
+/// A typed compiler value in the value-only subset of raw MIR.
+///
+/// This is intentionally distinct from [`Place`]. A `RawValueId` has no
+/// address, storage lifetime, or layout-derived projection. The initial use
+/// is a small no-drop scalar/tuple slice lowered from SIR; later raw-MIR
+/// value-flow work may extend it with block arguments and value edges without
+/// teaching `Place` to masquerade as an SSA value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RawValueId(pub u32);
+
+/// One typed definition in raw MIR's value-only instruction stream.
+///
+/// The first slice keeps the type adjacent to its definition instead of adding
+/// a function-global value table. That avoids making every existing raw-MIR
+/// constructor own a second, partially populated value namespace while the
+/// current subset remains one-block and def-before-use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawValueDef {
+    pub id: RawValueId,
+    pub ty: ResolvedTy,
+}
+
+/// Value-only raw-MIR operations.
+///
+/// These operations describe semantic values before any addressable storage is
+/// needed. They are deliberately limited to bit-copy scalar and tuple values:
+/// ownership, aggregate layout, calls, and control-flow value transport remain
+/// outside this first vertical slice.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawValueOp {
+    /// Bind one declared ABI parameter as a virtual raw-MIR value. Codegen
+    /// reads the incoming LLVM parameter at this final ABI index directly
+    /// rather than first storing it in a `Place::Local` alloca. Codegen must
+    /// not re-derive a hidden-prefix adjustment from function metadata.
+    Param { dest: RawValueDef, index: u32 },
+    /// An integer constant.
+    ConstI64 { dest: RawValueDef, value: i64 },
+    /// A boolean constant.
+    ConstBool { dest: RawValueDef, value: bool },
+    /// Construct an abstract tuple value in field order. `fields` are virtual
+    /// values, not addressable tuple slots.
+    TupleMake {
+        dest: RawValueDef,
+        fields: Vec<RawValueId>,
+    },
+    /// Observe one semantic tuple member by positional index. This is not a
+    /// byte-offset or physical-layout operation.
+    TupleGet {
+        dest: RawValueDef,
+        tuple: RawValueId,
+        index: u32,
+    },
+}
+
+/// Why a virtual raw-MIR value becomes addressable storage.
+///
+/// Keep this explicit so storage cannot quietly leak back into value-only
+/// lowering. The initial slice admits only the final ABI return handoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueMaterializationReason {
+    /// The ABI return epilogue consumes `Place::ReturnSlot` today.
+    ReturnAbi,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
     /// Ownership-SSA operation. This is semantic MIR authority and intentionally
@@ -4944,6 +5028,16 @@ pub enum Instr {
     /// marker begins the normal successor and refreshes backend crash-cleanup
     /// state without emitting user-visible machine code.
     InteriorMutationCommit { place: Place },
+    /// Define a virtual, value-only raw-MIR value. This instruction never
+    /// names a [`Place`] and therefore does not itself imply an alloca.
+    Value(RawValueOp),
+    /// Make a virtual value addressable for a concrete representation boundary.
+    /// The first slice permits only `ReturnAbi` into [`Place::ReturnSlot`].
+    MaterializeValue {
+        dest: Place,
+        value: RawValueId,
+        reason: ValueMaterializationReason,
+    },
     /// Semantic marker at actor-handler entry. Codegen emits no user-visible
     /// instruction, but validates that the hidden execution-context argument is
     /// bound before any context-dependent carrier op can execute.

@@ -21,8 +21,8 @@
 #
 # Environment:
 #   HEW_BIN                    compiler binary (default: target/debug/hew)
-#   SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 1)
-#   SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 1)
+#   SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 2; may only raise)
+#   SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 16; may only raise)
 
 set -euo pipefail
 
@@ -34,8 +34,14 @@ source "$ROOT/scripts/lib/corpus-nonempty.sh"
 
 HEW_BIN="${HEW_BIN:-$ROOT/target/debug/hew}"
 DEFAULT_CORPUS="$ROOT/tests/ll-oracle/corpus"
-MIN_REALIZED="${SIR_SHADOW_MIN_REALIZED:-1}"
-MIN_SUCCESSES="${SIR_SHADOW_MIN_SUCCESSES:-1}"
+REALIZED_FLOOR=2
+SUCCESS_FLOOR=16
+MIN_REALIZED="${SIR_SHADOW_MIN_REALIZED:-$REALIZED_FLOOR}"
+MIN_SUCCESSES="${SIR_SHADOW_MIN_SUCCESSES:-$SUCCESS_FLOOR}"
+# Repeat the established compile enough times to make randomized ownership-fact
+# emission fail closed without turning comparison into a set operation.  The
+# exact EdgeCarry sequence is compiler output and must remain byte-identical.
+DETERMINISM_RUNS=4
 
 usage() {
     cat <<'EOF'
@@ -46,8 +52,8 @@ arguments, runs every top-level .hew fixture in tests/ll-oracle/corpus.
 
 Environment:
   HEW_BIN                    compiler binary (default: target/debug/hew)
-  SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 1)
-  SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 1)
+  SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 2; may only raise)
+  SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 16; may only raise)
 EOF
 }
 
@@ -62,6 +68,14 @@ require_nonnegative_integer() {
 
 require_nonnegative_integer SIR_SHADOW_MIN_REALIZED "$MIN_REALIZED"
 require_nonnegative_integer SIR_SHADOW_MIN_SUCCESSES "$MIN_SUCCESSES"
+if (( MIN_REALIZED < REALIZED_FLOOR )); then
+    echo "sir-shadow-corpus: SIR_SHADOW_MIN_REALIZED may not lower the committed floor $REALIZED_FLOOR" >&2
+    exit 2
+fi
+if (( MIN_SUCCESSES < SUCCESS_FLOOR )); then
+    echo "sir-shadow-corpus: SIR_SHADOW_MIN_SUCCESSES may not lower the committed floor $SUCCESS_FLOOR" >&2
+    exit 2
+fi
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     usage
@@ -163,6 +177,11 @@ run_compile() {
     return "$status"
 }
 
+edge_carry_sequence() {
+    local output_path="$1"
+    sed -n '/ownership EdgeCarry/p' "$output_path"
+}
+
 failures=0
 successes=0
 verified=0
@@ -176,6 +195,7 @@ for index in "${!fixtures[@]}"; do
     label="${fixture#"$ROOT"/}"
     baseline_out="$tmpdir/$index.baseline.out"
     baseline_err="$tmpdir/$index.baseline.err"
+    baseline_edges="$tmpdir/$index.baseline.edges"
     shadow_out="$tmpdir/$index.shadow.out"
     shadow_err="$tmpdir/$index.shadow.err"
     normalized_shadow_err="$tmpdir/$index.shadow.normalized.err"
@@ -183,11 +203,30 @@ for index in "${!fixtures[@]}"; do
     baseline_status=0
     run_compile "$baseline_out" "$baseline_err" \
         "$HEW_BIN" compile --dump-mir raw "$fixture" || baseline_status=$?
+    edge_carry_sequence "$baseline_out" >"$baseline_edges"
     shadow_status=0
     run_compile "$shadow_out" "$shadow_err" \
         "$HEW_BIN" compile --sir-shadow --dump-mir raw "$fixture" || shadow_status=$?
 
     fixture_failed=0
+    for ((run = 2; run <= DETERMINISM_RUNS; run++)); do
+        repeated_out="$tmpdir/$index.baseline.$run.out"
+        repeated_err="$tmpdir/$index.baseline.$run.err"
+        repeated_edges="$tmpdir/$index.baseline.$run.edges"
+        repeated_status=0
+        run_compile "$repeated_out" "$repeated_err" \
+            "$HEW_BIN" compile --dump-mir raw "$fixture" || repeated_status=$?
+        edge_carry_sequence "$repeated_out" >"$repeated_edges"
+        if [[ "$baseline_status" -ne "$repeated_status" ]]; then
+            echo "FAIL $label: repeated compile $run changed exit status from $baseline_status to $repeated_status" >&2
+            fixture_failed=1
+        fi
+        if ! diff -u "$baseline_edges" "$repeated_edges"; then
+            echo "FAIL $label: repeated compile $run reordered EdgeCarry facts" >&2
+            fixture_failed=1
+        fi
+    done
+
     if [[ "$baseline_status" -ne "$shadow_status" ]]; then
         echo "FAIL $label: exit status baseline=$baseline_status shadow=$shadow_status" >&2
         fixture_failed=1

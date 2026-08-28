@@ -31,6 +31,9 @@ use std::sync::{Condvar, Mutex};
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
 use crate::mailbox_header::{normalize_coalesce_fallback, Origin};
+use crate::read_slot::{
+    hew_read_slot_free, read_slot_deposit_status, read_slot_retain, HewReadSlot, ReadStatus,
+};
 use crate::scheduler::{MESSAGES_RECEIVED, MESSAGES_SENT};
 use crate::set_last_error;
 use crate::tracing::HewTraceContext;
@@ -105,6 +108,49 @@ static SYS_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSw
 #[cfg(test)]
 static USER_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSwapPreLinkHook>> =
     crate::lifetime::PoisonSafe::new(None);
+
+/// One-shot test seam after a blocked sender's readiness is deposited but
+/// before its actor incarnation is resolved for wakeup.
+#[cfg(test)]
+type BlockedSenderPreWakeHook = (u64, fn());
+
+#[cfg(test)]
+static BLOCKED_SENDER_PRE_WAKE_HOOK: crate::lifetime::PoisonSafe<Option<BlockedSenderPreWakeHook>> =
+    crate::lifetime::PoisonSafe::new(None);
+
+#[cfg(test)]
+pub(crate) struct BlockedSenderPreWakeHookGuard;
+
+#[cfg(test)]
+impl BlockedSenderPreWakeHookGuard {
+    pub(crate) fn install(sender_id: u64, hook: fn()) -> Self {
+        BLOCKED_SENDER_PRE_WAKE_HOOK.access(|slot| {
+            assert!(slot.is_none(), "blocked-sender wake hook already installed");
+            *slot = Some((sender_id, hook));
+        });
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for BlockedSenderPreWakeHookGuard {
+    fn drop(&mut self) {
+        BLOCKED_SENDER_PRE_WAKE_HOOK.access(|slot| *slot = None);
+    }
+}
+
+#[cfg(test)]
+fn run_blocked_sender_pre_wake_hook(sender_id: u64) {
+    let hook = BLOCKED_SENDER_PRE_WAKE_HOOK.access(|slot| {
+        slot.as_ref()
+            .is_some_and(|(expected, _)| *expected == sender_id)
+            .then(|| slot.take().map(|(_, hook)| hook))
+            .flatten()
+    });
+    if let Some(hook) = hook {
+        hook();
+    }
+}
 
 /// Deterministic rendezvous for a bounded `Block` sender after it has proved
 /// the mailbox full while holding `slow_path`, joined `block_wait`, and
@@ -1358,6 +1404,26 @@ struct SlowPathQueue {
     user_queue: VecDeque<*mut HewMsgNode>,
 }
 
+/// One producer continuation parked by a full `overflow block` mailbox. The
+/// mailbox owns the copied node and one retained read-slot ref until admission,
+/// cancellation, or close wins the registration race.
+#[derive(Debug)]
+struct BlockedSender {
+    sender: Option<BlockedSenderIncarnation>,
+    slot: *mut HewReadSlot,
+    node: *mut HewMsgNode,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BlockedSenderIncarnation {
+    actor_id: u64,
+    spawn_serial: u64,
+}
+
+// SAFETY: slots and nodes remain live under explicit retained ownership; the
+// sender incarnation is copied scalar identity and carries no allocation.
+unsafe impl Send for BlockedSender {}
+
 // SAFETY: The raw pointers in the queue are only accessed while holding
 // the mutex, and each pointer is exclusively owned by the mailbox.
 unsafe impl Send for SlowPathQueue {}
@@ -1383,6 +1449,10 @@ pub struct HewMailbox {
     sys_queue: MpscQueue,
     /// Mutex-protected user queue for Block/DropOld/Coalesce policies.
     slow_path: Mutex<SlowPathQueue>,
+    /// FIFO producer continuations waiting for a bounded Block mailbox slot.
+    /// Separate from `slow_path` because close may be invoked by a callback
+    /// while that queue lock is already held.
+    blocked_senders: Mutex<VecDeque<BlockedSender>>,
     /// Queued user messages plus bounded fast-path slots reserved by in-flight
     /// producers.
     pub(crate) count: AtomicI64,
@@ -1563,6 +1633,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
         }),
+        blocked_senders: Mutex::new(VecDeque::new()),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: -1,
@@ -1603,6 +1674,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
         }),
+        blocked_senders: Mutex::new(VecDeque::new()),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: i64::from(capacity),
@@ -1652,6 +1724,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
         }),
+        blocked_senders: Mutex::new(VecDeque::new()),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: cap,
@@ -1693,6 +1766,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
         }),
+        blocked_senders: Mutex::new(VecDeque::new()),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: cap,
@@ -2662,12 +2736,12 @@ pub unsafe extern "C" fn hew_mailbox_send(
 /// code: the caller (`actor::actor_send_result_internal_reply`) needs both
 /// (a) the `HewError` status to report, and (b) whether a node actually
 /// reached the queue, since only an actual enqueue needs to wake/schedule
-/// the actor — a policy-drop reports success but enqueued nothing.
+/// the actor. A policy drop reports a distinct loss status to checked sends
+/// but enqueued nothing.
 ///
-/// A **policy-drop** (`DropNew` silently discards the new message) is
-/// spec-silent per §6.2 and must be reported as success by the caller,
-/// while a genuine failure (`Fail` policy rejects, the mailbox is closed,
-/// or allocation fails) must keep its own distinct non-zero code.
+/// A policy loss (`DropNew`, `DropOld`, or `Coalesce`) and a genuine failure
+/// (`Fail`, closed mailbox, or allocation failure) must keep distinct statuses
+/// so the language surface can report the exact outcome.
 ///
 /// Not an FFI entry point — used only by the local no-reply-channel send
 /// path ([`actor::actor_send_result_internal_reply`](crate::actor)) that
@@ -2692,6 +2766,212 @@ pub(crate) unsafe fn hew_mailbox_send_fire_and_forget(
     let mb_ref = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
     unsafe { send_with_overflow(mb_ref, msg_type, data, size, true, false, ptr::null_mut()) }
+}
+
+/// The block-send registration owns the copied message and parked continuation.
+pub(crate) const MAILBOX_AWAIT_SEND_SUSPEND: i32 = 0;
+/// The message was admitted immediately; the caller must continue without parking.
+pub(crate) const MAILBOX_AWAIT_SEND_READY: i32 = 1;
+
+/// Register a cooperative producer wait for a bounded `Block` mailbox.
+///
+/// On a full mailbox this copies the message into a FIFO waiter, retains
+/// `slot`, and returns [`MAILBOX_AWAIT_SEND_SUSPEND`]. The consumer admits and
+/// wakes one waiter whenever it frees a queue slot. An immediately available
+/// slot admits the copied node and returns [`MAILBOX_AWAIT_SEND_READY`].
+///
+/// # Safety
+///
+/// `mb`, `actor`, and `slot` must remain valid for registration; `data` must
+/// cover `size` readable bytes (or be null for zero size).
+pub(crate) unsafe fn mailbox_await_send(
+    mb: *mut HewMailbox,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    actor: *mut crate::actor::HewActor,
+    slot: *mut HewReadSlot,
+) -> i32 {
+    if mb.is_null() || slot.is_null() {
+        return HewError::ErrClosed as i32;
+    }
+    // SAFETY: caller guarantees a live mailbox.
+    let mailbox = unsafe { &*mb };
+    if mailbox.closed.load(Ordering::Acquire) {
+        return HewError::ErrActorStopped as i32;
+    }
+    if mailbox.capacity <= 0 || mailbox.overflow != HewOverflowPolicy::Block {
+        return HewError::ErrMailboxFull as i32;
+    }
+
+    let mut queue = mailbox.slow_path.lock_or_recover();
+    if mailbox.closed.load(Ordering::Acquire) {
+        return HewError::ErrActorStopped as i32;
+    }
+    // SAFETY: the caller guarantees the readable payload range.
+    let node = unsafe { msg_node_alloc(msg_type, data, size, ptr::null_mut()) };
+    if node.is_null() {
+        return HewError::ErrOom as i32;
+    }
+    if i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) < mailbox.capacity {
+        enqueue_bounded_slow_path_node(mailbox, &mut queue, node);
+        drop(queue);
+        update_high_water_mark(mailbox);
+        MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+        return MAILBOX_AWAIT_SEND_READY;
+    }
+
+    // Join the independent waiter lock while the queue is still held so a
+    // consumer cannot free capacity between the final predicate check and the
+    // registration. Close never takes the queue lock and therefore cannot
+    // deadlock with callbacks that close from inside a coalesce traversal.
+    let mut waiters = mailbox.blocked_senders.lock_or_recover();
+    if mailbox.closed.load(Ordering::Acquire) {
+        drop(waiters);
+        drop(queue);
+        // SAFETY: the node was never published and remains exclusively owned.
+        unsafe { hew_msg_node_free_with_message_drop(node, mailbox.message_drop_fn) };
+        return HewError::ErrActorStopped as i32;
+    }
+    // SAFETY: the caller owns the creator ref, so the slot is live to retain.
+    unsafe { read_slot_retain(slot) };
+    let sender = if actor.is_null() {
+        None
+    } else {
+        // SAFETY: the caller guarantees the sender is live for registration.
+        let sender = unsafe { &*actor };
+        Some(BlockedSenderIncarnation {
+            actor_id: sender.id,
+            spawn_serial: sender.spawn_serial,
+        })
+    };
+    waiters.push_back(BlockedSender { sender, slot, node });
+    MAILBOX_AWAIT_SEND_SUSPEND
+}
+
+/// Submit an ask without parking the scheduler worker when a bounded `Block`
+/// mailbox is full.
+///
+/// A full mailbox takes ownership of the copied node and its reply-channel
+/// sender reference in the same FIFO used by cooperative fire-and-forget
+/// sends. Unlike a tell waiter, an ask has no capacity-wait read slot to wake:
+/// its caller is already suspended on the reply channel, which is eventually
+/// resolved by the admitted handler or orphaned when mailbox teardown frees
+/// the pending node.
+///
+/// # Safety
+///
+/// `mb` must be live, `data` must cover `size` readable bytes (or be null for
+/// zero size), and `reply_channel` must carry the sender reference transferred
+/// to the mailbox by the ask submission path.
+pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
+    mb: *mut HewMailbox,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    reply_channel: *mut c_void,
+) -> i32 {
+    if mb.is_null() || reply_channel.is_null() {
+        return HewError::ErrClosed as i32;
+    }
+    // SAFETY: caller guarantees a live mailbox.
+    let mailbox = unsafe { &*mb };
+    if mailbox.closed.load(Ordering::Acquire) {
+        return HewError::ErrActorStopped as i32;
+    }
+    if mailbox.capacity <= 0 || mailbox.overflow != HewOverflowPolicy::Block {
+        // SAFETY: caller guarantees the ordinary send preconditions.
+        return unsafe { hew_mailbox_send_with_reply(mb, msg_type, data, size, reply_channel) };
+    }
+
+    let mut queue = mailbox.slow_path.lock_or_recover();
+    if mailbox.closed.load(Ordering::Acquire) {
+        return HewError::ErrActorStopped as i32;
+    }
+    // SAFETY: the caller guarantees the readable payload and live channel.
+    let node = unsafe { msg_node_alloc(msg_type, data, size, reply_channel) };
+    if node.is_null() {
+        return HewError::ErrOom as i32;
+    }
+    if i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) < mailbox.capacity {
+        enqueue_bounded_slow_path_node(mailbox, &mut queue, node);
+        drop(queue);
+        update_high_water_mark(mailbox);
+        MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+        return HewError::Ok as i32;
+    }
+
+    let mut waiters = mailbox.blocked_senders.lock_or_recover();
+    if mailbox.closed.load(Ordering::Acquire) {
+        drop(waiters);
+        drop(queue);
+        // SAFETY: the node was never published and remains exclusively owned.
+        unsafe { hew_msg_node_free_with_message_drop(node, mailbox.message_drop_fn) };
+        return HewError::ErrActorStopped as i32;
+    }
+    waiters.push_back(BlockedSender {
+        sender: None,
+        slot: ptr::null_mut(),
+        node,
+    });
+    HewError::Ok as i32
+}
+
+/// Remove an abandoned cooperative block-send registration. Idempotent when
+/// admission or close already consumed the waiter.
+///
+/// # Safety
+///
+/// `mb` and `slot` must be live pointers supplied to [`mailbox_await_send`].
+pub(crate) unsafe fn mailbox_detach_await_send(mb: *mut HewMailbox, slot: *mut HewReadSlot) {
+    if mb.is_null() || slot.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees a live mailbox.
+    let mailbox = unsafe { &*mb };
+    let removed = {
+        let mut waiters = mailbox.blocked_senders.lock_or_recover();
+        waiters
+            .iter()
+            .position(|waiter| waiter.slot == slot)
+            .and_then(|position| waiters.remove(position))
+    };
+    if let Some(waiter) = removed {
+        // SAFETY: removal transferred exclusive ownership of the unpublished node.
+        unsafe { hew_msg_node_free_with_message_drop(waiter.node, mailbox.message_drop_fn) };
+        // SAFETY: the waiter owned exactly one retained slot ref.
+        unsafe { hew_read_slot_free(waiter.slot) };
+    }
+}
+
+/// Resolve one removed waiter after releasing all mailbox locks.
+///
+/// # Safety
+///
+/// The caller must own the waiter's retained slot ref.
+unsafe fn wake_blocked_sender(waiter: &BlockedSender, status: ReadStatus) {
+    if waiter.slot.is_null() {
+        return;
+    }
+    // SAFETY: the waiter owns a retained live slot ref.
+    let should_wake = unsafe { read_slot_deposit_status(waiter.slot, status) };
+    if should_wake {
+        if let Some(sender) = waiter.sender {
+            #[cfg(test)]
+            run_blocked_sender_pre_wake_hook(sender.actor_id);
+            let _ = crate::lifetime::live_actors::with_actor_send_by_identity(
+                sender.actor_id,
+                sender.spawn_serial,
+                |pin| {
+                    // SAFETY: the identity pin keeps this exact incarnation's
+                    // allocation live throughout the pointer-based resume edge.
+                    unsafe { crate::scheduler::enqueue_resume(pin.as_ptr(), ptr::null_mut()) };
+                },
+            );
+        }
+    }
+    // SAFETY: the waiter owns exactly one retained slot ref.
+    unsafe { hew_read_slot_free(waiter.slot) };
 }
 
 /// Send a message with an associated reply channel.
@@ -3039,6 +3319,17 @@ pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     if !mb.closed.swap(true, Ordering::AcqRel) {
+        let blocked: Vec<_> = {
+            let mut waiters = mb.blocked_senders.lock_or_recover();
+            waiters.drain(..).collect()
+        };
+        for waiter in blocked {
+            // SAFETY: draining transferred exclusive ownership of the unpublished node.
+            unsafe { hew_msg_node_free_with_message_drop(waiter.node, mb.message_drop_fn) };
+            // SAFETY: the drained waiter owns its retained slot ref; Error wakes
+            // the sender so it can continue across the now-stopped recipient.
+            unsafe { wake_blocked_sender(&waiter, ReadStatus::Error) };
+        }
         // Blocking senders join `block_wait` while still owning the queue,
         // recheck `closed`, release the queue, and atomically release
         // `block_wait` in `Condvar::wait`. Joining that dedicated predicate
@@ -3146,8 +3437,24 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
         if let Some(node) = q.user_queue.pop_front() {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+            let blocked_sender = {
+                let mut waiters = mb.blocked_senders.lock_or_recover();
+                waiters.pop_front()
+            };
+            if let Some(waiter) = &blocked_sender {
+                enqueue_bounded_slow_path_node(mb, &mut q, waiter.node);
+                update_high_water_mark(mb);
+                MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+            }
             drop(q);
-            mb.notify_not_full_one();
+            if let Some(waiter) = blocked_sender {
+                // SAFETY: the waiter was removed under its lock and its node is
+                // now admitted; this edge owns the retained slot ref.
+                unsafe { wake_blocked_sender(&waiter, ReadStatus::Data) };
+            } else {
+                // Preserve the foreign-thread blocking sender path.
+                mb.notify_not_full_one();
+            }
             return RecvNode {
                 node,
                 origin: Origin::User,
@@ -3361,6 +3668,19 @@ pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
     // SAFETY: Caller guarantees `mb` was Box-allocated and is exclusively owned.
     let mailbox = unsafe { Box::from_raw(mb) };
 
+    // Defensive teardown for callers that skipped `mailbox_close`: no parked
+    // producer may retain a slot or copied payload beyond mailbox ownership.
+    let blocked: Vec<_> = {
+        let mut waiters = mailbox.blocked_senders.lock_or_recover();
+        waiters.drain(..).collect()
+    };
+    for waiter in blocked {
+        // SAFETY: draining transferred exclusive ownership of the unpublished node.
+        unsafe { hew_msg_node_free_with_message_drop(waiter.node, mailbox.message_drop_fn) };
+        // SAFETY: the drained waiter owns its retained slot ref.
+        unsafe { wake_blocked_sender(&waiter, ReadStatus::Error) };
+    }
+
     // Drain slow-path user queue (if used).
     {
         let mut q = mailbox.slow_path.lock_or_recover();
@@ -3386,6 +3706,120 @@ pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
 mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+
+    #[test]
+    fn cooperative_block_sender_is_admitted_and_signalled_after_dequeue() {
+        // SAFETY: this test exclusively owns the mailbox.
+        let mb = unsafe { hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block) };
+        assert!(!mb.is_null());
+        // SAFETY: mailbox and zero-sized payload are valid.
+        assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
+        let slot = crate::read_slot::hew_read_slot_new();
+        assert_eq!(
+            // SAFETY: mailbox and slot remain live through waiter resolution.
+            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot) },
+            MAILBOX_AWAIT_SEND_SUSPEND
+        );
+        // SAFETY: the creator reference keeps the slot live.
+        assert_eq!(unsafe { crate::read_slot::hew_read_slot_status(slot) }, 0);
+
+        // SAFETY: this test is the mailbox's sole consumer.
+        let first = unsafe { hew_mailbox_try_recv(mb) };
+        assert!(!first.is_null());
+        // SAFETY: dequeue transferred exclusive ownership of the first node.
+        unsafe {
+            assert_eq!((*first).msg_type, 1);
+            hew_msg_node_free(first);
+        }
+        assert_eq!(
+            // SAFETY: the creator reference keeps the deposited slot live.
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            ReadStatus::Data as i32
+        );
+
+        // SAFETY: this test is the mailbox's sole consumer.
+        let second = unsafe { hew_mailbox_try_recv(mb) };
+        assert!(!second.is_null());
+        // SAFETY: dequeue transferred exclusive ownership of the second node;
+        // this test retains the slot and mailbox creator ownership.
+        unsafe {
+            assert_eq!((*second).msg_type, 2);
+            hew_msg_node_free(second);
+            crate::read_slot::hew_read_slot_free(slot);
+            mailbox_close(mb);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn cooperative_block_sender_is_released_and_signalled_on_close() {
+        // SAFETY: this test exclusively owns the mailbox.
+        let mb = unsafe { hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block) };
+        // SAFETY: mailbox and zero-sized payload are valid.
+        assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
+        let slot = crate::read_slot::hew_read_slot_new();
+        assert_eq!(
+            // SAFETY: mailbox and slot remain live through waiter resolution.
+            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot) },
+            MAILBOX_AWAIT_SEND_SUSPEND
+        );
+        // SAFETY: this test owns the mailbox; close drains and deposits the waiter slot.
+        unsafe { mailbox_close(mb) };
+        assert_eq!(
+            // SAFETY: the creator reference keeps the deposited slot live.
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            ReadStatus::Error as i32
+        );
+        // SAFETY: this test retains the slot and mailbox creator ownership.
+        unsafe {
+            crate::read_slot::hew_read_slot_free(slot);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn cooperative_block_ask_is_admitted_without_a_capacity_wait_slot() {
+        // SAFETY: this test exclusively owns the mailbox.
+        let mb = unsafe { hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block) };
+        // SAFETY: mailbox and zero-sized payload are valid.
+        assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
+        let channel = crate::reply_channel::hew_reply_channel_new();
+        assert!(!channel.is_null());
+        // Mirror ask submission's sender-side reference transferred into the
+        // pending node; the test keeps the creator ref until teardown.
+        // SAFETY: the creator reference keeps the channel live.
+        unsafe { crate::reply_channel::hew_reply_channel_retain(channel) };
+        assert_eq!(
+            // SAFETY: mailbox, zero-sized payload, and retained channel are valid.
+            unsafe {
+                mailbox_send_with_reply_cooperative(mb, 2, ptr::null_mut(), 0, channel.cast())
+            },
+            HewError::Ok as i32
+        );
+
+        // SAFETY: this test is the mailbox's sole consumer.
+        let first = unsafe { hew_mailbox_try_recv(mb) };
+        assert!(!first.is_null());
+        // SAFETY: dequeue transferred exclusive ownership of the first node.
+        unsafe {
+            assert_eq!((*first).msg_type, 1);
+            hew_msg_node_free(first);
+        }
+
+        // SAFETY: this test is the mailbox's sole consumer.
+        let second = unsafe { hew_mailbox_try_recv(mb) };
+        assert!(!second.is_null());
+        // SAFETY: dequeue transferred exclusive ownership of the second node;
+        // this test retains the channel and mailbox creator ownership.
+        unsafe {
+            assert_eq!((*second).msg_type, 2);
+            assert_eq!((*second).reply_channel, channel.cast());
+            hew_msg_node_free(second);
+            crate::reply_channel::hew_reply_channel_free(channel);
+            mailbox_close(mb);
+            hew_mailbox_free(mb);
+        }
+    }
 
     #[repr(C)]
     #[derive(Clone, Copy)]

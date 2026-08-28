@@ -1429,7 +1429,7 @@ impl Checker {
         }
     }
 
-    fn record_actor_method_dispatch(&mut self, span: &Span, method_id: String, reply_ty: Ty) {
+    fn record_actor_method_dispatch(&mut self, span: &Span, method_id: String, reply_ty: Ty) -> Ty {
         let resolved_reply = self.subst.resolve(&reply_ty);
         let dispatch = if self.receive_generator_methods.contains(&method_id) {
             // `receive_generator_methods` is checker authority for gen-ness —
@@ -1450,7 +1450,26 @@ impl Checker {
             };
             ActorMethodKind::StreamProducer(method_id, elem_ty)
         } else if matches!(resolved_reply, Ty::Unit) {
-            ActorMethodKind::Fire(method_id)
+            let actor_identity = method_id
+                .rsplit_once("::")
+                .map_or(method_id.as_str(), |(actor, _)| actor);
+            let overflow_policy = self.actor_overflow_policies.get(actor_identity);
+            let is_policy_sensitive = overflow_policy.is_some_and(|policy| {
+                matches!(
+                    policy,
+                    hew_parser::ast::OverflowPolicy::DropNew
+                        | hew_parser::ast::OverflowPolicy::DropOld
+                        | hew_parser::ast::OverflowPolicy::Fail
+                        | hew_parser::ast::OverflowPolicy::Coalesce { .. }
+                )
+            });
+            if is_policy_sensitive {
+                ActorMethodKind::CheckedFire(method_id)
+            } else if overflow_policy == Some(&hew_parser::ast::OverflowPolicy::Block) {
+                ActorMethodKind::BlockingFire(method_id)
+            } else {
+                ActorMethodKind::Fire(method_id)
+            }
         } else {
             // Ask-shaped: the reply value crosses the actor boundary back to the
             // caller, so `R` must be `Send` — the same obligation the lambda
@@ -1508,10 +1527,15 @@ impl Checker {
                     ),
                 ),
             }
-            ActorMethodKind::Ask(method_id, reply_ty)
+            ActorMethodKind::Ask(method_id, reply_ty.clone())
+        };
+        let call_ty = match &dispatch {
+            ActorMethodKind::CheckedFire(_) => Ty::result(Ty::Unit, Ty::send_error()),
+            _ => reply_ty,
         };
         self.actor_method_dispatch
             .insert(SpanKey::in_module(span, self.current_module_idx), dispatch);
+        call_ty
     }
 
     pub(super) fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
@@ -3399,15 +3423,14 @@ impl Checker {
                         // Still record the dispatch so HIR/MIR have a sane entry; the
                         // type checker already emitted the error so this is recovery.
                     }
-                    self.record_actor_method_dispatch(span, method_key, ty.clone());
-                } else {
-                    self.record_method_call_receiver_kind(
-                        span,
-                        MethodCallReceiverKind::NamedTypeInstance {
-                            type_name: name.clone(),
-                        },
-                    );
+                    return self.record_actor_method_dispatch(span, method_key, ty.clone());
                 }
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::NamedTypeInstance {
+                        type_name: name.clone(),
+                    },
+                );
             }
             self.record_handle_method_call_rewrite_if_any(receiver_ty, method_name, span);
             return ty;
@@ -8565,7 +8588,7 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::I64);
                     }
-                    Ty::option(Ty::local_pid(child_ty.clone()))
+                    Ty::option(Ty::child_ref(child_ty.clone()))
                 }
                 crate::check::types::PoolAccessorKind::Index => {
                     unreachable!("index access does not enter method checking")
@@ -9113,18 +9136,22 @@ impl Checker {
                     }
                 }
             }
-            // LocalPid<T> methods — first check LocalPid's own impl methods,
-            // then fall through to actor receive-fn dispatch on the inner type T.
+            // Local actor-reference methods first check the concrete reference
+            // type's own impl, then fall through to actor receive-fn dispatch.
             //
-            // Own methods (e.g. `send`) are declared in
-            // `impl LocalPid<T>` in std/builtins.hew and registered in type_defs /
-            // fn_sigs as `"LocalPid::{method}"`.  Actor receive-fn dispatch
-            // (e.g. `pid.greet(arg)`) remains the local actor-dispatch path.
-            (resolved, _) if resolved.as_local_pid().is_some() => {
+            // `ChildRef<T>` and `LocalPid<T>` are distinct value representations;
+            // their own methods are registered under their respective nominal
+            // owners. Named receive handlers share the local dispatch path.
+            (resolved, _) if resolved.as_local_actor_ref().is_some() => {
+                let actor_ref_builtin = if resolved.as_child_ref().is_some() {
+                    crate::BuiltinType::ChildRef
+                } else {
+                    crate::BuiltinType::LocalPid
+                };
                 // A user handler named `send` is actor dispatch; otherwise
-                // `send` resolves through LocalPid's own fire-and-forget method.
+                // `send` resolves through the reference type's own method.
                 let has_user_send_handler = if method == "send" {
-                    resolved.as_local_pid().and_then(|inner| {
+                    resolved.as_local_actor_ref().and_then(|inner| {
                         if let Ty::Named { name, .. } = inner {
                             Some(name.clone())
                         } else {
@@ -9162,7 +9189,7 @@ impl Checker {
                         self.synthesize(expr, sp);
                     }
                     let actor_hint = resolved
-                        .as_local_pid()
+                        .as_local_actor_ref()
                         .and_then(|inner| {
                             if let Ty::Named { name, .. } = inner {
                                 Some(name.clone())
@@ -9190,7 +9217,7 @@ impl Checker {
                     } = resolved
                     {
                         if let Some(sig) = self.lookup_named_method_sig(
-                            crate::BuiltinType::LocalPid.canonical_name(),
+                            actor_ref_builtin.canonical_name(),
                             receiver_args,
                             method,
                         ) {
@@ -9204,7 +9231,7 @@ impl Checker {
                                 },
                                 true,
                                 Some(GenericCallee::Method {
-                                    type_name: crate::BuiltinType::LocalPid.canonical_name(),
+                                    type_name: actor_ref_builtin.canonical_name(),
                                     method,
                                     owner_type_args: receiver_args,
                                 }),
@@ -9219,7 +9246,7 @@ impl Checker {
                     }
                 }
                 // Fall through to actor receive-fn dispatch on the inner type.
-                let inner = resolved.as_local_pid().unwrap();
+                let inner = resolved.as_local_actor_ref().unwrap();
                 if let Ty::Named {
                     name: actor_name, ..
                 } = inner
@@ -9320,12 +9347,12 @@ impl Checker {
                                 ),
                             );
                         }
-                        self.record_actor_method_dispatch(
+                        let call_ty = self.record_actor_method_dispatch(
                             span,
                             method_key,
                             applied_sig.return_type.clone(),
                         );
-                        return applied_sig.return_type;
+                        return call_ty;
                     }
                 }
                 for arg in args {
@@ -10168,12 +10195,12 @@ impl Checker {
                         // also marks the span as already-rewritten below, so the
                         // synchronous `RewriteToFunction` path is skipped and the
                         // call lowers to `ActorSend` / `ActorAsk` in HIR.
-                        self.record_actor_method_dispatch(
+                        let call_ty = self.record_actor_method_dispatch(
                             span,
                             method_key,
                             applied_sig.return_type.clone(),
                         );
-                        return applied_sig.return_type;
+                        return call_ty;
                     }
                     self.record_method_call_receiver_kind(
                         span,

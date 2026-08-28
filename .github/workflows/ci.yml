@@ -44,7 +44,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Trunk health — a red main must not broadcast into every open branch
+  # Trunk health — report a red main without suppressing branch gates
   # ─────────────────────────────────────────────────────────────────────────
   main-health:
     name: main is green
@@ -52,23 +52,23 @@ jobs:
     timeout-minutes: 5
     steps:
       # On 2026-08-20 a warm-up defect landed on main and the same failure was
-      # reported by eleven branch runs over four hours: every one of them ran
-      # the trunk defect, not their own diff, and every one of them cost a full
-      # runner. A pull request cannot fix main from its own CI, so branch runs
-      # wait for main to be green instead of re-discovering its break.
+      # reported by eleven branch runs over four hours. Keep the trunk-health
+      # signal visible, but do not make gate scheduling depend on it: a failed
+      # prerequisite makes GitHub skip dependent jobs before their steps run,
+      # which would let a red main suppress every independent branch result.
       #
       # The escape is deliberate and visible: label the pull request `fix-main`
-      # and its run proceeds. Without an escape, a red main is a repository-wide
-      # deadlock, which is worse than the broadcast.
-      - name: Refuse to run branch gates while main is red
+      # to let this signal pass while repairing trunk. Without the label, the
+      # signal stays red but the independent branch gates still run.
+      - name: Report a confirmed red main
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -uo pipefail
-          # This gate blocks 13 jobs, so it fails OPEN on anything that is not
-          # a confirmed red main. An API error, a token problem, an empty
+          # This signal fails OPEN on anything that is not a confirmed red main.
+          # An API error, a token problem, an empty
           # response: none of those are evidence about main, and treating them
           # as evidence would take the whole repository down on a 404.
           if ! gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=1" > main-run.json; then
@@ -95,183 +95,13 @@ jobs:
           exit 1
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Path change detection — gates Windows/macOS and playground jobs
-  # ─────────────────────────────────────────────────────────────────────────
-  changes:
-    name: Detect changes
-    # Every job that runs anything needs this one, so the trunk-health gate
-    # hangs here rather than on a hand-kept list of jobs: a job added later
-    # inherits it by construction.
-    needs: main-health
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      # platform_smoke drives the Windows/macOS build+smoke required checks;
-      # platform_full additionally promotes those platform jobs to the full
-      # workspace nextest when a change can touch native linking / ABI /
-      # toolchain. playground drives the browser WASM job.
-      # The lightweight docs/scripts gate is always reported, and its steps
-      # select coverage from these two outputs.
-      platform_smoke: ${{ steps.filter.outputs.platform_smoke }}
-      platform_full: ${{ steps.filter.outputs.platform_full }}
-      playground: ${{ steps.filter.outputs.playground }}
-      docs: ${{ steps.filter.outputs.docs }}
-      scripts: ${{ steps.filter.outputs.scripts }}
-      selected_compile: ${{ steps.selector.outputs.requires_compile }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          fetch-depth: 0
-
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
-        id: filter
-        with:
-          filters: |
-            # Rule 4 (platform parity, weak set): any Rust change or CI/toolchain
-            # change runs the platform build + smoke on Windows/macOS. A Rust change
-            # anywhere can change native linking, paths, or process behaviour, so
-            # platform build/link coverage stays fail-closed.
-            platform_smoke:
-              - '**/*.rs'
-              - 'tests/**'
-              - 'std/**'
-              - 'examples/**'
-              - 'hew-sandbox-vm/**'
-              - 'hew-sandbox-wasm/**'
-              - 'hew-runtime-testkit/**'
-              - 'hew-testutil/**'
-              - 'tools/**'
-              - 'xtask/**'
-              - '.config/nextest.toml'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'Cargo.toml'
-              - '**/Cargo.toml'
-              - 'Cargo.lock'
-              - '**/Cargo.lock'
-              - 'Makefile'
-            # Rule 4 (platform parity, strong set): native linking / LLVM / C ABI
-            # / runtime scheduling / process / filesystem / networking / codegen
-            # paths force the FULL workspace nextest on Windows/macOS (not just
-            # smoke). Toolchain/dependency changes also force full, since they can
-            # shift the linked surface on any platform. Anything narrower than the
-            # smoke set but in this set runs full; everything else runs smoke.
-            platform_full:
-              - 'hew-runtime/**'
-              - 'hew-lib/**'
-              - 'hew-cabi/**'
-              - 'hew-codegen-rs/**'
-              - 'hew-compile/**'
-              - 'hew-cli/**'
-              - 'hew-pkg/**'
-              - 'hew-capability-gen/**'
-              - 'std/net/**'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'Cargo.toml'
-              - '**/Cargo.toml'
-              - 'Cargo.lock'
-              - '**/Cargo.lock'
-              - '.github/actions/setup-llvm/**'
-              - '.github/actions/setup-msvc/**'
-              - '.github/actions/setup-rust-build/**'
-            playground:
-              - 'hew-wasm/**'
-              - 'hew-analysis/**'
-              - 'hew-parser/**'
-              - 'hew-types/**'
-              - 'hew-lexer/**'
-              - 'hew-lsp/tests/fixtures/**'
-              - 'examples/playground/**'
-              - 'scripts/gen-playground-manifest.py'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'Makefile'
-              - '.github/actions/setup-wasm-pack/**'
-              - '.github/scripts/download-verify-binaryen.sh'
-              - '.github/scripts/retry-download.sh'
-              - '.github/workflows/ci.yml'
-            docs:
-              - 'docs/**'
-              - '*.md'
-            scripts:
-              - 'scripts/**'
-              - '.github/workflows/**'
-              - '.github/actions/**'
-              - '.github/workflows/release.yml'
-
-      - name: Classify the change with the local selector
-        id: selector
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          base_ref="${BASE_SHA}"
-          if [[ -z "${base_ref}" ]]; then
-            base_ref=HEAD^
-          fi
-          scripts/ci-preflight-dispatcher.sh --dry-run --base "${base_ref}" \
-            --github-output "${GITHUB_OUTPUT}"
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Lightweight docs/scripts coverage — required signal for narrow PRs.
-  # ─────────────────────────────────────────────────────────────────────────
-  docs-and-scripts:
-    name: Docs & scripts gates
-    needs: changes
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: No-op when docs and scripts are unchanged
-        if: needs.changes.outputs.selected_compile == 'true' || (needs.changes.outputs.docs != 'true' && needs.changes.outputs.scripts != 'true')
-        run: echo "No docs or scripts changes detected; lightweight gates are not needed."
-
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
-        with:
-          python-version: "3.12"
-        if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
-
-      - uses: ./.github/actions/setup-rust-build
-        if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
-        with:
-          components: rustfmt
-          cache-shared-key: docs-scripts-gates
-
-      - name: Provision pinned ast-grep toolchain
-        if: needs.changes.outputs.selected_compile != 'true' && needs.changes.outputs.scripts == 'true'
-        uses: ./.github/actions/setup-ast-grep
-
-      - name: Run change-scoped checks
-        if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          base_ref="${BASE_SHA}"
-          if [[ -z "${base_ref}" ]]; then
-            base_ref=HEAD^
-          fi
-          args=(--base "${base_ref}")
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            args+=(--fail-fast)
-          fi
-          scripts/ci-preflight-dispatcher.sh "${args[@]}"
-
-  # ─────────────────────────────────────────────────────────────────────────
   # Lint — code quality plus 1,778-file formatter preservation
   # (always runs; cold runners can take 15–25 min)
   # Produces SARIF output for GitHub Code Scanning inline annotations.
   # ─────────────────────────────────────────────────────────────────────────
   lint:
     name: Clippy & format
-    needs: changes
     runs-on: ubuntu-24.04
-    env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
     # Job 93290474020 reached the final authority-graph step at 25m17s after
     # 308s of toolchain setup, 252s of structural lint, 131s of .hew format,
     # 492s of formatter preservation, 167s of Clippy, and about 90s elsewhere.
@@ -279,10 +109,6 @@ jobs:
     # retaining a finite ceiling for a stuck job.
     timeout-minutes: 45
     steps:
-      - name: No-op for non-code changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No Rust or Hew code changed; compiled lint checks are not needed."
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           # fetch-depth: 0 required so origin/main is available for the
@@ -323,17 +149,14 @@ jobs:
       - name: Verify structural lint bootstrap contract
         run: make test-ast-grep-contract test-structural-lint-bootstrap
 
-      # The preflight dispatcher routes every branch gate, so its own routing
-      # and timeout counterfactuals belong on the required job rather than on
-      # the path-filtered scripts job that a compiler-only change skips.
-      # Stub-driven and temporary-tree only; no compiler build.
+      # Keep the stub-driven build-harness counterfactuals on a required job.
+      # They use temporary trees only and need no compiler build.
       - name: Verify build harness contracts
         run: make test-build-harness
 
       # >>> CI-PARITY-STEPS
       # This job is an active required status check on main. Keep the workflow
-      # contract here unconditionally so nightly/release-gate drift cannot merge
-      # even when the lightweight docs/scripts job is skipped or not required.
+      # contract here unconditionally so nightly/release-gate drift cannot merge.
       - name: Verify FreeBSD workflow contract
         run: make freebsd-workflow-contract-check
 
@@ -466,7 +289,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   license-check:
     name: License policy (cargo deny + THIRD-PARTY-LICENSES freshness)
-    needs: main-health
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -506,8 +328,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   playground-wasm-build:
     name: Playground WASM build
-    needs: changes
-    if: needs.changes.outputs.playground == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -539,50 +359,38 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   compiled-hew-linux:
     name: Build compiled Hew artifact (Linux)
-    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; no compiled Hew artifact is needed."
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
-        if: env.RUN_CODE_PATH == 'true'
 
       - name: Install build tools
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config mold zlib1g-dev libzstd-dev
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
-        if: env.RUN_CODE_PATH == 'true'
         with:
           cache-shared-key: compiled-hew-linux
 
       - name: Assert the developer compiler profile
-        if: env.RUN_CODE_PATH == 'true'
         run: make hew-profile-check
 
       - name: Build and certify the compiled Hew bundle
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           make hew-native libhew-debug
           scripts/check-libhew-fresh.sh
@@ -592,7 +400,6 @@ jobs:
             --output compiled-hew-linux.tar.gz
 
       - name: Upload compiled Hew bundle
-        if: env.RUN_CODE_PATH == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: compiled-hew-linux-${{ github.sha }}
@@ -605,49 +412,38 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   compiled-hew-shards:
     name: Compiled Hew suites (shard ${{ matrix.shard }}/4)
-    needs: [changes, compiled-hew-linux]
+    needs: compiled-hew-linux
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
     steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; compiled Hew suites are not needed."
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
-        if: env.RUN_CODE_PATH == 'true'
 
       - name: Install link prerequisites
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - name: Download compiled Hew bundle
-        if: env.RUN_CODE_PATH == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: compiled-hew-linux-${{ github.sha }}
           path: ${{ runner.temp }}/compiled-hew-download
 
       - name: Verify compiled Hew bundle
-        if: env.RUN_CODE_PATH == 'true'
         run: >-
           python3 scripts/compiled-hew-artifact.py unpack
           --input "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
@@ -655,7 +451,6 @@ jobs:
           --expected-revision "$GITHUB_SHA"
 
       - name: Run O0 and O2 shard
-        if: env.RUN_CODE_PATH == 'true'
         run: >-
           python3 scripts/compiled-hew-shards.py run
           --compiler "${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew"
@@ -663,7 +458,7 @@ jobs:
           --output-dir target/hew-shards
 
       - name: Upload shard reports
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: compiled-hew-shard-${{ matrix.shard }}-${{ github.sha }}
@@ -673,28 +468,22 @@ jobs:
 
   compiled-hew-aggregate:
     name: Aggregate compiled Hew suites
-    needs: [changes, compiled-hew-linux, compiled-hew-shards]
+    needs: [compiled-hew-linux, compiled-hew-shards]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
     steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; there are no compiled Hew shards to aggregate."
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
 
       - name: Download compiled Hew bundle
         if: >-
-          always() && env.RUN_CODE_PATH == 'true' &&
+          always() &&
           needs.compiled-hew-linux.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -703,7 +492,7 @@ jobs:
 
       - name: Verify compiled Hew bundle
         if: >-
-          always() && env.RUN_CODE_PATH == 'true' &&
+          always() &&
           needs.compiled-hew-linux.result == 'success'
         run: >-
           python3 scripts/compiled-hew-artifact.py unpack
@@ -712,7 +501,7 @@ jobs:
           --expected-revision "$GITHUB_SHA"
 
       - name: Download every shard report
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: compiled-hew-shard-*-${{ github.sha }}
@@ -720,7 +509,7 @@ jobs:
           merge-multiple: true
 
       - name: Report compiled Hew shard failures
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
         run: >-
           python3 scripts/compiled-hew-shards.py report
           --reports-dir "${{ runner.temp }}/compiled-hew-reports"
@@ -729,22 +518,13 @@ jobs:
       - name: Require every shard to complete
         if: always()
         env:
-          CHANGE_RESULT: ${{ needs.changes.result }}
           BUILD_RESULT: ${{ needs.compiled-hew-linux.result }}
           SHARD_RESULT: ${{ needs.compiled-hew-shards.result }}
         run: |
           set -euo pipefail
-          # When the code path is selected every leg must have SUCCEEDED. When it
-          # is not, the legs are legitimately skipped and that satisfies the gate --
-          # but a leg that actually ran and failed is still a failure, so `skipped`
-          # is the only non-success result accepted here.
-          for leg in CHANGE_RESULT BUILD_RESULT SHARD_RESULT; do
+          for leg in BUILD_RESULT SHARD_RESULT; do
             result="${!leg}"
             if [ "$result" = success ]; then
-              continue
-            fi
-            if [ "${RUN_CODE_PATH:-}" != 'true' ] && [ "$result" = skipped ]; then
-              echo "$leg skipped; code path not selected"
               continue
             fi
             echo "::error::$leg is '$result' (expected success)"
@@ -752,7 +532,6 @@ jobs:
           done
 
       - name: List the independent full suite inventory
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           for fixture in tests/hew/*.hew; do
             "${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew" \
@@ -761,7 +540,6 @@ jobs:
 
       # >>> CI-PARITY-STEPS
       - name: Assert shard union and Hew ratchet
-        if: env.RUN_CODE_PATH == 'true'
         run: >-  # parity-cmd: make test-hew-ratchet
           make test-hew-ratchet
           HEW_SHARD_REPORT_DIR="${{ runner.temp }}/compiled-hew-reports"
@@ -769,7 +547,6 @@ jobs:
           HEW_SHARD_COUNT=4
 
       - name: Assert shard union and O2 differential
-        if: env.RUN_CODE_PATH == 'true'
         run: >-  # parity-cmd: make test-o2-differential
           make test-o2-differential
           HEW_SHARD_REPORT_DIR="${{ runner.temp }}/compiled-hew-reports"
@@ -778,7 +555,7 @@ jobs:
       # <<< CI-PARITY-STEPS
 
       - name: Upload compiled Hew test reports
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: "${{ runner.temp }}/compiled-hew-reports/hew-*-shard-*.xml"
@@ -790,19 +567,14 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Linux gates (shard ${{ matrix.shard }}/4)
-    needs: changes
     runs-on: ubuntu-24.04
-    # Four shards of the selected preflight profile. The dispatcher partitions
-    # the profile's command list into four duration-balanced groups and each
-    # job runs `--shard N/4`; the partition is exhaustive and disjoint by
-    # construction, and ordering-dependent commands stay in the same shard, so
-    # the union of the four shards is the same gate set the single serial job
-    # ran. Warm-up is derived per shard, so a shard only builds the artifacts
-    # its own commands need.
+    # Four static shards run on every event. scripts/ci-gate-shards.py checks
+    # that every participating Make gate appears exactly once in the checked-in
+    # assignment before it executes the selected shard.
     #
     # The shard count here and the `/4` denominator below MUST agree — a
-    # mismatch would leave a shard's commands unrun behind green checks.
-    # scripts/tests/test_ci_preflight_dispatcher.py asserts they do.
+    # mismatch would leave a shard's commands unrun behind green checks. The
+    # workflow contract test asserts they do.
     strategy:
       fail-fast: false
       matrix:
@@ -820,23 +592,7 @@ jobs:
       # coverage-nightly, sanitizers) that run on runners without mold are
       # unaffected.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
-      # platform_smoke gates the whole Linux build+test required check, same
-      # boundary Windows/macOS already use (ci.yml:547-548,647-648) — it
-      # covers every glob that can affect Linux behaviour ('**/*.rs',
-      # 'tests/**', 'std/**', 'examples/**', 'Cargo.*', 'Makefile', workflow
-      # files), so a docs/comment-only PR (matching none of those globs)
-      # skips this job's ~51-90 min of work. STEP-LEVEL gating, not a
-      # job-level `if:` — a job whose `if:` is false reports skipped/missing,
-      # not a satisfied required context (LESSONS.md
-      # ci-required-gate-sequencing), so every step below carries its own
-      # `if: env.RUN_CODE_PATH == 'true'` and the no-op step below still
-      # reports a green required check on skip.
-      RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}
     steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; skipping heavy Linux CI while satisfying the required check."
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           fetch-depth: 0
@@ -845,10 +601,8 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
-        if: env.RUN_CODE_PATH == 'true'
 
       - name: Free runner disk
-        if: env.RUN_CODE_PATH == 'true'
         # This job installs LLVM 22.1.5 (~1.5 GB), builds the release hew-runtime
         # + hew-lsp binaries, the wasm32-wasip1 runtime, and runs the full debug
         # workspace nextest suite — all on one ubuntu-24.04 runner (~14 GB free).
@@ -863,13 +617,11 @@ jobs:
           df -h /
 
       - name: Install build tools
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq gdb libssl-dev pkg-config mold zlib1g-dev libzstd-dev
 
       - name: Install MQTT E2E clients
-        if: env.RUN_CODE_PATH == 'true'
         # mqtt-broker-e2e drives the Hew broker with real MQTT 3.1.1 clients;
         # do not let an absent client turn that behavioural oracle into an
         # implicit local-only target.
@@ -880,42 +632,38 @@ jobs:
           command -v mosquitto_sub
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
-        if: env.RUN_CODE_PATH == 'true'
         with:
           targets: 'wasm32-unknown-unknown, wasm32-wasip1'
           tools: nextest@0.9.120
           cache-shared-key: build-test-linux
 
       - name: Install WASI target
-        if: env.RUN_CODE_PATH == 'true'
         run: rustup target add wasm32-wasip1
 
       - name: Install wasmtime
-        if: env.RUN_CODE_PATH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          WASMTIME_ROOT="${RUNNER_TEMP}/wasmtime"
+          mkdir -p "${WASMTIME_ROOT}"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "${RUNNER_TEMP}" --clobber
+          tar -xJf "${RUNNER_TEMP}/${WASMTIME_DIR}.tar.xz" -C "${WASMTIME_ROOT}"
+          echo "${WASMTIME_ROOT}/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "${WASMTIME_ROOT}/${WASMTIME_DIR}/wasmtime" --version
 
       - name: Install wasm-pack v0.13.1 and Binaryen 117
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-wasm-pack
 
-      - name: Setup Node.js for selected browser checks
-        if: env.RUN_CODE_PATH == 'true'
+      - name: Setup Node.js for browser checks
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: 24
@@ -923,39 +671,19 @@ jobs:
           cache-dependency-path: hew-sandbox-vm/package-lock.json
 
       - name: Provision pinned ast-grep toolchain
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-ast-grep
 
       - name: Build shared Rust test artifact
-        if: env.RUN_CODE_PATH == 'true'
         run: make stdlib
 
-      - name: Run change-scoped tests
-        if: env.RUN_CODE_PATH == 'true'
+      - name: Run unconditional gate shard
         env:
-          CI_PREFLIGHT_BASE: origin/main
           COMPILED_HEW_GATE_OWNER: aggregate
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
-        # A push to main broadcasts failures to every branch; stop its affected
-        # shard at the first failure. Sharding keeps that from narrowing the
-        # report — strategy.fail-fast is false, so the other three shards run to
-        # completion and a broken change still surfaces up to four independent
-        # first failures.
-        #
-        # The dispatcher writes a per-command result table (command, elapsed,
-        # result, first failure line) to $GITHUB_STEP_SUMMARY and emits an
-        # ::error annotation per failed command, so a red shard reports the
-        # failing line at the top of the job instead of only "exit 1".
-        run: |
-          set -euo pipefail
-          args=(--base origin/main --shard ${{ matrix.shard }}/4)
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            args+=(--fail-fast)
-          fi
-          scripts/ci-preflight-dispatcher.sh "${args[@]}"
+        run: python3 scripts/ci-gate-shards.py run ${{ matrix.shard }}
 
       - name: Upload test reports
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
@@ -971,34 +699,20 @@ jobs:
   # "Build & test (Linux)", remains the single required context.
   linux-required:
     name: Build & test (Linux)
-    needs: [changes, build-and-test, compiled-hew-aggregate]
+    needs: [build-and-test, compiled-hew-aggregate]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.platform_smoke }}
     steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; the required Linux check is satisfied."
-
       - name: Require every Linux gate
         env:
-          CHANGE_RESULT: ${{ needs.changes.result }}
           RUST_GATES_RESULT: ${{ needs.build-and-test.result }}
           COMPILED_HEW_RESULT: ${{ needs.compiled-hew-aggregate.result }}
         run: |
           set -euo pipefail
-          # Same contract as the compiled-Hew aggregate: success always passes,
-          # `skipped` passes only when the code path was not selected, and any
-          # other result -- failure, cancelled, timed_out -- fails the required check.
-          for leg in CHANGE_RESULT RUST_GATES_RESULT COMPILED_HEW_RESULT; do
+          for leg in RUST_GATES_RESULT COMPILED_HEW_RESULT; do
             result="${!leg}"
             if [ "$result" = success ]; then
-              continue
-            fi
-            if [ "${RUN_CODE_PATH:-}" != 'true' ] && [ "$result" = skipped ]; then
-              echo "$leg skipped; code path not selected"
               continue
             fi
             echo "::error::$leg is '$result' (expected success)"
@@ -1016,18 +730,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test-windows:
     name: Build & test (Windows)
-    needs: changes
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      # platform_smoke gates the whole Windows build+smoke required check;
-      # platform_full additionally promotes the test step to the full workspace
-      # nextest. Linux owns full correctness on every code change — Windows is a
-      # platform build/link/smoke gate, with the full duplicated workspace
-      # nextest reserved for platform/toolchain/ABI changes here and the nightly
-      # cross-platform matrix.
-      RUN_CODE_PATH: ${{ needs.changes.outputs.platform_smoke }}
-      RUN_FULL_NEXTEST: ${{ needs.changes.outputs.platform_full }}
       # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
       # NASM on windows-msvc; the documented escape consumes the crate's
       # pregenerated assembly objects, so the test-time hew-lib bootstrap links
@@ -1045,54 +750,41 @@ jobs:
       # smaller modules, or when the Windows runner gains more memory.
       CARGO_BUILD_JOBS: "2"
     steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; skipping heavy Windows CI while satisfying the required check."
-        shell: pwsh
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
-        if: env.RUN_CODE_PATH == 'true'
 
       - name: Setup MSVC environment
         # lld-link needs the MSVC and UCRT library paths exported by vcvarsall;
         # the LLVM prefix is configured in the following setup-llvm step.
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-msvc
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
-        if: env.RUN_CODE_PATH == 'true'
         with:
           targets: wasm32-wasip1
           tools: nextest@0.9.120
           cache-shared-key: build-test-windows
 
       - name: Build Rust crates
-        if: env.RUN_CODE_PATH == 'true'
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
         run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
 
       - name: Build Hew runtime library for PDB e2e
-        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-lib --release
 
       - name: Build shared Rust test artifact
-        if: env.RUN_CODE_PATH == 'true'
         run: make stdlib
 
       - name: Verify Windows CodeView PDB emission
-        if: env.RUN_CODE_PATH == 'true'
         shell: pwsh
         run: |
           $pdbutil = Get-Command llvm-pdbutil -ErrorAction SilentlyContinue
@@ -1134,7 +826,6 @@ jobs:
         # the runner from the same pinned WASMTIME_VERSION the other two jobs
         # use, and prove it runs inside this step: a broken install must fail
         # the job here, not resurface as "not found" inside a test.
-        if: env.RUN_CODE_PATH == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1143,11 +834,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "rustup target add wasm32-wasip1 failed" }
 
           $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
-          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --clobber
+          $archive = Join-Path $env:RUNNER_TEMP "$dir.zip"
+          $root = Join-Path $env:RUNNER_TEMP "wasmtime"
+          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --dir $env:RUNNER_TEMP --clobber
           if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
 
-          Expand-Archive -Path "$dir.zip" -DestinationPath . -Force
-          $wasmtimeBin = Join-Path (Get-Location).Path $dir
+          Expand-Archive -Path $archive -DestinationPath $root -Force
+          $wasmtimeBin = Join-Path $root $dir
           $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
           if (-not (Test-Path -LiteralPath $wasmtimeExe)) {
             throw "wasmtime.exe not found at $wasmtimeExe after extracting $dir.zip"
@@ -1168,38 +861,15 @@ jobs:
       - name: Build hew-runtime for wasm32-wasip1 (debug)
         # Mirrors the macOS job. The WASI tests run as debug binaries and only
         # verify this archive, so it must exist before nextest starts.
-        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
       - name: Build hew-std for wasm32-wasip1 (debug)
         # bootstrap_wasi_runner verifies this archive too.
-        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-std --target wasm32-wasip1
 
-      - name: Run platform smoke tests
-        # Default Windows path: prove the platform build links and the
-        # platform-sensitive crates pass on windows-msvc, without re-running the
-        # whole 9500-test workspace that Linux already owns. The smoke set is the
-        # native/ABI/codegen/CLI surface where Windows-specific breakage lives
-        # (linking, path separators, process spawning).
-        # hew-cabi excluded — its #[no_mangle] symbols conflict with hew-runtime
-        # when both link into a test binary.
-        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
-        env:
-          HEW_TEST_NO_BUILD: "1"
-        run: >-
-          cargo nextest run
-          -p hew-runtime
-          -p hew-codegen-rs
-          -p hew-compile
-          -p hew-cli
-          -p hew-lib
-          --profile ci
-
       - name: Run full Rust workspace tests
-        # Platform/toolchain/ABI change: run the full workspace nextest on
-        # Windows so a native-linking or cross-platform regression is caught
-        # per-PR, not only by the nightly matrix.
+        # Run the full workspace nextest on every event so a native-linking or
+        # cross-platform regression is always caught before merge.
         # hew-wasm is excluded on every platform (profile.ci's default-filter
         # does the same) — the browser/tooling WASM surface has its own
         # playground-wasm-build job. hew-cabi has #[no_mangle] symbols that
@@ -1207,7 +877,6 @@ jobs:
         # C-ABI step below is its coverage.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
-        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
         env:
           HEW_TEST_NO_BUILD: "1"
         run: >-
@@ -1219,13 +888,12 @@ jobs:
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
-        # Unconditional on the code path: the crate is 82 fast tests and it is
-        # the only place the C-ABI ownership contract is exercised on Windows.
-        if: env.RUN_CODE_PATH == 'true'
+        # The crate is 82 fast tests and is the only place the C-ABI ownership
+        # contract is exercised on Windows.
         run: make test-cabi
 
       - name: Upload test reports
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
@@ -1236,62 +904,40 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test-macos:
     name: Build & test (macOS arm64)
-    needs: changes
     runs-on: macos-14
     timeout-minutes: 60
-    env:
-      # platform_smoke gates the whole macOS build+smoke required check;
-      # platform_full additionally promotes the test step to the full workspace
-      # nextest. Linux owns full correctness; macOS proves the Apple Silicon
-      # linker/WASI prerequisites + platform-sensitive crates per-PR, with the
-      # full duplicated nextest reserved for platform/toolchain/ABI changes and
-      # the nightly cross-platform matrix.
-      RUN_CODE_PATH: ${{ needs.changes.outputs.platform_smoke }}
-      RUN_FULL_NEXTEST: ${{ needs.changes.outputs.platform_full }}
     steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; skipping heavy macOS arm64 CI while satisfying the required check."
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
-        if: env.RUN_CODE_PATH == 'true'
 
       - uses: ./.github/actions/setup-rust-build
-        if: env.RUN_CODE_PATH == 'true'
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1'
           tools: nextest@0.9.120
           cache-shared-key: build-test-macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - name: Set macOS deployment target
-        if: env.RUN_CODE_PATH == 'true'
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
       - name: Build release libhew.a (runtime + stdlib)
-        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-lib --release
 
       - name: Build shared Rust test artifact
-        if: env.RUN_CODE_PATH == 'true'
         run: make stdlib
 
       - name: Build frontend (release)
-        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-cli --release
 
       - name: Smoke test the release binary
-        if: env.RUN_CODE_PATH == 'true'
         # Drives a trivial program through `hew compile` with the RELEASE
         # binary. Guards the ABI-mismatch abort class (#1606): a release build
         # that crashes at process exit while every debug test passes, because
@@ -1299,67 +945,39 @@ jobs:
         run: make test-release-binary
 
       - name: Install WASI runner prerequisites
-        if: env.RUN_CODE_PATH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           rustup target add wasm32-wasip1
           WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-aarch64-macos"
+          WASMTIME_ROOT="${RUNNER_TEMP}/wasmtime"
+          mkdir -p "${WASMTIME_ROOT}"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "${RUNNER_TEMP}" --clobber
+          tar -xJf "${RUNNER_TEMP}/${WASMTIME_DIR}.tar.xz" -C "${WASMTIME_ROOT}"
+          echo "${WASMTIME_ROOT}/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "${WASMTIME_ROOT}/${WASMTIME_DIR}/wasmtime" --version
           command -v wasm-ld
           wasm-ld --version
 
       - name: Build hew-runtime for wasm32-wasip1 (release)
-        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
       - name: Build hew-runtime for wasm32-wasip1 (debug)
-        # The platform smoke tests run as debug binaries (cargo nextest run, no
-        # --release). bootstrap_wasi_runner derives the build profile from the
-        # test binary path and verifies that profile's libhew_runtime.a.
-        if: env.RUN_CODE_PATH == 'true'
+        # The workspace tests run as debug binaries. bootstrap_wasi_runner
+        # derives the build profile from the test binary path and verifies that
+        # profile's libhew_runtime.a.
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
       - name: Build hew-std for wasm32-wasip1 (debug)
         # Pre-build the stdlib WASI archive for the same verify-only contract.
-        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-std --target wasm32-wasip1
 
-      - name: Run platform smoke tests
-        # Default macOS path: prove the Apple Silicon build links and the
-        # platform-sensitive crates pass, without re-running the whole
-        # 9500-test workspace that Linux already owns. The smoke set is the
-        # native/ABI/codegen/CLI surface where macOS-specific breakage lives
-        # (linker, dylib, WASI prereqs, process spawning).
-        # hew-cabi excluded — its #[no_mangle] symbols conflict with hew-runtime
-        # when both link into a test binary.
-        # Oracle integration binaries are intentionally excluded from ordinary
-        # hosted jobs, including release-gate, for runner cost/reliability.
-        # The macOS leak-oracle authority is explicit local macOS validation
-        # before release; Linux supplies structural/ASan coverage where applicable.
-        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
-        env:
-          HEW_TEST_NO_BUILD: "1"
-        run: >-
-          cargo nextest run
-          -p hew-runtime
-          -p hew-codegen-rs
-          -p hew-compile
-          -p hew-cli
-          -p hew-lib
-          --profile ci
-          -E 'not binary(~oracle)'
-
       - name: Run full Rust workspace tests
-        # Platform/toolchain/ABI change: run the full workspace nextest on
-        # macOS so a native-linking or cross-platform regression is caught
-        # per-PR, not only by the nightly matrix.
+        # Run the full workspace nextest on every event so a native-linking or
+        # cross-platform regression is always caught before merge.
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both link into a test binary.
         #
@@ -1367,7 +985,6 @@ jobs:
         # hosted jobs, including release-gate, for runner cost/reliability.
         # The macOS leak-oracle authority is explicit local macOS validation
         # before release; Linux supplies structural/ASan coverage where applicable.
-        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
         env:
           HEW_TEST_NO_BUILD: "1"
         run: >-
@@ -1380,9 +997,7 @@ jobs:
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
-        # Unconditional on the code path so Apple Silicon keeps C-ABI coverage
-        # even when the full workspace nextest is deduped off this job.
-        if: env.RUN_CODE_PATH == 'true'
+        # Apple Silicon keeps C-ABI coverage alongside the full workspace run.
         run: make test-cabi
 
       - name: Upload test reports
@@ -1390,7 +1005,7 @@ jobs:
         # as inline PR annotations; this job produces them too but never
         # surfaced them — a macOS-only failure was readable only by
         # scrolling raw step logs.
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"

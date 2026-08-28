@@ -19040,8 +19040,8 @@ impl LowerCtx {
                 // Lower the inner supervised-child accessor (a `FieldAccess`);
                 // its `site` keys `supervisor_child_slots` with the (supervisor,
                 // slot) discriminator MIR re-reads to emit `SuspendKind::RestartWait`.
-                // The result type is the child's `LocalPid<ChildType>` (the checker
-                // assigned this expr the same re-fetched-live type as the accessor).
+                // The result type is the child's stable `ChildRef<ChildType>` (the
+                // checker assigned this expression the same type as the accessor).
                 let child = self.lower_expr(inner, IntentKind::Read);
                 let result_ty = self
                     .expr_types
@@ -20596,7 +20596,12 @@ impl LowerCtx {
                     }
                     // A `receive gen fn` dispatch never reaches a `select`
                     // ActorAsk arm — `for await` is its only consumer surface.
-                    Some(ActorMethodKind::Fire(_) | ActorMethodKind::StreamProducer(_, _))
+                    Some(
+                        ActorMethodKind::Fire(_)
+                        | ActorMethodKind::BlockingFire(_)
+                        | ActorMethodKind::CheckedFire(_)
+                        | ActorMethodKind::StreamProducer(_, _),
+                    )
                     | None => {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::CheckerBoundaryViolation {
@@ -23921,7 +23926,7 @@ impl LowerCtx {
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
-        if builtin == Some(BuiltinType::LocalPid) {
+        if matches!(builtin, Some(BuiltinType::ChildRef | BuiltinType::LocalPid)) {
             if let [ResolvedTy::Named {
                 name: actor_name, ..
             }] = args.as_mut_slice()
@@ -27477,8 +27482,38 @@ impl LowerCtx {
                             receiver: Box::new(lowered_receiver),
                             method_id,
                             args: lowered_args,
+                            checked: false,
+                            blocking: false,
                         },
                         ResolvedTy::Unit,
+                    )
+                }
+                ActorMethodKind::BlockingFire(method_id) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    (
+                        HirExprKind::ActorSend {
+                            receiver: Box::new(lowered_receiver),
+                            method_id,
+                            args: lowered_args,
+                            checked: false,
+                            blocking: true,
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+                ActorMethodKind::CheckedFire(method_id) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    let result_ty = ResolvedTy::from_ty(&Ty::result(Ty::Unit, Ty::send_error()))
+                        .expect("checked actor send result type is compiler-owned");
+                    (
+                        HirExprKind::ActorSend {
+                            receiver: Box::new(lowered_receiver),
+                            method_id,
+                            args: lowered_args,
+                            checked: true,
+                            blocking: false,
+                        },
+                        result_ty,
                     )
                 }
                 ActorMethodKind::Ask(method_id, reply_ty) => {
@@ -38350,13 +38385,13 @@ impl Widget {
 
         #[test]
         fn non_owning_actor_references_are_not_transfers() {
-            // `LocalPid` and its raw runtime word carry the `Resource` marker
-            // for drop elaboration but free nothing, and supervisors
-            // legitimately hand one child's pid to several peers.
-            assert!(!transfers(&builtin_handle(
-                "LocalPid",
-                BuiltinType::LocalPid
-            )));
+            // ChildRef, LocalPid, and the raw runtime word free nothing.
+            for (name, kind) in [
+                ("ChildRef", BuiltinType::ChildRef),
+                ("LocalPid", BuiltinType::LocalPid),
+            ] {
+                assert!(!transfers(&builtin_handle(name, kind)));
+            }
             assert!(!transfers(&builtin_handle(
                 "HewActor",
                 BuiltinType::HewActor
@@ -40818,8 +40853,8 @@ mod caller_visible_param_projection_tests {
 mod builtin_enum_catalog_fingerprint_tests {
     use super::BUILTIN_ENUM_SPECS;
 
-    const TRANSITION_FINGERPRINT: u64 = 0xb212_192b_75a4_473a;
-    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0x1615_c20e_10cb_dac2;
+    const TRANSITION_FINGERPRINT: u64 = 0xc1fc_b995_abfb_984c;
+    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0xe7c1_bed6_d523_d55c;
 
     fn hash_byte(hash: &mut u64, byte: u8) {
         *hash ^= u64::from(byte);

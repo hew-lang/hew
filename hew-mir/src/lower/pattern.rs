@@ -1642,6 +1642,24 @@ impl Builder {
         self.field_drop_aggregate_admissible(&subst, &mut visiting)
     }
 
+    pub(crate) fn project_record_leaf_field_drop(
+        &self,
+        base: Place,
+        field: u32,
+        ty: &ResolvedTy,
+    ) -> Option<Instr> {
+        let ty = self.subst_ty(ty);
+        let ReleaseSymbolVerdict::Wired(symbol) = self.project_field_inline_drop_symbol(&ty) else {
+            return None;
+        };
+        Some(Instr::RecordFieldDrop {
+            record: base,
+            field_offset: FieldOffset(field),
+            ty,
+            drop_fn: crate::model::DropFnSpec::Release(symbol),
+        })
+    }
+
     /// The aggregate-shape half of [`Self::field_drop_in_place_admissible`]:
     /// true only for the five admitted aggregate shapes whose reachable
     /// leaves are all dischargeable. Operates on substituted types.

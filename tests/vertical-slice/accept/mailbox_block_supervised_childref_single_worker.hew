@@ -1,0 +1,35 @@
+// A cooperative bounded send through ChildRef must resolve and pin the stable
+// supervisor role. Treating the two-word ChildRef descriptor as LocalPid, or
+// blocking the only scheduler worker, prevents the second delivery.
+actor BlockedChild {
+    mailbox 1;
+    receive fn work(value: i64) {
+        if value == 2 {
+            println("CHILDREF_BLOCK_WORK_DELIVERED");
+            exit(42);
+        }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 2 within 60s;
+
+    child worker: BlockedChild;
+}
+
+actor Driver {
+    let worker: ChildRef<BlockedChild>;
+
+    receive fn run() {
+        worker.work(1);
+        worker.work(2);
+        println("CHILDREF_BLOCK_SEND_RESUMED");
+    }
+}
+
+fn main() {
+    let app = spawn App;
+    let driver = spawn Driver(worker: app.worker);
+    driver.run();
+}

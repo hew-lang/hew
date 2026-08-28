@@ -1,0 +1,12 @@
+fn pair_second(x: i64, y: i64) -> i64 {
+    let pair = (x, y);
+    pair.1
+}
+
+fn main() -> i64 {
+    if pair_second(0, 42) == 42 {
+        0
+    } else {
+        1
+    }
+}

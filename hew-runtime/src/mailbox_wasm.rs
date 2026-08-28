@@ -552,7 +552,7 @@ unsafe fn retire_reply_channel(reply_channel: *mut c_void) {
 /// Mirrors the native `SendOutcome` in `mailbox.rs`. FFI entry points map
 /// these variants to their own return conventions.
 #[derive(Clone, Copy)]
-enum SendOutcome {
+pub(crate) enum SendOutcome {
     /// Message was successfully enqueued.
     Enqueued,
     /// Mailbox is closed — message was not sent.
@@ -749,6 +749,24 @@ unsafe fn send_user_message(
         crate::scheduler_wasm::record_message_sent();
     }
     send_outcome_to_hew_error(outcome)
+}
+
+/// Policy-aware fire-and-forget send used by the actor layer. Unlike the FFI
+/// status mapping, this preserves whether a successful admission discarded or
+/// replaced work so checked language sends can report `MessageLost`.
+pub(crate) unsafe fn hew_mailbox_send_fire_and_forget(
+    mb: &mut HewMailboxWasm,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> SendOutcome {
+    // SAFETY: `mb` is valid and the caller guarantees that `data` covers `size` bytes.
+    let outcome =
+        unsafe { send_user_message_inner(mb, msg_type, data.cast_const(), size, ptr::null_mut()) };
+    if matches!(outcome, SendOutcome::Enqueued | SendOutcome::DroppedOld) {
+        crate::scheduler_wasm::record_message_sent();
+    }
+    outcome
 }
 
 // ── Constructors ────────────────────────────────────────────────────────

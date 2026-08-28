@@ -16,12 +16,10 @@ from types import SimpleNamespace
 # counterfactuals below drive
 # cargo-output-dir.py into its fail-closed paths, and those paths print
 # "error: ..." to stderr before exiting.  On a PASSING run that text is bait:
-# anything reading the log for a first failure line — the preflight
-# dispatcher's annotation extractor does exactly that — would report this
-# test's own provoked diagnostic as the defect.  Replaying it behind the
+# anything reading the log for a first failure line could report this test's
+# own provoked diagnostic as the defect. Replaying it behind the
 # marker keeps it readable and unmistakable.
-# `ci-preflight-dispatcher.sh --check-counterfactual-output` fails if this
-# stops happening.
+# Keep the prefix on every provoked line.
 COUNTERFACTUAL_MARKER = "CF-"
 
 

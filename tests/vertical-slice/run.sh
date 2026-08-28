@@ -981,6 +981,8 @@ run_accept_expect_stdout "arena_composite_value"
 run_accept_expect_stdout "arena_no_leak_cycle"
 run_accept_expect_stdout "arena_cross_instance_key_rejected"
 run_accept_expect_stdout "arena_nested_vec_reuse"
+run_accept_expect_status "move_owned_record_field_once" 0
+run_accept_expect_stdout "move_owned_record_field_sibling_cleanup"
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/arena_method_clone_rejected.hew" \
   "cannot be cloned" \
@@ -1839,6 +1841,19 @@ run_accept_expect_status_and_stdout "supervisor_fungible_dead_child" 1
 # setup status was treated as process-fatal and trapped (exit 133), even though
 # the tell + single-shot ask siblings already fail-closed.
 run_accept_expect_status_and_stdout "supervisor_fungible_dead_child_select" 1
+# ChildRef value-flow/state matrix: six flow positions (inline, parameter,
+# return, record, Vec, closure) x four referent states (live, restarting,
+# budget-exhausted, permanently stopped). Every cell asks, and every shape also
+# tells; a terminal static-pool member is exercised through a held value,
+# indexing, and get(). Exit 1 is the ordinary unrecovered-root-fault class from
+# the intentionally exhausted supervisors, not a signal-derived hardware-fault
+# status. The sentinel proves every recoverable branch and tell continuation ran.
+run_accept_expect_status "supervisor_childref_value_flow_states" 1
+if ! grep -qxF -- "CHILDREF_FLOW_STATE_MATRIX_OK" "${stdout_output}"; then
+  echo "supervisor_childref_value_flow_states: sentinel missing" >&2
+  cat "${stdout_output}" >&2
+  exit 1
+fi
 
 # Lifecycle-under-supervision: a supervised actor's init() / #[on(start)] must
 # fire on BOTH the initial supervised spawn AND a supervisor-triggered restart.
@@ -2014,6 +2029,49 @@ run_accept_expect_status "supervisor_max_heap" 42
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/mailbox_bounded_drop_new.hew" >"${accept_output}" 2>&1
 grep -q 'mailbox_capacity=4 overflow=DropNew' "${accept_output}"
 run_accept_expect_status "mailbox_bounded_drop_new" 0
+
+# A lossy actor send is Result-typed, reports the exact drop, and cannot be
+# discarded accidentally as a bare statement. HEW_WORKERS=1 makes the
+# capacity-one overflow deterministic while also proving that the dropped work
+# never reached its handler.
+run_accept_expect_status "mailbox_drop_new_visible" 42 HEW_WORKERS=1
+grep -qFx -- "LOSS_VISIBLE" "${stdout_output}"
+if grep -qF -- "DROPPED_WORK_DELIVERED" "${stdout_output}"; then
+  echo "mailbox_drop_new_visible delivered the dropped work" >&2
+  cat "${stdout_output}" >&2
+  exit 1
+fi
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/mailbox_loss_result_ignored.hew" \
+  "policy-sensitive actor send result must be handled" \
+  "discarded lossy actor send"
+
+# Unbounded, non-overflowing actor sends keep the ordinary unit-typed call
+# shape: no Result handling is imposed on the reliable common case.
+run_accept_expect_status "mailbox_normal_send_ergonomic" 42 HEW_WORKERS=1
+grep -qFx -- "NORMAL_SEND_DELIVERED" "${stdout_output}"
+
+# `fail` uses the same checked-send surface, but reports rejection as Full
+# instead of trapping a unit-typed sender with no usable diagnostic.
+run_accept_expect_status "mailbox_fail_observable" 43 HEW_WORKERS=1
+grep -qFx -- "FAIL_VISIBLE" "${stdout_output}"
+if grep -qF -- "REJECTED_WORK_DELIVERED" "${stdout_output}"; then
+  echo "mailbox_fail_observable delivered rejected work" >&2
+  cat "${stdout_output}" >&2
+  exit 1
+fi
+
+# A bounded mailbox's default `block` policy must suspend an actor sender,
+# freeing the only scheduler worker to consume and create capacity. The former
+# Condvar path times out here because Driver parks the sole worker.
+run_accept_expect_status "mailbox_block_single_worker" 42 HEW_WORKERS=1
+grep -qFx -- "BLOCK_WORK_DELIVERED" "${stdout_output}"
+run_accept_expect_status "mailbox_block_supervised_childref_single_worker" 42 HEW_WORKERS=1
+grep -qFx -- "CHILDREF_BLOCK_WORK_DELIVERED" "${stdout_output}"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/mailbox_coalesce_block_fallback.hew" \
+  "coalesce fallback 'block' is unsupported" \
+  "coalesce block fallback must fail closed"
 
 # second zero-hardcode site: the SAME bound must hold for a SUPERVISED
 # actor. `HewChildSpec` stored `const_zero` at the mailbox_capacity/overflow

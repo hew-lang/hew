@@ -757,6 +757,18 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
     ty.is_integer() || matches!(ty, hew_types::ResolvedTy::Bool)
 }
 
+/// The first aggregate value family admitted into SIR.
+///
+/// These values remain purely semantic until Raw MIR decides whether a
+/// representation boundary requires storage. Restricting tuple leaves to the
+/// existing `BitCopy` scalar domain keeps this first slice free of drops,
+/// borrowing, reference counts, and layout-dependent behavior.
+fn is_initial_value_type(ty: &ResolvedTy) -> bool {
+    is_initial_scalar(ty)
+        || matches!(ty, ResolvedTy::Tuple(elements)
+            if !elements.is_empty() && elements.iter().all(is_initial_value_type))
+}
+
 fn is_initial_scalar_return(ty: &ResolvedTy) -> bool {
     matches!(ty, hew_types::ResolvedTy::Unit) || is_initial_scalar(ty)
 }
@@ -802,39 +814,40 @@ fn initial_scalar_use_mode(intent: IntentKind) -> Result<UseMode, String> {
 }
 
 /// Lower a value flowing into a binding or function return in the initial
-/// no-drop scalar domain.
+/// no-drop scalar/tuple domain.
 ///
 /// HIR intentionally marks these positions `Consume`: their result transfers
 /// to a new binding or the caller. For `i*`/`u*`/`bool`, that semantic transfer
 /// has no exclusive ownership obligation, so SIR keeps the same virtual value
-/// and represents the receiving flow as `Read`. This is a narrow value-class
+/// and represents the receiving flow as `Read`. The same applies recursively
+/// to tuples made solely from such scalar values. This is a narrow value-class
 /// rule, not a general weakening of `Move`: actual operand positions remain
-/// read-only in this slice, and every non-scalar transfer fails closed until
-/// ownership/layout MIR can realize it.
-fn initial_scalar_transfer_mode(
+/// read-only in this slice, and every ownership-bearing transfer fails closed
+/// until ownership/layout MIR can realize it.
+fn initial_value_transfer_mode(
     intent: IntentKind,
     ty: &hew_types::ResolvedTy,
     context: &str,
 ) -> Result<(), String> {
     let mode = use_mode_from_hir_intent(intent).map_err(|reason| format!("{context}: {reason}"))?;
     match mode {
-        UseMode::Read | UseMode::Move if is_initial_scalar(ty) => Ok(()),
+        UseMode::Read | UseMode::Move if is_initial_value_type(ty) => Ok(()),
         UseMode::Read | UseMode::Move => Err(format!(
-            "{context}: HIR intent maps to SIR {mode:?} for non-scalar `{}`; initial SIR only aliases BitCopy scalar binding/return flow",
+            "{context}: HIR intent maps to SIR {mode:?} for ownership-bearing `{}`; initial SIR only aliases BitCopy scalar/tuple binding/return flow",
             ty.user_facing()
         )),
         other => Err(format!(
-            "{context}: HIR intent maps to SIR {other:?}; initial scalar binding/return flow admits only Read or BitCopy Move"
+            "{context}: HIR intent maps to SIR {other:?}; initial scalar/tuple binding/return flow admits only Read or BitCopy Move"
         )),
     }
 }
 
-fn lower_initial_scalar_transfer_value(
+fn lower_initial_value_transfer(
     builder: &mut Builder<'_, '_>,
     expr: &HirExpr,
     context: &str,
 ) -> Result<ValueId, String> {
-    initial_scalar_transfer_mode(expr.intent, &builder.ty(&expr.ty), context)?;
+    initial_value_transfer_mode(expr.intent, &builder.ty(&expr.ty), context)?;
     builder.lower_expr(expr)
 }
 
@@ -1070,9 +1083,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     }
                     let value = value
                         .as_ref()
-                        .map(|expr| {
-                            lower_initial_scalar_transfer_value(self, expr, "binding initializer")
-                        })
+                        .map(|expr| lower_initial_value_transfer(self, expr, "binding initializer"))
                         .transpose()?
                         .ok_or_else(|| {
                             "uninitialised bindings are not in the initial SIR subset".to_string()
@@ -1089,7 +1100,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                             None
                         }
                         Some(expr) => Some(Operand {
-                            value: lower_initial_scalar_transfer_value(self, expr, "return value")?,
+                            value: lower_initial_value_transfer(self, expr, "return value")?,
                             mode: UseMode::Read,
                         }),
                         None => None,
@@ -1164,6 +1175,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 self.emit(expr, SemOpKind::ConstBool(*value))
             }
+            HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
+            HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(binding),
                 ..
@@ -1219,6 +1232,100 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             ),
             _ => Err("unsupported HIR expression kind in the initial SIR subset".to_string()),
         }
+    }
+
+    /// Lower an immutable, no-drop tuple as one semantic aggregate value.
+    ///
+    /// The tuple's exact `ResolvedTy` is retained; neither its field layout nor
+    /// an addressable temporary is introduced at the HIR → SIR boundary.
+    fn lower_tuple_make(
+        &mut self,
+        expr: &HirExpr,
+        elements: &[HirExpr],
+    ) -> Result<ValueId, String> {
+        let tuple_ty = self.ty(&expr.ty);
+        let ResolvedTy::Tuple(expected_elements) = &tuple_ty else {
+            return Err(format!(
+                "tuple literal has non-tuple resolved type `{}` in SIR lowering",
+                tuple_ty.user_facing()
+            ));
+        };
+        if !is_initial_value_type(&tuple_ty) {
+            return Err(format!(
+                "tuple literal type `{}` is outside SIR's initial no-drop scalar/tuple value domain",
+                tuple_ty.user_facing()
+            ));
+        }
+        if expected_elements.len() != elements.len() {
+            return Err(format!(
+                "tuple literal has {} element(s), but its resolved type `{}` has {} element type(s)",
+                elements.len(),
+                tuple_ty.user_facing(),
+                expected_elements.len()
+            ));
+        }
+        let mut lowered_elements = Vec::with_capacity(elements.len());
+        for (index, (element, expected_ty)) in elements.iter().zip(expected_elements).enumerate() {
+            let actual_ty = self.ty(&element.ty);
+            if &actual_ty != expected_ty {
+                return Err(format!(
+                    "tuple literal element {index} has resolved type `{}`, expected `{}`",
+                    actual_ty.user_facing(),
+                    expected_ty.user_facing()
+                ));
+            }
+            lowered_elements
+                .push(self.lower_read_operand(element, &format!("tuple literal element {index}"))?);
+        }
+        self.emit(
+            expr,
+            SemOpKind::TupleMake {
+                elements: lowered_elements,
+            },
+        )
+    }
+
+    /// Lower a semantic tuple projection without exposing aggregate layout.
+    fn lower_tuple_get(
+        &mut self,
+        expr: &HirExpr,
+        tuple_expr: &HirExpr,
+        index: usize,
+    ) -> Result<ValueId, String> {
+        let tuple_ty = self.ty(&tuple_expr.ty);
+        let ResolvedTy::Tuple(elements) = &tuple_ty else {
+            return Err(format!(
+                "tuple projection has non-tuple operand type `{}` in SIR lowering",
+                tuple_ty.user_facing()
+            ));
+        };
+        if !is_initial_value_type(&tuple_ty) {
+            return Err(format!(
+                "tuple projection operand type `{}` is outside SIR's initial no-drop scalar/tuple value domain",
+                tuple_ty.user_facing()
+            ));
+        }
+        let expected_ty = elements.get(index).ok_or_else(|| {
+            format!(
+                "tuple projection index {index} is out of bounds for `{}` with {} element(s)",
+                tuple_ty.user_facing(),
+                elements.len()
+            )
+        })?;
+        let result_ty = self.ty(&expr.ty);
+        if &result_ty != expected_ty {
+            return Err(format!(
+                "tuple projection index {index} from `{}` has result type `{}`, expected `{}`",
+                tuple_ty.user_facing(),
+                result_ty.user_facing(),
+                expected_ty.user_facing()
+            ));
+        }
+        let index = u32::try_from(index).map_err(|_| {
+            "tuple projection index exceeds SIR's target-independent u32 field range".to_string()
+        })?;
+        let tuple = self.lower_read_operand(tuple_expr, "tuple projection operand")?;
+        self.emit(expr, SemOpKind::TupleGet { tuple, index })
     }
 
     /// Lower an HIR direct call through the resolved SIR callable table.
@@ -1535,8 +1642,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 #[cfg(test)]
 mod tests {
     use super::{
-        initial_scalar_transfer_mode, initial_scalar_use_mode, use_mode_from_hir_intent,
-        PendingBlock,
+        initial_scalar_use_mode, initial_value_transfer_mode, is_initial_value_type,
+        use_mode_from_hir_intent, PendingBlock,
     };
     use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemTerminator, UseMode};
     use hew_hir::IntentKind;
@@ -1581,17 +1688,24 @@ mod tests {
     }
 
     #[test]
-    fn scalar_binding_and_return_transfers_admit_only_bitcopy_move() {
-        assert!(
-            initial_scalar_transfer_mode(IntentKind::Consume, &ResolvedTy::I64, "test").is_ok()
-        );
-        assert!(initial_scalar_transfer_mode(IntentKind::Read, &ResolvedTy::Bool, "test").is_ok());
+    fn scalar_and_tuple_binding_transfers_admit_only_bitcopy_values() {
+        assert!(initial_value_transfer_mode(IntentKind::Consume, &ResolvedTy::I64, "test").is_ok());
+        assert!(initial_value_transfer_mode(IntentKind::Read, &ResolvedTy::Bool, "test").is_ok());
+        let tuple = ResolvedTy::Tuple(vec![
+            ResolvedTy::I64,
+            ResolvedTy::Tuple(vec![ResolvedTy::Bool]),
+        ]);
+        assert!(is_initial_value_type(&tuple));
+        assert!(initial_value_transfer_mode(IntentKind::Consume, &tuple, "test").is_ok());
         for intent in [IntentKind::Read, IntentKind::Consume] {
-            let error = initial_scalar_transfer_mode(intent, &ResolvedTy::String, "test")
-                .expect_err("a non-BitCopy transfer must stay outside the scalar SIR subset");
+            let error = initial_value_transfer_mode(intent, &ResolvedTy::String, "test")
+                .expect_err(
+                    "an ownership-bearing transfer must stay outside the SIR value-only subset",
+                );
             assert!(
-                error.contains("non-scalar") && error.contains("only aliases BitCopy scalar"),
-                "the transfer diagnostic must explain that this would erase ownership: {error}"
+                error.contains("ownership-bearing")
+                    && error.contains("only aliases BitCopy scalar/tuple"),
+                "the transfer diagnostic must explain that this would erase ownership: {error}",
             );
         }
     }

@@ -32,9 +32,9 @@ fn main() -> i64 {
     let sup = spawn MailboxSupervisor;
     let w = sup.w1;
     for i in 0 .. 20 {
-        w.process(i);
+        let _ = w.process(i);
     }
-    sleep(1000ms);
+    sleep(1s);
     let result = await w.report();
     let final_count = match result {
         Ok(value) => value,

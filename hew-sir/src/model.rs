@@ -517,6 +517,23 @@ impl EffectSet {
 pub enum SemOpKind {
     ConstI64(i64),
     ConstBool(bool),
+    /// Construct a semantic tuple value from its ordered elements.
+    ///
+    /// This is deliberately an aggregate-value operation: it says nothing
+    /// about field offsets, padding, allocation, or storage. Raw MIR decides
+    /// whether the resulting value can remain virtual or must be materialized.
+    TupleMake {
+        elements: Vec<Operand>,
+    },
+    /// Observe one semantic element of a tuple value.
+    ///
+    /// `index` is a target-independent semantic position, not a byte offset
+    /// or representation tag. The verifier proves that it is in bounds for
+    /// the tuple type and that the result has the selected element type.
+    TupleGet {
+        tuple: Operand,
+        index: u32,
+    },
     Unary {
         op: hew_parser::ast::UnaryOp,
         value: Operand,
@@ -557,6 +574,17 @@ impl SemOpKind {
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
             Self::ConstI64(_) | Self::ConstBool(_) => {}
+            Self::TupleMake { elements } => {
+                for (index, element) in elements.iter().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
+                        ),
+                        element,
+                    );
+                }
+            }
+            Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -586,6 +614,17 @@ impl SemOpKind {
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
             Self::ConstI64(_) | Self::ConstBool(_) => {}
+            Self::TupleMake { elements } => {
+                for (index, element) in elements.iter_mut().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
+                        ),
+                        element,
+                    );
+                }
+            }
+            Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -628,6 +667,8 @@ impl SemOpKind {
             } => EffectSet::MAY_TRAP,
             Self::ConstI64(_)
             | Self::ConstBool(_)
+            | Self::TupleMake { .. }
+            | Self::TupleGet { .. }
             | Self::Unary { .. }
             | Self::Binary { .. }
             | Self::Cast { .. } => EffectSet::PURE,

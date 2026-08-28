@@ -75,14 +75,15 @@ use hew_hir::stdlib_catalog::PrintKind;
 use hew_hir::{mangle_dotted_name, ItemId};
 use hew_mir::{
     instr_source_places, is_string_const_ty, terminator_source_places, validate_context_markers,
-    ActorHandlerKind, ActorLayout, ActorStateLoadMode, CallAuthority, CheckedMirFunction, CmpPred,
-    CooperateKind, CooperateSite, DropFnSpec, DropKind, DynVtableInstance, ElabDrop,
-    ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr,
-    IntArithOp, IntSignedness, IoHandleKind, IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout,
-    MirConst, MirConstValue, MirScope, ParamBoundaryMode, ParamLoanStorage, Place, RawMirFunction,
-    RecordLayout, RegexLiteral, ResourceCloseAuthority, RuntimeCall, SourceOrigin,
-    StateFieldCloneKind, Strategy, StringRetainCondition, SupervisorChildLayout, SuspendKind,
-    Terminator, TrapKind,
+    verify_raw_virtual_value_ladder, ActorHandlerKind, ActorLayout, ActorStateLoadMode,
+    CallAuthority, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, DropFnSpec, DropKind,
+    DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset,
+    FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
+    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, ParamBoundaryMode,
+    ParamLoanStorage, Place, RawMirFunction, RawValueDef, RawValueId, RawValueOp,
+    RawVirtualValueFacts, RecordLayout, RegexLiteral, ResourceCloseAuthority, RuntimeCall,
+    SourceOrigin, StateFieldCloneKind, Strategy, StringRetainCondition, SupervisorChildLayout,
+    SuspendKind, Terminator, TrapKind,
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
@@ -997,6 +998,23 @@ impl PartialEq<&str> for WasmExclusion {
 ///   elaborator-produced `"Duplex::close"` strings that resolve to
 ///   `hew_duplex_close` at codegen time.
 pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<WasmExclusion> {
+    // A bounded mailbox with the default/explicit Block policy needs the
+    // native read-slot + enqueue-resume capacity waiter even when its first
+    // send happens from a contextless entry point or through an ask carrier.
+    // Reject the declaration on wasm32 rather than reaching mailbox_wasm's
+    // historical DropNew fallback and silently losing work.
+    if pipeline.actor_layouts.iter().any(|layout| {
+        layout.mailbox_capacity.is_some()
+            && matches!(
+                layout.overflow_policy.as_ref(),
+                None | Some(hew_parser::ast::OverflowPolicy::Block)
+            )
+    }) {
+        return Some(WasmExclusion::new(
+            "hew_actor_await_send_by_id",
+            wasm_capability_ids::COOPERATIVE_YIELD,
+        ));
+    }
     for func in &pipeline.raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
@@ -1204,6 +1222,10 @@ fn wasm_excluded_terminal_call(terminator: &Terminator) -> Option<WasmExclusion>
 /// `RemoteAsk` / `StreamSend` / `CallClosure`) were never flagged here.
 fn wasm_excluded_suspend_kind(kind: &SuspendKind) -> Option<WasmExclusion> {
     match kind {
+        SuspendKind::ActorSend { .. } => Some(WasmExclusion::new(
+            "hew_actor_await_send_by_id",
+            wasm_capability_ids::COOPERATIVE_YIELD,
+        )),
         SuspendKind::StreamNext { .. } => Some(WasmExclusion::new(
             "hew_stream_await_next",
             wasm_capability_ids::STREAMS,
@@ -1311,6 +1333,7 @@ fn wasm_excluded_call_family(
         | F::LocalPidSupervisorChildGet
         | F::SupervisorNestedGet
         | F::SupervisorPoolChildGet
+        | F::LocalPidSupervisorPoolChildRefGet
         | F::SupervisorPoolLen
         | F::SupervisorStop
         | F::SupervisorRestartAwaitBlocking => Some(wasm_capability_ids::SUPERVISION_TREES),
@@ -1952,6 +1975,10 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// use their target-specific process/status boundary until LLVM exposes
     /// the corresponding funclet builders through Inkwell.
     pub(crate) unwind_enabled: bool,
+    /// The declared LLVM function currently being lowered. Raw virtual
+    /// parameter definitions bind directly to this function's incoming ABI
+    /// values, rather than creating a storage local solely for the prologue.
+    pub(crate) llvm_fn: FunctionValue<'ctx>,
     /// Emit `hew_shutdown_initiate_implicit(0)` + `hew_shutdown_wait()` before the
     /// `Terminator::Return` in the native program entry point of an
     /// actor-using program — the implicit actor-drain floor.
@@ -2082,6 +2109,11 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// ABI helpers that must encode a value from its source type, not only its
     /// LLVM storage shape.
     pub(crate) local_tys: HashMap<u32, ResolvedTy>,
+    /// Raw value id → LLVM SSA value for the narrowly admitted value-only Raw
+    /// MIR subset. This is intentionally separate from `locals`: entries here
+    /// have no address and must cross an explicit `MaterializeValue` boundary
+    /// before a storage-oriented lowering may observe them.
+    pub(crate) raw_values: RefCell<HashMap<RawValueId, BasicValueEnum<'ctx>>>,
     /// Block id → LLVM `BasicBlock`. Populated up front so terminators can
     /// name forward targets.
     pub(crate) blocks: HashMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
@@ -3464,6 +3496,17 @@ pub(crate) fn resolve_ty<'ctx>(
                 ],
                 false,
             )
+            .into());
+    }
+    if matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::ChildRef),
+            ..
+        }
+    ) {
+        return Ok(ctx
+            .struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false)
             .into());
     }
     if let ResolvedTy::Named {
@@ -12439,6 +12482,202 @@ fn lower_try_width_cast(
     }
 }
 
+fn raw_value_matches_type(value: BasicValueEnum<'_>, expected: BasicTypeEnum<'_>) -> bool {
+    match (value, expected) {
+        (BasicValueEnum::IntValue(value), BasicTypeEnum::IntType(expected)) => {
+            value.get_type() == expected
+        }
+        (BasicValueEnum::StructValue(value), BasicTypeEnum::StructType(expected)) => {
+            value.get_type() == expected
+        }
+        _ => false,
+    }
+}
+
+fn raw_value_type<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ty: &ResolvedTy,
+    context: &str,
+) -> CodegenResult<BasicTypeEnum<'ctx>> {
+    resolve_value_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        ty,
+        fn_ctx.record_layouts,
+        fn_ctx.enum_layouts,
+    )
+    .map_err(|error| {
+        CodegenError::FailClosed(format!(
+            "{context} cannot resolve virtual value type `{}`: {error}",
+            ty.user_facing()
+        ))
+    })
+}
+
+fn raw_value_get<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: RawValueId,
+    context: &str,
+) -> CodegenResult<BasicValueEnum<'ctx>> {
+    fn_ctx
+        .raw_values
+        .borrow()
+        .get(&value)
+        .copied()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "{context} reads undefined raw virtual value %{}",
+                value.0
+            ))
+        })
+}
+
+fn raw_value_define<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: &RawValueDef,
+    value: BasicValueEnum<'ctx>,
+    context: &str,
+) -> CodegenResult<()> {
+    let expected = raw_value_type(fn_ctx, &dest.ty, context)?;
+    if !raw_value_matches_type(value, expected) {
+        return Err(CodegenError::FailClosed(format!(
+            "{context} defines raw virtual value %{} as LLVM type {:?}, expected `{}`",
+            dest.id.0,
+            value,
+            dest.ty.user_facing()
+        )));
+    }
+    if fn_ctx
+        .raw_values
+        .borrow_mut()
+        .insert(dest.id, value)
+        .is_some()
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "{context} defines raw virtual value %{} more than once",
+            dest.id.0
+        )));
+    }
+    Ok(())
+}
+
+fn lower_raw_value_op<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, operation: &RawValueOp) -> CodegenResult<()> {
+    match operation {
+        RawValueOp::Param { dest, index } => {
+            if fn_ctx.execution_context.is_some() {
+                return Err(CodegenError::FailClosed(
+                    "raw virtual parameter body unexpectedly carries an execution context".into(),
+                ));
+            }
+            let incoming = fn_ctx.llvm_fn.get_nth_param(*index).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "raw virtual parameter {} has no corresponding LLVM ABI parameter",
+                    index
+                ))
+            })?;
+            raw_value_define(fn_ctx, dest, incoming, "raw virtual parameter")
+        }
+        RawValueOp::ConstI64 { dest, value } => {
+            let BasicTypeEnum::IntType(integer) =
+                raw_value_type(fn_ctx, &dest.ty, "raw virtual integer realization")?
+            else {
+                return Err(CodegenError::FailClosed(
+                    "raw virtual integer realization did not resolve to an LLVM integer".into(),
+                ));
+            };
+            #[allow(clippy::cast_sign_loss)]
+            let value = integer.const_int(*value as u64, true);
+            raw_value_define(fn_ctx, dest, value.into(), "raw virtual integer constant")
+        }
+        RawValueOp::ConstBool { dest, value } => {
+            let BasicTypeEnum::IntType(integer) =
+                raw_value_type(fn_ctx, &dest.ty, "raw virtual boolean realization")?
+            else {
+                return Err(CodegenError::FailClosed(
+                    "raw virtual boolean realization did not resolve to an LLVM integer".into(),
+                ));
+            };
+            let value = integer.const_int(u64::from(*value), false);
+            raw_value_define(fn_ctx, dest, value.into(), "raw virtual boolean constant")
+        }
+        RawValueOp::TupleMake { dest, fields } => {
+            let BasicTypeEnum::StructType(struct_ty) =
+                raw_value_type(fn_ctx, &dest.ty, "raw virtual tuple realization")?
+            else {
+                return Err(CodegenError::FailClosed(
+                    "raw virtual tuple realization did not resolve to an LLVM struct".into(),
+                ));
+            };
+            let mut aggregate = struct_ty.get_undef();
+            for (index, field) in fields.iter().enumerate() {
+                let field_value = raw_value_get(fn_ctx, *field, "raw virtual tuple.make")?;
+                let index = u32::try_from(index).map_err(|_| {
+                    CodegenError::FailClosed("raw virtual tuple field index exceeds u32".into())
+                })?;
+                aggregate = match fn_ctx
+                    .builder
+                    .build_insert_value(aggregate, field_value, index, "raw_tuple_make")
+                    .llvm_ctx("raw virtual tuple insertvalue")?
+                {
+                    inkwell::values::AggregateValueEnum::StructValue(value) => value,
+                    inkwell::values::AggregateValueEnum::ArrayValue(_) => {
+                        return Err(CodegenError::FailClosed(
+                            "raw virtual tuple insertvalue unexpectedly produced an LLVM array"
+                                .into(),
+                        ));
+                    }
+                };
+            }
+            raw_value_define(fn_ctx, dest, aggregate.into(), "raw virtual tuple.make")
+        }
+        RawValueOp::TupleGet { dest, tuple, index } => {
+            let tuple_value = raw_value_get(fn_ctx, *tuple, "raw virtual tuple.get")?;
+            let BasicValueEnum::StructValue(tuple_value) = tuple_value else {
+                return Err(CodegenError::FailClosed(format!(
+                    "raw virtual tuple.get reads non-struct value %{}",
+                    tuple.0
+                )));
+            };
+            let field_count = tuple_value.get_type().count_fields();
+            if *index >= field_count {
+                return Err(CodegenError::FailClosed(format!(
+                    "raw virtual tuple.get index {index} is outside tuple value %{} with {field_count} fields",
+                    tuple.0
+                )));
+            }
+            let value = fn_ctx
+                .builder
+                .build_extract_value(tuple_value, *index, "raw_tuple_get")
+                .llvm_ctx("raw virtual tuple extractvalue")?;
+            raw_value_define(fn_ctx, dest, value, "raw virtual tuple.get")
+        }
+    }
+}
+
+fn lower_raw_value_materialization<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: RawValueId,
+) -> CodegenResult<()> {
+    let value = raw_value_get(fn_ctx, value, "raw virtual ReturnAbi materialization")?;
+    let expected = raw_value_type(
+        fn_ctx,
+        &fn_ctx.return_resolved_ty,
+        "raw virtual ReturnAbi materialization",
+    )?;
+    if !raw_value_matches_type(value, expected) || !raw_value_matches_type(value, fn_ctx.return_ty)
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "raw virtual ReturnAbi value is incompatible with return type `{}`",
+            fn_ctx.return_resolved_ty.user_facing()
+        )));
+    }
+    fn_ctx
+        .builder
+        .build_store(fn_ctx.return_slot, value)
+        .llvm_ctx("raw virtual ReturnAbi store")?;
+    Ok(())
+}
+
 fn lower_instruction_with_cancel_drops(
     fn_ctx: &FnCtx<'_, '_>,
     instr: &Instr,
@@ -12461,6 +12700,8 @@ fn lower_instruction_with_cancel_drops(
     })?;
 
     match instr {
+        Instr::Value(operation) => lower_raw_value_op(fn_ctx, operation)?,
+        Instr::MaterializeValue { value, .. } => lower_raw_value_materialization(fn_ctx, *value)?,
         Instr::OwnershipEvent(_) | Instr::InteriorMutationCommit { .. } => {}
         Instr::EnterContext | Instr::ExitContext => {
             if fn_ctx.execution_context.is_none() {
@@ -15811,6 +16052,18 @@ pub(crate) fn record_struct_for<'ctx>(
             builtin,
             ..
         } => {
+            if *builtin == Some(BuiltinType::ChildRef) {
+                if args.len() != 1 {
+                    return Err(CodegenError::FailClosed(format!(
+                        "ChildRef record must carry 1 actor type argument, got {}",
+                        args.len()
+                    )));
+                }
+                return Ok(fn_ctx.ctx.struct_type(
+                    &[fn_ctx.ctx.i64_type().into(), fn_ctx.ctx.i64_type().into()],
+                    false,
+                ));
+            }
             if *builtin == Some(BuiltinType::SupervisorPool) {
                 if args.len() != 2 {
                     return Err(CodegenError::FailClosed(format!(
@@ -26868,7 +27121,7 @@ pub(crate) fn static_type_size_i64<'ctx>(
     }
 }
 
-fn load_actor_id<'ctx>(
+pub(crate) fn load_actor_id<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     actor_ptr: PointerValue<'ctx>,
 ) -> CodegenResult<IntValue<'ctx>> {
@@ -27194,6 +27447,150 @@ pub(crate) fn emit_send_result_from_rc<'ctx>(
         .llvm_ctx_with(|| format!("{helper} err br merge"))?;
 
     // ── Merge: subsequent instructions resume here. ──
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
+/// Materialize a policy-sensitive local actor send status as
+/// `Result<(), SendError>`.
+///
+/// The local actor ABI uses `0` for loss-free delivery, positive `1` for a
+/// declared policy that discarded/replaced/coalesced work, and negative
+/// [`HewError`] values for an undelivered send. The public mapping is:
+///
+/// - `0` -> `Ok(())`
+/// - `1` -> `Err(SendError::MessageLost)` (variant 10)
+/// - `ErrMailboxFull` (`-1`) -> `Err(SendError::Full)` (variant 0)
+/// - every other negative status -> `Err(SendError::Closed)` (variant 1)
+fn emit_checked_actor_send_result_from_rc<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    status: IntValue<'ctx>,
+    dest: Place,
+) -> CodegenResult<()> {
+    let helper = "checked_actor_send";
+    let dest_local = composite_dest_local(dest, helper)?;
+    let i32_ty = fn_ctx.ctx.i32_type();
+    if status.get_type().get_bit_width() != 32 {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: send status must be i32, got {}-bit",
+            status.get_type().get_bit_width()
+        )));
+    }
+
+    let is_ok = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            i32_ty.const_zero(),
+            "checked_send_ok",
+        )
+        .llvm_ctx("checked actor send status compare")?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed("checked actor send has no parent".into()))?;
+    let ok_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "checked_send_result_ok");
+    let err_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "checked_send_result_err");
+    let merge_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "checked_send_result_merge");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_ok, ok_bb, err_bb)
+        .llvm_ctx("checked actor send result branch")?;
+
+    fn_ctx.builder.position_at_end(ok_bb);
+    store_composite_tag(fn_ctx, dest_local, 0, helper)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("checked actor send ok merge")?;
+
+    fn_ctx.builder.position_at_end(err_bb);
+    store_composite_tag(fn_ctx, dest_local, 1, helper)?;
+    let is_lost = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            i32_ty.const_int(
+                hew_runtime::actor::HEW_ACTOR_SEND_MESSAGE_LOST as u64,
+                false,
+            ),
+            "checked_send_message_lost",
+        )
+        .llvm_ctx("checked actor send message-lost compare")?;
+    let is_full = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            i32_ty.const_int(HewError::ErrMailboxFull as i32 as u64, true),
+            "checked_send_mailbox_full",
+        )
+        .llvm_ctx("checked actor send mailbox-full compare")?;
+    let (send_err_ptr, send_err_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    )?;
+    let store_tag = |tag_ptr: PointerValue<'ctx>, tag_ty: IntType<'ctx>| -> CodegenResult<()> {
+        let full = tag_ty.const_int(0, false);
+        let closed = tag_ty.const_int(1, false);
+        let message_lost = tag_ty.const_int(10, false);
+        let fallback = fn_ctx
+            .builder
+            .build_select(is_full, full, closed, "checked_send_failure_tag")
+            .llvm_ctx("checked actor send failure tag select")?
+            .into_int_value();
+        let tag = fn_ctx
+            .builder
+            .build_select(is_lost, message_lost, fallback, "checked_send_error_tag")
+            .llvm_ctx("checked actor send error tag select")?
+            .into_int_value();
+        fn_ctx
+            .builder
+            .build_store(tag_ptr, tag)
+            .llvm_ctx("store checked actor SendError tag")?;
+        Ok(())
+    };
+    match send_err_ty {
+        BasicTypeEnum::IntType(tag_ty) => store_tag(send_err_ptr, tag_ty)?,
+        BasicTypeEnum::StructType(st) => {
+            fn_ctx
+                .builder
+                .build_store(send_err_ptr, st.const_zero())
+                .llvm_ctx("zero checked actor SendError")?;
+            let tag_ptr = fn_ctx
+                .builder
+                .build_struct_gep(st, send_err_ptr, 0, "checked_send_error_tag_ptr")
+                .llvm_ctx("checked actor SendError tag gep")?;
+            let Some(BasicTypeEnum::IntType(tag_ty)) = st.get_field_type_at_index(0) else {
+                return Err(CodegenError::FailClosed(
+                    "checked actor SendError tag field is not an integer".into(),
+                ));
+            };
+            store_tag(tag_ptr, tag_ty)?;
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "checked actor SendError payload must be struct or int, got {other:?}"
+            )));
+        }
+    }
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("checked actor send err merge")?;
     fn_ctx.builder.position_at_end(merge_bb);
     Ok(())
 }
@@ -29659,6 +30056,28 @@ fn dispatch_collapsed_suspend<'ctx>(
     await_deadlines: &std::collections::HashMap<u32, i64>,
 ) -> CodegenResult<()> {
     match kind {
+        SuspendKind::ActorSend {
+            actor,
+            stable_role,
+            msg_type,
+            value,
+            arg_modes,
+            cleanup_plan,
+        } => {
+            validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
+            crate::suspend::emit_suspending_actor_send_terminator(
+                fn_ctx,
+                crate::suspend::SuspendingActorSendEmit {
+                    actor: *actor,
+                    stable_role: *stable_role,
+                    msg_type: *msg_type,
+                    value: *value,
+                    cleanup_plan: cleanup_plan.clone(),
+                    resume,
+                    cleanup,
+                },
+            )
+        }
         SuspendKind::Ask {
             actor,
             stable_role,
@@ -32100,23 +32519,17 @@ fn lower_terminator<'ctx>(
         }
         Terminator::Send {
             actor,
+            stable_role,
             msg_type,
             value,
             next,
             arg_modes,
             cleanup_plan,
+            result_dest,
         } => {
             validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
-            let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
-            let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
             let (payload_ptr, payload_size) =
                 actor_payload_ptr_size(fn_ctx, *value, "actor_send_payload")?;
-            let send = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_actor_send_by_id",
-            )?;
             // `payload_size` is built as i64; the `size` param is `usize`/
             // `size_t` (i32 on wasm32). Reconcile to the target-correct width.
             let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
@@ -32127,9 +32540,9 @@ fn lower_terminator<'ctx>(
                 "actor send payload size",
             )?;
             let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
-            // Bind the i32 return value. `0` (`HewError::Ok`) includes
-            // declared bounded-mailbox policy drops (`drop_new`/`drop_old`/
-            // `coalesce`; spec §6.2). `ErrActorStopped` is also non-trapping
+            // Bind the i32 return value. `0` means the message was admitted;
+            // checked sends receive positive policy-loss statuses for
+            // `drop_new`, `drop_old`, and `coalesce`. `ErrActorStopped` is non-trapping
             // for this fire-and-forget LocalPid surface: it means a peer died
             // before delivery, so the send is a no-op. Every other non-zero
             // status remains a genuine, caller-visible failure and traps.
@@ -32138,27 +32551,140 @@ fn lower_terminator<'ctx>(
             // serialize path (that is the `RemotePid<T>` `emit_remote_pid_send_call`
             // spine). So the `(dispatch, msg_type)` codec key is irrelevant here —
             // pass a null dispatch, which the local send path ignores.
-            let null_dispatch = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
-            let send_status = fn_ctx
-                .builder
-                .build_call(
-                    send,
-                    &[
-                        actor_id.into(),
-                        null_dispatch.into(),
-                        msg_type.into(),
-                        payload_ptr.into(),
-                        payload_size.into(),
-                    ],
-                    "hew_actor_send_by_id_call",
-                )
-                .llvm_ctx("hew_actor_send_by_id call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_actor_send_by_id returned void".into())
-                })?
-                .into_int_value();
+            let send_status = if let Some(role) = stable_role {
+                let i64_ty = fn_ctx.ctx.i64_type();
+                let supervisor_token = load_int_arg(
+                    fn_ctx,
+                    role.supervisor_token,
+                    i64_ty,
+                    "actor_send_role_supervisor_token",
+                )?;
+                let slot_word =
+                    load_int_arg(fn_ctx, role.slot_index, i64_ty, "actor_send_role_slot")?;
+                let slot_index = fn_ctx
+                    .builder
+                    .build_int_truncate(
+                        slot_word,
+                        fn_ctx.ctx.i32_type(),
+                        "actor_send_role_slot_i32",
+                    )
+                    .llvm_ctx("actor send role slot truncate")?;
+                let send = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_supervisor_role_send",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        send,
+                        &[
+                            supervisor_token.into(),
+                            slot_index.into(),
+                            msg_type.into(),
+                            payload_ptr.into(),
+                            payload_size.into(),
+                        ],
+                        "hew_supervisor_role_send_call",
+                    )
+                    .llvm_ctx("hew_supervisor_role_send call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_supervisor_role_send returned void".into())
+                    })?
+                    .into_int_value()
+            } else {
+                let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
+                let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
+                let send = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_actor_send_by_id",
+                )?;
+                let null_dispatch = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
+                fn_ctx
+                    .builder
+                    .build_call(
+                        send,
+                        &[
+                            actor_id.into(),
+                            null_dispatch.into(),
+                            msg_type.into(),
+                            payload_ptr.into(),
+                            payload_size.into(),
+                        ],
+                        "hew_actor_send_by_id_call",
+                    )
+                    .llvm_ctx("hew_actor_send_by_id call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_actor_send_by_id returned void".into())
+                    })?
+                    .into_int_value()
+            };
+
+            if let Some(result_dest) = result_dest {
+                // Checked policy sends distinguish two ownership classes:
+                // non-negative statuses consumed the payload (0 delivered,
+                // positive MessageLost), while negative statuses left the
+                // prepared carrier with the caller and must release it before
+                // materializing the SendError.
+                let parent = fn_ctx
+                    .builder
+                    .get_insert_block()
+                    .and_then(|bb| bb.get_parent())
+                    .ok_or_else(|| {
+                        CodegenError::Llvm("checked actor send block has no parent".into())
+                    })?;
+                let materialize_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(parent, "checked_actor_send_materialize");
+                let undelivered_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(parent, "checked_actor_send_undelivered");
+                let status_negative = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        send_status,
+                        fn_ctx.ctx.i32_type().const_zero(),
+                        "checked_actor_send_negative",
+                    )
+                    .llvm_ctx("checked actor send ownership compare")?;
+                fn_ctx
+                    .builder
+                    .build_conditional_branch(status_negative, undelivered_bb, materialize_bb)
+                    .llvm_ctx("checked actor send ownership branch")?;
+
+                fn_ctx.builder.position_at_end(undelivered_bb);
+                if let Some(plan) = cleanup_plan {
+                    emit_prepared_carrier_drop(
+                        fn_ctx,
+                        *value,
+                        plan,
+                        hew_mir::PreparedCarrierBoundary::Actor,
+                    )?;
+                }
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(materialize_bb)
+                    .llvm_ctx("checked actor send cleanup branch")?;
+
+                fn_ctx.builder.position_at_end(materialize_bb);
+                emit_checked_actor_send_result_from_rc(fn_ctx, send_status, *result_dest)?;
+                let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
+                    CodegenError::FailClosed(format!("Send next bb{next} missing"))
+                })?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(next_bb)
+                    .llvm_ctx("checked actor send continuation branch")?;
+                return Ok(());
+            }
 
             // Delivery is the payload's ONE consumer: on `Ok` the mailbox owns
             // the copied bytes (heap pointers included) and the checker has
@@ -32277,10 +32803,12 @@ fn lower_terminator<'ctx>(
                     i64_ty,
                     "actor_ask_role_supervisor_token",
                 )?;
+                let slot_word =
+                    load_int_arg(fn_ctx, role.slot_index, i64_ty, "actor_ask_role_slot")?;
                 let slot_idx = fn_ctx
-                    .ctx
-                    .i32_type()
-                    .const_int(u64::from(role.slot_index), false);
+                    .builder
+                    .build_int_truncate(slot_word, fn_ctx.ctx.i32_type(), "actor_ask_role_slot_i32")
+                    .llvm_ctx("actor ask role slot truncate")?;
                 let role_ask = intern_runtime_decl(
                     fn_ctx.ctx,
                     fn_ctx.llvm_mod,
@@ -34695,6 +35223,23 @@ fn apply_optnone_for_debug<'ctx>(ctx: &'ctx Context, func: inkwell::values::Func
     }
 }
 
+/// Admit the Raw value-only lane through its complete MIR ladder before LLVM
+/// realizes it.  This uses the canonical `hew-mir` type/def-use facts rather
+/// than treating `RawValueOp::Param` as a prologue hint that codegen must
+/// independently validate.
+fn virtual_raw_value_facts(
+    func: &RawMirFunction,
+    checked: Option<&CheckedMirFunction>,
+    elaborated: Option<&ElaboratedMirFunction>,
+) -> CodegenResult<Option<RawVirtualValueFacts>> {
+    verify_raw_virtual_value_ladder(func, checked, elaborated).map_err(|error| {
+        CodegenError::FailClosed(format!(
+            "raw virtual-value admission failed for `{}`: {}",
+            func.name, error.reason
+        ))
+    })
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "module-lowering context is deliberately passed as explicit borrows"
@@ -34732,6 +35277,7 @@ fn lower_function<'ctx>(
         ))
     })?;
     let (llvm_fn, return_ty_llvm, _returns_unit) = symbol.real(&func.name, "lower_function")?;
+    let virtual_value_facts = virtual_raw_value_facts(func, checked, elab)?;
     // gdb `-g`: mark every debug-built non-coroutine function `optnone noinline`
     // so the backend keeps each local's stack slot eagerly written. Without it,
     // even at `-O0` LLVM's instruction selection coalesces a `store slot; load
@@ -35235,6 +35781,13 @@ fn lower_function<'ctx>(
                     func.name
                 ))
             })?;
+        if virtual_value_facts.is_some() {
+            // `RawValueOp::Param` binds this incoming LLVM value directly at
+            // its explicit ordered body definition. The canonical Raw verifier
+            // proves every ABI parameter has exactly one such definition and
+            // that this body has no `Place::Local` representation.
+            continue;
+        }
         let (slot, slot_ty) = *locals.get(&param_idx_u32).ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "function `{}` has no local slot for param index {param_idx}",
@@ -35687,6 +36240,7 @@ fn lower_function<'ctx>(
         ctx,
         llvm_mod,
         unwind_enabled,
+        llvm_fn,
         emit_drain_epilogue,
         emit_immediate_shutdown_epilogue,
         emit_runtime_cleanup_epilogue,
@@ -35711,6 +36265,7 @@ fn lower_function<'ctx>(
         alloca_prologue: prologue_bb,
         locals,
         local_tys,
+        raw_values: RefCell::new(HashMap::new()),
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),
         runtime_unwind_block: std::cell::Cell::new(None),

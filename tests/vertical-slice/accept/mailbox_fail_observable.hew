@@ -1,0 +1,38 @@
+// A full fail-policy mailbox rejects the send with SendError.Full. With one
+// worker the actor cannot drain the capacity-one queue between these calls,
+// making the rejection deterministic.
+actor RejectingWorker {
+    mailbox 1 overflow fail;
+    receive fn work(value: i64) {
+        if value == 2 {
+            println("REJECTED_WORK_DELIVERED");
+        }
+    }
+}
+
+fn main() -> i64 {
+    let worker = spawn RejectingWorker;
+    match worker.work(1) {
+        .Ok(_) => {},
+        .Err(_) => {
+            println("FIRST_SEND_FAILED");
+            return 41;
+        },
+    }
+    match worker.work(2) {
+        .Err(error) => match error {
+            SendError.Full => {
+                println("FAIL_VISIBLE");
+                43
+            },
+            _ => {
+                println("UNEXPECTED_SEND_ERROR");
+                44
+            },
+        },
+        .Ok(_) => {
+            println("FAIL_HIDDEN");
+            45
+        },
+    }
+}

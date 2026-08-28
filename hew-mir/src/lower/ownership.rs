@@ -11,7 +11,7 @@ use super::{
     FieldOffset, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
     HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic,
     MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedLocalEntry,
-    OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
+    OwnerMintOrigin, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
     ProducedValueOwnership, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
     Terminator, ValueClass, ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
     SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
@@ -508,6 +508,9 @@ impl Builder {
     ) {
         if warrant.withholds_mint() || super::drop_plan::ty_is_nonowning_handle_leaf(&ty) {
             return;
+        }
+        if warrant.origin() == OwnerMintOrigin::PayloadOfScrutinee {
+            self.scrutinee_payload_owner_bindings.insert(binding);
         }
         if matches!(ty, ResolvedTy::TraitObject { .. }) {
             self.dyn_trait_storage
@@ -3288,6 +3291,51 @@ impl Builder {
             // scope-exit drop obligation for the field-projection seam to record.
             _ => None,
         }
+    }
+
+    /// Publish the exact owner handoff for a non-retaining field load.
+    ///
+    /// A `HandleTransfer` load moves one heap handle out of a live aggregate:
+    /// the new binding owns that handle, the aggregate's remaining siblings
+    /// are discharged separately, and the aggregate generation must not reach
+    /// a terminal recursive drop. Ending it here keeps an earlier unwind edge
+    /// covered while preventing final plan reconstruction from reviving it.
+    pub(crate) fn publish_handle_transfer_projection(
+        &mut self,
+        value: &HirExpr,
+        binding_ty: &ResolvedTy,
+    ) {
+        if self.owned_field_projection_move_sites.last() != Some(&value.site)
+            || value.intent != hew_hir::IntentKind::Consume
+            || self.classify_field_load(binding_ty) != Some(FieldLoadClass::HandleTransfer)
+        {
+            return;
+        }
+        self.publish_projection_source_transfer(value);
+    }
+
+    fn publish_projection_source_transfer(&mut self, value: &HirExpr) {
+        let Some(root_binding) = Self::projection_root_binding(value) else {
+            return;
+        };
+        let (Some(generation), Some(place)) = (
+            self.owner_generations.get(&root_binding).copied(),
+            self.binding_locals.get(&root_binding).copied(),
+        ) else {
+            return;
+        };
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Transfer {
+                owner: crate::model::OwnerId {
+                    binding: root_binding,
+                    generation,
+                },
+                from: place,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            },
+        ));
     }
     /// Declaration-order ordinal of `field` on the record type of `object`, from
     /// the field-order table. `None` when the object type is not a registered

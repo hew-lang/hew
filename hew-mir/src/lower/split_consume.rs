@@ -453,10 +453,14 @@ fn transfer_block_split(
 #[cfg(test)]
 fn instr_places(instr: &Instr) -> Vec<Place> {
     match instr {
-        Instr::OwnershipEvent(_)
+        // Raw virtual values deliberately have no `Place` identity. Their
+        // sole storage boundary is handled by `MaterializeValue` below.
+        Instr::Value(_)
+        | Instr::OwnershipEvent(_)
         | Instr::EnterContext
         | Instr::ExitContext
         | Instr::CheckCancellation => Vec::new(),
+        Instr::MaterializeValue { dest, .. } => vec![*dest],
         Instr::InteriorMutationCommit { place } => vec![*place],
         Instr::ContextField { dest, .. } => vec![*dest],
         // Const-like producers write only their dest place.

@@ -1,0 +1,276 @@
+// Regression: ChildRef carries supervised-role identity through ordinary values.
+//
+// This program sweeps six value-flow positions (inline, parameter, return,
+// record field, Vec element, and closure capture) across four role states
+// (live, restarting, restart-budget-exhausted, and permanently stopped).
+// Every cell performs an ask. Each shape also performs a tell, whose proof is
+// reaching the final sentinel without a process fault.
+//
+// A static-pool member is separately exhausted and exercised through a stale
+// value, the index accessor, and the Option-returning get accessor. The final
+// root-supervisor budget failures intentionally make the process exit 1; the
+// harness asserts that clean failure class plus the sentinel line.
+actor Worker {
+    let value: i64 = 7;
+    receive fn work() -> i64 {
+        value
+    }
+    receive fn note() {}
+    receive fn crash_me() {
+        panic("childref state transition");
+    }
+    receive fn stop_me() {
+        unsafe {
+            hew_actor_self_stop()
+        };
+    }
+}
+
+supervisor LivePool {
+    strategy: one_for_one;
+    intensity: 20 within 60s;
+
+    child worker: Worker(value: 7);
+}
+
+supervisor RestartPool {
+    strategy: one_for_one;
+    intensity: 20 within 60s;
+
+    child worker: Worker(value: 7);
+}
+
+supervisor BudgetPool {
+    strategy: one_for_one;
+    intensity: 2 within 60s;
+
+    child worker: Worker(value: 7);
+}
+
+supervisor StopPool {
+    strategy: one_for_one;
+    intensity: 20 within 60s;
+
+    child worker: Worker(value: 7) restart: temporary;
+}
+
+supervisor StaticPool {
+    strategy: simple_one_for_one;
+    intensity: 2 within 60s;
+
+    pool workers: Worker(count: 1, value: 7);
+}
+
+type Holder {
+    child: ChildRef<Worker>;
+}
+
+extern "C" {
+    fn hew_actor_self_stop();
+}
+
+fn expect_live(child: ChildRef<Worker>) -> bool {
+    match await child.work() {
+        .Ok(value) => value == 7,
+        .Err(_) => false,
+    }
+}
+
+fn expect_unavailable(child: ChildRef<Worker>) -> bool {
+    match await child.work() {
+        .Ok(_) => false,
+        .Err(_) => true,
+    }
+}
+
+fn pass_through(child: ChildRef<Worker>) -> ChildRef<Worker> {
+    child
+}
+
+fn tell_through(child: ChildRef<Worker>) {
+    child.note();
+}
+
+fn wait_for_live(child: ChildRef<Worker>) -> bool {
+    var attempts = 0;
+    while attempts < 1000 {
+        if expect_live(child) {
+            return true;
+        }
+        sleep(10ms);
+        attempts = attempts + 1;
+    }
+    false
+}
+
+fn wait_for_unavailable(child: ChildRef<Worker>) -> bool {
+    var attempts = 0;
+    while attempts < 1000 {
+        if expect_unavailable(child) {
+            return true;
+        }
+        sleep(5ms);
+        attempts = attempts + 1;
+    }
+    false
+}
+
+fn crash_and_wait_for_restart(child: ChildRef<Worker>) -> bool {
+    child.crash_me();
+    wait_for_live(child)
+}
+
+fn main() {
+    var ok = true;
+    // Live x every flow position.
+    let live_sup = spawn LivePool;
+    let live = live_sup.worker;
+    let live_inline = match await live_sup.worker.work() {
+        .Ok(value) => value == 7,
+        .Err(_) => false,
+    };
+    ok = ok && live_inline;
+    ok = ok && expect_live(live);
+    let live_returned = pass_through(live);
+    ok = ok && expect_live(live_returned);
+    let live_holder = Holder { child: live };
+    ok = ok && expect_live(live_holder.child);
+    let live_vec: Vec<ChildRef<Worker>> = Vec.new();
+    live_vec.push(live);
+    ok = ok && expect_live(live_vec[0]);
+    let live_capture = || live;
+    let live_captured = live_capture();
+    ok = ok && expect_live(live_captured);
+    live_sup.worker.note();
+    tell_through(live);
+    pass_through(live).note();
+    live_holder.child.note();
+    live_vec[0].note();
+    live_capture().note();
+
+    // Build a long backoff, then enter the restarting state and sweep before
+    // the delayed restart can publish a new incarnation.
+    let restart_sup = spawn RestartPool;
+    let restarting = restart_sup.worker;
+    ok = ok && crash_and_wait_for_restart(restarting);
+    ok = ok && crash_and_wait_for_restart(restarting);
+    ok = ok && crash_and_wait_for_restart(restarting);
+    ok = ok && crash_and_wait_for_restart(restarting);
+    restarting.crash_me();
+    ok = ok && wait_for_unavailable(restarting);
+    let restarting_inline = match await restart_sup.worker.work() {
+        .Ok(_) => false,
+        .Err(_) => true,
+    };
+    ok = ok && restarting_inline;
+    ok = ok && expect_unavailable(restarting);
+    let restarting_returned = pass_through(restarting);
+    ok = ok && expect_unavailable(restarting_returned);
+    let restarting_holder = Holder { child: restarting };
+    ok = ok && expect_unavailable(restarting_holder.child);
+    let restarting_vec: Vec<ChildRef<Worker>> = Vec.new();
+    restarting_vec.push(restarting);
+    ok = ok && expect_unavailable(restarting_vec[0]);
+    let restarting_capture = || restarting;
+    let restarting_captured = restarting_capture();
+    ok = ok && expect_unavailable(restarting_captured);
+    restart_sup.worker.note();
+    tell_through(restarting);
+    pass_through(restarting).note();
+    restarting_holder.child.note();
+    restarting_vec[0].note();
+    restarting_capture().note();
+
+    // Two successful restarts consume the budget. The third crash leaves the
+    // static slot terminally dead.
+    let budget_sup = spawn BudgetPool;
+    let exhausted = budget_sup.worker;
+    ok = ok && crash_and_wait_for_restart(exhausted);
+    ok = ok && crash_and_wait_for_restart(exhausted);
+    exhausted.crash_me();
+    ok = ok && wait_for_unavailable(exhausted);
+    sleep(500ms);
+    let exhausted_inline = match await budget_sup.worker.work() {
+        .Ok(_) => false,
+        .Err(_) => true,
+    };
+    ok = ok && exhausted_inline;
+    ok = ok && expect_unavailable(exhausted);
+    let exhausted_returned = pass_through(exhausted);
+    ok = ok && expect_unavailable(exhausted_returned);
+    let exhausted_holder = Holder { child: exhausted };
+    ok = ok && expect_unavailable(exhausted_holder.child);
+    let exhausted_vec: Vec<ChildRef<Worker>> = Vec.new();
+    exhausted_vec.push(exhausted);
+    ok = ok && expect_unavailable(exhausted_vec[0]);
+    let exhausted_capture = || exhausted;
+    let exhausted_captured = exhausted_capture();
+    ok = ok && expect_unavailable(exhausted_captured);
+    budget_sup.worker.note();
+    tell_through(exhausted);
+    pass_through(exhausted).note();
+    exhausted_holder.child.note();
+    exhausted_vec[0].note();
+    exhausted_capture().note();
+
+    // A temporary child that exits normally is permanently stopped without
+    // consuming or exceeding a restart budget.
+    let stop_sup = spawn StopPool;
+    let stopped = stop_sup.worker;
+    stopped.stop_me();
+    ok = ok && wait_for_unavailable(stopped);
+    sleep(200ms);
+    let stopped_inline = match await stop_sup.worker.work() {
+        .Ok(_) => false,
+        .Err(_) => true,
+    };
+    ok = ok && stopped_inline;
+    ok = ok && expect_unavailable(stopped);
+    let stopped_returned = pass_through(stopped);
+    ok = ok && expect_unavailable(stopped_returned);
+    let stopped_holder = Holder { child: stopped };
+    ok = ok && expect_unavailable(stopped_holder.child);
+    let stopped_vec: Vec<ChildRef<Worker>> = Vec.new();
+    stopped_vec.push(stopped);
+    ok = ok && expect_unavailable(stopped_vec[0]);
+    let stopped_capture = || stopped;
+    let stopped_captured = stopped_capture();
+    ok = ok && expect_unavailable(stopped_captured);
+    stop_sup.worker.note();
+    tell_through(stopped);
+    pass_through(stopped).note();
+    stopped_holder.child.note();
+    stopped_vec[0].note();
+    stopped_capture().note();
+
+    // Pool access must create the same stable descriptor even when its member
+    // is terminally dead. Cover a stale value, direct index, and get().
+    let pool_sup = spawn StaticPool;
+    let stale_pool_member = pool_sup.workers[0];
+    ok = ok && crash_and_wait_for_restart(stale_pool_member);
+    ok = ok && crash_and_wait_for_restart(stale_pool_member);
+    stale_pool_member.crash_me();
+    ok = ok && wait_for_unavailable(stale_pool_member);
+    sleep(500ms);
+    ok = ok && expect_unavailable(stale_pool_member);
+    let pool_inline = match await pool_sup.workers[0].work() {
+        .Ok(_) => false,
+        .Err(_) => true,
+    };
+    ok = ok && pool_inline;
+    let pool_get = match pool_sup.workers.get(0) {
+        .Some(member) => {
+            member.note();
+            expect_unavailable(member)
+        },
+        .None => false,
+    };
+    ok = ok && pool_get;
+    stale_pool_member.note();
+    pool_sup.workers[0].note();
+    if ok {
+        println("CHILDREF_FLOW_STATE_MATRIX_OK");
+    } else {
+        println("CHILDREF_FLOW_STATE_MATRIX_FAILED");
+    }
+}

@@ -1,0 +1,8 @@
+type W {
+    v: Vec<i64>;
+}
+
+fn main() {
+    let w = W { v: [1] };
+    let v = w.v;
+}

@@ -8785,7 +8785,7 @@ const fn child_slot_reason_name(reason: u8) -> &'static str {
 /// contrast the tag-unchecked handle extraction the retired token path
 /// performed, which collapsed every non-Live state into a token-0 send).
 #[cfg(not(target_arch = "wasm32"))]
-fn role_ask_refuse(reason: u8, key: u32) -> i32 {
+fn role_refuse(reason: u8, key: u32, record_ask_error: bool) -> i32 {
     set_last_error(format!(
         "stable-role ask refused: child slot {key} is {}",
         child_slot_reason_name(reason)
@@ -8794,7 +8794,9 @@ fn role_ask_refuse(reason: u8, key: u32) -> i32 {
     // with-channel caller binds its Err kind from
     // `hew_actor_ask_take_last_error`, and an unwritten slot misreports this
     // genuine refusal as `AskError::NoError` (dogfood F1, mechanism 2).
-    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
+    if record_ask_error {
+        crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
+    }
     crate::internal::types::HewError::ErrActorStopped as i32
 }
 
@@ -8829,11 +8831,13 @@ fn role_ask_refuse(reason: u8, key: u32) -> i32 {
 fn role_resolve_current_child_id(
     token: crate::lifetime::local_handles::HewLocalPidId,
     key: u32,
+    record_ask_error: bool,
 ) -> Result<(u64, u64), i32> {
     let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
-        return Err(role_ask_refuse(
+        return Err(role_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
             key,
+            record_ask_error,
         ));
     };
     let sup = pin.supervisor();
@@ -8843,9 +8847,10 @@ fn role_resolve_current_child_id(
     if unsafe {
         (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
     } {
-        return Err(role_ask_refuse(
+        return Err(role_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
             key,
+            record_ask_error,
         ));
     }
     // SAFETY: the stable-identity pin keeps `sup` live through this lookup.
@@ -8860,15 +8865,20 @@ fn role_resolve_current_child_id(
     if unsafe {
         (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
     } {
-        return Err(role_ask_refuse(
+        return Err(role_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
             key,
+            record_ask_error,
         ));
     }
 
     let i = key as usize;
     if i >= s.child_count {
-        return Err(role_ask_refuse(ChildSlotReason::UnknownSlot as u8, key));
+        return Err(role_refuse(
+            ChildSlotReason::UnknownSlot as u8,
+            key,
+            record_ask_error,
+        ));
     }
 
     let child = s.children.get(i).copied().unwrap_or(ptr::null_mut());
@@ -8878,7 +8888,11 @@ fn role_resolve_current_child_id(
         // carries the classified slot state (the tag semantics the lookup
         // ABIs expose) so a Dead slot is never conflated with a Transient
         // one at the diagnostic surface.
-        return Err(role_ask_refuse(classify_null_child_slot(s, i).reason, key));
+        return Err(role_refuse(
+            classify_null_child_slot(s, i).reason,
+            key,
+            record_ask_error,
+        ));
     }
 
     #[cfg(test)]
@@ -8903,6 +8917,131 @@ fn role_ask_refuse_retired(key: u32) -> i32 {
     ));
     // Same TLS classification contract as `role_ask_refuse`.
     crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
+    crate::internal::types::HewError::ErrActorStopped as i32
+}
+
+/// Submit a tell through a stable `(supervisor token, child slot)` role.
+/// No actor pointer escapes the owner-scoped resolution and identity-pinned
+/// enqueue sequence. A restarting, stopped, or retired child returns
+/// `ErrActorStopped`; the caller retains its payload on every error.
+///
+/// # Safety
+///
+/// `data` must point to at least `size` readable bytes, or be null for zero size.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_role_send(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    key: u32,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> i32 {
+    let (child_id, child_serial) = match role_resolve_current_child_id(token, key, false) {
+        Ok(ids) => ids,
+        Err(code) => return code,
+    };
+    crate::lifetime::live_actors::with_actor_send_by_identity(child_id, child_serial, |pin| {
+        // SAFETY: the identity pin keeps the resolved incarnation live and
+        // the caller supplies the readable payload range.
+        unsafe { crate::actor::actor_send_pinned(pin, msg_type, data, size) }
+    })
+    .unwrap_or_else(|| {
+        set_last_error(format!(
+            "stable-role tell refused: child slot {key} incarnation retired during submission"
+        ));
+        crate::internal::types::HewError::ErrActorStopped as i32
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_supervisor_role_send(
+    _token: crate::lifetime::local_handles::HewLocalPidId,
+    _key: u32,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _size: usize,
+) -> i32 {
+    crate::internal::types::HewError::ErrActorStopped as i32
+}
+
+/// Cooperatively submit a bounded `overflow block` tell through a stable
+/// supervisor role. Resolution and mailbox registration occur under one
+/// identity pin; on acceptance, `out_actor_id` receives the exact incarnation
+/// whose mailbox owns the waiter so cancellation can detach from that mailbox.
+///
+/// # Safety
+///
+/// `data`, `sender`, and `slot` must satisfy
+/// [`crate::actor::actor_await_send_pinned`]. `out_actor_id` must be writable.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_role_await_send(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    key: u32,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    sender: *mut HewActor,
+    slot: *mut crate::read_slot::HewReadSlot,
+    out_actor_id: *mut u64,
+) -> c_int {
+    if out_actor_id.is_null() {
+        set_last_error("stable-role cooperative tell received a null actor-id output".to_string());
+        return crate::internal::types::HewError::ErrActorStopped as i32;
+    }
+    // SAFETY: the null check above establishes the caller-provided output is
+    // writable. Initialize it even on refusal because codegen loads before
+    // branching on status and only uses the value on the suspend edge.
+    unsafe { out_actor_id.write(0) };
+    let (child_id, child_serial) = match role_resolve_current_child_id(token, key, false) {
+        Ok(ids) => ids,
+        Err(code) => return code,
+    };
+    let rc = crate::lifetime::live_actors::with_actor_send_by_identity(
+        child_id,
+        child_serial,
+        |pin| {
+            // SAFETY: the identity pin keeps this incarnation live for the
+            // complete mailbox registration.
+            unsafe {
+                crate::actor::actor_await_send_pinned(
+                    pin.as_ptr(),
+                    msg_type,
+                    data,
+                    size,
+                    sender,
+                    slot,
+                )
+            }
+        },
+    )
+    .unwrap_or_else(|| {
+        set_last_error(format!(
+            "stable-role cooperative tell refused: child slot {key} incarnation retired during submission"
+        ));
+        crate::internal::types::HewError::ErrActorStopped as i32
+    });
+    if rc >= 0 {
+        // SAFETY: non-null writable output is part of this ABI's contract.
+        unsafe { out_actor_id.write(child_id) };
+    }
+    rc
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_supervisor_role_await_send(
+    _token: crate::lifetime::local_handles::HewLocalPidId,
+    _key: u32,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _size: usize,
+    _sender: *mut HewActor,
+    _slot: *mut crate::read_slot::HewReadSlot,
+    _out_actor_id: *mut u64,
+) -> c_int {
     crate::internal::types::HewError::ErrActorStopped as i32
 }
 
@@ -8946,18 +9085,18 @@ pub unsafe extern "C" fn hew_supervisor_role_ask_with_channel(
     size: usize,
     ch: *mut c_void,
 ) -> i32 {
-    let (child_id, child_serial) = match role_resolve_current_child_id(token, key) {
+    let (child_id, child_serial) = match role_resolve_current_child_id(token, key, true) {
         Ok(ids) => ids,
         Err(code) => return code,
     };
     #[cfg(test)]
     fire_role_ask_pinned_submit_hook();
-    crate::lifetime::live_actors::with_actor_send_by_identity(child_id, child_serial, |actor| {
+    crate::lifetime::live_actors::with_actor_send_by_identity(child_id, child_serial, |pin| {
         // SAFETY: the send pin keeps `actor` live for the submission;
         // `data`/`ch` follow this fn's contract. The identity-verified pin
         // refuses closed (returns None) if the id aliased a different
         // incarnation, so no wrong-actor enqueue can occur here.
-        unsafe { crate::actor::ask_with_channel_pinned(actor, msg_type, data, size, ch) }
+        unsafe { crate::actor::ask_with_channel_pinned(pin.as_ptr(), msg_type, data, size, ch) }
     })
     .unwrap_or_else(|| role_ask_refuse_retired(key))
 }
@@ -8993,7 +9132,7 @@ pub unsafe extern "C" fn hew_supervisor_role_ask(
     data: *mut c_void,
     size: usize,
 ) -> *mut c_void {
-    let Ok((child_id, child_serial)) = role_resolve_current_child_id(token, key) else {
+    let Ok((child_id, child_serial)) = role_resolve_current_child_id(token, key, true) else {
         return crate::actor::actor_ask_null_actor_stopped();
     };
     #[cfg(test)]
@@ -10496,6 +10635,53 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
     )]
     let handle = pid as usize as *mut HewActor;
     ChildLookupResult::live(handle)
+}
+
+/// Resolve a static-pool member index to its stable child slot descriptor.
+///
+/// This lookup deliberately ignores the current child incarnation and slot
+/// liveness. A valid pool position remains a valid `ChildRef<T>` while its
+/// member is restarting or permanently stopped; the later role send/ask is the
+/// sole liveness authority and fails closed there. Dynamic PID-set pools have
+/// no stable supervisor child slot and are rejected.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_local_pid_supervisor_pool_child_ref_get(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    pool_key: u32,
+    index: u64,
+) -> ChildLookupResult {
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    };
+    let Ok(index) = usize::try_from(index) else {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    };
+    let sup = pin.supervisor();
+    // SAFETY: the stable-identity pin keeps the supervisor allocation live.
+    let roster = unsafe { &(*sup).roster }.lock_or_recover();
+    let Ok(pool_index) = usize::try_from(pool_key) else {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    };
+    let Some(pool_spec) = roster.pool_specs.get(pool_index) else {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    };
+    let Some(&static_slot) = pool_spec.static_members.get(index) else {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    };
+    // The descriptor word is an integer, not a dereferenceable actor pointer.
+    let descriptor = std::ptr::with_exposed_provenance_mut::<HewActor>(static_slot);
+    ChildLookupResult::live(descriptor)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_local_pid_supervisor_pool_child_ref_get(
+    _token: crate::lifetime::local_handles::HewLocalPidId,
+    _pool_key: u32,
+    _index: u64,
+) -> ChildLookupResult {
+    ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown)
 }
 
 /// Return the number of live members in a pool slot.

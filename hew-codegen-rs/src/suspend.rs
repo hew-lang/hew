@@ -31,7 +31,9 @@ use hew_mir::{
 // ready and no default) — a distinct failure mode reusing the join-branch
 // code because a dedicated discriminant is an ABI addition past the rc1
 // freeze. WHEN OBSOLETE: rc2, once select-no-winner gets its own trap code.
-use hew_runtime::internal::types::{HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_JOIN_BRANCH_FAILED};
+use hew_runtime::internal::types::{
+    HewError, HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_JOIN_BRANCH_FAILED,
+};
 use hew_types::ResolvedTy;
 
 use crate::llvm::CoroState;
@@ -154,6 +156,17 @@ pub(crate) struct SuspendingStreamNextEmit {
 pub(crate) struct SuspendingStreamSendEmit {
     pub(crate) sink: Place,
     pub(crate) value: Place,
+    pub(crate) resume: u32,
+    pub(crate) cleanup: u32,
+}
+
+/// Carrier for a cooperative bounded `overflow block` actor send.
+pub(crate) struct SuspendingActorSendEmit {
+    pub(crate) actor: Place,
+    pub(crate) stable_role: Option<hew_mir::StableActorRole>,
+    pub(crate) msg_type: i32,
+    pub(crate) value: Place,
+    pub(crate) cleanup_plan: Option<hew_mir::state_clone::ValueSnapshotPlan>,
     pub(crate) resume: u32,
     pub(crate) cleanup: u32,
 }
@@ -4634,6 +4647,327 @@ pub(crate) fn emit_suspending_scope_deadline_terminator<'ctx>(
     )
 }
 
+/// Emit a bounded `overflow block` actor send as a cooperative producer park.
+/// The runtime copies the prepared payload before returning either READY or
+/// SUSPEND, so both accepted edges transfer ownership exactly once. A negative
+/// registration status retains caller ownership and releases the prepared
+/// carrier before following the ordinary stopped-recipient/no-op or trap rule.
+pub(crate) fn emit_suspending_actor_send_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingActorSendEmit,
+) -> CodegenResult<()> {
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "cooperative actor send reached codegen without a coroutine prologue".into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "cooperative actor-send resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "cooperative actor-send cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+
+    let (payload_ptr, payload_size) =
+        actor_payload_ptr_size(fn_ctx, term.value, "suspending_actor_send_payload")?;
+    let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+    let payload_size = reconcile_int_width_signed(
+        fn_ctx,
+        payload_size.into(),
+        size_ty.into(),
+        "cooperative actor send payload size",
+    )?;
+    let actor_self = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let sender = fn_ctx
+        .builder
+        .build_call(actor_self, &[], "suspending_actor_send_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+    let slot_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_new",
+    )?;
+    let slot = fn_ctx
+        .builder
+        .build_call(slot_new, &[], "suspending_actor_send_slot")
+        .llvm_ctx("hew_read_slot_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
+        .into_pointer_value();
+    let msg_type = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
+    let (actor_id, rc) = if let Some(role) = term.stable_role {
+        let i64_ty = fn_ctx.ctx.i64_type();
+        let supervisor_token = load_int_arg(
+            fn_ctx,
+            role.supervisor_token,
+            i64_ty,
+            "suspending_actor_send_role_supervisor_token",
+        )?;
+        let slot_word = load_int_arg(
+            fn_ctx,
+            role.slot_index,
+            i64_ty,
+            "suspending_actor_send_role_slot",
+        )?;
+        let slot_index = fn_ctx
+            .builder
+            .build_int_truncate(
+                slot_word,
+                fn_ctx.ctx.i32_type(),
+                "suspending_actor_send_role_slot_i32",
+            )
+            .llvm_ctx("suspending actor-send role slot truncate")?;
+        let actor_id_out = fn_ctx
+            .builder
+            .build_alloca(i64_ty, "suspending_actor_send_role_actor_id")
+            .llvm_ctx("suspending actor-send role actor-id alloca")?;
+        let await_send = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_supervisor_role_await_send",
+        )?;
+        let rc = fn_ctx
+            .builder
+            .build_call(
+                await_send,
+                &[
+                    supervisor_token.into(),
+                    slot_index.into(),
+                    msg_type.into(),
+                    payload_ptr.into(),
+                    payload_size.into(),
+                    sender.into(),
+                    slot.into(),
+                    actor_id_out.into(),
+                ],
+                "suspending_actor_send_role_register",
+            )
+            .llvm_ctx("hew_supervisor_role_await_send call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_supervisor_role_await_send returned void".into())
+            })?
+            .into_int_value();
+        let actor_id = fn_ctx
+            .builder
+            .build_load(
+                i64_ty,
+                actor_id_out,
+                "suspending_actor_send_role_actor_id_load",
+            )
+            .llvm_ctx("suspending actor-send role actor-id load")?
+            .into_int_value();
+        (actor_id, rc)
+    } else {
+        let actor_ptr = load_duplex_handle(fn_ctx, term.actor, "suspending_actor_send receiver")?;
+        let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
+        let await_send = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_actor_await_send_by_id",
+        )?;
+        let rc = fn_ctx
+            .builder
+            .build_call(
+                await_send,
+                &[
+                    actor_id.into(),
+                    msg_type.into(),
+                    payload_ptr.into(),
+                    payload_size.into(),
+                    sender.into(),
+                    slot.into(),
+                ],
+                "suspending_actor_send_register",
+            )
+            .llvm_ctx("hew_actor_await_send_by_id call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_actor_await_send_by_id returned void".into())
+            })?
+            .into_int_value();
+        (actor_id, rc)
+    };
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("cooperative actor send has no parent".into()))?;
+    let accepted_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_actor_send_accepted");
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_actor_send_suspend");
+    let bind_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_actor_send_bind");
+    let error_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_actor_send_error");
+    let trap_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_actor_send_trap");
+    let zero = rc.get_type().const_zero();
+    let is_error = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::SLT,
+            rc,
+            zero,
+            "suspending_actor_send_is_error",
+        )
+        .llvm_ctx("cooperative actor-send error compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_error, error_bb, accepted_bb)
+        .llvm_ctx("cooperative actor-send status branch")?;
+
+    fn_ctx.builder.position_at_end(accepted_bb);
+    let is_suspend = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            rc,
+            zero,
+            "suspending_actor_send_is_suspend",
+        )
+        .llvm_ctx("cooperative actor-send suspend compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
+        .llvm_ctx("cooperative actor-send accepted branch")?;
+
+    let slot_cancel = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_cancel",
+    )?;
+    let slot_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_free",
+    )?;
+    let detach = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_detach_await_send_by_id",
+    )?;
+
+    fn_ctx.builder.position_at_end(error_bb);
+    fn_ctx
+        .builder
+        .build_call(
+            slot_free,
+            &[slot.into()],
+            "suspending_actor_send_error_free",
+        )
+        .llvm_ctx("hew_read_slot_free actor-send registration error")?;
+    if let Some(plan) = &term.cleanup_plan {
+        emit_prepared_carrier_drop(
+            fn_ctx,
+            term.value,
+            plan,
+            hew_mir::PreparedCarrierBoundary::Actor,
+        )?;
+    }
+    let stopped = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            rc,
+            rc.get_type()
+                .const_int(HewError::ErrActorStopped as i32 as u64, true),
+            "suspending_actor_send_stopped",
+        )
+        .llvm_ctx("cooperative actor-send stopped compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(stopped, resume_bb, trap_bb)
+        .llvm_ctx("cooperative actor-send failure classification")?;
+    fn_ctx.builder.position_at_end(trap_bb);
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        "suspending_actor_send_fail",
+    )?;
+
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
+        bind_bb,
+        "suspending_actor_send",
+        "suspending_actor_send_abandon_cleanup",
+        "suspending actor-send abandon -> shared cleanup br",
+        || {
+            fn_ctx
+                .builder
+                .build_call(
+                    slot_cancel,
+                    &[slot.into()],
+                    "suspending_actor_send_abandon_cancel",
+                )
+                .llvm_ctx("hew_read_slot_cancel actor-send abandon")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    detach,
+                    &[actor_id.into(), slot.into()],
+                    "suspending_actor_send_abandon_detach",
+                )
+                .llvm_ctx("hew_actor_detach_await_send_by_id call")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    slot_free,
+                    &[slot.into()],
+                    "suspending_actor_send_abandon_free",
+                )
+                .llvm_ctx("hew_read_slot_free actor-send abandon")?;
+            Ok(())
+        },
+        || {
+            fn_ctx
+                .builder
+                .build_call(slot_free, &[slot.into()], "suspending_actor_send_bind_free")
+                .llvm_ctx("hew_read_slot_free actor-send bind")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(resume_bb)
+                .llvm_ctx("suspending actor-send bind -> resume")?;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
 /// Emit the caller-side non-blocking `await sink.send(x)` (NEW-7
 /// `Terminator::SuspendingStreamSend`). The backpressure analogue of
 /// [`emit_suspending_stream_next_terminator`].
@@ -5064,7 +5398,11 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
             i64_ty,
             "suspending_ask_role_supervisor_token",
         )?;
-        let slot_idx = i32_ty.const_int(u64::from(role.slot_index), false);
+        let slot_word = load_int_arg(fn_ctx, role.slot_index, i64_ty, "suspending_ask_role_slot")?;
+        let slot_idx = fn_ctx
+            .builder
+            .build_int_truncate(slot_word, i32_ty, "suspending_ask_role_slot_i32")
+            .llvm_ctx("suspending ask role slot truncate")?;
         let role_ask_fn = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -10223,7 +10561,20 @@ fn emit_select_arm_setup<'ctx>(
                         i64_ty,
                         &format!("select_role_{slot_idx}_supervisor_token"),
                     )?;
-                    let slot_const = i32_ty.const_int(u64::from(role.slot_index), false);
+                    let slot_word = load_int_arg(
+                        fn_ctx,
+                        role.slot_index,
+                        i64_ty,
+                        &format!("select_role_{slot_idx}_slot"),
+                    )?;
+                    let slot_const = fn_ctx
+                        .builder
+                        .build_int_truncate(
+                            slot_word,
+                            i32_ty,
+                            &format!("select_role_{slot_idx}_slot_i32"),
+                        )
+                        .llvm_ctx("select role slot truncate")?;
                     fn_ctx
                         .builder
                         .build_call(
@@ -11601,7 +11952,16 @@ pub(crate) fn emit_join_terminator<'ctx>(
                 i64_ty,
                 &format!("join_role_{i}_supervisor_token"),
             )?;
-            let slot_idx = i32_ty.const_int(u64::from(role.slot_index), false);
+            let slot_word = load_int_arg(
+                fn_ctx,
+                role.slot_index,
+                i64_ty,
+                &format!("join_role_{i}_slot"),
+            )?;
+            let slot_idx = fn_ctx
+                .builder
+                .build_int_truncate(slot_word, i32_ty, &format!("join_role_{i}_slot_i32"))
+                .llvm_ctx("join role slot truncate")?;
             fn_ctx
                 .builder
                 .build_call(

@@ -27,9 +27,32 @@
 //! ```
 //!
 //! `spawn Counter(...)` returns a typed `LocalPid<Counter>`. Calling a
-//! no-result receive function dispatches locally and has type `()`. Calling a
-//! result-bearing receive function creates a request; `await` yields the
-//! `Result`, never the bare reply.
+//! no-result receive function on an unbounded or `overflow block` actor has
+//! type `()`. A `drop_new`, `drop_old`, `fail`, or `coalesce` declaration makes
+//! those sends `Result<(), SendError>`, so loss or rejection is visible at the
+//! call site. A result-bearing receive function creates a request; `await`
+//! yields the `Result`, never the bare reply.
+//!
+//! ```hew
+//! actor Sampler {
+//!     mailbox 16 overflow drop_new;
+//!     receive fn sample(value: i64) {}
+//! }
+//!
+//! fn submit(sampler: LocalPid<Sampler>, value: i64) {
+//!     match sampler.sample(value) {
+//!         .Ok(_) => {},
+//!         .Err(error) => match error {
+//!             SendError.MessageLost => println("sample dropped"),
+//!             _ => println("send failed"),
+//!         },
+//!     }
+//! }
+//! ```
+//!
+//! Policy-sensitive results cannot be discarded as a bare statement. Handle
+//! them with `match` or `?`; `let _ = sampler.sample(value);` is the explicit
+//! acknowledgement when an application intentionally accepts the loss.
 //!
 //! ## Actor-to-actor dispatch
 //!

@@ -558,10 +558,10 @@ impl Checker {
 
             // AwaitRestart: `await_restart <supervised-child>` — suspend until the
             // named static supervised child's slot is Live again, then resume with
-            // the re-fetched live `LocalPid<ChildType>`. The operand MUST be a
+            // the same stable `ChildRef<ChildType>`. The operand MUST be a
             // static supervised-child accessor (recorded in
             // `supervisor_child_slots` by the inner `FieldAccess` synthesis, kind
-            // `Static`). The result type is the same `LocalPid<ChildType>` — by
+            // `Static`). The result type is the same `ChildRef<ChildType>` — by
             // construction the slot is Live after a completed restart; a
             // permanently-Dead child fails closed at runtime (resumes immediately)
             // rather than hanging, so the bare form never yields an `Option`.
@@ -572,7 +572,7 @@ impl Checker {
                 let inner_key = SpanKey::in_module(&inner.1, self.current_module_idx);
                 match self.supervisor_child_slots.get(&inner_key).cloned() {
                     Some(slot) if slot.kind == crate::check::types::ChildKind::Static => {
-                        // Re-fetched live handle: same `LocalPid<ChildType>` the
+                        // Stable role handle: same `ChildRef<ChildType>` the
                         // accessor produced. Carry the discriminator forward — the
                         // side-table entry already keys MIR lowering on this span.
                         inner_ty
@@ -2222,7 +2222,7 @@ impl Checker {
                     kind: crate::check::types::PoolAccessorKind::Index,
                 },
             );
-            return Ty::local_pid(child_ty.clone());
+            return Ty::child_ref(child_ty.clone());
         }
         if let Ty::TraitObject { traits } = &resolved_obj {
             for bound in traits {
@@ -6975,7 +6975,7 @@ impl Checker {
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
             Ty::Named { name, args, .. } => {
-                // Named supervisor child access: sup.child_name → LocalPid<ChildType>
+                // Actor children produce ChildRef<T>; nested supervisors remain LocalPid<S>.
                 // Accepts local actor handles via as_actor_handle().
                 if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_handle() {
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
@@ -7053,9 +7053,11 @@ impl Checker {
                             // synthesised `LocalPid` carries the same dotted
                             // identity a spawn handle does and method dispatch
                             // keys `fn_sigs` correctly.
+                            let canonical_child_type =
+                                self.canonical_supervisor_child_type(&child_type);
                             let child_ty = Ty::Named {
                                 builtin: None,
-                                name: self.canonical_supervisor_child_type(&child_type),
+                                name: canonical_child_type.clone(),
                                 args: vec![],
                             };
                             if slot_kind == crate::check::types::ChildKind::Pool {
@@ -7068,7 +7070,10 @@ impl Checker {
                                     child_ty,
                                 );
                             }
-                            return Ty::local_pid(child_ty);
+                            if self.supervisor_children.contains_key(&canonical_child_type) {
+                                return Ty::local_pid(child_ty);
+                            }
+                            return Ty::child_ref(child_ty);
                         }
                         // The supervisor is known but this child name is not declared.
                         // Emit a clear diagnostic and stop — the fallthrough branch

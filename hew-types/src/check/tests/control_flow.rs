@@ -299,8 +299,8 @@ mod supervisor_child_slot_tests {
             fn inspect(sup: LocalPid<Pool>) {
                 let workers: SupervisorPool<Pool, Worker> = sup.workers;
                 let count: i64 = workers.len();
-                let first: LocalPid<Worker> = workers[0];
-                let maybe: Option<LocalPid<Worker>> = workers.get(1);
+                let first: ChildRef<Worker> = workers[0];
+                let maybe: Option<ChildRef<Worker>> = workers.get(1);
                 let _ = count;
                 let _ = first;
                 let _ = maybe;

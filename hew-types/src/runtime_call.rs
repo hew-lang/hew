@@ -721,6 +721,9 @@ pub enum RuntimeCallFamily {
     /// — resolve a static-pool member through its live static slot. Emitted by
     /// the MIR static-pool accessor (`sup.pool[i]` / `.get(i)`).
     SupervisorPoolChildGet,
+    /// Resolve a static-pool index to its stable static-child slot without
+    /// consulting the member incarnation or liveness state.
+    LocalPidSupervisorPoolChildRefGet,
     /// `hew_supervisor_pool_len(sup, pool_key) -> i64` — the static-pool member
     /// count (`sup.pool.len()`).
     SupervisorPoolLen,
@@ -1314,6 +1317,9 @@ impl RuntimeCallFamily {
             Self::LocalPidSupervisorChildGet => "hew_local_pid_supervisor_child_get",
             Self::SupervisorNestedGet => "hew_supervisor_nested_get",
             Self::SupervisorPoolChildGet => "hew_supervisor_pool_child_get",
+            Self::LocalPidSupervisorPoolChildRefGet => {
+                "hew_local_pid_supervisor_pool_child_ref_get"
+            }
             Self::SupervisorPoolLen => "hew_supervisor_pool_len",
             Self::SupervisorStop => "hew_supervisor_stop",
             Self::SupervisorRestartAwaitBlocking => "hew_supervisor_restart_await_blocking",
@@ -1638,6 +1644,9 @@ impl RuntimeCallFamily {
             "hew_local_pid_supervisor_child_get" => Self::LocalPidSupervisorChildGet,
             "hew_supervisor_nested_get" => Self::SupervisorNestedGet,
             "hew_supervisor_pool_child_get" => Self::SupervisorPoolChildGet,
+            "hew_local_pid_supervisor_pool_child_ref_get" => {
+                Self::LocalPidSupervisorPoolChildRefGet
+            }
             "hew_supervisor_pool_len" => Self::SupervisorPoolLen,
             "hew_supervisor_stop" => Self::SupervisorStop,
             "hew_supervisor_restart_await_blocking" => Self::SupervisorRestartAwaitBlocking,
@@ -2432,6 +2441,7 @@ impl RuntimeCallFamily {
             | F::LocalPidSupervisorChildGet
             | F::SupervisorNestedGet
             | F::SupervisorPoolChildGet
+            | F::LocalPidSupervisorPoolChildRefGet
             | F::SupervisorPoolLen
             | F::SupervisorStop
             | F::SupervisorRestartAwaitBlocking

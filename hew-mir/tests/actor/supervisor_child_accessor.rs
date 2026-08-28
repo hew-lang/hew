@@ -1,23 +1,17 @@
-//! Supervisor child-accessor MIR intercept tests (F-04 fungible reference).
+//! Supervisor `ChildRef` MIR lowering tests.
 //!
-//! Validates that `HirExprKind::FieldAccess` on a supervisor-typed LHS is
-//! intercepted BEFORE the `record_field_orders` lookup and routed to the
-//! `hew_supervisor_child_get` runtime call path, producing a FUNGIBLE child
-//! reference rather than a snapshotted, trap-on-not-live handle.
+//! Static child and pool accessors construct the same pointer-free
+//! `ChildRef<T>` value: supervisor token plus static child slot. Every ask or
+//! tell extracts that stable role from the value at its use site. No raw child
+//! pointer lookup or per-local provenance table participates.
 //!
 //! Coverage:
-//! - Static child access lowers to a typed `Terminator::Call` for
-//!   `hew_supervisor_child_get` to seed the handle alloca, then a
-//!   `RecordFieldLoad` of the handle field.
-//! - The destination Place is typed `LocalPid<ChildActor>` (`ActorHandle`).
-//! - The accessor does NOT trap on a not-live slot: liveness is re-resolved at
-//!   each send/ask (the fungible model), so the accessor emits no
-//!   `Terminator::Trap { kind: SupervisorChildUnavailable }`.
-//! - Pool child field access constructs a first-class `SupervisorPool<S, T>`
-//!   view, including after binding, and safe `.get(i)` lowers through the pool
-//!   runtime lookup plus layout-aware Option construction.
-//! - No supervisor field access reaches the `record_field_orders` path
-//!   (verified by absence of any "unregistered record type" diagnostic).
+//! - Static child access constructs a typed two-field `ChildRef` record.
+//! - `ChildRef` sends, asks, and select arms carry stable-role Places.
+//! - Access and submission never emit a `SupervisorChildUnavailable` trap.
+//! - Pool index/get uses the stable pool-slot descriptor lookup and produces
+//!   `ChildRef` values through the same representation.
+//! - Supervisor field access never falls through to user-record lowering.
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
@@ -88,14 +82,12 @@ supervisor App {
     child worker: Worker
 }
 
-fn get_worker(app: LocalPid<App>) -> LocalPid<Worker> {
+fn get_worker(app: LocalPid<App>) -> ChildRef<Worker> {
     app.worker
 }
 ";
 
-/// A function that BINDS a fungible child reference and then sends through it.
-/// The send must re-resolve (a second `hew_supervisor_child_get`) rather than
-/// reuse the bind-site snapshot, and must NOT trap on a not-live slot.
+/// Bind a `ChildRef` and send through it after ordinary value flow.
 const STATIC_CHILD_SEND_SOURCE: &str = r"
 actor Worker {
     receive fn ping() {}
@@ -113,108 +105,94 @@ fn poke(app: LocalPid<App>) {
 ";
 
 #[test]
-fn static_child_access_emits_supervisor_child_get_call() {
+fn static_child_access_constructs_child_ref_without_runtime_child_lookup() {
     let pipeline = lower_module(STATIC_CHILD_ACCESS_SOURCE);
-
-    // Find the `get_worker` function.
     let func = pipeline
         .raw_mir
         .iter()
         .find(|f| f.name == "get_worker")
-        .expect("get_worker function lowered");
+        .unwrap();
 
-    let has_child_get = runtime_terminator_calls(func, RuntimeCallFamily::SupervisorChildGet)
-        .next()
-        .is_some();
-    assert!(
-        has_child_get,
-        "static child access must emit hew_supervisor_child_get"
+    assert_eq!(child_ref_slot_constants(func), vec![0]);
+    assert_eq!(
+        runtime_terminator_calls(func, RuntimeCallFamily::SupervisorChildGet).count(),
+        0,
+        "ChildRef construction must never snapshot a child pointer",
     );
 }
 
 #[test]
-fn static_child_access_call_has_sup_place_and_slot_index_args() {
+fn static_child_access_carries_supervisor_token_and_slot_fields() {
     let pipeline = lower_module(STATIC_CHILD_ACCESS_SOURCE);
-
     let func = pipeline
         .raw_mir
         .iter()
         .find(|f| f.name == "get_worker")
-        .expect("get_worker function lowered");
-
-    let (args, dest) = runtime_terminator_calls(func, RuntimeCallFamily::SupervisorChildGet)
-        .next()
-        .expect("hew_supervisor_child_get call found");
-
-    // args[0] = sup_place, args[1] = slot_index_const (i64 0 for first child).
-    assert_eq!(args.len(), 2, "call takes exactly sup_place + slot_index");
-    // args[0] should be a Place::Local (the lowered supervisor PID parameter).
-    assert!(
-        matches!(args[0], Place::Local(_)),
-        "first arg must be the supervisor PID place; got {:?}",
-        args[0]
-    );
-    // args[1] should also be a Place::Local (the ConstI64 slot index).
-    assert!(
-        matches!(args[1], Place::Local(_)),
-        "second arg must be the slot-index constant place; got {:?}",
-        args[1]
-    );
-    // dest must be present (the struct return value place).
-    assert!(
-        dest.is_some(),
-        "hew_supervisor_child_get must have a dest (struct return place)"
-    );
-}
-
-#[test]
-fn static_child_access_dest_is_actor_handle_typed_local_pid() {
-    let pipeline = lower_module(STATIC_CHILD_ACCESS_SOURCE);
-
-    let func = pipeline
-        .raw_mir
-        .iter()
-        .find(|f| f.name == "get_worker")
-        .expect("get_worker function lowered");
-
-    // The final handle place returned to the caller must be an ActorHandle(N)
-    // whose backing local is typed `LocalPid<Worker>`.
-    let handle_place = func
+        .unwrap();
+    let fields = func
         .blocks
         .iter()
-        .flat_map(|b| b.instructions.iter())
-        .find_map(|i| match i {
-            Instr::Move {
-                dest: Place::ActorHandle(n),
+        .flat_map(|b| &b.instructions)
+        .find_map(|instr| match instr {
+            Instr::RecordInit {
+                ty:
+                    hew_types::ResolvedTy::Named {
+                        builtin: Some(BuiltinType::ChildRef),
+                        ..
+                    },
+                fields,
                 ..
-            } => Some(*n),
+            } => Some(fields),
             _ => None,
-        });
-    assert!(
-        handle_place.is_some(),
-        "a Move into ActorHandle(N) must exist on the success path"
-    );
-    let handle_id = handle_place.unwrap();
+        })
+        .expect("ChildRef record init");
 
-    let ty = func
-        .locals
-        .get(handle_id as usize)
-        .expect("handle local index in bounds");
-    assert!(
-        matches!(ty,
-            hew_types::ResolvedTy::Named { name, args, .. }
-            if name == "LocalPid" && args.len() == 1
-               && matches!(&args[0],
-                   hew_types::ResolvedTy::Named { name: inner, .. }
-                   if inner == "Worker")
-        ),
-        "handle local must be typed LocalPid<Worker>; got {ty:?}"
-    );
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].0, FieldOffset(0));
+    assert_eq!(fields[1].0, FieldOffset(1));
+    assert!(matches!(fields[0].1, Place::Local(_)));
+    assert!(matches!(fields[1].1, Place::Local(_)));
+}
+
+#[test]
+fn static_child_access_dest_is_child_ref_typed_value() {
+    let pipeline = lower_module(STATIC_CHILD_ACCESS_SOURCE);
+    let func = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "get_worker")
+        .unwrap();
+    let dest = func
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .find_map(|instr| match instr {
+            Instr::RecordInit {
+                ty:
+                    hew_types::ResolvedTy::Named {
+                        builtin: Some(BuiltinType::ChildRef),
+                        ..
+                    },
+                dest: Place::Local(local),
+                ..
+            } => Some(*local),
+            _ => None,
+        })
+        .expect("ChildRef destination local");
+
+    assert!(matches!(
+        &func.locals[dest as usize],
+        hew_types::ResolvedTy::Named {
+            builtin: Some(BuiltinType::ChildRef),
+            args,
+            ..
+        } if matches!(args.as_slice(), [hew_types::ResolvedTy::Named { name, .. }] if name == "Worker")
+    ));
 }
 
 #[test]
 fn static_child_access_does_not_trap_on_not_live() {
-    // F-04: the fungible accessor never traps. A not-live slot is the SEND's
+    // F-04: the ChildRef accessor never traps. A not-live slot is the SEND's
     // concern (re-resolved + fail-closed there), not the accessor's. The
     // accessor only seeds the handle alloca, so no SupervisorChildUnavailable
     // trap block is emitted for a bare `app.worker`.
@@ -236,43 +214,33 @@ fn static_child_access_does_not_trap_on_not_live() {
     });
     assert!(
         !has_sup_trap,
-        "the fungible accessor must NOT emit a SupervisorChildUnavailable trap; \
+        "the ChildRef accessor must NOT emit a SupervisorChildUnavailable trap; \
          liveness is the send's concern (re-resolve + fail-closed Err/drop)"
     );
 }
 
 #[test]
-fn static_child_access_emits_handle_field_load() {
-    // The accessor seed extracts field 1 (the handle pointer) from the
-    // ChildLookupResult struct to populate the ActorHandle alloca. It does NOT
-    // extract the tag (no liveness branch in the accessor) — the tag is read
-    // only at the send re-resolve.
+fn static_child_access_never_loads_a_child_pointer() {
     let pipeline = lower_module(STATIC_CHILD_ACCESS_SOURCE);
-
     let func = pipeline
         .raw_mir
         .iter()
         .find(|f| f.name == "get_worker")
-        .expect("get_worker function lowered");
-
-    let handle_field_loads: Vec<_> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.instructions.iter())
-        .filter(|i| {
-            matches!(
-                i,
-                Instr::RecordFieldLoad {
-                    field_offset: FieldOffset(1),
-                    ..
-                }
-            )
-        })
-        .collect();
-
+        .unwrap();
     assert!(
-        !handle_field_loads.is_empty(),
-        "the accessor must extract the handle field (offset 1) to seed the alloca"
+        func.blocks
+            .iter()
+            .flat_map(|b| &b.instructions)
+            .all(|instr| {
+                !matches!(
+                    instr,
+                    Instr::RecordFieldLoad {
+                        field_offset: FieldOffset(1),
+                        ..
+                    }
+                )
+            }),
+        "bare ChildRef construction must not load a pointer from ChildLookupResult"
     );
 }
 
@@ -296,32 +264,21 @@ fn static_child_access_does_not_emit_not_yet_implemented() {
 }
 
 #[test]
-fn fungible_send_reresolves_child_at_send_site() {
-    // F-04 core: a tell through a bound fungible child reference re-resolves the
-    // current child at the SEND site. The bind seeds one `child_get`; the send
-    // emits a SECOND `child_get` (the re-resolve), so a restart between the bind
-    // and the send reaches the FRESH child rather than the snapshotted pointer.
+fn child_ref_send_carries_stable_role_without_runtime_lookup() {
     let pipeline = lower_module(STATIC_CHILD_SEND_SOURCE);
+    let func = pipeline.raw_mir.iter().find(|f| f.name == "poke").unwrap();
 
-    let func = pipeline
-        .raw_mir
-        .iter()
-        .find(|f| f.name == "poke")
-        .expect("poke function lowered");
-
-    let child_get_count =
-        runtime_terminator_calls(func, RuntimeCallFamily::SupervisorChildGet).count();
-
+    assert_eq!(stable_role_slot_constants(func), vec![0]);
     assert_eq!(
-        child_get_count, 2,
-        "a bound-then-sent fungible child ref must emit two child_get calls \
-         (bind seed + send re-resolve); got {child_get_count}"
+        runtime_terminator_calls(func, RuntimeCallFamily::SupervisorChildGet).count(),
+        0,
+        "ChildRef send must use its value-carried role, not child_get",
     );
 }
 
 #[test]
-fn fungible_send_has_no_program_killing_trap() {
-    // F-04: the send through a fungible reference fail-closes a not-live slot as
+fn child_ref_send_has_no_program_killing_trap() {
+    // F-04: the send through a ChildRef fail-closes a not-live slot as
     // a recoverable drop (a `Goto` to the continuation), NOT a
     // SupervisorChildUnavailable trap. No trap block of that kind exists anywhere
     // in the lowered `poke`.
@@ -343,37 +300,118 @@ fn fungible_send_has_no_program_killing_trap() {
     });
     assert!(
         !has_sup_trap,
-        "the fungible send must fail-closed recoverably (drop/Err), never a \
+        "the ChildRef send must fail-closed recoverably (drop/Err), never a \
          SupervisorChildUnavailable trap"
     );
 }
 
-/// Collect the `ConstI64` slot-index value feeding `args[1]` of every
-/// `hew_supervisor_child_get` call in `func`, in CFG block order.
-fn child_get_slot_constants(func: &hew_mir::RawMirFunction) -> Vec<i64> {
-    // Map each local to the last ConstI64 written into it before the call
-    // (accessor lowering emits the const immediately before its child_get, and
-    // each const local is single-use, so a per-function map is sufficient).
-    let mut const_values: std::collections::HashMap<Place, i64> = std::collections::HashMap::new();
-    let mut slots = Vec::new();
-    for block in &func.blocks {
-        for instr in &block.instructions {
-            if let Instr::ConstI64 { dest, value } = instr {
-                const_values.insert(*dest, *value);
+fn const_i64_values(func: &hew_mir::RawMirFunction) -> std::collections::HashMap<Place, i64> {
+    func.blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::ConstI64 { dest, value } => Some((*dest, *value)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn child_ref_slot_constants(func: &hew_mir::RawMirFunction) -> Vec<i64> {
+    let constants = const_i64_values(func);
+    func.blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::RecordInit {
+                ty:
+                    hew_types::ResolvedTy::Named {
+                        builtin: Some(BuiltinType::ChildRef),
+                        ..
+                    },
+                fields,
+                ..
+            } => fields
+                .iter()
+                .find(|(offset, _)| *offset == FieldOffset(1))
+                .and_then(|(_, source)| constants.get(source).copied()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn stable_role_slot_constants(func: &hew_mir::RawMirFunction) -> Vec<i64> {
+    let constants = const_i64_values(func);
+    let mut record_fields = std::collections::HashMap::new();
+    let mut field_loads = std::collections::HashMap::new();
+    let mut moves = std::collections::HashMap::new();
+    for instr in func.blocks.iter().flat_map(|block| &block.instructions) {
+        match instr {
+            Instr::RecordInit { fields, dest, .. } => {
+                for (offset, source) in fields {
+                    record_fields.insert((*dest, *offset), *source);
+                }
             }
+            Instr::RecordFieldLoad {
+                record,
+                field_offset,
+                dest,
+            } => {
+                field_loads.insert(*dest, (*record, *field_offset));
+            }
+            Instr::Move { dest, src } => {
+                moves.insert(*dest, *src);
+            }
+            _ => {}
         }
-        if let Terminator::Call {
-            authority, args, ..
-        } = &block.terminator
+    }
+    let chase = |mut place: Place| {
+        while let Some(source) = moves.get(&place) {
+            place = *source;
+        }
+        place
+    };
+    let resolve = |place: Place| {
+        let place = chase(place);
+        constants
+            .get(&place)
+            .copied()
+            .or_else(|| {
+                let (record, offset) = field_loads.get(&place)?;
+                let record = chase(*record);
+                let source = chase(*record_fields.get(&(record, *offset))?);
+                constants.get(&source).copied()
+            })
+            .expect("stable role slot must trace to the ChildRef slot constant")
+    };
+    let mut slots = Vec::new();
+    let mut push_role = |role: Option<hew_mir::StableActorRole>| {
+        if let Some(role) = role {
+            slots.push(resolve(role.slot_index));
+        }
+    };
+    for block in &func.blocks {
+        if let Some(hew_mir::SuspendKind::Ask { stable_role, .. }) =
+            func.suspend_kinds.get(&block.id)
         {
-            if authority.runtime_family() == Some(RuntimeCallFamily::SupervisorChildGet) {
-                let idx_place = args[1];
-                slots.push(
-                    *const_values
-                        .get(&idx_place)
-                        .expect("child_get slot arg must be a ConstI64-seeded local"),
-                );
+            push_role(*stable_role);
+        }
+        match &block.terminator {
+            Terminator::Send { stable_role, .. } | Terminator::Ask { stable_role, .. } => {
+                push_role(*stable_role);
             }
+            Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
+                for arm in arms {
+                    if let hew_mir::SelectArmKind::ActorAsk { stable_role, .. } = &arm.kind {
+                        push_role(*stable_role);
+                    }
+                }
+            }
+            Terminator::Join { branches, .. } => {
+                for branch in branches {
+                    push_role(branch.stable_role);
+                }
+            }
+            _ => {}
         }
     }
     slots
@@ -425,7 +463,7 @@ fn main() {
         .iter()
         .find(|f| f.name.contains("Dispatcher") && f.name.contains("run"))
         .expect("Dispatcher receive handler lowered");
-    let slots = child_get_slot_constants(handler);
+    let slots = stable_role_slot_constants(handler);
     assert_eq!(
         slots,
         vec![0, 1, 2],
@@ -437,8 +475,8 @@ fn main() {
 
 /// Blast-radius companion for the same defect class: `select` arms that ask
 /// DIFFERENT supervisor children from inside a receive handler share the
-/// stable-role machinery (`fungible_child_ref_of`), so their accessor seeds
-/// must also bake distinct slot indices.
+/// stable-role machinery (`ChildRef` field extraction), so their accessor seeds
+/// must also carry distinct slot indices.
 #[test]
 fn actor_handler_select_arms_bake_distinct_slot_indices() {
     let source = r"
@@ -478,7 +516,7 @@ fn main() {
         .iter()
         .find(|f| f.name.contains("Dispatcher") && f.name.contains("pick"))
         .expect("Dispatcher select handler lowered");
-    let slots = child_get_slot_constants(handler);
+    let slots = stable_role_slot_constants(handler);
     assert_eq!(
         slots,
         vec![0, 1],
@@ -536,12 +574,13 @@ fn pool_child_field_and_get_lower_end_to_end() {
         has_pool_view,
         "pool field must construct SupervisorPool view"
     );
-    let has_pool_lookup = runtime_terminator_calls(func, RuntimeCallFamily::SupervisorPoolChildGet)
-        .next()
-        .is_some();
+    let has_pool_lookup =
+        runtime_terminator_calls(func, RuntimeCallFamily::LocalPidSupervisorPoolChildRefGet)
+            .next()
+            .is_some();
     assert!(
         has_pool_lookup,
-        "pool.get must emit hew_supervisor_pool_child_get"
+        "pool.get must emit the stable pool ChildRef lookup"
     );
     let has_option_materialiser = func.blocks.iter().any(|block| {
         matches!(

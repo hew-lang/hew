@@ -540,15 +540,13 @@ pub(crate) fn with_actor_send_by_id<R>(
 pub(crate) fn with_actor_send_by_identity<R>(
     actor_id: u64,
     expected_serial: u64,
-    f: impl FnOnce(*mut HewActor) -> R,
+    f: impl FnOnce(&ActorPin) -> R,
 ) -> Option<R> {
     let pin = pin_actor_by_id(actor_id)?;
-    // SAFETY: the pin keeps the actor allocation live for this field read; the
-    // free path cannot reclaim it until the pin drops.
-    if unsafe { (*pin.as_ptr()).spawn_serial } != expected_serial {
+    if pin.actor().spawn_serial != expected_serial {
         return None;
     }
-    Some(f(pin.as_ptr()))
+    Some(f(&pin))
 }
 
 /// Resolve the per-actor-TYPE dispatch function pointer for a live actor id,

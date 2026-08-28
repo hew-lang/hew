@@ -1,8 +1,10 @@
 use super::*;
-use hew_hir::IntentKind;
+use hew_hir::{IntentKind, SiteId, ValueClass};
 use hew_mir::{
-    BasicBlock, BlockKind, CallAuthority, CollectionLayoutProbeKind, CompilerCallKind,
-    DecisionFact, ElabBlock, ElaboratedMirFunction, IrPipeline, MirStatement,
+    BasicBlock, BlockKind, CallAuthority, CheckedMirFunction, CollectionLayoutProbeKind,
+    CompilerCallKind, CooperateKind, CooperateSite, DecisionFact, DropPlan, ElabBlock,
+    ElaboratedMirFunction, ExitPath, IrPipeline, MirStatement, ParamBoundaryFact,
+    ParamBoundaryMode, RawValueDef, RawValueId, RawValueOp, Strategy, ValueMaterializationReason,
 };
 use inkwell::values::AnyValue;
 
@@ -451,6 +453,363 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
+}
+
+/// Raw-MIR fixture for the first value-only ABI proof. The two scalar
+/// parameters bind directly as `RawValueId`s; the tuple exists only as an LLVM
+/// aggregate value and its second field is materialized at the return ABI.
+/// No `Place::Local` is available for either parameter or the tuple.
+fn pipeline_with_virtual_tuple_parameter_projection() -> IrPipeline {
+    let pair_ty = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]);
+    let raw = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: "pair_second".to_string(),
+        return_ty: ResolvedTy::I64,
+        call_conv: hew_mir::FunctionCallConv::Default,
+        params: vec![ResolvedTy::I64, ResolvedTy::I64],
+        locals: Vec::new(),
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![
+                Instr::Value(RawValueOp::Param {
+                    dest: RawValueDef {
+                        id: RawValueId(0),
+                        ty: ResolvedTy::I64,
+                    },
+                    index: 0,
+                }),
+                Instr::Value(RawValueOp::Param {
+                    dest: RawValueDef {
+                        id: RawValueId(1),
+                        ty: ResolvedTy::I64,
+                    },
+                    index: 1,
+                }),
+                Instr::Value(RawValueOp::TupleMake {
+                    dest: RawValueDef {
+                        id: RawValueId(2),
+                        ty: pair_ty,
+                    },
+                    fields: vec![RawValueId(0), RawValueId(1)],
+                }),
+                Instr::Value(RawValueOp::TupleGet {
+                    dest: RawValueDef {
+                        id: RawValueId(3),
+                        ty: ResolvedTy::I64,
+                    },
+                    tuple: RawValueId(2),
+                    index: 1,
+                }),
+                Instr::MaterializeValue {
+                    dest: Place::ReturnSlot,
+                    value: RawValueId(3),
+                    reason: ValueMaterializationReason::ReturnAbi,
+                },
+            ],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![
+            virtual_scalar_parameter_boundary_fact(0, 2, ResolvedTy::I64),
+            virtual_scalar_parameter_boundary_fact(1, 2, ResolvedTy::I64),
+        ],
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let mut pipeline = empty_pipeline_with_const_42();
+    let mut checked = CheckedMirFunction {
+        name: raw.name.clone(),
+        return_ty: raw.return_ty.clone(),
+        blocks: raw.blocks.clone(),
+        decisions: raw.decisions.clone(),
+        checks: hew_mir::validate_context_markers(&raw),
+        cooperate_sites: hew_mir::dataflow::compute_structural_cooperate_sites(&raw.blocks),
+        ownership_elaboration: None,
+    };
+    let elaborated = ElaboratedMirFunction {
+        name: raw.name.clone(),
+        return_ty: raw.return_ty.clone(),
+        statements: Vec::new(),
+        decisions: raw.decisions.clone(),
+        blocks: vec![ElabBlock {
+            id: 0,
+            kind: BlockKind::Normal,
+            drops: Vec::new(),
+            successor: None,
+        }],
+        drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+        coroutine: None,
+        lambda_captures: Vec::new(),
+    };
+    checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
+    pipeline.raw_mir = vec![raw];
+    pipeline.checked_mir = vec![checked];
+    pipeline.elaborated_mir = vec![elaborated];
+    pipeline
+}
+
+fn virtual_scalar_parameter_boundary_fact(index: u32, count: u32, ty: ResolvedTy) -> DecisionFact {
+    DecisionFact {
+        site: SiteId(index),
+        ty,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Unknown,
+        strategy: Strategy::ParamBoundary(ParamBoundaryFact {
+            param_index: index,
+            param_count: count,
+            caller_visible_projection: false,
+            mode: ParamBoundaryMode::BorrowReadOnly,
+        }),
+        why: "test virtual scalar parameter boundary".to_string(),
+    }
+}
+
+#[test]
+fn virtual_raw_tuple_values_use_llvm_values_not_parameter_or_tuple_allocas() {
+    let ctx = Context::create();
+    let pipeline = pipeline_with_virtual_tuple_parameter_projection();
+    let module = build_module(&ctx, &pipeline, "virtual_raw_tuple_values")
+        .expect("virtual scalar params and an internal tuple must lower to LLVM values");
+    module
+        .verify()
+        .expect("virtual raw tuple module must verify");
+    let function = module
+        .get_function("pair_second")
+        .expect("fixture must emit pair_second")
+        .print_to_string()
+        .to_string();
+
+    assert!(
+        function.contains("insertvalue { i64, i64 }")
+            && function.contains("extractvalue { i64, i64 }"),
+        "the semantic tuple must stay an LLVM aggregate value:\n{function}"
+    );
+    assert!(
+        !function.contains("alloca { i64, i64 }"),
+        "the internal tuple must not acquire addressable storage:\n{function}"
+    );
+    assert!(
+        !function.contains("local_0") && !function.contains("local_1"),
+        "virtual scalar ABI parameters must not be allocated as legacy locals:\n{function}"
+    );
+}
+
+/// The public Raw -> LLVM entry must reject a virtual body that mixes its
+/// direct ABI values with legacy `Place::Local` storage before it can emit an
+/// uninitialized local load.
+#[test]
+fn virtual_raw_param_mixed_with_place_body_fails_codegen_admission() {
+    let mut pipeline = pipeline_with_virtual_tuple_parameter_projection();
+    let raw = pipeline
+        .raw_mir
+        .first_mut()
+        .expect("virtual tuple fixture must contain one Raw body");
+    raw.locals = vec![ResolvedTy::I64, ResolvedTy::I64];
+    raw.blocks[0].instructions.insert(
+        2,
+        Instr::Move {
+            dest: Place::Local(0),
+            src: Place::Local(1),
+        },
+    );
+
+    let ctx = Context::create();
+    let error = build_module(&ctx, &pipeline, "virtual_raw_param_mixed_place").expect_err(
+        "a virtual parameter body mixed with Place::Local must fail before LLVM lowering",
+    );
+    let CodegenError::FailClosed(message) = error else {
+        panic!("mixed virtual/storage body must fail closed");
+    };
+    assert!(
+        message.contains("declares local storage") && message.contains("Place::Local"),
+        "codegen must reject the mixed virtual/storage body at admission: {message}"
+    );
+}
+
+#[test]
+fn virtual_raw_values_require_checked_and_elaborated_mir_at_codegen() {
+    let ctx = Context::create();
+    let mut missing_checked = pipeline_with_virtual_tuple_parameter_projection();
+    missing_checked.checked_mir.clear();
+    let error = build_module(&ctx, &missing_checked, "virtual_raw_missing_checked")
+        .expect_err("virtual Raw must not bypass Checked MIR at the public codegen entry");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("missing virtual Checked MIR must fail closed");
+    };
+    assert!(
+        message.contains("requires matching Checked MIR"),
+        "missing Checked MIR must be diagnosed at virtual admission: {message}"
+    );
+
+    let ctx = Context::create();
+    let mut missing_elaborated = pipeline_with_virtual_tuple_parameter_projection();
+    missing_elaborated.elaborated_mir.clear();
+    let error = build_module(&ctx, &missing_elaborated, "virtual_raw_missing_elaborated")
+        .expect_err("virtual Raw must not bypass Elaborated MIR at the public codegen entry");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("missing virtual Elaborated MIR must fail closed");
+    };
+    assert!(
+        message.contains("requires matching Elaborated MIR"),
+        "missing Elaborated MIR must be diagnosed at virtual admission: {message}"
+    );
+}
+
+#[test]
+fn virtual_raw_values_require_ordered_parameter_boundary_facts() {
+    let mut pipeline = pipeline_with_virtual_tuple_parameter_projection();
+    pipeline.raw_mir[0].decisions.clear();
+
+    let ctx = Context::create();
+    let error = build_module(&ctx, &pipeline, "virtual_raw_missing_param_facts").expect_err(
+        "virtual Raw parameter ABI must not reach codegen without its ordered decision facts",
+    );
+    let CodegenError::FailClosed(message) = error else {
+        panic!("missing virtual parameter facts must fail closed");
+    };
+    assert!(
+        message.contains("parameter-boundary facts"),
+        "canonical Raw admission must reject missing ABI decisions: {message}"
+    );
+}
+
+#[test]
+fn virtual_raw_semantic_tuple_projection_type_mismatch_fails_before_llvm() {
+    let mut pipeline = pipeline_with_virtual_tuple_parameter_projection();
+    let raw = pipeline
+        .raw_mir
+        .first_mut()
+        .expect("virtual tuple fixture must contain one Raw body");
+    raw.params[1] = ResolvedTy::U64;
+    raw.decisions[1].ty = ResolvedTy::U64;
+    let Instr::Value(RawValueOp::Param { dest, .. }) = &mut raw.blocks[0].instructions[1] else {
+        panic!("fixture instruction 1 must be the second virtual parameter");
+    };
+    dest.ty = ResolvedTy::U64;
+    let Instr::Value(RawValueOp::TupleMake { dest, .. }) = &mut raw.blocks[0].instructions[2]
+    else {
+        panic!("fixture instruction 2 must be tuple.make");
+    };
+    dest.ty = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::U64]);
+    let Instr::Value(RawValueOp::TupleGet { dest, .. }) = &mut raw.blocks[0].instructions[3] else {
+        panic!("fixture instruction 3 must be tuple.get");
+    };
+    dest.ty = ResolvedTy::I64;
+
+    let ctx = Context::create();
+    let error = build_module(&ctx, &pipeline, "virtual_raw_semantic_type_mismatch").expect_err(
+        "i64/u64 LLVM shape equality must not admit a forged semantic tuple projection",
+    );
+    let CodegenError::FailClosed(message) = error else {
+        panic!("semantic virtual-value mismatch must fail closed");
+    };
+    assert!(
+        message.contains("tuple.get result") && message.contains("u64"),
+        "canonical Raw type facts must reject the forged projection before LLVM: {message}"
+    );
+}
+
+#[test]
+fn virtual_raw_tuple_return_abi_is_rejected_before_layout_lowering() {
+    let mut pipeline = pipeline_with_virtual_tuple_parameter_projection();
+    let raw = pipeline
+        .raw_mir
+        .first_mut()
+        .expect("virtual tuple fixture must contain one Raw body");
+    raw.return_ty = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]);
+    let Instr::MaterializeValue { value, .. } = &mut raw.blocks[0].instructions[4] else {
+        panic!("fixture instruction 4 must be ReturnAbi materialization");
+    };
+    *value = RawValueId(2);
+
+    let ctx = Context::create();
+    let error = build_module(&ctx, &pipeline, "virtual_raw_tuple_return")
+        .expect_err("virtual tuples must remain internal rather than choosing a tuple ABI");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("tuple return ABI must fail closed");
+    };
+    assert!(
+        message.contains("scalar-or-unit ABI subset") && message.contains("tuples remain internal"),
+        "tuple ABI admission must fail before LLVM layout lowering: {message}"
+    );
+}
+
+#[test]
+fn virtual_raw_checked_scheduler_site_fails_before_codegen() {
+    let mut pipeline = pipeline_with_virtual_tuple_parameter_projection();
+    pipeline.checked_mir[0].cooperate_sites.push(CooperateSite {
+        bb_id: 0,
+        kind: CooperateKind::FunctionEntry,
+    });
+
+    let ctx = Context::create();
+    let error = build_module(&ctx, &pipeline, "virtual_raw_checked_scheduler").expect_err(
+        "a virtual Raw body must reject a checked scheduler fact before LLVM can inject it",
+    );
+    let CodegenError::FailClosed(message) = error else {
+        panic!("virtual checked scheduler fact must fail closed");
+    };
+    assert!(
+        message.contains("scheduler cooperate sites"),
+        "virtual admission must reject scheduler injection: {message}"
+    );
+}
+
+#[test]
+fn virtual_raw_coroutine_and_synthesized_provenance_fail_before_codegen() {
+    let mut coroutine = pipeline_with_virtual_tuple_parameter_projection();
+    coroutine.raw_mir[0].name = format!("{}virtual_value", hew_mir::GEN_BODY_PREFIX);
+    coroutine.checked_mir[0].name = coroutine.raw_mir[0].name.clone();
+    coroutine.elaborated_mir[0].name = coroutine.raw_mir[0].name.clone();
+    let ctx = Context::create();
+    let error = build_module(&ctx, &coroutine, "virtual_raw_coroutine_name")
+        .expect_err("a generator-name coroutine fact must not enter the virtual value-only lane");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("virtual coroutine realization facts must fail closed");
+    };
+    assert!(
+        message.contains("coroutine realization facts"),
+        "canonical Raw admission must reject no-yield generator identity: {message}"
+    );
+
+    let mut actor = pipeline_with_virtual_tuple_parameter_projection();
+    actor.raw_mir[0].source_origin = hew_mir::SourceOrigin::SynthesizedActorHandler {
+        kind: hew_mir::ActorHandlerKind::Receive,
+        actor_layout_key: "test.Actor".to_string(),
+    };
+    let ctx = Context::create();
+    let error = build_module(&ctx, &actor, "virtual_raw_actor_provenance")
+        .expect_err("a synthesized actor identity must not enter the virtual value-only lane");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("virtual synthesized actor provenance must fail closed");
+    };
+    assert!(
+        message.contains("synthesized actor or machine provenance"),
+        "canonical Raw admission must reject synthesized actor provenance: {message}"
+    );
+
+    let mut machine = pipeline_with_virtual_tuple_parameter_projection();
+    machine.raw_mir[0].source_origin = hew_mir::SourceOrigin::SynthesizedMachineStep {
+        machine_name: "TestMachine".to_string(),
+    };
+    let ctx = Context::create();
+    let error = build_module(&ctx, &machine, "virtual_raw_machine_provenance")
+        .expect_err("a synthesized machine identity must not enter the virtual value-only lane");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("virtual synthesized machine provenance must fail closed");
+    };
+    assert!(
+        message.contains("synthesized actor or machine provenance"),
+        "canonical Raw admission must reject synthesized machine provenance: {message}"
+    );
 }
 
 #[test]
@@ -2833,7 +3192,7 @@ fn pipeline_with_join_branches(
     pipeline
 }
 
-/// A fungible stable-role join branch submits through the OWNER-SCOPED
+/// A ChildRef stable-role join branch submits through the OWNER-SCOPED
 /// runtime op — supervisor token + slot index + payload in ONE call — and
 /// emits NO trace of the racy lookup-token-then-send pair
 /// (`hew_local_pid_supervisor_child_get` → `hew_local_pid_ask_with_channel`),
@@ -2845,7 +3204,7 @@ fn join_stable_role_branch_submits_owner_scoped() {
         actor: Place::DuplexHandle(0),
         stable_role: Some(hew_mir::StableActorRole {
             supervisor_token: Place::Local(2),
-            slot_index: 0,
+            slot_index: Place::Local(2),
         }),
         method: "score".to_string(),
         args: Vec::new(),
@@ -3176,7 +3535,7 @@ fn select_actor_ask_plus_after_timer_emits_deadline() {
     );
 }
 
-/// A fungible stable-role select arm submits through the OWNER-SCOPED
+/// A ChildRef stable-role select arm submits through the OWNER-SCOPED
 /// runtime op, mirroring the join cutover: no lookup-token-then-send pair
 /// survives on the select ask path either.
 #[test]
@@ -3187,7 +3546,7 @@ fn select_stable_role_arm_submits_owner_scoped() {
                 actor: Place::DuplexHandle(0),
                 stable_role: Some(hew_mir::StableActorRole {
                     supervisor_token: Place::Local(2),
-                    slot_index: 1,
+                    slot_index: Place::Local(2),
                 }),
                 method: "ping".to_string(),
                 args: Vec::new(),
@@ -6221,6 +6580,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         ctx,
         llvm_mod,
         unwind_enabled: true,
+        llvm_fn,
         // Test harness contexts never exercise the drain epilogue; keep
         // the flag off so the test builder's block does not attempt to
         // intern shutdown symbols that are absent from the minimal fixture.
@@ -6250,6 +6610,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         alloca_prologue: entry,
         locals: HashMap::new(),
         local_tys: HashMap::new(),
+        raw_values: RefCell::new(HashMap::new()),
         blocks: HashMap::new(),
         runtime_decls: RefCell::new(HashMap::new()),
         runtime_unwind_block: std::cell::Cell::new(None),

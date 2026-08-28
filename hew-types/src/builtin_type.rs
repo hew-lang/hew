@@ -32,6 +32,10 @@ pub enum BuiltinType {
     /// `SupervisorPool<S, T>` — compiler-produced view of pool `T` owned by
     /// supervisor `S`. Runtime representation is `{ LocalPid<S>, i64 pool_key }`.
     SupervisorPool,
+    /// `ChildRef<T>` — a stable reference to a supervised actor role.
+    /// Runtime representation is two `i64` words: stable supervisor token and
+    /// static child slot. Pool accessors translate an index to that same slot.
+    ChildRef,
     LocalPid,
     NodeId,
     Location,
@@ -214,6 +218,7 @@ builtin_types! {
     Sink => "Sink",
     Duplex => "Duplex",
     SupervisorPool => "SupervisorPool",
+    ChildRef => "ChildRef",
     LocalPid => "LocalPid",
     NodeId => "NodeId",
     Location => "Location",
@@ -278,7 +283,8 @@ impl BuiltinType {
     pub const fn is_affine_clone_terminal(self) -> bool {
         matches!(
             self,
-            Self::LocalPid
+            Self::ChildRef
+                | Self::LocalPid
                 | Self::RemotePid
                 | Self::LambdaPid
                 | Self::HewActor
@@ -366,6 +372,7 @@ impl BuiltinType {
             | Self::CancellationToken
             | Self::MonitorRef => BuiltinTypeMarker::Resource,
             Self::SupervisorPool
+            | Self::ChildRef
             | Self::NodeId
             | Self::Location
             | Self::RemotePid
@@ -432,7 +439,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
         match self {
-            Self::LocalPid | Self::RemotePid | Self::LambdaPid => {
+            Self::ChildRef | Self::LocalPid | Self::RemotePid | Self::LambdaPid => {
                 Some(BuiltinHandleFamily::ActorPid)
             }
             Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
@@ -467,6 +474,7 @@ impl BuiltinType {
             | Self::Sink
             | Self::LocalPid
             | Self::RemotePid
+            | Self::ChildRef
             | Self::ActorState
             | Self::MachineState
             | Self::SendHalf
@@ -515,7 +523,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn roles(self) -> &'static [BuiltinTypeRole] {
         match self {
-            Self::LambdaPid => &[BuiltinTypeRole::ActorDispatchLocal],
+            Self::ChildRef | Self::LambdaPid => &[BuiltinTypeRole::ActorDispatchLocal],
             Self::LocalPid => &[
                 BuiltinTypeRole::ActorDispatchLocal,
                 BuiltinTypeRole::SupervisorLocalPid,
@@ -570,6 +578,7 @@ impl BuiltinType {
                 | Self::LocalPid
                 | Self::RemotePid
                 | Self::Duplex
+                | Self::ChildRef
                 | Self::Stream
                 | Self::Sink
                 | Self::SendHalf
@@ -930,6 +939,7 @@ mod tests {
             BuiltinType::Weak,
             BuiltinType::Sender,
             BuiltinType::Receiver,
+            BuiltinType::ChildRef,
             BuiltinType::LocalPid,
             BuiltinType::RemotePid,
             BuiltinType::Duplex,

@@ -806,13 +806,16 @@ fn main() -> i64 { 0 }
     );
 }
 
-/// Undelivered send: forwarding through a FUNGIBLE supervisor-child reference
-/// (`app.worker`) re-resolves the child at the send site and skips delivery
-/// on a not-live slot (F-04's recoverable fail-closed tell). The skipped-
-/// delivery `Goto` edge must release the payload exactly once — the same
-/// buffer neither a double-free nor a leak.
+/// A `ChildRef` tell carries the stable role into the send terminator. Ownership
+/// stays in the handler across role construction, so cancellation and unwind
+/// before the send release the bytes. The send then transfers them exactly
+/// once; neither its continuation nor the terminal return may release again.
 #[test]
-fn cooperate_then_forward_through_a_not_live_fungible_child_releases_once() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression checks the stable role and every pre/post-transfer exit class"
+)]
+fn child_ref_forward_releases_before_but_not_after_send_transfer() {
     let source = r"
 actor Worker {
     receive fn take(data: bytes) { let _ = data.len(); }
@@ -841,11 +844,26 @@ fn main() -> i64 { 0 }
         .iter()
         .find(|f| f.name == "Forwarder__recv__forward")
         .expect("Forwarder__recv__forward must be present");
-    // The not-live recover edge is a `Goto` (F-04 joins straight back into
-    // normal control flow); the live-delivery edge is the `Send` itself.
-    // The successful delivery sets the guard; the not-live path does not. Both
-    // converge on the shared Return, whose one guarded drop therefore releases
-    // only the undelivered path.
+    let send_has_stable_role = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Forwarder__recv__forward")
+        .expect("Forwarder__recv__forward raw MIR")
+        .blocks
+        .iter()
+        .any(|block| {
+            matches!(
+                block.terminator,
+                hew_mir::Terminator::Send {
+                    stable_role: Some(_),
+                    ..
+                }
+            )
+        });
+    assert!(
+        send_has_stable_role,
+        "ChildRef send must carry its stable supervisor role"
+    );
     let send_drop_count = f
         .drop_plans
         .iter()
@@ -853,51 +871,68 @@ fn main() -> i64 { 0 }
         .flat_map(|(_, plan)| &plan.drops)
         .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
         .count();
-    let goto_drop_count = f
+    let unwind_bytes: Vec<_> = f
         .drop_plans
         .iter()
-        .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Goto { .. }))
+        .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Unwind { .. }))
         .flat_map(|(_, plan)| &plan.drops)
         .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
-        .count();
-    let return_bytes: Vec<_> = f
+        .collect();
+    let cancel_bytes: Vec<_> = f
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Cancel { .. }))
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
+        .collect();
+    let return_drop_count = f
         .drop_plans
         .iter()
         .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Return { .. }))
         .flat_map(|(_, plan)| &plan.drops)
         .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
-        .collect();
+        .count();
     assert_eq!(
         send_drop_count, 0,
-        "a live delivery transfers ownership; the send exit must not drop: {:#?}",
+        "delivery transfers ownership; the send exit must not drop: {:#?}",
         f.drop_plans
     );
     assert_eq!(
-        goto_drop_count, 0,
-        "the recover edge must defer release to the shared guarded exit: {:#?}",
+        return_drop_count, 0,
+        "the post-send return must not release transferred bytes: {:#?}",
         f.drop_plans
     );
     assert_eq!(
-        return_bytes.len(),
+        unwind_bytes.len(),
         1,
-        "the shared exit must carry exactly one Bytes drop: {:#?}",
+        "role-construction unwind must retain one Bytes release: {:#?}",
         f.drop_plans
     );
     assert!(
-        return_bytes[0].guard.is_some(),
-        "the shared Bytes drop must discriminate delivered from undelivered paths"
+        unwind_bytes[0].guard.is_some(),
+        "the pre-send unwind release must use the transfer guard"
+    );
+    assert_eq!(
+        cancel_bytes.len(),
+        1,
+        "entry cancellation must release the incoming Bytes owner: {:#?}",
+        f.drop_plans
+    );
+    assert!(
+        cancel_bytes[0].guard.is_none(),
+        "entry cancellation runs before the transfer guard is initialised"
     );
 }
 
-/// A multi-argument tell packs its values with `RecordInit` in the live block.
-/// The guarded Bytes transfer must be committed before that pack reads the
-/// prepared carrier; the not-live edge keeps and carries the original owner.
+/// A multi-argument `ChildRef` tell packs its values with a message
+/// `RecordInit`. The guarded Bytes transfer must be committed before that pack
+/// reads the prepared carrier, and the Send must carry the stable role.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "the regression pins one ordered MIR sequence and its exclusive recover edge"
 )]
-fn fungible_multi_arg_transfer_precedes_record_pack_only_on_the_live_edge() {
+fn child_ref_multi_arg_transfer_precedes_message_record_pack() {
     let source = r"
 actor Worker {
     receive fn take(data: bytes, tag: i64) {
@@ -957,11 +992,19 @@ fn main() -> i64 { 0 }
         .blocks
         .iter()
         .find(|block| matches!(block.terminator, hew_mir::Terminator::Send { .. }))
-        .expect("fungible live edge must contain the Send");
+        .expect("ChildRef tell must contain the Send");
     let record_index = send_block
         .instructions
         .iter()
-        .position(|instruction| matches!(instruction, hew_mir::Instr::RecordInit { .. }))
+        .position(|instruction| {
+            matches!(
+                instruction,
+                hew_mir::Instr::RecordInit {
+                    ty: hew_types::ResolvedTy::Named { name, .. },
+                    ..
+                } if name.starts_with("__hew_packed_args_")
+            )
+        })
         .expect("two message arguments must be packed with RecordInit");
     let flag_index = send_block
         .instructions
@@ -1003,53 +1046,15 @@ fn main() -> i64 { 0 }
         "all transfer preparation must precede RecordInit: {:#?}",
         send_block.instructions
     );
-
-    let recover_block = function
-        .blocks
-        .iter()
-        .find_map(|block| match block.terminator {
-            hew_mir::Terminator::Branch {
-                then_target,
-                else_target,
+    assert!(
+        matches!(
+            send_block.terminator,
+            hew_mir::Terminator::Send {
+                stable_role: Some(_),
                 ..
-            } if then_target == send_block.id => function
-                .blocks
-                .iter()
-                .find(|candidate| candidate.id == else_target),
-            _ => None,
-        })
-        .expect("fungible liveness branch must have a recover block");
-    assert!(
-        recover_block
-            .instructions
-            .iter()
-            .all(|instruction| !matches!(instruction, hew_mir::Instr::ValueSnapshotDrop { .. }))
-            && recover_block
-                .instructions
-                .iter()
-                .all(|instruction| !matches!(
-                    instruction,
-                    hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer {
-                        owner: candidate,
-                        ..
-                    }) if *candidate == owner
-                )),
-        "recover must neither transfer nor snapshot-drop the guarded source: {:#?}",
-        recover_block.instructions
-    );
-    assert!(
-        recover_block
-            .instructions
-            .iter()
-            .any(|instruction| matches!(
-                instruction,
-                hew_mir::Instr::OwnershipEvent(hew_mir::OwnershipEvent::EdgeCarry {
-                    owner: candidate,
-                    place,
-                    ..
-                }) if *candidate == owner && *place == source_place
-            )),
-        "recover must carry the original guarded owner: {:#?}",
-        recover_block.instructions
+            }
+        ),
+        "ChildRef tell must carry its stable role: {:#?}",
+        send_block.terminator
     );
 }

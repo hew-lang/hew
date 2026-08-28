@@ -2093,9 +2093,9 @@ pub enum ActorMethodKind {
     Fire(String),
     /// Policy-sensitive dispatch to a unit-returning actor receive handler.
     ///
-    /// A bounded lossy mailbox (`drop_new`, `drop_old`, or `coalesce`) reports
-    /// `Result<(), SendError>` so the call site must acknowledge that this
-    /// particular send may have discarded work.
+    /// A bounded mailbox that can lose or reject a message (`drop_new`,
+    /// `drop_old`, `coalesce`, or `fail`) reports `Result<(), SendError>` so
+    /// the call site can observe its policy outcome.
     CheckedFire(String),
     /// Request/reply dispatch to an actor receive handler with a non-unit reply.
     Ask(String, Ty),

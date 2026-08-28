@@ -2036,6 +2036,16 @@ expect_check_fail_contains \
 run_accept_expect_status "mailbox_normal_send_ergonomic" 42 HEW_WORKERS=1
 grep -qFx -- "NORMAL_SEND_DELIVERED" "${stdout_output}"
 
+# `fail` uses the same checked-send surface, but reports rejection as Full
+# instead of trapping a unit-typed sender with no usable diagnostic.
+run_accept_expect_status "mailbox_fail_observable" 43 HEW_WORKERS=1
+grep -qFx -- "FAIL_VISIBLE" "${stdout_output}"
+if grep -qF -- "REJECTED_WORK_DELIVERED" "${stdout_output}"; then
+  echo "mailbox_fail_observable delivered rejected work" >&2
+  cat "${stdout_output}" >&2
+  exit 1
+fi
+
 # second zero-hardcode site: the SAME bound must hold for a SUPERVISED
 # actor. `HewChildSpec` stored `const_zero` at the mailbox_capacity/overflow
 # fields regardless of the direct-spawn fix, so every supervised actor stayed

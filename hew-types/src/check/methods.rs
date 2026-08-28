@@ -1453,7 +1453,7 @@ impl Checker {
             let actor_identity = method_id
                 .rsplit_once("::")
                 .map_or(method_id.as_str(), |(actor, _)| actor);
-            let is_lossy = self
+            let is_policy_sensitive = self
                 .actor_overflow_policies
                 .get(actor_identity)
                 .is_some_and(|policy| {
@@ -1461,10 +1461,11 @@ impl Checker {
                         policy,
                         hew_parser::ast::OverflowPolicy::DropNew
                             | hew_parser::ast::OverflowPolicy::DropOld
+                            | hew_parser::ast::OverflowPolicy::Fail
                             | hew_parser::ast::OverflowPolicy::Coalesce { .. }
                     )
                 });
-            if is_lossy {
+            if is_policy_sensitive {
                 ActorMethodKind::CheckedFire(method_id)
             } else {
                 ActorMethodKind::Fire(method_id)

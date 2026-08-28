@@ -733,9 +733,23 @@ jobs:
           BUILD_RESULT: ${{ needs.compiled-hew-linux.result }}
           SHARD_RESULT: ${{ needs.compiled-hew-shards.result }}
         run: |
-          test "$CHANGE_RESULT" = success
-          test "$BUILD_RESULT" = success
-          test "$SHARD_RESULT" = success
+          set -euo pipefail
+          # When the code path is selected every leg must have SUCCEEDED. When it
+          # is not, the legs are legitimately skipped and that satisfies the gate --
+          # but a leg that actually ran and failed is still a failure, so `skipped`
+          # is the only non-success result accepted here.
+          for leg in CHANGE_RESULT BUILD_RESULT SHARD_RESULT; do
+            result="${!leg}"
+            if [ "$result" = success ]; then
+              continue
+            fi
+            if [ "${RUN_CODE_PATH:-}" != 'true' ] && [ "$result" = skipped ]; then
+              echo "$leg skipped; code path not selected"
+              continue
+            fi
+            echo "::error::$leg is '$result' (expected success)"
+            exit 1
+          done
 
       - name: List the independent full suite inventory
         if: env.RUN_CODE_PATH == 'true'
@@ -974,9 +988,22 @@ jobs:
           RUST_GATES_RESULT: ${{ needs.build-and-test.result }}
           COMPILED_HEW_RESULT: ${{ needs.compiled-hew-aggregate.result }}
         run: |
-          test "$CHANGE_RESULT" = success
-          test "$RUST_GATES_RESULT" = success
-          test "$COMPILED_HEW_RESULT" = success
+          set -euo pipefail
+          # Same contract as the compiled-Hew aggregate: success always passes,
+          # `skipped` passes only when the code path was not selected, and any
+          # other result -- failure, cancelled, timed_out -- fails the required check.
+          for leg in CHANGE_RESULT RUST_GATES_RESULT COMPILED_HEW_RESULT; do
+            result="${!leg}"
+            if [ "$result" = success ]; then
+              continue
+            fi
+            if [ "${RUN_CODE_PATH:-}" != 'true' ] && [ "$result" = skipped ]; then
+              echo "$leg skipped; code path not selected"
+              continue
+            fi
+            echo "::error::$leg is '$result' (expected success)"
+            exit 1
+          done
 
   # Code coverage moved off the per-PR path: it was the flakiest required check
   # (cargo-llvm-cov instrumentation + the duplicated target/llvm-cov-target/

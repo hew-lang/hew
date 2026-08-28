@@ -194,6 +194,11 @@
         "name": "AskError"
       },
       {
+        "id": "type:ChildRef",
+        "kind": "record",
+        "name": "ChildRef"
+      },
+      {
         "id": "type:HashMapIter",
         "kind": "record",
         "name": "HashMapIter"
@@ -272,6 +277,11 @@
         "id": "type:std.builtins.AskError",
         "kind": "enum",
         "name": "std.builtins.AskError"
+      },
+      {
+        "id": "type:std.builtins.ChildRef",
+        "kind": "record",
+        "name": "std.builtins.ChildRef"
       },
       {
         "id": "type:std.builtins.HashMapIter",
@@ -374,7 +384,7 @@
       }
     ]
   },
-  "package_id": "pkg:713fa64db36eb96b",
+  "package_id": "pkg:2a420234c602c71d",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

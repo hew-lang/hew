@@ -77,7 +77,7 @@ runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/closure_gen.rs	
 runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/vec_index.rs	2	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	3	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	16	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	230	stage-4	typed runtime-family dispatch carrier including structural formatting
+runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	231	stage-4	typed runtime-family dispatch carrier including structural formatting
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining owner-shortening sink
 signature-application	apply_instantiated_call_signature_with_assoc	hew-types/src/check/calls.rs	3	stage-1	THE call-signature application authority: the one place a generic callee's type parameters are freshened, inferred, and recorded as an instantiation
 signature-application	check_actor_field_defaults	hew-types/src/check/items.rs	1	stage-1	actor field default initialisers checked against declared field types
@@ -132,7 +132,6 @@ string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	revi
 string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	32	stage-1	reviewed compatibility-key factory for unique imported tagged-union constructors and `?` checker payload mismatch diagnostics; exact source owner remains the authority
 string-method-identity	qualified-format-macro	hew-hir/src/node.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	6	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/raw_values.rs	2	stage-5	canonical Raw virtual-value verifier reports the verified Raw/Checked/Elaborated ladder boundary
 string-method-identity	qualified-format-macro	hew-mir/src/lower/consts.rs	2	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/control_flow.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan.rs	2	stage-3	reviewed qualified string identity construction
@@ -140,6 +139,7 @@ string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan/typed_
 string-method-identity	qualified-format-macro	hew-mir/src/lower/expr.rs	2	stage-5	A315 S7 retired source-facing scoped diagnostic spellings
 string-method-identity	qualified-format-macro	hew-mir/src/lower/machine_synth.rs	16	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/pattern.rs	6	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/raw_values.rs	2	stage-5	canonical Raw virtual-value verifier reports the verified Raw/Checked/Elaborated ladder boundary
 string-method-identity	qualified-format-macro	hew-mir/src/thunk_requirements.rs	1	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/actor_protocol.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	3	stage-1	reviewed qualified string identity construction

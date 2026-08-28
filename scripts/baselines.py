@@ -60,7 +60,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-TIERS = ("fast", "compiler")
+TIERS = ("fast", "compiler", "license")
 
 
 @dataclass(frozen=True)
@@ -136,7 +136,11 @@ REGISTRY: tuple[Baseline, ...] = (
     Baseline(
         id="licenses",
         summary="THIRD-PARTY-LICENSES derived from the dependency tree",
-        tier="fast",
+        # `license` rather than `fast`: the check shells out to cargo-about, which
+        # only the License policy job provisions. That job already runs
+        # `make licenses-check` directly, so this member is checked there and must
+        # not be pulled into a shard that has no cargo-about on PATH.
+        tier="license",
         paths=("THIRD-PARTY-LICENSES",),
         gates=("licenses-check",),
         # Requires cargo-about: cargo install cargo-about --locked

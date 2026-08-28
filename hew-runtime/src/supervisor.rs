@@ -8941,10 +8941,10 @@ pub unsafe extern "C" fn hew_supervisor_role_send(
         Ok(ids) => ids,
         Err(code) => return code,
     };
-    crate::lifetime::live_actors::with_actor_send_by_identity(child_id, child_serial, |actor| {
+    crate::lifetime::live_actors::with_actor_send_by_identity(child_id, child_serial, |pin| {
         // SAFETY: the identity pin keeps the resolved incarnation live and
         // the caller supplies the readable payload range.
-        unsafe { crate::actor::actor_send_pinned(actor, msg_type, data, size) }
+        unsafe { crate::actor::actor_send_pinned(pin, msg_type, data, size) }
     })
     .unwrap_or_else(|| {
         set_last_error(format!(
@@ -9002,12 +9002,17 @@ pub unsafe extern "C" fn hew_supervisor_role_await_send(
     let rc = crate::lifetime::live_actors::with_actor_send_by_identity(
         child_id,
         child_serial,
-        |actor| {
+        |pin| {
             // SAFETY: the identity pin keeps this incarnation live for the
             // complete mailbox registration.
             unsafe {
                 crate::actor::actor_await_send_pinned(
-                    actor, msg_type, data, size, sender, slot,
+                    pin.as_ptr(),
+                    msg_type,
+                    data,
+                    size,
+                    sender,
+                    slot,
                 )
             }
         },
@@ -9086,12 +9091,12 @@ pub unsafe extern "C" fn hew_supervisor_role_ask_with_channel(
     };
     #[cfg(test)]
     fire_role_ask_pinned_submit_hook();
-    crate::lifetime::live_actors::with_actor_send_by_identity(child_id, child_serial, |actor| {
+    crate::lifetime::live_actors::with_actor_send_by_identity(child_id, child_serial, |pin| {
         // SAFETY: the send pin keeps `actor` live for the submission;
         // `data`/`ch` follow this fn's contract. The identity-verified pin
         // refuses closed (returns None) if the id aliased a different
         // incarnation, so no wrong-actor enqueue can occur here.
-        unsafe { crate::actor::ask_with_channel_pinned(actor, msg_type, data, size, ch) }
+        unsafe { crate::actor::ask_with_channel_pinned(pin.as_ptr(), msg_type, data, size, ch) }
     })
     .unwrap_or_else(|| role_ask_refuse_retired(key))
 }

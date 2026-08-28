@@ -2962,10 +2962,10 @@ unsafe fn wake_blocked_sender(waiter: &BlockedSender, status: ReadStatus) {
             let _ = crate::lifetime::live_actors::with_actor_send_by_identity(
                 sender.actor_id,
                 sender.spawn_serial,
-                |actor| {
+                |pin| {
                     // SAFETY: the identity pin keeps this exact incarnation's
                     // allocation live throughout the pointer-based resume edge.
-                    unsafe { crate::scheduler::enqueue_resume(actor, ptr::null_mut()) };
+                    unsafe { crate::scheduler::enqueue_resume(pin.as_ptr(), ptr::null_mut()) };
                 },
             );
         }
@@ -3709,29 +3709,40 @@ mod tests {
 
     #[test]
     fn cooperative_block_sender_is_admitted_and_signalled_after_dequeue() {
-        // SAFETY: this test owns the mailbox, nodes, and read slot exclusively.
-        unsafe {
-            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
-            assert!(!mb.is_null());
-            assert_eq!(hew_mailbox_send(mb, 1, ptr::null_mut(), 0), 0);
-            let slot = crate::read_slot::hew_read_slot_new();
-            assert_eq!(
-                mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot),
-                MAILBOX_AWAIT_SEND_SUSPEND
-            );
-            assert_eq!(crate::read_slot::hew_read_slot_status(slot), 0);
+        // SAFETY: this test exclusively owns the mailbox.
+        let mb = unsafe { hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block) };
+        assert!(!mb.is_null());
+        // SAFETY: mailbox and zero-sized payload are valid.
+        assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
+        let slot = crate::read_slot::hew_read_slot_new();
+        assert_eq!(
+            // SAFETY: mailbox and slot remain live through waiter resolution.
+            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot) },
+            MAILBOX_AWAIT_SEND_SUSPEND
+        );
+        // SAFETY: the creator reference keeps the slot live.
+        assert_eq!(unsafe { crate::read_slot::hew_read_slot_status(slot) }, 0);
 
-            let first = hew_mailbox_try_recv(mb);
-            assert!(!first.is_null());
+        // SAFETY: this test is the mailbox's sole consumer.
+        let first = unsafe { hew_mailbox_try_recv(mb) };
+        assert!(!first.is_null());
+        // SAFETY: dequeue transferred exclusive ownership of the first node.
+        unsafe {
             assert_eq!((*first).msg_type, 1);
             hew_msg_node_free(first);
-            assert_eq!(
-                crate::read_slot::hew_read_slot_status(slot),
-                ReadStatus::Data as i32
-            );
+        }
+        assert_eq!(
+            // SAFETY: the creator reference keeps the deposited slot live.
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            ReadStatus::Data as i32
+        );
 
-            let second = hew_mailbox_try_recv(mb);
-            assert!(!second.is_null());
+        // SAFETY: this test is the mailbox's sole consumer.
+        let second = unsafe { hew_mailbox_try_recv(mb) };
+        assert!(!second.is_null());
+        // SAFETY: dequeue transferred exclusive ownership of the second node;
+        // this test retains the slot and mailbox creator ownership.
+        unsafe {
             assert_eq!((*second).msg_type, 2);
             hew_msg_node_free(second);
             crate::read_slot::hew_read_slot_free(slot);
@@ -3742,20 +3753,25 @@ mod tests {
 
     #[test]
     fn cooperative_block_sender_is_released_and_signalled_on_close() {
-        // SAFETY: this test owns the mailbox, nodes, and read slot exclusively.
+        // SAFETY: this test exclusively owns the mailbox.
+        let mb = unsafe { hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block) };
+        // SAFETY: mailbox and zero-sized payload are valid.
+        assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
+        let slot = crate::read_slot::hew_read_slot_new();
+        assert_eq!(
+            // SAFETY: mailbox and slot remain live through waiter resolution.
+            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot) },
+            MAILBOX_AWAIT_SEND_SUSPEND
+        );
+        // SAFETY: this test owns the mailbox; close drains and deposits the waiter slot.
+        unsafe { mailbox_close(mb) };
+        assert_eq!(
+            // SAFETY: the creator reference keeps the deposited slot live.
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            ReadStatus::Error as i32
+        );
+        // SAFETY: this test retains the slot and mailbox creator ownership.
         unsafe {
-            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
-            assert_eq!(hew_mailbox_send(mb, 1, ptr::null_mut(), 0), 0);
-            let slot = crate::read_slot::hew_read_slot_new();
-            assert_eq!(
-                mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot),
-                MAILBOX_AWAIT_SEND_SUSPEND
-            );
-            mailbox_close(mb);
-            assert_eq!(
-                crate::read_slot::hew_read_slot_status(slot),
-                ReadStatus::Error as i32
-            );
             crate::read_slot::hew_read_slot_free(slot);
             hew_mailbox_free(mb);
         }
@@ -3763,27 +3779,39 @@ mod tests {
 
     #[test]
     fn cooperative_block_ask_is_admitted_without_a_capacity_wait_slot() {
-        // SAFETY: this test owns the mailbox, nodes, and reply-channel refs.
-        unsafe {
-            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
-            assert_eq!(hew_mailbox_send(mb, 1, ptr::null_mut(), 0), 0);
-            let channel = crate::reply_channel::hew_reply_channel_new();
-            assert!(!channel.is_null());
-            // Mirror ask submission's sender-side reference transferred into
-            // the pending node; the test keeps the creator ref until teardown.
-            crate::reply_channel::hew_reply_channel_retain(channel);
-            assert_eq!(
-                mailbox_send_with_reply_cooperative(mb, 2, ptr::null_mut(), 0, channel.cast(),),
-                HewError::Ok as i32
-            );
+        // SAFETY: this test exclusively owns the mailbox.
+        let mb = unsafe { hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block) };
+        // SAFETY: mailbox and zero-sized payload are valid.
+        assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
+        let channel = crate::reply_channel::hew_reply_channel_new();
+        assert!(!channel.is_null());
+        // Mirror ask submission's sender-side reference transferred into the
+        // pending node; the test keeps the creator ref until teardown.
+        // SAFETY: the creator reference keeps the channel live.
+        unsafe { crate::reply_channel::hew_reply_channel_retain(channel) };
+        assert_eq!(
+            // SAFETY: mailbox, zero-sized payload, and retained channel are valid.
+            unsafe {
+                mailbox_send_with_reply_cooperative(mb, 2, ptr::null_mut(), 0, channel.cast())
+            },
+            HewError::Ok as i32
+        );
 
-            let first = hew_mailbox_try_recv(mb);
-            assert!(!first.is_null());
+        // SAFETY: this test is the mailbox's sole consumer.
+        let first = unsafe { hew_mailbox_try_recv(mb) };
+        assert!(!first.is_null());
+        // SAFETY: dequeue transferred exclusive ownership of the first node.
+        unsafe {
             assert_eq!((*first).msg_type, 1);
             hew_msg_node_free(first);
+        }
 
-            let second = hew_mailbox_try_recv(mb);
-            assert!(!second.is_null());
+        // SAFETY: this test is the mailbox's sole consumer.
+        let second = unsafe { hew_mailbox_try_recv(mb) };
+        assert!(!second.is_null());
+        // SAFETY: dequeue transferred exclusive ownership of the second node;
+        // this test retains the channel and mailbox creator ownership.
+        unsafe {
             assert_eq!((*second).msg_type, 2);
             assert_eq!((*second).reply_channel, channel.cast());
             hew_msg_node_free(second);

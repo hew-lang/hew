@@ -4187,15 +4187,15 @@ unsafe fn actor_send_by_id_wasm_internal(
     size: usize,
 ) -> c_int {
     live_actors::with_actor_send_by_id(actor_id, |actor| {
-        // SAFETY: the live-actor pin keeps `actor` and its cooperative mailbox
-        // valid; the caller supplies the readable payload range.
+        // SAFETY: the live-actor pin keeps `actor` and its cooperative mailbox valid.
+        let mailbox = unsafe {
+            &mut *(*actor)
+                .mailbox
+                .cast::<crate::mailbox_wasm::HewMailboxWasm>()
+        };
+        // SAFETY: the caller supplies the readable payload range.
         let outcome = unsafe {
-            crate::mailbox_wasm::hew_mailbox_send_fire_and_forget(
-                (*actor).mailbox.cast(),
-                msg_type,
-                data,
-                size,
-            )
+            crate::mailbox_wasm::hew_mailbox_send_fire_and_forget(mailbox, msg_type, data, size)
         };
         match outcome {
             crate::mailbox_wasm::SendOutcome::Enqueued => {
@@ -5786,16 +5786,17 @@ unsafe fn actor_send_result_internal(
 ///
 /// # Safety
 ///
-/// `actor` must remain pinned and `data` must point to `size` readable bytes.
+/// `data` must point to `size` readable bytes.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn actor_send_pinned(
-    actor: *mut HewActor,
+    pin: &crate::lifetime::live_actors::ActorPin,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
 ) -> i32 {
-    // SAFETY: this wrapper preserves the internal send contract.
-    unsafe { actor_send_result_internal(actor, msg_type, data, size) }
+    // SAFETY: the typed pin proves the actor allocation remains live; the
+    // caller supplies the readable payload range.
+    unsafe { actor_send_result_internal(pin.as_ptr(), msg_type, data, size) }
 }
 
 /// Like [`actor_send_result_internal`] but with an explicit reply channel
@@ -6447,9 +6448,9 @@ unsafe fn actor_ask_by_id_inner(
                 actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
             };
             match expected_serial {
-                Some(serial) => {
-                    live_actors::with_actor_send_by_identity(actor_id, serial, dispatch)
-                }
+                Some(serial) => live_actors::with_actor_send_by_identity(actor_id, serial, |pin| {
+                    dispatch(pin.as_ptr())
+                }),
                 None => live_actors::with_actor_send_by_id(actor_id, dispatch),
             }
             .unwrap_or(HewError::ErrActorStopped as i32)

@@ -16,7 +16,7 @@ trap cleanup_work_dir EXIT
 # evidence the bait path ran; replaying them behind the marker keeps them
 # readable, keeps the preflight's first-failure extractor from reporting one as
 # a verdict, and is what
-# `ci-preflight-dispatcher.sh --check-counterfactual-output` looks for.
+# Prefix provoked failures so they are unmistakable in a passing self-test log.
 COUNTERFACTUAL_MARKER="CF-"
 
 replay_counterfactual() {

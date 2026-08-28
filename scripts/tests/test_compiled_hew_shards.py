@@ -198,10 +198,7 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
                 else start + 1 + following.start()
             )
             section = self.workflow[start:end]
-            self.assertIn(
-                "RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}",
-                section,
-            )
+            self.assertNotIn("RUN_CODE_PATH", section)
         self.assertGreaterEqual(
             self.workflow.count("scripts/compiled-hew-artifact.py unpack"), 2
         )
@@ -230,11 +227,12 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
             "\n  # Code coverage", 1
         )[0]
         self.assertIn("name: Build & test (Linux)", required)
+        self.assertIn("needs: [build-and-test, compiled-hew-aggregate]", required)
+        self.assertIn("RUST_GATES_RESULT: ${{ needs.build-and-test.result }}", required)
         self.assertIn(
-            "needs: [changes, build-and-test, compiled-hew-aggregate]", required
+            "COMPILED_HEW_RESULT: ${{ needs.compiled-hew-aggregate.result }}",
+            required,
         )
-        self.assertIn('test "$RUST_GATES_RESULT" = success', required)
-        self.assertIn('test "$COMPILED_HEW_RESULT" = success', required)
 
 
 if __name__ == "__main__":

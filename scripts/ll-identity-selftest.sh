@@ -63,7 +63,7 @@ trap 'rm -rf "$TMPDIR_BASE"' EXIT
 # left this self-test with no evidence in its log that the bait path ran at all.
 # Replaying it behind the CF- marker keeps it readable, keeps the preflight's
 # first-failure extractor from mistaking it for a verdict, and gives
-# `ci-preflight-dispatcher.sh --check-counterfactual-output` the proof it needs.
+# Prefix provoked failures so they are unmistakable in a passing self-test log.
 COUNTERFACTUAL_MARKER="CF-"
 
 run_counterfactual() {

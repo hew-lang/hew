@@ -34,7 +34,7 @@ mkdir -p "$TESTS_DIR"
 # and left no evidence in a green log that the bait path ran.  Replaying it
 # behind the marker keeps it readable, keeps the preflight's first-failure
 # extractor from reporting it as a verdict, and is what
-# `ci-preflight-dispatcher.sh --check-counterfactual-output` looks for.
+# Prefix provoked failures so they are unmistakable in a passing self-test log.
 COUNTERFACTUAL_MARKER="CF-"
 
 pass() { echo "PASS $1"; }

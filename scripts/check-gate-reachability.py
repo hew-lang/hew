@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """check-gate-reachability.py — assert every gate in this repo is actually run.
 
-The required Linux job executes the local dispatcher directly, so this checker
-expands its fail-closed selection when it builds the hosted command graph.
-It also detects a check absent from both graphs, the blind spot that previously
+The required Linux job executes a checked-in static shard assignment, so this
+checker expands that assignment when it builds the hosted command graph. It
+also detects a check absent from both graphs, the blind spot that previously
 left test code in the tree while executing nowhere.
 
 This gate closes it through the assertions below:
@@ -43,14 +43,11 @@ This gate closes it through the assertions below:
       CI reds in the 2026-08-18..21 window happened.
   A7  every CI gate declares its input paths beside its Make recipe.
   A8  the static consumer scan advises on likely gate inputs absent from their
-      explicit declarations; its findings do not affect routing.
+      explicit declarations; its findings do not affect the static assignment.
   A9  every Rust `include_str!` and `include_bytes!` target is tracked.
-  A10 the static consumer scan rejects every discovered consumer relation that
-      also matches the positive no-gate allowlist; consumed and inert cannot
-      both be true.
-  A11 every tracked scripts/tests/test_*.{py,sh} self-test is invoked by CI, a
+  A10 every tracked scripts/tests/test_*.{py,sh} self-test is invoked by CI, a
       CI-reached Make target, or a shell wrapper reached through that graph.
-  A12 CI executes every member of the local lint graph exactly once, including
+  A11 CI executes every member of the local lint graph exactly once, including
       the lint recipe's Clippy command and structural-lint sub-authorities.
 
 There is deliberately no waiver list. An unreached gate is either wired in or
@@ -82,9 +79,8 @@ subset parser — no third-party dependency, matching every other Python gate in
   * that `run:` body with SHELL COMMENTS STRIPPED. Same rule one level down: a
     `# make foo` inside a script is a note, not an invocation.
 
-A dynamic `if:` (`needs.changes.outputs.docs == 'true'`, `env.RUN_CODE_PATH`)
-IS an edge: that step can run. Proving which pull requests it runs on is the
-path-filter oracle's job, not this one's.
+A dynamic `if:` is an edge because the step can run. This checker proves
+reachability, while policy-specific contract tests prove when it runs.
 
 `continue-on-error: true` is also an edge. The advisory sanitizer jobs really
 do execute their gate; whether a job BLOCKS a merge is a different axis from
@@ -117,12 +113,25 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 MAKEFILE = REPO_ROOT / "Makefile"
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 ACTION_DIR = REPO_ROOT / ".github" / "actions"
-DISPATCHER = REPO_ROOT / "scripts" / "ci-preflight-dispatcher.sh"
+SHARD_ASSIGNMENT = REPO_ROOT / "scripts" / "ci-gate-shards.tsv"
 NEXTEST_TOML = REPO_ROOT / ".config" / "nextest.toml"
 ROOT_CARGO = REPO_ROOT / "Cargo.toml"
 STRUCTURAL_LINT_WRAPPER = REPO_ROOT / "scripts" / "ast-grep-lint.sh"
 
 SELF_TARGET = "check-gate-reachability"
+
+
+def static_shard_commands() -> list[str]:
+    """Commands named by the exhaustive checked-in Linux shard assignment."""
+    commands: list[str] = []
+    for raw_line in SHARD_ASSIGNMENT.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        _shard, command = line.split("\t", 1)
+        commands.append(command)
+    return commands
+
 
 # A target is a GATE — something that asserts rather than builds — when its name
 # matches one of these. Build/publish/scaffold targets (`hew`, `runtime`,
@@ -179,9 +188,9 @@ def strip_test_no_build_prefix(command: str) -> str:
     return TEST_NO_BUILD_PREFIX_RE.sub("", command, count=1)
 
 
-# The checker and dispatcher share one declaration parser and glob semantics.
+# The static shard checker and reachability audit share one declaration parser.
 # The consumer walk below is deliberately advisory: a static scan cannot prove
-# completeness and the dispatcher never reads its results.
+# completeness and never changes which gates execute.
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "lib"))
 import gate_inputs  # noqa: E402
 
@@ -2149,7 +2158,7 @@ def documented_make_references(root: Path = REPO_ROOT) -> list[MakeReference]:
     return references
 
 
-# ── A12: local lint graph and hosted CI are the same authority ───────────────
+# ── A11: local lint graph and hosted CI are the same authority ───────────────
 
 
 def lint_make_variable_words(makefile: str, name: str) -> tuple[str, ...]:
@@ -2420,15 +2429,16 @@ def harness_invocation_text(
 ) -> str:
     """Structurally executable CI/Make text, with shell-wrapper expansion.
 
-    ``step_commands`` is the output of :func:`ci_step_commands`, optionally
-    extended with the dispatcher's executable dry-run selections. Keeping the
-    structured command collection intact here prevents raw workflow text from
-    becoming an A11 execution claim through a comment, echo, or disabled step.
+    ``step_commands`` is the output of :func:`ci_step_commands`, extended with
+    the static shard commands. Keeping the structured command collection intact
+    here prevents raw workflow text from becoming an A10 execution claim
+    through a comment, echo, or disabled step.
     """
     parts = [command for _, command in step_commands]
     invokers = reached | {authority.target for authority in HOST_RELEASE_AUTHORITIES}
     for target in sorted(invokers):
-        parts.append(executing_text(strip_shell_comments(recipes.get(target, ""))))
+        recipe = executing_text(strip_shell_comments(recipes.get(target, "")))
+        parts.append(recipe.replace("$(PYTHON)", "python3"))
 
     invoked = {rel for part in parts for rel in script_invocations_in(part)}
     seen: set[str] = set()
@@ -2554,10 +2564,9 @@ def comparison_targets(recipes: dict[str, str]) -> dict[str, str]:
     Several classes are excluded by construction rather than by exemption,
     because each is structurally incapable of being a baseline comparison: the
     registry's own regen targets (they WRITE the artefacts), delegation to
-    another target or to the preflight dispatcher (whichever gate runs is
-    classified on its own terms), formatter idempotency over live sources, and
-    harness self-tests (they drive a comparer over synthetic fixtures, never
-    over the tree).
+    another target, formatter idempotency over live sources, and harness
+    self-tests (they drive a comparer over synthetic fixtures, never over the
+    tree).
     """
     regen = _regen_targets()
     found: dict[str, str] = {}
@@ -2565,8 +2574,6 @@ def comparison_targets(recipes: dict[str, str]) -> dict[str, str]:
         body = executing_text(recipe)
         body = DELEGATION_RE.sub("", FORMATTER_IDEMPOTENCY_RE.sub("", body))
         if not body.strip() or target in regen:
-            continue
-        if "ci-preflight-dispatcher.sh" in body:
             continue
         if SELF_TEST_SCRIPT_RE.search(body) or SELF_TEST_SCRIPT_RE.search(target):
             continue
@@ -2672,32 +2679,10 @@ def main() -> int:
     live = triggerable(workflows)
     step_commands = ci_step_commands(workflows)
     ci_text = "\n".join(command for _, command in step_commands)
-    if "ci-preflight-dispatcher.sh" in ci_text:
-        for selection_name, probe_path in (
-            ("fallback", "some-unclassified-root-file.txt"),
-            ("scripts-config", "scripts/example.sh"),
-            ("counterfactual", "scripts/lib/counterfactual.sh"),
-        ):
-            selection = subprocess.run(
-                [
-                    "bash",
-                    str(DISPATCHER),
-                    "--dry-run",
-                    "--",
-                    probe_path,
-                ],
-                cwd=REPO_ROOT,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            if selection.returncode != 0:
-                print(selection.stderr, file=sys.stderr)
-                return 2
-            step_commands.append(
-                (f"ci dispatcher {selection_name} selection", selection.stdout)
-            )
-            ci_text += "\n" + selection.stdout
+    if "ci-gate-shards.py run" in ci_text:
+        shard_commands = "\n".join(static_shard_commands())
+        step_commands.append(("static Linux shard assignment", shard_commands))
+        ci_text += "\n" + shard_commands
 
     print(
         f"==> parsed {len(workflows)} workflow(s); {len(live)} can trigger; "
@@ -2726,9 +2711,8 @@ def main() -> int:
         )
 
     # ── A1: every gate target is reached ──────────────────────────────────────
-    # Roots are commands reached from CI. When CI invokes the dispatcher, its
-    # fail-closed selection is expanded above from the same executable used by
-    # local preflight instead of from a separately maintained command list.
+    # Roots are commands reached from CI. The checked-in shard assignment is
+    # expanded above so opaque runner indirection cannot hide a missing gate.
     members = workspace_members()
     crates = [crate_name(m) for m in members]
     exclusions = profile_ci_exclusions()
@@ -3066,20 +3050,15 @@ def main() -> int:
 
     # ── A7: every CI gate declares the inputs it reads ────────────────────────
     #
-    # scripts/ci-preflight-dispatcher.sh selects gates by intersecting the diff
-    # with these declarations. A gate that declares nothing can only be selected
-    # by the fail-closed comprehensive profile, which is how "change-scoped"
-    # became comprehensive on 30 of 30 runs: the router carried its own
-    # hand-maintained path table, and a table nobody edits when a gate grows an
-    # input root routes on yesterday's inputs. Declaring next to the recipe puts
-    # the fact in the one place the person adding the input is already editing.
-    routing_declarations = gate_inputs.declared(REPO_ROOT)
+    # The static shard checker requires every participating declaration exactly
+    # once. Declaring next to the recipe puts the fact in the one place the
+    # person adding the input is already editing.
+    gate_declarations = gate_inputs.declared(REPO_ROOT)
     advisory_declarations = gate_inputs.load(REPO_ROOT)
-    declared_by_target = {gate.target: gate for gate in routing_declarations.gates}
+    declared_by_target = {gate.target: gate for gate in gate_declarations.gates}
     gate_targets = ci_gate_targets(phony)
-    # A `<gate>-build` rule is the warm-up form of the gate beside it. It is
-    # derived, never selected, and declaring inputs on it would make the router
-    # select a warm-up as a gate — which would then need a warm-up of its own.
+    # A `<gate>-build` rule prepares the gate beside it and is not itself a
+    # separately executable gate, so it does not need another declaration.
     gate_targets = [t for t in gate_targets if not t.endswith("-build")]
     undeclared = [t for t in gate_targets if t not in declared_by_target]
     print(f"\n==> A7: gates declare their inputs ({len(gate_targets)} gate target(s))")
@@ -3088,9 +3067,8 @@ def main() -> int:
             "A7",
             f"Makefile: {target}",
             "this gate does not declare the paths it reads. Add an `# inputs:` "
-            "line above its recipe listing them, so the preflight can select it "
-            "when they change; a gate with no declaration only ever runs in the "
-            "comprehensive profile.",
+            "line above its recipe listing them so the static shard checker can "
+            "include it in the exhaustive assignment.",
         )
     print(
         f"    {len(gate_targets) - len(undeclared)}/{len(gate_targets)} gates declare inputs."
@@ -3100,8 +3078,8 @@ def main() -> int:
     #
     # Static analysis cannot enumerate shell expansion, runtime path assembly,
     # module execution, Make expansion, or every import form. It may point out
-    # a likely missing declaration, but only the explicit Makefile declarations
-    # decide whether a path narrows. An unmatched path already fails closed.
+    # a likely missing declaration, but it never changes the unconditional gate
+    # set.
     paths = tracked_paths()
     likely = gate_inputs.likely_undeclared_inputs(REPO_ROOT, advisory_declarations)
     advisory_rows = sorted(
@@ -3115,13 +3093,12 @@ def main() -> int:
         print(f"    likely undeclared input for gate {gate}: {path}")
     if len(advisory_rows) > 25:
         print(f"    ... {len(advisory_rows) - 25} further advisory finding(s)")
-    print("    advisory only; routing uses explicit declarations and fails closed.")
+    print("    advisory only; the static assignment remains unconditional.")
 
     # ── A9: compiled-in assets resolve to tracked files ───────────────────────
     #
-    # Include scanning remains a useful correctness lint, but its output is not
-    # a routing edge. An undeclared embedded asset therefore routes comprehensive
-    # like every other undeclared path.
+    # Include scanning remains a useful correctness lint, but its output cannot
+    # remove a command from the static assignment.
     tracked = set(paths)
     dangling_embeds = sorted(
         (target, crates)
@@ -3145,46 +3122,19 @@ def main() -> int:
         f"{len(advisory_declarations.embeds)} embedded assets are tracked."
     )
 
-    # ── A10: no-gate/consumer contradiction ───────────────────────────────────
-    #
-    # The positive allowlist is routing authority. Static scanning cannot prove
-    # the absence of consumers, but a concrete gate-source literal proves that
-    # an allowlisted path is not inert. Rust includes are equally concrete and
-    # must not escape merely because their relation is stored outside expanded
-    # gate literals. That one direction is safe to enforce.
-    likely_no_gate = gate_inputs.likely_no_gate_inputs(REPO_ROOT, advisory_declarations)
-    no_gate_rows = sorted(
-        (consumer, path)
-        for consumer, consumer_paths in likely_no_gate.items()
-        for path in consumer_paths
-    )
-    print(
-        f"\n==> A10: no-gate paths have no discovered consumers "
-        f"({len(no_gate_rows)} contradiction(s))"
-    )
-    for consumer, path in no_gate_rows:
-        findings.fail(
-            "A10",
-            consumer,
-            f"{path} matches the positive no-gate allowlist but has a "
-            "discovered consumer. If CI reaches the consumer, declare the path "
-            "as a gate input; in every case, remove its no-gate match.",
-        )
-    print(f"    {len(no_gate_rows)} contradictory consumer relation(s).")
-
     tests = harness_tests()
     invocations = harness_invocation_text(step_commands, recipes, reached)
     orphans = [test for test in tests if test not in invocations]
-    print(f"\n==> A11: CI invokes harness self-tests ({len(tests)} self-test(s))")
+    print(f"\n==> A10: CI invokes harness self-tests ({len(tests)} self-test(s))")
     for test in orphans:
         findings.fail(
-            "A11",
+            "A10",
             test,
             "no CI-reached command invokes this self-test.",
         )
     print(f"    {len(tests) - len(orphans)}/{len(tests)} self-tests are invoked.")
 
-    # ── A12: CI runs every local lint-graph member exactly once ───────────────
+    # ── A11: CI runs every local lint-graph member exactly once ───────────────
     try:
         prerequisites = lint_prerequisites(makefile_text)
         lint_errors = lint_coverage_errors(
@@ -3194,12 +3144,12 @@ def main() -> int:
         prerequisites = ()
         lint_errors = [str(error)]
     print(
-        f"\n==> A12: lint graph CI coverage ({len(prerequisites)} prerequisite(s) "
+        f"\n==> A11: lint graph CI coverage ({len(prerequisites)} prerequisite(s) "
         "+ Clippy)"
     )
     for error in lint_errors:
         findings.fail(
-            "A12",
+            "A11",
             error,
             "the local `make lint` aggregate and the CI lint job must describe "
             "the same gates exactly once; the reachability checker is the one "
@@ -3224,8 +3174,8 @@ def main() -> int:
     print("==> Gate reachability: every CI gate target, workspace crate, profile.ci")
     print("    exclusion, inline `-E` filter and `#[ignore]`d crate is reached by")
     print("    CI; named host-release authorities are real local ports; every")
-    print("    documented `make` target exists; every gate declares its routing")
-    print("    inputs; every undeclared path fails closed; every compiled-in asset")
+    print("    documented `make` target exists; every gate declares its inputs;")
+    print("    every compiled-in asset")
     print("    is tracked; static missing-input findings remain advisory; and no")
     print("    allowlisted path has a discovered consumer; every harness self-test")
     print("    is invoked; and CI covers the local lint graph exactly once.")

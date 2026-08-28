@@ -92,6 +92,19 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_await_send_by_id( u64, i32, *mut c_void, usize, *mut HewActor, *mut HewReadSlot, ) -> c_int"
+      },
+      "symbol": "hew_actor_await_send_by_id"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -162,6 +175,19 @@
         "native": "fn hew_actor_demonitor( u64)"
       },
       "symbol": "hew_actor_demonitor"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_detach_await_send_by_id( u64, *mut HewReadSlot, )"
+      },
+      "symbol": "hew_actor_detach_await_send_by_id"
     },
     {
       "availability": [

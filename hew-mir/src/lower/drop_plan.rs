@@ -9418,7 +9418,8 @@ fn suspend_resume_mint_places(kind: &SuspendKind) -> Vec<Place> {
         } => std::iter::once(*result_dest)
             .chain(deadline_result_dest.iter().copied())
             .collect(),
-        SuspendKind::StreamSend { .. }
+        SuspendKind::ActorSend { .. }
+        | SuspendKind::StreamSend { .. }
         | SuspendKind::Sleep { .. }
         | SuspendKind::SleepUntil { .. } => Vec::new(),
     }

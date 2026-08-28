@@ -1,0 +1,27 @@
+// The sender is itself an actor handler. With one worker, parking that worker
+// on the second send deadlocks before BlockedWorker can consume the first
+// message. A cooperative block send suspends Driver instead, freeing the sole
+// worker to deliver both queued messages.
+actor BlockedWorker {
+    mailbox 1;
+    receive fn work(value: i64) {
+        if value == 2 {
+            println("BLOCK_WORK_DELIVERED");
+            exit(42);
+        }
+    }
+}
+
+actor Driver {
+    receive fn run(worker: LocalPid<BlockedWorker>) {
+        worker.work(1);
+        worker.work(2);
+        println("BLOCK_SEND_RESUMED");
+    }
+}
+
+fn main() {
+    let worker = spawn BlockedWorker;
+    let driver = spawn Driver;
+    driver.run(worker);
+}

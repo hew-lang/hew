@@ -997,6 +997,23 @@ impl PartialEq<&str> for WasmExclusion {
 ///   elaborator-produced `"Duplex::close"` strings that resolve to
 ///   `hew_duplex_close` at codegen time.
 pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<WasmExclusion> {
+    // A bounded mailbox with the default/explicit Block policy needs the
+    // native read-slot + enqueue-resume capacity waiter even when its first
+    // send happens from a contextless entry point or through an ask carrier.
+    // Reject the declaration on wasm32 rather than reaching mailbox_wasm's
+    // historical DropNew fallback and silently losing work.
+    if pipeline.actor_layouts.iter().any(|layout| {
+        layout.mailbox_capacity.is_some()
+            && matches!(
+                layout.overflow_policy.as_ref(),
+                None | Some(hew_parser::ast::OverflowPolicy::Block)
+            )
+    }) {
+        return Some(WasmExclusion::new(
+            "hew_actor_await_send_by_id",
+            wasm_capability_ids::COOPERATIVE_YIELD,
+        ));
+    }
     for func in &pipeline.raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
@@ -1204,6 +1221,10 @@ fn wasm_excluded_terminal_call(terminator: &Terminator) -> Option<WasmExclusion>
 /// `RemoteAsk` / `StreamSend` / `CallClosure`) were never flagged here.
 fn wasm_excluded_suspend_kind(kind: &SuspendKind) -> Option<WasmExclusion> {
     match kind {
+        SuspendKind::ActorSend { .. } => Some(WasmExclusion::new(
+            "hew_actor_await_send_by_id",
+            wasm_capability_ids::COOPERATIVE_YIELD,
+        )),
         SuspendKind::StreamNext { .. } => Some(WasmExclusion::new(
             "hew_stream_await_next",
             wasm_capability_ids::STREAMS,
@@ -26868,7 +26889,7 @@ pub(crate) fn static_type_size_i64<'ctx>(
     }
 }
 
-fn load_actor_id<'ctx>(
+pub(crate) fn load_actor_id<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     actor_ptr: PointerValue<'ctx>,
 ) -> CodegenResult<IntValue<'ctx>> {
@@ -29803,6 +29824,26 @@ fn dispatch_collapsed_suspend<'ctx>(
     await_deadlines: &std::collections::HashMap<u32, i64>,
 ) -> CodegenResult<()> {
     match kind {
+        SuspendKind::ActorSend {
+            actor,
+            msg_type,
+            value,
+            arg_modes,
+            cleanup_plan,
+        } => {
+            validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
+            crate::suspend::emit_suspending_actor_send_terminator(
+                fn_ctx,
+                crate::suspend::SuspendingActorSendEmit {
+                    actor: *actor,
+                    msg_type: *msg_type,
+                    value: *value,
+                    cleanup_plan: cleanup_plan.clone(),
+                    resume,
+                    cleanup,
+                },
+            )
+        }
         SuspendKind::Ask {
             actor,
             stable_role,

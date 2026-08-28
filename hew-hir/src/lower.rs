@@ -20598,6 +20598,7 @@ impl LowerCtx {
                     // ActorAsk arm — `for await` is its only consumer surface.
                     Some(
                         ActorMethodKind::Fire(_)
+                        | ActorMethodKind::BlockingFire(_)
                         | ActorMethodKind::CheckedFire(_)
                         | ActorMethodKind::StreamProducer(_, _),
                     )
@@ -27482,6 +27483,20 @@ impl LowerCtx {
                             method_id,
                             args: lowered_args,
                             checked: false,
+                            blocking: false,
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+                ActorMethodKind::BlockingFire(method_id) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    (
+                        HirExprKind::ActorSend {
+                            receiver: Box::new(lowered_receiver),
+                            method_id,
+                            args: lowered_args,
+                            checked: false,
+                            blocking: true,
                         },
                         ResolvedTy::Unit,
                     )
@@ -27496,6 +27511,7 @@ impl LowerCtx {
                             method_id,
                             args: lowered_args,
                             checked: true,
+                            blocking: false,
                         },
                         result_ty,
                     )

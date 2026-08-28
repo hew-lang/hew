@@ -920,6 +920,9 @@ impl Checker {
             .map(|(k, kind)| {
                 let resolved_kind = match kind {
                     ActorMethodKind::Fire(method_id) => ActorMethodKind::Fire(method_id),
+                    ActorMethodKind::BlockingFire(method_id) => {
+                        ActorMethodKind::BlockingFire(method_id)
+                    }
                     ActorMethodKind::CheckedFire(method_id) => {
                         ActorMethodKind::CheckedFire(method_id)
                     }

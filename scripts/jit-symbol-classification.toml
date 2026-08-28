@@ -1278,7 +1278,9 @@ stable-stdlib = [
 # non-trivial actor programs. NOT user-callable via `extern "rt"` (the checker
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.
 codegen-stable = [
+  "hew_actor_await_send_by_id",
   "hew_actor_cooperate",
+  "hew_actor_detach_await_send_by_id",
   # SYSTEM-LANE PROVENANCE BOUNDARY (this entry and `hew_actor_monitor`).
   # Installing a link or a monitor on an ALREADY-TERMINAL peer synthesizes the
   # `Exit` / `Down` the contract owes on the spot, straight onto a system
@@ -6472,6 +6474,27 @@ discharge-depth = "none"
 # allocation behind it, so nothing is transferred and nothing is released.
 [[ownership.contracts]]
 symbol = "hew_actor_set_sys_dispatch"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/actor.rs: copies the payload into a mailbox node. A queued
+# producer keeps an additional read-slot ref until admission, close, or detach;
+# the caller keeps its creator ref. The sender pointer names the suspended
+# continuation but transfers no actor ownership.
+[[ownership.contracts]]
+symbol = "hew_actor_await_send_by_id"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "retain"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/actor.rs: removes a pending waiter and balances only the
+# mailbox's retained read-slot ref. The caller's creator ref stays owned by the
+# caller, including when admission or close already removed the waiter.
+[[ownership.contracts]]
+symbol = "hew_actor_detach_await_send_by_id"
 result = "none"
 params = ["borrow", "borrow"]
 release-symbol = ""

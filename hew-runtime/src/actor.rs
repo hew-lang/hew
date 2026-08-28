@@ -4072,6 +4072,68 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     HewError::ErrActorStopped as i32
 }
 
+/// Cooperatively send to a bounded `overflow block` mailbox.
+///
+/// Returns `0` after registering the copied message and parked producer, `1`
+/// when the message was admitted immediately, or a negative [`HewError`] when
+/// no ownership transfer occurred. A registered producer is resumed by the
+/// target mailbox after dequeue creates capacity.
+///
+/// # Safety
+///
+/// `data` must cover `size` readable bytes; `sender` is the current live actor
+/// and `slot` is a live read slot whose creator ref remains with the caller.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_await_send_by_id(
+    actor_id: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    sender: *mut HewActor,
+    slot: *mut crate::read_slot::HewReadSlot,
+) -> c_int {
+    let result = live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: the live registry pin keeps the actor valid for this closure.
+        let target = unsafe { &*actor };
+        if !actor_runtime_matches(target) {
+            return HewError::ErrForeignRuntime as i32;
+        }
+        if actor_send_is_terminal(target) {
+            return HewError::ErrActorStopped as i32;
+        }
+        // SAFETY: target mailbox and caller-provided payload/slot satisfy the
+        // mailbox registration contract for the duration of this pinned call.
+        let rc = unsafe {
+            mailbox::mailbox_await_send(target.mailbox.cast(), msg_type, data, size, sender, slot)
+        };
+        if rc == mailbox::MAILBOX_AWAIT_SEND_READY {
+            // SAFETY: immediate readiness means a node reached the target queue.
+            unsafe { schedule_actor_after_enqueue(actor, target, msg_type) };
+        }
+        rc
+    });
+    result.unwrap_or(HewError::ErrActorStopped as i32)
+}
+
+/// Detach an abandoned cooperative block-send registration. Idempotent when
+/// admission or target close already resolved the waiter.
+///
+/// # Safety
+///
+/// `slot` must be the live slot passed to [`hew_actor_await_send_by_id`].
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_detach_await_send_by_id(
+    actor_id: u64,
+    slot: *mut crate::read_slot::HewReadSlot,
+) {
+    let _ = live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: the registry pin keeps the actor and mailbox live.
+        unsafe { mailbox::mailbox_detach_await_send((*actor).mailbox.cast(), slot) };
+    });
+}
+
 /// Cooperative-WASM implementation of by-ID local actor delivery.
 ///
 /// The single-threaded runtime still publishes actors in `live_actors`; pin the
@@ -5771,8 +5833,12 @@ unsafe fn actor_send_result_internal_reply(
     // policy-drop, must stay caller-visible — a silently dropped ask would
     // leave the caller waiting forever for a reply that will never arrive.
     // SAFETY: Mailbox is valid for the actor's lifetime; reply_channel is non-null and valid.
-    let result =
-        unsafe { mailbox::hew_mailbox_send_with_reply(mb, msg_type, data, size, reply_channel) };
+    // Suspending asks must not park a scheduler worker while waiting for
+    // bounded `Block` capacity. A pending ask stays suspended on its reply
+    // channel; mailbox admission transfers its queued node to the actor FIFO.
+    let result = unsafe {
+        mailbox::mailbox_send_with_reply_cooperative(mb, msg_type, data, size, reply_channel)
+    };
     if result != 0 {
         return result;
     }

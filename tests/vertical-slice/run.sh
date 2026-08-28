@@ -2046,6 +2046,16 @@ if grep -qF -- "REJECTED_WORK_DELIVERED" "${stdout_output}"; then
   exit 1
 fi
 
+# A bounded mailbox's default `block` policy must suspend an actor sender,
+# freeing the only scheduler worker to consume and create capacity. The former
+# Condvar path times out here because Driver parks the sole worker.
+run_accept_expect_status "mailbox_block_single_worker" 42 HEW_WORKERS=1
+grep -qFx -- "BLOCK_WORK_DELIVERED" "${stdout_output}"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/mailbox_coalesce_block_fallback.hew" \
+  "coalesce fallback 'block' is unsupported" \
+  "coalesce block fallback must fail closed"
+
 # second zero-hardcode site: the SAME bound must hold for a SUPERVISED
 # actor. `HewChildSpec` stored `const_zero` at the mailbox_capacity/overflow
 # fields regardless of the direct-spawn fix, so every supervised actor stayed

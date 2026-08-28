@@ -2091,6 +2091,9 @@ pub struct TryWidthCastLowering {
 pub enum ActorMethodKind {
     /// Fire-and-forget dispatch to an actor receive handler that returns `()`.
     Fire(String),
+    /// Unit-returning dispatch whose bounded `block` mailbox may suspend the
+    /// caller until capacity is available.
+    BlockingFire(String),
     /// Policy-sensitive dispatch to a unit-returning actor receive handler.
     ///
     /// A bounded mailbox that can lose or reject a message (`drop_new`,

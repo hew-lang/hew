@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1481u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1483u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1481] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1483] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -56,6 +56,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1481] = {
      "HewActor, i64) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_await_send_by_id",
+     "{\"native\": \"fn hew_actor_await_send_by_id( u64, i32, *mut c_void, "
+     "usize, *mut HewActor, *mut HewReadSlot, ) -> c_int\"}",
+     "native", "codegen-stable", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_cancel_periodic",
      "{\"native\": \"fn hew_actor_cancel_periodic( *mut c_void)\", "
      "\"wasm32-wasip1\": \"fn hew_actor_cancel_periodic( *mut c_void)\"}",
@@ -78,6 +83,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1481] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_demonitor", "{\"native\": \"fn hew_actor_demonitor( u64)\"}",
      "native", "stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_detach_await_send_by_id",
+     "{\"native\": \"fn hew_actor_detach_await_send_by_id( u64, *mut "
+     "HewReadSlot, )\"}",
+     "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_drain_outcome_free",
      "{\"native\": \"fn hew_actor_drain_outcome_free( *mut "

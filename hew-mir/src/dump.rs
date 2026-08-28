@@ -325,6 +325,7 @@ fn render_suspend_kind_tag(kind: Option<&SuspendKind>) -> String {
         return String::new();
     };
     match kind {
+        SuspendKind::ActorSend { .. } => "[actor_send]".to_string(),
         SuspendKind::Ask { .. } => "[ask]".to_string(),
         SuspendKind::Read { .. } => "[read]".to_string(),
         SuspendKind::Accept { .. } => "[accept]".to_string(),

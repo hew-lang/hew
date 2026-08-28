@@ -1591,6 +1591,9 @@ pub enum HirExprKind {
         /// `true` when the target actor declares a loss- or rejection-capable
         /// mailbox policy and the call returns `Result<(), SendError>`.
         checked: bool,
+        /// `true` when a bounded `block` mailbox send must cooperatively
+        /// suspend from an execution-context caller rather than park its worker.
+        blocking: bool,
     },
     /// Request/reply actor receive dispatch, selected from the checker's
     /// `actor_method_dispatch` side table. `reply_ty` is checker-resolved and

@@ -800,7 +800,9 @@ impl Checker {
                 return false;
             }
             match dispatch {
-                ActorMethodKind::Fire(_) | ActorMethodKind::CheckedFire(_) => true,
+                ActorMethodKind::Fire(_)
+                | ActorMethodKind::BlockingFire(_)
+                | ActorMethodKind::CheckedFire(_) => true,
                 // Output-contract pruning ONLY: retain the dispatch entry when
                 // the reply type is fully resolved and error-free. This is NOT
                 // the reply-type admissibility gate — a non-Send reply (`Rc`,

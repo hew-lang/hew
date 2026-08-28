@@ -1056,7 +1056,8 @@ pub fn suspend_kind_write_places(kind: &crate::SuspendKind) -> Vec<Place> {
         | crate::SuspendKind::TaskAwait { result_dest, .. } => {
             result_dest.iter().copied().collect()
         }
-        crate::SuspendKind::StreamSend { .. }
+        crate::SuspendKind::ActorSend { .. }
+        | crate::SuspendKind::StreamSend { .. }
         | crate::SuspendKind::RestartWait { .. }
         | crate::SuspendKind::Sleep { .. }
         | crate::SuspendKind::SleepUntil { .. } => Vec::new(),

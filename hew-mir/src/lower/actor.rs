@@ -2170,6 +2170,7 @@ impl Builder {
         method_id: &str,
         args: &[hew_hir::HirExpr],
         checked: bool,
+        blocking: bool,
         expr: &HirExpr,
     ) -> Option<Place> {
         let site = expr.site;
@@ -2287,17 +2288,62 @@ impl Builder {
             .collect::<Option<Vec<_>>>()
             .unwrap_or_default();
         let result_dest = checked.then(|| self.alloc_local(expr.ty.clone()));
+        if blocking && self.current_function_call_conv.carries_execution_context() {
+            self.finish_blocking_actor_send(actor, info.msg_type, value, next, raw_bitcopy_modes);
+        } else {
+            self.finish_nonblocking_actor_send(
+                actor,
+                info.msg_type,
+                value,
+                next,
+                raw_bitcopy_modes,
+                result_dest,
+            );
+        }
+        self.start_block(next);
+        result_dest
+    }
+
+    fn finish_blocking_actor_send(
+        &mut self,
+        actor: Place,
+        msg_type: i32,
+        value: Place,
+        next: u32,
+        arg_modes: Vec<crate::model::SendAliasMode>,
+    ) {
+        self.record_suspend_kind(SuspendKind::ActorSend {
+            actor,
+            msg_type,
+            value,
+            arg_modes,
+            cleanup_plan: None,
+        });
+        self.finish_current_block(Terminator::Suspend {
+            resume: next,
+            cleanup: next,
+            is_final: false,
+        });
+    }
+
+    fn finish_nonblocking_actor_send(
+        &mut self,
+        actor: Place,
+        msg_type: i32,
+        value: Place,
+        next: u32,
+        arg_modes: Vec<crate::model::SendAliasMode>,
+        result_dest: Option<Place>,
+    ) {
         self.finish_current_block(Terminator::Send {
             actor,
-            msg_type: info.msg_type,
+            msg_type,
             value,
             next,
-            arg_modes: raw_bitcopy_modes,
+            arg_modes,
             cleanup_plan: None,
             result_dest,
         });
-        self.start_block(next);
-        result_dest
     }
 
     /// Lower a `receive gen fn` call (`e.ticks()`, `t.stream(3)`) — decision 4

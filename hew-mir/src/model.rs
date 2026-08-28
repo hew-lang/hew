@@ -2728,6 +2728,15 @@ pub struct ThirFunction {
 /// [`RawMirFunction::await_deadline_ns`] keyed by the same block id.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SuspendKind {
+    /// A bounded actor mailbox with `overflow block`: register the prepared
+    /// message and park the sending continuation when the mailbox is full.
+    ActorSend {
+        actor: Place,
+        msg_type: i32,
+        value: Place,
+        arg_modes: Vec<SendAliasMode>,
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
+    },
     /// Non-blocking `await actor.method(value)` (`SuspendingAsk`).
     Ask {
         actor: Place,

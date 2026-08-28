@@ -5141,7 +5141,8 @@ impl Builder {
                 method_id,
                 args,
                 checked,
-            } => self.lower_actor_send(receiver, method_id, args, *checked, expr),
+                blocking,
+            } => self.lower_actor_send(receiver, method_id, args, *checked, *blocking, expr),
             HirExprKind::ActorAsk {
                 receiver,
                 method_id,

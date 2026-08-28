@@ -259,7 +259,9 @@ fn select_arm_source_places(arms: &[SelectArm]) -> Vec<Place> {
 pub fn suspend_kind_source_places(kind: &SuspendKind) -> Vec<Place> {
     match kind {
         // `actor` + `value` are the reads; result/reply/error dests are writes.
-        SuspendKind::Ask { actor, value, .. } => vec![*actor, *value],
+        SuspendKind::ActorSend { actor, value, .. } | SuspendKind::Ask { actor, value, .. } => {
+            vec![*actor, *value]
+        }
         // `conn` is the read source; `result_dest` is a resume-edge write.
         SuspendKind::Read { conn, .. } => vec![*conn],
         // `listener` is the accept source; `result_dest` is a resume-edge write.
@@ -669,7 +671,8 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
 /// analogue of the per-carrier arms in [`generator_yield_terminator_escapes`].
 fn suspend_kind_yield_escapes(kind: &SuspendKind, local: u32) -> bool {
     match kind {
-        SuspendKind::Ask { value, .. }
+        SuspendKind::ActorSend { value, .. }
+        | SuspendKind::Ask { value, .. }
         | SuspendKind::StreamSend { value, .. }
         | SuspendKind::RemoteAsk { value, .. } => place_refs_local(*value, local),
         // Handle reads + result-binding carriers transfer no yielded value out.
@@ -922,7 +925,8 @@ pub(super) fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 #[cfg(test)]
 fn suspend_kind_escape_places(kind: &SuspendKind) -> Vec<Place> {
     match kind {
-        SuspendKind::Ask { value, .. }
+        SuspendKind::ActorSend { value, .. }
+        | SuspendKind::Ask { value, .. }
         | SuspendKind::StreamSend { value, .. }
         | SuspendKind::RemoteAsk { value, .. } => vec![*value],
         SuspendKind::CallClosure { args, .. } => args.clone(),

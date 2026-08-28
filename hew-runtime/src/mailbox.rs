@@ -2662,12 +2662,12 @@ pub unsafe extern "C" fn hew_mailbox_send(
 /// code: the caller (`actor::actor_send_result_internal_reply`) needs both
 /// (a) the `HewError` status to report, and (b) whether a node actually
 /// reached the queue, since only an actual enqueue needs to wake/schedule
-/// the actor — a policy-drop reports success but enqueued nothing.
+/// the actor. A policy drop reports a distinct loss status to checked sends
+/// but enqueued nothing.
 ///
-/// A **policy-drop** (`DropNew` silently discards the new message) is
-/// spec-silent per §6.2 and must be reported as success by the caller,
-/// while a genuine failure (`Fail` policy rejects, the mailbox is closed,
-/// or allocation fails) must keep its own distinct non-zero code.
+/// A policy loss (`DropNew`, `DropOld`, or `Coalesce`) and a genuine failure
+/// (`Fail`, closed mailbox, or allocation failure) must keep distinct statuses
+/// so the language surface can report the exact outcome.
 ///
 /// Not an FFI entry point — used only by the local no-reply-channel send
 /// path ([`actor::actor_send_result_internal_reply`](crate::actor)) that

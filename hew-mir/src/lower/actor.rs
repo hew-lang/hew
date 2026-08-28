@@ -2169,8 +2169,10 @@ impl Builder {
         receiver: &HirExpr,
         method_id: &str,
         args: &[hew_hir::HirExpr],
-        site: hew_hir::SiteId,
+        checked: bool,
+        expr: &HirExpr,
     ) -> Option<Place> {
+        let site = expr.site;
         let info = self.actor_method_info(&receiver.ty, method_id, site)?;
         // `ActorMethodKind::Fire` is only produced by `record_actor_method_dispatch`
         // when `reply_ty == Ty::Unit`, so every `ActorSend` HIR node refers to a
@@ -2284,6 +2286,7 @@ impl Builder {
             })
             .collect::<Option<Vec<_>>>()
             .unwrap_or_default();
+        let result_dest = checked.then(|| self.alloc_local(expr.ty.clone()));
         self.finish_current_block(Terminator::Send {
             actor,
             msg_type: info.msg_type,
@@ -2291,9 +2294,10 @@ impl Builder {
             next,
             arg_modes: raw_bitcopy_modes,
             cleanup_plan: None,
+            result_dest,
         });
         self.start_block(next);
-        None
+        result_dest
     }
 
     /// Lower a `receive gen fn` call (`e.ticks()`, `t.stream(3)`) — decision 4
@@ -2392,6 +2396,7 @@ impl Builder {
             next,
             arg_modes: Vec::new(),
             cleanup_plan: None,
+            result_dest: None,
         });
         self.start_block(next);
         Some(stream)

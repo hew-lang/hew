@@ -5140,7 +5140,8 @@ impl Builder {
                 receiver,
                 method_id,
                 args,
-            } => self.lower_actor_send(receiver, method_id, args, expr.site),
+                checked,
+            } => self.lower_actor_send(receiver, method_id, args, *checked, expr),
             HirExprKind::ActorAsk {
                 receiver,
                 method_id,

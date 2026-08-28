@@ -33,6 +33,14 @@ use crate::reply_channel::{self, HewReplyChannel};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::scheduler;
 
+/// Policy-sensitive actor-send status: the incoming send completed, but the
+/// declared mailbox policy discarded, replaced, or coalesced work.
+///
+/// This positive code is intentionally outside the negative [`HewError`]
+/// space. Checked language sends map it to `SendError.MessageLost`; ordinary
+/// lossless sends never produce it.
+pub const HEW_ACTOR_SEND_MESSAGE_LOST: i32 = 1;
+
 // ── Crash teardown ordering hook ─────────────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4035,11 +4043,9 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     // The closure returns the actual `HewError` code from
     // `actor_send_result_internal` — NOT a collapsed bool. Every genuine
     // failure (actor gone/stopped, OOM, foreign-runtime, a `Fail`-policy
-    // overflow) keeps its own distinct non-zero code; only the
-    // deliberately-silent `DropNew`/`DropOld`/`Coalesce` policy outcomes
-    // come back as `Ok`. Collapsing these into a single reused code (as a
-    // prior version of this function did) is what let a genuine send
-    // failure hide behind the same value as a declared-silent overflow drop.
+    // overflow) keeps its own distinct negative code; declared loss under
+    // `DropNew`/`DropOld`/`Coalesce` uses a dedicated positive code. Keeping
+    // those classes distinct lets checked sends report the exact outcome.
     let send_result = live_actors::with_actor_send_by_id(actor_id, |actor| {
         // SAFETY: `actor` is pinned live by `with_actor_send_by_id`;
         // the allocation is guaranteed valid for the duration of this
@@ -4100,14 +4106,31 @@ unsafe fn actor_send_by_id_wasm_internal(
     live_actors::with_actor_send_by_id(actor_id, |actor| {
         // SAFETY: the live-actor pin keeps `actor` and its cooperative mailbox
         // valid; the caller supplies the readable payload range.
-        let result = unsafe {
-            crate::mailbox_wasm::hew_mailbox_send((*actor).mailbox.cast(), msg_type, data, size)
+        let outcome = unsafe {
+            crate::mailbox_wasm::hew_mailbox_send_fire_and_forget(
+                (*actor).mailbox.cast(),
+                msg_type,
+                data,
+                size,
+            )
         };
-        if result == HewError::Ok as i32 {
-            // SAFETY: successful delivery targets the same pinned live actor.
-            unsafe { wake_wasm_actor(actor) };
+        match outcome {
+            crate::mailbox_wasm::SendOutcome::Enqueued => {
+                // SAFETY: the live-actor pin keeps `actor` valid through wakeup.
+                unsafe { wake_wasm_actor(actor) };
+                HewError::Ok as i32
+            }
+            crate::mailbox_wasm::SendOutcome::Coalesced
+            | crate::mailbox_wasm::SendOutcome::DroppedOld => {
+                // SAFETY: the live-actor pin keeps `actor` valid through wakeup.
+                unsafe { wake_wasm_actor(actor) };
+                HEW_ACTOR_SEND_MESSAGE_LOST
+            }
+            crate::mailbox_wasm::SendOutcome::Dropped => HEW_ACTOR_SEND_MESSAGE_LOST,
+            crate::mailbox_wasm::SendOutcome::Failed => HewError::ErrMailboxFull as i32,
+            crate::mailbox_wasm::SendOutcome::Closed => HewError::ErrActorStopped as i32,
+            crate::mailbox_wasm::SendOutcome::Oom => HewError::ErrOom as i32,
         }
-        result
     })
     .unwrap_or(HewError::ErrActorStopped as i32)
 }
@@ -5714,27 +5737,28 @@ unsafe fn actor_send_result_internal_reply(
     let mb = a.mailbox.cast::<HewMailbox>();
 
     if reply_channel.is_null() {
-        // Fire-and-forget (no reply channel expected): resolve against the
-        // raw `SendOutcome` rather than a collapsed status code. A
-        // `DropNew` policy-drop is spec-silent per §6.2 — it must report
-        // success — but unlike an actual enqueue, it queued nothing, so it
-        // must NOT wake/schedule the actor (there is no new message for it
-        // to find). See `hew_mailbox_send_fire_and_forget` for the seam
-        // rationale.
+        // A no-reply send still preserves the raw policy outcome so checked
+        // language sends can distinguish delivery from declared loss. A
+        // DropNew outcome queued nothing and therefore must not wake the
+        // actor; DropOld and Coalesce did leave runnable work behind.
         // SAFETY: Mailbox is valid for the actor's lifetime; data/size from caller.
         return match unsafe { mailbox::hew_mailbox_send_fire_and_forget(mb, msg_type, data, size) }
         {
-            mailbox::SendOutcome::Enqueued
-            | mailbox::SendOutcome::Coalesced
-            | mailbox::SendOutcome::DroppedOld => {
+            mailbox::SendOutcome::Enqueued => {
                 // SAFETY: `actor`/`a` valid; a node actually reached the
                 // queue, so the actor may be scheduled to run.
                 unsafe { schedule_actor_after_enqueue(actor, a, msg_type) };
                 HewError::Ok as i32
             }
-            // Policy-drop: silent per spec §6.2, nothing was queued, so
-            // there is nothing to wake the actor for.
-            mailbox::SendOutcome::Dropped => HewError::Ok as i32,
+            mailbox::SendOutcome::Coalesced | mailbox::SendOutcome::DroppedOld => {
+                // A node reached the queue (or was updated in place), so the
+                // actor must run even though this send reports visible loss.
+                // SAFETY: `actor` and `a` remain pinned and valid for this send.
+                unsafe { schedule_actor_after_enqueue(actor, a, msg_type) };
+                HEW_ACTOR_SEND_MESSAGE_LOST
+            }
+            // DropNew consumed the incoming payload but queued nothing.
+            mailbox::SendOutcome::Dropped => HEW_ACTOR_SEND_MESSAGE_LOST,
             mailbox::SendOutcome::Closed => HewError::ErrActorStopped as i32,
             // `Fail`-policy overflow is a genuine, caller-visible failure —
             // never silently dropped.
@@ -11228,14 +11252,13 @@ mod tests {
         );
     }
 
-    /// A fire-and-forget send-by-id into a `DropNew` bounded mailbox that
-    /// is at capacity is a declared-silent policy outcome (spec §6.2) and
-    /// must report success (`0`), not `ErrMailboxFull`. Paired with
+    /// A send-by-id into a full `DropNew` mailbox reports the dedicated
+    /// positive policy-loss status, distinct from a failed admission. Paired with
     /// `send_by_id_after_free_returns_genuine_failure_not_mailbox_full`:
-    /// the two scenarios must produce DIFFERENT codes so `Terminator::Send`
-    /// can trap on genuine failure while treating policy-drop as success.
+    /// the two scenarios must produce DIFFERENT codes so checked sends can
+    /// materialize the right `SendError` without confusing loss and rejection.
     #[test]
-    fn send_by_id_dropnew_policy_drop_is_silent() {
+    fn send_by_id_dropnew_policy_drop_reports_message_lost() {
         let _guard = crate::runtime_test_guard();
 
         let opts = HewActorOpts {
@@ -11267,14 +11290,12 @@ mod tests {
         assert_eq!(pre_fill, HewError::Ok as i32, "pre-fill must succeed");
 
         // The mailbox is now at capacity; this send must overflow into the
-        // DropNew policy and be reported as silent success.
+        // DropNew policy and report visible loss.
         // SAFETY: actor remains live for this call.
         let rc = unsafe { hew_actor_send_by_id(actor_id, ptr::null(), 1, ptr::null_mut(), 0) };
         assert_eq!(
-            rc,
-            HewError::Ok as i32,
-            "a DropNew policy-drop on a fire-and-forget send must be silent (Ok), \
-             per spec §6.2"
+            rc, HEW_ACTOR_SEND_MESSAGE_LOST,
+            "a DropNew policy-drop must report the dedicated message-loss status"
         );
 
         // Actor is still Idle (no state transition occurred: the DropNew
@@ -11289,8 +11310,8 @@ mod tests {
     }
 
     /// The `Fail` overflow policy is fail-closed for fire-and-forget sends.
-    /// Unlike `DropNew`/`DropOld`/`Coalesce` (which are spec-silent), the
-    /// `Fail` policy is an explicit, genuine rejection: it must report a
+    /// Unlike lossy policies, the `Fail` policy is an explicit rejection. It
+    /// must report a
     /// distinct non-zero code even on the no-reply-channel send path, so
     /// `Terminator::Send` traps rather than silently dropping the message.
     #[test]

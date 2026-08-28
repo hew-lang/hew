@@ -1548,6 +1548,7 @@ mod f1_suspending_escape_poison {
                 next: 1,
                 arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
                 cleanup_plan: None,
+                result_dest: None,
             },
         };
         let allowed = derive_local_bytes_drop_allowed(

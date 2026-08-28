@@ -3972,6 +3972,9 @@ pub enum Terminator {
         /// Whole prepared-carrier drop witness used only when transport retains
         /// caller ownership on an error edge.
         cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
+        /// Destination for a policy-sensitive `Result<(), SendError>`.
+        /// `None` preserves the ergonomic unit-typed lossless send path.
+        result_dest: Option<Place>,
     },
     /// Actor ask: send `value` to `actor` on a caller-owned reply
     /// channel and resume at `next` once the reply has been received.

@@ -30,11 +30,13 @@ actor MailboxWorker {
 fn main() -> i64 {
     let w = spawn MailboxWorker(processed: 0);
     for i in 0 .. 20 {
-        w.process(i);
+        // This fixture intentionally measures the queue after acknowledging
+        // that its flood may lose work under drop_new.
+        let _ = w.process(i);
     }
     // Let every accepted message finish processing (well past the 4-5 * 20ms
     // it would take even in the worst accepted-batch case).
-    sleep(1000ms);
+    sleep(1s);
     let result = await w.report();
     let final_count = match result {
         Ok(value) => value,

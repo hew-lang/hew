@@ -14352,6 +14352,7 @@ pub(super) fn enumerate_exits(
                 next,
                 arg_modes: _,
                 cleanup_plan: _,
+                result_dest: _,
             } => (
                 // `actor` is a Place; the ExitPath::Send slot carries
                 // the callee name. Spine has no Send construction

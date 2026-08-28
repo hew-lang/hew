@@ -1,0 +1,29 @@
+actor ReliableWorker {
+    var seen: i64 = 0;
+
+    receive fn work(value: i64) {
+        seen = value;
+    }
+
+    receive fn value() -> i64 {
+        seen
+    }
+}
+
+fn main() -> i64 {
+    let worker = spawn ReliableWorker(seen: 0);
+    worker.work(42);
+    match await worker.value() {
+        .Ok(value) => if value == 42 {
+            println("NORMAL_SEND_DELIVERED");
+            42
+        } else {
+            println("NORMAL_SEND_WRONG_VALUE");
+            2
+        },
+        _ => {
+            println("NORMAL_SEND_FAILED");
+            1
+        },
+    }
+}

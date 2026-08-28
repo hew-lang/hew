@@ -2015,6 +2015,27 @@ run_accept_expect_status "supervisor_max_heap" 42
 grep -q 'mailbox_capacity=4 overflow=DropNew' "${accept_output}"
 run_accept_expect_status "mailbox_bounded_drop_new" 0
 
+# A lossy actor send is Result-typed, reports the exact drop, and cannot be
+# discarded accidentally as a bare statement. HEW_WORKERS=1 makes the
+# capacity-one overflow deterministic while also proving that the dropped work
+# never reached its handler.
+run_accept_expect_status "mailbox_drop_new_visible" 42 HEW_WORKERS=1
+grep -qFx -- "LOSS_VISIBLE" "${stdout_output}"
+if grep -qF -- "DROPPED_WORK_DELIVERED" "${stdout_output}"; then
+  echo "mailbox_drop_new_visible delivered the dropped work" >&2
+  cat "${stdout_output}" >&2
+  exit 1
+fi
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/mailbox_loss_result_ignored.hew" \
+  "policy-sensitive actor send result must be handled" \
+  "discarded lossy actor send"
+
+# Unbounded, non-overflowing actor sends keep the ordinary unit-typed call
+# shape: no Result handling is imposed on the reliable common case.
+run_accept_expect_status "mailbox_normal_send_ergonomic" 42 HEW_WORKERS=1
+grep -qFx -- "NORMAL_SEND_DELIVERED" "${stdout_output}"
+
 # second zero-hardcode site: the SAME bound must hold for a SUPERVISED
 # actor. `HewChildSpec` stored `const_zero` at the mailbox_capacity/overflow
 # fields regardless of the direct-spawn fix, so every supervised actor stayed

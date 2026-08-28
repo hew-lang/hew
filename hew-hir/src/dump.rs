@@ -546,8 +546,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             receiver,
             method_id,
             args,
+            checked,
         } => {
-            writeln!(out, "{pad}  actor-send {method_id}").expect("write to string");
+            writeln!(out, "{pad}  actor-send {method_id} checked={checked}")
+                .expect("write to string");
             dump_expr(out, receiver, indent + 4);
             for arg in args {
                 dump_expr(out, arg, indent + 4);

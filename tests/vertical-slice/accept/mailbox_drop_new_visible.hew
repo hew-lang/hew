@@ -1,0 +1,40 @@
+// A full drop_new mailbox reports loss to its sender. Pinning the runtime to
+// one worker keeps this main task running until both sends have completed, so
+// the actor cannot drain the first message before the second send observes the
+// full mailbox.
+actor LossyWorker {
+    mailbox 1 overflow drop_new;
+    receive fn work(value: i64) {
+        if value == 2 {
+            println("DROPPED_WORK_DELIVERED");
+        }
+    }
+}
+
+fn main() -> i64 {
+    let worker = spawn LossyWorker;
+    let first = worker.work(1);
+    match first {
+        .Ok(_) => {},
+        .Err(_) => {
+            println("FIRST_SEND_FAILED");
+            return 41;
+        },
+    }
+    match worker.work(2) {
+        .Err(error) => match error {
+            SendError.MessageLost => {
+                println("LOSS_VISIBLE");
+                42
+            },
+            _ => {
+                println("UNEXPECTED_SEND_ERROR");
+                43
+            },
+        },
+        .Ok(_) => {
+            println("LOSS_HIDDEN");
+            44
+        },
+    }
+}

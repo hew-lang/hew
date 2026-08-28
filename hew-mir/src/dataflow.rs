@@ -969,9 +969,9 @@ pub fn terminator_write_places(term: &Terminator) -> Vec<Place> {
         | Terminator::Trap { .. }
         | Terminator::Branch { .. }
         | Terminator::Yield { .. }
-        | Terminator::Send { .. }
         | Terminator::Suspend { .. }
         | Terminator::SuspendingScopeDeadline { .. } => Vec::new(),
+        Terminator::Send { result_dest, .. } => result_dest.iter().copied().collect(),
         Terminator::Call { dest, .. } => dest.iter().copied().collect(),
         Terminator::MakeGenerator { dest, .. } | Terminator::MakeLambdaActor { dest, .. } => {
             vec![*dest]

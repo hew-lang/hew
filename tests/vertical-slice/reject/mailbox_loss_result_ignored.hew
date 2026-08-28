@@ -1,0 +1,10 @@
+actor LossyWorker {
+    mailbox 1 overflow drop_new;
+
+    receive fn work() {}
+}
+
+fn main() {
+    let worker = spawn LossyWorker;
+    worker.work();
+}

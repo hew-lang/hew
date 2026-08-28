@@ -478,6 +478,7 @@ fn render_terminator(term: &Terminator) -> String {
             next,
             arg_modes: _,
             cleanup_plan: _,
+            result_dest: _,
         } => format!(
             "send {}[msg={msg_type}] {} alias=Copy -> bb{next}",
             render_place(actor),

@@ -28,12 +28,12 @@ actor OwnedCoalescer {
 #[test]
 fn coalesce_owned_payload_superseded_values_drop_once() {
     let worker = spawn OwnedCoalescer(processed: 0, latest_len: -1);
-    worker.update(0, "active", 150ms);
+    let _ = worker.update(0, "active", 150ms);
     sleep(20ms);
-    worker.update(9, "one", 0ns);
-    worker.update(9, "two-two", 0ns);
-    worker.update(9, "three-three-three", 0ns);
-    worker.update(9, "latest-payload", 0ns);
+    let _ = worker.update(9, "one", 0ns);
+    let _ = worker.update(9, "two-two", 0ns);
+    let _ = worker.update(9, "three-three-three", 0ns);
+    let _ = worker.update(9, "latest-payload", 0ns);
     sleep(350ms);
     match await worker.count() {
         .Ok(value) => testing.assert_eq(value, 2),

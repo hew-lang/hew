@@ -2091,6 +2091,12 @@ pub struct TryWidthCastLowering {
 pub enum ActorMethodKind {
     /// Fire-and-forget dispatch to an actor receive handler that returns `()`.
     Fire(String),
+    /// Policy-sensitive dispatch to a unit-returning actor receive handler.
+    ///
+    /// A bounded lossy mailbox (`drop_new`, `drop_old`, or `coalesce`) reports
+    /// `Result<(), SendError>` so the call site must acknowledge that this
+    /// particular send may have discarded work.
+    CheckedFire(String),
     /// Request/reply dispatch to an actor receive handler with a non-unit reply.
     Ask(String, Ty),
     /// Dispatch to a `receive gen fn` handler: a per-call, channel-backed
@@ -2767,6 +2773,10 @@ pub struct Checker {
     pub(super) width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    /// Mailbox overflow policy keyed by the actor's canonical declaration
+    /// identity. Absence means an unbounded mailbox. A bounded declaration
+    /// with no explicit policy is recorded as `Block`.
+    pub(super) actor_overflow_policies: HashMap<String, hew_parser::ast::OverflowPolicy>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
     pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
     /// `await conn.read()` suspending-read sites. Mirrors
@@ -3769,6 +3779,7 @@ impl Checker {
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
             listener_await_accepts: HashSet::new(),

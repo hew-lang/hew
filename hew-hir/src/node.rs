@@ -1588,6 +1588,9 @@ pub enum HirExprKind {
         receiver: Box<HirExpr>,
         method_id: String,
         args: Vec<HirExpr>,
+        /// `true` when the target actor declares a lossy mailbox policy and
+        /// the call therefore returns `Result<(), SendError>`.
+        checked: bool,
     },
     /// Request/reply actor receive dispatch, selected from the checker's
     /// `actor_method_dispatch` side table. `reply_ty` is checker-resolved and

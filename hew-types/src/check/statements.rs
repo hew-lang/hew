@@ -109,6 +109,18 @@ impl Checker {
             .and_then(|name| self.env.lookup(name))
             .is_some_and(|binding| binding.is_moved);
         let ty = self.synthesize(expr, span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if matches!(
+            self.actor_method_dispatch.get(&key),
+            Some(ActorMethodKind::CheckedFire(_))
+        ) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "policy-sensitive actor send result must be handled; use `?`, `match`, or an explicit `let _ = ...` acknowledgment"
+                    .to_string(),
+            );
+        }
         if !root_was_moved {
             if let Some(root) = self.preserve_discarded_receiver_identity_chain(expr, span) {
                 self.env.unmark_moved(&root);

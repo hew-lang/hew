@@ -145,13 +145,12 @@
 .PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-unsafe-clippy runtime-unsafe-geiger unsafe-pattern-audit runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check test-build-harness forced-cancel-composite-check
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean stdlib-user-build-clean-build
-.PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check test-python310-toml-compat
+.PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
 # Repository files consumed by commands evaluated while this Makefile is
 # parsed. Tests that stage a Makefile copy read this declaration to reproduce
 # the complete parse environment.
 MAKEFILE_PARSE_INPUTS := \
 	scripts/cargo-output-dir.py \
-	scripts/lib/toml_compat.py \
 	scripts/libhew-inputs.py \
 	hew-testutil/shared-test-artifacts.tsv
 
@@ -164,16 +163,29 @@ MAKEFILE_PARSE_INPUTS := \
 .PHONY: hew-check-all
 
 help:
-	@python3 scripts/make-help.py
+	@$(PYTHON) scripts/make-help.py
 
 # inputs: scripts/*.sh scripts/**/*.sh scripts/shell-script-lint.py
 shell-script-lint:
-	@python3 scripts/shell-script-lint.py
+	@$(PYTHON) scripts/shell-script-lint.py
 
 shell-script-lint-build:
 	@:
 
 # ── Configuration ───────────────────────────────────────────────────────────
+
+# Repository scripts require Python 3.12+ (PEP 701 and stdlib tomllib).
+# Override with `make PYTHON=/path/to/python3.12 <target>` when needed.
+PYTHON ?= python3
+PYTHON_VERSION_CHECK := $(shell $(PYTHON) -c 'import sys; version = ".".join(map(str, sys.version_info[:3])); print(("ok" if sys.version_info >= (3, 12) else "unsupported") + " " + version)' 2>/dev/null)
+PYTHON_VERSION := $(word 2,$(PYTHON_VERSION_CHECK))
+
+ifeq ($(PYTHON_VERSION_CHECK),)
+$(error Python 3.12 or newer is required; could not run `$(PYTHON)`. Install Python 3.12+ and rerun with `make PYTHON=/path/to/python3.12`)
+endif
+ifneq ($(word 1,$(PYTHON_VERSION_CHECK)),ok)
+$(error Python 3.12 or newer is required; found Python $(PYTHON_VERSION) via `$(PYTHON)`. Install Python 3.12+ and rerun with `make PYTHON=/path/to/python3.12`)
+endif
 
 # Installation prefix (used by `make install`)
 PREFIX     ?= /usr/local/hew
@@ -536,13 +548,13 @@ wasm-capability-check-build:
 
 # Regenerate the curated playground manifest consumed by downstream browser tooling.
 playground-manifest: wasm-capability
-	python3 scripts/gen-playground-manifest.py
+	$(PYTHON) scripts/gen-playground-manifest.py
 
 # Verify the checked-in playground manifest is current.
 # inputs: examples/playground/* scripts/gen-playground-manifest.py
 # inputs: wasm-capability-manifest.toml
 playground-manifest-check: wasm-capability-check
-	python3 scripts/gen-playground-manifest.py --check
+	$(PYTHON) scripts/gen-playground-manifest.py --check
 
 # Build the generator the manifest check runs.
 playground-manifest-check-build:
@@ -595,12 +607,12 @@ BASELINE_SELECT = $(if $(BASELINE_TIER),--tier $(BASELINE_TIER),)
 BASELINE_SCOPE = $(if $(BASELINE_GATES),--relevant-to-file $(BASELINE_GATES),)
 
 baselines:
-	python3 scripts/baselines.py regen $(BASELINE_SELECT)
+	$(PYTHON) scripts/baselines.py regen $(BASELINE_SELECT)
 
 # inputs: scripts/baselines.py
 # preflight: never — executed by the dispatcher before warm-up
 baselines-check: ## Check: verify every committed derived artifact is current
-	python3 scripts/baselines.py check $(BASELINE_SELECT) $(BASELINE_SCOPE)
+	$(PYTHON) scripts/baselines.py check $(BASELINE_SELECT) $(BASELINE_SCOPE)
 
 # Python-only freshness check; the dispatcher must still derive a build form.
 baselines-check-build:
@@ -611,7 +623,7 @@ baselines-check-build:
 # from sandbox-parity as its own reusable prerequisite.
 sandbox-vm-deps:
 	@set -e; \
-	lock_hash=$$(python3 -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path("hew-sandbox-vm/package-lock.json").read_bytes()).hexdigest())'); \
+	lock_hash=$$($(PYTHON) -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path("hew-sandbox-vm/package-lock.json").read_bytes()).hexdigest())'); \
 	stamp=hew-sandbox-vm/node_modules/.package-lock.sha256; \
 	if [ ! -d hew-sandbox-vm/node_modules ] || [ ! -f "$$stamp" ] || [ "$$lock_hash" != "$$(cat "$$stamp")" ]; then \
 		echo "npm --prefix hew-sandbox-vm ci"; \
@@ -772,9 +784,9 @@ FUZZ_ORACLE_FULL ?=
 # inputs: hew-codegen-rs/src/*.rs hew-runtime/src/*.rs hew-types/src/*.rs
 fuzz-oracle: hew-native runtime $(LIBHEW_READY)
 	@if [ -n "$(FUZZ_ORACLE_FULL)" ]; then \
-		python3 scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --full --timeout 30; \
+		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --full --timeout 30; \
 	else \
-		python3 scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --timeout 30; \
+		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --timeout 30; \
 	fi
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
@@ -1196,8 +1208,8 @@ test-compiler-lifecycle: test-opaque-resource-lifecycle-matrix
 # inputs: hew-mir/src/*.rs hew-codegen-rs/src/*.rs hew-runtime/src/*.rs
 # inputs: scripts/opaque-resource-lifecycle-evidence.json
 test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
-	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py
+	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_facts.py
+	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-opaque-resource-lifecycle-matrix-build: wasm-runtime hew-native
@@ -1206,8 +1218,8 @@ test-opaque-resource-lifecycle-matrix-build: wasm-runtime hew-native
 # inputs: scripts/tests/test_opaque_resource_lifecycle_matrix.py std/net/*
 # preflight: comprehensive-only — drives the external-network runtime profile
 test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
-	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
+	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_facts.py
+	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-opaque-resource-lifecycle-matrix-external-build: wasm-runtime hew-native
@@ -1397,7 +1409,7 @@ test-hew-ratchet:
 
 ifneq ($(strip $(HEW_SHARD_REPORT_DIR)),)
 test-hew-ratchet:
-	python3 scripts/compiled-hew-shards.py aggregate --mode ratchet \
+	$(PYTHON) scripts/compiled-hew-shards.py aggregate --mode ratchet \
 		--reports-dir "$(HEW_SHARD_REPORT_DIR)" \
 		--full-inventory "$(HEW_FULL_INVENTORY)" \
 		--shard-count "$(HEW_SHARD_COUNT)"
@@ -1433,15 +1445,15 @@ endif
 test-core-matrix: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Checking the core-matrix corpus matches its generator"
 	@rm -rf "$(CURDIR)/.tmp/core-matrix-regen"
-	python3 scripts/core-matrix-gen.py --out "$(CURDIR)/.tmp/core-matrix-regen"
+	$(PYTHON) scripts/core-matrix-gen.py --out "$(CURDIR)/.tmp/core-matrix-regen"
 	diff -r tests/core-matrix/cells "$(CURDIR)/.tmp/core-matrix-regen"
 	@echo "==> Running the core matrix (primitive x operation)"
-	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/core-matrix.py
+	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/core-matrix.py
 
 # Regen seam: driven only by an explicit
 # `python3 scripts/baselines.py regen --only core-matrix-truth-table`.
 core-matrix-record: hew-native runtime $(LIBHEW_READY)
-	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/core-matrix.py --record
+	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/core-matrix.py --record
 
 # Regen seam: re-dumps every row of the funcupdate/reassign manifest. The dump's
 # function order is nondeterministic, so this is a reviewed act, never a sweep.
@@ -1466,7 +1478,7 @@ test-core-matrix-build: hew-native runtime $(LIBHEW_READY)
 test-ownership-balance-corpus: hew-native
 	cargo build -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
 	HEW_BIN="$(DEBUG_DIR)/hew" HEW_RELEASE_BIN="$(RELEASE_LIB_DIR)/hew" \
-		python3 tests/ownership-balance/run.py
+		$(PYTHON) tests/ownership-balance/run.py
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-ownership-balance-corpus-build: hew-native
@@ -1474,8 +1486,8 @@ test-ownership-balance-corpus-build: hew-native
 
 # inputs: scripts/tests/test_ownership_balance_run.py tests/ownership-balance/run.py scripts/tests/test_obligation_site_diff.py scripts/obligation-site-diff.py
 test-ownership-balance-runner-selftest:
-	python3 scripts/tests/test_ownership_balance_run.py
-	python3 scripts/tests/test_obligation_site_diff.py
+	$(PYTHON) scripts/tests/test_ownership_balance_run.py
+	$(PYTHON) scripts/tests/test_obligation_site_diff.py
 
 test-ownership-balance-runner-selftest-build:
 	@:
@@ -1491,7 +1503,7 @@ test-o2-differential:
 
 ifneq ($(strip $(HEW_SHARD_REPORT_DIR)),)
 test-o2-differential:
-	python3 scripts/compiled-hew-shards.py aggregate --mode differential \
+	$(PYTHON) scripts/compiled-hew-shards.py aggregate --mode differential \
 		--reports-dir "$(HEW_SHARD_REPORT_DIR)" \
 		--full-inventory "$(HEW_FULL_INVENTORY)" \
 		--shard-count "$(HEW_SHARD_COUNT)"
@@ -1534,8 +1546,8 @@ o2-differential-selftest-build:
 # inputs: hew-runtime/DETERMINISM.md hew-runtime/benches/HASHMAP_LAYOUT_BASELINE.md
 # inputs: hew-sandbox-vm/bytecode/*.md hew-sandbox-vm/specs/*.md !editors/*
 check-gate-reachability: test-check-gate-reachability ## Check: prove every gate and harness test is reached by CI
-	python3 scripts/tests/test_baselines.py
-	python3 scripts/check-gate-reachability.py
+	$(PYTHON) scripts/tests/test_baselines.py
+	$(PYTHON) scripts/check-gate-reachability.py
 
 # Python only; no artifacts.
 check-gate-reachability-build:
@@ -1545,8 +1557,8 @@ check-gate-reachability-build:
 # inputs: scripts/tests/test_check_gate_reachability.py
 # inputs: scripts/tests/test_check_lint_ci_coverage.py
 test-check-gate-reachability:
-	python3 scripts/tests/test_check_gate_reachability.py
-	python3 scripts/tests/test_check_lint_ci_coverage.py
+	$(PYTHON) scripts/tests/test_check_gate_reachability.py
+	$(PYTHON) scripts/tests/test_check_lint_ci_coverage.py
 
 # Python only; no artifacts.
 test-check-gate-reachability-build:
@@ -1630,14 +1642,14 @@ UX_EXAMPLE_INVENTORY = --label "ux + progressive tutorial" \
 # inputs: examples/ux/* examples/progressive/* scripts/example-expectations.py
 test-ux-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running ux + progressive tutorials against .expected"
-	@python3 scripts/example-expectations.py \
+	@$(PYTHON) scripts/example-expectations.py \
 	  --hew-bin "$(DEBUG_DIR)/hew" $(UX_EXAMPLE_INVENTORY)
 
 # Regen seam: driven only by an explicit
 # `python3 scripts/baselines.py regen --only ux-example-expectations`, never by a
 # blanket regen. An example's output is its user-facing contract.
 ux-examples-expect: hew-native runtime $(LIBHEW_READY)
-	@python3 scripts/example-expectations.py \
+	@$(PYTHON) scripts/example-expectations.py \
 	  --hew-bin "$(DEBUG_DIR)/hew" $(UX_EXAMPLE_INVENTORY) --write-expected
 
 # Artifacts only: the expectations self-test belongs to the gate.
@@ -1679,12 +1691,12 @@ SURFACE_EXAMPLE_INVENTORY = --label "surface" \
 # inputs: scripts/example-expectations.py
 test-surface-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running v0.5 surface examples against .expected"
-	@python3 scripts/example-expectations.py \
+	@$(PYTHON) scripts/example-expectations.py \
 	  --hew-bin "$(DEBUG_DIR)/hew" $(SURFACE_EXAMPLE_INVENTORY)
 
 # Regen seam: see ux-examples-expect.
 surface-examples-expect: hew-native runtime $(LIBHEW_READY)
-	@python3 scripts/example-expectations.py \
+	@$(PYTHON) scripts/example-expectations.py \
 	  --hew-bin "$(DEBUG_DIR)/hew" $(SURFACE_EXAMPLE_INVENTORY) --write-expected
 
 # Artifacts only: the expectations self-test belongs to the gate.
@@ -1693,7 +1705,7 @@ test-surface-examples-build: hew-native runtime $(LIBHEW_READY)
 
 # inputs: scripts/example-expectations.py scripts/tests/test_example_expectations.py
 test-example-expectations-selftest:
-	@python3 scripts/tests/test_example_expectations.py
+	@$(PYTHON) scripts/tests/test_example_expectations.py
 
 # Python only; no artifacts.
 test-example-expectations-selftest-build:
@@ -1947,7 +1959,7 @@ runtime-unsafe-clippy-build:
 # it is the explicit review waiver for new runtime unsafe code.
 # inputs: .github/hew-runtime-unsafe-count.txt scripts/check-runtime-unsafe-count.py
 runtime-unsafe-geiger:
-	python3 scripts/check-runtime-unsafe-count.py
+	$(PYTHON) scripts/check-runtime-unsafe-count.py
 
 # The selector invokes each selected gate's build form before its timed check.
 # Provision the external checker there so any CI lane that selects this gate
@@ -1979,7 +1991,7 @@ LINT_GATES += legacy-path-syntax-lint
 # inputs: examples/*.hew std/*.hew README.md CHANGELOG.md docs/*.md
 # inputs: scripts/lint-legacy-path-syntax.py
 legacy-path-syntax-lint:
-	python3 scripts/lint-legacy-path-syntax.py
+	$(PYTHON) scripts/lint-legacy-path-syntax.py
 
 # Python only; no artifacts.
 legacy-path-syntax-lint-build:
@@ -2020,7 +2032,7 @@ structural-lint-bootstrap-install:
 # inputs: scripts/structural-authority-audit.py
 # inputs: scripts/tests/test_structural_authority_audit.py
 test-structural-authority-audit:
-	python3 scripts/tests/test_structural_authority_audit.py
+	$(PYTHON) scripts/tests/test_structural_authority_audit.py
 
 # Provision the pinned ast-grep toolchain; the audit belongs to the gate.
 test-structural-authority-audit-build: structural-lint-bootstrap-install
@@ -2040,7 +2052,7 @@ test-ast-grep-contract-build: structural-lint-bootstrap-install
 # inputs: tools/ast-grep.lock
 # inputs: scripts/build-ast-grep-lang.sh
 test-structural-lint-bootstrap:
-	python3 scripts/tests/test_structural_lint_bootstrap.py
+	$(PYTHON) scripts/tests/test_structural_lint_bootstrap.py
 
 # Provision the pinned ast-grep toolchain; the assertions belong to the gate.
 test-structural-lint-bootstrap-build: structural-lint-bootstrap-install
@@ -2055,7 +2067,7 @@ test-structural-lint-bootstrap-build: structural-lint-bootstrap-install
 # inputs: scripts/tests/test_freebsd_workflow_contract.py
 # inputs: scripts/ci-preflight-dispatcher.sh
 freebsd-workflow-contract-check:
-	python3 scripts/tests/test_freebsd_workflow_contract.py
+	$(PYTHON) scripts/tests/test_freebsd_workflow_contract.py
 
 # Python only; no artifacts.
 freebsd-workflow-contract-check-build:
@@ -2074,7 +2086,7 @@ LINT_GATES += tool-pin-contract-check
 # inputs: scripts/tests/test_tool_pin_contract.py xtask/src/build_system.rs
 # inputs: .github/workflows/* .github/actions/*
 tool-pin-contract-check:
-	python3 scripts/tests/test_tool_pin_contract.py
+	$(PYTHON) scripts/tests/test_tool_pin_contract.py
 
 # Python only; no artifacts.
 tool-pin-contract-check-build:
@@ -2094,7 +2106,7 @@ LINT_GATES += sandbox-parity-coverage-check
 # inputs: .config/nextest.toml Makefile hew-sandbox-wasm/tests/*
 # inputs: scripts/check-sandbox-parity-coverage.py
 sandbox-parity-coverage-check: test-sandbox-parity-coverage-check
-	python3 scripts/check-sandbox-parity-coverage.py
+	$(PYTHON) scripts/check-sandbox-parity-coverage.py
 
 # Python only; no artifacts.
 sandbox-parity-coverage-check-build:
@@ -2108,7 +2120,7 @@ sandbox-parity-coverage-check-build:
 # inputs: scripts/check-sandbox-parity-coverage.py
 # inputs: scripts/tests/test_check_sandbox_parity_coverage.py
 test-sandbox-parity-coverage-check:
-	python3 scripts/tests/test_check_sandbox_parity_coverage.py
+	$(PYTHON) scripts/tests/test_check_sandbox_parity_coverage.py
 
 # Python only; no artifacts.
 test-sandbox-parity-coverage-check-build:
@@ -2130,10 +2142,10 @@ test-sandbox-parity-coverage-check-build:
 # inputs: CHANGELOG.md docs/releases/*.md docs/release-runbook.md
 # inputs: docs/cross-platform-build-guide.md
 test-release-workflow-contract:
-	python3 scripts/tests/test_release_workflow_contract.py
-	python3 scripts/tests/test_pre_release_validate_contract.py
-	python3 scripts/tests/test_cargo_output_dir.py
-	python3 scripts/tests/test_target_dir_gate_wiring.py
+	$(PYTHON) scripts/tests/test_release_workflow_contract.py
+	$(PYTHON) scripts/tests/test_pre_release_validate_contract.py
+	$(PYTHON) scripts/tests/test_cargo_output_dir.py
+	$(PYTHON) scripts/tests/test_target_dir_gate_wiring.py
 
 # Python only; no artifacts.
 test-release-workflow-contract-build:
@@ -2154,12 +2166,12 @@ LINT_GATES += test-build-harness
 # refuses for every scripts/tests/ file. All use stubs or temporary trees;
 # none needs a built compiler.
 test-build-harness:
-	python3 scripts/tests/test_ci_preflight_dispatcher.py
+	$(PYTHON) scripts/tests/test_ci_preflight_dispatcher.py
 	bash scripts/tests/test_ci_preflight_timeout.sh
-	python3 scripts/tests/test_playground_path_filter_oracle.py
-	python3 scripts/tests/test_libhew_freshness.py
-	python3 scripts/tests/test_hew_suite_cache.py
-	python3 scripts/tests/test_makefile_interfaces.py
+	$(PYTHON) scripts/tests/test_playground_path_filter_oracle.py
+	$(PYTHON) scripts/tests/test_libhew_freshness.py
+	$(PYTHON) scripts/tests/test_hew_suite_cache.py
+	$(PYTHON) scripts/tests/test_makefile_interfaces.py
 
 # Python and shell only; no artifacts.
 test-build-harness-build:
@@ -2324,7 +2336,7 @@ test-mir-baselines-build:
 # inputs: scripts/ci-preflight-dispatcher.sh scripts/tests/test_ci_preflight_dispatcher.py
 # inputs: scripts/tests/test_ci_preflight_timeout.sh scripts/lib/timeout.sh
 test-ci-preflight-dispatcher:
-	python3 scripts/tests/test_ci_preflight_dispatcher.py
+	$(PYTHON) scripts/tests/test_ci_preflight_dispatcher.py
 	bash scripts/tests/test_ci_preflight_timeout.sh
 
 # Python and shell only; no artifacts.
@@ -2335,7 +2347,7 @@ test-ci-preflight-dispatcher-build:
 LINT_GATES += codegen-trap-inventory-check
 # inputs: hew-codegen-rs/src/*.rs scripts/check-codegen-trap-inventory.py
 codegen-trap-inventory-check:
-	python3 scripts/check-codegen-trap-inventory.py
+	$(PYTHON) scripts/check-codegen-trap-inventory.py
 
 # Python only; no artifacts.
 codegen-trap-inventory-check-build:
@@ -2419,7 +2431,7 @@ LINT_GATES += lint-wasm-todo
 # behaviour independently of the live corpus.
 # inputs: * !docs/* !.github/* scripts/lint-wasm-todo.py CONTRIBUTING.md
 lint-wasm-todo: lint-wasm-todo-self-test wasm-capability-check
-	python3 scripts/lint-wasm-todo.py
+	$(PYTHON) scripts/lint-wasm-todo.py
 
 # Reaches cargo through wasm-capability-check; build that generator.
 lint-wasm-todo-build:
@@ -2427,7 +2439,7 @@ lint-wasm-todo-build:
 
 # inputs: scripts/lint-wasm-todo.py
 lint-wasm-todo-self-test:
-	python3 scripts/lint-wasm-todo.py --self-test
+	$(PYTHON) scripts/lint-wasm-todo.py --self-test
 
 # Python only; no artifacts.
 lint-wasm-todo-self-test-build:
@@ -2507,13 +2519,13 @@ LINT_GATES += verify-ffi
 # inputs: hew-runtime/src/*.rs hew-std/src/*.rs scripts/verify-ffi-symbols.py
 # inputs: scripts/jit-symbol-classification.toml scripts/ffi-ownership-ratchet.toml
 verify-ffi: cabi-surface-check
-	python3 scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
+	$(PYTHON) scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
 
 # Regen seam: re-records the exact unclassified-ownership count. Records a fall
 # (ABI surface gaining contracts); refuses a rise, which is new unclassified
 # surface and needs a deliberate decision.
 ffi-ownership-ratchet-record:
-	python3 scripts/verify-ffi-symbols.py --classify stable --validate \
+	$(PYTHON) scripts/verify-ffi-symbols.py --classify stable --validate \
 	  --write-ownership-ratchet > /dev/null
 
 # Python only; no artifacts.
@@ -2523,20 +2535,20 @@ verify-ffi-build:
 LINT_GATES += test-verify-ffi
 # inputs: scripts/verify-ffi-symbols.py scripts/tests/test_verify_ffi_symbols.py
 test-verify-ffi:
-	python3 scripts/tests/test_verify_ffi_symbols.py
+	$(PYTHON) scripts/tests/test_verify_ffi_symbols.py
 
 # Python only; no artifacts.
 test-verify-ffi-build:
 	@:
 
 cabi-surface:
-	python3 scripts/generate-cabi-surface.py --write
+	$(PYTHON) scripts/generate-cabi-surface.py --write
 
 
 # inputs: hew-cabi/* hew-runtime/src/*.rs hew-std/src/*.rs
 # inputs: scripts/cabi-surface.json scripts/generate-cabi-surface.py
 cabi-surface-check:
-	python3 scripts/generate-cabi-surface.py --check
+	$(PYTHON) scripts/generate-cabi-surface.py --check
 
 # Python only; no artifacts.
 cabi-surface-check-build:
@@ -2545,22 +2557,10 @@ cabi-surface-check-build:
 LINT_GATES += test-cabi-surface
 # inputs: scripts/generate-cabi-surface.py scripts/tests/test_cabi_surface.py
 test-cabi-surface:
-	python3 scripts/tests/test_cabi_surface.py
+	$(PYTHON) scripts/tests/test_cabi_surface.py
 
 # Python only; no artifacts.
 test-cabi-surface-build:
-	@:
-
-LINT_GATES += test-python310-toml-compat
-# The release macOS validator uses Python 3.10, which has no stdlib tomllib.
-# Force the dependency-free parser even on newer CI interpreters and run every
-# production consumer of repository TOML policy/configuration.
-# inputs: scripts/tests/test_toml_compat.py
-test-python310-toml-compat:
-	HEW_FORCE_TOML_FALLBACK=1 python3 scripts/tests/test_toml_compat.py
-
-# Python only; no artifacts.
-test-python310-toml-compat-build:
 	@:
 
 LINT_GATES += verify-sys-lane-closure
@@ -2575,7 +2575,7 @@ LINT_GATES += verify-sys-lane-closure
 # inputs: hew-runtime/src/*.rs hew-std/src/*.rs scripts/sys-lane-closure.py
 # inputs: scripts/jit-symbol-classification.toml
 verify-sys-lane-closure: test-sys-lane-closure
-	python3 scripts/sys-lane-closure.py
+	$(PYTHON) scripts/sys-lane-closure.py
 
 # Python only; no artifacts.
 verify-sys-lane-closure-build:
@@ -2586,7 +2586,7 @@ verify-sys-lane-closure-build:
 # or unreasoned waiver fails rather than silently widening the stable tier.
 # inputs: scripts/sys-lane-closure.py scripts/tests/test_sys_lane_closure.py
 test-sys-lane-closure:
-	python3 scripts/tests/test_sys_lane_closure.py
+	$(PYTHON) scripts/tests/test_sys_lane_closure.py
 
 # Python only; no artifacts.
 test-sys-lane-closure-build:

@@ -66,12 +66,11 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from collections import deque
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-import toml_compat  # noqa: E402
 
 SCAN_DIRS = [ROOT / "hew-runtime" / "src", ROOT / "hew-std" / "src"]
 JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
@@ -549,7 +548,7 @@ def load_classification(
     path: Path | None = None,
 ) -> tuple[dict[str, set[str]], Waivers]:
     text = (path or JIT_SYMBOL_CLASSIFICATION).read_text(encoding=SOURCE_ENCODING)
-    document = toml_compat.loads(text)
+    document = tomllib.loads(text)
     tiers = {
         key: set(document.get(key, []))
         for key in ("stable", "stable-stdlib", "codegen-stable", "internal")

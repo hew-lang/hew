@@ -56,7 +56,7 @@ jobs:
             # alternative is building wasmtime from source inside a VM step that
             # already runs near its time limit. Every other runner takes the pinned
             # release asset.
-            pkg install -y -r FreeBSD llvm22 gdb rustup-init python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rustup-init python312 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
             pw useradd -n hew-ci -m -s /bin/sh
 
           run: |
@@ -87,7 +87,7 @@ jobs:
             # executables instead of depending on the SSH login environment.
             export PATH="$HOME/.cargo/bin:/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
             export CARGO="$HOME/.cargo/bin/cargo"
-            export PYTHON=/usr/local/bin/python3
+            export PYTHON=/usr/local/bin/python3.12
             test -x "$CARGO"
             test -x "$PYTHON"
             rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '

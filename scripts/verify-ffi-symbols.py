@@ -30,13 +30,13 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from corpus_nonempty import check_nonempty  # noqa: E402
-import toml_compat  # noqa: E402
 
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
 STDLIB_SRC = ROOT / "hew-std" / "src"
@@ -365,7 +365,7 @@ def validate_ownership_contracts(
     write_ratchet: bool = False,
 ) -> list[str]:
     errors: list[str] = []
-    document = toml_compat.loads(
+    document = tomllib.loads(
         JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
     )
     ownership = document.get("ownership")
@@ -598,9 +598,7 @@ def validate_ownership_contracts(
             file=sys.stderr,
         )
 
-    ratchet = toml_compat.loads(
-        FFI_OWNERSHIP_RATCHET.read_text(encoding=SOURCE_ENCODING)
-    )
+    ratchet = tomllib.loads(FFI_OWNERSHIP_RATCHET.read_text(encoding=SOURCE_ENCODING))
 
     expected_unclassified = ratchet.get("unclassified")
     if not isinstance(expected_unclassified, int) or expected_unclassified < 0:

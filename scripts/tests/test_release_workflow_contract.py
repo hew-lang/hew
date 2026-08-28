@@ -414,18 +414,15 @@ def test_current_sandbox_vm_version_matches_workspace_version() -> None:
     assert lockfile["packages"][""]["version"] == workspace_version
 
 
-def test_workspace_version_command_is_python310_compatible() -> None:
+def test_workspace_version_command_requires_python312() -> None:
     source = WORKSPACE_VERSION_HELPER.read_text()
-    ast.parse(source, filename=str(WORKSPACE_VERSION_HELPER), feature_version=(3, 10))
-    assert "import tomllib" not in source
-    assert "import toml_compat" in source
+    ast.parse(source, filename=str(WORKSPACE_VERSION_HELPER), feature_version=(3, 12))
+    assert "import tomllib" in source
+    assert "import toml_compat" not in source
 
-    env = os.environ.copy()
-    env["HEW_FORCE_TOML_FALLBACK"] = "1"
     result = subprocess.run(
         [sys.executable, str(WORKSPACE_VERSION_HELPER)],
         cwd=ROOT,
-        env=env,
         check=False,
         capture_output=True,
         text=True,
@@ -435,7 +432,6 @@ def test_workspace_version_command_is_python310_compatible() -> None:
     assert result.stdout.strip() == WORKSPACE_VERSION
 
     runbook = RUNBOOK.read_text()
-    assert "import tomllib" not in runbook
     assert runbook.count('release_version="$(scripts/workspace-version.py)"') == 3
 
 
@@ -3095,10 +3091,6 @@ def test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive() -> No
                     ROOT / "scripts" / "cargo-output-dir.py",
                     repo / "scripts" / "cargo-output-dir.py",
                 ),
-                (
-                    ROOT / "scripts" / "lib" / "toml_compat.py",
-                    repo / "scripts" / "lib" / "toml_compat.py",
-                ),
             ):
                 shutil.copy2(source, destination)
                 destination.chmod(0o755)
@@ -3238,12 +3230,10 @@ def test_freebsd_aarch64_installs_wasi_std_before_building_stdlib() -> None:
     version = "RUST_VERSION=$(rustc --version | awk '{print $2}')"
     component = 'RUST_STD_COMPONENT="rust-std-${RUST_VERSION}-wasm32-wasip1"'
     archive = '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz"'
-    checksum = (
-        '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"'
-    )
+    checksum = '"https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"'
     verify = (
         'test "$(sha256 -q "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz")" = \\\n'
-        '              "$(awk \'{print $1}\' '
+        "              \"$(awk '{print $1}' "
         '"$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz.sha256")"'
     )
     install = (

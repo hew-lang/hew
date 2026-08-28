@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 from unittest import mock
 
@@ -224,7 +225,7 @@ def test_local_pid_runtime_surface_is_jit_stable() -> None:
 
 
 def test_string_to_bytes_transfer_contract_is_exact() -> None:
-    document = verify_ffi_symbols.toml_compat.loads(
+    document = tomllib.loads(
         verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
             encoding=verify_ffi_symbols.SOURCE_ENCODING
         )

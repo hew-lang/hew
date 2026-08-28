@@ -5,11 +5,13 @@ Thank you for your interest in contributing to Hew! This document covers how to 
 ## Getting Started
 
 1. Fork and clone the repository
-2. Install the [prerequisites](README.md#prerequisites)
+2. Install the [prerequisites](README.md#prerequisites), including Python 3.12 or newer
 3. Build from source: `make`
 4. Run the tests: `make test`
 
 See the [Building from Source](README.md#building-from-source) section of the README for detailed setup instructions.
+Makefile targets fail fast if `python3` resolves to an older interpreter; point them at
+the installed interpreter with `make PYTHON=/path/to/python3.12 <target>` if necessary.
 
 ## Development Workflow
 

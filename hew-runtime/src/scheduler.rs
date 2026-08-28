@@ -4860,8 +4860,7 @@ mod tests {
 
     impl TrackedTestActor {
         fn install(mut actor: HewActor) -> Self {
-            static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-            actor.id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            actor.id = next_tracked_test_actor_id();
             // Own the actor through a single raw pointer from `Box::into_raw`
             // rather than storing a `Box` alongside a derived raw pointer: under
             // Stacked Borrows, moving the `Box` (e.g. returning `Self`) retags and
@@ -4884,6 +4883,48 @@ mod tests {
         fn untrack(&self) {
             crate::lifetime::live_actors::untrack_actor(self.ptr);
         }
+    }
+
+    fn next_tracked_test_actor_id() -> u64 {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
+    static BLOCKED_SENDER_REINCARNATION: AtomicPtr<HewActor> = AtomicPtr::new(ptr::null_mut());
+
+    fn reincarnate_blocked_sender_at_same_address() {
+        let actor_ptr = BLOCKED_SENDER_REINCARNATION.swap(ptr::null_mut(), Ordering::AcqRel);
+        assert!(
+            !actor_ptr.is_null(),
+            "blocked sender reincarnation target must be installed"
+        );
+        assert!(crate::lifetime::live_actors::untrack_actor(actor_ptr));
+
+        let mut replacement = stub_actor();
+        replacement.id = next_tracked_test_actor_id();
+        replacement.spawn_serial = 2;
+        replacement
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        replacement.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        replacement.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+
+        // SAFETY: the old incarnation is untracked and exclusively owned by
+        // this test. Destroying it returns this exact allocation to the test's
+        // one-slot pool; placement immediately reuses it for the replacement.
+        unsafe {
+            actor_ptr.drop_in_place();
+            actor_ptr.write(replacement);
+        }
+        // SAFETY: the replacement is fully initialized at `actor_ptr` and has
+        // a fresh identity distinct from the destroyed incarnation.
+        assert!(unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) });
     }
 
     impl std::ops::Deref for TrackedTestActor {
@@ -5153,6 +5194,92 @@ mod tests {
             !crate::coro_exec::take_pending_wake(&actor),
             "a freed caller must not record a pending wake either"
         );
+    }
+
+    /// A blocked sender wake carries the incarnation that registered, not the
+    /// allocation address. The hook destroys that sender after readiness is
+    /// deposited, then deterministically placement-allocates a fresh suspended
+    /// actor at the exact same address before wake resolution. Pointer-only
+    /// liveness wakes the replacement; identity resolution must refuse it.
+    #[test]
+    fn blocked_sender_wake_refuses_reused_actor_address() {
+        let _guard = crate::runtime_test_guard();
+        let sched = NoWorkerSchedulerForTest::install();
+        let mut sender_stub = stub_actor();
+        sender_stub.spawn_serial = 1;
+        let sender = TrackedTestActor::install(sender_stub);
+        let sender_ptr = sender.ptr();
+        let sender_id = sender.id;
+
+        // SAFETY: this test exclusively owns the bounded mailbox and slot.
+        let mailbox = unsafe {
+            crate::mailbox::hew_mailbox_new_with_policy(
+                1,
+                crate::internal::types::HewOverflowPolicy::Block,
+            )
+        };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox and payload are valid for the complete copying call.
+            unsafe { crate::mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+        let slot = crate::read_slot::hew_read_slot_new();
+        assert_eq!(
+            // SAFETY: sender, mailbox, and slot remain live until the waiter is resolved.
+            unsafe {
+                crate::mailbox::mailbox_await_send(mailbox, 2, ptr::null_mut(), 0, sender_ptr, slot)
+            },
+            crate::mailbox::MAILBOX_AWAIT_SEND_SUSPEND
+        );
+
+        assert!(
+            BLOCKED_SENDER_REINCARNATION
+                .compare_exchange(
+                    ptr::null_mut(),
+                    sender_ptr,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok(),
+            "blocked sender reincarnation target already installed"
+        );
+        let _hook = crate::mailbox::BlockedSenderPreWakeHookGuard::install(
+            sender_id,
+            reincarnate_blocked_sender_at_same_address,
+        );
+
+        // Dequeue removes the waiter and deposits readiness before the hook
+        // destroys/reuses the sender allocation and releases wake resolution.
+        // SAFETY: this test is the mailbox's sole consumer.
+        let first = unsafe { crate::mailbox::hew_mailbox_try_recv(mailbox) };
+        assert!(!first.is_null());
+        // SAFETY: dequeue transferred ownership of the first node.
+        unsafe { crate::mailbox::hew_msg_node_free(first) };
+
+        assert_eq!(sender.ptr(), sender_ptr, "the allocation address is reused");
+        assert_ne!(sender.id, sender_id, "the replacement has a fresh identity");
+        assert_eq!(
+            sender.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "the replacement incarnation must not be resumed"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            None,
+            "no scheduler entry may be minted for the replacement incarnation"
+        );
+
+        // SAFETY: this test is still the mailbox's sole consumer.
+        let second = unsafe { crate::mailbox::hew_mailbox_try_recv(mailbox) };
+        assert!(!second.is_null());
+        // SAFETY: this test owns the admitted node, slot, and mailbox.
+        unsafe {
+            crate::mailbox::hew_msg_node_free(second);
+            crate::read_slot::hew_read_slot_free(slot);
+            crate::mailbox::mailbox_close(mailbox);
+            crate::mailbox::hew_mailbox_free(mailbox);
+        }
     }
 
     /// The same UAF guard exercised through the full reply path: a reply

@@ -109,6 +109,49 @@ static SYS_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSw
 static USER_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSwapPreLinkHook>> =
     crate::lifetime::PoisonSafe::new(None);
 
+/// One-shot test seam after a blocked sender's readiness is deposited but
+/// before its actor incarnation is resolved for wakeup.
+#[cfg(test)]
+type BlockedSenderPreWakeHook = (u64, fn());
+
+#[cfg(test)]
+static BLOCKED_SENDER_PRE_WAKE_HOOK: crate::lifetime::PoisonSafe<Option<BlockedSenderPreWakeHook>> =
+    crate::lifetime::PoisonSafe::new(None);
+
+#[cfg(test)]
+pub(crate) struct BlockedSenderPreWakeHookGuard;
+
+#[cfg(test)]
+impl BlockedSenderPreWakeHookGuard {
+    pub(crate) fn install(sender_id: u64, hook: fn()) -> Self {
+        BLOCKED_SENDER_PRE_WAKE_HOOK.access(|slot| {
+            assert!(slot.is_none(), "blocked-sender wake hook already installed");
+            *slot = Some((sender_id, hook));
+        });
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for BlockedSenderPreWakeHookGuard {
+    fn drop(&mut self) {
+        BLOCKED_SENDER_PRE_WAKE_HOOK.access(|slot| *slot = None);
+    }
+}
+
+#[cfg(test)]
+fn run_blocked_sender_pre_wake_hook(sender_id: u64) {
+    let hook = BLOCKED_SENDER_PRE_WAKE_HOOK.access(|slot| {
+        slot.as_ref()
+            .is_some_and(|(expected, _)| *expected == sender_id)
+            .then(|| slot.take().map(|(_, hook)| hook))
+            .flatten()
+    });
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Deterministic rendezvous for a bounded `Block` sender after it has proved
 /// the mailbox full while holding `slow_path`, joined `block_wait`, and
 /// rechecked closure, but immediately before it releases the queue and
@@ -1366,13 +1409,19 @@ struct SlowPathQueue {
 /// cancellation, or close wins the registration race.
 #[derive(Debug)]
 struct BlockedSender {
-    actor: *mut crate::actor::HewActor,
+    sender: Option<BlockedSenderIncarnation>,
     slot: *mut HewReadSlot,
     node: *mut HewMsgNode,
 }
 
-// SAFETY: raw actor pointers are used only by the liveness-validating scheduler
-// wake path; slots and nodes remain live under explicit retained ownership.
+#[derive(Debug, Clone, Copy)]
+struct BlockedSenderIncarnation {
+    actor_id: u64,
+    spawn_serial: u64,
+}
+
+// SAFETY: slots and nodes remain live under explicit retained ownership; the
+// sender incarnation is copied scalar identity and carries no allocation.
 unsafe impl Send for BlockedSender {}
 
 // SAFETY: The raw pointers in the queue are only accessed while holding
@@ -2786,7 +2835,17 @@ pub(crate) unsafe fn mailbox_await_send(
     }
     // SAFETY: the caller owns the creator ref, so the slot is live to retain.
     unsafe { read_slot_retain(slot) };
-    waiters.push_back(BlockedSender { actor, slot, node });
+    let sender = if actor.is_null() {
+        None
+    } else {
+        // SAFETY: the caller guarantees the sender is live for registration.
+        let sender = unsafe { &*actor };
+        Some(BlockedSenderIncarnation {
+            actor_id: sender.id,
+            spawn_serial: sender.spawn_serial,
+        })
+    };
+    waiters.push_back(BlockedSender { sender, slot, node });
     MAILBOX_AWAIT_SEND_SUSPEND
 }
 
@@ -2851,7 +2910,7 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
         return HewError::ErrActorStopped as i32;
     }
     waiters.push_back(BlockedSender {
-        actor: ptr::null_mut(),
+        sender: None,
         slot: ptr::null_mut(),
         node,
     });
@@ -2889,8 +2948,7 @@ pub(crate) unsafe fn mailbox_detach_await_send(mb: *mut HewMailbox, slot: *mut H
 ///
 /// # Safety
 ///
-/// The caller must own the waiter's retained slot ref. `actor` may be stale;
-/// `enqueue_resume` validates it against the live registry before use.
+/// The caller must own the waiter's retained slot ref.
 unsafe fn wake_blocked_sender(waiter: &BlockedSender, status: ReadStatus) {
     if waiter.slot.is_null() {
         return;
@@ -2898,8 +2956,19 @@ unsafe fn wake_blocked_sender(waiter: &BlockedSender, status: ReadStatus) {
     // SAFETY: the waiter owns a retained live slot ref.
     let should_wake = unsafe { read_slot_deposit_status(waiter.slot, status) };
     if should_wake {
-        // SAFETY: enqueue_resume performs the liveness validation for this raw actor pointer.
-        unsafe { crate::scheduler::enqueue_resume(waiter.actor, ptr::null_mut()) };
+        if let Some(sender) = waiter.sender {
+            #[cfg(test)]
+            run_blocked_sender_pre_wake_hook(sender.actor_id);
+            let _ = crate::lifetime::live_actors::with_actor_send_by_identity(
+                sender.actor_id,
+                sender.spawn_serial,
+                |actor| {
+                    // SAFETY: the identity pin keeps this exact incarnation's
+                    // allocation live throughout the pointer-based resume edge.
+                    unsafe { crate::scheduler::enqueue_resume(actor, ptr::null_mut()) };
+                },
+            );
+        }
     }
     // SAFETY: the waiter owns exactly one retained slot ref.
     unsafe { hew_read_slot_free(waiter.slot) };

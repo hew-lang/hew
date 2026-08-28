@@ -22,7 +22,7 @@
 # Environment:
 #   HEW_BIN                    compiler binary (default: target/debug/hew)
 #   SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 2; may only raise)
-#   SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 16; may only raise)
+#   SIR_SHADOW_MIN_VERIFIED    minimum verified compiler outcomes (default: 16; may only raise)
 
 set -euo pipefail
 
@@ -35,13 +35,14 @@ source "$ROOT/scripts/lib/corpus-nonempty.sh"
 HEW_BIN="${HEW_BIN:-$ROOT/target/debug/hew}"
 DEFAULT_CORPUS="$ROOT/tests/ll-oracle/corpus"
 REALIZED_FLOOR=2
-SUCCESS_FLOOR=16
+VERIFIED_FLOOR=16
 MIN_REALIZED="${SIR_SHADOW_MIN_REALIZED:-$REALIZED_FLOOR}"
-MIN_SUCCESSES="${SIR_SHADOW_MIN_SUCCESSES:-$SUCCESS_FLOOR}"
+MIN_VERIFIED="${SIR_SHADOW_MIN_VERIFIED:-$VERIFIED_FLOOR}"
 # Repeat the established compile enough times to make randomized ownership-fact
-# emission fail closed without turning comparison into a set operation.  The
-# exact EdgeCarry sequence is compiler output and must remain byte-identical.
-DETERMINISM_RUNS=4
+# and diagnostic emission fail closed without turning either comparison into a
+# set operation.  Both streams are compiler output and must remain
+# byte-identical.
+DETERMINISM_RUNS=6
 
 usage() {
     cat <<'EOF'
@@ -53,7 +54,7 @@ arguments, runs every top-level .hew fixture in tests/ll-oracle/corpus.
 Environment:
   HEW_BIN                    compiler binary (default: target/debug/hew)
   SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 2; may only raise)
-  SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 16; may only raise)
+  SIR_SHADOW_MIN_VERIFIED    minimum verified compiler outcomes (default: 16; may only raise)
 EOF
 }
 
@@ -67,13 +68,13 @@ require_nonnegative_integer() {
 }
 
 require_nonnegative_integer SIR_SHADOW_MIN_REALIZED "$MIN_REALIZED"
-require_nonnegative_integer SIR_SHADOW_MIN_SUCCESSES "$MIN_SUCCESSES"
+require_nonnegative_integer SIR_SHADOW_MIN_VERIFIED "$MIN_VERIFIED"
 if (( MIN_REALIZED < REALIZED_FLOOR )); then
     echo "sir-shadow-corpus: SIR_SHADOW_MIN_REALIZED may not lower the committed floor $REALIZED_FLOOR" >&2
     exit 2
 fi
-if (( MIN_SUCCESSES < SUCCESS_FLOOR )); then
-    echo "sir-shadow-corpus: SIR_SHADOW_MIN_SUCCESSES may not lower the committed floor $SUCCESS_FLOOR" >&2
+if (( MIN_VERIFIED < VERIFIED_FLOOR )); then
+    echo "sir-shadow-corpus: SIR_SHADOW_MIN_VERIFIED may not lower the committed floor $VERIFIED_FLOOR" >&2
     exit 2
 fi
 
@@ -184,6 +185,7 @@ edge_carry_sequence() {
 
 failures=0
 successes=0
+verified_outcomes=0
 verified=0
 generic_templates=0
 hir_declarations=0
@@ -209,6 +211,14 @@ for index in "${!fixtures[@]}"; do
         "$HEW_BIN" compile --sir-shadow --dump-mir raw "$fixture" || shadow_status=$?
 
     fixture_failed=0
+    if [[ "$baseline_status" -ne 0 && "$baseline_status" -ne 1 ]]; then
+        echo "FAIL $label: baseline compiler exited abnormally with status $baseline_status" >&2
+        fixture_failed=1
+    fi
+    if [[ "$shadow_status" -ne 0 && "$shadow_status" -ne 1 ]]; then
+        echo "FAIL $label: SIR shadow compiler exited abnormally with status $shadow_status" >&2
+        fixture_failed=1
+    fi
     for ((run = 2; run <= DETERMINISM_RUNS; run++)); do
         repeated_out="$tmpdir/$index.baseline.$run.out"
         repeated_err="$tmpdir/$index.baseline.$run.err"
@@ -223,6 +233,10 @@ for index in "${!fixtures[@]}"; do
         fi
         if ! diff -u "$baseline_edges" "$repeated_edges"; then
             echo "FAIL $label: repeated compile $run reordered EdgeCarry facts" >&2
+            fixture_failed=1
+        fi
+        if ! diff -u "$baseline_err" "$repeated_err"; then
+            echo "FAIL $label: repeated compile $run changed diagnostic emission" >&2
             fixture_failed=1
         fi
     done
@@ -267,11 +281,19 @@ for index in "${!fixtures[@]}"; do
 
     if [[ "$fixture_failed" -ne 0 ]]; then
         failures=$((failures + 1))
+    else
+        # A normal diagnostic rejection is a verified compiler outcome, not a
+        # missing corpus execution. Its status, stdout, and exact stderr have
+        # all passed the same repeated-compile and shadow-parity assertions.
+        verified_outcomes=$((verified_outcomes + 1))
+        if [[ "$baseline_status" -eq 1 ]]; then
+            printf 'ok   %s  (deterministic diagnostic rejection)\n' "$label"
+        fi
     fi
 done
 
-if [[ "$successes" -lt "$MIN_SUCCESSES" ]]; then
-    echo "FAIL sir-shadow-corpus: only $successes successful baseline compilations; require $MIN_SUCCESSES" >&2
+if [[ "$verified_outcomes" -lt "$MIN_VERIFIED" ]]; then
+    echo "FAIL sir-shadow-corpus: only $verified_outcomes verified compiler outcomes; require $MIN_VERIFIED" >&2
     failures=$((failures + 1))
 fi
 if [[ "$realized" -lt "$MIN_REALIZED" ]]; then
@@ -284,4 +306,4 @@ if [[ "$failures" -ne 0 ]]; then
     exit 1
 fi
 
-echo "sir-shadow-corpus: OK (${#fixtures[@]} fixtures, $successes successful baseline compiles, SIR $verified monomorphic, $generic_templates template(s), $hir_declarations HIR declarations, $realized/$concrete_bodies concrete realized)"
+echo "sir-shadow-corpus: OK (${#fixtures[@]} fixtures, $verified_outcomes verified outcomes, $successes successful baseline compiles, SIR $verified monomorphic, $generic_templates template(s), $hir_declarations HIR declarations, $realized/$concrete_bodies concrete realized)"

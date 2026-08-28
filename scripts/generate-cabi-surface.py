@@ -504,7 +504,7 @@ def expected_manifest() -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
         for symbol in sorted(set().union(*(set(rows) for rows in source.values()))):
             availability = [target for target in TARGETS if symbol in source[target]]
-            type = source[availability[0]][symbol]
+            record = source[availability[0]][symbol]
             rows.append(
                 {
                     "symbol": symbol,

@@ -1892,12 +1892,14 @@ def test_a_labelled_fix_for_main_runs_against_a_red_main() -> None:
     assert "labelled fix-main" in result.stdout, result.stdout
 
 
-def test_a_push_to_main_stops_at_the_first_failing_gate() -> None:
-    """A red main broadcasts; finishing the other 37 commands proves nothing."""
+def test_pushes_and_pull_requests_stop_at_the_first_failing_gate() -> None:
+    """Once either event is red, finishing the other affected gates adds delay."""
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert workflow.count('if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then') == 2, (
-        workflow
+    fail_fast_events = (
+        'if [[ "${GITHUB_EVENT_NAME}" == "push" '
+        '|| "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then'
     )
+    assert workflow.count(fail_fast_events) == 2, workflow
     assert workflow.count("args+=(--fail-fast)") == 2, workflow
 
 

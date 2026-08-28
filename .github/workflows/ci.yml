@@ -256,7 +256,7 @@ jobs:
             base_ref=HEAD^
           fi
           args=(--base "${base_ref}")
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "push" || "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
             args+=(--fail-fast)
           fi
           scripts/ci-preflight-dispatcher.sh "${args[@]}"
@@ -936,9 +936,9 @@ jobs:
           CI_PREFLIGHT_BASE: origin/main
           COMPILED_HEW_GATE_OWNER: aggregate
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
-        # A push to main broadcasts failures to every branch; stop its affected
-        # shard at the first failure. Sharding keeps that from narrowing the
-        # report — strategy.fail-fast is false, so the other three shards run to
+        # A failed push or pull request should stop its affected shard at the
+        # first failure. Sharding keeps that from narrowing the report —
+        # strategy.fail-fast is false, so the other three shards run to
         # completion and a broken change still surfaces up to four independent
         # first failures.
         #
@@ -949,7 +949,7 @@ jobs:
         run: |
           set -euo pipefail
           args=(--base origin/main --shard ${{ matrix.shard }}/4)
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "push" || "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
             args+=(--fail-fast)
           fi
           scripts/ci-preflight-dispatcher.sh "${args[@]}"

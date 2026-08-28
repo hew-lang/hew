@@ -8,6 +8,61 @@ use crate::builtin_names::BuiltinNamedType;
 use crate::BuiltinType;
 
 impl Checker {
+    /// Re-synthesize deferred bodies at one materialization edge while keeping
+    /// only move-state diagnostics. Registration already owns ordinary typing
+    /// and lexical-resolution errors; replay exists solely to apply the edge's
+    /// current ownership state and to thread effects through LIFO bodies.
+    fn recheck_materialized_defers(&mut self, defers: Vec<Spanned<Expr>>) {
+        for (body, span) in defers {
+            let error_mark = self.errors.len();
+            self.synthesize(&body, &span);
+            let replay_errors = self.errors.split_off(error_mark);
+            for error in replay_errors.into_iter().filter(|error| {
+                matches!(
+                    error.kind,
+                    TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
+                )
+            }) {
+                let duplicate = self.errors.iter().any(|existing| {
+                    existing.kind == error.kind
+                        && existing.span == error.span
+                        && existing.message == error.message
+                        && existing.notes == error.notes
+                        && existing.suggestions == error.suggestions
+                        && existing.source_module == error.source_module
+                });
+                if !duplicate {
+                    self.errors.push(error);
+                }
+            }
+        }
+    }
+
+    fn recheck_current_scope_defers(&mut self) {
+        self.recheck_materialized_defers(self.env.current_scope_defers());
+    }
+
+    fn recheck_return_edge_defers(&mut self) {
+        self.recheck_materialized_defers(self.env.return_edge_defers());
+    }
+
+    fn recheck_loop_edge_defers(&mut self, label: Option<&str>, span: &Span) {
+        let Some(defers) = self.env.loop_edge_defers(label) else {
+            self.errors.push(
+                TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    "cannot determine deferred move-state for this loop exit",
+                )
+                .with_suggestion(
+                    "check that the loop label names an active enclosing loop".to_string(),
+                ),
+            );
+            return;
+        };
+        self.recheck_materialized_defers(defers);
+    }
+
     /// The declared type of an annotated `let`/`var`, given the annotation and
     /// the type synthesised for the initialiser.
     ///
@@ -383,6 +438,9 @@ impl Checker {
                 // If/Match arm bodies that flow to return can Ok-coerce.
                 self.tail_ok_armed = tail_ok_armed;
                 let ty = self.check_last_stmt_type(stmt, span, expected);
+                if !matches!(ty, Ty::Never) {
+                    self.recheck_current_scope_defers();
+                }
                 self.const_values = const_values_snapshot;
                 self.emit_scope_warnings();
                 return ty;
@@ -438,6 +496,9 @@ impl Checker {
         } else {
             Ty::Unit
         };
+        if !terminated && !matches!(ty, Ty::Never) {
+            self.recheck_current_scope_defers();
+        }
         self.const_values = const_values_snapshot;
         self.emit_scope_warnings();
         ty
@@ -515,44 +576,44 @@ impl Checker {
     /// The return *type* of the construct itself is always `Ty::Never` (a
     /// `return` diverges); callers assign that directly.
     pub(super) fn check_return_operand(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
-        let Some(expected) = self.current_return_type.clone() else {
-            return;
-        };
-        // Inside a gen{} body, `current_return_type` is shaped as
-        // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
-        // not the full Generator type, so `return 1` inside gen{} unifies
-        // against i64 rather than Generator<Y, i64>.
-        let effective_expected = if self.in_generator {
-            let resolved = self.subst.resolve(&expected);
-            match resolved.as_generator() {
-                Some((_, ret)) => ret.clone(),
-                None => expected,
-            }
-        } else {
-            expected
-        };
-        // Guard: do not check against Ty::Error — it would silently suppress
-        // mismatch diagnostics in the returned expression. Synthesize the value
-        // instead so its own errors are still caught.
-        if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
-            if let Some((val, vs)) = value {
-                self.synthesize(val, vs);
-            }
-        } else {
-            match value {
-                Some((val, vs)) => {
-                    self.check_against(val, vs, &effective_expected);
+        if let Some(expected) = self.current_return_type.clone() {
+            // Inside a gen{} body, `current_return_type` is shaped as
+            // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
+            // not the full Generator type, so `return 1` inside gen{} unifies
+            // against i64 rather than Generator<Y, i64>.
+            let effective_expected = if self.in_generator {
+                let resolved = self.subst.resolve(&expected);
+                match resolved.as_generator() {
+                    Some((_, ret)) => ret.clone(),
+                    None => expected,
                 }
-                None if effective_expected != Ty::Unit => {
-                    self.errors.push(TypeError::return_type_mismatch(
-                        span.clone(),
-                        &effective_expected,
-                        &Ty::Unit,
-                    ));
+            } else {
+                expected
+            };
+            // Guard: do not check against Ty::Error — it would silently suppress
+            // mismatch diagnostics in the returned expression. Synthesize the value
+            // instead so its own errors are still caught.
+            if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
+                if let Some((val, vs)) = value {
+                    self.synthesize(val, vs);
                 }
-                _ => {}
+            } else {
+                match value {
+                    Some((val, vs)) => {
+                        self.check_against(val, vs, &effective_expected);
+                    }
+                    None if effective_expected != Ty::Unit => {
+                        self.errors.push(TypeError::return_type_mismatch(
+                            span.clone(),
+                            &effective_expected,
+                            &Ty::Unit,
+                        ));
+                    }
+                    _ => {}
+                }
             }
         }
+        self.recheck_return_edge_defers();
         // M-4: a `return CrashAction::…;` inside a `#[on(crash)]` hook is now
         // fully wired (the MIR return boundary extracts the variant tag; the
         // supervisor honours it). The former fail-closed reject is removed; the
@@ -1551,7 +1612,9 @@ impl Checker {
                     self.loop_labels.push(lbl.clone());
                 }
                 self.loop_depth += 1;
+                self.env.enter_loop(label.as_deref());
                 self.check_block(body, None);
+                self.env.exit_loop();
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -1880,7 +1943,9 @@ impl Checker {
                     self.loop_labels.push(lbl.clone());
                 }
                 self.loop_depth += 1;
+                self.env.enter_loop(label.as_deref());
                 self.check_block(body, None);
+                self.env.exit_loop();
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -1911,7 +1976,9 @@ impl Checker {
                     self.loop_labels.push(lbl.clone());
                 }
                 self.loop_depth += 1;
+                self.env.enter_loop(label.as_deref());
                 self.check_block(body, None);
+                self.env.exit_loop();
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -1939,7 +2006,9 @@ impl Checker {
                     self.loop_labels.push(lbl.clone());
                 }
                 self.loop_depth += 1;
+                self.env.enter_loop(label.as_deref());
                 self.check_block(body, None);
+                self.env.exit_loop();
                 self.loop_depth -= 1;
                 if label.is_some() {
                     self.loop_labels.pop();
@@ -1965,6 +2034,9 @@ impl Checker {
                 if let Some((val_expr, val_span)) = value {
                     self.synthesize(val_expr, val_span);
                 }
+                if self.loop_depth > 0 {
+                    self.recheck_loop_edge_defers(label.as_deref(), span);
+                }
             }
             Stmt::Continue { label } => {
                 if self.loop_depth == 0 {
@@ -1982,13 +2054,30 @@ impl Checker {
                         ));
                     }
                 }
+                if self.loop_depth > 0 {
+                    self.recheck_loop_edge_defers(label.as_deref(), span);
+                }
             }
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
                 self.check_match_stmt(&scr_ty, arms, span);
             }
             Stmt::Defer(expr) => {
+                let ownership = self.env.ownership_snapshot();
                 self.synthesize(&expr.0, &expr.1);
+                self.env.restore_ownership(&ownership);
+                if !self.env.register_defer(*expr.clone()) {
+                    self.errors.push(
+                        TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            span.clone(),
+                            "cannot register defer without an active lexical scope",
+                        )
+                        .with_suggestion(
+                            "place the defer inside a function or block scope".to_string(),
+                        ),
+                    );
+                }
             }
         }
     }

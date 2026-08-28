@@ -574,7 +574,18 @@ impl Builder {
         if direct_projected_resource {
             self.projected_resource_direct_move_sites.push(expr.site);
         }
+        let direct_owned_field_projection =
+            effective_transfer && matches!(expr.kind, HirExprKind::FieldAccess { .. });
+        if direct_owned_field_projection {
+            self.owned_field_projection_move_sites.push(expr.site);
+        }
         let value = self.lower_value(expr);
+        if direct_owned_field_projection {
+            debug_assert_eq!(
+                self.owned_field_projection_move_sites.pop(),
+                Some(expr.site)
+            );
+        }
         if direct_projected_resource {
             self.projected_resource_direct_move_sites.pop();
         }

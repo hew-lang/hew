@@ -64,6 +64,8 @@ pub(super) use shell_drop_safety::{
 };
 pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bindings;
 
+type FieldDropInsertions = Vec<(u32, usize, Vec<Instr>)>;
+
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
 /// composite drop the sole-owner prover excludes because ONE of its fields
 /// escaped through a field binder.
@@ -157,6 +159,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     owned_tuple_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
+    leaf_field_drop: &dyn Fn(Place, u32, &ResolvedTy) -> Option<Instr>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
     let owned_binding_bases: HashSet<u32> = owned_locals
@@ -279,6 +282,14 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     for &root in alias_of.values() {
         *member_count.entry(root).or_insert(0) += 1;
     }
+    let (mut insertions, explicit_projection_roots) = explicit_projection_transfer_sibling_drops(
+        blocks,
+        &root_record_ty,
+        &alias_of,
+        owned_field_list,
+        field_dischargeable,
+        leaf_field_drop,
+    );
     // Condition 3 — base locals of every owned binding (a binder in this set
     // is an extracted field with its own release path).
     let mut scans: HashMap<u32, RootScan> = root_record_ty
@@ -640,8 +651,10 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
 
     let mut roots: Vec<u32> = scans.keys().copied().collect();
     roots.sort_unstable();
-    let mut insertions: Vec<(u32, usize, Vec<Instr>)> = Vec::new();
     for root in roots {
+        if explicit_projection_roots.contains(&root) {
+            continue;
+        }
         let scan = &scans[&root];
         if scan.poisoned || member_count.get(&root).copied().unwrap_or(0) != 1 {
             continue;
@@ -775,6 +788,115 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         }
     }
 }
+
+/// Discharge siblings after lowering has published an exact field-projection
+/// transfer for the aggregate generation. Unlike the legacy escape scan, this
+/// proof permits the extracted binder to keep its own release path: the
+/// transfer event has already ended the parent owner, so only later reads of
+/// the parent storage can make an immediate sibling release unsafe.
+fn explicit_projection_transfer_sibling_drops(
+    blocks: &[BasicBlock],
+    root_record_ty: &HashMap<u32, ResolvedTy>,
+    alias_of: &HashMap<u32, u32>,
+    owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
+    field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
+    leaf_field_drop: &dyn Fn(Place, u32, &ResolvedTy) -> Option<Instr>,
+) -> (FieldDropInsertions, HashSet<u32>) {
+    use crate::model::OwnershipEvent;
+
+    let mut candidates: HashMap<u32, Vec<(u32, usize, u32, u32)>> = HashMap::new();
+    for block in blocks {
+        for (index, pair) in block.instructions.windows(2).enumerate() {
+            let [Instr::RecordFieldLoad {
+                record,
+                field_offset,
+                ..
+            }, Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                from,
+                to: None,
+                to_owner: None,
+                ..
+            })] = pair
+            else {
+                continue;
+            };
+            let Some(record_local) = base_local(*record) else {
+                continue;
+            };
+            let root = alias_of.get(&record_local).copied().unwrap_or(record_local);
+            if base_local(*from) == Some(record_local) {
+                candidates.entry(root).or_default().push((
+                    block.id,
+                    index + 1,
+                    field_offset.0,
+                    record_local,
+                ));
+            }
+        }
+    }
+
+    let mut insertions = Vec::new();
+    let mut proven_roots = HashSet::new();
+    for (root, transfers) in candidates {
+        let [(block_id, transfer_index, escaped_field, record_local)] = transfers.as_slice() else {
+            continue;
+        };
+        let root_members = alias_of
+            .iter()
+            .filter_map(|(local, candidate_root)| (*candidate_root == root).then_some(*local))
+            .chain(std::iter::once(root))
+            .collect::<HashSet<_>>();
+        let reachable = blocks_reachable_from(blocks, *block_id);
+        if reachable.contains(block_id) {
+            continue;
+        }
+        let parent_read_after_transfer = blocks.iter().any(|block| {
+            let in_region = if block.id == *block_id {
+                Some(*transfer_index + 1)
+            } else if reachable.contains(&block.id) {
+                Some(0)
+            } else {
+                None
+            };
+            let Some(start) = in_region else {
+                return false;
+            };
+            block.instructions[start.min(block.instructions.len())..]
+                .iter()
+                .flat_map(instr_source_places)
+                .chain(terminator_source_places(&block.terminator, None))
+                .filter_map(base_local)
+                .any(|local| root_members.contains(&local))
+        });
+        if parent_read_after_transfer {
+            continue;
+        }
+        proven_roots.insert(root);
+        let Some(record_ty) = root_record_ty
+            .get(record_local)
+            .or_else(|| root_record_ty.get(&root))
+        else {
+            continue;
+        };
+        let siblings = owned_field_list(record_ty)
+            .into_iter()
+            .filter(|(field, _)| *field != *escaped_field)
+            .filter_map(|(field, ty)| {
+                leaf_field_drop(Place::Local(*record_local), field, &ty).or_else(|| {
+                    field_dischargeable(&ty).then_some(Instr::FieldDropInPlace {
+                        base: Place::Local(*record_local),
+                        field: crate::model::FieldAddr::Record(FieldOffset(field)),
+                        ty,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        if !siblings.is_empty() {
+            insertions.push((*block_id, *transfer_index + 1, siblings));
+        }
+    }
+    (insertions, proven_roots)
+}
 /// Multi-hop sibling discharge for the ESCAPED deep-alias chain
 /// (`let mid = o.mid; let leaf = mid.leaf; return leaf` and its tuple twin
 /// `let mid = o.0; let leaf = mid.0; leaf`), the ≥2-hop companion to the
@@ -850,7 +972,7 @@ fn compute_escaped_chain_sibling_drops(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     aggregate_clone_sites: &HashSet<(u32, usize, Place)>,
-) -> Vec<(u32, usize, Vec<Instr>)> {
+) -> FieldDropInsertions {
     // Immediate-parent map: alias_local -> (parent_local, field ordinal it reads).
     // A retained string field load is a fresh co-owner, so it terminates the
     // byte-alias chain rather than transferring the parent's original field.

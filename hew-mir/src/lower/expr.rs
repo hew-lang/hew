@@ -5084,6 +5084,7 @@ impl Builder {
                     &field_ty,
                     expr.site,
                 );
+                self.publish_handle_transfer_projection(expr, &field_ty);
                 Some(dest)
             }
             HirExprKind::Scope { body } => Some(self.lower_task_scope(body)),

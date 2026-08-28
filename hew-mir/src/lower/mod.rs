@@ -88,7 +88,7 @@ use self::pattern::{project_match_ownership_mode, ProjectMatchOwnershipMode};
 /// it through `super::`, exactly as it reaches [`Builder`] — while the type's
 /// fields, and therefore its construction, stay private to
 /// [`self::owner_mint`]. See that module for why that is the whole close.
-pub(crate) use self::owner_mint::OwnerMintWarrant;
+pub(crate) use self::owner_mint::{OwnerMintOrigin, OwnerMintWarrant};
 
 /// Crate-visible re-export of the layout-key mangler for the MIR-owned
 /// thunk-synthesis registry (`crate::thunk_requirements`), which must resolve
@@ -1379,6 +1379,12 @@ struct Builder {
     /// drop admission is keyed by binding rather than local, so this is the
     /// matching active-variant proof for recursive record payload teardown.
     pub(crate) fresh_variant_payload_bindings: HashSet<BindingId>,
+    /// Proven-domestic payload binders that acquired a scope-exit owner from a
+    /// match, if-let, while-let, or let-else scrutinee. The record escape scan
+    /// sees their projection load and conservatively excludes them; this set
+    /// preserves the mint warrant's narrower proof so drop elaboration can
+    /// admit their exact record owner without reopening ordinary initializers.
+    pub(crate) scrutinee_payload_owner_bindings: HashSet<BindingId>,
     /// Bindings that hold a closure value whose resolved invoke-shim carries a
     /// suspend terminator (the suspendable-callee discriminator). Populated by
     /// the `Let` handler from the shim's lowered MIR carriers — the SAME

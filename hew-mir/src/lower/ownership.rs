@@ -11,7 +11,7 @@ use super::{
     FieldOffset, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
     HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic,
     MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedLocalEntry,
-    OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
+    OwnerMintOrigin, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
     ProducedValueOwnership, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
     Terminator, ValueClass, ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
     SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
@@ -508,6 +508,9 @@ impl Builder {
     ) {
         if warrant.withholds_mint() || super::drop_plan::ty_is_nonowning_handle_leaf(&ty) {
             return;
+        }
+        if warrant.origin() == OwnerMintOrigin::PayloadOfScrutinee {
+            self.scrutinee_payload_owner_bindings.insert(binding);
         }
         if matches!(ty, ResolvedTy::TraitObject { .. }) {
             self.dyn_trait_storage
@@ -3306,15 +3309,6 @@ impl Builder {
             || value.intent != hew_hir::IntentKind::Consume
             || self.classify_field_load(binding_ty) != Some(FieldLoadClass::HandleTransfer)
         {
-            return;
-        }
-        self.publish_projection_source_transfer(value);
-    }
-
-    /// Publish the aggregate source handoff when an unguarded consuming match
-    /// takes ownership through an inline field projection.
-    pub(crate) fn publish_consuming_match_projection(&mut self, value: &HirExpr) {
-        if self.classify_field_load(&value.ty) != Some(FieldLoadClass::ByteCopyAlias) {
             return;
         }
         self.publish_projection_source_transfer(value);

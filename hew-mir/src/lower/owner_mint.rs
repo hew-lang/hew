@@ -125,7 +125,6 @@ impl OwnerMintWarrant {
     }
 
     /// The value the question was put about. Read by the inventory tests.
-    #[cfg(test)]
     pub(crate) fn origin(self) -> OwnerMintOrigin {
         self.origin
     }

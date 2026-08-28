@@ -1036,7 +1036,11 @@ pub(super) fn derive_elaboration(
         let is_explicit_transfer_generation = path_local_transfer_cleanup_bindings
             .contains(binding)
             || return_move_chain_cleanup_bindings.contains(binding)
-            || transfer_destination_cleanup_bindings.contains(binding);
+            || transfer_destination_cleanup_bindings.contains(binding)
+            || builder
+                .typed_produced_value_owner_bindings
+                .contains(binding)
+            || builder.scrutinee_payload_owner_bindings.contains(binding);
         let is_owned_actor_message_ingress = builder.current_function_call_conv
             == crate::model::FunctionCallConv::ActorHandler
             && ownership_binding_locals
@@ -1049,10 +1053,13 @@ pub(super) fn derive_elaboration(
         // below decides whether that generation is live at each exit. Owned
         // records are different: their fail-closed sole-owner exclusion must
         // survive unless an explicit transfer event requires pre-handoff
-        // cleanup for that exact generation. An actor handler's registered
-        // message parameter is also explicit ingress ownership; admitting its
-        // recipe covers suspension before any later field handoff, while exact
-        // owner replay suppresses it after a transfer.
+        // cleanup for that exact generation, a typed produced-value verdict
+        // published a fresh synthetic owner, or a provenance-checked
+        // scrutinee-payload warrant minted the record owner after a projection
+        // load made the structural scan conservative. An actor handler's
+        // registered message parameter is also explicit ingress ownership;
+        // admitting its recipe covers suspension before any later field
+        // handoff, while exact owner replay suppresses it after a transfer.
         if matches!(ty, ResolvedTy::String) {
             cow_drop_allowed.insert(*binding);
         }

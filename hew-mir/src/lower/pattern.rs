@@ -4820,11 +4820,6 @@ impl Builder {
         self.suppress_typed_produced_owner_sites
             .remove(&scrutinee.site);
         let scrutinee_place = scrutinee_place?;
-        if arms.iter().all(|arm| arm.guard.is_none())
-            && arms.iter().any(|arm| !arm.bindings.is_empty())
-        {
-            self.publish_consuming_match_projection(scrutinee);
-        }
         let scrutinee_local = match scrutinee_place {
             Place::Local(n) => n,
             other => {

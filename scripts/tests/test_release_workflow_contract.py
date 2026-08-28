@@ -2564,7 +2564,7 @@ def test_a_labelled_fix_for_main_runs_against_a_red_main() -> None:
     assert "labelled fix-main" in result.stdout, result.stdout
 
 
-def test_every_job_waits_for_a_green_main() -> None:
+def test_trunk_health_does_not_suppress_gate_jobs() -> None:
     workflow_text = CI_WORKFLOW.read_text()
     assert "main is red at ${head_sha}; fix main first" in workflow_text
     assert "failure|timed_out" in workflow_text
@@ -2576,8 +2576,8 @@ def test_every_job_waits_for_a_green_main() -> None:
         needs = [needs] if isinstance(needs, str) else needs
         return "main-health" in needs or any(waits(dependency) for dependency in needs)
 
-    ungated = sorted(name for name in jobs if name != "main-health" and not waits(name))
-    assert not ungated, ungated
+    dependent = sorted(name for name in jobs if name != "main-health" and waits(name))
+    assert not dependent, dependent
 
 
 def test_ci_pipeline_is_unconditional() -> None:

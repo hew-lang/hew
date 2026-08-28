@@ -44,7 +44,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Trunk health — a red main must not broadcast into every open branch
+  # Trunk health — report a red main without suppressing branch gates
   # ─────────────────────────────────────────────────────────────────────────
   main-health:
     name: main is green
@@ -52,23 +52,23 @@ jobs:
     timeout-minutes: 5
     steps:
       # On 2026-08-20 a warm-up defect landed on main and the same failure was
-      # reported by eleven branch runs over four hours: every one of them ran
-      # the trunk defect, not their own diff, and every one of them cost a full
-      # runner. A pull request cannot fix main from its own CI, so branch runs
-      # wait for main to be green instead of re-discovering its break.
+      # reported by eleven branch runs over four hours. Keep the trunk-health
+      # signal visible, but do not make gate scheduling depend on it: a failed
+      # prerequisite makes GitHub skip dependent jobs before their steps run,
+      # which would let a red main suppress every independent branch result.
       #
       # The escape is deliberate and visible: label the pull request `fix-main`
-      # and its run proceeds. Without an escape, a red main is a repository-wide
-      # deadlock, which is worse than the broadcast.
-      - name: Refuse to run branch gates while main is red
+      # to let this signal pass while repairing trunk. Without the label, the
+      # signal stays red but the independent branch gates still run.
+      - name: Report a confirmed red main
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -uo pipefail
-          # This gate blocks downstream CI, so it fails OPEN on anything that is
-          # not a confirmed red main. An API error, a token problem, an empty
+          # This signal fails OPEN on anything that is not a confirmed red main.
+          # An API error, a token problem, an empty
           # response: none of those are evidence about main, and treating them
           # as evidence would take the whole repository down on a 404.
           if ! gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=1" > main-run.json; then
@@ -101,7 +101,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   lint:
     name: Clippy & format
-    needs: main-health
     runs-on: ubuntu-24.04
     # Job 93290474020 reached the final authority-graph step at 25m17s after
     # 308s of toolchain setup, 252s of structural lint, 131s of .hew format,
@@ -290,7 +289,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   license-check:
     name: License policy (cargo deny + THIRD-PARTY-LICENSES freshness)
-    needs: main-health
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -330,7 +328,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   playground-wasm-build:
     name: Playground WASM build
-    needs: main-health
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -362,7 +359,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   compiled-hew-linux:
     name: Build compiled Hew artifact (Linux)
-    needs: main-health
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -571,7 +567,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Linux gates (shard ${{ matrix.shard }}/4)
-    needs: main-health
     runs-on: ubuntu-24.04
     # Four static shards run on every event. scripts/ci-gate-shards.py checks
     # that every participating Make gate appears exactly once in the checked-in
@@ -735,7 +730,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test-windows:
     name: Build & test (Windows)
-    needs: main-health
     runs-on: windows-2022
     timeout-minutes: 60
     env:
@@ -910,7 +904,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test-macos:
     name: Build & test (macOS arm64)
-    needs: main-health
     runs-on: macos-14
     timeout-minutes: 60
     steps:

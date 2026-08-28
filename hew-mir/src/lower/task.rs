@@ -12,7 +12,6 @@ use super::{
     RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership,
     SuspendKind, Terminator, ThirFunction, ValueClass,
 };
-use crate::model::StableActorRole;
 
 fn select_stream_item_ty(ty: ResolvedTy) -> Option<ResolvedTy> {
     match ty {
@@ -1599,12 +1598,7 @@ impl Builder {
                         return None;
                     }
                     let actor_place = self.lower_value(actor)?;
-                    let stable_role =
-                        self.fungible_child_ref_of(actor_place)
-                            .map(|child_ref| StableActorRole {
-                                supervisor_token: child_ref.supervisor_token,
-                                slot_index: child_ref.slot_index,
-                            });
+                    let stable_role = self.child_ref_role_of(&actor.ty, actor_place);
                     // Lower each argument exactly once with move semantics. The
                     // resulting places are both the arm's source authority and
                     // the inputs to its packed payload; re-lowering here would
@@ -1980,12 +1974,7 @@ impl Builder {
                 return None;
             }
             let actor_place = self.lower_value(&branch.actor)?;
-            let stable_role =
-                self.fungible_child_ref_of(actor_place)
-                    .map(|child_ref| StableActorRole {
-                        supervisor_token: child_ref.supervisor_token,
-                        slot_index: child_ref.slot_index,
-                    });
+            let stable_role = self.child_ref_role_of(&branch.actor.ty, actor_place);
             // Lower each argument once and use those exact moved places for the
             // branch metadata and payload. This keeps handler-param ownership
             // singular when a join forwards an owning value.

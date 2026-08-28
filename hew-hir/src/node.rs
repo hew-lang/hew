@@ -1743,7 +1743,7 @@ pub enum HirExprKind {
     },
     /// `await_restart <supervised-child>` — suspend the current actor until the
     /// named static supervised child's slot is Live again (it restarted), then
-    /// resume with the re-fetched live `LocalPid<ChildType>`. The inner
+    /// resume with the same stable `ChildRef<ChildType>`. The inner
     /// `child` expression is the supervised-child accessor (a `FieldAccess`
     /// whose `SiteId` keys `HirModule.supervisor_child_slots` with the
     /// `(supervisor, slot)` discriminator). MIR lowers this to

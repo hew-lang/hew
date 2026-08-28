@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Supervised actors use `ChildRef<T>` handles.** Named child and static-pool
+  accessors no longer return `LocalPid<T>`. A `ChildRef<T>` carries its
+  supervisor identity and child slot, so asks and tells re-resolve the current
+  incarnation after restarts and fail closed while the role is unavailable or
+  permanently stopped.
+
 ## [0.6.0-rc2] - 2026-08-24
 
 Hew v0.6.0-rc2 is the second release candidate for v0.6. It completes the

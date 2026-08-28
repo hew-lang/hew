@@ -1507,6 +1507,7 @@ fn send_value_transfer_balances() {
             0,
             vec![mint(1)],
             Terminator::Send {
+                stable_role: None,
                 actor: Place::Local(0),
                 msg_type: 0,
                 value: Place::Local(1),

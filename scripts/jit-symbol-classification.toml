@@ -427,6 +427,7 @@ stable = [
   "hew_local_pid_ask_with_channel",
   "hew_local_pid_send",
   "hew_local_pid_supervisor_child_get",
+  "hew_local_pid_supervisor_pool_child_ref_get",
   "hew_local_pid_supervisor_is_running",
   "hew_local_pid_supervisor_stop",
   "hew_local_pid_unlink",
@@ -706,6 +707,7 @@ stable = [
   "hew_supervisor_restart_await_suspend",
   "hew_supervisor_role_ask",
   "hew_supervisor_role_ask_with_channel",
+  "hew_supervisor_role_send",
   "hew_supervisor_set_child_init_fn",
   "hew_supervisor_set_child_lifecycle",
   "hew_supervisor_set_child_state_clone",
@@ -6427,6 +6429,24 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free"
 discharge-depth = "shallow"
+
+# hew-runtime/src/supervisor.rs: maps a stable pool index to a static child
+# slot. The aggregate result carries only scalar words and owns no resource.
+[[ownership.contracts]]
+symbol = "hew_local_pid_supervisor_pool_child_ref_get"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/supervisor.rs: owner-scoped stable-role tell. The payload is
+# deep-copied by the mailbox before this call returns.
+[[ownership.contracts]]
+symbol = "hew_supervisor_role_send"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
 
 # hew-runtime/src/supervisor.rs: owner-scoped stable-role ask. The payload is
 # deep-copied by the mailbox; the reply channel gains one queued sender ref

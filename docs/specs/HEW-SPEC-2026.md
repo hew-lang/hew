@@ -3805,10 +3805,11 @@ The supervisor's `intensity: N within <window>` budget caps restarts; exceeding 
 ### 5.5 Nested Supervisors
 
 A `child` declaration whose target is itself a supervisor with children is
-implemented end-to-end. Dotted access to a nested child (`root.sub`) and
-chained access through it (`root.sub.worker`) both lower through the
-`hew_supervisor_nested_get` runtime call and return a fully typed
-`LocalPid`.
+implemented end-to-end. Dotted access to a nested supervisor (`root.sub`)
+returns a fully typed `LocalPid<Sub>` through
+`hew_supervisor_nested_get`. Chained actor access (`root.sub.worker`) then
+produces the leaf's stable `ChildRef<Worker>` through the same representation
+as a direct supervised actor.
 
 The shape is:
 
@@ -3840,10 +3841,10 @@ fn main() {
     sleep(50ms);
 
     // Access children by declared name
-    let w = pool.worker1;              // Typed: compiler knows w is a Worker
+    let w = pool.worker1;              // ChildRef<Worker>
     w.tick();
 
-    let w2 = pool.worker2;             // Dotted access is resolved statically
+    let w2 = pool.worker2;             // ChildRef<Worker>
     w2.tick();
 
     supervisor_stop(pool);              // Graceful shutdown
@@ -3851,7 +3852,10 @@ fn main() {
 ```
 
 - `spawn SupervisorName` — creates and starts the supervisor with all declared children
-- `sup.child_name` — named child access via field syntax. The compiler resolves the child name to its index at compile time and returns a fully typed `LocalPid` for the child's actor type. The child name must match one of the `child` declarations in the supervisor definition.
+- `sup.child_name` — named actor-child access via field syntax. The compiler
+  resolves the child name to a static slot and returns `ChildRef<Actor>`, which
+  re-resolves the current incarnation on every ask or tell. The child name must
+  match one of the `child` declarations in the supervisor definition.
 - `supervisor_stop(sup)` — gracefully stops the supervisor and all its children
 
 ### 5.7 Crash Isolation

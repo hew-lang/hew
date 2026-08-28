@@ -5676,6 +5676,22 @@ unsafe fn actor_send_result_internal(
     unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ptr::null_mut()) }
 }
 
+/// Submit a tell while the caller holds an identity-verified actor send pin.
+///
+/// # Safety
+///
+/// `actor` must remain pinned and `data` must point to `size` readable bytes.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn actor_send_pinned(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> i32 {
+    // SAFETY: this wrapper preserves the internal send contract.
+    unsafe { actor_send_result_internal(actor, msg_type, data, size) }
+}
+
 /// Like [`actor_send_result_internal`] but with an explicit reply channel
 /// that is set on the message node (for the ask pattern).
 #[cfg(not(target_arch = "wasm32"))]

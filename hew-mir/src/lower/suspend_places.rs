@@ -1542,6 +1542,7 @@ mod f1_suspending_escape_poison {
             statements: vec![],
             instructions: vec![],
             terminator: Terminator::Send {
+                stable_role: None,
                 actor: Place::Local(9),
                 msg_type: 0,
                 value: Place::Local(1),

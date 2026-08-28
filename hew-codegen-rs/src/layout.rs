@@ -4012,7 +4012,20 @@ pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
                 Ok(None)
             }
         }
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            if *builtin == Some(BuiltinType::ChildRef) {
+                return Ok(Some(resolve_ty(
+                    fn_ctx.ctx,
+                    fn_ctx.target_data,
+                    elem_ty,
+                    fn_ctx.record_layouts,
+                )?));
+            }
             // An indirect enum is heap-allocated: every element slot holds an
             // 8-byte pointer, so it rides the pointer ABI (`hew_vec_*_ptr`) —
             // the same routing the checker (`vec_authority` pointer ABI) and
@@ -4084,7 +4097,7 @@ fn resolved_ty_is_plain_bitcopy(
             builtin,
             ..
         } => {
-            if *builtin == Some(BuiltinType::LocalPid) {
+            if matches!(builtin, Some(BuiltinType::ChildRef | BuiltinType::LocalPid)) {
                 return Ok(true);
             }
             let lookup_key = if args.is_empty() {
@@ -6451,26 +6464,22 @@ pub(crate) fn lower_string_get_option_call(
     Ok(())
 }
 
-/// Materialise `Option<LocalPid<T>>` from a `__HewChildLookupResult`.
-///
-/// MIR emits the pool runtime lookup first, then routes its aggregate result
-/// through this layout-aware call so Option construction follows the same
-/// registered enum layout as source-level `Some` / `None`.
+/// Materialise `Option<ChildRef<T>>` from a pool slot descriptor lookup.
 pub(crate) fn lower_supervisor_pool_get_option_call(
     fn_ctx: &FnCtx<'_, '_>,
     args: &[Place],
     dest: Option<&Place>,
     next: u32,
 ) -> CodegenResult<()> {
-    if args.len() != 1 {
+    if args.len() != 2 {
         return Err(CodegenError::FailClosed(format!(
-            "hew_supervisor_pool_get_option expects 1 child-lookup result, got {}",
+            "hew_supervisor_pool_get_option expects lookup + supervisor token, got {} args",
             args.len()
         )));
     }
     let dest_place = dest.ok_or_else(|| {
         CodegenError::FailClosed(
-            "hew_supervisor_pool_get_option returns Option<LocalPid<T>>; call needs a dest".into(),
+            "hew_supervisor_pool_get_option returns Option<ChildRef<T>>; call needs a dest".into(),
         )
     })?;
     match place_resolved_ty(fn_ctx, *dest_place)? {
@@ -6481,13 +6490,13 @@ pub(crate) fn lower_supervisor_pool_get_option_call(
         } if matches!(
             args.as_slice(),
             [ResolvedTy::Named {
-                builtin: Some(BuiltinType::LocalPid),
+                builtin: Some(BuiltinType::ChildRef),
                 ..
             }]
         ) => {}
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_supervisor_pool_get_option dest must be Option<LocalPid<T>>, got {other:?}"
+                "hew_supervisor_pool_get_option dest must be Option<ChildRef<T>>, got {other:?}"
             )));
         }
     }
@@ -6511,10 +6520,10 @@ pub(crate) fn lower_supervisor_pool_get_option_call(
         .builder
         .build_struct_gep(lookup_struct, lookup_ptr, 0, "pool_get_word0_ptr")
         .llvm_ctx("pool get word0 GEP")?;
-    let handle_ptr = fn_ctx
+    let slot_ptr = fn_ctx
         .builder
-        .build_struct_gep(lookup_struct, lookup_ptr, 1, "pool_get_handle_ptr")
-        .llvm_ctx("pool get handle GEP")?;
+        .build_struct_gep(lookup_struct, lookup_ptr, 1, "pool_get_slot_ptr")
+        .llvm_ctx("pool get slot GEP")?;
     let i64_ty = fn_ctx.ctx.i64_type();
     let word0 = fn_ctx
         .builder
@@ -6525,13 +6534,13 @@ pub(crate) fn lower_supervisor_pool_get_option_call(
         .builder
         .build_int_truncate(word0, fn_ctx.ctx.i8_type(), "pool_get_tag")
         .llvm_ctx("pool get tag truncate")?;
-    let is_live = fn_ctx
+    let is_valid = fn_ctx
         .builder
         .build_int_compare(
             IntPredicate::EQ,
             tag,
             fn_ctx.ctx.i8_type().const_zero(),
-            "pool_get_is_live",
+            "pool_get_is_valid",
         )
         .llvm_ctx("pool get tag compare")?;
 
@@ -6548,14 +6557,15 @@ pub(crate) fn lower_supervisor_pool_get_option_call(
         .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
     fn_ctx
         .builder
-        .build_conditional_branch(is_live, some_bb, none_bb)
+        .build_conditional_branch(is_valid, some_bb, none_bb)
         .llvm_ctx("pool get Option condbr")?;
 
     fn_ctx.builder.position_at_end(some_bb);
-    let handle = fn_ctx
+    let supervisor_token = load_int_arg(fn_ctx, args[1], i64_ty, "pool_get_supervisor_token")?;
+    let slot = fn_ctx
         .builder
-        .build_load(i64_ty, handle_ptr, "pool_get_handle")
-        .llvm_ctx("pool get handle load")?
+        .build_load(i64_ty, slot_ptr, "pool_get_slot")
+        .llvm_ctx("pool get slot load")?
         .into_int_value();
     let dest_local = composite_dest_local(*dest_place, "hew_supervisor_pool_get_option")?;
     let (payload_ptr, payload_ty) = place_pointer(
@@ -6566,19 +6576,27 @@ pub(crate) fn lower_supervisor_pool_get_option_call(
             field_idx: 0,
         },
     )?;
-    let BasicTypeEnum::PointerType(payload_ty) = payload_ty else {
+    let BasicTypeEnum::StructType(child_ref_ty) = payload_ty else {
         return Err(CodegenError::FailClosed(format!(
-            "Option<LocalPid<T>>::Some payload must be pointer-shaped, got {payload_ty:?}"
+            "Option<ChildRef<T>>::Some payload must be a struct, got {payload_ty:?}"
         )));
     };
-    let handle = fn_ctx
+    let token_field = fn_ctx
         .builder
-        .build_int_to_ptr(handle, payload_ty, "pool_get_handle_ptr_value")
-        .llvm_ctx("pool get handle inttoptr")?;
+        .build_struct_gep(child_ref_ty, payload_ptr, 0, "pool_get_child_ref_token")
+        .llvm_ctx("pool get ChildRef token GEP")?;
+    let slot_field = fn_ctx
+        .builder
+        .build_struct_gep(child_ref_ty, payload_ptr, 1, "pool_get_child_ref_slot")
+        .llvm_ctx("pool get ChildRef slot GEP")?;
     fn_ctx
         .builder
-        .build_store(payload_ptr, handle)
-        .llvm_ctx("pool get Some payload store")?;
+        .build_store(token_field, supervisor_token)
+        .llvm_ctx("pool get ChildRef token store")?;
+    fn_ctx
+        .builder
+        .build_store(slot_field, slot)
+        .llvm_ctx("pool get ChildRef slot store")?;
     emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
     fn_ctx
         .builder

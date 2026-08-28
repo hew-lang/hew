@@ -361,7 +361,7 @@ pub enum Expr {
 
     /// `await_restart <supervised-child>` — suspend the current actor until the
     /// named supervised child's slot is Live again (it restarted), then resume
-    /// with the re-fetched live `LocalPid<ChildType>`. A dedicated prefix
+    /// with the same stable `ChildRef<ChildType>`. A dedicated prefix
     /// keyword (not a method, not an extension of `await`): the supervisor
     /// analogue of `await task`, lowered through `SuspendKind::RestartWait`. The
     /// operand must be a static supervised-child accessor; a permanently-Dead

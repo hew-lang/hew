@@ -16,7 +16,7 @@ pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
 pub(crate) fn identity_aggregate_layout(ty: &Ty) -> Option<(usize, usize)> {
     match ty {
         Ty::Named {
-            builtin: Some(BuiltinType::NodeId),
+            builtin: Some(BuiltinType::ChildRef | BuiltinType::NodeId),
             ..
         } => Some((16, 8)),
         Ty::Named {
@@ -3835,6 +3835,7 @@ mod tests {
         let node_id = Ty::builtin_named(BuiltinType::NodeId, vec![]);
         let location = Ty::builtin_named(BuiltinType::Location, vec![]);
         let remote_pid = Ty::remote_pid(Ty::I64);
+        let child_ref = Ty::child_ref(Ty::I64);
         let type_defs = HashMap::new();
 
         assert_eq!(primitive_copy_layout(&node_id, &type_defs), Some((16, 8)));
@@ -3843,6 +3844,7 @@ mod tests {
             primitive_copy_layout(&remote_pid, &type_defs),
             Some((32, 8))
         );
+        assert_eq!(primitive_copy_layout(&child_ref, &type_defs), Some((16, 8)));
     }
 
     #[test]

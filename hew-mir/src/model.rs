@@ -2307,7 +2307,10 @@ fn ty_contains_unclonable_opaque_inner(
             //    walks the type args and finds any opaque payload. Only a real
             //    builtin handle (stamped `builtin: Some(LocalPid)` by the
             //    checker) earns the bit-copy skip.
-            if matches!(builtin, Some(hew_types::BuiltinType::LocalPid)) {
+            if matches!(
+                builtin,
+                Some(hew_types::BuiltinType::ChildRef | hew_types::BuiltinType::LocalPid)
+            ) {
                 return false;
             }
             // 5. Type arguments (generic builtins with no layout: Vec<T>,
@@ -2802,15 +2805,15 @@ pub enum SuspendKind {
     },
     /// Non-blocking `await_restart sup.child` — park the current actor on the
     /// supervisor restart observer until the static child at `slot_index`
-    /// becomes Live again (it restarted), then resume re-fetching the now-Live
-    /// `LocalPid<ChildType>` into `result_dest`. The supervisor analogue of
+    /// becomes Live again (it restarted), then resume with the same stable
+    /// `ChildRef<ChildType>` in `result_dest`. The supervisor analogue of
     /// `TaskAwait`: lowered through the SAME cooperative-suspension machinery,
     /// parking against the supervisor's `restart_notify` (NOT the thread-blocking
     /// `hew_supervisor_wait_restart`). A permanently-Dead child fails closed
     /// (resumes immediately) rather than hanging forever.
     ///
     /// `deadline_result_dest` is RESERVED for the future bounded form
-    /// (`await_restart sup.w within: 5.seconds → Option<LocalPid<T>>`), mirroring
+    /// (`await_restart sup.w within: 5.seconds → Option<ChildRef<T>>`), mirroring
     /// the deadline slot on `Read`/`Accept`/`StreamNext`; the bare form leaves
     /// it `None`.
     RestartWait {
@@ -3964,6 +3967,9 @@ pub enum Terminator {
     ///
     Send {
         actor: Place,
+        /// Present for `ChildRef<T>` receivers. Carries the supervisor role
+        /// directly from the value into owner-scoped runtime submission.
+        stable_role: Option<StableActorRole>,
         msg_type: i32,
         value: Place,
         next: u32,
@@ -4208,14 +4214,13 @@ pub struct SelectArm {
 
 /// Stable identity for a fungible supervisor-child role.
 ///
-/// `supervisor_token` is the target-word identity captured while the source
-/// supervisor binding is live. `slot_index` is the compile-time static child
-/// slot. Codegen resolves this pair immediately before request submission and
-/// never dereferences either the supervisor or a previous child allocation.
+/// Both words are extracted from a `ChildRef<T>` value at its use site. This
+/// makes parameters, aggregate fields, collection elements, returns, and
+/// closure captures share one representation-driven path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StableActorRole {
     pub supervisor_token: Place,
-    pub slot_index: u32,
+    pub slot_index: Place,
 }
 
 /// The four sealed arm forms mirrored from HIR. The MIR layer carries

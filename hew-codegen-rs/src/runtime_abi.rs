@@ -3280,13 +3280,20 @@ pub(crate) fn lower_call_runtime_abi(
         F::SupervisorChildGet
         | F::LocalPidSupervisorChildGet
         | F::SupervisorNestedGet
-        | F::SupervisorPoolChildGet => {
+        | F::SupervisorPoolChildGet
+        | F::LocalPidSupervisorPoolChildRefGet => {
             // child_get/nested_get take 2 args (sup, key); pool_child_get takes 3
             // (sup, pool_key, index). All three return the same ChildLookupResult
             // aggregate, so the ABI handling below is shared; only the arg list
             // and the declared param types differ.
-            let is_pool = matches!(call.family(), F::SupervisorPoolChildGet);
-            let is_stable_role = matches!(call.family(), F::LocalPidSupervisorChildGet);
+            let is_pool = matches!(
+                call.family(),
+                F::SupervisorPoolChildGet | F::LocalPidSupervisorPoolChildRefGet
+            );
+            let is_stable_role = matches!(
+                call.family(),
+                F::LocalPidSupervisorChildGet | F::LocalPidSupervisorPoolChildRefGet
+            );
             let expected_args = if is_pool { 3 } else { 2 };
             if args.len() != expected_args {
                 return Err(CodegenError::FailClosed(format!(
@@ -4163,6 +4170,16 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // ask: classified resolve under children_lock, then the ID-pinned
         // blocking ask. Same null-or-reply return contract as hew_actor_ask
         // (null binds Err via hew_actor_ask_take_last_error).
+        "hew_supervisor_role_send" => i32_ty.fn_type(
+            &[
+                i64_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                size_ty.into(),
+            ],
+            false,
+        ),
         "hew_supervisor_role_ask" => ptr_ty.fn_type(
             &[
                 i64_ty.into(),
@@ -5478,6 +5495,10 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_supervisor_pool_child_get" => {
             let result_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
             result_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false)
+        }
+        "hew_local_pid_supervisor_pool_child_ref_get" => {
+            let result_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
+            result_ty.fn_type(&[i64_ty.into(), i32_ty.into(), i64_ty.into()], false)
         }
         // hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_key: u32) -> i64
         // (`hew-runtime/src/supervisor.rs`). Returns the pool's member count

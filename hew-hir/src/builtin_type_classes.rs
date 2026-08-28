@@ -206,6 +206,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(HashMap, BuiltinTypeShape::Opaque),
     registration!(HashSet, BuiltinTypeShape::Opaque),
     registration!(CancellationToken, BuiltinTypeShape::Opaque),
+    registration!(ChildRef, BuiltinTypeShape::Opaque),
     registration!(LocalPid, BuiltinTypeShape::Opaque),
     registration!(NodeId, BuiltinTypeShape::Struct(NODE_ID_FIELDS)),
     registration!(Location, BuiltinTypeShape::Struct(LOCATION_FIELDS)),

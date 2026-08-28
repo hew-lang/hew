@@ -1064,7 +1064,10 @@ impl Checker {
         name: &str,
         type_def: &TypeDef,
     ) -> Vec<Ty> {
-        if type_def.kind != TypeDefKind::Record || !type_def.fields.is_empty() {
+        if !matches!(type_def.kind, TypeDefKind::Struct | TypeDefKind::Record)
+            || !type_def.fields.is_empty()
+            || self.registry.is_resource(name)
+        {
             return Vec::new();
         }
         self.fn_sigs
@@ -1738,7 +1741,10 @@ impl Checker {
                 }) else {
                     return false;
                 };
-                matches!(type_def.kind, TypeDefKind::Record | TypeDefKind::Enum)
+                matches!(
+                    type_def.kind,
+                    TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+                ) && !self.registry.is_resource(name)
                     && (primitive_copy_layout(ty, &self.type_defs).is_some()
                         || self.registry.implements_marker(ty, MarkerTrait::Copy))
             }
@@ -4284,6 +4290,39 @@ mod tests {
             output.errors.is_empty(),
             "HashMap<Point, i64> with i64 record fields must be admitted; got: {:?}",
             output.errors
+        );
+    }
+
+    #[test]
+    fn hashmap_resource_struct_key_is_refused_before_layout_fact_derivation() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 21..31;
+        let mut token = make_record("Token", vec![("id", Ty::I64)]);
+        token.kind = TypeDefKind::Struct;
+        checker.type_defs.insert("Token".to_string(), token);
+        checker.registry.register_resource_type("Token".to_string());
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("Token".to_string(), vec![]),
+                val_ty: Ty::I64,
+                source_module: None,
+                is_abstract_key_param: false,
+            },
+        );
+
+        checker.finalize_hashmap_admission();
+
+        assert!(
+            !checker.errors.is_empty(),
+            "a #[resource] struct must be refused as a HashMap key"
+        );
+        assert!(
+            !checker
+                .hashmap_layout_facts
+                .contains_key(&SpanKey::in_module(&span, 0)),
+            "a #[resource] struct must not produce a layout-key fact"
         );
     }
 

@@ -593,6 +593,15 @@ impl TraitRegistry {
         self.resource_types.contains(name)
     }
 
+    /// Return the canonical `#[resource]` declaration identities.
+    ///
+    /// Collection admission needs the complete set so it can reject a marker
+    /// nested inside a value-type field walk, not only the outer key spelling.
+    #[must_use]
+    pub fn resource_type_names(&self) -> &HashSet<String> {
+        &self.resource_types
+    }
+
     /// Report whether `name` is a canonical `#[linear]` declaration.
     #[must_use]
     pub fn is_linear(&self, name: &str) -> bool {

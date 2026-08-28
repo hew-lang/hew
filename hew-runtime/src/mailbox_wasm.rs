@@ -764,7 +764,12 @@ pub(crate) unsafe fn hew_mailbox_send_fire_and_forget(
     // `hew_mailbox_send`.
     let mb = unsafe { &mut *mb };
     // SAFETY: `mb` is valid and the caller guarantees that `data` covers `size` bytes.
-    unsafe { send_user_message_inner(mb, msg_type, data.cast_const(), size, ptr::null_mut()) }
+    let outcome =
+        unsafe { send_user_message_inner(mb, msg_type, data.cast_const(), size, ptr::null_mut()) };
+    if matches!(outcome, SendOutcome::Enqueued | SendOutcome::DroppedOld) {
+        crate::scheduler_wasm::record_message_sent();
+    }
+    outcome
 }
 
 // ── Constructors ────────────────────────────────────────────────────────

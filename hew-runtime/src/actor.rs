@@ -11052,6 +11052,7 @@ mod tests {
     fn wasm_send_by_id_live_actor_delivers_and_wakes() {
         let _guard = crate::runtime_test_guard();
         crate::scheduler_wasm::hew_sched_init();
+        crate::scheduler_wasm::hew_sched_metrics_reset();
 
         let actor = make_tracked_wasm_free_test_actor(HewActorState::Idle);
         // SAFETY: the test exclusively owns the actor and newly allocated
@@ -11070,6 +11071,11 @@ mod tests {
             actor_send_by_id_wasm_internal(actor_id, 7, (&raw mut payload).cast(), size_of::<i64>())
         };
         assert_eq!(rc, HewError::Ok as i32);
+        assert_eq!(
+            crate::scheduler_wasm::hew_sched_metrics_messages_sent(),
+            1,
+            "successful WASM by-ID delivery must increment the sent-message metric"
+        );
         assert_eq!(
             // SAFETY: mailbox remains live and exclusively owned here.
             unsafe { crate::mailbox_wasm::hew_mailbox_len(mailbox) },

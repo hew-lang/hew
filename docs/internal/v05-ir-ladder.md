@@ -395,6 +395,12 @@ arity/types; entry parameter initialization; and operation-specific semantic
 invariants. The module SIR → MIR pipeline verifies at module scope before it
 can construct representation or storage.
 
+Optimization-safety verifier ledger:
+
+| Rewrite | Required proof | Counterfactual evidence |
+| --- | --- | --- |
+| Constant-CFG region discard | Every newly unreachable block has no value or ownership use carrying a drop obligation and no operation with a `MayTrap` edge. | `optimize_cfg` proves ordinary structural verification accepts a folded candidate with a discarded trapping arm, while the discard-safety verifier rejects it and leaves the original function unchanged. |
+
 **Dump:** `hew compile --dump-sir`.
 
 ### 2.5 Raw MIR (`hew-mir::raw`)

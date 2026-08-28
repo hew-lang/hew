@@ -31,5 +31,6 @@ pub use optimize::{
     SirOptimizationError,
 };
 pub use verify::{
-    verify_function, verify_function_in_module, verify_module, SirDiagnostic, SirDiagnosticKind,
+    verify_function, verify_function_in_module, verify_module, CfgDiscardSafetyReason,
+    SirDiagnostic, SirDiagnosticKind,
 };

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::OpId;
 use crate::{
@@ -134,6 +134,31 @@ pub enum SirDiagnosticKind {
         value: ValueId,
         block: BlockId,
     },
+    /// A CFG rewrite made a formerly executable block unreachable even though
+    /// discarding that region is not yet semantically safe.
+    UnsafeCfgDiscard {
+        block: BlockId,
+        reason: CfgDiscardSafetyReason,
+    },
+}
+
+/// The fail-closed reasons a CFG rewrite may not discard a reachable region.
+///
+/// The initial SIR domain is no-drop, but the ownership cases remain explicit
+/// here so widening that domain cannot silently make an existing CFG rewrite
+/// unsound. Each violation is a concrete verifier-ledger row rather than a
+/// prose-only precondition on the optimizer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CfgDiscardSafetyReason {
+    /// An operation in the discarded region may transfer control to a
+    /// language-visible trap.
+    MayTrap { op: OpId },
+    /// A block argument or operation result is not proven to be a no-drop
+    /// value in the currently admitted SIR value domain.
+    DropObligationValue { value: ValueId },
+    /// A move or consume in the discarded region transfers or discharges an
+    /// ownership obligation.
+    DropObligationUse { site: UseSite },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +233,108 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
 #[must_use]
 pub fn verify_function(function: &SemFunction) -> Vec<SirDiagnostic> {
     verify_function_with_context(function, None)
+}
+
+/// Verify the semantic precondition for discarding blocks during a CFG rewrite.
+///
+/// `rewritten` is the post-edge-rewrite, pre-compaction candidate, so both
+/// functions still use the same block identities. Only blocks reachable in
+/// `original` and newly unreachable in `rewritten` are examined. The rewrite
+/// fails closed if such a block contains a potentially trapping operation, a
+/// value outside the proven no-drop domain, or an ownership transfer/discharge.
+#[must_use]
+pub(crate) fn verify_cfg_discard_safety(
+    original: &SemFunction,
+    rewritten: &SemFunction,
+) -> Vec<SirDiagnostic> {
+    let original_cfg = crate::build_cfg_index(original);
+    let rewritten_cfg = crate::build_cfg_index(rewritten);
+    let discarded = original_cfg
+        .reachable()
+        .difference(rewritten_cfg.reachable())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut diagnostics = Vec::new();
+
+    for block in &original.blocks {
+        if !discarded.contains(&block.id) {
+            continue;
+        }
+        for argument in &block.args {
+            if !is_initial_value_type(&argument.ty) {
+                diagnostics.push(cfg_discard_diag(
+                    original,
+                    block.id,
+                    CfgDiscardSafetyReason::DropObligationValue {
+                        value: argument.value,
+                    },
+                ));
+            }
+        }
+        for operation in &block.ops {
+            if operation.kind.effects().may_trap() {
+                diagnostics.push(cfg_discard_diag(
+                    original,
+                    block.id,
+                    CfgDiscardSafetyReason::MayTrap { op: operation.id },
+                ));
+            }
+            for result in &operation.results {
+                if !is_initial_value_type(&result.ty) {
+                    diagnostics.push(cfg_discard_diag(
+                        original,
+                        block.id,
+                        CfgDiscardSafetyReason::DropObligationValue { value: result.id },
+                    ));
+                }
+            }
+            operation.kind.visit_operands(|operand, use_| {
+                if matches!(use_.mode, UseMode::Move | UseMode::Consume) {
+                    diagnostics.push(cfg_discard_diag(
+                        original,
+                        block.id,
+                        CfgDiscardSafetyReason::DropObligationUse {
+                            site: UseSite::Operation {
+                                op: operation.id,
+                                operand,
+                                value: use_.value,
+                                mode: use_.mode,
+                            },
+                        },
+                    ));
+                }
+            });
+        }
+        block.terminator.visit_operands(|operand, use_| {
+            if matches!(use_.mode, UseMode::Move | UseMode::Consume) {
+                diagnostics.push(cfg_discard_diag(
+                    original,
+                    block.id,
+                    CfgDiscardSafetyReason::DropObligationUse {
+                        site: UseSite::Terminator {
+                            block: block.id,
+                            operand,
+                            value: use_.value,
+                            mode: use_.mode,
+                        },
+                    },
+                ));
+            }
+        });
+    }
+
+    diagnostics
+}
+
+fn cfg_discard_diag(
+    function: &SemFunction,
+    block: BlockId,
+    reason: CfgDiscardSafetyReason,
+) -> SirDiagnostic {
+    diag(
+        function,
+        SirDiagnosticKind::UnsafeCfgDiscard { block, reason },
+    )
 }
 
 #[allow(
@@ -1406,4 +1533,99 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<ValueId> {
     let mut uses = Vec::new();
     term.visit_operands(|_, operand| uses.push(operand.value));
     uses
+}
+
+#[cfg(test)]
+mod cfg_discard_safety_tests {
+    use super::{verify_cfg_discard_safety, CfgDiscardSafetyReason, SirDiagnosticKind};
+    use crate::{
+        BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemFunction,
+        SemTerminator, UseMode, UseSite, ValueId,
+    };
+    use hew_hir::ItemId;
+    use hew_types::{DefId, ResolvedTy};
+
+    fn operand(value: u32, mode: UseMode) -> Operand {
+        Operand {
+            value: ValueId(value),
+            mode,
+        }
+    }
+
+    #[test]
+    fn records_a_discarded_ownership_discharge_as_a_drop_obligation() {
+        let original = SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("discarded_drop_obligation"),
+            name: "discarded_drop_obligation".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: vec![
+                BlockArg {
+                    value: ValueId(0),
+                    ty: ResolvedTy::Bool,
+                },
+                BlockArg {
+                    value: ValueId(1),
+                    ty: ResolvedTy::I64,
+                },
+            ],
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![
+                SemBlock {
+                    id: BlockId(0),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::Branch {
+                        condition: operand(0, UseMode::Read),
+                        then_target: Edge {
+                            target: BlockId(1),
+                            args: Vec::new(),
+                        },
+                        else_target: Edge {
+                            target: BlockId(2),
+                            args: Vec::new(),
+                        },
+                    },
+                },
+                SemBlock {
+                    id: BlockId(1),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::Return {
+                        value: Some(operand(1, UseMode::Read)),
+                    },
+                },
+                SemBlock {
+                    id: BlockId(2),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::Return {
+                        value: Some(operand(1, UseMode::Consume)),
+                    },
+                },
+            ],
+        };
+        let mut rewritten = original.clone();
+        rewritten.blocks[0].terminator = SemTerminator::Goto(Edge {
+            target: BlockId(1),
+            args: Vec::new(),
+        });
+
+        let diagnostics = verify_cfg_discard_safety(&original, &rewritten);
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::UnsafeCfgDiscard {
+                block: BlockId(2),
+                reason: CfgDiscardSafetyReason::DropObligationUse {
+                    site: UseSite::Terminator {
+                        mode: UseMode::Consume,
+                        ..
+                    }
+                }
+            }
+        )));
+    }
 }

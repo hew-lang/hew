@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::verify::verify_cfg_discard_safety;
 use crate::{
     build_cfg_index, verify_function, verify_module, BlockId, CallableId, SemFunction, SemModule,
     SemOpKind, SemTerminator, SirDiagnostic, ValueId,
@@ -106,6 +107,7 @@ pub fn canonicalize_module_constant_cfg(
 fn canonicalize_verified_function(
     function: &mut SemFunction,
 ) -> Result<CfgCanonicalizationReport, Vec<SirDiagnostic>> {
+    let before_folding = function.clone();
     let constants = direct_bool_constants(function);
     let initial_cfg = build_cfg_index(function);
     let mut folded_branches = 0;
@@ -143,6 +145,10 @@ fn canonicalize_verified_function(
     // separate audited transformation: later passes can follow this shape
     // without inventing a second validation convention.
     let diagnostics = verify_function(function);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+    let diagnostics = verify_cfg_discard_safety(&before_folding, function);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }

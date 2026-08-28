@@ -1,10 +1,11 @@
 use hew_hir::ItemId;
 use hew_sir::{
     canonicalize_constant_cfg, canonicalize_module_constant_cfg, verify_function, verify_module,
-    BlockArg, BlockId, CallableId, CallableInstance, CfgCanonicalizationReport, Edge,
-    EffectSummary, FunctionSourceOrigin, OpId, Operand, Provenance, SemAbiParam, SemBlock,
-    SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemTerminator, SirOptimizationError, UseMode, ValueDef, ValueId,
+    BlockArg, BlockId, CallableId, CallableInstance, CfgCanonicalizationReport,
+    CfgDiscardSafetyReason, Edge, EffectSummary, FunctionSourceOrigin, OpId, Operand, Provenance,
+    SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
+    SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
+    SirOptimizationError, UseMode, ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
 
@@ -167,6 +168,150 @@ fn false_branch_keeps_the_selected_duplicate_target_edge_and_remaps_blocks() {
             if args == &vec![read(1)]
     ));
     assert_eq!(function.blocks[1].args[0].value, ValueId(4));
+}
+
+#[test]
+fn compaction_preserves_every_surviving_non_block_identity_and_fact() {
+    let mut function = false_same_target_diamond();
+    let before = function.clone();
+
+    let report = canonicalize_constant_cfg(&mut function)
+        .expect("verified duplicate-edge CFG must canonicalize");
+
+    assert_eq!(function.id, before.id);
+    assert_eq!(function.callable, before.callable);
+    assert_eq!(function.declaration, before.declaration);
+    assert_eq!(function.name, before.name);
+    assert_eq!(function.span, before.span);
+    assert_eq!(function.source_origin, before.source_origin);
+    assert_eq!(function.params, before.params);
+    assert_eq!(function.return_ty, before.return_ty);
+
+    for (former_id, canonical_id) in &report.block_remap {
+        let former = before
+            .blocks
+            .iter()
+            .find(|block| block.id == *former_id)
+            .expect("every remap source must name an input block");
+        let canonical = function
+            .blocks
+            .iter()
+            .find(|block| block.id == *canonical_id)
+            .expect("every remap target must name an output block");
+
+        // These equalities jointly cover block-argument and operation
+        // ValueIds, OpIds, types, provenance, operands, and UseModes.
+        assert_eq!(canonical.args, former.args);
+        assert_eq!(canonical.ops, former.ops);
+
+        let mut expected_terminator = if *former_id == BlockId(0) {
+            match &former.terminator {
+                SemTerminator::Branch { else_target, .. } => {
+                    SemTerminator::Goto(else_target.clone())
+                }
+                other => panic!("fixture entry must be a branch, found {other:?}"),
+            }
+        } else {
+            former.terminator.clone()
+        };
+        expected_terminator.visit_successors_mut(|edge| {
+            edge.target = report.block_remap[&edge.target];
+        });
+        assert_eq!(canonical.terminator, expected_terminator);
+    }
+}
+
+#[test]
+fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() {
+    let mut function = function(
+        "discarded_trap",
+        Vec::new(),
+        ResolvedTy::Unit,
+        vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![SemOp {
+                    id: OpId(0),
+                    results: vec![value(0, ResolvedTy::Bool)],
+                    kind: SemOpKind::ConstBool(true),
+                    provenance: Provenance::Synthesized,
+                }],
+                terminator: SemTerminator::Branch {
+                    condition: read(0),
+                    then_target: Edge {
+                        target: BlockId(1),
+                        args: Vec::new(),
+                    },
+                    else_target: Edge {
+                        target: BlockId(2),
+                        args: Vec::new(),
+                    },
+                },
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return { value: None },
+            },
+            SemBlock {
+                id: BlockId(2),
+                args: Vec::new(),
+                ops: vec![
+                    SemOp {
+                        id: OpId(1),
+                        results: vec![value(1, ResolvedTy::I64)],
+                        kind: SemOpKind::ConstI64(1),
+                        provenance: Provenance::Synthesized,
+                    },
+                    SemOp {
+                        id: OpId(2),
+                        results: vec![value(2, ResolvedTy::I64)],
+                        kind: SemOpKind::ConstI64(0),
+                        provenance: Provenance::Synthesized,
+                    },
+                    SemOp {
+                        id: OpId(3),
+                        results: vec![value(3, ResolvedTy::I64)],
+                        kind: SemOpKind::Binary {
+                            op: hew_parser::ast::BinaryOp::Divide,
+                            lhs: read(1),
+                            rhs: read(2),
+                        },
+                        provenance: Provenance::Synthesized,
+                    },
+                ],
+                terminator: SemTerminator::Return { value: None },
+            },
+        ],
+    );
+    let before = function.clone();
+    assert!(verify_function(&function).is_empty());
+
+    // This is the counterfactual: the ordinary post-fold verifier alone sees
+    // valid SSA even though compaction would erase a MayTrap region.
+    let mut structurally_valid_but_unsafe = function.clone();
+    structurally_valid_but_unsafe.blocks[0].terminator = SemTerminator::Goto(Edge {
+        target: BlockId(1),
+        args: Vec::new(),
+    });
+    assert!(verify_function(&structurally_valid_but_unsafe).is_empty());
+
+    let error = canonicalize_constant_cfg(&mut function)
+        .expect_err("discarding a MayTrap arm must fail closed");
+    assert!(matches!(
+        error,
+        SirOptimizationError::InvalidOutput(diagnostics)
+            if diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                SirDiagnosticKind::UnsafeCfgDiscard {
+                    block: BlockId(2),
+                    reason: CfgDiscardSafetyReason::MayTrap { op: OpId(3) },
+                }
+            ))
+    ));
+    assert_eq!(function, before);
 }
 
 #[test]

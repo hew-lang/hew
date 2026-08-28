@@ -5,6 +5,7 @@ use super::{
     base_local, BuiltinType, ClosureEnvFieldOwnership, HirExpr, HirExprKind, HirStmt, HirStmtKind,
     Instr, Place, ResolvedTy, SelectArm, SelectArmKind, SuspendKind, Terminator,
 };
+use crate::{raw_virtual_operation_class, RawVirtualClass};
 
 /// The *source* (read) operands of an instruction — every `Place` whose
 /// value the instruction consumes, excluding the destination(s) it writes.
@@ -34,6 +35,12 @@ use super::{
 pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // No operands at all.
+        Instr::Value(operation) => match raw_virtual_operation_class(operation) {
+            Some(
+                RawVirtualClass::Integer | RawVirtualClass::Bool | RawVirtualClass::Tuple,
+            )
+            | None => Vec::new(),
+        },
         Instr::OwnershipEvent(_)
         | Instr::EnterContext
         | Instr::ExitContext
@@ -41,7 +48,6 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // Raw value operations are deliberately disjoint from `Place`; the
         // ReturnAbi materialization has a virtual source rather than a
         // place-source, so neither can alias a storage owner out of scope.
-        | Instr::Value(_)
         | Instr::MaterializeValue { .. }
         | Instr::ContextField { .. }
         | Instr::ConstI64 { .. }

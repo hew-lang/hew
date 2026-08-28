@@ -90,10 +90,10 @@ pub use ownership::{
     ProvenanceOrigin, ValueOwnership, ValueProvenance,
 };
 pub use raw_values::{
-    is_supported_raw_virtual_scalar_type, is_supported_raw_virtual_value_type,
-    raw_uses_virtual_values, verify_raw_virtual_value_checked, verify_raw_virtual_value_elaborated,
-    verify_raw_virtual_value_function, verify_raw_virtual_value_ladder, RawVirtualValueError,
-    RawVirtualValueFacts,
+    is_supported_raw_virtual_scalar_type, raw_uses_virtual_values, raw_virtual_class,
+    raw_virtual_operation_class, verify_raw_virtual_value_checked,
+    verify_raw_virtual_value_elaborated, verify_raw_virtual_value_function,
+    verify_raw_virtual_value_ladder, RawVirtualClass, RawVirtualValueError, RawVirtualValueFacts,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use sir::{

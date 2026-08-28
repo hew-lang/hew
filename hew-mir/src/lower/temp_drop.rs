@@ -1,4 +1,5 @@
 use super::ownership::returned_aggregate_consumes_source;
+mod handoff;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -17,35 +18,12 @@ use super::{
     ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
     StringRetainSite, SuspendKind, Terminator,
 };
+use crate::{raw_virtual_operation_class, RawVirtualClass};
+use handoff::instruction_carries_typed_handoff;
 
 const STRING_RETURN_SOURCE_BORROWED: u8 = 0b001;
 const STRING_RETURN_SOURCE_OWNED: u8 = 0b010;
 const STRING_RETURN_SOURCE_UNKNOWN: u8 = 0b100;
-
-fn instruction_carries_typed_handoff(
-    instruction: &Instr,
-    value: Place,
-    handoffs: &HashSet<(Place, Place)>,
-) -> bool {
-    handoffs.iter().any(|(source, destination)| {
-        if *source != value {
-            return false;
-        }
-        match instruction {
-            Instr::Move { dest, src } => {
-                *src == value
-                    && (*dest == *destination || base_local(*dest) == base_local(*destination))
-            }
-            Instr::TupleConstruct { elements, dest } => {
-                elements.contains(&value) && *dest == *destination
-            }
-            Instr::RecordInit { fields, dest, .. } => {
-                fields.iter().any(|(_, field)| *field == value) && *dest == *destination
-            }
-            _ => false,
-        }
-    })
-}
 
 fn aggregate_handoff_destination(instruction: &Instr, value: Place) -> Option<Place> {
     match instruction {
@@ -708,8 +686,13 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         // Raw virtual values are not places and do not participate in
         // projection-alias tracking. Materialization writes the return slot,
         // but it cannot create an interior aggregate alias either.
-        Instr::Value(_)
-        | Instr::MaterializeValue { .. }
+        Instr::Value(operation) => match raw_virtual_operation_class(operation) {
+            Some(
+                RawVirtualClass::Integer | RawVirtualClass::Bool | RawVirtualClass::Tuple,
+            )
+            | None => None,
+        },
+        Instr::MaterializeValue { .. }
         | Instr::OwnershipEvent(_)
         | Instr::InteriorMutationCommit { .. }
         | Instr::EnterContext

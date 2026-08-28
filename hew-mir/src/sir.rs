@@ -23,13 +23,12 @@ use hew_types::DefId;
 use hew_types::ResolvedTy;
 
 use crate::{
-    dataflow, is_supported_raw_virtual_value_type, raw_uses_virtual_values,
-    verify_raw_virtual_value_checked, verify_raw_virtual_value_elaborated,
-    verify_raw_virtual_value_function, BasicBlock, BlockKind, CheckedMirFunction, DropPlan,
-    ElabBlock, ElaboratedMirFunction, ExitPath, FunctionCallConv, Instr, IntArithOp, IntSignedness,
-    IrPipeline, ModuleCapabilities, ParamBoundaryFact, ParamBoundaryMode, Place, RawMirFunction,
-    RawValueDef, RawValueId, RawValueOp, Strategy, Terminator, TrapKind,
-    ValueMaterializationReason,
+    dataflow, raw_uses_virtual_values, raw_virtual_class, verify_raw_virtual_value_checked,
+    verify_raw_virtual_value_elaborated, verify_raw_virtual_value_function, BasicBlock, BlockKind,
+    CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction, ExitPath, FunctionCallConv,
+    Instr, IntArithOp, IntSignedness, IrPipeline, ModuleCapabilities, ParamBoundaryFact,
+    ParamBoundaryMode, Place, RawMirFunction, RawValueDef, RawValueId, RawValueOp, Strategy,
+    Terminator, TrapKind, ValueMaterializationReason,
 };
 
 /// The result of lowering one SIR function through the complete existing MIR
@@ -1752,7 +1751,7 @@ fn collect_virtual_value_types(
         }
     }
     for (value, ty) in &types {
-        if !is_supported_raw_virtual_value_type(ty) {
+        if raw_virtual_class(ty).is_none() {
             return Err(SirMirLoweringError::unsupported(format!(
                 "virtual raw value %{} of type `{}` needs ownership or representation lowering",
                 value.0,

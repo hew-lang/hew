@@ -4963,8 +4963,9 @@ pub struct RawValueDef {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RawValueOp {
     /// Bind one declared ABI parameter as a virtual raw-MIR value. Codegen
-    /// reads the incoming LLVM parameter directly rather than first storing it
-    /// in a `Place::Local` alloca.
+    /// reads the incoming LLVM parameter at this final ABI index directly
+    /// rather than first storing it in a `Place::Local` alloca. Codegen must
+    /// not re-derive a hidden-prefix adjustment from function metadata.
     Param { dest: RawValueDef, index: u32 },
     /// An integer constant.
     ConstI64 { dest: RawValueDef, value: i64 },

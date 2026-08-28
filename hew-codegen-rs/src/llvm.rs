@@ -12531,15 +12531,12 @@ fn raw_value_define<'ctx>(
 fn lower_raw_value_op<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, operation: &RawValueOp) -> CodegenResult<()> {
     match operation {
         RawValueOp::Param { dest, index } => {
-            let llvm_index = usize::try_from(*index)
-                .map_err(|_| {
-                    CodegenError::FailClosed("raw virtual parameter index exceeds usize".into())
-                })?
-                .saturating_add(usize::from(fn_ctx.execution_context.is_some()));
-            let llvm_index = u32::try_from(llvm_index).map_err(|_| {
-                CodegenError::FailClosed("raw virtual LLVM parameter index exceeds u32".into())
-            })?;
-            let incoming = fn_ctx.llvm_fn.get_nth_param(llvm_index).ok_or_else(|| {
+            if fn_ctx.execution_context.is_some() {
+                return Err(CodegenError::FailClosed(
+                    "raw virtual parameter body unexpectedly carries an execution context".into(),
+                ));
+            }
+            let incoming = fn_ctx.llvm_fn.get_nth_param(*index).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "raw virtual parameter {} has no corresponding LLVM ABI parameter",
                     index

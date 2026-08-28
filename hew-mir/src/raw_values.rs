@@ -78,13 +78,67 @@ pub fn is_supported_raw_virtual_scalar_type(ty: &ResolvedTy) -> bool {
     ty.is_integer() || *ty == ResolvedTy::Bool
 }
 
-/// Whether a type is valid for an internal Raw virtual value.
+/// Closed semantic classes admitted by Raw MIR's first virtual-value lane.
+///
+/// Every production consumer of virtual values matches this enum exhaustively.
+/// Adding an ownership-bearing or representation-bearing class therefore
+/// breaks those consumers at compile time until each one makes an explicit
+/// storage, suspension, and drop decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawVirtualClass {
+    Integer,
+    Bool,
+    Tuple,
+}
+
+/// Classify a type admitted for an internal Raw virtual value.
+///
+/// The wildcard is deliberately fail-closed over [`ResolvedTy`]: a new type is
+/// rejected until it is assigned an explicit [`RawVirtualClass`].
 #[must_use]
-pub fn is_supported_raw_virtual_value_type(ty: &ResolvedTy) -> bool {
-    is_supported_raw_virtual_scalar_type(ty)
-        || matches!(ty, ResolvedTy::Tuple(elements)
+pub fn raw_virtual_class(ty: &ResolvedTy) -> Option<RawVirtualClass> {
+    match ty {
+        ResolvedTy::I8
+        | ResolvedTy::I16
+        | ResolvedTy::I32
+        | ResolvedTy::I64
+        | ResolvedTy::U8
+        | ResolvedTy::U16
+        | ResolvedTy::U32
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize => Some(RawVirtualClass::Integer),
+        ResolvedTy::Bool => Some(RawVirtualClass::Bool),
+        ResolvedTy::Tuple(elements)
             if !elements.is_empty()
-                && elements.iter().all(is_supported_raw_virtual_value_type))
+                && elements.iter().all(|element| {
+                    matches!(
+                        raw_virtual_class(element),
+                        Some(
+                            RawVirtualClass::Integer
+                                | RawVirtualClass::Bool
+                                | RawVirtualClass::Tuple
+                        )
+                    )
+                }) =>
+        {
+            Some(RawVirtualClass::Tuple)
+        }
+        _ => None,
+    }
+}
+
+/// Return the admitted class of a Raw virtual-value operation's definition.
+#[must_use]
+pub fn raw_virtual_operation_class(operation: &RawValueOp) -> Option<RawVirtualClass> {
+    let dest = match operation {
+        RawValueOp::Param { dest, .. }
+        | RawValueOp::ConstI64 { dest, .. }
+        | RawValueOp::ConstBool { dest, .. }
+        | RawValueOp::TupleMake { dest, .. }
+        | RawValueOp::TupleGet { dest, .. } => dest,
+    };
+    raw_virtual_class(&dest.ty)
 }
 
 /// Verify a Raw body in the first, one-block virtual-value subset.
@@ -527,7 +581,7 @@ fn define_virtual_value(
     dest: &RawValueDef,
     context: &str,
 ) -> Result<(), RawVirtualValueError> {
-    if !is_supported_raw_virtual_value_type(&dest.ty) {
+    if raw_virtual_class(&dest.ty).is_none() {
         return Err(raw_virtual_error(format!(
             "{context} defines unsupported virtual value %{} type `{}`",
             dest.id.0,

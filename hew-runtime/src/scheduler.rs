@@ -110,8 +110,8 @@ static WORKER_PRE_PARK_HOOK: PoisonSafe<Option<fn()>> = PoisonSafe::new(None);
 #[cfg(test)]
 struct WorkerShutdownGate {
     worker_id: usize,
-    entered: std::sync::Arc<AtomicBool>,
-    release: std::sync::Arc<AtomicBool>,
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
 }
 
 #[cfg(test)]
@@ -1842,10 +1842,8 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
                         )
                     })
             }) {
-                entered.store(true, Ordering::Release);
-                while !release.load(Ordering::Acquire) {
-                    thread::sleep(Duration::from_millis(1));
-                }
+                entered.wait();
+                release.wait();
             }
             break;
         }
@@ -4602,9 +4600,9 @@ mod tests {
     struct WorkerShutdownGateGuard;
 
     impl WorkerShutdownGateGuard {
-        fn install(worker_id: usize) -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
-            let entered = Arc::new(AtomicBool::new(false));
-            let release = Arc::new(AtomicBool::new(false));
+        fn install(worker_id: usize) -> (Self, Arc<std::sync::Barrier>, Arc<std::sync::Barrier>) {
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
             WORKER_SHUTDOWN_GATE.access(|gate| {
                 assert!(gate.is_none(), "worker shutdown gate already installed");
                 *gate = Some(WorkerShutdownGate {
@@ -7907,14 +7905,7 @@ mod tests {
         let probe = runtime::install_drop_probe_for_test(rt_ptr);
 
         let shutdown = thread::spawn(|| hew_sched_shutdown());
-        let entered_deadline = Instant::now() + Duration::from_secs(2);
-        while !entered.load(Ordering::Acquire) && Instant::now() < entered_deadline {
-            thread::sleep(Duration::from_millis(1));
-        }
-        assert!(
-            entered.load(Ordering::Acquire),
-            "real worker must reach the shutdown-exit gate"
-        );
+        entered.wait();
         shutdown.join().expect("scheduler shutdown must return");
 
         let installed = runtime::default_runtime_ptr(Ordering::Acquire);
@@ -7954,7 +7945,7 @@ mod tests {
             "cleanup timeout must not drop the runtime"
         );
 
-        release.store(true, Ordering::Release);
+        release.wait();
         hew_runtime_cleanup();
         assert!(
             runtime::default_runtime_ptr(Ordering::Acquire).is_null(),

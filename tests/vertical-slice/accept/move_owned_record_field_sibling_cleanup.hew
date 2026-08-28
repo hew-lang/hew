@@ -1,0 +1,10 @@
+type Pair {
+    moved: Vec<i64>;
+    sibling: Vec<i64>;
+}
+
+fn main() {
+    let pair = Pair { moved: [11], sibling: [22] };
+    let moved = pair.moved;
+    println(moved[0]);
+}

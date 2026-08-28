@@ -3289,6 +3289,60 @@ impl Builder {
             _ => None,
         }
     }
+
+    /// Publish the exact owner handoff for a non-retaining field load.
+    ///
+    /// A `HandleTransfer` load moves one heap handle out of a live aggregate:
+    /// the new binding owns that handle, the aggregate's remaining siblings
+    /// are discharged separately, and the aggregate generation must not reach
+    /// a terminal recursive drop. Ending it here keeps an earlier unwind edge
+    /// covered while preventing final plan reconstruction from reviving it.
+    pub(crate) fn publish_handle_transfer_projection(
+        &mut self,
+        value: &HirExpr,
+        binding_ty: &ResolvedTy,
+    ) {
+        if self.owned_field_projection_move_sites.last() != Some(&value.site)
+            || value.intent != hew_hir::IntentKind::Consume
+            || self.classify_field_load(binding_ty) != Some(FieldLoadClass::HandleTransfer)
+        {
+            return;
+        }
+        self.publish_projection_source_transfer(value);
+    }
+
+    /// Publish the aggregate source handoff when an unguarded consuming match
+    /// takes ownership through an inline field projection.
+    pub(crate) fn publish_consuming_match_projection(&mut self, value: &HirExpr) {
+        if self.classify_field_load(&value.ty) != Some(FieldLoadClass::ByteCopyAlias) {
+            return;
+        }
+        self.publish_projection_source_transfer(value);
+    }
+
+    fn publish_projection_source_transfer(&mut self, value: &HirExpr) {
+        let Some(root_binding) = Self::projection_root_binding(value) else {
+            return;
+        };
+        let (Some(generation), Some(place)) = (
+            self.owner_generations.get(&root_binding).copied(),
+            self.binding_locals.get(&root_binding).copied(),
+        ) else {
+            return;
+        };
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Transfer {
+                owner: crate::model::OwnerId {
+                    binding: root_binding,
+                    generation,
+                },
+                from: place,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            },
+        ));
+    }
     /// Declaration-order ordinal of `field` on the record type of `object`, from
     /// the field-order table. `None` when the object type is not a registered
     /// record (a tuple projection uses its literal index instead).

@@ -923,6 +923,11 @@ struct Builder {
     /// lets binding lowering record that exact handoff as `Consume`, which
     /// disarms the arm binder and neutralizes its source payload slot.
     pub(crate) projected_resource_direct_move_sites: Vec<hew_hir::SiteId>,
+    /// Direct record-field expressions currently crossing an ownership
+    /// boundary. Nested projections used only to index, slice, or call a
+    /// borrowing method never enter this stack, even when their field type is
+    /// a non-retaining handle.
+    pub(crate) owned_field_projection_move_sites: Vec<hew_hir::SiteId>,
     /// Ownership sidecar produced for each lowered `VecIter<T>` expression.
     /// Let/var and assignment destinations copy this bit after moving the value
     /// bytes, preserving both owning and borrowing topologies through composite
@@ -7804,6 +7809,8 @@ fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, build
         let field_dischargeable = |ty: &ResolvedTy| {
             matches!(ty, ResolvedTy::String) || builder.field_drop_in_place_admissible(ty)
         };
+        let leaf_field_drop =
+            |base, field, ty: &ResolvedTy| builder.project_record_leaf_field_drop(base, field, ty);
         apply_escaped_record_sibling_field_drops(
             &mut *blocks,
             &builder.suspend_kinds,
@@ -7820,6 +7827,7 @@ fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, build
             &owned_field_list,
             &owned_tuple_field_list,
             &field_dischargeable,
+            &leaf_field_drop,
             &mut instr_spans,
         );
         builder.instr_spans = instr_spans;

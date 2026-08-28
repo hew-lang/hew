@@ -1680,7 +1680,7 @@ fn eval_wasm_hashmap_record_key_uses_thunk_values_correctly() {
     assert_wasm_eval_file_output(
         "wasm_hashmap_point_i64",
         r#"
-record Point {
+type Point {
     x: i64,
     y: i64
 }

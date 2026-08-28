@@ -26,7 +26,7 @@ use support::leak_slope::{
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const TUPLE_RECORD_ENUM_TEMPLATE: &str = r#"
-record Holder {
+type Holder {
     items: Vec<string>,
     tag: string,
 }
@@ -87,7 +87,7 @@ fn main() -> i64 {
 "#;
 
 const RECORD_ONLY_CONTROL_SOURCE: &str = r#"
-record Holder {
+type Holder {
     items: Vec<string>,
     tag: string,
 }
@@ -121,7 +121,7 @@ fn main() {
 "#;
 
 const NO_DOUBLE_FREE_SOURCE: &str = r#"
-record Holder {
+type Holder {
     items: Vec<string>,
     tag: string,
 }
@@ -169,7 +169,7 @@ fn main() {
 "#;
 
 const FORWARD_REBIND_HELPER_SIBLING_SOURCE: &str = r#"
-record Holder {
+type Holder {
     items: Vec<string>,
     tag: string,
 }
@@ -203,7 +203,7 @@ fn main() -> i64 {
 "#;
 
 const ENUM_CARRIER_FORWARD_REBIND_SOURCE: &str = r#"
-record Payload {
+type Payload {
     values: Vec<string>,
     label: string,
 }

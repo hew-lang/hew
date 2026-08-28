@@ -5,7 +5,7 @@
 // element layout descriptor.
 // Tracked: t1-vec-managed-projection
 // Expected behaviour once fixed: exits 1 (length of slice).
-record Person { name: string }
+type Person { name: string }
 
 fn main() {
   let v: Vec<Person> = [Person { name: "a" }];

@@ -1123,7 +1123,7 @@ fn recursive_value_type_allows_non_recursive_nested_enum() {
 fn recursive_value_type_rejects_record_enum_cycle() {
     let output = check_source(
         r"
-        record Boxed { tree: Tree }
+        type Boxed { tree: Tree }
         enum Tree { Leaf; Node(Boxed); }
         fn main() {}
         ",
@@ -1143,7 +1143,7 @@ fn recursive_value_type_rejects_record_enum_cycle() {
 fn recursive_value_type_rejects_generic_record_wrapper_cycle() {
     let output = check_source(
         r"
-        record Wrapper<T> { value: T }
+        type Wrapper<T> { value: T }
         enum Tree { Leaf; Node(Wrapper<Tree>); }
         fn main() {}
         ",
@@ -1200,7 +1200,7 @@ fn recursive_value_type_rejects_diverging_generic_self_reference() {
 fn recursive_value_type_allows_pointer_self_reference() {
     let output = check_source(
         r"
-        record Node { next: *const Node }
+        type Node { next: *const Node }
         fn main() {}
         ",
     );
@@ -3464,7 +3464,7 @@ fn generic_decl_bound_rejects_tuple_record_constructor_site() {
     assert_decl_bound_rejects_no_display(
         r"
         type NoDisplay { n: i64 }
-        record Wrap<T: Display>(T);
+        type Wrap<T: Display>(T);
         fn main() {
             let _wrap = Wrap(NoDisplay { n: 1 });
         }

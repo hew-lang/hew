@@ -1,4 +1,4 @@
-record ArrayHeapMoveCarrier { items: Vec<string>, sibling: string }
+type ArrayHeapMoveCarrier { items: Vec<string>, sibling: string }
 
 fn project(i: i64) -> string {
     let values: Vec<string> = Vec.new();

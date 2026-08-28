@@ -611,7 +611,7 @@ fn borrowed_vec_control() -> i64 {
 fn record_init_adopts_fresh_vec_field_but_not_borrowed_iterator_capture() {
     let p = pipeline_with_tc(
         r#"
-record Carrier { items: Vec<i64>, sibling: string }
+type Carrier { items: Vec<i64>, sibling: string }
 
 fn projected_record() -> i64 {
     let values: Vec<i64> = Vec.new();

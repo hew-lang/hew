@@ -1,4 +1,4 @@
-record TupleScalarMoveCarrier {
+type TupleScalarMoveCarrier {
     pair: (string, i64),
     sibling: string,
 }

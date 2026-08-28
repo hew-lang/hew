@@ -20,7 +20,7 @@
 
 import std.testing;
 
-record Point {
+type Point {
     x: i64,
     y: i64
 }

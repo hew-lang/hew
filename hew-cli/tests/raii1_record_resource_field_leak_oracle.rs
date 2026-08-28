@@ -562,7 +562,7 @@ fn raii1_async_cancel_drop_spine_reaches_close() {
     assert!(
         run.contains("cancel_exit") && run.contains("__hew_record_drop_inplace_Holder"),
         "the coroutine's cooperative-cancel resume path must drop the frame-spilled \
-         record through the thunk;\n{run}"
+         type through the thunk;\n{run}"
     );
     let thunk = fn_body(&ll, "@__hew_record_drop_inplace_Holder")
         .expect("missing `__hew_record_drop_inplace_Holder` definition");

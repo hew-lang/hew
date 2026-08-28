@@ -8689,7 +8689,7 @@ fn emit_child_init_thunk<'ctx>(
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "init thunk for supervisor `{sup_name}` child `{}`: config struct `{}` has no MIR \
-                 record layout for field-index resolution",
+                 type layout for field-index resolution",
                 child.name, config_param.config_ty_name
             ))
         })?;

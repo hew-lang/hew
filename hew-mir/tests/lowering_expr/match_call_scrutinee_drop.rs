@@ -539,7 +539,7 @@ fn main() {
 fn returned_payload_binder_releases_remaining_call_carrier_on_early_return() {
     let p = pipeline_with_tc(
         r#"
-record Snap { label: string, terminal: bool }
+type Snap { label: string, terminal: bool }
 
 actor Svc {
     receive fn snapshot() -> Snap {
@@ -766,7 +766,7 @@ fn main() -> i64 {
 fn vec_clone_match_field_return_defers_original_fields_to_carrier() {
     let p = pipeline_with_tc(
         r#"
-record Secret { value: string, kind: string }
+type Secret { value: string, kind: string }
 enum CredErr { Missing(string); Denied(string) }
 
 fn resolve(n: i64) -> Result<Secret, CredErr> {
@@ -918,7 +918,7 @@ fn main() {
 fn nested_record_payload_escape_neutralizes_original_call_carrier() {
     let p = pipeline_with_tc(
         r#"
-record Slot { generation: i64, value: Option<string> }
+type Slot { generation: i64, value: Option<string> }
 
 fn clone_slot() -> Option<Slot> {
     Some(Slot { generation: 1, value: Some("payload".to_upper()) })

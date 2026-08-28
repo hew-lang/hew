@@ -20,7 +20,7 @@
 
 import std.testing;
 
-record Pair {
+type Pair {
     n: i64,
     label: string
 }

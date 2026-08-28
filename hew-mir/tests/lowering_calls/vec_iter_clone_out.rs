@@ -425,15 +425,15 @@ fn borrowed_for_source_cannot_move_or_reassign_until_cursor_scope_closes() {
 fn borrowed_projection_prefix_stores_reject_while_cursor_active() {
     let pipeline = pipeline_allowing_mir_diagnostics(
         r"
-        record Holder {
+        type Holder {
             items: Vec<i64>,
         }
 
-        record Inner {
+        type Inner {
             items: Vec<i64>,
         }
 
-        record Outer {
+        type Outer {
             inner: Inner,
             spare: Vec<i64>,
         }

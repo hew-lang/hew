@@ -1,6 +1,6 @@
 type Label = string;
 
-record AppConfig {
+type AppConfig {
     label: Label,
 }
 

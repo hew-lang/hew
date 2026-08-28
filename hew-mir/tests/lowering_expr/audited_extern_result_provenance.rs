@@ -87,7 +87,7 @@ fn transfers_are_refused(p: &IrPipeline) -> bool {
 fn stdlib_shape(extern_decls: &str, producer: &str) -> IrPipeline {
     pipeline_with_tc(&format!(
         "extern \"C\" {{\n{extern_decls}}}\n\
-         record Holder {{ label: string }}\n\
+         type Holder {{ label: string }}\n\
          type Pod {{ status: i32; timestamp: i64 }}\n\
          #[opaque]\n\
          type Handle {{\n}}\n\
@@ -122,7 +122,7 @@ fn pod_carrier_shape(
 ) -> IrPipeline {
     pipeline_with_tc(&format!(
         "extern \"C\" {{\n{extern_decls}}}\n\
-         record Holder {{ label: string }}\n\
+         type Holder {{ label: string }}\n\
          type Pod {{ status: i32; timestamp: i64 }}\n\
          #[opaque]\n\
          type Handle {{\n}}\n\

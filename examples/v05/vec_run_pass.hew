@@ -3,7 +3,7 @@
 // get, set, remove, contains, is_empty, clone, append, extend, clear,
 // join) so any regression in the checker/HIR/MIR/codegen chain that
 // powers `Vec<T>` shows up here.
-record Point {
+type Point {
     x: i64,
     y: i64
 }

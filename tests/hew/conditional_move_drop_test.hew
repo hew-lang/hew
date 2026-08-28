@@ -237,7 +237,7 @@ fn test_both_arm_moves_release_once_each() {
 // keeps its release; the source falls back to the fail-closed legacy posture
 // on the neither path (bounded leak, never a wrong free). Values must stay
 // exact on every path.
-record Crate {
+type Crate {
     items: Vec<i64>
 }
 

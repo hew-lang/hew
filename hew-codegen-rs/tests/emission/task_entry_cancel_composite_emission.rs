@@ -70,7 +70,7 @@ fn emit_ll_text(pipeline: &hew_mir::IrPipeline, module_name: &str) -> String {
 /// `compute_cooperate_sites`: any non-leaf function's bb0 gets one
 /// unconditionally).
 const COMPOSITE_FORK_SOURCE: &str = r#"
-record Point {
+type Point {
     x: i64,
     y: i64,
 }

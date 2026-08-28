@@ -315,7 +315,7 @@ mod record_admission {
         // must produce no errors.
         let output = check_source(
             r"
-            record Point { x: i64, y: i64 }
+            type Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: 1, y: 2 };
             }
@@ -333,7 +333,7 @@ mod record_admission {
         // Omitting a required field must produce a missing-field error.
         let output = check_source(
             r"
-            record Point { x: i64, y: i64 }
+            type Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: 1 };
             }
@@ -356,7 +356,7 @@ mod record_admission {
         // undefined-field error.
         let output = check_source(
             r"
-            record Point { x: i64, y: i64 }
+            type Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: 1, y: 2, z: 3 };
             }
@@ -379,7 +379,7 @@ mod record_admission {
         // error.
         let output = check_source(
             r#"
-            record Point { x: i64, y: i64 }
+            type Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: "hello", y: 2 };
             }
@@ -403,7 +403,7 @@ mod record_admission {
         // produce no errors.
         let output = check_source(
             r"
-            record Point { x: i64, y: i64 }
+            type Point { x: i64, y: i64 }
             fn main() {
                 let p = Point { x: 10, y: 20 };
                 let n: i64 = p.x;
@@ -422,7 +422,7 @@ mod record_admission {
         // Assigning to a record field through an immutable binding must be rejected.
         let output = check_source(
             r"
-            record Point { x: i64, y: i64 }
+            type Point { x: i64, y: i64 }
             fn main() {
                 let p: Point = Point { x: 1, y: 2 };
                 p.x = 5;
@@ -444,7 +444,7 @@ mod record_admission {
     fn field_write_through_mutable_binding_accepted() {
         let output = check_source(
             r"
-            record Point { x: i64, y: i64 }
+            type Point { x: i64, y: i64 }
             fn main() {
                 var p: Point = Point { x: 1, y: 2 };
                 p.x = 5;
@@ -464,7 +464,7 @@ mod record_admission {
         // declared record type without errors.
         let output = check_source(
             r"
-            record UserId(i64);
+            type UserId(i64);
             fn make() -> UserId {
                 UserId(42)
             }
@@ -484,7 +484,7 @@ mod record_admission {
         // error for the synthesised field name `"0"`.
         let output = check_source(
             r"
-            record UserId(i64);
+            type UserId(i64);
             fn get_inner(id: UserId) -> i64 {
                 id.0
             }
@@ -512,7 +512,7 @@ mod record {
             // because `base` fills the missing `y` field.
             let output = check_source(
                 r"
-                record Point { x: i64, y: i64 }
+                type Point { x: i64, y: i64 }
                 fn f(base: Point) -> Point {
                     Point { x: 5, ..base }
                 }
@@ -530,7 +530,7 @@ mod record {
             // All fields listed explicitly plus base — still valid (explicit overrides).
             let output = check_source(
                 r"
-                record Point { x: i64, y: i64 }
+                type Point { x: i64, y: i64 }
                 fn f(base: Point) -> Point {
                     Point { x: 1, y: 2, ..base }
                 }
@@ -548,7 +548,7 @@ mod record {
             // `Point { ..base }` — base fills all fields.
             let output = check_source(
                 r"
-                record Point { x: i64, y: i64 }
+                type Point { x: i64, y: i64 }
                 fn f(base: Point) -> Point {
                     Point { ..base }
                 }
@@ -566,8 +566,8 @@ mod record {
             // `Point { x: 5, ..other }` where `other` is a different type — must error.
             let output = check_source(
                 r"
-                record Point { x: i64, y: i64 }
-                record Color { r: i64, g: i64, b: i64 }
+                type Point { x: i64, y: i64 }
+                type Color { r: i64, g: i64, b: i64 }
                 fn f(other: Color) -> Point {
                     Point { x: 5, ..other }
                 }
@@ -589,7 +589,7 @@ mod record {
             // No functional update — missing field still an error.
             let output = check_source(
                 r"
-                record Point { x: i64, y: i64 }
+                type Point { x: i64, y: i64 }
                 fn f() -> Point {
                     Point { x: 1 }
                 }
@@ -611,7 +611,7 @@ mod record {
             // Explicit field type mismatch must still be caught even when base is present.
             let output = check_source(
                 r#"
-                record Point { x: i64, y: i64 }
+                type Point { x: i64, y: i64 }
                 fn f(base: Point) -> Point {
                     Point { x: "not-an-i64", ..base }
                 }
@@ -630,8 +630,8 @@ mod record {
             // different type — the check_against path must also validate the base.
             let output = check_source(
                 r"
-                record Point { x: i64, y: i64 }
-                record Color { r: i64, g: i64, b: i64 }
+                type Point { x: i64, y: i64 }
+                type Color { r: i64, g: i64, b: i64 }
                 fn f(other: Color) {
                     let p: Point = Point { x: 5, ..other };
                 }

@@ -42,7 +42,7 @@ enum DeepOuter {
     Empty;
 }
 
-record Holder {
+type Holder {
     value: Inner,
     sibling: i64,
 }

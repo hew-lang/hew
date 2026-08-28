@@ -5,7 +5,7 @@ enum Choice<T> {
     Empty;
 }
 
-record EnumHolder<T> {
+type EnumHolder<T> {
     item: Choice<T>,
     count: i64
 }

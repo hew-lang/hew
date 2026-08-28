@@ -1,6 +1,6 @@
 import std.string;
 
-record Session { token: string, generation: i64 }
+type Session { token: string, generation: i64 }
 enum LoadError { Missing(string); }
 
 fn load_session(ok: bool) -> Result<Session, LoadError> {

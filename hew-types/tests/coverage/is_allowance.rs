@@ -214,7 +214,7 @@ fn string_is_string_rejected() {
 fn record_is_record_rejected() {
     assert_has_e_is_value_type(
         r"
-            record Point { x: i64, y: i64 }
+            type Point { x: i64, y: i64 }
 
             fn main() {
                 let p = Point { x: 1, y: 2 };

@@ -45,7 +45,7 @@ fn enum_layout_names(output: &hew_hir::LowerOutput) -> Vec<String> {
 #[test]
 fn generic_record_in_generic_body_registers_concrete_layout() {
     let source = r"
-        record Box<T> {
+        type Box<T> {
             value: T,
         }
 
@@ -77,7 +77,7 @@ fn generic_record_in_generic_body_registers_concrete_layout() {
 #[test]
 fn abstract_origin_layout_is_not_registered() {
     let source = r"
-        record Box<T> {
+        type Box<T> {
             value: T,
         }
 
@@ -103,7 +103,7 @@ fn abstract_origin_layout_is_not_registered() {
 #[test]
 fn two_record_instantiations_register_distinct_layouts() {
     let source = r"
-        record Box<T> {
+        type Box<T> {
             value: T,
         }
 
@@ -174,7 +174,7 @@ fn generic_enum_in_generic_body_registers_concrete_layout() {
 #[test]
 fn uninstantiated_generic_produces_no_layout() {
     let source = r"
-        record Box<T> {
+        type Box<T> {
             value: T,
         }
 

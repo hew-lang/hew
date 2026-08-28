@@ -1,4 +1,4 @@
-record User { name: string, id: i64 }
+type User { name: string, id: i64 }
 
 fn main() {
     let users: HashMap<i64, User> = HashMap.new();

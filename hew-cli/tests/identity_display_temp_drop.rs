@@ -22,7 +22,7 @@ use support::leak_slope::compile_to_native_with_ir;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const STRUCTURAL_SOURCE: &str = r"
-record Ping {
+type Ping {
     value: i64,
 }
 

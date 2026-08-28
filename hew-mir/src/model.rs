@@ -8796,7 +8796,7 @@ mod heap_owning_tests {
                 &qualified_names
             ),
             "a qualified opaque handle must fail closed even when a clean user \
-             record shares its short name (the same-short collision must not \
+             type shares its short name (the same-short collision must not \
              suppress the opaque name-fallback)"
         );
 

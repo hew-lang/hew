@@ -309,8 +309,8 @@ const PRELUDE: &str = r#"extern "C" {
     fn host_record() -> Holder;
     fn host_sink(s: string);
 }
-record Holder { label: string }
-record Wrapper { inner: Holder }
+type Holder { label: string }
+type Wrapper { inner: Holder }
 enum Boxed { Full(Holder); Empty }
 "#;
 

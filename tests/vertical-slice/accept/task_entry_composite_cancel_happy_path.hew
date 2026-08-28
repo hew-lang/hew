@@ -3,7 +3,7 @@
 // (emit_cancel_trap_or_return, hew-codegen-rs/src/llvm.rs). The fix only
 // touches the cancel_exit arm; a normal, non-cancelled `fork`+`await` over a
 // composite return type must be byte-identical to pre-fix behaviour.
-record Point {
+type Point {
     x: i64,
     y: i64
 }

@@ -2958,8 +2958,8 @@ fn record_field_marker_derivation_expands_top_level_alias() {
         type GoodAlias = i64;
         type BadAlias = Rc<i64>;
 
-        record Good { v: GoodAlias }
-        record Bad { v: BadAlias }
+        type Good { v: GoodAlias }
+        type Bad { v: BadAlias }
 
         fn main() {}
     ";

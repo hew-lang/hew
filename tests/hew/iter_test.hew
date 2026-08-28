@@ -13,12 +13,12 @@ import std.iter;
 
 import std.testing;
 
-record Claim {
+type Claim {
     run_id: string,
     amount: i64
 }
 
-record ClaimsLedger {
+type ClaimsLedger {
     claims: Vec<Claim>,
     terminal_runs: Vec<string>
 }

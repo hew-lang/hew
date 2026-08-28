@@ -2965,7 +2965,7 @@ This is deliberately different from the IEEE numeric `==` you get on a bare
 `f64`/`f32` expression, where `NaN != NaN` and `+0.0 == -0.0`:
 
 ```hew
-record Vec2 { x: f64, y: f64 }
+type Vec2 { x: f64, y: f64 }
 
 fn main() {
     let nan = 0.0 / 0.0;
@@ -2999,7 +2999,7 @@ implies an equal hash and a float-bearing `record` is a sound `HashMap` key.
 > not extend to `Vec<f64>.contains` or direct `f64 == f64` expressions.
 
 ```hew
-record Coord { x: f64, y: f64 }
+type Coord { x: f64, y: f64 }
 
 fn main() {
     let m: HashMap<Coord, i64> = HashMap.new();

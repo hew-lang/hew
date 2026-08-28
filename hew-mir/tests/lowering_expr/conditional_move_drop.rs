@@ -715,7 +715,7 @@ fn mixed_rebind_and_record_ingress_keeps_destination_release() {
             return v;
         }
 
-        record Holder {
+        type Holder {
             items: Vec<i64>,
         }
 

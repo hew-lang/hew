@@ -5193,7 +5193,7 @@ pub(crate) mod tests {
     fn coarse_differential_forwarder_and_projection() {
         assert_coarse_byte_identical(
             r"
-            record Box { data: string }
+            type Box { data: string }
             fn passthru(x: string) -> string { x }
             fn project(b: Box) -> string { b.data }
             fn ctor(s: string) -> Box { Box { data: s } }
@@ -5207,7 +5207,7 @@ pub(crate) mod tests {
     fn retained_string_projection_is_a_release_owner_not_a_fresh_alias() {
         let module = lower_source(
             r"
-            record Box { data: string }
+            type Box { data: string }
             fn record_project(b: Box) -> string { b.data }
             fn tuple_project(t: (string, i64)) -> string { t.0 }
             fn passthru(s: string) -> string { s }
@@ -5349,7 +5349,7 @@ pub(crate) mod tests {
     fn coarse_differential_aggregate_and_method_shapes() {
         assert_coarse_byte_identical(
             r"
-            record Box { data: string }
+            type Box { data: string }
             fn embed(p: string) -> Box { Box { data: p } }
             fn tuple_embed(p: string) -> (string, i64) { (p, 0) }
             fn via_method(v: Vec<i64>) -> i64 { v.len() }
@@ -5366,7 +5366,7 @@ pub(crate) mod tests {
     fn coarse_still_fails_closed_on_the_unsafe_shapes() {
         let module = lower_source(
             r"
-            record Box { data: Vec<i64> }
+            type Box { data: Vec<i64> }
             fn recursive_forwarder(flag: bool, x: Vec<i64>) -> Vec<i64> {
                 if flag { x } else { recursive_forwarder(true, x) }
             }

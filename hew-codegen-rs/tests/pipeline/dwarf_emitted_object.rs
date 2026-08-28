@@ -37,9 +37,9 @@ use hew_types::Checker;
 /// with mixed-width fields (for the member bit-offset check). Mirrors the
 /// independent review probe that surfaced the three blocking defects.
 const FIXTURE: &str = "\
-record Point { x: i64, y: i64 }
+type Point { x: i64, y: i64 }
 
-record Mixed { tiny: i8, wide: i64, flag: bool, mid: i16, tail: i32 }
+type Mixed { tiny: i8, wide: i64, flag: bool, mid: i16, tail: i32 }
 
 enum Status {
     Idle;

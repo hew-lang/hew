@@ -3,7 +3,7 @@
 // post-function-mono record-layout discovery is genuinely polymorphic, not a
 // single-type special case. The `Box<T>` layout is registered only after
 // `make` is substituted as `make$$i64` / `make$$bool`.
-record Box<T> {
+type Box<T> {
     value: T
 }
 

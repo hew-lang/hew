@@ -235,7 +235,7 @@ fn spawn_init_actor_rejects_unknown_argument() {
 fn remote_pid_ask_lowers_to_remote_ask_terminator() {
     let pipeline = lower_checked(
         r"
-        record Ping {
+        type Ping {
             n: i64,
         }
 

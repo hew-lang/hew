@@ -1,5 +1,5 @@
-record NestedScalarMoveInner { text: string, value: i64 }
-record NestedScalarMoveCarrier {
+type NestedScalarMoveInner { text: string, value: i64 }
+type NestedScalarMoveCarrier {
     inner: NestedScalarMoveInner,
     sibling: string,
 }

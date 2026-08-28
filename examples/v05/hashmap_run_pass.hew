@@ -19,7 +19,7 @@
 //     `hew_hashmap_<op>_layout` / `hew_hashset_<op>_layout` C-ABI symbol
 //     (catalogued in `hew-hir/src/stdlib_catalog.rs`).
 // `hew run examples/v05/hashmap_run_pass.hew` must complete successfully.
-record Point {
+type Point {
     x: i64,
     y: i64
 }

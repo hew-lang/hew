@@ -332,7 +332,7 @@ fn supervisor_permanent_record_containing_vec_known_residual_gap() {
     // so the check does NOT fire.  This is the documented residual gap.
     let output = check_source(
         r"
-        record Wrapper { inner: Vec<i64> }
+        type Wrapper { inner: Vec<i64> }
 
         actor Holder {
             let data: Wrapper;
@@ -511,7 +511,7 @@ fn supervisor_init_arg_tuple_rejects() {
 fn supervisor_init_arg_record_wrapping_vec_rejects() {
     assert_supervisor_init_arg_non_bitcopy(
         r"
-        record Wrapper { inner: Vec<i64> }
+        type Wrapper { inner: Vec<i64> }
 
         actor Holder {
             let data: Wrapper;
@@ -680,7 +680,7 @@ fn supervisor_init_arg_scalar_config_field_admitted() {
     // the byte-copy wall (keyed on the scalar param) admits it.
     let output = check_source(
         r"
-        record AppConfig { size: i64 }
+        type AppConfig { size: i64 }
 
         actor Cache {
             var capacity: i64;
@@ -722,7 +722,7 @@ fn supervisor_init_arg_config_nonexistent_field_surfaces_error() {
     // diagnostic for a missing config field, at the arg-expr span.
     let output = check_source(
         r"
-        record AppConfig { size: i64 }
+        type AppConfig { size: i64 }
 
         actor Cache {
             var capacity: i64;
@@ -756,7 +756,7 @@ fn supervisor_init_arg_config_field_type_mismatch_surfaces_error() {
     // bool). The init-arg-expr typing is what makes this catchable.
     let output = check_source(
         r"
-        record AppConfig { flag: bool }
+        type AppConfig { flag: bool }
 
         actor Cache {
             var capacity: i64;
@@ -933,7 +933,7 @@ fn supervisor_pool_count_dynamic_config_is_accepted() {
     // loop is not yet emitted. This test only covers the type-checker accept.
     let output = check_source(
         r"
-        record AppConfig { workers: i64 }
+        type AppConfig { workers: i64 }
 
         actor Worker { receive fn ping() {} }
 

@@ -24,8 +24,8 @@ fn count<T>(items: Vec<T>) -> i64 {
     c
 }
 
-record Pair(i64, string);
-record Slot<T>(T);
+type Pair(i64, string);
+type Slot<T>(T);
 
 // Positional records keep their payload shape outside named-field access.
 // Both direct and generic VecIter paths must accept this clone-total layout.

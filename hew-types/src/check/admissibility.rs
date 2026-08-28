@@ -4264,7 +4264,7 @@ mod tests {
     #[test]
     fn hashmap_source_record_key_i64_fields_is_hash_eligible() {
         let source = r"
-            record Point { x: i64, y: i64 }
+            type Point { x: i64, y: i64 }
             fn main() {
                 let m: HashMap<Point, i64> = HashMap.new();
                 m.insert(Point { x: 1, y: 2 }, 10);

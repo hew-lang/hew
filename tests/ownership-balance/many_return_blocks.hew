@@ -1,6 +1,6 @@
 import std.string;
 
-record Admission { label: string, ordinal: i64 }
+type Admission { label: string, ordinal: i64 }
 enum AdmissionError { Rejected(string); }
 
 fn admit(n: i64) -> Result<Admission, AdmissionError> {

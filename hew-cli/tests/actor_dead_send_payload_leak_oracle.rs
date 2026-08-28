@@ -86,7 +86,7 @@ const RACE_ITERS: usize = 400;
 fn dead_recipient_source(iters: usize) -> String {
     format!(
         r#"
-record Parcel {{
+type Parcel {{
     label: string,
     tags: Vec<string>,
 }}

@@ -82,7 +82,7 @@ const SLOPE_TOLERANCE: usize = 5;
 /// returns a FRESH `Vec<string>` (rc=1, its own buffer) so each element the
 /// store ingests owns distinct heap the leak oracle can count.
 const PRELUDE: &str = "\
-record Holder { items: Vec<string> }\n\
+type Holder { items: Vec<string> }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
 \x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
@@ -142,7 +142,7 @@ fn set_temp_source(frames: usize) -> String {
 /// `readAfter` reads `h.items.len()` (== 2) across 3 iterations → 6; then `OK`
 /// (so `66OK`).
 const NO_DOUBLE_FREE_SOURCE: &str = "\
-record Holder { items: Vec<string> }\n\
+type Holder { items: Vec<string> }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
 \x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
@@ -199,8 +199,8 @@ fn main() {\n\
 /// pre-set read=2, and the caller's post-call `p.items.len()`=2, then `OK` — so
 /// `22222OK`.
 const SET_NO_DOUBLE_FREE_SOURCE: &str = "\
-record Holder { items: Vec<string> }\n\
-record Wrap { inner: Holder }\n\
+type Holder { items: Vec<string> }\n\
+type Wrap { inner: Holder }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
 \x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\

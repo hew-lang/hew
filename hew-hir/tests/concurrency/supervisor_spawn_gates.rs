@@ -61,7 +61,7 @@ fn supervisor_spawn_no_args_accepted() {
 #[test]
 fn config_supervisor_spawn_with_config_arg_accepted() {
     let source = r"
-        record AppConfig { size: i64 }
+        type AppConfig { size: i64 }
         actor Cache {
             var capacity: i64;
             receive fn get_cap() -> i64 { capacity }

@@ -159,7 +159,7 @@ constDecl
     ;
 
 typeDecl
-    : 'type'   ident typeParams? whereClause? structBody
+    : 'type'   ident typeParams? whereClause? (structBody | tupleTypeBody)
     | 'indirect'? 'enum'   ident typeParams? whereClause? enumBody
     ;
 
@@ -167,24 +167,7 @@ typeAliasDecl
     : 'type' ident '=' type_ ';'
     ;
 
-recordDecl
-    : 'record' ident typeParams? whereClause? recordBody
-    ;
-
-recordBody
-    : recordNamedBody
-    | recordTupleBody
-    ;
-
-recordNamedBody
-    : '{' recordFieldDecl ( ',' recordFieldDecl )* ','? '}'
-    ;
-
-recordFieldDecl
-    : ident ':' type_
-    ;
-
-recordTupleBody
+tupleTypeBody
     : '(' type_ ( ',' type_ )* ','? ')' ';'
     ;
 

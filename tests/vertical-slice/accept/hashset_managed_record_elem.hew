@@ -5,7 +5,7 @@
 // pins dedupe (equal-by-fields elements collapse to one slot) and membership
 // (contains is true for an equal-by-value probe, false for a distinct one).
 
-record Tag { name: string, kind: i64 }
+type Tag { name: string, kind: i64 }
 
 fn main() -> i64 {
     let s: HashSet<Tag> = HashSet.new();

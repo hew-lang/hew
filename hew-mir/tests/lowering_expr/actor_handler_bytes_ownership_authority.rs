@@ -227,7 +227,7 @@ fn main() -> i64 {
 fn record_wrapped_proven_foreign_bytes_into_an_actor_handler_mailbox_is_refused() {
     let source = format!(
         "{FOREIGN_BYTES_PRELUDE}\
-         record Holder {{ payload: bytes }}\n\
+         type Holder {{ payload: bytes }}\n\
          actor RecordSink {{\n    \
          receive fn take(data: Holder) {{ let _ = data.payload.len(); }}\n\
          }}\n\
@@ -676,7 +676,7 @@ fn main() -> i64 { 0 }
 #[test]
 fn aggregate_owner_on_the_non_transfer_branch_suppresses_source_readmission() {
     let source = r#"
-record Holder { payload: bytes }
+type Holder { payload: bytes }
 actor Recipient { receive fn take(data: bytes) { println("DATA"); } }
 actor Forwarder {
     let recipient: LocalPid<Recipient>;

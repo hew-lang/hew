@@ -13,7 +13,7 @@ type Wrapper {
     handle: Handle;
 }
 
-record PositionalWrapper(Handle);
+type PositionalWrapper(Handle);
 
 fn _count<T>(items: Vec<T>) -> i64 {
     var count = 0;

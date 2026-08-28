@@ -38,7 +38,7 @@ fn lower_source(src: &str) -> hew_mir::IrPipeline {
 /// reads span two Call-terminated blocks inside the arm body. The second
 /// read sits in a block whose only predecessor is another arm-body block.
 const ASK_RECORD_CROSS_BLOCK: &str = r#"
-record Pair {
+type Pair {
     a: string,
     b: string
 }
@@ -98,7 +98,7 @@ fn select_arm_aggregate_binding_initialised_passes() {
 fn select_arm_aggregate_binding_single_block_use_passes() {
     let pipeline = lower_source(
         r#"
-record Pair {
+type Pair {
     a: string,
     b: string
 }

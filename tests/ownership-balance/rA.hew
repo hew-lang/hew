@@ -1,6 +1,6 @@
 import std.string;
 
-record Rec { label: string, n: i64 }
+type Rec { label: string, n: i64 }
 
 fn make(seed: i64) -> Rec {
     Rec { label: "payload-" + string.from_int(seed), n: seed }

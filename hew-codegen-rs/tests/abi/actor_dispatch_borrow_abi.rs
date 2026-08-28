@@ -919,7 +919,7 @@ fn main() -> i64 {
 #[test]
 fn receive_handler_record_construction_escape_traps_under_live_borrow() {
     let source = r#"
-record Wrap {
+type Wrap {
     name: string,
 }
 

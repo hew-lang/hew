@@ -391,7 +391,7 @@ fn spawn_no_config_supervisor_with_init_args_is_rejected_at_hir() {
 fn spawn_config_supervisor_admits_config_arg_and_threads_it_to_bootstrap() {
     let pipeline = lower_module_from_source(
         r"
-        record AppConfig { size: i64 }
+        type AppConfig { size: i64 }
 
         actor Cache {
             var capacity: i64;
@@ -576,7 +576,7 @@ fn scalar_config_field_init_arg_lowers_to_resolved_config_field() {
 
     let pipeline = lower_module_from_source(
         r"
-        record AppConfig { size: i64 }
+        type AppConfig { size: i64 }
 
         actor Cache {
             var capacity: i64;
@@ -642,7 +642,7 @@ fn owned_string_config_field_init_arg_lowers_to_owned_config_field() {
 
     let pipeline = lower_module_from_source(
         r"
-        record AppConfig { label: string }
+        type AppConfig { label: string }
 
         actor Tagged {
             let name: string;
@@ -691,7 +691,7 @@ fn owned_string_config_field_init_arg_lowers_to_owned_config_field() {
 fn owned_collection_config_field_init_arg_is_walled_at_checker() {
     let parsed = hew_parser::parse(
         r"
-        record AppConfig { items: Vec<i64> }
+        type AppConfig { items: Vec<i64> }
 
         actor Holder {
             let data: Vec<i64>;
@@ -859,7 +859,7 @@ fn supervisor_child_missing_required_field_reports_missing_actor_spawn_argument(
 fn supervisor_config_child_unknown_field_reports_invalid_actor_spawn_argument() {
     let pipeline = lower_module_from_source(
         r"
-        record AppConfig { size: i64 }
+        type AppConfig { size: i64 }
 
         actor Cache {
             var capacity: i64;
@@ -929,7 +929,7 @@ fn supervisor_config_child_unknown_field_reports_invalid_actor_spawn_argument() 
 fn supervisor_config_child_valid_arg_missing_other_field_reports_missing_actor_spawn_argument() {
     let pipeline = lower_module_from_source(
         r"
-        record AppConfig { size: i64 }
+        type AppConfig { size: i64 }
 
         actor Cache {
             var capacity: i64;

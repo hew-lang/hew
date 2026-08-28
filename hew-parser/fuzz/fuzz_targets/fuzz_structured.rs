@@ -91,7 +91,7 @@ impl HewProgram {
 
         out.push_str(
             r#"
-record CoreType {
+type CoreType {
     value: i64,
 }
 

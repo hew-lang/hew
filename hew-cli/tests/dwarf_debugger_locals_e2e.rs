@@ -197,7 +197,7 @@ fn main() {
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const ENUM_SRC: &str = "\
-record Payload {
+type Payload {
     code: i64,
 }
 

@@ -569,7 +569,7 @@ machine TrafficLight {
     on Tick: Green => Red;
 }
 
-record Dashboard {
+type Dashboard {
     light: TrafficLight,
 }
 

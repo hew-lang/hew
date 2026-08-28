@@ -24,7 +24,7 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
 fn looped_last_read_keeps_one_exit_release_for_one_mint() {
     let pipeline = pipeline_with_tc(
         r#"
-record Rec { label: string, n: i64 }
+type Rec { label: string, n: i64 }
 
 fn make(seed: i64) -> Rec {
     Rec { label: "payload".to_upper(), n: seed }
@@ -86,7 +86,7 @@ fn spin(seed: i64) -> i64 {
 fn method_match_carrier_releases_on_early_return() {
     let pipeline = pipeline_with_tc(
         r"
-record Rec { label: string }
+type Rec { label: string }
 
 fn probe(xs: Vec<Rec>) {
     let value = match xs.get(0) {

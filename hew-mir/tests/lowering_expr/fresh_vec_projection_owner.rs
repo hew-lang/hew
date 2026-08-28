@@ -175,7 +175,7 @@ fn clone_drop_exits<'a>(
 fn direct_projection_gets_exactly_one_synthetic_root_but_bound_control_does_not() {
     let p = pipeline(
         r#"
-record Holder { items: Vec<string> }
+type Holder { items: Vec<string> }
 
 fn direct() -> i64 {
     let v: Vec<Holder> = [];
@@ -190,7 +190,7 @@ fn bound() -> i64 {
     h.items.len()
 }
 
-record Scalar { value: i64 }
+type Scalar { value: i64 }
 
 fn bitcopy_control() -> i64 {
     let v: Vec<Scalar> = [];
@@ -266,7 +266,7 @@ fn borrowed_control() -> i64 {
 fn copy_in_projection_assignment_does_not_neutralize_source_but_consuming_assignment_does() {
     let p = pipeline(
         r#"
-record Holder { items: Vec<string> }
+type Holder { items: Vec<string> }
 
 fn make() -> (Holder, i64) {
     (Holder { items: ["left", "right"] }, 7)
@@ -318,7 +318,7 @@ fn forward() -> i64 {
 fn panic_edge_never_drops_an_uninitialised_projection_owner() {
     let p = pipeline(
         r#"
-record Holder { items: Vec<string> }
+type Holder { items: Vec<string> }
 
 fn indexed(i: i64) -> i64 {
     let v: Vec<Holder> = [];
@@ -354,8 +354,8 @@ fn indexed(i: i64) -> i64 {
 fn destructive_update_of_projected_member_transfers_out_of_the_synthetic_root() {
     let p = pipeline(
         r#"
-record Inner { label: string, n: i64 }
-record Mid { inner: Inner, k: i64 }
+type Inner { label: string, n: i64 }
+type Mid { inner: Inner, k: i64 }
 
 fn transfer() -> i64 {
     let v: Vec<Mid> = [];
@@ -425,7 +425,7 @@ fn transfer() -> i64 {
 fn early_return_back_edge_and_break_each_release_the_live_root_once() {
     let p = pipeline(
         r#"
-record Holder { items: Vec<string> }
+type Holder { items: Vec<string> }
 
 fn early(flag: bool) -> i64 {
     let v: Vec<Holder> = [];

@@ -394,7 +394,7 @@ fn resource_beside_string_payload_is_refused() {
             &hew_hir::TypeClassTable::default()
         ),
         "the same field order WITHOUT the resource marker is a plain value \
-         record and stays admitted — the gate keys on affinity, not presence"
+         type and stays admitted — the gate keys on affinity, not presence"
     );
 }
 

@@ -7,7 +7,7 @@
 //
 // Exit code encodes the verification: each failed assertion returns a distinct
 // non-zero code, so a green run (exit 0) means every value-oracle held.
-record Person {
+type Person {
     name: string,
     age: i64
 }

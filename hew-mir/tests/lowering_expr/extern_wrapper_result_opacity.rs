@@ -241,7 +241,7 @@ const PRELUDE: &str = r#"extern "C" {
     fn host_sink(s: string);
     fn host_record() -> Holder;
 }
-record Holder { label: string }
+type Holder { label: string }
 "#;
 
 fn main_with(defs: &str, body: &str) -> IrPipeline {
@@ -539,7 +539,7 @@ fn tuple_of_a_domestic_value_pushed_into_a_vec_still_moves() {
 fn nested_container_embedding_a_direct_extern_mints_no_owner() {
     let p = main_with(
         "record Outer { inner: Holder }\n\
-         record Mid { o: Outer }\n\
+         type Mid { o: Outer }\n\
          fn borrowMid(m: Mid) -> i64 { m.o.inner.label.len() }",
         "unsafe { borrowMid(Mid { o: Outer { inner: host_record() } }); }",
     );

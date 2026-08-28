@@ -4,7 +4,7 @@
 // executes on this happy path — the point is to prove the composite arm's
 // fix does not disturb normal owned-field round-tripping for a
 // non-scalar-only record shape.
-record Wrapped {
+type Wrapped {
     s: string,
     n: i64
 }

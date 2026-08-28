@@ -20,7 +20,7 @@
 // holds a fresh, independent owned value cloned from config. Length 1 would mean
 // the dead instance's mutated state leaked through; a trap/garbage length would
 // mean an aliasing UAF.
-record AppConfig { label: string }
+type AppConfig { label: string }
 
 actor Tagged {
     var name: string;

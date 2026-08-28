@@ -152,7 +152,7 @@ fn branch_asym_consume_overwrite_source(frames: usize) -> String {
 /// over-eager release would actually free it; the trailing read then crashes
 /// under the poisoned triple. Exit = 7 (`"KEEPER-"`).
 const RECORD_SELF_REASSIGN_SOURCE: &str = "\
-record Rec {
+type Rec {
     name: string,
     n: i64,
 }
@@ -174,7 +174,7 @@ fn main() -> i64 {
 /// `owned_locals` was dropped at the consume). An over-eager release double-
 /// frees the buffer the callee already freed. Exit = 5 (`"fresh"`).
 const RECORD_CONSUME_REASSIGN_SOURCE: &str = "\
-record Rec {
+type Rec {
     name: string,
 }
 
@@ -207,7 +207,7 @@ fn main() -> i64 {
 /// on the consume arm double-frees the value `moved` released — under the
 /// poisoned triple that crashes before the clean exit. Exit = 8 (`"PAYLOAD-"`).
 const RECORD_BRANCH_ASYM_ALTERNATING_SOURCE: &str = "\
-record Rec {
+type Rec {
     name: string,
 }
 

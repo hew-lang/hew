@@ -1,4 +1,4 @@
-record TupleHeapReadCarrier {
+type TupleHeapReadCarrier {
     pair: (string, i64),
     sibling: string,
 }

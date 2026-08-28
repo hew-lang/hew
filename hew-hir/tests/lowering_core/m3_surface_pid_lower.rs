@@ -200,7 +200,7 @@ fn hir_module_has_main() {
 #[test]
 fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
     let source = r"
-        record Job {
+        type Job {
             n: i32,
         }
 

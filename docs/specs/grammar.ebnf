@@ -28,7 +28,6 @@ Item           = Attribute* Visibility? ( Import
                              | ConstDecl
                              | TypeDecl
                              | TypeAlias
-                             | RecordDecl
                              | TraitDecl
                              | ImplDecl
                              | WireStructDecl
@@ -43,11 +42,7 @@ Item           = Attribute* Visibility? ( Import
 
 TypeAlias      = "type" Ident "=" Type ";" ;
 
-RecordDecl      = "record" Ident TypeParams? WhereClause? RecordBody ;
-RecordBody      = RecordNamedBody | RecordTupleBody ;
-RecordNamedBody = "{" RecordFieldDecl { "," RecordFieldDecl } ","? "}" ;
-RecordFieldDecl = Ident ":" Type ;
-RecordTupleBody = "(" Type { "," Type } ","? ")" ";" ;
+TupleTypeBody   = "(" Type { "," Type } ","? ")" ";" ;
 
 Visibility     = ( "pub" | "package" ) ;
 
@@ -71,7 +66,7 @@ ImportName      = Ident [ "as" Ident ] ;
 (* Constants and types *)
 ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
 
-TypeDecl       = "type" Ident TypeParams? WhereClause? TypeBody
+TypeDecl       = "type" Ident TypeParams? WhereClause? ( TypeBody | TupleTypeBody )
                | "indirect"? "enum" Ident TypeParams? WhereClause? TypeBody ;
 (* #[wire] type syntax — canonical wire type declaration *)
 WireStructDecl = "type" Ident "{" { WireStructFieldDecl | ReservedDecl } "}" ;

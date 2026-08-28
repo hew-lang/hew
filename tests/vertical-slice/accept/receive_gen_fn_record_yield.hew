@@ -1,6 +1,6 @@
 // Yield-type generalization: a BitCopy `record` yield crosses the pump's
 // layout-witness send path (Plain witness) with all fields intact.
-record Point {
+type Point {
     x: i64,
     y: i64,
 }

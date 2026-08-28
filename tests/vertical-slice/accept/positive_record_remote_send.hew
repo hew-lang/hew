@@ -1,6 +1,6 @@
 // Accept: record-value messages are admitted by the RemotePid<T>::send
 // Serializable gate.
-record Ping {
+type Ping {
     n: i64,
 }
 

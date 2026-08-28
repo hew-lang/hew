@@ -5,7 +5,7 @@
 // prior element is dropped, the source temp is not). A DEEP-OWNED element (a
 // record carrying a nested `Vec<string>`) is required — a refcount-shared
 // string/Option field would not route to the move sibling.
-record Holder {
+type Holder {
     items: Vec<string>
 }
 

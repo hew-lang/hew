@@ -75,14 +75,15 @@ use hew_hir::stdlib_catalog::PrintKind;
 use hew_hir::{mangle_dotted_name, ItemId};
 use hew_mir::{
     instr_source_places, is_string_const_ty, terminator_source_places, validate_context_markers,
-    ActorHandlerKind, ActorLayout, ActorStateLoadMode, CallAuthority, CheckedMirFunction, CmpPred,
-    CooperateKind, CooperateSite, DropFnSpec, DropKind, DynVtableInstance, ElabDrop,
-    ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr,
-    IntArithOp, IntSignedness, IoHandleKind, IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout,
-    MirConst, MirConstValue, MirScope, ParamBoundaryMode, ParamLoanStorage, Place, RawMirFunction,
-    RecordLayout, RegexLiteral, ResourceCloseAuthority, RuntimeCall, SourceOrigin,
-    StateFieldCloneKind, Strategy, StringRetainCondition, SupervisorChildLayout, SuspendKind,
-    Terminator, TrapKind,
+    verify_raw_virtual_value_ladder, ActorHandlerKind, ActorLayout, ActorStateLoadMode,
+    CallAuthority, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, DropFnSpec, DropKind,
+    DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset,
+    FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
+    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, ParamBoundaryMode,
+    ParamLoanStorage, Place, RawMirFunction, RawValueDef, RawValueId, RawValueOp,
+    RawVirtualValueFacts, RecordLayout, RegexLiteral, ResourceCloseAuthority, RuntimeCall,
+    SourceOrigin, StateFieldCloneKind, Strategy, StringRetainCondition, SupervisorChildLayout,
+    SuspendKind, Terminator, TrapKind,
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
@@ -1953,6 +1954,10 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// use their target-specific process/status boundary until LLVM exposes
     /// the corresponding funclet builders through Inkwell.
     pub(crate) unwind_enabled: bool,
+    /// The declared LLVM function currently being lowered. Raw virtual
+    /// parameter definitions bind directly to this function's incoming ABI
+    /// values, rather than creating a storage local solely for the prologue.
+    pub(crate) llvm_fn: FunctionValue<'ctx>,
     /// Emit `hew_shutdown_initiate_implicit(0)` + `hew_shutdown_wait()` before the
     /// `Terminator::Return` in the native program entry point of an
     /// actor-using program — the implicit actor-drain floor.
@@ -2083,6 +2088,11 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// ABI helpers that must encode a value from its source type, not only its
     /// LLVM storage shape.
     pub(crate) local_tys: HashMap<u32, ResolvedTy>,
+    /// Raw value id → LLVM SSA value for the narrowly admitted value-only Raw
+    /// MIR subset. This is intentionally separate from `locals`: entries here
+    /// have no address and must cross an explicit `MaterializeValue` boundary
+    /// before a storage-oriented lowering may observe them.
+    pub(crate) raw_values: RefCell<HashMap<RawValueId, BasicValueEnum<'ctx>>>,
     /// Block id → LLVM `BasicBlock`. Populated up front so terminators can
     /// name forward targets.
     pub(crate) blocks: HashMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
@@ -12451,6 +12461,202 @@ fn lower_try_width_cast(
     }
 }
 
+fn raw_value_matches_type(value: BasicValueEnum<'_>, expected: BasicTypeEnum<'_>) -> bool {
+    match (value, expected) {
+        (BasicValueEnum::IntValue(value), BasicTypeEnum::IntType(expected)) => {
+            value.get_type() == expected
+        }
+        (BasicValueEnum::StructValue(value), BasicTypeEnum::StructType(expected)) => {
+            value.get_type() == expected
+        }
+        _ => false,
+    }
+}
+
+fn raw_value_type<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ty: &ResolvedTy,
+    context: &str,
+) -> CodegenResult<BasicTypeEnum<'ctx>> {
+    resolve_value_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        ty,
+        fn_ctx.record_layouts,
+        fn_ctx.enum_layouts,
+    )
+    .map_err(|error| {
+        CodegenError::FailClosed(format!(
+            "{context} cannot resolve virtual value type `{}`: {error}",
+            ty.user_facing()
+        ))
+    })
+}
+
+fn raw_value_get<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: RawValueId,
+    context: &str,
+) -> CodegenResult<BasicValueEnum<'ctx>> {
+    fn_ctx
+        .raw_values
+        .borrow()
+        .get(&value)
+        .copied()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "{context} reads undefined raw virtual value %{}",
+                value.0
+            ))
+        })
+}
+
+fn raw_value_define<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: &RawValueDef,
+    value: BasicValueEnum<'ctx>,
+    context: &str,
+) -> CodegenResult<()> {
+    let expected = raw_value_type(fn_ctx, &dest.ty, context)?;
+    if !raw_value_matches_type(value, expected) {
+        return Err(CodegenError::FailClosed(format!(
+            "{context} defines raw virtual value %{} as LLVM type {:?}, expected `{}`",
+            dest.id.0,
+            value,
+            dest.ty.user_facing()
+        )));
+    }
+    if fn_ctx
+        .raw_values
+        .borrow_mut()
+        .insert(dest.id, value)
+        .is_some()
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "{context} defines raw virtual value %{} more than once",
+            dest.id.0
+        )));
+    }
+    Ok(())
+}
+
+fn lower_raw_value_op<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, operation: &RawValueOp) -> CodegenResult<()> {
+    match operation {
+        RawValueOp::Param { dest, index } => {
+            if fn_ctx.execution_context.is_some() {
+                return Err(CodegenError::FailClosed(
+                    "raw virtual parameter body unexpectedly carries an execution context".into(),
+                ));
+            }
+            let incoming = fn_ctx.llvm_fn.get_nth_param(*index).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "raw virtual parameter {} has no corresponding LLVM ABI parameter",
+                    index
+                ))
+            })?;
+            raw_value_define(fn_ctx, dest, incoming, "raw virtual parameter")
+        }
+        RawValueOp::ConstI64 { dest, value } => {
+            let BasicTypeEnum::IntType(integer) =
+                raw_value_type(fn_ctx, &dest.ty, "raw virtual integer realization")?
+            else {
+                return Err(CodegenError::FailClosed(
+                    "raw virtual integer realization did not resolve to an LLVM integer".into(),
+                ));
+            };
+            #[allow(clippy::cast_sign_loss)]
+            let value = integer.const_int(*value as u64, true);
+            raw_value_define(fn_ctx, dest, value.into(), "raw virtual integer constant")
+        }
+        RawValueOp::ConstBool { dest, value } => {
+            let BasicTypeEnum::IntType(integer) =
+                raw_value_type(fn_ctx, &dest.ty, "raw virtual boolean realization")?
+            else {
+                return Err(CodegenError::FailClosed(
+                    "raw virtual boolean realization did not resolve to an LLVM integer".into(),
+                ));
+            };
+            let value = integer.const_int(u64::from(*value), false);
+            raw_value_define(fn_ctx, dest, value.into(), "raw virtual boolean constant")
+        }
+        RawValueOp::TupleMake { dest, fields } => {
+            let BasicTypeEnum::StructType(struct_ty) =
+                raw_value_type(fn_ctx, &dest.ty, "raw virtual tuple realization")?
+            else {
+                return Err(CodegenError::FailClosed(
+                    "raw virtual tuple realization did not resolve to an LLVM struct".into(),
+                ));
+            };
+            let mut aggregate = struct_ty.get_undef();
+            for (index, field) in fields.iter().enumerate() {
+                let field_value = raw_value_get(fn_ctx, *field, "raw virtual tuple.make")?;
+                let index = u32::try_from(index).map_err(|_| {
+                    CodegenError::FailClosed("raw virtual tuple field index exceeds u32".into())
+                })?;
+                aggregate = match fn_ctx
+                    .builder
+                    .build_insert_value(aggregate, field_value, index, "raw_tuple_make")
+                    .llvm_ctx("raw virtual tuple insertvalue")?
+                {
+                    inkwell::values::AggregateValueEnum::StructValue(value) => value,
+                    inkwell::values::AggregateValueEnum::ArrayValue(_) => {
+                        return Err(CodegenError::FailClosed(
+                            "raw virtual tuple insertvalue unexpectedly produced an LLVM array"
+                                .into(),
+                        ));
+                    }
+                };
+            }
+            raw_value_define(fn_ctx, dest, aggregate.into(), "raw virtual tuple.make")
+        }
+        RawValueOp::TupleGet { dest, tuple, index } => {
+            let tuple_value = raw_value_get(fn_ctx, *tuple, "raw virtual tuple.get")?;
+            let BasicValueEnum::StructValue(tuple_value) = tuple_value else {
+                return Err(CodegenError::FailClosed(format!(
+                    "raw virtual tuple.get reads non-struct value %{}",
+                    tuple.0
+                )));
+            };
+            let field_count = tuple_value.get_type().count_fields();
+            if *index >= field_count {
+                return Err(CodegenError::FailClosed(format!(
+                    "raw virtual tuple.get index {index} is outside tuple value %{} with {field_count} fields",
+                    tuple.0
+                )));
+            }
+            let value = fn_ctx
+                .builder
+                .build_extract_value(tuple_value, *index, "raw_tuple_get")
+                .llvm_ctx("raw virtual tuple extractvalue")?;
+            raw_value_define(fn_ctx, dest, value, "raw virtual tuple.get")
+        }
+    }
+}
+
+fn lower_raw_value_materialization<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: RawValueId,
+) -> CodegenResult<()> {
+    let value = raw_value_get(fn_ctx, value, "raw virtual ReturnAbi materialization")?;
+    let expected = raw_value_type(
+        fn_ctx,
+        &fn_ctx.return_resolved_ty,
+        "raw virtual ReturnAbi materialization",
+    )?;
+    if !raw_value_matches_type(value, expected) || !raw_value_matches_type(value, fn_ctx.return_ty)
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "raw virtual ReturnAbi value is incompatible with return type `{}`",
+            fn_ctx.return_resolved_ty.user_facing()
+        )));
+    }
+    fn_ctx
+        .builder
+        .build_store(fn_ctx.return_slot, value)
+        .llvm_ctx("raw virtual ReturnAbi store")?;
+    Ok(())
+}
+
 fn lower_instruction_with_cancel_drops(
     fn_ctx: &FnCtx<'_, '_>,
     instr: &Instr,
@@ -12473,6 +12679,8 @@ fn lower_instruction_with_cancel_drops(
     })?;
 
     match instr {
+        Instr::Value(operation) => lower_raw_value_op(fn_ctx, operation)?,
+        Instr::MaterializeValue { value, .. } => lower_raw_value_materialization(fn_ctx, *value)?,
         Instr::OwnershipEvent(_) | Instr::InteriorMutationCommit { .. } => {}
         Instr::EnterContext | Instr::ExitContext => {
             if fn_ctx.execution_context.is_none() {
@@ -34768,6 +34976,23 @@ fn apply_optnone_for_debug<'ctx>(ctx: &'ctx Context, func: inkwell::values::Func
     }
 }
 
+/// Admit the Raw value-only lane through its complete MIR ladder before LLVM
+/// realizes it.  This uses the canonical `hew-mir` type/def-use facts rather
+/// than treating `RawValueOp::Param` as a prologue hint that codegen must
+/// independently validate.
+fn virtual_raw_value_facts(
+    func: &RawMirFunction,
+    checked: Option<&CheckedMirFunction>,
+    elaborated: Option<&ElaboratedMirFunction>,
+) -> CodegenResult<Option<RawVirtualValueFacts>> {
+    verify_raw_virtual_value_ladder(func, checked, elaborated).map_err(|error| {
+        CodegenError::FailClosed(format!(
+            "raw virtual-value admission failed for `{}`: {}",
+            func.name, error.reason
+        ))
+    })
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "module-lowering context is deliberately passed as explicit borrows"
@@ -34805,6 +35030,7 @@ fn lower_function<'ctx>(
         ))
     })?;
     let (llvm_fn, return_ty_llvm, _returns_unit) = symbol.real(&func.name, "lower_function")?;
+    let virtual_value_facts = virtual_raw_value_facts(func, checked, elab)?;
     // gdb `-g`: mark every debug-built non-coroutine function `optnone noinline`
     // so the backend keeps each local's stack slot eagerly written. Without it,
     // even at `-O0` LLVM's instruction selection coalesces a `store slot; load
@@ -35308,6 +35534,13 @@ fn lower_function<'ctx>(
                     func.name
                 ))
             })?;
+        if virtual_value_facts.is_some() {
+            // `RawValueOp::Param` binds this incoming LLVM value directly at
+            // its explicit ordered body definition. The canonical Raw verifier
+            // proves every ABI parameter has exactly one such definition and
+            // that this body has no `Place::Local` representation.
+            continue;
+        }
         let (slot, slot_ty) = *locals.get(&param_idx_u32).ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "function `{}` has no local slot for param index {param_idx}",
@@ -35760,6 +35993,7 @@ fn lower_function<'ctx>(
         ctx,
         llvm_mod,
         unwind_enabled,
+        llvm_fn,
         emit_drain_epilogue,
         emit_immediate_shutdown_epilogue,
         emit_runtime_cleanup_epilogue,
@@ -35784,6 +36018,7 @@ fn lower_function<'ctx>(
         alloca_prologue: prologue_bb,
         locals,
         local_tys,
+        raw_values: RefCell::new(HashMap::new()),
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),
         runtime_unwind_block: std::cell::Cell::new(None),

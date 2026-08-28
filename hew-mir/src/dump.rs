@@ -35,8 +35,9 @@ use crate::model::{
     ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, FunctionCallConv, Instr, IntArithOp,
     IntSignedness, IrPipeline, JoinBranch, LambdaEnvFieldDrop, MirCheck, MirDiagnostic,
     MirDiagnosticKind, MirStatement, ParamBoundaryFact, ParamBoundaryMode, ParamLoanStorage,
-    ParamRepresentationEffect, Place, RawMirFunction, SelectArm, SelectArmKind,
-    SpawnEnvFieldOwnership, Strategy, StringRetainCondition, SuspendKind, Terminator, TrapKind,
+    ParamRepresentationEffect, Place, RawMirFunction, RawValueId, RawValueOp, SelectArm,
+    SelectArmKind, SpawnEnvFieldOwnership, Strategy, StringRetainCondition, SuspendKind,
+    Terminator, TrapKind, ValueMaterializationReason,
 };
 
 /// Which stage of the pipeline to render.
@@ -308,6 +309,47 @@ fn render_place(place: &Place) -> String {
             variant_idx,
             field_idx,
         } => format!("evar{local}.{variant_idx}.{field_idx}"),
+    }
+}
+
+fn render_raw_value(value: RawValueId) -> String {
+    format!("%v{}", value.0)
+}
+
+fn render_raw_value_op(op: &RawValueOp) -> String {
+    match op {
+        RawValueOp::Param { dest, index } => format!(
+            "{}:{} = param {index}",
+            render_raw_value(dest.id),
+            dest.ty.user_facing()
+        ),
+        RawValueOp::ConstI64 { dest, value } => format!(
+            "{}:{} = const.i64 {value}",
+            render_raw_value(dest.id),
+            dest.ty.user_facing()
+        ),
+        RawValueOp::ConstBool { dest, value } => format!(
+            "{}:{} = const.bool {value}",
+            render_raw_value(dest.id),
+            dest.ty.user_facing()
+        ),
+        RawValueOp::TupleMake { dest, fields } => format!(
+            "{}:{} = tuple.make {}",
+            render_raw_value(dest.id),
+            dest.ty.user_facing(),
+            fields
+                .iter()
+                .copied()
+                .map(render_raw_value)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        RawValueOp::TupleGet { dest, tuple, index } => format!(
+            "{}:{} = tuple.get {}, {index}",
+            render_raw_value(dest.id),
+            dest.ty.user_facing(),
+            render_raw_value(*tuple)
+        ),
     }
 }
 
@@ -583,6 +625,18 @@ fn render_instr(instr: &Instr) -> String {
         Instr::InteriorMutationCommit { place } => {
             format!("interior_mutation.commit {}", render_place(place))
         }
+        Instr::Value(operation) => render_raw_value_op(operation),
+        Instr::MaterializeValue {
+            dest,
+            value,
+            reason,
+        } => match reason {
+            ValueMaterializationReason::ReturnAbi => format!(
+                "materialize.return_abi {} -> {}",
+                render_raw_value(*value),
+                render_place(dest)
+            ),
+        },
         // Context markers
         Instr::EnterContext => "enter_context".to_string(),
         Instr::ExitContext => "exit_context".to_string(),

@@ -21,8 +21,8 @@
 #
 # Environment:
 #   HEW_BIN                    compiler binary (default: target/debug/hew)
-#   SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 1)
-#   SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 1)
+#   SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 2; may only raise)
+#   SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 16; may only raise)
 
 set -euo pipefail
 
@@ -34,8 +34,10 @@ source "$ROOT/scripts/lib/corpus-nonempty.sh"
 
 HEW_BIN="${HEW_BIN:-$ROOT/target/debug/hew}"
 DEFAULT_CORPUS="$ROOT/tests/ll-oracle/corpus"
-MIN_REALIZED="${SIR_SHADOW_MIN_REALIZED:-1}"
-MIN_SUCCESSES="${SIR_SHADOW_MIN_SUCCESSES:-1}"
+REALIZED_FLOOR=2
+SUCCESS_FLOOR=16
+MIN_REALIZED="${SIR_SHADOW_MIN_REALIZED:-$REALIZED_FLOOR}"
+MIN_SUCCESSES="${SIR_SHADOW_MIN_SUCCESSES:-$SUCCESS_FLOOR}"
 # Repeat the established compile enough times to make randomized ownership-fact
 # emission fail closed without turning comparison into a set operation.  The
 # exact EdgeCarry sequence is compiler output and must remain byte-identical.
@@ -50,8 +52,8 @@ arguments, runs every top-level .hew fixture in tests/ll-oracle/corpus.
 
 Environment:
   HEW_BIN                    compiler binary (default: target/debug/hew)
-  SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 1)
-  SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 1)
+  SIR_SHADOW_MIN_REALIZED    minimum total SIR→raw-MIR realizations (default: 2; may only raise)
+  SIR_SHADOW_MIN_SUCCESSES   minimum successful baseline compilations (default: 16; may only raise)
 EOF
 }
 
@@ -66,6 +68,14 @@ require_nonnegative_integer() {
 
 require_nonnegative_integer SIR_SHADOW_MIN_REALIZED "$MIN_REALIZED"
 require_nonnegative_integer SIR_SHADOW_MIN_SUCCESSES "$MIN_SUCCESSES"
+if (( MIN_REALIZED < REALIZED_FLOOR )); then
+    echo "sir-shadow-corpus: SIR_SHADOW_MIN_REALIZED may not lower the committed floor $REALIZED_FLOOR" >&2
+    exit 2
+fi
+if (( MIN_SUCCESSES < SUCCESS_FLOOR )); then
+    echo "sir-shadow-corpus: SIR_SHADOW_MIN_SUCCESSES may not lower the committed floor $SUCCESS_FLOOR" >&2
+    exit 2
+fi
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     usage

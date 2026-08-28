@@ -23,10 +23,12 @@ use hew_types::DefId;
 use hew_types::ResolvedTy;
 
 use crate::{
-    dataflow, BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock,
-    ElaboratedMirFunction, ExitPath, FunctionCallConv, Instr, IntArithOp, IntSignedness,
-    IrPipeline, ModuleCapabilities, ParamBoundaryFact, ParamBoundaryMode, Place, RawMirFunction,
-    Strategy, Terminator, TrapKind,
+    dataflow, raw_uses_virtual_values, raw_virtual_class, verify_raw_virtual_value_checked,
+    verify_raw_virtual_value_elaborated, verify_raw_virtual_value_function, BasicBlock, BlockKind,
+    CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction, ExitPath, FunctionCallConv,
+    Instr, IntArithOp, IntSignedness, IrPipeline, ModuleCapabilities, ParamBoundaryFact,
+    ParamBoundaryMode, Place, RawMirFunction, RawValueDef, RawValueId, RawValueOp, Strategy,
+    Terminator, TrapKind, ValueMaterializationReason,
 };
 
 /// The result of lowering one SIR function through the complete existing MIR
@@ -275,12 +277,16 @@ fn lower_verified_sir_function(
         ));
     }
 
-    let collected = CollectedValues::from_function(function)?;
-    let mut lowerer = RawLowerer::new(function, collected, Some(module))?;
-    for block in &function.blocks {
-        lowerer.lower_block(block)?;
-    }
-    let (locals, blocks) = lowerer.finish()?;
+    let (locals, blocks) = if function_uses_virtual_tuple_values(function) {
+        VirtualRawLowerer::new(function)?.finish()
+    } else {
+        let collected = CollectedValues::from_function(function)?;
+        let mut lowerer = RawLowerer::new(function, collected, Some(module))?;
+        for block in &function.blocks {
+            lowerer.lower_block(block)?;
+        }
+        lowerer.finish()?
+    };
     let parameter_decisions = sir_parameter_decisions(callable)?;
     let raw = RawMirFunction {
         name: callable.symbol.clone(),
@@ -328,6 +334,9 @@ fn lower_verified_sir_function(
     verify_strict_sir_raw_checked(module, callable, &raw, &checked)?;
     let elaborated = zero_drop_elaboration(&raw, &checked)?;
     checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
+    if raw_uses_virtual_values(&raw) {
+        verify_strict_sir_virtual_elaboration(&raw, &checked, &elaborated)?;
+    }
     Ok(SirMirLowered {
         raw,
         checked,
@@ -376,6 +385,9 @@ fn verify_strict_sir_raw_checked(
             "strict SIR raw/checked verifier: raw parameters do not match callable `{}` ABI",
             callable.symbol
         )));
+    }
+    if raw_uses_virtual_values(raw) {
+        return verify_strict_sir_virtual_raw_checked(callable, raw, checked);
     }
     if raw.locals.len() < raw.params.len() {
         return Err(SirMirLoweringError::unsupported(format!(
@@ -442,6 +454,34 @@ fn verify_strict_sir_raw_checked(
         verify_strict_sir_terminator(module, raw, block)?;
     }
     Ok(())
+}
+
+/// Verify the one-block virtual-value Raw → Checked boundary.
+///
+/// Raw-MIR owns the semantic virtual-value contract, including its `RawValueId`
+/// type map and no-storage ABI. SIR retains only its callable-specific
+/// parameter-boundary facts here; LLVM consumes the same Raw verifier facts.
+fn verify_strict_sir_virtual_raw_checked(
+    callable: &SemCallable,
+    raw: &RawMirFunction,
+    checked: &CheckedMirFunction,
+) -> Result<(), SirMirLoweringError> {
+    let facts = verify_raw_virtual_value_function(raw)
+        .map_err(strict_sir_virtual_value_error)?
+        .ok_or_else(|| {
+            SirMirLoweringError::unsupported(format!(
+                "strict SIR virtual verifier: raw `{}` has no virtual values",
+                raw.name
+            ))
+        })?;
+    verify_raw_virtual_value_checked(raw, checked, &facts)
+        .map_err(strict_sir_virtual_value_error)?;
+    verify_strict_sir_parameter_boundary_facts(callable, raw)
+}
+
+fn strict_sir_virtual_value_error(error: crate::RawVirtualValueError) -> SirMirLoweringError {
+    let crate::RawVirtualValueError { reason } = error;
+    SirMirLoweringError::unsupported(format!("strict SIR virtual verifier: {reason}"))
 }
 
 fn verify_strict_sir_block_layout(
@@ -1108,8 +1148,18 @@ pub fn apply_sir_to_pipeline(
             ));
             continue;
         }
+        let Some(callable) = module.callable(function.callable) else {
+            report.statuses.push((
+                function.name.clone(),
+                SirMirLoweringStatus::Unsupported {
+                    reason: "SIR function has no resolved callable for raw-MIR verification"
+                        .to_string(),
+                },
+            ));
+            continue;
+        };
         let template = pipeline.raw_mir[*raw_index].clone();
-        match lower_sir_function_with_template(function, &template) {
+        match lower_sir_function_with_template(function, callable, &template) {
             Ok(mut lowered) => {
                 // The initial scalar SIR subset is acyclic and has no calls,
                 // so it creates no scheduler sites of its own.  Preserve the
@@ -1119,31 +1169,45 @@ pub fn apply_sir_to_pipeline(
                 // which used to look like false back-edges to the legacy
                 // numeric heuristic.  A later SIR effect/CFG scheduling pass
                 // replaces this bridge; it is not a second long-term policy.
-                if let Some(&checked_index) = matching_checked.first() {
-                    let established_sites = &pipeline.checked_mir[checked_index].cooperate_sites;
-                    if !cooperate_sites_apply_to(&lowered.raw, established_sites) {
-                        report.statuses.push((
+                let uses_virtual_values = raw_uses_virtual_values(&lowered.raw);
+                if uses_virtual_values && !lowered.checked.cooperate_sites.is_empty() {
+                    report.statuses.push((
+                        function.name.clone(),
+                        SirMirLoweringStatus::Unsupported {
+                            reason: "value-only SIR realization unexpectedly introduced a scheduler cooperate site"
+                                .to_string(),
+                        },
+                    ));
+                    continue;
+                }
+                if !uses_virtual_values {
+                    if let Some(&checked_index) = matching_checked.first() {
+                        let established_sites =
+                            &pipeline.checked_mir[checked_index].cooperate_sites;
+                        if !cooperate_sites_apply_to(&lowered.raw, established_sites) {
+                            report.statuses.push((
                             function.name.clone(),
                             SirMirLoweringStatus::Unsupported {
                                 reason: "established scheduler cooperate sites do not map to the SIR-realized CFG"
                                     .to_string(),
                             },
                         ));
-                        continue;
-                    }
-                    lowered
-                        .checked
-                        .cooperate_sites
-                        .clone_from(established_sites);
-                } else if !lowered.checked.cooperate_sites.is_empty() {
-                    report.statuses.push((
+                            continue;
+                        }
+                        lowered
+                            .checked
+                            .cooperate_sites
+                            .clone_from(established_sites);
+                    } else if !lowered.checked.cooperate_sites.is_empty() {
+                        report.statuses.push((
                         function.name.clone(),
                         SirMirLoweringStatus::Unsupported {
                             reason: "SIR realization would introduce scheduler cooperate sites without a scheduling-fact bridge"
                                 .to_string(),
                         },
                     ));
-                    continue;
+                        continue;
+                    }
                 }
                 // The scheduler bridge can replace the candidate's structural
                 // cooperation facts with the established legacy facts. Build
@@ -1156,6 +1220,34 @@ pub fn apply_sir_to_pipeline(
                         lowered.elaborated = elaborated;
                     }
                     Err(error) => {
+                        report.statuses.push((
+                            function.name.clone(),
+                            SirMirLoweringStatus::Unsupported {
+                                reason: error.reason,
+                            },
+                        ));
+                        continue;
+                    }
+                }
+                if uses_virtual_values {
+                    if let Err(error) = verify_strict_sir_virtual_raw_checked(
+                        callable,
+                        &lowered.raw,
+                        &lowered.checked,
+                    ) {
+                        report.statuses.push((
+                            function.name.clone(),
+                            SirMirLoweringStatus::Unsupported {
+                                reason: error.reason,
+                            },
+                        ));
+                        continue;
+                    }
+                    if let Err(error) = verify_strict_sir_virtual_elaboration(
+                        &lowered.raw,
+                        &lowered.checked,
+                        &lowered.elaborated,
+                    ) {
                         report.statuses.push((
                             function.name.clone(),
                             SirMirLoweringStatus::Unsupported {
@@ -1230,6 +1322,7 @@ fn cooperate_sites_apply_to(raw: &RawMirFunction, sites: &[crate::CooperateSite]
 /// semantic fact not carried by the initial SIR value/CFG subset.
 fn lower_sir_function_with_template(
     function: &SemFunction,
+    callable: &SemCallable,
     template: &RawMirFunction,
 ) -> Result<SirMirLowered, SirMirLoweringError> {
     if let Some(diagnostic) = hew_sir::verify_function(function).into_iter().next() {
@@ -1238,13 +1331,22 @@ fn lower_sir_function_with_template(
             function.name, diagnostic.kind
         )));
     }
-    let parameter_decisions = validate_template(function, template)?;
-    let collected = CollectedValues::from_function(function)?;
-    let mut lowerer = RawLowerer::new(function, collected, None)?;
-    for block in &function.blocks {
-        lowerer.lower_block(block)?;
+    if function.callable != callable.id {
+        return Err(SirMirLoweringError::unsupported(
+            "SIR function callable does not match the template bridge callable",
+        ));
     }
-    let (locals, blocks) = lowerer.finish()?;
+    let parameter_decisions = validate_template(function, template)?;
+    let (locals, blocks) = if function_uses_virtual_tuple_values(function) {
+        VirtualRawLowerer::new(function)?.finish()
+    } else {
+        let collected = CollectedValues::from_function(function)?;
+        let mut lowerer = RawLowerer::new(function, collected, None)?;
+        for block in &function.blocks {
+            lowerer.lower_block(block)?;
+        }
+        lowerer.finish()?
+    };
 
     let raw = RawMirFunction {
         name: template.name.clone(),
@@ -1291,8 +1393,17 @@ fn lower_sir_function_with_template(
         cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
         ownership_elaboration: None,
     };
+    if raw_uses_virtual_values(&raw) {
+        verify_strict_sir_virtual_raw_checked(callable, &raw, &checked)?;
+    }
     let elaborated = zero_drop_elaboration(&raw, &checked)?;
     checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
+    if raw_uses_virtual_values(&raw) {
+        // The template bridge uses the same strict value-only Raw body. Its
+        // elaboration must therefore prove the same explicit no-drop contract
+        // before it can replace an established function in the pipeline.
+        verify_strict_sir_virtual_elaboration(&raw, &checked, &elaborated)?;
+    }
     Ok(SirMirLowered {
         raw,
         checked,
@@ -1422,6 +1533,27 @@ fn zero_drop_elaboration(
         coroutine: None,
         lambda_captures: Vec::new(),
     })
+}
+
+/// Verify the explicit Elaborated-MIR artifact for a virtual-value Raw body.
+///
+/// Raw-MIR owns the zero-drop mirror invariant so direct Raw -> LLVM lowering
+/// cannot accept a different elaboration shape than SIR lowering does.
+fn verify_strict_sir_virtual_elaboration(
+    raw: &RawMirFunction,
+    checked: &CheckedMirFunction,
+    elaborated: &ElaboratedMirFunction,
+) -> Result<(), SirMirLoweringError> {
+    let facts = verify_raw_virtual_value_function(raw)
+        .map_err(strict_sir_virtual_value_error)?
+        .ok_or_else(|| {
+            SirMirLoweringError::unsupported(format!(
+                "strict SIR virtual elaboration: raw `{}` has no virtual values",
+                raw.name
+            ))
+        })?;
+    verify_raw_virtual_value_elaborated(raw, checked, elaborated, &facts)
+        .map_err(strict_sir_virtual_value_error)
 }
 
 fn raw_source_origin(origin: &FunctionSourceOrigin) -> crate::SourceOrigin {
@@ -1576,6 +1708,306 @@ fn is_supported_return_type(ty: &ResolvedTy) -> bool {
 
 fn is_supported_value_type(ty: &ResolvedTy) -> bool {
     ty.is_integer() || matches!(ty, ResolvedTy::Bool)
+}
+
+/// Whether a SIR function needs the narrowly admitted raw-MIR virtual-value
+/// realization instead of the established local/Place lowerer.
+///
+/// The presence of a semantic tuple operation is intentional evidence that
+/// lowering through `Place::Local` would destroy the value-only boundary this
+/// slice is proving. Do not silently fall back to the legacy tuple lowering:
+/// an unsupported shape must remain an explicit SIR implementation gap.
+fn function_uses_virtual_tuple_values(function: &SemFunction) -> bool {
+    function.blocks.iter().any(|block| {
+        block.ops.iter().any(|operation| {
+            matches!(
+                &operation.kind,
+                SemOpKind::TupleMake { .. } | SemOpKind::TupleGet { .. }
+            )
+        })
+    })
+}
+
+/// Typed SIR values used by the one-block raw virtual-value realization.
+///
+/// This deliberately does not reuse [`CollectedValues`]: the established
+/// `RawLowerer` remains scalar/Place based, while this collector admits the
+/// separately verified recursive `BitCopy` tuple family.
+fn collect_virtual_value_types(
+    function: &SemFunction,
+) -> Result<BTreeMap<ValueId, ResolvedTy>, SirMirLoweringError> {
+    let mut types = BTreeMap::new();
+    for parameter in &function.params {
+        insert_value(&mut types, parameter.value, &parameter.ty)?;
+    }
+    for block in &function.blocks {
+        for argument in &block.args {
+            insert_value(&mut types, argument.value, &argument.ty)?;
+        }
+        for operation in &block.ops {
+            for result in &operation.results {
+                insert_value(&mut types, result.id, &result.ty)?;
+            }
+        }
+    }
+    for (value, ty) in &types {
+        if raw_virtual_class(ty).is_none() {
+            return Err(SirMirLoweringError::unsupported(format!(
+                "virtual raw value %{} of type `{}` needs ownership or representation lowering",
+                value.0,
+                ty.user_facing()
+            )));
+        }
+    }
+    Ok(types)
+}
+
+/// Lower SIR's first aggregate family directly to Raw MIR virtual values.
+///
+/// This is intentionally not a second general IR. It is a short, strict Raw
+/// MIR construction path whose only addressable operation is the final ABI
+/// store to `ReturnSlot`. Control-flow value transport, calls, ownership, and
+/// aggregate ABI lowering remain rejected until their dedicated Raw-MIR work.
+struct VirtualRawLowerer<'a> {
+    function: &'a SemFunction,
+    value_types: BTreeMap<ValueId, ResolvedTy>,
+    instructions: Vec<Instr>,
+}
+
+impl<'a> VirtualRawLowerer<'a> {
+    fn new(function: &'a SemFunction) -> Result<Self, SirMirLoweringError> {
+        if function.entry != BlockId(0) {
+            return Err(SirMirLoweringError::unsupported(
+                "the raw virtual-value slice requires SIR entry block bb0",
+            ));
+        }
+        let [block] = function.blocks.as_slice() else {
+            return Err(SirMirLoweringError::unsupported(
+                "the raw virtual-value slice admits exactly one SIR basic block",
+            ));
+        };
+        if block.id != BlockId(0) || !block.args.is_empty() {
+            return Err(SirMirLoweringError::unsupported(
+                "the raw virtual-value slice requires an argument-free entry bb0",
+            ));
+        }
+        let value_types = collect_virtual_value_types(function)?;
+        let mut lowerer = Self {
+            function,
+            value_types,
+            instructions: Vec::new(),
+        };
+        lowerer.lower_params()?;
+        for operation in &block.ops {
+            lowerer.lower_op(operation)?;
+        }
+        lowerer.lower_terminator(&block.terminator)?;
+        Ok(lowerer)
+    }
+
+    fn lower_params(&mut self) -> Result<(), SirMirLoweringError> {
+        for (index, parameter) in self.function.params.iter().enumerate() {
+            if !is_supported_value_type(&parameter.ty) {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "raw virtual-value parameter {index} has non-scalar type `{}`; tuple ABI lowering is deferred",
+                    parameter.ty.user_facing()
+                )));
+            }
+            let index = u32::try_from(index).map_err(|_| {
+                SirMirLoweringError::unsupported(
+                    "raw virtual-value parameter count exceeds the u32 ABI range",
+                )
+            })?;
+            self.instructions.push(Instr::Value(RawValueOp::Param {
+                dest: self.value_def(parameter.value)?,
+                index,
+            }));
+        }
+        Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the bounded virtual-value operation vocabulary stays in one match so every admitted SIR operation is visible at the Raw boundary"
+    )]
+    fn lower_op(&mut self, operation: &SemOp) -> Result<(), SirMirLoweringError> {
+        let (result, result_ty) = RawLowerer::single_result(operation)?;
+        let dest = self.value_def(result)?;
+        let operation = match &operation.kind {
+            SemOpKind::ConstI64(value) => {
+                if !result_ty.is_integer() {
+                    return Err(SirMirLoweringError::unsupported(format!(
+                        "raw virtual integer constant result %{} has non-integer type `{}`",
+                        result.0,
+                        result_ty.user_facing()
+                    )));
+                }
+                RawValueOp::ConstI64 {
+                    dest,
+                    value: *value,
+                }
+            }
+            SemOpKind::ConstBool(value) => {
+                if result_ty != ResolvedTy::Bool {
+                    return Err(SirMirLoweringError::unsupported(format!(
+                        "raw virtual boolean constant result %{} has type `{}` rather than bool",
+                        result.0,
+                        result_ty.user_facing()
+                    )));
+                }
+                RawValueOp::ConstBool {
+                    dest,
+                    value: *value,
+                }
+            }
+            SemOpKind::TupleMake { elements } => {
+                let ResolvedTy::Tuple(element_tys) = &result_ty else {
+                    return Err(SirMirLoweringError::unsupported(format!(
+                        "SIR tuple.make result %{} has non-tuple type `{}`",
+                        result.0,
+                        result_ty.user_facing()
+                    )));
+                };
+                if elements.len() != element_tys.len() {
+                    return Err(SirMirLoweringError::unsupported(
+                        "SIR tuple.make operand count does not match its semantic tuple type",
+                    ));
+                }
+                let mut fields = Vec::with_capacity(elements.len());
+                for (index, (element, expected_ty)) in elements.iter().zip(element_tys).enumerate()
+                {
+                    Self::require_read(element, "SIR tuple.make element")?;
+                    let actual_ty = self.value_type(element.value)?;
+                    if actual_ty != expected_ty {
+                        return Err(SirMirLoweringError::unsupported(format!(
+                            "SIR tuple.make element {index} type `{}` does not match semantic tuple element `{}`",
+                            actual_ty.user_facing(),
+                            expected_ty.user_facing()
+                        )));
+                    }
+                    fields.push(Self::raw_value_id(element.value));
+                }
+                RawValueOp::TupleMake { dest, fields }
+            }
+            SemOpKind::TupleGet { tuple, index } => {
+                Self::require_read(tuple, "SIR tuple.get operand")?;
+                let tuple_ty = self.value_type(tuple.value)?;
+                let ResolvedTy::Tuple(element_tys) = tuple_ty else {
+                    return Err(SirMirLoweringError::unsupported(format!(
+                        "SIR tuple.get operand %{} has non-tuple type `{}`",
+                        tuple.value.0,
+                        tuple_ty.user_facing()
+                    )));
+                };
+                let index_usize = usize::try_from(*index).map_err(|_| {
+                    SirMirLoweringError::unsupported(
+                        "SIR tuple.get index cannot index the semantic tuple",
+                    )
+                })?;
+                let expected_ty = element_tys.get(index_usize).ok_or_else(|| {
+                    SirMirLoweringError::unsupported(format!(
+                        "SIR tuple.get index {index} is outside `{}`",
+                        tuple_ty.user_facing()
+                    ))
+                })?;
+                if &result_ty != expected_ty {
+                    return Err(SirMirLoweringError::unsupported(format!(
+                        "SIR tuple.get result type `{}` does not match selected element `{}`",
+                        result_ty.user_facing(),
+                        expected_ty.user_facing()
+                    )));
+                }
+                RawValueOp::TupleGet {
+                    dest,
+                    tuple: Self::raw_value_id(tuple.value),
+                    index: *index,
+                }
+            }
+            SemOpKind::Unary { .. }
+            | SemOpKind::Binary { .. }
+            | SemOpKind::Cast { .. }
+            | SemOpKind::Call { .. } => {
+                return Err(SirMirLoweringError::unsupported(
+                    "the raw virtual-value slice admits only constants and semantic tuple make/get operations",
+                ));
+            }
+        };
+        self.instructions.push(Instr::Value(operation));
+        Ok(())
+    }
+
+    fn lower_terminator(&mut self, terminator: &SemTerminator) -> Result<(), SirMirLoweringError> {
+        match terminator {
+            SemTerminator::Return { value: Some(value) } => {
+                Self::require_read(value, "SIR virtual return value")?;
+                if self.value_type(value.value)? != &self.function.return_ty {
+                    return Err(SirMirLoweringError::unsupported(
+                        "SIR virtual return value type does not match the function return type",
+                    ));
+                }
+                if self.function.return_ty == ResolvedTy::Unit {
+                    return Err(SirMirLoweringError::unsupported(
+                        "unit SIR function must not materialize a virtual return value",
+                    ));
+                }
+                self.instructions.push(Instr::MaterializeValue {
+                    dest: Place::ReturnSlot,
+                    value: Self::raw_value_id(value.value),
+                    reason: ValueMaterializationReason::ReturnAbi,
+                });
+                Ok(())
+            }
+            SemTerminator::Return { value: None }
+                if self.function.return_ty == ResolvedTy::Unit =>
+            {
+                Ok(())
+            }
+            SemTerminator::Return { value: None } => Err(SirMirLoweringError::unsupported(
+                "non-unit SIR function has a value-less virtual return",
+            )),
+            SemTerminator::Goto(_) | SemTerminator::Branch { .. } | SemTerminator::Unreachable => {
+                Err(SirMirLoweringError::unsupported(
+                    "the raw virtual-value slice admits only an ordinary Return terminator",
+                ))
+            }
+        }
+    }
+
+    fn raw_value_id(value: ValueId) -> RawValueId {
+        RawValueId(value.0)
+    }
+
+    fn value_def(&self, value: ValueId) -> Result<RawValueDef, SirMirLoweringError> {
+        Ok(RawValueDef {
+            id: Self::raw_value_id(value),
+            ty: self.value_type(value)?.clone(),
+        })
+    }
+
+    fn value_type(&self, value: ValueId) -> Result<&ResolvedTy, SirMirLoweringError> {
+        self.value_types.get(&value).ok_or_else(|| {
+            SirMirLoweringError::unsupported(format!(
+                "SIR virtual raw lowering uses undefined value %{}",
+                value.0
+            ))
+        })
+    }
+
+    fn require_read(operand: &Operand, context: &str) -> Result<(), SirMirLoweringError> {
+        RawLowerer::require_read(operand, context)
+    }
+
+    fn finish(self) -> (Vec<ResolvedTy>, Vec<BasicBlock>) {
+        (
+            Vec::new(),
+            vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: self.instructions,
+                terminator: Terminator::Return,
+            }],
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -1773,6 +2205,11 @@ impl<'a> RawLowerer<'a> {
                     from_ty,
                     to_ty: to.clone(),
                 });
+            }
+            SemOpKind::TupleMake { .. } | SemOpKind::TupleGet { .. } => {
+                return Err(SirMirLoweringError::unsupported(
+                    "SIR tuple values require the raw virtual-value lowering path",
+                ));
             }
             SemOpKind::Call { .. } => unreachable!("calls return before value-result lowering"),
         }
@@ -2495,6 +2932,103 @@ mod tests {
         }
     }
 
+    /// The bounded virtual-value proof body: values are constructed and
+    /// projected as a semantic tuple, but only the scalar result crosses the
+    /// existing ABI return slot. This is deliberately parameter-free so it
+    /// exercises no aggregate ABI policy.
+    fn strict_virtual_tuple_projection_function() -> SemFunction {
+        let pair_ty = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]);
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("main"),
+            name: "main".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: Vec::new(),
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![
+                    op(0, definition(0, ResolvedTy::I64), SemOpKind::ConstI64(0)),
+                    op(1, definition(1, ResolvedTy::I64), SemOpKind::ConstI64(42)),
+                    op(
+                        2,
+                        definition(2, pair_ty),
+                        SemOpKind::TupleMake {
+                            elements: vec![operand(0), operand(1)],
+                        },
+                    ),
+                    op(
+                        3,
+                        definition(3, ResolvedTy::I64),
+                        SemOpKind::TupleGet {
+                            tuple: operand(2),
+                            index: 0,
+                        },
+                    ),
+                ],
+                terminator: SemTerminator::Return {
+                    value: Some(operand(3)),
+                },
+            }],
+        }
+    }
+
+    /// This only exists as a Raw/LLVM ABI regression fixture. Tuple
+    /// parameters and results intentionally remain outside the first slice;
+    /// individual scalar parameters can still be bound directly as virtual
+    /// values and feed an internal tuple.
+    fn strict_virtual_scalar_param_tuple_projection_function() -> SemFunction {
+        let pair_ty = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]);
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("pair_second"),
+            name: "pair_second".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: vec![
+                BlockArg {
+                    value: ValueId(0),
+                    ty: ResolvedTy::I64,
+                },
+                BlockArg {
+                    value: ValueId(1),
+                    ty: ResolvedTy::I64,
+                },
+            ],
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![
+                    op(
+                        0,
+                        definition(2, pair_ty),
+                        SemOpKind::TupleMake {
+                            elements: vec![operand(0), operand(1)],
+                        },
+                    ),
+                    op(
+                        1,
+                        definition(3, ResolvedTy::I64),
+                        SemOpKind::TupleGet {
+                            tuple: operand(2),
+                            index: 1,
+                        },
+                    ),
+                ],
+                terminator: SemTerminator::Return {
+                    value: Some(operand(3)),
+                },
+            }],
+        }
+    }
+
     #[test]
     fn strict_post_lowering_verifier_accepts_boolean_equality_and_rejects_bad_local() {
         let function = strict_boolean_equality_function();
@@ -2525,6 +3059,177 @@ mod tests {
             verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
                 .expect_err("an out-of-bounds scalar local must fail at the SIR raw boundary");
         assert!(error.reason.contains("out-of-bounds local 99"));
+    }
+
+    #[test]
+    fn realizes_semantic_tuple_values_through_the_no_drop_mir_ladder() {
+        let function = strict_virtual_tuple_projection_function();
+        let module = test_module(vec![function.clone()]);
+        let lowered = lower_sir_function(&module, &function)
+            .expect("the internal tuple projection must use virtual Raw MIR values");
+        let callable = module
+            .callable(function.callable)
+            .expect("test callable must exist");
+
+        assert!(lowered.raw.locals.is_empty());
+        assert_eq!(lowered.raw.blocks.len(), 1);
+        assert_eq!(lowered.checked.blocks, lowered.raw.blocks);
+        assert_eq!(
+            lowered.raw.blocks[0].instructions,
+            vec![
+                Instr::Value(RawValueOp::ConstI64 {
+                    dest: RawValueDef {
+                        id: RawValueId(0),
+                        ty: ResolvedTy::I64,
+                    },
+                    value: 0,
+                }),
+                Instr::Value(RawValueOp::ConstI64 {
+                    dest: RawValueDef {
+                        id: RawValueId(1),
+                        ty: ResolvedTy::I64,
+                    },
+                    value: 42,
+                }),
+                Instr::Value(RawValueOp::TupleMake {
+                    dest: RawValueDef {
+                        id: RawValueId(2),
+                        ty: ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+                    },
+                    fields: vec![RawValueId(0), RawValueId(1)],
+                }),
+                Instr::Value(RawValueOp::TupleGet {
+                    dest: RawValueDef {
+                        id: RawValueId(3),
+                        ty: ResolvedTy::I64,
+                    },
+                    tuple: RawValueId(2),
+                    index: 0,
+                }),
+                Instr::MaterializeValue {
+                    dest: Place::ReturnSlot,
+                    value: RawValueId(3),
+                    reason: ValueMaterializationReason::ReturnAbi,
+                },
+            ]
+        );
+        verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
+            .expect("the virtual Raw and Checked bodies must agree");
+        verify_strict_sir_virtual_elaboration(&lowered.raw, &lowered.checked, &lowered.elaborated)
+            .expect("the virtual body must elaborate to one explicit empty return plan");
+    }
+
+    #[test]
+    fn virtual_raw_verifier_requires_exact_scalar_param_binding_and_return_boundary() {
+        let function = strict_virtual_scalar_param_tuple_projection_function();
+        let module = test_module(vec![function.clone()]);
+        let mut lowered = lower_sir_function(&module, &function)
+            .expect("scalar params may feed an internal virtual tuple");
+        let callable = module
+            .callable(function.callable)
+            .expect("test callable must exist");
+
+        assert!(lowered.raw.locals.is_empty());
+        assert!(matches!(
+            lowered.raw.blocks[0].instructions.as_slice(),
+            [
+                Instr::Value(RawValueOp::Param { index: 0, .. }),
+                Instr::Value(RawValueOp::Param { index: 1, .. }),
+                ..,
+                Instr::MaterializeValue {
+                    dest: Place::ReturnSlot,
+                    reason: ValueMaterializationReason::ReturnAbi,
+                    ..
+                },
+            ]
+        ));
+
+        let Instr::Value(RawValueOp::Param { index, .. }) =
+            &mut lowered.raw.blocks[0].instructions[1]
+        else {
+            panic!("the second instruction must bind ABI parameter 1");
+        };
+        *index = 0;
+        lowered.checked.blocks = lowered.raw.blocks.clone();
+        let error =
+            verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
+                .expect_err("one ABI parameter may map to exactly one virtual definition");
+        assert!(error.reason.contains("expected ordered parameter 1"));
+
+        let mut lowered = lower_sir_function(&module, &function)
+            .expect("fresh virtual lowering must remain valid");
+        let Instr::MaterializeValue { dest, .. } = lowered.raw.blocks[0]
+            .instructions
+            .last_mut()
+            .expect("virtual return materialization")
+        else {
+            panic!("the final virtual instruction must materialize the ABI return");
+        };
+        *dest = Place::Local(0);
+        lowered.checked.blocks = lowered.raw.blocks.clone();
+        let error =
+            verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
+                .expect_err("only ReturnSlot may materialize a virtual value");
+        assert!(error.reason.contains("ReturnAbi -> ReturnSlot"));
+    }
+
+    #[test]
+    fn shadow_bridge_realizes_tuple_values_through_the_verified_virtual_lane() {
+        let function = strict_virtual_tuple_projection_function();
+        let module = test_module(vec![function.clone()]);
+        let template = template("main", Vec::new(), ResolvedTy::I64);
+        let mut pipeline = IrPipeline {
+            raw_mir: vec![template.clone()],
+            checked_mir: vec![CheckedMirFunction {
+                name: template.name.clone(),
+                return_ty: template.return_ty.clone(),
+                blocks: Vec::new(),
+                decisions: template.decisions.clone(),
+                checks: Vec::new(),
+                cooperate_sites: Vec::new(),
+                ownership_elaboration: None,
+            }],
+            elaborated_mir: vec![ElaboratedMirFunction {
+                name: template.name,
+                return_ty: template.return_ty,
+                statements: Vec::new(),
+                decisions: Vec::new(),
+                blocks: Vec::new(),
+                drop_plans: Vec::new(),
+                coroutine: None,
+                lambda_captures: Vec::new(),
+            }],
+            ..IrPipeline::default()
+        };
+
+        let report = apply_sir_to_pipeline(&module, &mut pipeline);
+        assert_eq!(report.lowered_count(), 1, "{report:#?}");
+        let raw = pipeline
+            .raw_mir
+            .first()
+            .expect("shadow bridge must replace the main raw body");
+        let checked = pipeline
+            .checked_mir
+            .first()
+            .expect("shadow bridge must install matching checked MIR");
+        let elaborated = pipeline
+            .elaborated_mir
+            .first()
+            .expect("shadow bridge must install matching elaborated MIR");
+        let callable = module
+            .callable(function.callable)
+            .expect("test callable must exist");
+
+        assert!(raw.locals.is_empty());
+        assert!(raw.blocks[0]
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instr::Value(RawValueOp::TupleMake { .. }))));
+        verify_strict_sir_virtual_raw_checked(callable, raw, checked).expect(
+            "shadow virtual body must pass the same raw/checked verifier as strict lowering",
+        );
+        verify_strict_sir_virtual_elaboration(raw, checked, elaborated)
+            .expect("shadow virtual body must pass the no-drop elaboration verifier");
     }
 
     #[test]
@@ -2775,8 +3480,10 @@ mod tests {
             ],
         };
 
+        let callable = test_callable(&function);
         let lowered = lower_sir_function_with_template(
             &function,
+            &callable,
             &template("f", vec![ResolvedTy::I64, ResolvedTy::I64], ResolvedTy::I64),
         )
         .expect("the scalar SSA diamond should lower to raw MIR");
@@ -2907,8 +3614,10 @@ mod tests {
             }],
         };
 
+        let callable = test_callable(&function);
         let error = lower_sir_function_with_template(
             &function,
+            &callable,
             &template("bad_entry", Vec::new(), ResolvedTy::I64),
         )
         .expect_err("a malformed SIR entry must fail before raw MIR exists");
@@ -3027,8 +3736,10 @@ mod tests {
                 },
             ],
         };
+        let callable = test_callable(&function);
         let lowered = lower_sir_function_with_template(
             &function,
+            &callable,
             &template(
                 "swap",
                 vec![ResolvedTy::I64, ResolvedTy::I64, ResolvedTy::Bool],

@@ -785,6 +785,18 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
     ty.is_integer() || matches!(ty, ResolvedTy::Bool)
 }
 
+/// Value types the initial Raw-MIR virtual-value bridge can realize without
+/// borrowing, drops, allocation, or layout-dependent semantics.
+///
+/// SIR retains tuples as abstract values; this predicate merely bounds the
+/// first lowering slice to recursively `BitCopy` scalar elements until the
+/// ownership/layout layer owns aggregate resource realization.
+fn is_initial_value_type(ty: &ResolvedTy) -> bool {
+    is_initial_scalar(ty)
+        || matches!(ty, ResolvedTy::Tuple(elements)
+            if !elements.is_empty() && elements.iter().all(is_initial_value_type))
+}
+
 fn is_initial_scalar_return(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Unit) || is_initial_scalar(ty)
 }
@@ -853,6 +865,117 @@ fn verify_operation_shape(
                 actual: result.ty.user_facing().to_string(),
             },
         )),
+        SemOpKind::TupleMake { elements } => {
+            let ResolvedTy::Tuple(element_tys) = &result.ty else {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "tuple.make result must have a semantic tuple type, found `{}`",
+                        result.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+                return;
+            };
+            if !is_initial_value_type(&result.ty) {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "tuple.make result `{}` is outside SIR's initial no-drop scalar/tuple value domain",
+                        result.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+            if element_tys.len() != elements.len() {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "tuple.make for `{}` has {} operand(s), expected {}",
+                        result.ty.user_facing(),
+                        elements.len(),
+                        element_tys.len()
+                    ),
+                    diagnostics,
+                );
+            }
+            for (index, (element, expected_ty)) in elements.iter().zip(element_tys).enumerate() {
+                if let Some(actual_ty) = types.get(&element.value) {
+                    if actual_ty != expected_ty {
+                        invalid_operation(
+                            function,
+                            operation.id,
+                            format!(
+                                "tuple.make operand {index} has `{}`, expected `{}`",
+                                actual_ty.user_facing(),
+                                expected_ty.user_facing()
+                            ),
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+        }
+        SemOpKind::TupleGet { tuple, index } => {
+            let Some(tuple_ty) = types.get(&tuple.value) else {
+                return;
+            };
+            let ResolvedTy::Tuple(element_tys) = tuple_ty else {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "tuple.get operand has non-tuple semantic type `{}`",
+                        tuple_ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+                return;
+            };
+            if !is_initial_value_type(tuple_ty) {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "tuple.get operand `{}` is outside SIR's initial no-drop scalar/tuple value domain",
+                        tuple_ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+            let Some(expected_ty) = usize::try_from(*index)
+                .ok()
+                .and_then(|index| element_tys.get(index))
+            else {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "tuple.get index {index} is out of bounds for `{}` with {} element(s)",
+                        tuple_ty.user_facing(),
+                        element_tys.len()
+                    ),
+                    diagnostics,
+                );
+                return;
+            };
+            if &result.ty != expected_ty {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "tuple.get index {index} from `{}` produces `{}`, expected `{}`",
+                        tuple_ty.user_facing(),
+                        result.ty.user_facing(),
+                        expected_ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+        }
         SemOpKind::Cast { value, to } => {
             if &result.ty != to {
                 diagnostics.push(diag(
@@ -1107,6 +1230,8 @@ fn require_read_use(
 fn operation_operand_context(kind: &SemOpKind, operand: crate::OperandSlot) -> &'static str {
     match kind {
         SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => "operation operand",
+        SemOpKind::TupleMake { .. } => "tuple.make element",
+        SemOpKind::TupleGet { .. } => "tuple.get operand",
         SemOpKind::Unary { .. } => "unary operand",
         SemOpKind::Binary { .. } if operand.0 == 0 => "binary left operand",
         SemOpKind::Binary { .. } => "binary right operand",

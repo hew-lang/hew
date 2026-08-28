@@ -16,6 +16,7 @@ pub mod liveness;
 pub mod lower;
 pub mod model;
 pub mod ownership;
+pub mod raw_values;
 pub mod return_provenance;
 pub mod runtime_call;
 pub mod runtime_symbols;
@@ -76,17 +77,23 @@ pub use model::{
     MirScope, MirStatement, ModuleCapabilities, NeutralizeAuthority, OwnerId, OwnershipEvent,
     OwnershipGuardKind, ParamBoundaryFact, ParamBoundaryMode, ParamCrashCleanupKind,
     ParamLoanStorage, ParamRepresentationEffect, Place, PointerWidth, PolymorphicMirFunction,
-    PoolCount, PreparedCarrierBoundary, ProjectedPayloadRejectReason, RawMirFunction, RecordLayout,
-    RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, SourceOrigin,
-    SpawnEnvFieldOwnership, StableActorRole, Strategy, StringRetainCondition,
-    SupervisorChildLayout, SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator,
-    ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand, GEN_BODY_PREFIX,
-    INDIRECT_CLOSURE_CALLEE,
+    PoolCount, PreparedCarrierBoundary, ProjectedPayloadRejectReason, RawMirFunction, RawValueDef,
+    RawValueId, RawValueOp, RecordLayout, RegexLiteral, RuntimeCall, SelectArm, SelectArmKind,
+    SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership, StableActorRole, Strategy,
+    StringRetainCondition, SupervisorChildLayout, SupervisorConfigParam, SupervisorLayout,
+    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    ValueMaterializationReason, WitnessOperand, GEN_BODY_PREFIX, INDIRECT_CLOSURE_CALLEE,
 };
 pub use ownership::{
     AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf,
     InPlaceReleaseKind, LayoutClass, OwnershipCtx, OwnershipDecision, PlaceProvenance, Projection,
     ProvenanceOrigin, ValueOwnership, ValueProvenance,
+};
+pub use raw_values::{
+    is_supported_raw_virtual_scalar_type, raw_uses_virtual_values, raw_virtual_class,
+    raw_virtual_operation_class, verify_raw_virtual_value_checked,
+    verify_raw_virtual_value_elaborated, verify_raw_virtual_value_function,
+    verify_raw_virtual_value_ladder, RawVirtualClass, RawVirtualValueError, RawVirtualValueFacts,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use sir::{

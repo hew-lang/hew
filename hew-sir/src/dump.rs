@@ -59,6 +59,19 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
     match &op.kind {
         SemOpKind::ConstI64(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstBool(value) => writeln!(out, "const {value}").expect("write to String"),
+        SemOpKind::TupleMake { elements } => {
+            write!(out, "tuple.make(").expect("write to String");
+            for (index, element) in elements.iter().enumerate() {
+                if index != 0 {
+                    write!(out, ", ").expect("write to String");
+                }
+                write!(out, "{}", operand(element)).expect("write to String");
+            }
+            writeln!(out, ")").expect("write to String");
+        }
+        SemOpKind::TupleGet { tuple, index } => {
+            writeln!(out, "tuple.get {}, {index}", operand(tuple)).expect("write to String");
+        }
         SemOpKind::Unary { op, value } => {
             writeln!(out, "{op:?} {}", operand(value)).expect("write to String");
         }

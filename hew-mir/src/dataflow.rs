@@ -80,6 +80,7 @@ use crate::model::{
     BasicBlock, CooperateKind, CooperateSite, Instr, MirCheck, MirStatement, Place, RawMirFunction,
     Terminator,
 };
+use crate::{raw_virtual_operation_class, RawVirtualClass};
 
 /// Per-binding state in the four-state lattice. `Uninit` is the
 /// implicit default — a binding not present in the state map is
@@ -657,6 +658,14 @@ impl ContextFlowState {
 )]
 pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>, Vec<Place>) {
     match instr {
+        // Raw value operations use a disjoint virtual-value namespace. They
+        // neither read nor write addressable MIR places; the explicit ABI
+        // materialization below is the sole storage boundary in this slice.
+        Instr::Value(operation) => match raw_virtual_operation_class(operation) {
+            Some(RawVirtualClass::Integer | RawVirtualClass::Bool | RawVirtualClass::Tuple)
+            | None => (vec![], vec![], vec![]),
+        },
+        Instr::MaterializeValue { dest, .. } => (vec![], vec![*dest], vec![]),
         Instr::OwnershipEvent(_)
         | Instr::EnterContext
         | Instr::ExitContext

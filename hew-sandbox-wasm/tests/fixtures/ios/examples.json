@@ -49,6 +49,6 @@
   },
   {
     "id": "supervisor",
-    "source": "actor Worker {\n    let id: i64;\n\n    receive fn work(x: i64) -> i64 {\n        println(f\"Worker {id} processing {x}\");\n        x * 2\n    }\n}\n\n// A supervisor starts and restarts a tree of child actors.\nsupervisor WorkerPool {\n    strategy: one_for_one;\n    intensity: 5 within 60s;\n    child w1: Worker(id: 1);\n    child w2: Worker(id: 2);\n}\n\nfn main() {\n    let workers = spawn WorkerPool;\n    let w1 = workers.w1;\n    await w1.work(10);\n    let w2 = workers.w2;\n    await w2.work(20);\n}\n"
+    "source": "actor Worker {\n    let id: i64;\n\n    receive fn work(x: i64) -> i64 {\n        println(f\"Worker {id} processing {x}\");\n        x * 2\n    }\n}\n\n// A supervisor starts and restarts a tree of child actors.\nsupervisor WorkerPool {\n    strategy: one_for_one;\n    intensity: 5 within 60s;\n    child w1: Worker(id: 1);\n    child w2: Worker(id: 2);\n}\n\nfn main() {\n    let workers = spawn WorkerPool;\n    let w1 = workers.w1;\n    let a = match await w1.work(10) {\n        .Ok(value) => value,\n        .Err(_) => -1,\n    };\n    let w2 = workers.w2;\n    let b = match await w2.work(20) {\n        .Ok(value) => value,\n        .Err(_) => -1,\n    };\n    println(f\"w1 -> {a}\");\n    println(f\"w2 -> {b}\");\n}\n"
   }
 ]

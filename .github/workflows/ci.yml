@@ -72,7 +72,6 @@ jobs:
         with:
           components: "clippy, rustfmt"
           targets: wasm32-wasip1
-          tools: actionlint@1.7.12
           cache-shared-key: lint
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}

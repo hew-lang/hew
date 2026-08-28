@@ -385,7 +385,7 @@ These are only needed for specific workflows:
 | wasm32-wasip1 target | `rustup target add wasm32-wasip1`                   | Build WASM runtime (`make wasm-runtime`)                                                                                      |
 | wasm-pack            | `cargo install wasm-pack`                           | Build browser analysis bindings (`make wasm`, `make playground-check`)                                                        |
 | Python 3.12+         | system package manager                              | Required for Makefile gates and repository scripts (`scripts/`)                                                               |
-| actionlint           | platform package manager                            | Validate GitHub Actions workflows (`make lint`)                                                                               |
+| actionlint           | platform package manager                            | Validate GitHub Actions workflows before pushing (`make actionlint`)                                                          |
 | ShellCheck           | platform package manager                            | Validate shell scripts (`make lint`)                                                                                          |
 | cargo-fuzz           | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)                                                                                           |
 

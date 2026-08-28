@@ -94,15 +94,13 @@ shell-script-lint:
 	@$(PYTHON) scripts/shell-script-lint.py
 
 
-# GitHub Actions syntax, expression, local-action input, and embedded-shell
-# validation. CI installs the pinned binary; local users can install actionlint
-# with their platform package manager and get the identical repository check.
+# Local GitHub Actions syntax, expression, local-action input, and embedded-shell
+# validation. Run this before pushing workflow edits: a malformed CI workflow
+# may be unable to start the job that would otherwise try to validate it.
 actionlint:
 	actionlint -color
 
 # Static workflow validation produces no build artifacts.
-
-LINT_GATES += actionlint
 
 # ── Configuration ───────────────────────────────────────────────────────────
 

@@ -5351,6 +5351,14 @@ impl Checker {
     /// identity so two same-named actors from different modules occupy
     /// distinct entries instead of last-write-wins clobbering.
     pub(super) fn register_actor_decl_as(&mut self, ad: &ActorDecl, identity: &str) {
+        if ad.mailbox_capacity.is_some() {
+            self.actor_overflow_policies.insert(
+                identity.to_string(),
+                ad.overflow_policy
+                    .clone()
+                    .unwrap_or(hew_parser::ast::OverflowPolicy::Block),
+            );
+        }
         let mut fields = HashMap::new();
         let mut field_order: Vec<String> = Vec::new();
         let mut hole_vars = Vec::new();

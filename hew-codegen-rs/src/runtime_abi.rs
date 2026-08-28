@@ -4785,6 +4785,37 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             ],
             false,
         ),
+        // Cooperative bounded Block send. `0` registers a parked producer;
+        // `1` means immediate admission; negative values retain caller ownership.
+        "hew_actor_await_send_by_id" => i32_ty.fn_type(
+            &[
+                i64_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                size_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+        // Stable-role sibling of `hew_actor_await_send_by_id`. The final
+        // pointer receives the exact accepted incarnation id for detach.
+        "hew_supervisor_role_await_send" => i32_ty.fn_type(
+            &[
+                i64_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                size_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+        "hew_actor_detach_await_send_by_id" => ctx
+            .void_type()
+            .fn_type(&[i64_ty.into(), ptr_ty.into()], false),
         // hew_tcp_attach_local(conn: c_int, actor: *mut HewActor,
         //                      on_data_type: i32, on_close_type: i32) -> c_int
         // (`hew-runtime/src/transport.rs`). The active-mode `conn.attach(handler)`

@@ -20596,7 +20596,12 @@ impl LowerCtx {
                     }
                     // A `receive gen fn` dispatch never reaches a `select`
                     // ActorAsk arm — `for await` is its only consumer surface.
-                    Some(ActorMethodKind::Fire(_) | ActorMethodKind::StreamProducer(_, _))
+                    Some(
+                        ActorMethodKind::Fire(_)
+                        | ActorMethodKind::BlockingFire(_)
+                        | ActorMethodKind::CheckedFire(_)
+                        | ActorMethodKind::StreamProducer(_, _),
+                    )
                     | None => {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::CheckerBoundaryViolation {
@@ -27477,8 +27482,38 @@ impl LowerCtx {
                             receiver: Box::new(lowered_receiver),
                             method_id,
                             args: lowered_args,
+                            checked: false,
+                            blocking: false,
                         },
                         ResolvedTy::Unit,
+                    )
+                }
+                ActorMethodKind::BlockingFire(method_id) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    (
+                        HirExprKind::ActorSend {
+                            receiver: Box::new(lowered_receiver),
+                            method_id,
+                            args: lowered_args,
+                            checked: false,
+                            blocking: true,
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+                ActorMethodKind::CheckedFire(method_id) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    let result_ty = ResolvedTy::from_ty(&Ty::result(Ty::Unit, Ty::send_error()))
+                        .expect("checked actor send result type is compiler-owned");
+                    (
+                        HirExprKind::ActorSend {
+                            receiver: Box::new(lowered_receiver),
+                            method_id,
+                            args: lowered_args,
+                            checked: true,
+                            blocking: false,
+                        },
+                        result_ty,
                     )
                 }
                 ActorMethodKind::Ask(method_id, reply_ty) => {
@@ -40818,8 +40853,8 @@ mod caller_visible_param_projection_tests {
 mod builtin_enum_catalog_fingerprint_tests {
     use super::BUILTIN_ENUM_SPECS;
 
-    const TRANSITION_FINGERPRINT: u64 = 0xb212_192b_75a4_473a;
-    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0x1615_c20e_10cb_dac2;
+    const TRANSITION_FINGERPRINT: u64 = 0xc1fc_b995_abfb_984c;
+    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0xe7c1_bed6_d523_d55c;
 
     fn hash_byte(hash: &mut u64, byte: u8) {
         *hash ^= u64::from(byte);

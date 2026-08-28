@@ -1514,6 +1514,7 @@ fn send_value_transfer_balances() {
                 next: 1,
                 arg_modes: Vec::new(),
                 cleanup_plan: None,
+                result_dest: None,
             },
         ),
         block(1, Vec::new(), Terminator::Return),

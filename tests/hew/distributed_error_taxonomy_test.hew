@@ -16,6 +16,7 @@ fn send_error_id(err: SendError) -> i64 {
         SendError.VersionMismatch => 8,
         SendError.Unauthorized => 9,
         SendError.Backpressure => 10,
+        SendError.MessageLost => 11,
     }
 }
 
@@ -97,6 +98,7 @@ fn test_send_error_taxonomy_variants() {
     testing.assert_eq(send_error_id(SendError.VersionMismatch), 8);
     testing.assert_eq(send_error_id(SendError.Unauthorized), 9);
     testing.assert_eq(send_error_id(SendError.Backpressure), 10);
+    testing.assert_eq(send_error_id(SendError.MessageLost), 11);
 }
 
 #[test]

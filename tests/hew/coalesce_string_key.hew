@@ -36,13 +36,13 @@ actor StringCoalescer {
 #[test]
 fn coalesce_string_key_latest_wins_and_distinct_keys_survive() {
     let worker = spawn StringCoalescer(processed: 0, latest_one: -1, latest_two: -1);
-    worker.update("active", 0, 150ms);
+    let _ = worker.update("active", 0, 150ms);
     sleep(20ms);
-    worker.update("one", 1, 0ns);
-    worker.update("two", 20, 0ns);
-    worker.update("one", 2, 0ns);
-    worker.update("one", 3, 0ns);
-    worker.update("one", 4, 0ns);
+    let _ = worker.update("one", 1, 0ns);
+    let _ = worker.update("two", 20, 0ns);
+    let _ = worker.update("one", 2, 0ns);
+    let _ = worker.update("one", 3, 0ns);
+    let _ = worker.update("one", 4, 0ns);
     sleep(400ms);
     match await worker.count() {
         .Ok(value) => testing.assert_eq(value, 3),

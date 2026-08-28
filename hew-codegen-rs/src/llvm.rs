@@ -998,6 +998,23 @@ impl PartialEq<&str> for WasmExclusion {
 ///   elaborator-produced `"Duplex::close"` strings that resolve to
 ///   `hew_duplex_close` at codegen time.
 pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<WasmExclusion> {
+    // A bounded mailbox with the default/explicit Block policy needs the
+    // native read-slot + enqueue-resume capacity waiter even when its first
+    // send happens from a contextless entry point or through an ask carrier.
+    // Reject the declaration on wasm32 rather than reaching mailbox_wasm's
+    // historical DropNew fallback and silently losing work.
+    if pipeline.actor_layouts.iter().any(|layout| {
+        layout.mailbox_capacity.is_some()
+            && matches!(
+                layout.overflow_policy.as_ref(),
+                None | Some(hew_parser::ast::OverflowPolicy::Block)
+            )
+    }) {
+        return Some(WasmExclusion::new(
+            "hew_actor_await_send_by_id",
+            wasm_capability_ids::COOPERATIVE_YIELD,
+        ));
+    }
     for func in &pipeline.raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
@@ -1205,6 +1222,10 @@ fn wasm_excluded_terminal_call(terminator: &Terminator) -> Option<WasmExclusion>
 /// `RemoteAsk` / `StreamSend` / `CallClosure`) were never flagged here.
 fn wasm_excluded_suspend_kind(kind: &SuspendKind) -> Option<WasmExclusion> {
     match kind {
+        SuspendKind::ActorSend { .. } => Some(WasmExclusion::new(
+            "hew_actor_await_send_by_id",
+            wasm_capability_ids::COOPERATIVE_YIELD,
+        )),
         SuspendKind::StreamNext { .. } => Some(WasmExclusion::new(
             "hew_stream_await_next",
             wasm_capability_ids::STREAMS,
@@ -27100,7 +27121,7 @@ pub(crate) fn static_type_size_i64<'ctx>(
     }
 }
 
-fn load_actor_id<'ctx>(
+pub(crate) fn load_actor_id<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     actor_ptr: PointerValue<'ctx>,
 ) -> CodegenResult<IntValue<'ctx>> {
@@ -27426,6 +27447,150 @@ pub(crate) fn emit_send_result_from_rc<'ctx>(
         .llvm_ctx_with(|| format!("{helper} err br merge"))?;
 
     // ── Merge: subsequent instructions resume here. ──
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
+/// Materialize a policy-sensitive local actor send status as
+/// `Result<(), SendError>`.
+///
+/// The local actor ABI uses `0` for loss-free delivery, positive `1` for a
+/// declared policy that discarded/replaced/coalesced work, and negative
+/// [`HewError`] values for an undelivered send. The public mapping is:
+///
+/// - `0` -> `Ok(())`
+/// - `1` -> `Err(SendError::MessageLost)` (variant 10)
+/// - `ErrMailboxFull` (`-1`) -> `Err(SendError::Full)` (variant 0)
+/// - every other negative status -> `Err(SendError::Closed)` (variant 1)
+fn emit_checked_actor_send_result_from_rc<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    status: IntValue<'ctx>,
+    dest: Place,
+) -> CodegenResult<()> {
+    let helper = "checked_actor_send";
+    let dest_local = composite_dest_local(dest, helper)?;
+    let i32_ty = fn_ctx.ctx.i32_type();
+    if status.get_type().get_bit_width() != 32 {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper}: send status must be i32, got {}-bit",
+            status.get_type().get_bit_width()
+        )));
+    }
+
+    let is_ok = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            i32_ty.const_zero(),
+            "checked_send_ok",
+        )
+        .llvm_ctx("checked actor send status compare")?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed("checked actor send has no parent".into()))?;
+    let ok_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "checked_send_result_ok");
+    let err_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "checked_send_result_err");
+    let merge_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "checked_send_result_merge");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_ok, ok_bb, err_bb)
+        .llvm_ctx("checked actor send result branch")?;
+
+    fn_ctx.builder.position_at_end(ok_bb);
+    store_composite_tag(fn_ctx, dest_local, 0, helper)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("checked actor send ok merge")?;
+
+    fn_ctx.builder.position_at_end(err_bb);
+    store_composite_tag(fn_ctx, dest_local, 1, helper)?;
+    let is_lost = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            i32_ty.const_int(
+                hew_runtime::actor::HEW_ACTOR_SEND_MESSAGE_LOST as u64,
+                false,
+            ),
+            "checked_send_message_lost",
+        )
+        .llvm_ctx("checked actor send message-lost compare")?;
+    let is_full = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            i32_ty.const_int(HewError::ErrMailboxFull as i32 as u64, true),
+            "checked_send_mailbox_full",
+        )
+        .llvm_ctx("checked actor send mailbox-full compare")?;
+    let (send_err_ptr, send_err_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    )?;
+    let store_tag = |tag_ptr: PointerValue<'ctx>, tag_ty: IntType<'ctx>| -> CodegenResult<()> {
+        let full = tag_ty.const_int(0, false);
+        let closed = tag_ty.const_int(1, false);
+        let message_lost = tag_ty.const_int(10, false);
+        let fallback = fn_ctx
+            .builder
+            .build_select(is_full, full, closed, "checked_send_failure_tag")
+            .llvm_ctx("checked actor send failure tag select")?
+            .into_int_value();
+        let tag = fn_ctx
+            .builder
+            .build_select(is_lost, message_lost, fallback, "checked_send_error_tag")
+            .llvm_ctx("checked actor send error tag select")?
+            .into_int_value();
+        fn_ctx
+            .builder
+            .build_store(tag_ptr, tag)
+            .llvm_ctx("store checked actor SendError tag")?;
+        Ok(())
+    };
+    match send_err_ty {
+        BasicTypeEnum::IntType(tag_ty) => store_tag(send_err_ptr, tag_ty)?,
+        BasicTypeEnum::StructType(st) => {
+            fn_ctx
+                .builder
+                .build_store(send_err_ptr, st.const_zero())
+                .llvm_ctx("zero checked actor SendError")?;
+            let tag_ptr = fn_ctx
+                .builder
+                .build_struct_gep(st, send_err_ptr, 0, "checked_send_error_tag_ptr")
+                .llvm_ctx("checked actor SendError tag gep")?;
+            let Some(BasicTypeEnum::IntType(tag_ty)) = st.get_field_type_at_index(0) else {
+                return Err(CodegenError::FailClosed(
+                    "checked actor SendError tag field is not an integer".into(),
+                ));
+            };
+            store_tag(tag_ptr, tag_ty)?;
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "checked actor SendError payload must be struct or int, got {other:?}"
+            )));
+        }
+    }
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("checked actor send err merge")?;
     fn_ctx.builder.position_at_end(merge_bb);
     Ok(())
 }
@@ -29891,6 +30056,28 @@ fn dispatch_collapsed_suspend<'ctx>(
     await_deadlines: &std::collections::HashMap<u32, i64>,
 ) -> CodegenResult<()> {
     match kind {
+        SuspendKind::ActorSend {
+            actor,
+            stable_role,
+            msg_type,
+            value,
+            arg_modes,
+            cleanup_plan,
+        } => {
+            validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
+            crate::suspend::emit_suspending_actor_send_terminator(
+                fn_ctx,
+                crate::suspend::SuspendingActorSendEmit {
+                    actor: *actor,
+                    stable_role: *stable_role,
+                    msg_type: *msg_type,
+                    value: *value,
+                    cleanup_plan: cleanup_plan.clone(),
+                    resume,
+                    cleanup,
+                },
+            )
+        }
         SuspendKind::Ask {
             actor,
             stable_role,
@@ -32338,6 +32525,7 @@ fn lower_terminator<'ctx>(
             next,
             arg_modes,
             cleanup_plan,
+            result_dest,
         } => {
             validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
             let (payload_ptr, payload_size) =
@@ -32352,9 +32540,9 @@ fn lower_terminator<'ctx>(
                 "actor send payload size",
             )?;
             let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
-            // Bind the i32 return value. `0` (`HewError::Ok`) includes
-            // declared bounded-mailbox policy drops (`drop_new`/`drop_old`/
-            // `coalesce`; spec §6.2). `ErrActorStopped` is also non-trapping
+            // Bind the i32 return value. `0` means the message was admitted;
+            // checked sends receive positive policy-loss statuses for
+            // `drop_new`, `drop_old`, and `coalesce`. `ErrActorStopped` is non-trapping
             // for this fire-and-forget LocalPid surface: it means a peer died
             // before delivery, so the send is a no-op. Every other non-zero
             // status remains a genuine, caller-visible failure and traps.
@@ -32438,6 +32626,65 @@ fn lower_terminator<'ctx>(
                     })?
                     .into_int_value()
             };
+
+            if let Some(result_dest) = result_dest {
+                // Checked policy sends distinguish two ownership classes:
+                // non-negative statuses consumed the payload (0 delivered,
+                // positive MessageLost), while negative statuses left the
+                // prepared carrier with the caller and must release it before
+                // materializing the SendError.
+                let parent = fn_ctx
+                    .builder
+                    .get_insert_block()
+                    .and_then(|bb| bb.get_parent())
+                    .ok_or_else(|| {
+                        CodegenError::Llvm("checked actor send block has no parent".into())
+                    })?;
+                let materialize_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(parent, "checked_actor_send_materialize");
+                let undelivered_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(parent, "checked_actor_send_undelivered");
+                let status_negative = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        send_status,
+                        fn_ctx.ctx.i32_type().const_zero(),
+                        "checked_actor_send_negative",
+                    )
+                    .llvm_ctx("checked actor send ownership compare")?;
+                fn_ctx
+                    .builder
+                    .build_conditional_branch(status_negative, undelivered_bb, materialize_bb)
+                    .llvm_ctx("checked actor send ownership branch")?;
+
+                fn_ctx.builder.position_at_end(undelivered_bb);
+                if let Some(plan) = cleanup_plan {
+                    emit_prepared_carrier_drop(
+                        fn_ctx,
+                        *value,
+                        plan,
+                        hew_mir::PreparedCarrierBoundary::Actor,
+                    )?;
+                }
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(materialize_bb)
+                    .llvm_ctx("checked actor send cleanup branch")?;
+
+                fn_ctx.builder.position_at_end(materialize_bb);
+                emit_checked_actor_send_result_from_rc(fn_ctx, send_status, *result_dest)?;
+                let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
+                    CodegenError::FailClosed(format!("Send next bb{next} missing"))
+                })?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(next_bb)
+                    .llvm_ctx("checked actor send continuation branch")?;
+                return Ok(());
+            }
 
             // Delivery is the payload's ONE consumer: on `Ok` the mailbox owns
             // the copied bytes (heap pointers included) and the checker has

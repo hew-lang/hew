@@ -9418,7 +9418,8 @@ fn suspend_resume_mint_places(kind: &SuspendKind) -> Vec<Place> {
         } => std::iter::once(*result_dest)
             .chain(deadline_result_dest.iter().copied())
             .collect(),
-        SuspendKind::StreamSend { .. }
+        SuspendKind::ActorSend { .. }
+        | SuspendKind::StreamSend { .. }
         | SuspendKind::Sleep { .. }
         | SuspendKind::SleepUntil { .. } => Vec::new(),
     }
@@ -14353,6 +14354,7 @@ pub(super) fn enumerate_exits(
                 next,
                 arg_modes: _,
                 cleanup_plan: _,
+                result_dest: _,
             } => (
                 // `actor` is a Place; the ExitPath::Send slot carries
                 // the callee name. Spine has no Send construction

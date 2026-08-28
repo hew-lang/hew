@@ -269,8 +269,27 @@ fn select_arm_source_places(arms: &[SelectArm]) -> Vec<Place> {
 #[must_use]
 pub fn suspend_kind_source_places(kind: &SuspendKind) -> Vec<Place> {
     match kind {
-        // `actor` + `value` are the reads; result/reply/error dests are writes.
-        SuspendKind::Ask { actor, value, .. } => vec![*actor, *value],
+        // The receiver descriptor and payload are reads. A ChildRef carrier
+        // additionally reads the two extracted stable-role words used by
+        // owner-scoped submission.
+        SuspendKind::ActorSend {
+            actor,
+            stable_role,
+            value,
+            ..
+        }
+        | SuspendKind::Ask {
+            actor,
+            stable_role,
+            value,
+            ..
+        } => {
+            let mut places = vec![*actor, *value];
+            if let Some(role) = stable_role {
+                places.extend([role.supervisor_token, role.slot_index]);
+            }
+            places
+        }
         // `conn` is the read source; `result_dest` is a resume-edge write.
         SuspendKind::Read { conn, .. } => vec![*conn],
         // `listener` is the accept source; `result_dest` is a resume-edge write.
@@ -347,10 +366,26 @@ pub fn terminator_source_places(
         Terminator::Suspend { .. } => {
             suspend_kind.map_or_else(Vec::new, suspend_kind_source_places)
         }
-        Terminator::Send { actor, value, .. } => vec![*actor, *value],
+        Terminator::Send {
+            actor,
+            stable_role,
+            value,
+            ..
+        }
         // `reply_dest` is the slot the reply is written into — a write, not
         // a source.
-        Terminator::Ask { actor, value, .. } => vec![*actor, *value],
+        | Terminator::Ask {
+            actor,
+            stable_role,
+            value,
+            ..
+        } => {
+            let mut places = vec![*actor, *value];
+            if let Some(role) = stable_role {
+                places.extend([role.supervisor_token, role.slot_index]);
+            }
+            places
+        }
         // The ten pure-{resume,cleanup} suspension carriers collapsed onto the
         // bare `Suspend` arm above, which recovers their source operands from the
         // `SuspendKind` side-table via `suspend_kind_source_places`.
@@ -682,7 +717,8 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
 /// analogue of the per-carrier arms in [`generator_yield_terminator_escapes`].
 fn suspend_kind_yield_escapes(kind: &SuspendKind, local: u32) -> bool {
     match kind {
-        SuspendKind::Ask { value, .. }
+        SuspendKind::ActorSend { value, .. }
+        | SuspendKind::Ask { value, .. }
         | SuspendKind::StreamSend { value, .. }
         | SuspendKind::RemoteAsk { value, .. } => place_refs_local(*value, local),
         // Handle reads + result-binding carriers transfer no yielded value out.
@@ -935,7 +971,8 @@ pub(super) fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 #[cfg(test)]
 fn suspend_kind_escape_places(kind: &SuspendKind) -> Vec<Place> {
     match kind {
-        SuspendKind::Ask { value, .. }
+        SuspendKind::ActorSend { value, .. }
+        | SuspendKind::Ask { value, .. }
         | SuspendKind::StreamSend { value, .. }
         | SuspendKind::RemoteAsk { value, .. } => vec![*value],
         SuspendKind::CallClosure { args, .. } => args.clone(),
@@ -1562,6 +1599,7 @@ mod f1_suspending_escape_poison {
                 next: 1,
                 arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
                 cleanup_plan: None,
+                result_dest: None,
             },
         };
         let allowed = derive_local_bytes_drop_allowed(

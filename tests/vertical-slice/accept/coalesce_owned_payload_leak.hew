@@ -10,17 +10,14 @@ actor OwnedCoalescer {
     var latest_len: i64 = -1;
 
     mailbox 1 overflow coalesce(id) fallback drop_new;
-
     receive fn update(id: i64, payload: string, pause: duration) {
         sleep(pause);
         processed = processed + 1;
         latest_len = payload.len() as i64;
     }
-
     receive fn count() -> i64 {
         processed
     }
-
     receive fn length() -> i64 {
         latest_len
     }
@@ -28,14 +25,13 @@ actor OwnedCoalescer {
 
 fn main() -> i64 {
     let worker = spawn OwnedCoalescer(processed: 0, latest_len: -1);
-    worker.update(0, "active", 150ms);
+    let _ = worker.update(0, "active", 150ms);
     sleep(20ms);
-    worker.update(9, "one", 0ms);
-    worker.update(9, "two-two", 0ms);
-    worker.update(9, "three-three-three", 0ms);
-    worker.update(9, "latest-payload", 0ms);
+    let _ = worker.update(9, "one", 0ns);
+    let _ = worker.update(9, "two-two", 0ns);
+    let _ = worker.update(9, "three-three-three", 0ns);
+    let _ = worker.update(9, "latest-payload", 0ns);
     sleep(350ms);
-
     let count = match await worker.count() {
         Ok(value) => value,
         Err(_) => -1,

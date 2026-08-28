@@ -8,6 +8,12 @@ use super::{
     RECEIVE_GEN_STREAM_CAPACITY,
 };
 
+#[derive(Clone, Copy)]
+struct ActorSendTarget {
+    actor: Place,
+    stable_role: Option<StableActorRole>,
+}
+
 impl Builder {
     fn record_pending_outbound_args(
         &mut self,
@@ -1835,8 +1841,11 @@ impl Builder {
         receiver: &HirExpr,
         method_id: &str,
         args: &[hew_hir::HirExpr],
-        site: hew_hir::SiteId,
+        checked: bool,
+        blocking: bool,
+        expr: &HirExpr,
     ) -> Option<Place> {
+        let site = expr.site;
         let info = self.actor_method_info(&receiver.ty, method_id, site)?;
         if info.param_tys.len() != args.len() {
             self.diagnostics.push(MirDiagnostic {
@@ -1886,17 +1895,68 @@ impl Builder {
             })
             .collect::<Option<Vec<_>>>()
             .unwrap_or_default();
+        let result_dest = checked.then(|| self.alloc_local(expr.ty.clone()));
+        let target = ActorSendTarget { actor, stable_role };
+        if blocking && self.current_function_call_conv.carries_execution_context() {
+            self.finish_blocking_actor_send(target, info.msg_type, value, next, raw_bitcopy_modes);
+        } else {
+            self.finish_nonblocking_actor_send(
+                target,
+                info.msg_type,
+                value,
+                next,
+                raw_bitcopy_modes,
+                result_dest,
+            );
+        }
+        self.start_block(next);
+        result_dest
+    }
+
+    fn finish_blocking_actor_send(
+        &mut self,
+        target: ActorSendTarget,
+        msg_type: i32,
+        value: Place,
+        next: u32,
+        arg_modes: Vec<crate::model::SendAliasMode>,
+    ) {
+        let ActorSendTarget { actor, stable_role } = target;
+        self.record_suspend_kind(SuspendKind::ActorSend {
+            actor,
+            stable_role,
+            msg_type,
+            value,
+            arg_modes,
+            cleanup_plan: None,
+        });
+        self.finish_current_block(Terminator::Suspend {
+            resume: next,
+            cleanup: next,
+            is_final: false,
+        });
+    }
+
+    fn finish_nonblocking_actor_send(
+        &mut self,
+        target: ActorSendTarget,
+        msg_type: i32,
+        value: Place,
+        next: u32,
+        arg_modes: Vec<crate::model::SendAliasMode>,
+        result_dest: Option<Place>,
+    ) {
+        let ActorSendTarget { actor, stable_role } = target;
         self.finish_current_block(Terminator::Send {
             actor,
             stable_role,
-            msg_type: info.msg_type,
+            msg_type,
             value,
             next,
-            arg_modes: raw_bitcopy_modes,
+            arg_modes,
             cleanup_plan: None,
+            result_dest,
         });
-        self.start_block(next);
-        None
     }
 
     /// Lower a `receive gen fn` call (`e.ticks()`, `t.stream(3)`) — decision 4
@@ -1997,6 +2057,7 @@ impl Builder {
             next,
             arg_modes: Vec::new(),
             cleanup_plan: None,
+            result_dest: None,
         });
         self.start_block(next);
         Some(stream)

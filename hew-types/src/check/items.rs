@@ -25,6 +25,20 @@ impl Checker {
             Item::Function(fd) => self.check_function(fd),
             Item::Actor(ad) => {
                 if !crate::ty::is_reserved_type_name(&ad.name) {
+                    if matches!(
+                        ad.overflow_policy.as_ref(),
+                        Some(hew_parser::ast::OverflowPolicy::Coalesce {
+                            fallback: Some(hew_parser::ast::OverflowFallback::Block),
+                            ..
+                        })
+                    ) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "coalesce fallback 'block' is unsupported: use top-level `overflow block` for cooperative backpressure"
+                                .to_string(),
+                        );
+                    }
                     self.check_actor(ad);
                 }
             }

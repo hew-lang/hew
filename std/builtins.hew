@@ -67,6 +67,9 @@ pub enum SendError {
     Unauthorized;
     /// The destination or route is applying flow control.
     Backpressure;
+    /// The declared mailbox policy discarded, replaced, or coalesced work
+    /// while processing this send.
+    MessageLost;
 }
 
 /// Error returned when `Node.lookup<T>(name)` cannot resolve `name`.

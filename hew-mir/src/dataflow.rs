@@ -978,9 +978,9 @@ pub fn terminator_write_places(term: &Terminator) -> Vec<Place> {
         | Terminator::Trap { .. }
         | Terminator::Branch { .. }
         | Terminator::Yield { .. }
-        | Terminator::Send { .. }
         | Terminator::Suspend { .. }
         | Terminator::SuspendingScopeDeadline { .. } => Vec::new(),
+        Terminator::Send { result_dest, .. } => result_dest.iter().copied().collect(),
         Terminator::Call { dest, .. } => dest.iter().copied().collect(),
         Terminator::MakeGenerator { dest, .. } | Terminator::MakeLambdaActor { dest, .. } => {
             vec![*dest]
@@ -1065,7 +1065,8 @@ pub fn suspend_kind_write_places(kind: &crate::SuspendKind) -> Vec<Place> {
         | crate::SuspendKind::TaskAwait { result_dest, .. } => {
             result_dest.iter().copied().collect()
         }
-        crate::SuspendKind::StreamSend { .. }
+        crate::SuspendKind::ActorSend { .. }
+        | crate::SuspendKind::StreamSend { .. }
         | crate::SuspendKind::RestartWait { .. }
         | crate::SuspendKind::Sleep { .. }
         | crate::SuspendKind::SleepUntil { .. } => Vec::new(),

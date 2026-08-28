@@ -2731,6 +2731,18 @@ pub struct ThirFunction {
 /// [`RawMirFunction::await_deadline_ns`] keyed by the same block id.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SuspendKind {
+    /// A bounded actor mailbox with `overflow block`: register the prepared
+    /// message and park the sending continuation when the mailbox is full.
+    ActorSend {
+        actor: Place,
+        /// Present for a blocking send through `ChildRef<T>`. The cooperative
+        /// registration resolves and pins the current supervised incarnation.
+        stable_role: Option<StableActorRole>,
+        msg_type: i32,
+        value: Place,
+        arg_modes: Vec<SendAliasMode>,
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
+    },
     /// Non-blocking `await actor.method(value)` (`SuspendingAsk`).
     Ask {
         actor: Place,
@@ -3978,6 +3990,9 @@ pub enum Terminator {
         /// Whole prepared-carrier drop witness used only when transport retains
         /// caller ownership on an error edge.
         cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
+        /// Destination for a policy-sensitive `Result<(), SendError>`.
+        /// `None` preserves the ergonomic unit-typed lossless send path.
+        result_dest: Option<Place>,
     },
     /// Actor ask: send `value` to `actor` on a caller-owned reply
     /// channel and resume at `next` once the reply has been received.

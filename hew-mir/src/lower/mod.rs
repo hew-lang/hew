@@ -5070,8 +5070,10 @@ fn resolve_outbound_actor_modes(
                         *arg_modes = modes;
                     }
                     Terminator::Suspend { .. } => {
-                        let Some(SuspendKind::Ask { arg_modes, .. }) =
-                            builder.suspend_kinds.get_mut(&block.id)
+                        let Some(
+                            SuspendKind::Ask { arg_modes, .. }
+                            | SuspendKind::ActorSend { arg_modes, .. },
+                        ) = builder.suspend_kinds.get_mut(&block.id)
                         else {
                             builder.diagnostics.push(MirDiagnostic {
                                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -5143,8 +5145,9 @@ fn prepare_outbound_actor_payloads(
                 PendingOutboundTarget::Direct => match &block.terminator {
                     Terminator::Send { value, .. } | Terminator::Ask { value, .. } => *value,
                     Terminator::Suspend { .. } => {
-                        let Some(SuspendKind::Ask { value, .. }) =
-                            builder.suspend_kinds.get(&block.id)
+                        let Some(
+                            SuspendKind::Ask { value, .. } | SuspendKind::ActorSend { value, .. },
+                        ) = builder.suspend_kinds.get(&block.id)
                         else {
                             continue;
                         };
@@ -5380,11 +5383,18 @@ fn prepare_outbound_actor_payloads(
                         *carrier_cleanup = cleanup_plan;
                     }
                     Terminator::Suspend { .. } => {
-                        if let Some(SuspendKind::Ask {
-                            value,
-                            cleanup_plan: carrier_cleanup,
-                            ..
-                        }) = builder.suspend_kinds.get_mut(&block.id)
+                        if let Some(
+                            SuspendKind::Ask {
+                                value,
+                                cleanup_plan: carrier_cleanup,
+                                ..
+                            }
+                            | SuspendKind::ActorSend {
+                                value,
+                                cleanup_plan: carrier_cleanup,
+                                ..
+                            },
+                        ) = builder.suspend_kinds.get_mut(&block.id)
                         {
                             *value = prepared_payload;
                             *carrier_cleanup = cleanup_plan;
@@ -7102,6 +7112,9 @@ pub fn validate_outbound_actor_modes(raw: &RawMirFunction) -> Vec<MirCheck> {
                         .get(&block.id)
                         .is_some_and(|kind| match kind {
                             SuspendKind::Ask {
+                                value, arg_modes, ..
+                            }
+                            | SuspendKind::ActorSend {
                                 value, arg_modes, ..
                             } => arg_modes.is_empty() && payload_requires_mode(*value),
                             _ => false,

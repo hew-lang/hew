@@ -8966,6 +8966,80 @@ pub extern "C" fn hew_supervisor_role_send(
     crate::internal::types::HewError::ErrActorStopped as i32
 }
 
+/// Cooperatively submit a bounded `overflow block` tell through a stable
+/// supervisor role. Resolution and mailbox registration occur under one
+/// identity pin; on acceptance, `out_actor_id` receives the exact incarnation
+/// whose mailbox owns the waiter so cancellation can detach from that mailbox.
+///
+/// # Safety
+///
+/// `data`, `sender`, and `slot` must satisfy
+/// [`crate::actor::actor_await_send_pinned`]. `out_actor_id` must be writable.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_role_await_send(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    key: u32,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    sender: *mut HewActor,
+    slot: *mut crate::read_slot::HewReadSlot,
+    out_actor_id: *mut u64,
+) -> c_int {
+    if out_actor_id.is_null() {
+        set_last_error("stable-role cooperative tell received a null actor-id output".to_string());
+        return crate::internal::types::HewError::ErrActorStopped as i32;
+    }
+    // SAFETY: the null check above establishes the caller-provided output is
+    // writable. Initialize it even on refusal because codegen loads before
+    // branching on status and only uses the value on the suspend edge.
+    unsafe { out_actor_id.write(0) };
+    let (child_id, child_serial) = match role_resolve_current_child_id(token, key, false) {
+        Ok(ids) => ids,
+        Err(code) => return code,
+    };
+    let rc = crate::lifetime::live_actors::with_actor_send_by_identity(
+        child_id,
+        child_serial,
+        |actor| {
+            // SAFETY: the identity pin keeps this incarnation live for the
+            // complete mailbox registration.
+            unsafe {
+                crate::actor::actor_await_send_pinned(
+                    actor, msg_type, data, size, sender, slot,
+                )
+            }
+        },
+    )
+    .unwrap_or_else(|| {
+        set_last_error(format!(
+            "stable-role cooperative tell refused: child slot {key} incarnation retired during submission"
+        ));
+        crate::internal::types::HewError::ErrActorStopped as i32
+    });
+    if rc >= 0 {
+        // SAFETY: non-null writable output is part of this ABI's contract.
+        unsafe { out_actor_id.write(child_id) };
+    }
+    rc
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_supervisor_role_await_send(
+    _token: crate::lifetime::local_handles::HewLocalPidId,
+    _key: u32,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _size: usize,
+    _sender: *mut HewActor,
+    _slot: *mut crate::read_slot::HewReadSlot,
+    _out_actor_id: *mut u64,
+) -> c_int {
+    crate::internal::types::HewError::ErrActorStopped as i32
+}
+
 /// Submit an ask with a caller-owned reply channel through a fungible
 /// `(stable supervisor token, static slot)` role.
 ///

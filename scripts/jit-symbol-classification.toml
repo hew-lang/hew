@@ -1280,7 +1280,9 @@ stable-stdlib = [
 # non-trivial actor programs. NOT user-callable via `extern "rt"` (the checker
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.
 codegen-stable = [
+  "hew_actor_await_send_by_id",
   "hew_actor_cooperate",
+  "hew_actor_detach_await_send_by_id",
   # SYSTEM-LANE PROVENANCE BOUNDARY (this entry and `hew_actor_monitor`).
   # Installing a link or a monitor on an ALREADY-TERMINAL peer synthesizes the
   # `Exit` / `Down` the contract owes on the spot, straight onto a system
@@ -1447,6 +1449,7 @@ codegen-stable = [
   # emits the literal and the call); user code has no way to name it that is
   # not a forged system-dispatch registration.
   "hew_supervisor_add_child_spec",
+  "hew_supervisor_role_await_send",
   # SYSTEM-LANE PROVENANCE BOUNDARY. Installs the runtime's own
   # `supervisor_sys_dispatch` trampoline on the supervisor's not-yet-published
   # `self_actor`. The installed value is a compile-time constant code address
@@ -6448,6 +6451,25 @@ params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
+# hew-runtime/src/supervisor.rs: cooperative owner-scoped stable-role tell.
+# The mailbox copies the payload and retains its waiter slot only while parked;
+# the sender, role words, and exact-incarnation output remain borrowed.
+[[ownership.contracts]]
+symbol = "hew_supervisor_role_await_send"
+result = "none"
+params = [
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "retain",
+  "borrow",
+]
+release-symbol = ""
+discharge-depth = "none"
+
 # hew-runtime/src/supervisor.rs: owner-scoped stable-role ask. The payload is
 # deep-copied by the mailbox; the reply channel gains one queued sender ref
 # (retain), released internally on a failed submission — the caller's creator
@@ -6492,6 +6514,27 @@ discharge-depth = "none"
 # allocation behind it, so nothing is transferred and nothing is released.
 [[ownership.contracts]]
 symbol = "hew_actor_set_sys_dispatch"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/actor.rs: copies the payload into a mailbox node. A queued
+# producer keeps an additional read-slot ref until admission, close, or detach;
+# the caller keeps its creator ref. The sender pointer names the suspended
+# continuation but transfers no actor ownership.
+[[ownership.contracts]]
+symbol = "hew_actor_await_send_by_id"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "retain"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/actor.rs: removes a pending waiter and balances only the
+# mailbox's retained read-slot ref. The caller's creator ref stays owned by the
+# caller, including when admission or close already removed the waiter.
+[[ownership.contracts]]
+symbol = "hew_actor_detach_await_send_by_id"
 result = "none"
 params = ["borrow", "borrow"]
 release-symbol = ""

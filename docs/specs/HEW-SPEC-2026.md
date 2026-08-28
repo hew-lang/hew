@@ -91,9 +91,9 @@ Rules:
 
 Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required.
 
-Named actor `receive fn` methods are called directly — there is no `.send()` or `.ask()` call site. The distinguishing axis is the callee's `receive fn` signature: a `receive fn` without a return type produces a fire-and-forget call (type `()`); a `receive fn` with a return type `R` produces a request-reply call (type `Result<R, AskError>`). The checker derives the call kind from the callee's signature — no caller-side keyword is needed, because `LocalPid<T>` is a distinct nominal type that already encodes the mailbox boundary.
+Named actor `receive fn` methods are called directly — there is no `.send()` or `.ask()` call site. The distinguishing axes are the callee's signature and its actor's declared mailbox policy. A `receive fn` with a return type `R` produces a request-reply call (type `Result<R, AskError>`). A `receive fn` without a return type is fire-and-forget: its call has type `()` for an unbounded mailbox or bounded `block` mailbox, and `Result<(), SendError>` for a `drop_new`, `drop_old`, `fail`, or `coalesce` mailbox. Because `LocalPid<T>` preserves the actor's nominal identity, this policy-sensitive result is visible in the handle's inferred method surface without adding a caller-side send keyword.
 
-The token `ask` does not appear at actor call sites. Request-reply against a named actor is written `await <ref>.<method>(<args>)` and has result type `Result<R, AskError>`. Fire-and-forget is written `<ref>.<method>(<args>)` (no `await`) and has type `()`. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
+The token `ask` does not appear at actor call sites. Request-reply against a named actor is written `await <ref>.<method>(<args>)` and has result type `Result<R, AskError>`. Fire-and-forget is written `<ref>.<method>(<args>)` (no `await`) and has the policy-derived type above. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
 
 ```hew
 actor Counter {
@@ -118,7 +118,7 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → fire-and-forget. The method call returns `()` and the caller does not need `await`. The message is enqueued and the caller continues immediately; if the recipient is already terminal the send is a no-op (see *Fire-and-forget delivery*, below).
+- **`receive fn` without return type** → fire-and-forget. The caller does not use `await`. Unbounded and bounded-`block` calls return `()`; policy-sensitive calls return `Result<(), SendError>` (see *Fire-and-forget delivery*, below).
 - **`receive fn` with return type** → request-response. The call produces `R` and waits for the reply. Inside `select`/`join`, the actor call is treated as an implicit concurrent reply source; writing `await` there is accepted but redundant.
 
 **Calling named actors:**
@@ -148,20 +148,34 @@ counter.increment(10);
 
 **Fire-and-forget delivery (normative):**
 
-A fire-and-forget send enqueues the message and returns `()`. Delivery is the
-message's single consumer: on enqueue the recipient's mailbox takes ownership of
-the payload, and the caller's binding is moved.
+A fire-and-forget send enqueues a logical snapshot of the message. On enqueue
+the recipient's mailbox takes ownership of that snapshot. Its source-level
+result is chosen from the actor declaration, so a caller can tell from the code
+and handle type whether the declared policy can lose work:
 
-A send to an actor that is already terminal — stopped or crashed — is a
-**no-op**: nothing is enqueued, the payload is released at the send site, and the
-caller continues. Sending is not a liveness test; a broadcast outlives a dead
-peer, and reaching a dead recipient is normal actor topology churn, not an error
-the sender observes. Any OTHER delivery failure (a `fail`-policy mailbox
-overflow — §6.2 — or a runtime fault) traps the sender.
+- An unbounded mailbox returns `()` and does not lose work to overflow.
+- A bounded `block` mailbox returns `()`. If full, the sending continuation
+  suspends at a real scheduler yield point until capacity exists; it MUST NOT
+  park an OS scheduler-worker thread.
+- A `drop_new`, `drop_old`, or `coalesce` mailbox returns
+  `Result<(), SendError>`. `Ok(())` means this send caused no policy loss;
+  `Err(SendError.MessageLost)` means it discarded, evicted, replaced, or
+  coalesced a message.
+- A `fail` mailbox returns `Result<(), SendError>`. Full-mailbox rejection is
+  `Err(SendError.Full)` and transfers no message ownership.
 
-A declared bounded mailbox's `drop_new` / `drop_old` / `coalesce` policies are
-successful sends by definition (§6.2): the message was accepted and the policy
-chose what to keep.
+A bare statement that discards a policy-sensitive result is a compile error.
+The caller MUST handle it with `match` or `?`, or explicitly acknowledge the
+decision with `let _ = target.method(...);`. This explicit discard exists for
+metrics/sampling workloads, but loss can no longer be introduced by changing an
+actor declaration while leaving an ordinary bare send apparently successful.
+
+A unit-typed send to an actor that is already terminal — stopped or crashed —
+is a **no-op**: nothing is enqueued, the payload is released at the send site,
+and the caller continues. Sending is not a liveness test for this lossless
+surface. A policy-sensitive send instead reports `Err(SendError.Closed)`,
+because its result already exists to state whether this particular delivery
+completed. Other unit-surface runtime failures trap the sender.
 
 Named-actor request-response uses `await` on the receive method (see §2.1.4); an
 `ask` of a terminal actor is NOT a no-op — it yields `Err`, because the caller
@@ -3940,7 +3954,10 @@ supervisor recovers what it supervises, and nothing else.
 
 ## 6. Backpressure and bounded queues
 
-Every actor mailbox has a bounded capacity and an overflow policy that determines behaviour when the mailbox is full.
+An actor with no `mailbox` declaration has an unbounded mailbox. A `mailbox N`
+declaration opts into a bounded capacity and an overflow policy that determines
+behaviour when the mailbox is full. The policy is part of the typed actor
+surface, not an invisible runtime setting.
 
 ### 6.1 Mailbox Declaration
 
@@ -3956,17 +3973,28 @@ actor MyActor {
 
 ### 6.2 Overflow Policies
 
-| Policy               | Behaviour when mailbox is full                                       |
-| -------------------- | -------------------------------------------------------------------- |
-| `block`              | Sender suspends until space is available (cancellable). **Default.** |
-| `drop_new`           | New message is silently discarded.                                   |
-| `drop_old`           | Oldest message in the queue is evicted; new message is enqueued.     |
-| `fail`               | Send returns an error to the sender.                                 |
-| `coalesce(key_expr)` | Replace an existing message with a matching key (see §6.3).          |
+| Policy               | Behaviour when mailbox is full                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------- |
+| `block`              | Cooperatively suspend the sender until space is available (cancellable). **Bounded default.**   |
+| `drop_new`           | Discard the incoming message and return `Err(SendError.MessageLost)`.                            |
+| `drop_old`           | Evict the oldest message, enqueue the incoming message, and return `Err(SendError.MessageLost)`. |
+| `fail`               | Reject the incoming message and return `Err(SendError.Full)`.                                   |
+| `coalesce(key_expr)` | Replace matching queued work or apply its fallback; every loss returns `MessageLost` (§6.3).     |
 
 Default:
 
-- Actor mailbox: `capacity=1024`, `overflow_policy=block` for local sends, `drop_new` for network ingress unless overridden.
+- No `mailbox` declaration: unbounded, with the ordinary unit-typed send surface.
+- `mailbox N` without `overflow`: capacity `N`, `overflow_policy=block`.
+- Network ingress is always result-bearing. A transport MAY choose a different
+  admission policy, but it MUST report rejection or policy loss through its
+  `SendError`; it MUST NOT fabricate success for discarded work.
+
+`block` is a scheduler suspension, not a condition-variable wait by a language
+actor. Dequeue admits waiting producers in FIFO order and makes their
+continuations runnable. A target without the cooperative suspension substrate
+MUST reject bounded `block` mailboxes at compile time; it MUST NOT substitute a
+lossy policy. Foreign C callers that are not runtime continuations may use a
+thread-blocking ABI, because they do not occupy a Hew scheduler worker.
 
 The compiler enforces that **all channels are bounded** (no accidental unbounded memory growth).
 
@@ -4000,7 +4028,7 @@ When the mailbox is full and a new message arrives:
 
 1. The runtime computes the coalesce key for the incoming message.
 2. The runtime scans the queue for an existing message with the same `msg_type` AND the same coalesce key.
-3. **If a match is found:** The existing message is replaced in-place (preserving its queue position). The old message data is freed and replaced with the new message data.
+3. **If a match is found:** The existing message is replaced in-place (preserving its queue position). The old message data is freed and replaced with the new message data. The send returns `Err(SendError.MessageLost)` because queued work was replaced.
 4. **If no match is found:** The **fallback policy** is applied. The default fallback is `drop_new`. An explicit fallback can be specified: `coalesce(key) fallback drop_old`.
 
 **Key matching:**
@@ -4016,20 +4044,22 @@ When the mailbox is full and a new message arrives:
 - The runtime MAY defer coalesce evaluation to message processing time (consumer-side) rather than send-time (producer-side). This permits lock-free mailbox implementations.
 - The mailbox capacity is a **logical** bound. The runtime MAY temporarily accept messages beyond capacity if coalesce evaluation is deferred. After coalesce processing, the effective queue length MUST NOT exceed capacity.
 
-> **Note:** Implementations using lock-free message queues MAY allow a transient overshoot of at most one message between producer enqueue and consumer coalesce scan. This transient state is not observable to the sending actor (the send succeeds or the fallback policy fires) and is resolved before the next message is dispatched to the receiving actor.
+> **Note:** Implementations using lock-free message queues MAY allow a transient overshoot of at most one message between producer enqueue and consumer coalesce scan. This transient state is not observable to the sending actor (the send returns `Ok(())`, `MessageLost`, or the fallback error according to the final policy decision) and is resolved before the next message is dispatched to the receiving actor.
 
 **Coalesce fallback policy:**
 
 When the mailbox is full, no coalesce match exists, and the fallback must be applied:
 
-| Fallback             | Behaviour                                            |
-| -------------------- | ---------------------------------------------------- |
-| `drop_new` (default) | Incoming message is discarded                        |
-| `drop_old`           | Oldest message is evicted; incoming message enqueued |
-| `fail`               | Error returned to sender                             |
-| `block`              | Sender suspends until space is available             |
+| Fallback             | Behaviour                                                                 |
+| -------------------- | ------------------------------------------------------------------------- |
+| `drop_new` (default) | Discard incoming message; return `SendError.MessageLost`                  |
+| `drop_old`           | Evict oldest and enqueue incoming message; return `SendError.MessageLost` |
+| `fail`               | Reject incoming message; return `SendError.Full`                          |
 
-> **Note:** `coalesce` cannot be used as its own fallback. The fallback must be one of the non-coalesce policies.
+> **Note:** `coalesce` and `block` cannot be fallbacks. `block` is available as
+> a top-level overflow policy with a unit-typed cooperative send surface;
+> combining it with coalesce's result-bearing loss surface is rejected rather
+> than falling back to a worker-thread park.
 
 ### 6.5 First-Class Streams (`Stream<T>` and `Sink<T>`)
 
@@ -4825,9 +4855,9 @@ Transitions:
 - `Healthy --RestartBudgetExceeded--> Escalating`
 - `Escalating -> Stopped` if no parent; otherwise parent receives escalation
 
-### 9.3 Channel send state machine
+### 9.3 Actor mailbox send state machine
 
-For a bounded channel with capacity `N`:
+For a bounded actor mailbox with capacity `N`:
 
 States: `HasSpace`, `Full`, `Closed`
 
@@ -4840,11 +4870,15 @@ Events:
 Behaviour:
 
 - In `Full`, overflow policy decides:
-  - `block`: sender waits (cancellable)
-  - `drop_new`: discard new item
-  - `drop_old`: evict oldest then enqueue
-  - `fail`: return error
-  - `coalesce(field_name)`: replace existing message with same coalesce key (see §6.3 for full semantics)
+  - `block`: register the message and suspend the producer continuation;
+    `Recv()` admits one FIFO waiter and schedules that continuation. No Hew
+    scheduler worker waits on an OS condition variable.
+  - `drop_new`: discard new item and return `SendError.MessageLost`.
+  - `drop_old`: evict oldest, enqueue new item, and return `SendError.MessageLost`.
+  - `fail`: reject the item and return `SendError.Full`.
+  - `coalesce(field_name)`: replace existing work or apply a non-blocking
+    fallback, reporting every discard/replacement as `SendError.MessageLost`
+    (see §6.3 for full semantics).
 
 **Coalesce syntax example:**
 

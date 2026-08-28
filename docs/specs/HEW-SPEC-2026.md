@@ -427,6 +427,17 @@ unaffected.
 
 ### 3.1 Type categories
 
+#### Product type declaration
+
+`type` is Hew's sole product-type declaration keyword. A named product uses
+`type Name { field: Type, ... }`; a positional product uses
+`type Name(Type, ...);`. Product values are immutable after construction
+unless their binding is declared with `var`, and retain the structural
+equality, hashing, construction, pattern, and tuple-constructor capabilities
+previously associated with the removed `record` keyword. `record` is not a
+keyword or declaration form; source using it is rejected with a migration hint
+to use `type`.
+
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
 - **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but no user-facing `Arc<T>` type is exposed (HEW-FUTURE §2.3).
@@ -2429,8 +2440,9 @@ let miss = m.get("absent");  // Option<i64> — None (m["absent"] would trap)
 **Current implementation boundary** — the shipped runtime/codegen ABI supports
 `K` of `string`, any integer type, any float type, `bool`, or `char`, and `V`
 of `string`, `bool`, `char`, any integer type, any float type, `duration`, a
-user-defined record, or `Vec<T>`. A key whose type is not one of those (for
-example a user record) is rejected during type checking. Key and value
+user-defined product `type`, or `Vec<T>`. A key may likewise be a
+field-bearing product `type` whose fields satisfy the layout-key rules; enums,
+resources, and unsupported owned shapes are rejected during type checking. Key and value
 positions remain subject to their independent fixed-layout, semantic
 clone/drop, `Hash`, and `Eq` requirements.
 

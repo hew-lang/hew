@@ -5,7 +5,7 @@
 // break-edge drop is the only thing standing between cancellation and a
 // per-cancel leak of the frame's owned field. The actor stays healthy and
 // answers a later ask normally.
-record Item {
+type Item {
     name: string,
     value: i64,
 }

@@ -2076,7 +2076,7 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
             "typeparam",
         ),
         (
-            "record string { value: i64, }\nfn main() -> i64 { return 0; }",
+            "type string { value: i64, }\nfn main() -> i64 { return 0; }",
             "string",
         ),
         (

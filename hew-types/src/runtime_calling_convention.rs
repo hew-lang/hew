@@ -29,7 +29,7 @@
 //! no access to the checker's `TypeDef` table — so it cannot tell a
 //! heap-handle nominal (`Vec`, `HashMap`, opaque `net.Listener`,
 //! `is_indirect = true`) apart from a value-record nominal
-//! (`record Connection { id: i32 }`, `is_indirect = false`). The
+//! (`type Connection { id: i32 }`, `is_indirect = false`). The
 //! context-free path therefore routes **every** [`Ty::Named`] to
 //! [`RuntimeCallingConvention::LayoutDescriptor`], fail-closed: a
 //! caller that needs the `Pointer` upgrade must positively prove
@@ -203,7 +203,7 @@ impl RuntimeCallingConvention {
     ///
     /// Because `for_ty` has no access to `TypeDef.is_indirect`, it
     /// cannot distinguish a heap-handle nominal (`Vec`) from a
-    /// value-record nominal (`record Connection { id: i32 }`).
+    /// value-product nominal (`type Connection { id: i32 }`).
     /// Misclassifying a value record as [`Self::Pointer`] would
     /// silently lower a 4-byte struct as a pointer-shaped word and
     /// corrupt the C-ABI. To honour the substrate-first /

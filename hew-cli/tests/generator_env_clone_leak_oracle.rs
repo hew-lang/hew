@@ -392,7 +392,7 @@ fn main() {
 "#;
 
 const ACTOR_STATE_SOURCE: &str = r#"
-record Config { label: string }
+type Config { label: string }
 
 actor Reader {
     var name: string;
@@ -456,7 +456,7 @@ fn main() {
 
 fn actor_record_param_source(frames: usize) -> String {
     r#"
-record Payload {
+type Payload {
     label: string,
     data: bytes,
     pair: (string, i64),
@@ -535,7 +535,7 @@ fn main() {
 }
 
 const ACTOR_RECORD_PARAM_SUSPEND: &str = r#"
-record Payload {
+type Payload {
     label: string,
     data: bytes,
     pair: (string, i64),
@@ -564,7 +564,7 @@ actor Streamer {
     }
 }
 
-record AppConfig { label: string }
+type AppConfig { label: string }
 
 supervisor App(config: AppConfig) {
     strategy: one_for_one;

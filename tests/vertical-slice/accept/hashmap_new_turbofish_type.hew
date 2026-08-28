@@ -1,6 +1,6 @@
 // HashMap<K, V>.new() accepts explicit type arguments even though the stdlib
 // catalog row declares no callable type parameters.
-record Key {
+type Key {
     id: i64,
 }
 

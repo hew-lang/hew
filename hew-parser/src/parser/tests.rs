@@ -200,26 +200,25 @@ fn parse_struct_decl() {
 }
 
 #[test]
-fn parse_record_named_fields_with_semicolon_emits_hint() {
-    let source = "record Point { x: i32; y: i32 }";
+fn record_declaration_emits_type_migration_hint() {
+    let source = "record Point { x: i32, y: i32 }";
     let result = parse(source);
     assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
-    assert_eq!(
-        result.errors[0].message,
-        "expected `,` or `}` after record field, found `;`"
-    );
+    assert_eq!(result.errors[0].message, "`record` has been removed");
     assert_eq!(
         result.errors[0].hint.as_deref(),
-        Some("record fields use commas; write `field: Type,` instead of `field: Type;`")
+        Some("use `type Name { ... }` instead")
     );
-    assert_eq!(result.program.items.len(), 1);
-    let Item::Record(record) = &result.program.items[0].0 else {
-        panic!("expected recovered record item");
+}
+
+#[test]
+fn type_tuple_declaration_preserves_positional_constructor_surface() {
+    let result = parse("type Pair(i64, string);");
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Record(decl) = &result.program.items[0].0 else {
+        panic!("expected positional product declaration");
     };
-    let RecordKind::Named(fields) = &record.kind else {
-        panic!("expected named record");
-    };
-    assert_eq!(fields.len(), 2);
+    assert!(matches!(decl.kind, RecordKind::Tuple(ref fields) if fields.len() == 2));
 }
 
 #[test]
@@ -254,25 +253,10 @@ fn actor_keyword_still_starts_actor_item() {
 /// error that names the keyword and suggests renaming, instead of a
 /// cascade of parse errors for each remaining token in the declaration.
 #[test]
-fn receive_fn_reserved_keyword_name_emits_single_clear_error() {
+fn receive_fn_can_use_record_as_an_identifier() {
     let source = "actor Metrics { receive fn record(n: i64) {} }";
     let result = parse(source);
-    assert_eq!(
-        result.errors.len(),
-        1,
-        "expected exactly 1 error, got {}: {:?}",
-        result.errors.len(),
-        result.errors
-    );
-    let msg = &result.errors[0].message;
-    assert!(
-        msg.contains("record"),
-        "error message must name the reserved word; got: {msg}"
-    );
-    assert!(
-        msg.contains("reserved") || msg.contains("keyword"),
-        "error message must say reserved/keyword; got: {msg}"
-    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
 /// Variant: `match` as the name of a plain `fn` method inside an actor.
@@ -296,21 +280,10 @@ fn actor_method_reserved_keyword_name_emits_single_clear_error() {
 
 /// Variant: `record` as the name of a top-level `fn` declaration.
 #[test]
-fn toplevel_fn_reserved_keyword_name_emits_single_clear_error() {
+fn toplevel_fn_can_use_record_as_an_identifier() {
     let source = "fn record(n: i64) -> i64 { n }";
     let result = parse(source);
-    assert_eq!(
-        result.errors.len(),
-        1,
-        "expected exactly 1 error, got {}: {:?}",
-        result.errors.len(),
-        result.errors
-    );
-    let msg = &result.errors[0].message;
-    assert!(
-        msg.contains("record"),
-        "error must name the reserved word; got: {msg}"
-    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
 /// A reserved word in a BINDING position must be named as reserved. The
@@ -319,7 +292,7 @@ fn toplevel_fn_reserved_keyword_name_emits_single_clear_error() {
 /// word is off-limits" from "the parser did not recognise this token".
 #[test]
 fn let_binding_reserved_keyword_names_it_as_reserved() {
-    let result = parse("fn f() { let record = 1 }");
+    let result = parse("fn f() { let match = 1 }");
     let diagnostic = result
         .errors
         .iter()
@@ -331,15 +304,15 @@ fn let_binding_reserved_keyword_names_it_as_reserved() {
             )
         });
     assert!(
-        diagnostic.message.contains("reserved word `record`"),
-        "message must name `record` as reserved; got: {}",
+        diagnostic.message.contains("reserved word `match`"),
+        "message must name `match` as reserved; got: {}",
         diagnostic.message
     );
     assert!(
         diagnostic
             .hint
             .as_ref()
-            .is_some_and(|hint| hint.contains("record")),
+            .is_some_and(|hint| hint.contains("match")),
         "a reserved word in a binding position must carry a rename hint; got: {:?}",
         diagnostic.hint
     );
@@ -348,12 +321,12 @@ fn let_binding_reserved_keyword_names_it_as_reserved() {
 /// The same fact through the other pattern position.
 #[test]
 fn match_arm_reserved_keyword_names_it_as_reserved() {
-    let result = parse("fn f() { match 1 { record => 0 } }");
+    let result = parse("fn f() { match 1 { type => 0 } }");
     assert!(
         result
             .errors
             .iter()
-            .any(|err| err.message.contains("reserved word `record`")),
+            .any(|err| err.message.contains("reserved word `type`")),
         "expected a reserved-word pattern diagnostic, got: {:?}",
         result.errors
     );
@@ -419,17 +392,10 @@ fn actor_with_non_keyword_receive_fn_name_parses_ok() {
 /// Recovery: a second valid receive fn after a reserved-keyword name is
 /// still parsed correctly (the error does not swallow the rest of the actor).
 #[test]
-fn reserved_keyword_name_recovery_continues_parsing_sibling_methods() {
+fn record_identifier_does_not_disrupt_sibling_methods() {
     let source = "actor Metrics { receive fn record(n: i64) {} receive fn add(m: i64) {} }";
     let result = parse(source);
-    // One error for the bad name, but the actor and sibling method survive.
-    assert_eq!(
-        result.errors.len(),
-        1,
-        "expected 1 error, got {}: {:?}",
-        result.errors.len(),
-        result.errors
-    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     assert_eq!(
         result.program.items.len(),
         1,
@@ -438,13 +404,13 @@ fn reserved_keyword_name_recovery_continues_parsing_sibling_methods() {
     let Item::Actor(actor) = &result.program.items[0].0 else {
         panic!("expected actor");
     };
-    // The second (valid) receive fn must be recovered.
     assert_eq!(
         actor.receive_fns.len(),
-        1,
-        "sibling receive fn `add` must be parsed"
+        2,
+        "both receive functions must be parsed"
     );
-    assert_eq!(actor.receive_fns[0].name, "add");
+    assert_eq!(actor.receive_fns[0].name, "record");
+    assert_eq!(actor.receive_fns[1].name, "add");
 }
 
 #[test]
@@ -4305,7 +4271,7 @@ fn wrapping_ops_parse_with_no_errors() {
 fn functional_update_basic_parses() {
     // `Point { x: 1, ..old }` must parse as a StructInit with base = Some(old).
     let src = r"
-            record Point { x: int, y: int }
+            type Point { x: int, y: int }
             fn f(old: Point) { let p = Point { x: 1, ..old }; }
         ";
     let result = parse(src);
@@ -4341,7 +4307,7 @@ fn functional_update_basic_parses() {
 fn functional_update_no_explicit_fields_parses() {
     // `Point { ..old }` (zero explicit fields, only base) must also parse.
     let src = r"
-            record Point { x: int, y: int }
+            type Point { x: int, y: int }
             fn f(old: Point) { let p = Point { ..old }; }
         ";
     let result = parse(src);
@@ -4372,7 +4338,7 @@ fn functional_update_no_explicit_fields_parses() {
 fn functional_update_mid_list_base_is_rejected() {
     // `Point { ..base, x: 1 }` — base is not last; must produce a parse error.
     let src = r"
-            record Point { x: int, y: int }
+            type Point { x: int, y: int }
             fn f(old: Point) { let p = Point { ..old, x: 1 }; }
         ";
     let result = parse(src);
@@ -4386,7 +4352,7 @@ fn functional_update_mid_list_base_is_rejected() {
 fn functional_update_base_is_none_for_regular_struct_init() {
     // A plain struct literal must have base = None.
     let src = r"
-            record Point { x: int, y: int }
+            type Point { x: int, y: int }
             fn f() { let p = Point { x: 1, y: 2 }; }
         ";
     let result = parse(src);
@@ -4416,7 +4382,7 @@ fn functional_update_base_is_none_for_regular_struct_init() {
 fn functional_update_double_base_is_rejected() {
     // `R { ..a, ..b }` must be a parse error — only one base allowed.
     let src = r"
-            record Point { x: int, y: int }
+            type Point { x: int, y: int }
             fn f(a: Point, b: Point) { let p = Point { ..a, ..b }; }
         ";
     let result = parse(src);

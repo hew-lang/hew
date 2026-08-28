@@ -1,6 +1,6 @@
 type Label = string;
 
-record AppConfig { label: Label }
+type AppConfig { label: Label }
 
 actor Tagged {
     var name: Label;

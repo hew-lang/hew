@@ -258,8 +258,6 @@ pub enum Token<'src> {
     Receive,
     #[token("init")]
     Init,
-    #[token("record")]
-    Record,
     #[token("type")]
     Type,
     #[token("this")]
@@ -691,7 +689,6 @@ define_keywords! {
     AwaitRestart => "await_restart",
     Receive    => "receive",
     Init       => "init",
-    Record     => "record",
     Type       => "type",
     This       => "this",
     Dyn        => "dyn",
@@ -792,7 +789,6 @@ impl Token<'_> {
                 | Token::Receive
                 | Token::Actor
                 | Token::Enum
-                | Token::Record
                 | Token::Trait
                 | Token::Supervisor
                 | Token::Type
@@ -809,7 +805,6 @@ impl Token<'_> {
             self,
             Token::Actor
                 | Token::Enum
-                | Token::Record
                 | Token::Trait
                 | Token::Supervisor
                 | Token::Type
@@ -1296,7 +1291,6 @@ mod tests {
         assert!(Token::Fn.is_decl_keyword());
         assert!(Token::Actor.is_decl_keyword());
         assert!(Token::Enum.is_decl_keyword());
-        assert!(Token::Record.is_decl_keyword());
         assert!(Token::Trait.is_decl_keyword());
         assert!(Token::Supervisor.is_decl_keyword());
         assert!(Token::Type.is_decl_keyword());
@@ -1314,7 +1308,6 @@ mod tests {
         // Every keyword that introduces a named type must return true.
         assert!(Token::Actor.is_type_decl_keyword());
         assert!(Token::Enum.is_type_decl_keyword());
-        assert!(Token::Record.is_type_decl_keyword());
         assert!(Token::Trait.is_type_decl_keyword());
         assert!(Token::Supervisor.is_type_decl_keyword());
         assert!(Token::Type.is_type_decl_keyword());

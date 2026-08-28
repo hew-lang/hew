@@ -1,6 +1,6 @@
 import std.string;
 
-record Snap { label: string, n: i64, terminal: bool }
+type Snap { label: string, n: i64, terminal: bool }
 enum Fail { Missing(i64) }
 
 // rJ with a heap-free Err payload: isolates the Ok-carrier shell from the

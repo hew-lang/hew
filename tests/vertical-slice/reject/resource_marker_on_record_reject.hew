@@ -2,7 +2,7 @@
 // A record has no ResourceMarker slot; this must fail during parsing rather
 // than silently becoming a copyable record and reaching the clone below.
 #[resource]
-record Token { id: i64 }
+type Token { id: i64 }
 
 impl Token {
     fn close(self) {}

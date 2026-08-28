@@ -131,7 +131,7 @@ fn vec_tuple_string_new_constructor_preserves_existing_typecheck_behavior() {
 fn hashmap_new_turbofish_typechecks() {
     let output = check_source(
         r"
-        record Key { id: i64 }
+        type Key { id: i64 }
 
         fn main() {
             let _m = HashMap<Key, i64>.new();
@@ -1608,8 +1608,8 @@ fn vec_iter_admits_generic_mutual_vec_and_hashmap_value_recursion() {
     // VALUE buffer. Neither type is recursively embedded inline.
     let output = check_source(
         r"
-        record A<T> { children: Vec<B<T>> }
-        record B<T> { parents: HashMap<i64, A<T>> }
+        type A<T> { children: Vec<B<T>> }
+        type B<T> { parents: HashMap<i64, A<T>> }
 
         fn main() {
             var roots: Vec<A<i64>> = [];
@@ -1700,7 +1700,7 @@ fn vec_iter_rejects_direct_inline_recursive_declaration() {
     // clone/drop classification until the checker overflows its stack.
     let output = check_source(
         r"
-        record Direct { next: Direct }
+        type Direct { next: Direct }
 
         fn main() {
             var nodes: Vec<Direct> = [];
@@ -1728,8 +1728,8 @@ fn vec_iter_rejects_mutual_inline_recursive_declarations() {
     // sized and must fail closed without a recursive checker walk.
     let output = check_source(
         r"
-        record A { nested: B }
-        record B { outer: A }
+        type A { nested: B }
+        type B { outer: A }
 
         fn main() {
             var roots: Vec<A> = [];
@@ -2153,7 +2153,7 @@ fn vec_iter_clone_totality_rejects_marked_resource_direct_and_wrapped() {
         r"
         #[resource]
         type Tok { id: i64 }
-        record Wrap { token: Tok }
+        type Wrap { token: Tok }
         fn scan(xs: Vec<Tok>, wrapped: Vec<Wrap>) {
             let _ = xs.iter().next();
             let _ = wrapped.iter().next();
@@ -2195,7 +2195,7 @@ fn vec_clone_growing_recursive_generic_terminates_fail_closed() {
 fn vec_iter_clone_totality_rejects_function_inside_positional_record() {
     let output = check_source(
         r"
-        record Callback(fn(i64) -> i64);
+        type Callback(fn(i64) -> i64);
 
         fn scan(callbacks: Vec<Callback>) {
             for callback in callbacks.iter() {

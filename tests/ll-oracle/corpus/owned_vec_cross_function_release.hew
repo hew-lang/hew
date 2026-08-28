@@ -1,9 +1,9 @@
-record HeapRow {
+type HeapRow {
     payload: [i64],
     value: i64
 }
 
-record Holder {
+type Holder {
     rows: Vec<HeapRow>,
     value: i64
 }

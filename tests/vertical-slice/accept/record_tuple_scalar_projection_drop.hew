@@ -2,7 +2,7 @@
 //! recursive scope drop. Each helper frame owns two strings; a projection read
 //! must release both exactly once when the frame returns.
 
-record Carrier {
+type Carrier {
     pair: (string, i64),
     sibling: string,
 }

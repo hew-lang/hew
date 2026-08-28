@@ -14,7 +14,7 @@
 import std.os;
 
 // `record` is Serializable (required for RemotePid messaging).
-record KvPut {
+type KvPut {
     key: string,
     val: string
 }

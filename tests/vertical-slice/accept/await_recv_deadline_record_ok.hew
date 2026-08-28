@@ -6,7 +6,7 @@
 // Exit-code contract: Ok(Some(Point { x: 10, y: 20 })) — returns x + y = 30.
 import std.channel.channel;
 
-record Point { x: i64, y: i64 }
+type Point { x: i64, y: i64 }
 
 actor Worker {
     receive fn run() -> i64 {

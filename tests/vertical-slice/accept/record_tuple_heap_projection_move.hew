@@ -1,4 +1,4 @@
-record TupleHeapMoveCarrier {
+type TupleHeapMoveCarrier {
     pair: (string, i64),
     sibling: string,
 }

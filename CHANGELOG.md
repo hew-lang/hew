@@ -238,7 +238,7 @@ than double-free risks.
   first `.hew`-callable surface over the runtime's per-dispatch policy slot. The
   variant-to-discriminant mapping is exhaustive and fail-closed; the call returns
   `false` when made outside a dispatch, where no execution context exists to
-  record it.
+  type it.
 
 ## [0.5.1] — 2026-06-14
 
@@ -699,7 +699,7 @@ the structured changelog.
 
 - **Fail-closed compiler boundaries:** The checker, HIR, MIR, and codegen front
   reject ambiguous module resolution, unsupported collection layouts, missing
-  record layouts, unresolved named-type readiness, and stale lowering shapes
+  type layouts, unresolved named-type readiness, and stale lowering shapes
   instead of silently continuing with partial metadata.
 - **Recursive value types:** Recursive value-type definitions are rejected during
   checking, preventing invalid self-contained layouts from reaching lowering or

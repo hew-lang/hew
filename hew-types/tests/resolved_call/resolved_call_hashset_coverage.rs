@@ -22,7 +22,7 @@ fn rewrite_symbols(output: &hew_types::TypeCheckOutput) -> HashSet<String> {
 fn layout_element_hashset_methods_dual_emit_resolved_calls() {
     let output = typecheck(
         r"
-        record Point { x: i64, y: i64 }
+        type Point { x: i64, y: i64 }
 
         fn main() {
             let s: HashSet<Point> = HashSet.new();

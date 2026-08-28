@@ -1,6 +1,6 @@
 // A direct field projection from a Vec-owned record index clones the record,
 // reads its field, and releases the anonymous clone on each loop iteration.
-record Holder {
+type Holder {
     items: Vec<string>
 }
 

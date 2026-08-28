@@ -10,7 +10,6 @@ pub mod builtin_names;
 pub mod builtin_type;
 pub mod check;
 pub mod cycle;
-pub(crate) mod eligibility_walker;
 pub mod env;
 pub(crate) mod eq_eligibility;
 pub mod error;

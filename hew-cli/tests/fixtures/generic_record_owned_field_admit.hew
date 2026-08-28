@@ -11,7 +11,7 @@
 // clone/drop-SUPPORTED owned leaves (String/Bytes/Vec/nested record+enum). A
 // clone-UNSUPPORTED leaf (opaque/IO handle) still fails closed at the value-
 // class admit gate — pinned by the `hew-mir` admission unit tests.
-record Box<T> {
+type Box<T> {
     value: T
 }
 

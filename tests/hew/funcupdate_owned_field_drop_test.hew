@@ -25,22 +25,22 @@ import std.testing;
 
 import std.string;
 
-record FlatConfig {
+type FlatConfig {
     label: string,
     count: i64
 }
 
-record VecHolder {
+type VecHolder {
     items: Vec<i64>,
     tag: string
 }
 
-record MapHolder {
+type MapHolder {
     m: HashMap<string, i64>,
     tag: i64
 }
 
-record SetHolder {
+type SetHolder {
     s: HashSet<i64>,
     tag: i64
 }

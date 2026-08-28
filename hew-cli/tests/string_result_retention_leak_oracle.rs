@@ -359,7 +359,7 @@ fn main() {{
 
 fn ordinary_helper_snapshot_normal_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
-record Bundle { text: string, data: bytes }
+type Bundle { text: string, data: bytes }
 #[resource] type Witness { fd: i64 }
 impl Witness { fn close(self) { println("closed"); } }
 fn make_nested(label: string) -> fn() -> i64 { || label.len() }
@@ -399,7 +399,7 @@ fn main() {
 
 fn ordinary_helper_snapshot_crash_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
-record Bundle { text: string, data: bytes }
+type Bundle { text: string, data: bytes }
 #[resource] type Witness { fd: i64 }
 impl Witness { fn close(self) { println("closed"); } }
 fn make_nested(label: string) -> fn() -> i64 { || label.len() }
@@ -441,7 +441,7 @@ fn main() {
 const SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE: &str = r#"
 import std.observe;
 
-record RootBundle {
+type RootBundle {
     text: string,
     data: bytes,
 }
@@ -519,7 +519,7 @@ fn static_resume_crash_source() -> String {
 /// drain the `DIRECT_FRAME` registry before raw frame reclamation.
 fn suspending_closure_child_owner_pre_first_await_crash_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
-record ChildBundle {
+type ChildBundle {
     text: string,
     data: bytes,
 }
@@ -634,7 +634,7 @@ fn main() {
 /// run.
 fn suspending_closure_child_owner_resume_crash_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
-record ChildBundle {
+type ChildBundle {
     text: string,
     data: bytes,
 }

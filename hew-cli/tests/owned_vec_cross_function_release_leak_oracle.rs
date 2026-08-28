@@ -59,7 +59,7 @@ fn field_reassignment_source(frames: usize) -> String {
          \x20   value: i64,\n\
          }}\n\
          \n\
-         record Holder {{\n\
+         type Holder {{\n\
          \x20   rows: Vec<HeapRow>,\n\
          \x20   total: i64,\n\
          }}\n\

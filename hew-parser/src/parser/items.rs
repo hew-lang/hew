@@ -262,6 +262,13 @@ impl Parser<'_> {
     /// through to its own generic diagnostic.
     fn foreign_keyword_redirect(&mut self, id: &str, has_wire_attr: bool) -> bool {
         match id {
+            "record" => {
+                self.error_with_hint(
+                    "`record` has been removed".to_string(),
+                    "use `type Name { ... }` instead",
+                );
+                true
+            }
             "struct" => {
                 let hint = if has_wire_attr {
                     "write `#[wire] type Name { ... }`"
@@ -434,14 +441,13 @@ impl Parser<'_> {
                         t.doc_comment = doc_comment;
                         Item::TypeDecl(t)
                     }
-                    Some(Token::Record) => {
-                        let mut r = self.parse_record_decl(vis)?;
-                        r.doc_comment = doc_comment;
-                        Item::Record(r)
-                    }
                     Some(Token::Type) => {
                         if self.is_type_alias_lookahead() {
                             Item::TypeAlias(self.parse_type_alias(vis, doc_comment)?)
+                        } else if self.is_tuple_type_lookahead() {
+                            let mut r = self.parse_record_decl(vis)?;
+                            r.doc_comment = doc_comment;
+                            Item::Record(r)
                         } else if has_wire_attr {
                             let mut t = self.parse_wire_struct(&attrs, vis)?;
                             t.doc_comment = doc_comment;
@@ -484,7 +490,7 @@ impl Parser<'_> {
                             }
                         }
                         self.error(
-                            "invalid item after visibility modifier (expected fn, type, trait, actor, machine, supervisor, record, enum, indirect, or const)".to_string(),
+                            "invalid item after visibility modifier (expected fn, type, trait, actor, machine, supervisor, enum, indirect, or const)".to_string(),
                         );
                         return None;
                     }
@@ -508,14 +514,13 @@ impl Parser<'_> {
                 t.doc_comment = doc_comment;
                 Item::TypeDecl(t)
             }
-            Some(Token::Record) => {
-                let mut r = self.parse_record_decl(Visibility::Private)?;
-                r.doc_comment = doc_comment;
-                Item::Record(r)
-            }
             Some(Token::Type) => {
                 if self.is_type_alias_lookahead() {
                     Item::TypeAlias(self.parse_type_alias(Visibility::Private, doc_comment)?)
+                } else if self.is_tuple_type_lookahead() {
+                    let mut r = self.parse_record_decl(Visibility::Private)?;
+                    r.doc_comment = doc_comment;
+                    Item::Record(r)
                 } else if has_wire_attr {
                     let mut t = self.parse_wire_struct(&attrs, Visibility::Private)?;
                     t.doc_comment = doc_comment;
@@ -786,6 +791,35 @@ impl Parser<'_> {
         false
     }
 
+    /// Check for `type Name(...)` (including generic names) without consuming.
+    pub(crate) fn is_tuple_type_lookahead(&self) -> bool {
+        if !matches!(self.tokens.get(self.pos), Some((Token::Type, _)))
+            || !self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|(tok, _)| Self::is_ident_token(tok))
+        {
+            return false;
+        }
+        let mut index = self.pos + 2;
+        if matches!(self.tokens.get(index), Some((Token::Less, _))) {
+            let mut depth = 0usize;
+            while let Some((token, _)) = self.tokens.get(index) {
+                match token {
+                    Token::Less => depth += 1,
+                    Token::Greater => depth = depth.saturating_sub(1),
+                    Token::GreaterGreater => depth = depth.saturating_sub(2),
+                    _ => {}
+                }
+                index += 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+        }
+        matches!(self.tokens.get(index), Some((Token::LeftParen, _)))
+    }
+
     pub(crate) fn parse_type_alias(
         &mut self,
         visibility: Visibility,
@@ -898,17 +932,11 @@ impl Parser<'_> {
         })
     }
 
-    /// Parse a `record` declaration in either named-field or tuple-positional form.
-    ///
-    /// Named form:  `record Name<T>? where...? { field: Type, ... }`
-    /// Tuple form:  `record Name<T>? (Type, ...) ;`
-    ///
-    /// The `record` keyword must already be consumed before this is called.
-    /// Both forms reject empty field lists.
+    /// Parse a tuple-form `type` declaration.
     pub(crate) fn parse_record_decl(&mut self, visibility: Visibility) -> Option<RecordDecl> {
         let start = self.peek_span().start;
 
-        // Consume `record`
+        // Consume `type`.
         self.advance();
 
         let name = self.expect_ident()?;
@@ -916,7 +944,7 @@ impl Parser<'_> {
         let where_clause = self.parse_opt_where_clause()?;
 
         if self.eat(&Token::LeftParen) {
-            // Tuple-positional form: `record Name(T1, T2, ...) ;`
+            // Tuple-positional form: `type Name(T1, T2, ...) ;`
             let mut field_types: Vec<Spanned<TypeExpr>> = Vec::new();
 
             while !self.at_end() && self.peek() != Some(&Token::RightParen) {
@@ -931,7 +959,7 @@ impl Parser<'_> {
             }
 
             if field_types.is_empty() {
-                self.error("tuple record must have at least one positional field".to_string());
+                self.error("tuple type must have at least one positional field".to_string());
                 return None;
             }
 
@@ -949,7 +977,7 @@ impl Parser<'_> {
                 span: start..end,
             })
         } else {
-            // Named-field form: `record Name { field: Type, ... }`
+            // This parser is selected only for tuple-form `type` declarations.
             self.expect(&Token::LeftBrace)?;
 
             let mut fields: Vec<RecordField> = Vec::new();

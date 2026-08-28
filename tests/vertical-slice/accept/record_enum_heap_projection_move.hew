@@ -1,5 +1,5 @@
 enum EnumHeapMoveChoice { Pair(string, i64); }
-record EnumHeapMoveCarrier {
+type EnumHeapMoveCarrier {
     choice: EnumHeapMoveChoice,
     sibling: string,
 }

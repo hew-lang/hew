@@ -4,7 +4,7 @@
 // allocator (MallocScribble / MallocGuardEdges) in CI: each owned string key is
 // dropped exactly once, with no double-free and no scribble-read.
 
-record Person { name: string, age: i64 }
+type Person { name: string, age: i64 }
 
 fn churn() -> i64 {
     let m: HashMap<Person, i64> = HashMap.new();

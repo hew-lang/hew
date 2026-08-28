@@ -1,4 +1,4 @@
-record PairState {
+type PairState {
   left: i64,
   right: i64,
 }

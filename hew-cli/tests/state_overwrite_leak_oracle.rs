@@ -128,7 +128,7 @@ fn record_functional_update_source(frames: usize) -> String {
          \x20   note: string,\n\
          }}\n\
          \n\
-         record Outer {{\n\
+         type Outer {{\n\
          \x20   label: string,\n\
          \x20   payload: bytes,\n\
          \x20   inner: Inner,\n\
@@ -184,7 +184,7 @@ fn nested_record_alias_source(frames: usize) -> String {
          \x20   text: string,\n\
          }}\n\
          \n\
-         record Wrap {{\n\
+         type Wrap {{\n\
          \x20   leaf: Leaf,\n\
          }}\n\
          \n\
@@ -234,7 +234,7 @@ fn enum_payload_alias_source(frames: usize) -> String {
          \x20   Hold(Leaf);\n\
          }}\n\
          \n\
-         record Wrap {{\n\
+         type Wrap {{\n\
          \x20   payload: Payload,\n\
          }}\n\
          \n\
@@ -412,7 +412,7 @@ fn collection_iterate_source(frames: usize) -> String {
 /// the poisoned triple (a static literal would never be freed, making
 /// the pin vacuous). `"self-store-name".to_upper()` stays length 15.
 const RECORD_SELF_STORE_SOURCE: &str = "\
-record Profile {
+type Profile {
     name: string,
     hits: i64,
 }
@@ -451,7 +451,7 @@ fn main() -> i64 {
 /// release actually frees them. After an odd number of swaps `a` holds
 /// the original `b` string (`"RIGHT-SIDE"`, length 10).
 const RECORD_SWAP_SOURCE: &str = "\
-record Pair {
+type Pair {
     a: string,
     b: string,
 }
@@ -980,7 +980,7 @@ fn record_self_store_emits_one_recursive_clone_authority() {
 #[test]
 fn tuple_alias_emits_one_retain_per_string_occurrence() {
     const SOURCE: &str = r"
-record Wrap { nested: (string, string, string) }
+type Wrap { nested: (string, string, string) }
 
 actor Keeper {
     var cur: Wrap;
@@ -1018,8 +1018,8 @@ fn main() -> i64 { 0 }
 #[test]
 fn zero_string_aggregate_alias_emits_no_recursive_retain_code() {
     const SOURCE: &str = r"
-record Leaf { value: i64 }
-record Wrap { leaf: Leaf }
+type Leaf { value: i64 }
+type Wrap { leaf: Leaf }
 
 actor Keeper {
     var cur: Wrap;

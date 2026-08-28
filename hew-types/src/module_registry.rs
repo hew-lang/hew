@@ -1430,7 +1430,7 @@ mod tests {
         let fixture = TestDir::new("registry-signature-record-owner");
         fs::write(
             fixture.root.join("record_owner.hew"),
-            "pub record Packet { value: i64 }\n",
+            "pub type Packet { value: i64 }\n",
         )
         .expect("write record owner");
         fs::write(
@@ -1440,7 +1440,7 @@ mod tests {
         .expect("write record importer");
         fs::write(
             fixture.root.join("lookalike.hew"),
-            "pub record Packet { other: string }\n",
+            "pub type Packet { other: string }\n",
         )
         .expect("write record lookalike");
 

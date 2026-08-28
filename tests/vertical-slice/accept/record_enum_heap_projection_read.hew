@@ -1,5 +1,5 @@
 enum EnumHeapReadChoice { Pair(string, i64); }
-record EnumHeapReadCarrier {
+type EnumHeapReadCarrier {
     choice: EnumHeapReadChoice,
     sibling: string,
 }

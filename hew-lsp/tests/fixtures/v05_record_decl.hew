@@ -1,4 +1,4 @@
-record AutoRecord {
+type AutoRecord {
     count: i64,
     name: string,
 }

@@ -42,12 +42,12 @@ use support::{describe_output, require_codegen};
 /// iterated, the record rebuilt and returned. One helper frame per iteration so
 /// leaked storage is unreachable from `main`'s final frame.
 const PARAM_FIELD_LOOP_TEMPLATE: &str = r#"
-record Claim {
+type Claim {
     run_id: string,
     amount: i64,
 }
 
-record ClaimsLedger {
+type ClaimsLedger {
     claims: Vec<Claim>,
     terminal_runs: Vec<string>,
 }
@@ -92,12 +92,12 @@ fn main() -> i64 {
 /// Minimal double-free repro: by-value single-field record, field iterated with
 /// a no-op body, record never touched again. Crashed at `count_claims` return.
 const PARAM_MINIMAL_SOURCE: &str = r#"
-record Claim {
+type Claim {
     run_id: string,
     amount: i64,
 }
 
-record ClaimsLedger {
+type ClaimsLedger {
     claims: Vec<Claim>,
 }
 
@@ -124,12 +124,12 @@ fn main() {
 /// BOTH fields — including the partially iterated one — stay readable after
 /// the loop and release exactly once at the carrier drop.
 const PARAM_EARLY_BREAK_SOURCE: &str = r#"
-record Claim {
+type Claim {
     run_id: string,
     amount: i64,
 }
 
-record ClaimsLedger {
+type ClaimsLedger {
     claims: Vec<Claim>,
     terminal_runs: Vec<string>,
 }
@@ -157,12 +157,12 @@ fn main() {
 /// Iterating the same parameter field twice proves the cursor left the handle
 /// live (a sole-owner cursor freed it at first exhaustion — use-after-free).
 const PARAM_DOUBLE_ITERATION_SOURCE: &str = r#"
-record Claim {
+type Claim {
     run_id: string,
     amount: i64,
 }
 
-record ClaimsLedger {
+type ClaimsLedger {
     claims: Vec<Claim>,
 }
 
@@ -190,12 +190,12 @@ fn main() {
 /// record excluded the root's composite drop wholesale and leaked the
 /// non-iterated `terminal_runs` Vec (3 nodes / 176 bytes per frame).
 const LOCAL_TWO_FIELD_PARTIAL_SOURCE: &str = r#"
-record Claim {
+type Claim {
     run_id: string,
     amount: i64,
 }
 
-record ClaimsLedger {
+type ClaimsLedger {
     claims: Vec<Claim>,
     terminal_runs: Vec<string>,
 }
@@ -219,12 +219,12 @@ fn main() {
 /// must KEEP the sole-owner free — the borrow verdict is scoped to live
 /// binding roots and must not flip this shape into a leak.
 const RVALUE_ROOT_PROJECTION_CONTROL_SOURCE: &str = r#"
-record Claim {
+type Claim {
     run_id: string,
     amount: i64,
 }
 
-record ClaimsLedger {
+type ClaimsLedger {
     claims: Vec<Claim>,
 }
 
@@ -251,7 +251,7 @@ fn main() {
 /// it. The store now rejects at check-time (`vec_iter_borrowed_projections`
 /// prefix guard), so the runtime scenario is unreachable by construction.
 const PROJECTION_STORE_MID_LOOP_SOURCE: &str = r#"
-record Holder {
+type Holder {
     items: Vec<i64>,
 }
 
@@ -273,7 +273,7 @@ fn main() {
 /// handle from the cursor and clones the element out, so neither operation
 /// can leave the cursor holding a stale buffer pointer.
 const ITERATED_FIELD_PUSH_CLEAR_SOURCE: &str = r#"
-record Holder {
+type Holder {
     items: Vec<i64>,
 }
 
@@ -303,7 +303,7 @@ fn main() {
 /// handle replacement — so the cursor observes the new element on the next
 /// clone-out: a live view, not a stale read.
 const ITERATED_FIELD_INDEX_SET_SOURCE: &str = r#"
-record Holder {
+type Holder {
     items: Vec<i64>,
 }
 

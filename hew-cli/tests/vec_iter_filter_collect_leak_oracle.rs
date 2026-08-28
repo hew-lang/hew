@@ -52,7 +52,7 @@ fn owned_record_filter_collect_source(frames: usize) -> String {
     format!(
         "import std.iter;\n\
          \n\
-         record Claim {{\n\
+         type Claim {{\n\
          \x20   run_id: string,\n\
          \x20   amount: i64,\n\
          }}\n\

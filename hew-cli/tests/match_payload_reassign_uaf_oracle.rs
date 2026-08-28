@@ -382,7 +382,7 @@ fn field_place_reread_loop_source() -> String {
          \x20   Full(Vec<i64>);\n\
          \x20   Empty;\n\
          }}\n\
-         record Holder {{ b: Box, }}\n\
+         type Holder {{ b: Box, }}\n\
          \n\
          fn main() {{\n\
          \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
@@ -412,7 +412,7 @@ fn field_place_no_reread_source() -> String {
          \x20   Full(Vec<i64>);\n\
          \x20   Empty;\n\
          }}\n\
-         record Holder {{ b: Box, }}\n\
+         type Holder {{ b: Box, }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
@@ -466,8 +466,8 @@ fn nested_field_place_reread_loop_source() -> String {
          \x20   Full(Vec<i64>);\n\
          \x20   Empty;\n\
          }}\n\
-         record Inner {{ b: Box, }}\n\
-         record Outer {{ inner: Inner, }}\n\
+         type Inner {{ b: Box, }}\n\
+         type Outer {{ inner: Inner, }}\n\
          \n\
          fn main() {{\n\
          \x20   let o = Outer {{ inner: Inner {{ b: Box.Full(seed()) }} }};\n\
@@ -496,7 +496,7 @@ fn field_place_borrow_only_source() -> String {
          \x20   Full(Vec<i64>);\n\
          \x20   Empty;\n\
          }}\n\
-         record Holder {{ b: Box, }}\n\
+         type Holder {{ b: Box, }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
@@ -621,7 +621,7 @@ fn block_wrapped_field_place_source() -> String {
          \x20   Full(Vec<i64>);\n\
          \x20   Empty;\n\
          }}\n\
-         record Holder {{ b: Box, }}\n\
+         type Holder {{ b: Box, }}\n\
          \n\
          fn main() {{\n\
          \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
@@ -650,7 +650,7 @@ fn if_wrapped_field_place_source() -> String {
          \x20   Full(Vec<i64>);\n\
          \x20   Empty;\n\
          }}\n\
-         record Holder {{ b: Box, }}\n\
+         type Holder {{ b: Box, }}\n\
          \n\
          fn main() {{\n\
          \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\

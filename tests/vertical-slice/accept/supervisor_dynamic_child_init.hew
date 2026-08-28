@@ -11,7 +11,7 @@
 // A sentinel only `config.size` can produce (37) — not a default-zero, not a
 // hard-coded literal — proves the thunk actually loaded the config field. A
 // missing/garbage thunk would return 0 (default) or trap.
-record AppConfig { size: i64 }
+type AppConfig { size: i64 }
 
 actor Cache {
     var capacity: i64;

@@ -2993,7 +2993,10 @@ impl Checker {
                 .iter()
                 .all(|f| self.registry.implements_marker(f, MarkerTrait::Encode));
         self.registry.register_type(td.name.clone(), field_types);
-        if td.wire.is_some() || kind == TypeDefKind::Enum {
+        // Product `type` declarations inherit the former `record`
+        // Serializable derivation. A resource marker is an explicit exclusion:
+        // an empty resource type must not be admitted vacuously.
+        if td.resource_marker != hew_parser::ast::ResourceMarker::Resource {
             self.register_serializable_members_for_type(&td.name, &type_def);
         }
         self.seed_qualified_type_markers_for_current_module(&td.name);
@@ -3379,7 +3382,10 @@ impl Checker {
         self.registry.register_type(td.name.clone(), field_types);
         self.registry
             .register_type_params(td.name.clone(), type_def.type_params.clone());
-        if td.wire.is_some() || kind == TypeDefKind::Enum {
+        // Product `type` declarations inherit the former `record`
+        // Serializable derivation. A resource marker is an explicit exclusion:
+        // an empty resource type must not be admitted vacuously.
+        if td.resource_marker != hew_parser::ast::ResourceMarker::Resource {
             self.register_serializable_members_for_type(&td.name, &type_def);
         }
         // Mirror the markers under the module-qualified key so a same-bare-name
@@ -3689,7 +3695,10 @@ impl Checker {
         self.registry.register_type(td.name.clone(), field_types);
         self.registry
             .register_type_params(td.name.clone(), type_param_names.clone());
-        if td.wire.is_some() || kind == TypeDefKind::Enum {
+        // Product `type` declarations inherit the former `record`
+        // Serializable derivation. A resource marker is an explicit exclusion:
+        // an empty resource type must not be admitted vacuously.
+        if td.resource_marker != hew_parser::ast::ResourceMarker::Resource {
             self.register_serializable_members_for_type(&td.name, &type_def);
         }
         // Mirror the markers under the module-qualified key (when this type is

@@ -10,7 +10,7 @@
 //   - the `hew_supervisor_set_child_init_fn` RuntimeCall family the codegen
 //     bootstrap emits per config-init child (the #2229 corpus-pin discipline:
 //     pin every new RuntimeCall family in the golden corpus).
-record AppConfig {
+type AppConfig {
     size: i64,
     label: string
 }

@@ -3,7 +3,7 @@
 // `passthru` returns a retained by-value parameter. `choose` alternates between
 // a retained record-field projection and a retained forwarded parameter. Their
 // direct f-string consumers must release each anonymous result exactly once.
-record Holder {
+type Holder {
     value: string,
 }
 

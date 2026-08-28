@@ -7,7 +7,7 @@
 #[opaque]
 type Handle {}
 
-record WrappedHandle {
+type WrappedHandle {
     h: Handle,
 }
 

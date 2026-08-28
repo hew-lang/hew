@@ -13,7 +13,7 @@ use support::leak_slope::{
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const RECORD_PROJECTION_SOURCE: &str = r#"
-record Snap { label: string, n: i64 }
+type Snap { label: string, n: i64 }
 
 fn make_snap(seed: i64) -> Snap {
     Snap { label: f"snap-{seed}", n: seed }

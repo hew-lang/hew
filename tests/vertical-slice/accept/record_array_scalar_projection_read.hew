@@ -1,4 +1,4 @@
-record ArrayScalarReadCarrier { items: Vec<i64>, sibling: string }
+type ArrayScalarReadCarrier { items: Vec<i64>, sibling: string }
 
 fn project(i: i64) -> i64 {
     let values: Vec<i64> = Vec.new();

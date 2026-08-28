@@ -6,7 +6,7 @@
 // thunk, and the consuming `for await` body frees its fresh decode copy at
 // body end through the same thunk. Exact output pins the field values; the
 // per-yield leak slope is pinned by the composite-yield leak oracle.
-record Item {
+type Item {
     name: string,
     value: i64,
 }

@@ -1310,7 +1310,7 @@ fn a_match_over_a_domestic_enum_keeps_working() {
 ///
 /// Measured against the pre-fix compiler this fixture reports `releases=8`.
 const RECORD_LITERAL_EMBEDDING_A_DIRECT_EXTERN: &str = r#"record Holder { label: string }
-record Outer { inner: Holder, tag: i64 }
+type Outer { inner: Holder, tag: i64 }
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1396,8 +1396,8 @@ const RECORD_LITERAL_OF_A_DOMESTIC_FIELD: &str = r#"extern "C" {
     fn spy_retain(s: string) -> i64;
 }
 
-record Holder { label: string }
-record Outer { inner: Holder, tag: i64 }
+type Holder { label: string }
+type Outer { inner: Holder, tag: i64 }
 
 fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
 
@@ -1662,7 +1662,7 @@ fn a_let_bound_extern_record_sees_no_caller_release() {
 /// — the fact has to travel WITH the binder, not just be read off the
 /// initializer at the moment of binding.
 const LET_BOUND_EXTERN_RECORD_INSIDE_A_CONTAINER: &str = r#"record Holder { label: string }
-record Outer { inner: Holder, tag: i64 }
+type Outer { inner: Holder, tag: i64 }
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1752,7 +1752,7 @@ const LET_BOUND_DOMESTIC_RECORD: &str = r#"extern "C" {
     fn spy_retain(s: string) -> i64;
 }
 
-record Holder { label: string }
+type Holder { label: string }
 
 fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
 

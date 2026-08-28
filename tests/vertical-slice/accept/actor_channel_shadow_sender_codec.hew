@@ -5,11 +5,11 @@
 // actor-send consume decision must not treat these user records as channel
 // handle transfers, and the cross-node codec seeder must emit their codecs
 // rather than silently skipping them by bare name.
-record Sender {
+type Sender {
     x: i64,
 }
 
-record Receiver {
+type Receiver {
     y: i64,
 }
 

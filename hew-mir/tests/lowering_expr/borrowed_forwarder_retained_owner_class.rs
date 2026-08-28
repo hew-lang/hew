@@ -119,7 +119,7 @@ fn tuple_field_forwarder_result_mints_no_caller_owner() {
         temp_arg_owners(&pipeline, "main"),
         0,
         "a tuple element projection is the same byte-copy interior alias as a \
-         record field and must not acquire a caller-side drop"
+         type field and must not acquire a caller-side drop"
     );
 }
 

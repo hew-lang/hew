@@ -6,11 +6,11 @@ use common::typecheck;
 fn user_pid_trait_does_not_inherit_builtin_serializable_policy() {
     let output = typecheck(
         r"
-        record Work {
+        type Work {
             id: i32,
         }
 
-        record Local {
+        type Local {
             id: i32,
         }
 
@@ -53,7 +53,7 @@ fn user_pid_trait_does_not_inherit_builtin_serializable_policy() {
 fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
     let output = typecheck(
         r"
-        record Work {
+        type Work {
             id: i32,
         }
 
@@ -94,7 +94,7 @@ fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
 fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
     let output = typecheck(
         r"
-        record Job {
+        type Job {
             n: i32,
         }
 
@@ -140,7 +140,7 @@ fn local_pid_send_without_handler_rejected_even_with_actor_msg_envelope() {
     // same actionable diagnostic as the no-envelope case.
     let output = typecheck(
         r"
-        record Job {
+        type Job {
             n: i32,
         }
 
@@ -177,7 +177,7 @@ fn local_pid_send_without_handler_rejected_even_with_actor_msg_envelope() {
 fn remote_pid_send_returns_typed_send_error_stub() {
     let output = typecheck(
         r"
-        record Job {
+        type Job {
             n: i32,
         }
 
@@ -209,7 +209,7 @@ fn remote_pid_send_returns_typed_send_error_stub() {
 fn remote_pid_ask_returns_typed_reply_or_ask_error() {
     let output = typecheck(
         r"
-        record Job {
+        type Job {
             n: i32,
         }
 
@@ -243,7 +243,7 @@ fn remote_pid_ask_rejects_nonserializable_reply() {
         r"
         fn inc(x: i64) -> i64 { x + 1 }
 
-        record Job {
+        type Job {
             n: i32,
         }
 

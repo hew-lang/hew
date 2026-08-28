@@ -29,7 +29,7 @@
 // chance to arm before the coroutine parks waiting on the very task the
 // timer is meant to cancel (self-deadlock, only broken by the hook's own
 // bounded-wait panic).
-record Point {
+type Point {
     x: i64,
     y: i64
 }

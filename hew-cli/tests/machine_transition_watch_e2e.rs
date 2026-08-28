@@ -123,7 +123,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
         "select_record_element",
         "import std.channel.channel;\n\
          \n\
-         record Transition {\n\
+         type Transition {\n\
          \x20   from_state: string,\n\
          \x20   to_state: string\n\
          }\n\
@@ -334,7 +334,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
         "import std.concurrency.lifecycle;\n\
          import std.channel.channel;\n\
          \n\
-         record Transition {\n\
+         type Transition {\n\
          \x20   from_state: string,\n\
          \x20   to_state: string\n\
          }\n\

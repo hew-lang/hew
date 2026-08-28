@@ -129,7 +129,7 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
 fn record_decl_of_primitives_is_inferred_bitcopy() {
     let output = lower_no_tc(
         r"
-        record Point { x: i64, y: i64 }
+        type Point { x: i64, y: i64 }
     ",
     );
     assert!(

@@ -1,5 +1,5 @@
-record NestedHeapReadInner { text: string, value: i64 }
-record NestedHeapReadCarrier {
+type NestedHeapReadInner { text: string, value: i64 }
+type NestedHeapReadCarrier {
     inner: NestedHeapReadInner,
     sibling: string,
 }

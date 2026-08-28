@@ -1,7 +1,7 @@
 import std.string;
 
-record Admission { message: string, token: string }
-record Config { token: string, name: string }
+type Admission { message: string, token: string }
+type Config { token: string, name: string }
 
 fn assemble(number: i64, early: bool) -> string {
     let admission = Admission {

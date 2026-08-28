@@ -13300,7 +13300,7 @@ fn helper_snapshot_cleanup_arm_is_target_correct_native_and_wasm32() {
 
 fn pipeline_from_helper_snapshot_raw_trap_source() -> IrPipeline {
     let source = r#"
-record Bundle { text: string, data: bytes }
+type Bundle { text: string, data: bytes }
 #[resource] type Witness { fd: i64 }
 impl Witness { fn close(self) { println("closed"); } }
 fn make_nested(label: string) -> fn() -> i64 { || label.len() }
@@ -16125,7 +16125,7 @@ fn heap_owning_record_composite_return_admits_registered_record_shape() {
             &record_layouts,
         ),
         "a registered generic record instantiation must be admitted as a \
-             record composite-return shape"
+             type composite-return shape"
     );
 
     // A registered all-BitCopy instantiation is STILL a valid record shape:

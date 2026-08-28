@@ -67,7 +67,7 @@ const SLOPE_TOLERANCE: usize = 5;
 /// returns a FRESH `Vec<string>` (rc=1, its own buffer) so each element the
 /// store ingests owns distinct heap the leak oracle can count.
 const PRELUDE: &str = "\
-record Holder { items: Vec<string> }\n\
+type Holder { items: Vec<string> }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
 \x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
@@ -122,7 +122,7 @@ fn index_assign_consumed_bound_source(frames: usize) -> String {
 /// is read back through the Vec (`v[0].items.len()` == 2). Expected stdout:
 /// `2OK`.
 const CONSUMED_BOUND_SOURCE: &str = "\
-record Holder { items: Vec<string> }\n\
+type Holder { items: Vec<string> }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
 \x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
@@ -145,7 +145,7 @@ fn main() {\n\
 /// environment. Each invocation may read it into the Vec, so index-assignment
 /// must remain COPY-IN. Expected stdout: `22OK`.
 const BORROWED_CAPTURE_SOURCE: &str = "\
-record Holder { items: Vec<string> }\n\
+type Holder { items: Vec<string> }\n\
 fn mkItems() -> Vec<string> {\n\
 \x20   let xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
@@ -166,7 +166,7 @@ fn main() {\n\
 }\n";
 
 const COPY_IN_PROJECTION_SOURCE: &str = "\
-record Holder { items: Vec<string> }\n\
+type Holder { items: Vec<string> }\n\
 fn make() -> (Holder, Vec<string>) {\n\
 \x20   (Holder { items: [\"pair-item\"] }, [\"sibling-item\"])\n\
 }\n\

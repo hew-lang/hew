@@ -7,7 +7,7 @@
 // `Vec<string>`, deep-cloned by `clone_fn` into a distinct buffer) is required:
 // a string/Option field is refcount-shared and would not expose the leak.
 // Pre-fix, the per-iteration `set` temp leaked its inner Vec under COPY-IN.
-record Holder {
+type Holder {
     items: Vec<string>
 }
 

@@ -1,6 +1,6 @@
 import std.string;
 
-record Secret { value: string, kind: string }
+type Secret { value: string, kind: string }
 enum CredErr { Missing(string); Denied(string) }
 
 fn resolve(n: i64) -> Result<Secret, CredErr> {

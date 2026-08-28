@@ -692,7 +692,7 @@ impl Builder {
                         kind: MirDiagnosticKind::UnsupportedNode {
                             reason: format!(
                                 "field-store on unknown field `{field}` of \
-                                 record `{type_name}`"
+                                 type `{type_name}`"
                             ),
                         },
                         note: "field not found in declaration-order table; \

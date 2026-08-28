@@ -2150,8 +2150,8 @@ fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
 fn actor_state_nested_record_alias_ingress_retains_recursive_string_leaves() {
     let pipeline = lower_source(
         r"
-        record Leaf { text: string }
-        record Wrap { leaf: Leaf }
+        type Leaf { text: string }
+        type Wrap { leaf: Leaf }
         actor Keeper {
             var cur: Wrap;
             receive fn rewrite() {
@@ -2192,9 +2192,9 @@ fn actor_state_nested_record_alias_ingress_retains_recursive_string_leaves() {
 fn actor_state_enum_payload_alias_ingress_retains_recursive_string_leaves() {
     let pipeline = lower_source(
         r"
-        record Leaf { text: string }
+        type Leaf { text: string }
         enum Payload { Empty; Hold(Leaf); }
-        record Wrap { payload: Payload }
+        type Wrap { payload: Payload }
         actor Keeper {
             var cur: Wrap;
             receive fn rewrite() {
@@ -2236,7 +2236,7 @@ fn actor_state_enum_payload_alias_ingress_retains_recursive_string_leaves() {
 fn actor_state_owned_record_self_store_does_not_double_retain_strings() {
     let pipeline = lower_source(
         r"
-        record Profile { name: string }
+        type Profile { name: string }
         actor Keeper {
             var prof: Profile;
             receive fn rewrite() {

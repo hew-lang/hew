@@ -7,7 +7,7 @@
 // resolved to accept it.
 //
 // Sibling of `actor_builtin_send_no_handler.hew` (no envelope either).
-record Job {
+type Job {
     n: i64,
 }
 

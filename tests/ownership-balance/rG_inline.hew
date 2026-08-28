@@ -1,6 +1,6 @@
 import std.string;
 
-record Snap { label: string, n: i64, terminal: bool }
+type Snap { label: string, n: i64, terminal: bool }
 
 actor Svc {
     let seed: i64;

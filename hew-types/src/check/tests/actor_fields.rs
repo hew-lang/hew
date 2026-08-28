@@ -852,7 +852,7 @@ mod every_attribute {
     fn let_irrefutable_struct_record_keyword_no_error() {
         // `record`-keyword product type is also irrefutable.
         let output = check_source(
-            "record Pair { a: i64, b: i64 }
+            "type Pair { a: i64, b: i64 }
              fn main() -> i64 { let p = Pair { a: 3, b: 4 }; let Pair { a, b } = p; a + b }",
         );
         assert!(

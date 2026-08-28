@@ -28,7 +28,7 @@ use hew_types::Checker;
 /// The fixture: an `i64` local, a record local, an enum-with-payload local, and
 /// a function taking a typed parameter. Exercises every `resolve_di_type` arm.
 const FIXTURE: &str = "\
-record Point { x: i64, y: i64 }
+type Point { x: i64, y: i64 }
 
 enum Shape {
     Circle { radius: i64 };

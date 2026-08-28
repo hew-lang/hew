@@ -1,5 +1,5 @@
-record NestedScalarReadInner { text: string, value: i64 }
-record NestedScalarReadCarrier {
+type NestedScalarReadInner { text: string, value: i64 }
+type NestedScalarReadCarrier {
     inner: NestedScalarReadInner,
     sibling: string,
 }

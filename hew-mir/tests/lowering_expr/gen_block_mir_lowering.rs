@@ -697,7 +697,7 @@ fn actor_receive_gen_owned_param_moves_into_environment() {
 fn actor_receive_gen_owned_record_param_relinquishes_shell_drop() {
     let pipeline = lower_checked(
         r#"
-        record Payload { label: string, data: bytes }
+        type Payload { label: string, data: bytes }
         actor Streamer {
             var state: string;
             receive gen fn emit(payload: Payload, n: i64) -> i64 {
@@ -952,7 +952,7 @@ fn cloned_indirect_enum_generator_capture_fails_closed() {
 fn anonymous_owned_capture_preserves_caller_source_drop() {
     let pipeline = lower_checked(
         r#"
-        record Capture { label: string }
+        type Capture { label: string }
         fn main() {
             let capture = Capture { label: "caller" };
             let _g = gen { yield capture.label.len(); };
@@ -1005,7 +1005,7 @@ fn anonymous_owned_capture_preserves_caller_source_drop() {
 fn actor_state_owned_capture_carries_clone_plan() {
     let pipeline = lower_checked(
         r#"
-        record Config { label: string }
+        type Config { label: string }
         actor Labeler {
             var label: string;
             receive gen fn lengths() -> i64 { yield label.len(); }

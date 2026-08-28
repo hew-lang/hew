@@ -19940,7 +19940,7 @@ pub(crate) fn env_field_drop_kinds(
     let Some(field_tys) = fn_ctx.record_field_resolved_tys.get(env_name.as_str()) else {
         return Err(CodegenError::FailClosed(format!(
             "{env_role} environment `{env_name}` for `{fn_symbol}` is not in the codegen \
-             record registry; its owned-field drop manifest cannot be derived and values \
+             type registry; its owned-field drop manifest cannot be derived and values \
              would leak (boundary-fail-closed)"
         )));
     };

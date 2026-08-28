@@ -18,7 +18,7 @@ fn ownership_marker_on_record_fails_closed_before_hir() {
     std::fs::write(
         &source,
         r"#[resource]
-record Token { id: i64 }
+type Token { id: i64 }
 
 impl Token {
     fn close(self) {}

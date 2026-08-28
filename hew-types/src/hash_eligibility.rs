@@ -33,10 +33,9 @@
 //! admissibility gate (C-2c) will reject them before they reach codegen.
 
 use crate::check::{TypeDef, TypeDefKind};
-use crate::eligibility_walker::walk_fields_for_eligibility;
 use crate::ty::Ty;
 use crate::BuiltinType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The hash eligibility verdict for a type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,10 +87,13 @@ pub(crate) const fn collection_key_ownership_capability(
 
 /// Returns `Some(rejection)` if `ty` is not hash-eligible, `None` if eligible.
 ///
-/// This inner form is passed as a `fn` pointer to
-/// [`walk_fields_for_eligibility`] so that named-type field recursion
-/// is shared with [`crate::eq_eligibility`] without code duplication.
-fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<HashEligibility> {
+/// `resource_types` is threaded through this recursive walk because a
+/// resource marker can occur in any nested value-type field.
+fn hash_ineligibility(
+    ty: &Ty,
+    type_defs: &HashMap<String, TypeDef>,
+    resource_types: &HashSet<String>,
+) -> Option<HashEligibility> {
     match ty {
         // Fixed-width integer primitives — hash the exact-width value load.
         // bool: hash the low bit as i8. char: hash 4-byte Unicode scalar as i32.
@@ -142,10 +144,33 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
             Some(type_def) if type_def.is_indirect => {
                 Some(HashEligibility::IneligibleManaged(ty.clone()))
             }
-            Some(type_def) if type_def.kind != TypeDefKind::Record => {
+            // `#[resource]` is an ownership contract, not an incidental
+            // representation detail. A resource-shaped `type` must never be
+            // copied into a collection key slot: doing so would duplicate the
+            // close obligation and make a later remove/free double-close it.
+            Some(type_def)
+                if resource_types.contains(name) || resource_types.contains(&type_def.name) =>
+            {
+                Some(HashEligibility::IneligibleManaged(ty.clone()))
+            }
+            // Enums keep their payloads in `variants`, not `fields`. Do not
+            // delete this kind guard: a field walk over an enum is vacuously
+            // successful and would incorrectly make it a layout key.
+            Some(type_def)
+                if !matches!(type_def.kind, TypeDefKind::Struct | TypeDefKind::Record) =>
+            {
                 Some(HashEligibility::IneligibleNamedNonRecord(ty.clone()))
             }
-            Some(type_def) => walk_fields_for_eligibility(type_def, type_defs, hash_ineligibility),
+            Some(type_def) => {
+                let mut field_names: Vec<&String> = type_def.fields.keys().collect();
+                field_names.sort();
+                field_names.into_iter().find_map(|field_name| {
+                    type_def
+                        .fields
+                        .get(field_name)
+                        .and_then(|field_ty| hash_ineligibility(field_ty, type_defs, resource_types))
+                })
+            }
             // Unknown named type — fail closed; cannot verify hash-eligibility.
             None => Some(HashEligibility::IneligibleOwned(ty.clone())),
         },
@@ -187,12 +212,27 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
 /// field-typed thunk with deterministic fixed-width loads (no padding, no
 /// float-equality hazards, no heap pointers). Named records are eligible only
 /// when they are not indirect and every field passes the same check recursively.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn ty_is_hash_eligible(
     ty: &Ty,
     type_defs: &HashMap<String, TypeDef>,
 ) -> HashEligibility {
-    hash_ineligibility(ty, type_defs).unwrap_or(HashEligibility::Eligible)
+    ty_is_hash_eligible_with_resources(ty, type_defs, &HashSet::new())
+}
+
+/// Determine hash eligibility with the ownership-marker authority in scope.
+///
+/// Collection admission must call this form. The marker set is separate from
+/// `TypeDef` because declaration identity (including imported module paths) is
+/// owned by `TypeRegistry`.
+#[must_use]
+pub(crate) fn ty_is_hash_eligible_with_resources(
+    ty: &Ty,
+    type_defs: &HashMap<String, TypeDef>,
+    resource_types: &HashSet<String>,
+) -> HashEligibility {
+    hash_ineligibility(ty, type_defs, resource_types).unwrap_or(HashEligibility::Eligible)
 }
 
 #[cfg(test)]
@@ -465,19 +505,34 @@ mod tests {
         );
     }
 
-    /// Regression: a `Struct`-kind named type (not declared with `record`) is also
-    /// rejected — Struct types are not guaranteed Copy value-semantic in Hew.
+    /// A field-bearing `type` shares the value-type layout-key capability.
     #[test]
-    fn hash_ineligible_struct_named_type() {
+    fn hash_eligible_struct_named_type() {
         let mut tds = HashMap::new();
         tds.insert(
             "Wrapper".to_string(),
-            make_non_record("Wrapper", TypeDefKind::Struct),
+            make_record("Wrapper", vec![("value", Ty::I64)], false),
         );
+        tds.get_mut("Wrapper").expect("inserted type").kind = TypeDefKind::Struct;
         let ty = Ty::normalize_named("Wrapper".to_string(), vec![]);
+        assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible,);
+    }
+
+    /// A resource marker wins over an otherwise hashable `type` layout. If the
+    /// marker check is removed, this regression becomes `Eligible` and a map
+    /// key slot would own a second close obligation.
+    #[test]
+    fn hash_ineligible_resource_struct_named_type() {
+        let mut tds = HashMap::new();
+        tds.insert(
+            "Token".to_string(),
+            make_record("Token", vec![("id", Ty::I64)], false),
+        );
+        tds.get_mut("Token").expect("inserted type").kind = TypeDefKind::Struct;
+        let ty = Ty::normalize_named("Token".to_string(), vec![]);
         assert_eq!(
-            ty_is_hash_eligible(&ty, &tds),
-            HashEligibility::IneligibleNamedNonRecord(ty.clone()),
+            ty_is_hash_eligible_with_resources(&ty, &tds, &HashSet::from(["Token".to_string()]),),
+            HashEligibility::IneligibleManaged(ty),
         );
     }
 

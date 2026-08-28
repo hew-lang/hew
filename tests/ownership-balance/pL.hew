@@ -1,6 +1,6 @@
 import std.string;
 
-record Item { number: i64, label: string }
+type Item { number: i64, label: string }
 
 fn make_item(number: i64) -> Item {
     Item { number: number, label: "item-" + string.from_int(number) }

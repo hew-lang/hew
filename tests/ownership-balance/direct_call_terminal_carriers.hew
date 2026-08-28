@@ -1,5 +1,5 @@
 enum ProbeError { Failed(string); }
-record Envelope { message: string }
+type Envelope { message: string }
 
 fn unit_result(ok: bool) -> Result<(), string> {
     if ok { return Ok(()); }

@@ -183,7 +183,7 @@ fn vec_index_supported_element_types_accepted() {
     // tuples route through hew_vec_get_layout.
     let out = lower(
         r"
-        record UserRecord { x: i32 }
+        type UserRecord { x: i32 }
         fn pick_bool(xs: Vec<bool>, i: i64) -> bool { xs[i] }
         fn pick_char(xs: Vec<char>, i: i64) -> char { xs[i] }
         fn pick_i8(xs: Vec<i8>, i: i64) -> i8 { xs[i] }
@@ -223,7 +223,7 @@ fn vec_slice_supported_element_types_accepted() {
     // Range-slice on scalar widths, string, tuples, and named records/enums must NOT fire.
     let out = lower(
         r"
-        record UserRecord { x: i32 }
+        type UserRecord { x: i32 }
         enum Colour { Red; Green; }
         fn slice_bool(xs: Vec<bool>) -> Vec<bool> { xs[0..2] }
         fn slice_char(xs: Vec<char>) -> Vec<char> { xs[0..2] }

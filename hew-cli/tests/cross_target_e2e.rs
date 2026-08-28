@@ -313,7 +313,7 @@ fn serializable_actor_emits_target_walked_ctor_section() {
     // message + an actor with a receive handler taking it. The codec module-init
     // pass seeds a codec for the handler's message type, emitting the ctor.
     let src = "\
-record Ping { seq: i64 }
+type Ping { seq: i64 }
 actor Echo {
     receive fn handle(msg: Ping) -> i64 { msg.seq }
 }

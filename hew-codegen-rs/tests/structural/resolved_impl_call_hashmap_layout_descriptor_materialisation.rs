@@ -135,7 +135,7 @@ fn has_call(pipeline: &hew_mir::IrPipeline, sym: &str, arity: usize) -> bool {
 #[test]
 fn hashmap_point_i64_insert_lowers_to_hew_hashmap_insert_layout_with_arity_3() {
     let src = r"
-record Point { x: i64, y: i64 }
+type Point { x: i64, y: i64 }
 
 fn main() {
     let m: HashMap<Point, i64> = HashMap.new();
@@ -210,7 +210,7 @@ fn hashmap_kernel_symbol_matrix_named_record_k_by_accepted_v_classes() {
             let expr = expr_tmpl.replace("{v}", v_lit);
             let src = format!(
                 r"
-record Point {{ x: i64, y: i64 }}
+type Point {{ x: i64, y: i64 }}
 
 fn main() {{
     let m: HashMap<Point, {v_ty}> = HashMap.new();
@@ -270,7 +270,7 @@ fn hashset_kernel_symbol_matrix_named_record_t_across_every_op() {
     for (op_name, expr, kernel_symbol, arity) in ops {
         let src = format!(
             r"
-record Point {{ x: i64, y: i64 }}
+type Point {{ x: i64, y: i64 }}
 
 fn main() {{
     let s: HashSet<Point> = HashSet.new();
@@ -309,7 +309,7 @@ fn main() {{
 #[test]
 fn hashmap_and_hashset_run_pass_topology_pins_every_kernel_symbol() {
     let src = r"
-record Point { x: i64, y: i64 }
+type Point { x: i64, y: i64 }
 
 fn main() {
     let m: HashMap<Point, i64> = HashMap.new();

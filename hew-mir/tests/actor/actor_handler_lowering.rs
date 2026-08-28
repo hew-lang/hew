@@ -1310,7 +1310,7 @@ fn generator_pump_releases_record_yield_value_in_place() {
         body_inline_inplace_drop(record_pump),
         Some(hew_mir::InPlaceReleaseKind::Record),
         "an owned-record yield pump must release its producer copy through the \
-         record in-place thunk on the resume edge"
+         type in-place thunk on the resume edge"
     );
     assert_eq!(
         suspend_plan_inplace_drop_kinds(&record_pipeline, "Maker__recv__items"),
@@ -1333,7 +1333,7 @@ fn generator_pump_releases_record_yield_value_in_place() {
         body_inline_inplace_drop(record_main),
         Some(hew_mir::InPlaceReleaseKind::Record),
         "the for-await consuming body must release its fresh decode copy of the \
-         record frame at body end through the record in-place thunk"
+         type frame at body end through the record in-place thunk"
     );
 }
 

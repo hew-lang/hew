@@ -11,7 +11,7 @@ use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
 use crate::check::types::GenericCallee;
 use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission};
-use crate::hash_eligibility::{ty_is_hash_eligible, HashEligibility};
+use crate::hash_eligibility::{ty_is_hash_eligible_with_resources, HashEligibility};
 use crate::lowering_facts::{
     hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
     HashMapValueType,
@@ -497,7 +497,11 @@ impl Checker {
                     // (Eligible) or a diagnostic (ineligible).
                     if let Ty::Named { name, .. } = &resolved_ty {
                         let type_defs_snapshot = self.type_defs.clone();
-                        match ty_is_hash_eligible(&resolved_ty, &type_defs_snapshot) {
+                        match ty_is_hash_eligible_with_resources(
+                            &resolved_ty,
+                            &type_defs_snapshot,
+                            self.registry.resource_type_names(),
+                        ) {
                             HashEligibility::Eligible => {
                                 let type_def = self.lookup_type_def(name);
                                 let layout =
@@ -712,7 +716,11 @@ impl Checker {
                 // Collect the type_defs snapshot before borrowing self mutably below.
                 let type_defs_snapshot = self.type_defs.clone();
 
-                match ty_is_hash_eligible(&resolved_key, &type_defs_snapshot) {
+                match ty_is_hash_eligible_with_resources(
+                    &resolved_key,
+                    &type_defs_snapshot,
+                    self.registry.resource_type_names(),
+                ) {
                     HashEligibility::Eligible => {
                         let key_type_def = self.lookup_type_def(key_name);
                         let key_layout = identity_aggregate_layout(&resolved_key).or_else(|| {

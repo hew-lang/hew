@@ -5,7 +5,7 @@
 // (a LoopBackEdge cooperate site, hew-mir/src/dataflow.rs), so this fixture
 // locks in that the fix generalizes beyond the FunctionEntry-only instance
 // the primary probe exercises.
-record Sum {
+type Sum {
     total: i64,
     count: i64
 }

@@ -91,7 +91,7 @@ fn string_field_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Cfg {{\n\
+         type Cfg {{\n\
          \x20   label: string,\n\
          \x20   count: i64,\n\
          }}\n\
@@ -135,7 +135,7 @@ fn bytes_field_source(frames: usize) -> String {
 fn direct_string_field_store_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
-         record Cfg {{ label: string, count: i64 }}\n\
+         type Cfg {{ label: string, count: i64 }}\n\
          fn main() -> i64 {{\n\
          \x20   var c = Cfg {{ label: string.repeat(\"a\", 32), count: 0 }};\n\
          \x20   var i: i64 = 0;\n\
@@ -151,7 +151,7 @@ fn direct_string_field_store_source(frames: usize) -> String {
 fn direct_string_self_store_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
-         record Cfg {{ label: string }}\n\
+         type Cfg {{ label: string }}\n\
          fn main() -> i64 {{\n\
          \x20   var c = Cfg {{ label: string.repeat(\"self\", 32) }};\n\
          \x20   var i: i64 = 0;\n\
@@ -175,7 +175,7 @@ fn direct_string_self_store_source(frames: usize) -> String {
 fn callee_scope_string_store_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
-         record Cfg {{ label: string, count: i64 }}\n\
+         type Cfg {{ label: string, count: i64 }}\n\
          fn churn(seed: string) -> i64 {{\n\
          \x20   var c = Cfg {{ label: seed, count: 0 }};\n\
          \x20   c.label = string.repeat(\"b\", 32);\n\
@@ -333,7 +333,7 @@ fn multi_field_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Multi {{\n\
+         type Multi {{\n\
          \x20   label: string,\n\
          \x20   items: Vec<i64>,\n\
          \x20   id: i64,\n\
@@ -371,11 +371,11 @@ fn carry_record_field_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Inner {{\n\
+         type Inner {{\n\
          \x20   label: string,\n\
          \x20   n: i64,\n\
          }}\n\
-         record Pair {{\n\
+         type Pair {{\n\
          \x20   keep: Inner,\n\
          \x20   churn: string,\n\
          }}\n\
@@ -397,7 +397,7 @@ fn carry_string_field_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Pair {{\n\
+         type Pair {{\n\
          \x20   keep: string,\n\
          \x20   churn: string,\n\
          }}\n\
@@ -419,7 +419,7 @@ fn carry_vec_field_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Pair {{\n\
+         type Pair {{\n\
          \x20   keep: Vec<string>,\n\
          \x20   churn: string,\n\
          }}\n\
@@ -443,7 +443,7 @@ fn carry_hashmap_field_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Pair {{\n\
+         type Pair {{\n\
          \x20   keep: HashMap<string, string>,\n\
          \x20   churn: string,\n\
          }}\n\
@@ -467,7 +467,7 @@ fn carry_hashset_field_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Pair {{\n\
+         type Pair {{\n\
          \x20   keep: HashSet<string>,\n\
          \x20   churn: string,\n\
          }}\n\
@@ -491,7 +491,7 @@ fn carry_bytes_field_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Pair {{\n\
+         type Pair {{\n\
          \x20   keep: bytes,\n\
          \x20   churn: string,\n\
          }}\n\
@@ -535,7 +535,7 @@ fn carry_tuple_field_escape_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Pair {{\n\
+         type Pair {{\n\
          \x20   keep: (string, i64),\n\
          \x20   churn: string,\n\
          }}\n\
@@ -565,7 +565,7 @@ fn carry_tuple_field_same_frame_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Pair {{\n\
+         type Pair {{\n\
          \x20   keep: (string, i64),\n\
          \x20   churn: string,\n\
          }}\n\
@@ -590,11 +590,11 @@ fn carry_tuple_of_record_field_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
          \n\
-         record Inner {{\n\
+         type Inner {{\n\
          \x20   label: string,\n\
          \x20   n: i64,\n\
          }}\n\
-         record Pair {{\n\
+         type Pair {{\n\
          \x20   keep: (Inner, i64),\n\
          \x20   churn: string,\n\
          }}\n\
@@ -624,9 +624,9 @@ fn carry_tuple_of_record_field_source(frames: usize) -> String {
 fn carry_record_nested_option_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
-         record Leaf {{ label: string, n: i64 }}\n\
-         record Wrapper {{ inner: (Option<Leaf>, i64), tag: string }}\n\
-         record T {{ pair: (Wrapper, i64), churn: string }}\n\
+         type Leaf {{ label: string, n: i64 }}\n\
+         type Wrapper {{ inner: (Option<Leaf>, i64), tag: string }}\n\
+         type T {{ pair: (Wrapper, i64), churn: string }}\n\
          fn mk() -> T {{\n\
          \x20   let b = T {{\n\
          \x20       pair: (Wrapper {{ inner: (Some(Leaf {{ label: string.repeat(\"k\", 32), n: 1 }}), 9), tag: string.repeat(\"w\", 32) }}, 5),\n\
@@ -652,9 +652,9 @@ fn carry_record_nested_option_source(frames: usize) -> String {
 fn nested_option_without_funcupdate_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
-         record Leaf {{ label: string, n: i64 }}\n\
-         record Wrapper {{ inner: (Option<Leaf>, i64), tag: string }}\n\
-         record T {{ pair: (Wrapper, i64), churn: string }}\n\
+         type Leaf {{ label: string, n: i64 }}\n\
+         type Wrapper {{ inner: (Option<Leaf>, i64), tag: string }}\n\
+         type T {{ pair: (Wrapper, i64), churn: string }}\n\
          fn mk() -> T {{\n\
          \x20   T {{\n\
          \x20       pair: (Wrapper {{ inner: (Some(Leaf {{ label: string.repeat(\"k\", 32), n: 1 }}), 9), tag: string.repeat(\"w\", 32) }}, 5),\n\
@@ -679,8 +679,8 @@ fn nested_option_without_funcupdate_source(frames: usize) -> String {
 fn nested_record_without_option_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
-         record Wrapper {{ inner: (string, i64), tag: string }}\n\
-         record T {{ pair: (Wrapper, i64), churn: string }}\n\
+         type Wrapper {{ inner: (string, i64), tag: string }}\n\
+         type T {{ pair: (Wrapper, i64), churn: string }}\n\
          fn mk() -> T {{\n\
          \x20   let b = T {{\n\
          \x20       pair: (Wrapper {{ inner: (string.repeat(\"k\", 32), 9), tag: string.repeat(\"w\", 32) }}, 5),\n\

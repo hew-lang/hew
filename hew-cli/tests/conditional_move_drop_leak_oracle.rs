@@ -307,7 +307,7 @@ fn strs_move(take: bool) -> i64 {\n\
 \x20   out\n\
 }\n\
 \n\
-record Crate {\n\
+type Crate {\n\
 \x20   items: Vec<i64>,\n\
 }\n\
 \n\

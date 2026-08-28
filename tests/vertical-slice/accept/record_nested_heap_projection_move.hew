@@ -1,5 +1,5 @@
-record NestedHeapMoveInner { text: string, value: i64 }
-record NestedHeapMoveCarrier {
+type NestedHeapMoveInner { text: string, value: i64 }
+type NestedHeapMoveCarrier {
     inner: NestedHeapMoveInner,
     sibling: string,
 }

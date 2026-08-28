@@ -9,7 +9,7 @@
 import std.os;
 
 // Mirror the server's serializable types.  Both nodes must agree on these.
-record KvPut {
+type KvPut {
     key: string,
     val: string
 }

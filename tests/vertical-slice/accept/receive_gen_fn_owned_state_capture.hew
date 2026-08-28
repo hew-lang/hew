@@ -1,6 +1,6 @@
 // An owned actor-state field is cloned into the receive-generator environment.
 // Supervised child construction supplies the already-supported owned state.
-record Config { label: string }
+type Config { label: string }
 
 actor Reader {
     var name: string;

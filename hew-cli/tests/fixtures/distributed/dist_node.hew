@@ -45,7 +45,7 @@ extern "C" {
 }
 
 // `record` is Serializable — required for RemotePid messaging across the wire.
-record KvPut {
+type KvPut {
     key: string,
     val: string
 }
@@ -168,7 +168,7 @@ impl ActorMsg for WireProbe {
     type Reply = WireResult;
 }
 
-record DistIdentity {
+type DistIdentity {
     node_id: string,
     slot: u64,
     incarnation: u32

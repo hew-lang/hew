@@ -9,7 +9,7 @@
 //   - user records
 //   - HashMap and HashSet collections
 
-record Wrapper { inner: Vec<i64> }
+type Wrapper { inner: Vec<i64> }
 
 actor MaybeGreeter {
     var name: Option<string>;

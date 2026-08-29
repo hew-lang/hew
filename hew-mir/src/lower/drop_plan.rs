@@ -1498,7 +1498,24 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
         }
     }
     if checked.ownership_elaboration.is_some() {
-        for (owner, ty) in &definition_types {
+        // `definition_types` is a HashMap; report recipe findings in source
+        // order (the binding's `Bind` site), then by owner, so a missing or
+        // drifted recipe is diagnosed deterministically and once per owner.
+        let binding_sites: HashMap<BindingId, SiteId> = checked
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter_map(|statement| match statement {
+                MirStatement::Bind { binding, site, .. } => Some((*binding, *site)),
+                _ => None,
+            })
+            .collect();
+        let mut definitions = definition_types.iter().collect::<Vec<_>>();
+        definitions.sort_by_key(|(owner, _)| {
+            let site = binding_sites.get(&owner.binding).copied();
+            (site.is_none(), site.unwrap_or(SiteId(u32::MAX)), **owner)
+        });
+        for (owner, ty) in definitions {
             match recipes_by_owner.get(owner).map(Vec::as_slice) {
                 Some([recipe]) if &recipe.ty == ty => {}
                 Some([recipe]) => findings.push(MirCheck::DischargeAuthorityDrift {
@@ -4784,7 +4801,7 @@ fn conditional_scope_exit_rejects_kind_only_non_resource_recipe() {
 }
 
 #[test]
-fn missing_owner_diagnostics_follow_source_binding_order() {
+fn missing_recipe_diagnostics_follow_source_binding_order() {
     use crate::model::{OwnerId, OwnershipEvent};
 
     let later_owner = OwnerId {
@@ -4850,14 +4867,26 @@ fn missing_owner_diagnostics_follow_source_binding_order() {
         })),
     };
 
-    let sites = validate_ownership_events(&checked)
+    // Neither owner publishes a recipe: the definition-site findings must be
+    // ordered by the binding's source site (3 before 9), not by mint order.
+    let reasons = validate_ownership_events(&checked)
         .into_iter()
         .filter_map(|finding| match finding {
-            MirCheck::ObligationUnderReleased { site, .. } => Some(site),
+            MirCheck::DischargeAuthorityDrift { reason, .. }
+                if reason.contains("no definition-site destructor recipe") =>
+            {
+                Some(reason)
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(sites, [SiteId(3), SiteId(9)]);
+    assert_eq!(
+        reasons,
+        [
+            format!("owner {earlier_owner:?} has no definition-site destructor recipe"),
+            format!("owner {later_owner:?} has no definition-site destructor recipe"),
+        ]
+    );
 }
 
 #[test]

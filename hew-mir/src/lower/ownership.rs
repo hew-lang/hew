@@ -6,11 +6,11 @@ use super::{
     hir_expr_contains_synthetic_vec_get_clone, local_is_rewritten_after_current_iteration,
     machine_layout_ty_matches, monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
-    vec_iter_record_layout_key, ActiveIterationOwner, BasicBlock, BindingId, Builder, BuiltinType,
-    ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
-    FieldOffset, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
-    HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedLocalEntry,
+    vec_iter_record_layout_key, ActiveIterationOwner, AffineCallConsumeCandidate, BasicBlock,
+    BindingId, Builder, BuiltinType, ClosurePairIngress, CmpPred, DecisionFact, DischargeSite,
+    Disposition, FieldLoadClass, FieldOffset, HashMap, HashSet, HirBinding, HirBlock, HirExpr,
+    HirExprKind, HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedLocalEntry,
     OwnerMintOrigin, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
     ProducedValueOwnership, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
     Terminator, ValueClass, ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
@@ -153,6 +153,80 @@ pub(super) fn returned_aggregate_consumes_source(
 }
 
 impl Builder {
+    /// Resolve affine arguments whose declared extern contract adopts the value
+    /// only on normal return. Direct Hew consuming parameters own their values
+    /// from function entry and therefore use ordinary pre-invoke binding
+    /// transfer instead of this deferred protocol.
+    pub(super) fn affine_call_consume_candidates(
+        &mut self,
+        callee_symbol: &str,
+        callee_item: Option<hew_hir::ItemId>,
+        hir_args: &[hew_hir::HirExpr],
+    ) -> Vec<AffineCallConsumeCandidate> {
+        let mut candidates = Vec::new();
+        for (index, arg) in hir_args.iter().enumerate() {
+            let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                ..
+            } = &arg.kind
+            else {
+                continue;
+            };
+            let use_intent = self.binding_ref_use_intent(arg);
+            if use_intent == IntentKind::Discharge {
+                continue;
+            }
+            let Some(guard) = self.affine_release_flags.get(binding).copied() else {
+                continue;
+            };
+            if callee_item.is_some()
+                || !self
+                    .call_scrutinee_provenance
+                    .extern_table
+                    .extern_param_is_consume(callee_symbol, index)
+            {
+                continue;
+            }
+            if use_intent != IntentKind::Consume {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "typed affine call consume without checker Consume intent"
+                            .to_string(),
+                        site: arg.site,
+                    },
+                    note: "the checker use and physical normal-edge handoff must share one consume authority"
+                        .to_string(),
+                });
+                continue;
+            }
+            candidates.push(AffineCallConsumeCandidate {
+                index,
+                binding: *binding,
+                guard,
+                site: arg.site,
+            });
+        }
+        candidates
+    }
+
+    pub(super) fn activate_affine_call_consume_sites(
+        &mut self,
+        candidates: &[AffineCallConsumeCandidate],
+    ) {
+        self.deferred_affine_call_consume_sites
+            .extend(candidates.iter().map(|candidate| candidate.site));
+    }
+
+    pub(super) fn deactivate_affine_call_consume_sites(
+        &mut self,
+        candidates: &[AffineCallConsumeCandidate],
+    ) {
+        for candidate in candidates {
+            self.deferred_affine_call_consume_sites
+                .remove(&candidate.site);
+        }
+    }
+
     pub(crate) fn emit_scope_exit_marker<I>(&mut self, scopes: I)
     where
         I: IntoIterator<Item = hew_hir::ScopeId>,

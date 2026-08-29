@@ -26056,8 +26056,10 @@ fn resolved_ty_cow_heap_release(
 
 /// W5.011 — the closed set of C-ABI release symbols a `DropKind::CowHeap`
 /// is permitted to carry. The MIR drop-elaborator chooses the symbol from
-/// its own `(type, symbol)` table (`build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) →
-/// `cow_value_leaf_drop_symbol`); codegen re-validates it here against the
+/// its own `(type, symbol)` table (the owner's definition-site
+/// `OwnershipEvent::DropRecipe`, built through `cow_value_leaf_drop_symbol`
+/// and replayed into every exit plan by `derive_drop_plans_from_replay`);
+/// codegen re-validates it here against the
 /// same closed set BEFORE emitting any call. A symbol that drifted from
 /// the elaborator's table, or one fabricated by a future producer, fails
 /// closed at module-build time rather than emitting a call to an

@@ -7617,9 +7617,10 @@ pub enum DropKind {
 ///
 /// Populated by the MIR builder at each `dyn Trait` binding's
 /// introducing statement (W3.031 Stage 1) and threaded into the
-/// `DropKind::TraitObject` variant in `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay). Codegen
-/// (W3.031 Stage 6) reads the discriminator to select the post-
-/// `drop_in_place` release ritual.
+/// `DropKind::TraitObject` variant of the owner's definition-site
+/// `OwnershipEvent::DropRecipe` (`drop_kind_for`), from which every exit
+/// plan is derived. Codegen (W3.031 Stage 6) reads the discriminator to
+/// select the post-`drop_in_place` release ritual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TraitObjectStorage {
     /// Caller-allocated alloca; no post-`drop_in_place` release.

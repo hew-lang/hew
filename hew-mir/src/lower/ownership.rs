@@ -2189,9 +2189,14 @@ impl Builder {
     /// WHEN: delete once every arm Move that relocates an owner emits its own
     /// generation-ending event at the Move site (the ladder's virtual-value /
     /// `Place` seam, `Materialize { reason }`), at which point the join derives
-    /// from replay and no predecessor scan is needed. A new retain variant
-    /// that precedes an arm Move fails closed here as an `ownership-place`
-    /// verifier finding, never as a silent double owner.
+    /// from replay and no predecessor scan is needed. Until then the retain
+    /// exemption is a closed list, and its failure mode is NOT fail-closed: a
+    /// new retain instruction that precedes an arm Move is not recognised as a
+    /// `+1` share, so the still-live source owner is treated as relocated and
+    /// its generation ended — the verifier then sees one owner per place (no
+    /// finding) while the source's retained `+1` is never released. That is a
+    /// silent under-release caught only by the leak oracles, so any new retain
+    /// variant must be added to the match below in the same change.
     /// WHAT: the real solution is a per-arm "value relocated into the join
     /// slot" event produced by the arm lowering itself.
     fn composite_join_predecessor_move_sources(&self, place: Place) -> Vec<Place> {
@@ -2564,7 +2569,7 @@ impl Builder {
     /// carries its
     /// [`OwnershipDecision::InteriorAlias`]-shaped provenance and is minted
     /// [`Disposition::AliasOf`], so it drops out of the scope-exit-live view the
-    /// drop-elaboration provers and `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) read: the alias emits no
+    /// ownership finalizers read and never mints an owner generation: the alias emits no
     /// composite drop of its own (the owner's composite frees the whole tree),
     /// and its base local never seeds the record/tuple provers'
     /// `release_owner_bases`, so it no longer trips their Defect-1 blanket
@@ -3613,8 +3618,9 @@ impl Builder {
         chain
     }
     /// The scope-exit-live owned locals as `(binding, name, ty)` tuples — the
-    /// compat shape the twelve allow-set provers, `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay), and the
-    /// double-free gate consume. The `Disposition::ScopeExit` filter narrows the
+    /// compat shape the ownership finalizers and the double-free gate consume
+    /// (exit plans themselves derive from event replay, not from this list).
+    /// The `Disposition::ScopeExit` filter narrows the
     /// ledger to exactly the bindings the function-exit LIFO pass still owns:
     /// entries retracted by a [`Builder::set_owned_local_disposition`] write
     /// (consumed, body-end-released, inner-scope-released) are excluded, which is
@@ -4968,8 +4974,8 @@ impl Builder {
     /// path fires the release.
     ///
     /// Restricted to the collection classes whose releases are null-tolerant
-    /// runtime frees and whose allow-set provers ride the
-    /// `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) escape scan; every other owned
+    /// runtime frees and whose mint-site admission rides the local-collection
+    /// escape scan; every other owned
     /// class keeps the legacy path-insensitive retraction (fail-closed: leak
     /// on the not-moved path, never a double-free). A mutable binding that is
     /// also reassigned takes the #2301 `overwrite_guard_flags` path instead —
@@ -5460,9 +5466,9 @@ impl Builder {
     /// `HashSet`, `bytes`, `CoW string` and owned records each gate their
     /// scope-exit release on a per-class escape-scan allow-set that removes a
     /// handle proven to have escaped into an aggregate. `Rc` / `Weak` have no
-    /// such allow-set — `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay)' `AffineResource` arm emits their
-    /// release unconditionally — so the transfer has to be recorded where it
-    /// happens.
+    /// such allow-set — their `AffineResource` recipe is replayed onto every
+    /// exit where the owner is still live — so the transfer has to be recorded
+    /// where it happens.
     ///
     /// The record is the SAME path-sensitive drop-flag store a by-value
     /// `Use { Consume }` already emits (`#1933` / `#1941`):

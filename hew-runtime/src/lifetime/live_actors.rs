@@ -572,6 +572,9 @@ pub(crate) struct ActorIncarnation {
     spawn_serial: u64,
 }
 
+// The whole surface is the native wake edge: wasm32 has its own cooperative
+// scheduler, reply channel and mailbox, and never resolves an incarnation.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl ActorIncarnation {
     /// No wake target.
     ///
@@ -617,10 +620,12 @@ impl ActorIncarnation {
         self.actor_id == 0
     }
 
+    /// The location-transparent actor id half of the pair.
     pub(crate) const fn actor_id(self) -> u64 {
         self.actor_id
     }
 
+    /// The never-reissued serial half of the pair.
     pub(crate) const fn spawn_serial(self) -> u64 {
         self.spawn_serial
     }

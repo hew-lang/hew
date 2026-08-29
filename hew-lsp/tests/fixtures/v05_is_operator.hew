@@ -1,5 +1,6 @@
-type Payload {
-    value: i32;
+enum Payload {
+    First;
+    Second;
 }
 
 fn is_probe() -> i32 {

@@ -638,7 +638,10 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "identity comparison (`is`)",
-        probe: "type Node { value: i64; }\nfn same(a: Node, b: Node) -> bool { a is b }\nfn main() {\n    println(\"x\");\n}\n",
+        // `Vec` handles, not a record: `is` on a record is a checker rejection
+        // (E_IS_VALUE_TYPE, #3108) and would never reach the profile check,
+        // which is what this row pins.
+        probe: "fn same(a: Vec<i64>, b: Vec<i64>) -> bool { a is b }\nfn main() {\n    println(\"x\");\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },

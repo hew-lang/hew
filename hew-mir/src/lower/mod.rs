@@ -7418,31 +7418,35 @@ fn discharged_declared_release_parent(
     Some(*parent)
 }
 
-/// Materialize normal-edge ownership commits for runtime calls that adopt
-/// arguments. LLVM `invoke` gives the call two successors: before the call the
-/// caller owns every argument; only the normal successor transfers the proven
-/// consumed arguments, while the unwind successor must destroy them. Carrying
-/// the commit as a statement in `next` gives drop dataflow exactly that shape.
-/// Every block from which `target` is reachable, `target` included.
-fn reverse_reachable_blocks(blocks: &[BasicBlock], target: u32) -> HashSet<u32> {
+/// `target` followed by its unique-predecessor chain: the blocks lowering
+/// split off the straight-line evaluation that ends at `target` (a bounds
+/// check or an intervening call between an argument and the call that adopts
+/// it). The walk stops at the first block with zero or several predecessors,
+/// so a loop header or a join never contributes its other paths.
+fn linear_predecessor_chain(blocks: &[BasicBlock], target: u32) -> Vec<u32> {
     let mut predecessors: HashMap<u32, Vec<u32>> = HashMap::new();
     for block in blocks {
         for successor in block.successors() {
             predecessors.entry(successor).or_default().push(block.id);
         }
     }
-    let mut seen = HashSet::from([target]);
-    let mut stack = vec![target];
-    while let Some(block) = stack.pop() {
-        for predecessor in predecessors.get(&block).into_iter().flatten() {
-            if seen.insert(*predecessor) {
-                stack.push(*predecessor);
-            }
+    let mut chain = vec![target];
+    let mut current = target;
+    while let Some([predecessor]) = predecessors.get(&current).map(Vec::as_slice) {
+        if chain.contains(predecessor) {
+            break;
         }
+        chain.push(*predecessor);
+        current = *predecessor;
     }
-    seen
+    chain
 }
 
+/// Materialize normal-edge ownership commits for runtime calls that adopt
+/// arguments. LLVM `invoke` gives the call two successors: before the call the
+/// caller owns every argument; only the normal successor transfers the proven
+/// consumed arguments, while the unwind successor must destroy them. Carrying
+/// the commit as a statement in `next` gives drop dataflow exactly that shape.
 #[allow(
     clippy::too_many_lines,
     reason = "normal-success call commits split CFG edges while preserving call-site owner and guard authority"
@@ -7489,24 +7493,26 @@ fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut
                 .get(&entry.binding)
                 .copied()
                 .unwrap_or(SiteId(0));
-            // The source-level consume may sit in a predecessor of the call
-            // block (a Vec index assignment lowers its bounds check between
-            // the argument and the call), so look at every block that reaches
-            // this call, not only the call block itself.
-            let source_already_consumes = reverse_reachable_blocks(blocks, block.id)
+            // The argument's own `Use` is the LAST use of the binding on the
+            // straight-line path into the call: the source-level consume may
+            // sit in a predecessor of the call block (a Vec index assignment
+            // lowers its bounds check between the argument and the call), so
+            // walk the unique-predecessor chain backwards and let the nearest
+            // `Use` decide. An earlier consume of the same binding at an
+            // unrelated site (before a rebind, or elsewhere in a loop body) is
+            // never the argument's use and must not suppress this call's
+            // checker transition.
+            let source_already_consumes = linear_predecessor_chain(blocks, block.id)
                 .into_iter()
                 .filter_map(|id| blocks.iter().find(|candidate| candidate.id == id))
-                .flat_map(|candidate| candidate.statements.iter())
-                .any(|statement| {
-                    matches!(
-                        statement,
-                        MirStatement::Use {
-                            binding,
-                            intent: IntentKind::Consume,
-                            ..
-                        } if *binding == entry.binding
-                    )
-                });
+                .flat_map(|candidate| candidate.statements.iter().rev())
+                .find_map(|statement| match statement {
+                    MirStatement::Use {
+                        binding, intent, ..
+                    } if *binding == entry.binding => Some(*intent == IntentKind::Consume),
+                    _ => None,
+                })
+                .unwrap_or(false);
             commits.push((
                 *next,
                 entry.binding,
@@ -14729,14 +14735,15 @@ impl Builder {
                     .insert(param.id, TraitObjectStorage::HeapBoxed);
             }
             // A summary-owned param is one whose CALLERS consult the same
-            // `call_param_owned_carrier` verdict and therefore move ownership
-            // in (transfer, clone, or fail closed) — the callee owns it even
-            // when registration declined (e.g. a non-clone-total plan keeps
-            // the legacy transfer path). Two caller populations do NOT move
-            // in despite a true summary: method callers of a stripped
-            // true-receiver slot (summary removed — absent here), and
-            // String/Bytes args, which the caller preparation skips onto the
-            // CoW borrow spine.
+            // `call_param_owned_carrier` verdict and therefore hand the callee
+            // its own copy: `prepare_owned_call_carriers` transfers a dead
+            // source, snapshot-clones a live clone-total source, and refuses
+            // (`NotYetImplemented`, live owned call-carrier) anything else.
+            // The callee owns the slot in every admitted case. Two caller
+            // populations do NOT hand a copy in despite a true summary:
+            // method callers of a stripped true-receiver slot (summary
+            // removed — absent here), and String/Bytes args, which the caller
+            // preparation skips onto the CoW borrow spine.
             let param_summary_owned = self
                 .param_ownership
                 .call_param_owned_carrier

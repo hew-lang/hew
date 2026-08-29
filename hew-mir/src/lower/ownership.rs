@@ -2165,31 +2165,6 @@ impl Builder {
         }
     }
 
-    /// The source of each predecessor arm's final physical Move into `place`,
-    /// for every finished block that falls through into the current (join)
-    /// block. A Move immediately preceded by a retain of its source is an
-    /// independent `+1` share, not a relocation of the source generation, and
-    /// is skipped: the source owner stays live and the join owns the share.
-    ///
-    /// SHORTCUT (structural scan, not an ownership fact).
-    /// WHY: arm lowering does not record "this Move relocates a live owner
-    /// generation" as an event, so the join publication has to recover it by
-    /// re-reading the predecessor blocks; the retain exemption enumerates the
-    /// `+1` share instructions (`StringRetain`/`BytesRetain`) because those are
-    /// the only retains an arm emits directly before its result Move today.
-    /// WHEN: delete once every arm Move that relocates an owner emits its own
-    /// generation-ending event at the Move site (the ladder's virtual-value /
-    /// `Place` seam, `Materialize { reason }`), at which point the join derives
-    /// from replay and no predecessor scan is needed. Until then the retain
-    /// exemption is a closed list, and its failure mode is NOT fail-closed: a
-    /// new retain instruction that precedes an arm Move is not recognised as a
-    /// `+1` share, so the still-live source owner is treated as relocated and
-    /// its generation ended — the verifier then sees one owner per place (no
-    /// finding) while the source's retained `+1` is never released. That is a
-    /// silent under-release caught only by the leak oracles, so any new retain
-    /// variant must be added to the match below in the same change.
-    /// WHAT: the real solution is a per-arm "value relocated into the join
-    /// slot" event produced by the arm lowering itself.
     /// The unique scope-exit owners (of type `ty`) that a predecessor arm
     /// physically moved into the join slot `place`, when the join owner is
     /// about to be minted at the head of the join block. Each of these owners
@@ -2232,6 +2207,31 @@ impl Builder {
             .collect()
     }
 
+    /// The source of each predecessor arm's final physical Move into `place`,
+    /// for every finished block that falls through into the current (join)
+    /// block. A Move immediately preceded by a retain of its source is an
+    /// independent `+1` share, not a relocation of the source generation, and
+    /// is skipped: the source owner stays live and the join owns the share.
+    ///
+    /// SHORTCUT (structural scan, not an ownership fact).
+    /// WHY: arm lowering does not record "this Move relocates a live owner
+    /// generation" as an event, so the join publication has to recover it by
+    /// re-reading the predecessor blocks; the retain exemption enumerates the
+    /// `+1` share instructions (`StringRetain`/`BytesRetain`) because those are
+    /// the only retains an arm emits directly before its result Move today.
+    /// WHEN: delete once every arm Move that relocates an owner emits its own
+    /// generation-ending event at the Move site (the ladder's virtual-value /
+    /// `Place` seam, `Materialize { reason }`), at which point the join derives
+    /// from replay and no predecessor scan is needed. Until then the retain
+    /// exemption is a closed list, and its failure mode is NOT fail-closed: a
+    /// new retain instruction that precedes an arm Move is not recognised as a
+    /// `+1` share, so the still-live source owner is treated as relocated and
+    /// its generation ended — the verifier then sees one owner per place (no
+    /// finding) while the source's retained `+1` is never released. That is a
+    /// silent under-release caught only by the leak oracles, so any new retain
+    /// variant must be added to the match below in the same change.
+    /// WHAT: the real solution is a per-arm "value relocated into the join
+    /// slot" event produced by the arm lowering itself.
     fn composite_join_predecessor_move_sources(&self, place: Place) -> Vec<Place> {
         self.pending_blocks
             .iter()

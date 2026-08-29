@@ -1170,12 +1170,22 @@ fn main() {
     );
 }
 
+/// A `Lifecycle<T>` owned by `module`, with the declaration identity hew-hir
+/// would mint for it. `defining_module` and `declaration` are set together
+/// because the producer derives one from the other: two same-leaf machines from
+/// distinct modules are distinct declarations, and a fixture that moved only the
+/// display module would be claiming they are the same one.
+fn generic_lifecycle_machine_in_module(module: &str) -> HirMachineDecl {
+    let mut machine = generic_lifecycle_machine();
+    machine.declaration = hew_types::DefId::for_test(format!("{module}.Lifecycle"));
+    machine.defining_module = Some(module.to_string());
+    machine
+}
+
 #[test]
 fn same_leaf_generic_machines_from_distinct_modules_get_disjoint_layouts() {
-    let mut left = generic_lifecycle_machine();
-    left.defining_module = Some("left".to_string());
-    let mut right = generic_lifecycle_machine();
-    right.defining_module = Some("right".to_string());
+    let left = generic_lifecycle_machine_in_module("left");
+    let right = generic_lifecycle_machine_in_module("right");
 
     let pipeline = lower_hir_module(&empty_module(vec![
         HirItem::Machine(left),

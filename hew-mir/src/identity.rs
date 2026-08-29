@@ -20,7 +20,11 @@
 //! `RawMirFunction::name` (and its Checked/Elaborated twins) stays as the
 //! presentation/linkage alias beside the key.
 
+use std::collections::HashMap;
+
 use hew_types::{DefId, ResolvedTy};
+
+use crate::model::{MirDiagnostic, MirDiagnosticKind, RawMirFunction};
 
 /// Canonical identity of one MIR callable.
 ///
@@ -142,4 +146,40 @@ impl MirCallableKey {
     pub fn for_test(declaration_path: &str) -> Self {
         Self::declared(DefId::for_test(declaration_path))
     }
+}
+
+/// Reject a module whose raw MIR realizes one callable identity twice.
+///
+/// The key is what every downstream join is being moved onto, so two
+/// functions sharing one key would make that join ambiguous exactly the way
+/// two functions sharing one `name` do today. This is the fail-closed
+/// boundary: a collision is a lowering bug (a producer that minted the same
+/// declaration + instance twice), reported as an error naming both emitted
+/// symbols, never a silent second entry in the vector.
+///
+/// The first occurrence of a key is the anchor; every later one is reported
+/// against it, so N copies of one key give N-1 findings rather than a
+/// quadratic pile.
+#[must_use]
+pub fn validate_unique_callable_keys(functions: &[RawMirFunction]) -> Vec<MirDiagnostic> {
+    let mut seen: HashMap<&MirCallableKey, &str> = HashMap::new();
+    let mut diagnostics = Vec::new();
+    for function in functions {
+        match seen.get(&function.key) {
+            Some(first) => diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CallableKeyCollision {
+                    declaration: function.key.declaration.full_path().to_string(),
+                    first_symbol: (*first).to_string(),
+                    second_symbol: function.name.clone(),
+                },
+                note: "two lowered bodies claim one callable identity; the producer that \
+                       minted the second must give it its own declaration or instance"
+                    .to_string(),
+            }),
+            None => {
+                seen.insert(&function.key, &function.name);
+            }
+        }
+    }
+    diagnostics
 }

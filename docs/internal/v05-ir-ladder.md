@@ -125,6 +125,21 @@ A reachable feature outside that domain fails explicitly. An unrelated
 unsupported body neither blocks the selected component nor becomes a hidden
 legacy callee.
 
+#### Callable identity on the MIR function types
+
+Each of `RawMirFunction`, `CheckedMirFunction` and `ElaboratedMirFunction`
+carries `key: MirCallableKey` — the resolver-minted `DefId` of the declaration
+the body realizes, plus the instance discriminator that separates one
+realization from another (monomorphic, one generic specialization with its
+declared-order `type_args`, the abstract polymorphic origin, or a synthesized
+child naming its parent key and the producer that minted it). The legacy HIR
+lowerer projects it from `HirFn::declaration`; the SIR bridge projects the same
+identity from `SemCallable::declaration` + `CallableInstance`, so a monomorphic
+function lowered either way carries an equal key. `name` remains the
+presentation/linkage alias beside it, and a module whose raw MIR realizes one
+key twice is rejected. Re-keying the cross-stage joins onto this field — and
+deleting the name comparisons in `sir.rs` and `llvm.rs` — is the next slice.
+
 #### Transitional callable/linkage bridge
 
 Today, the strict bridge carries HIR's selected body spelling in

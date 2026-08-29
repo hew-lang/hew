@@ -96,7 +96,9 @@ pub use raw_values::{
     verify_raw_virtual_value_ladder, RawVirtualClass, RawVirtualValueError, RawVirtualValueFacts,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
-pub use sir::{lower_closed_scalar_component, SirMirComponent, SirMirLoweringError};
+pub use sir::{
+    lower_closed_scalar_component, lower_entry_component, SirMirComponent, SirMirLoweringError,
+};
 pub use state_clone::{
     classify_actor_state_fields_with_lifecycle_registry, classify_owned_string_record_fields,
     classify_state_field_with_lifecycle_registry, mangle_actor_state_clone_fn,

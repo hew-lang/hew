@@ -293,16 +293,10 @@ fn lower_verified_hir_to_pipeline(
         }
         compile::SirMode::Lower => {
             let sir = lower_verified_hir_to_sir(module)?;
-            let entry = sir.module.entry_callable.ok_or_else(|| {
-                eprintln!(
-                    "SIR strict lowering requires a root-unit scalar `main` with a resolved callable"
-                );
+            let component = hew_mir::lower_entry_component(&sir.module).map_err(|error| {
+                eprintln!("SIR strict lowering failed: {error}");
+                report_strict_sir_missing_body(module, &sir, error.missing_body);
             })?;
-            let component =
-                hew_mir::lower_closed_scalar_component(&sir.module, &[entry]).map_err(|error| {
-                    eprintln!("SIR strict lowering failed: {error}");
-                    report_strict_sir_missing_body(module, &sir, error.missing_body);
-                })?;
             let callables = component.callables().to_vec();
             let pipeline = component.into_pipeline();
             if let Err(error) = hew_codegen_rs::validate_codegen_front_for_triple(

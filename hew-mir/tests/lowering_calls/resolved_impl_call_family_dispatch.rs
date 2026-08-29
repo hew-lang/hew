@@ -57,6 +57,7 @@ use hew_types::{
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
+        entry_declaration: None,
         items,
         // Hand-built HIR intentionally has no checker-origin producer facts.
         produced_value_facts: HashMap::default(),

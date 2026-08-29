@@ -5775,11 +5775,27 @@ pub fn lower_program_with_mono_cap(
     );
     admit_resource_record_lifecycles(&items, &mut ctx.type_classes, &mut ctx.diagnostics);
 
+    // The language's entry rule is applied here, once: the root compilation
+    // unit's monomorphic `main` declaration. Publishing the resolved `DefId`
+    // is what lets SIR and the strict driver select an entry callable without
+    // ever comparing a declaration path or an emitted symbol against "main".
+    let entry_declaration = items.iter().find_map(|item| match item {
+        HirItem::Function(function)
+            if function.name == "main"
+                && function.type_params.is_empty()
+                && ctx.root_item_ids.contains(&function.id) =>
+        {
+            Some(function.declaration.clone())
+        }
+        _ => None,
+    });
+
     let mut module = HirModule {
         items,
         produced_value_facts: HashMap::new(),
         diagnostic_source_modules,
         root_item_ids: ctx.root_item_ids,
+        entry_declaration,
         caller_visible_param_projections: ctx.caller_visible_param_projections,
         wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
         type_classes: ctx.type_classes,

@@ -241,9 +241,14 @@ impl<'a> CallableTable<'a> {
             );
             if source_origin == FunctionSourceOrigin::RootUnit {
                 root_unit_callables.push(id);
-                if function.declaration.full_path() == "main" {
-                    entry_callable = Some(id);
-                }
+            }
+            // Entry selection joins on HIR's resolved entry declaration. SIR
+            // never re-applies the language's entry rule, so it never compares
+            // a declaration path or an emitted symbol against "main". A fact
+            // that names a non-root declaration is admitted here and rejected
+            // by the verifier's entry rule rather than silently dropped.
+            if module.entry_declaration.as_ref() == Some(&function.declaration) {
+                entry_callable = Some(id);
             }
             monomorphic_by_declaration.insert(function.declaration.clone(), id);
             callables.push(SemCallable {

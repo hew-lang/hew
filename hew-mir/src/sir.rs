@@ -128,6 +128,27 @@ impl std::fmt::Display for SirMirLoweringError {
 
 impl std::error::Error for SirMirLoweringError {}
 
+/// Lower the closed scalar component reachable from the module's resolved
+/// entry callable.
+///
+/// This is the strict lane's only program-selection entry point. The entry is
+/// the identity HIR published and SIR joined on; a module that carries no
+/// entry fact is not an executable program and is refused here with a typed
+/// error rather than being rescued by a name lookup.
+///
+/// # Errors
+///
+/// Returns a deterministic refusal when the module carries no entry callable,
+/// or when [`lower_closed_scalar_component`] refuses the entry's component.
+pub fn lower_entry_component(module: &SemModule) -> Result<SirMirComponent, SirMirLoweringError> {
+    let entry = module.entry_callable.ok_or_else(|| {
+        SirMirLoweringError::unsupported(
+            "strict SIR lowering requires a resolved entry callable; this module carries no HIR entry declaration",
+        )
+    })?;
+    lower_closed_scalar_component(module, &[entry])
+}
+
 /// Lower a closed scalar direct-call component without consulting legacy MIR.
 ///
 /// `roots` are resolved SIR callable identities, normally the HIR-established
@@ -3566,6 +3587,56 @@ mod tests {
             error.reason.contains("SIR module verifier rejected"),
             "{}",
             error.reason
+        );
+    }
+
+    /// The strict lane selects a program from the entry fact alone. Removing
+    /// the fact must refuse with a typed error, not fall through to some other
+    /// root body, and not go looking for a callable named `main`.
+    #[test]
+    fn entry_component_lowering_fails_closed_without_an_entry_fact() {
+        let function = SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("main"),
+            name: "main".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: Vec::new(),
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![op(
+                    0,
+                    definition(0, ResolvedTy::I64),
+                    SemOpKind::ConstI64(42),
+                )],
+                terminator: SemTerminator::Return {
+                    value: Some(operand(0)),
+                },
+            }],
+        };
+        let mut module = test_module(vec![function]);
+
+        // Positive control: with the entry fact present this exact module is a
+        // program, so the refusal below is about the fact and nothing else.
+        let component = lower_entry_component(&module)
+            .expect("an entry fact must select the component it names");
+        assert_eq!(component.callables(), &[CallableId(0)]);
+
+        module.entry_callable = None;
+        let error = lower_entry_component(&module)
+            .expect_err("a module with no entry fact is not an executable program");
+        assert!(
+            error.reason.contains("no HIR entry declaration"),
+            "{}",
+            error.reason
+        );
+        assert_eq!(
+            error.missing_body, None,
+            "a missing entry fact is not a missing SIR body"
         );
     }
 }

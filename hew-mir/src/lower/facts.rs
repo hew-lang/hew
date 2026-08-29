@@ -4490,6 +4490,7 @@ mod enum_layout_tests {
 
     fn minimal_module(items: Vec<HirItem>) -> HirModule {
         HirModule {
+            entry_declaration: None,
             items,
             produced_value_facts: HashMap::default(),
             diagnostic_source_modules: HashMap::default(),

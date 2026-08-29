@@ -806,8 +806,45 @@ fn verifier_rejects_duplicate_semantic_and_emitted_function_identities() {
     )));
 }
 
+/// Naming is not part of the entry boundary: HIR owns entry identity and SIR
+/// only joins on the id it published. Neither the declaration path nor the
+/// emitted symbol may decide whether a callable is the entry.
+///
+/// The negative controls for the rules that *do* survive live in
+/// [`verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_abi`].
 #[test]
-fn verifier_requires_entry_to_be_canonical_parameterless_root_main_with_portable_abi() {
+fn verifier_admits_an_entry_whose_declaration_and_symbol_are_not_spelled_main() {
+    let non_main = entry_module(unit_function(
+        0,
+        "helper",
+        "helper",
+        FunctionSourceOrigin::RootUnit,
+        Vec::new(),
+    ));
+    assert!(
+        verify_module(&non_main).is_empty(),
+        "an entry whose declaration is not spelled `main` must satisfy the same shape rule: {:#?}",
+        verify_module(&non_main)
+    );
+
+    let renamed_symbol = entry_module(unit_function(
+        0,
+        "main",
+        "not_main",
+        FunctionSourceOrigin::RootUnit,
+        Vec::new(),
+    ));
+    assert!(
+        verify_module(&renamed_symbol).is_empty(),
+        "the emitted entry symbol is a linkage decision codegen owns, not a SIR entry rule: {:#?}",
+        verify_module(&renamed_symbol)
+    );
+}
+
+/// The entry boundary is a *shape* rule: root-unit provenance, no parameters,
+/// and a portable exit status.
+#[test]
+fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_abi() {
     let valid = entry_module(unit_function(
         0,
         "main",
@@ -821,18 +858,24 @@ fn verifier_requires_entry_to_be_canonical_parameterless_root_main_with_portable
         verify_module(&valid)
     );
 
-    let non_main = entry_module(unit_function(
+    let foreign_entry = entry_module(unit_function(
         0,
-        "helper",
-        "helper",
-        FunctionSourceOrigin::RootUnit,
+        "main",
+        "main",
+        FunctionSourceOrigin::Foreign("dep".to_string()),
         Vec::new(),
     ));
-    assert!(verify_module(&non_main).iter().any(|diagnostic| matches!(
-        &diagnostic.kind,
-        SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
-            if reason.contains("canonical root-unit source `main`")
-    )));
+    assert!(
+        verify_module(&foreign_entry)
+            .iter()
+            .any(|diagnostic| matches!(
+                &diagnostic.kind,
+                SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
+                    if reason.contains("root-unit callable")
+            )),
+        "provenance, not spelling, is what the entry rule fails closed on: {:#?}",
+        verify_module(&foreign_entry)
+    );
 
     let parameterized_main = entry_module(unit_function(
         0,
@@ -850,21 +893,6 @@ fn verifier_requires_entry_to_be_canonical_parameterless_root_main_with_portable
             &diagnostic.kind,
             SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
                 if reason.contains("parameterless")
-        )));
-
-    let wrong_symbol = entry_module(unit_function(
-        0,
-        "main",
-        "not_main",
-        FunctionSourceOrigin::RootUnit,
-        Vec::new(),
-    ));
-    assert!(verify_module(&wrong_symbol)
-        .iter()
-        .any(|diagnostic| matches!(
-            &diagnostic.kind,
-            SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
-                if reason.contains("emitted `main` symbol")
         )));
 
     let bool_main = SemFunction {

@@ -374,9 +374,11 @@ pub struct SemModule {
     /// from [`Self::entry_callable`], so unrelated root bodies do not block a
     /// selected program.
     pub root_unit_callables: Vec<CallableId>,
-    /// Checked root-unit entry callable, if its signature belongs to the
-    /// current SIR surface. HIR establishes this from the root source `main`
-    /// declaration once; strict selection never rediscovers it by symbol.
+    /// Resolved entry callable, projected from `HirModule::entry_declaration`.
+    /// HIR applies the language's entry rule once and publishes the
+    /// declaration id; SIR only joins on it. Neither lowering nor the verifier
+    /// rediscovers an entry from a declaration path or an emitted symbol, so a
+    /// program whose entry is not spelled `main` selects exactly as well.
     pub entry_callable: Option<CallableId>,
     pub functions: Vec<SemFunction>,
 }

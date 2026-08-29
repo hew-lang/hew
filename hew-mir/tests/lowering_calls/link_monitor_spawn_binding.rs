@@ -6,8 +6,8 @@
 //! pushed `p` into `owned_locals` (because `LocalPid<Probe>` is not
 //! `BitCopy`) but skipped `binding_locals` insertion (the let-arm only
 //! wires `binding_locals` when `lower_value` returns `Some`). The
-//! drop-elaboration pass then panicked with `build_lifo_drops
-//! invariant`. The fix gates the `owned_locals` push on the same
+//! drop-elaboration pass then panicked on its owned-locals invariant.
+//! The fix gates the `owned_locals` push on the same
 //! condition that wires `binding_locals`, so the two ledgers stay in
 //! agreement.
 //!
@@ -68,7 +68,7 @@ fn link_monitor_after_four_spawns_lowers_without_panic() {
         hir.diagnostics
     );
 
-    // Pre-fix: this panics at `build_lifo_drops invariant`.
+    // Pre-fix: this panics on the drop elaborator's owned-locals invariant.
     // Post-fix: lowering completes; MIR diagnostics report
     // `spawn of unknown actor `Probe`` but no panic.
     let pipeline = lower_hir_module(&hir.module);

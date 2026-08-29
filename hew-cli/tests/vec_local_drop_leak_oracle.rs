@@ -9,8 +9,8 @@
 //! The fix is the `plain_vec_drop_allowed` fail-closed admission authority
 //! in `hew-mir/src/lower.rs` (riding `derive_local_collection_drop_allowed`
 //! with a default-deny element filter) plus the
-//! `DropKind::CowHeap { "hew_vec_free" }` interception arm in
-//! `build_lifo_drops`.
+//! `DropKind::CowHeap { "hew_vec_free" }` interception arm in the
+//! drop-recipe minting (`owner_definition_drop_recipe`).
 //!
 //! ## Slope methodology
 //!

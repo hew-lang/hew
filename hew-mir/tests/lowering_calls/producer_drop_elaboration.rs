@@ -238,8 +238,9 @@ fn duplex_pair_emits_two_duplex_close_drops_on_return() {
 /// Drops fire in reverse-binding order: the second tuple element (`b`)
 /// drops before the first (`a`).
 ///
-/// `Builder::owned_locals` is appended in declaration order; `elaborate`
-/// reverses it (`iter().rev()` at `build_lifo_drops`).  The drop plan's
+/// Drop recipes are minted in declaration order; the replay derivation
+/// (`derive_drop_plans_from_replay`) emits live owners in reverse
+/// declaration order.  The drop plan's
 /// first entry must correspond to `b`'s Place index, the second to
 /// `a`'s.  We recover the per-binding index from the typed terminal call
 /// args (`args[2]` is `dh0` for `a`, `args[3]` is `dh1` for `b`).
@@ -544,7 +545,8 @@ fn every_return_exit_carries_drop_plan_for_owned_handles() {
 /// `drop_fn` is populated from the HIR `type_classes` registry, not
 /// hardcoded per Place variant.  For `Duplex<i64, i64>` the close
 /// method is `"close"`, so `drop_fn` reads `"Duplex::close"`.  This
-/// pins that `build_lifo_drops` consults the registry and that
+/// pins that the drop-recipe minting (`owner_definition_drop_recipe`)
+/// consults the registry and that
 /// `seed_builtin_type_classes` seeds the substrate types with a
 /// `close` method (codegen E4 will route the dispatch to
 /// `hew_duplex_close`).

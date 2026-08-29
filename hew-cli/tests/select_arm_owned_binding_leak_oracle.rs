@@ -3,7 +3,7 @@
 //! A `select` arm's value binding (`reply from actor.ask(...)`,
 //! `msg from rx.recv()`) entered `binding_locals` but never
 //! `register_owned_local`, so it never reached `owned_locals` and
-//! `build_lifo_drops` released it on NO exit edge: every selected owned value
+//! the drop elaborator released it on NO exit edge: every selected owned value
 //! leaked once per iteration (~1 leak-node/iter, 32 bytes per owned-string
 //! reply in the original repro). The fix registers the binding at the shared
 //! body-block site (`lower_select`), giving it the same scope-exit drop

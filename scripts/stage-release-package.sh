@@ -98,8 +98,9 @@ done
 
 destination_parent=$(dirname "$destination")
 mkdir -p "$destination_parent"
-[ ! -e "$destination" ] && [ ! -L "$destination" ] ||
+if [ -e "$destination" ] || [ -L "$destination" ]; then
     die "destination already exists: $destination"
+fi
 stage_dir=$(mktemp -d "$destination_parent/.hew-release-stage.XXXXXX") ||
     die "could not create staging directory under $destination_parent"
 package_root=$stage_dir/package

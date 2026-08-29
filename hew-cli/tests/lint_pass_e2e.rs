@@ -54,6 +54,36 @@ fn run_check(source: &str, extra_args: &[&str]) -> Output {
         .expect("failed to spawn hew check")
 }
 
+/// Run `hew check` on a program importing a directory module assembled from
+/// `journal.hew` and `recovery.hew`. Only the peer file contains a lint.
+fn run_directory_module_check() -> Output {
+    let dir = tempdir();
+    let journal_dir = dir.path().join("journal");
+    std::fs::create_dir(&journal_dir).unwrap();
+    std::fs::write(
+        dir.path().join("main.hew"),
+        "import journal;\n\nfn main() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        journal_dir.join("journal.hew"),
+        "pub fn open() {\n    println(\"journal primary\");\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        journal_dir.join("recovery.hew"),
+        "pub fn recover() {\n    let names: Vec<string> = Vec.new();\n    for i in 0..names.len() {\n        let _ = names[i];\n    }\n}\n",
+    )
+    .unwrap();
+
+    Command::new(hew_binary())
+        .arg("check")
+        .arg(dir.path().join("main.hew"))
+        .current_dir(repo_root())
+        .output()
+        .expect("failed to spawn hew check")
+}
+
 fn stderr_of(output: &Output) -> String {
     strip_ansi(&String::from_utf8_lossy(&output.stderr))
 }
@@ -90,6 +120,26 @@ fn needless_range_loop_warning_points_at_loop_header() {
     assert!(
         !stderr.contains("unrelated after loop"),
         "the warning must not point at the following statement:\n{stderr}"
+    );
+}
+
+#[test]
+fn directory_module_lint_points_at_peer_file() {
+    let output = run_directory_module_check();
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a lint warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("recovery.hew:3:9:")
+            && stderr.contains("3 |     for i in 0..names.len() {")
+            && stderr.contains("the loop variable `i` is only used to index `names`"),
+        "the lint must render against the peer file that owns its span:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("journal.hew:") && !stderr.contains("journal primary"),
+        "the primary module file is a negative control for attribution:\n{stderr}"
     );
 }
 

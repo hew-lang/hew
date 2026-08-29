@@ -257,15 +257,16 @@ impl Default for LintLevels {
     }
 }
 
-/// Per-compilation source text, keyed by module, for in-source suppression.
+/// Per-compilation source text, keyed by diagnostic routing identity, for
+/// in-source suppression.
 ///
 /// The checker only carries byte-offset [`Span`]s, not source text, so the
 /// front end hands it the program's source(s) through
 /// [`super::Checker::set_lint_sources`] before [`super::Checker::check_program`].
 /// A lint then resolves the `// hew:allow(...)` directive on (or above) the line
 /// of its finding's span. `root` is the entry source the user compiled;
-/// `modules` maps a non-root module's dotted name (the same key
-/// [`LintCtx::source_module`] carries) to that module's source.
+/// `modules` maps a non-root module's dotted name, or an assembled peer file's
+/// path token, to that source (the same key [`LintCtx::source_module`] carries).
 #[derive(Debug, Clone, Default)]
 pub struct LintSources {
     root: Option<String>,
@@ -284,9 +285,9 @@ impl LintSources {
         self.root = Some(source);
     }
 
-    /// Install a non-root module's source, keyed by its dotted module name
-    /// (e.g. `"std.net.http"`), matching the `source_module` tag the lint
-    /// sweep stamps onto that module's diagnostics.
+    /// Install a non-root source, keyed by its dotted module name (e.g.
+    /// `"std.net.http"`) or assembled peer-file path, matching the
+    /// `source_module` tag the lint sweep stamps onto its diagnostics.
     pub fn set_module(&mut self, module: String, source: String) {
         self.modules.insert(module, source);
     }

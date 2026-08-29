@@ -114,6 +114,46 @@ fn dump_mir(stage: &str) -> String {
     String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
 }
 
+fn assert_payload_drop_authority(
+    name: &str,
+    raw_section: &str,
+    elaborated_section: &str,
+    expected_payload_owners: usize,
+) {
+    assert_eq!(
+        unique_drop_locals(elaborated_section, "ty=Box kind=enum_in_place").len(),
+        1,
+        "{name} must preserve exactly one parent composite authority:\n{elaborated_section}"
+    );
+    let payload_locals = retained_payload_locals(raw_section, "string.retain_fresh_share ");
+    assert_eq!(
+        payload_locals.len(),
+        expected_payload_owners,
+        "{name} must track exactly {expected_payload_owners} payload owner(s):\n{raw_section}"
+    );
+    for local in payload_locals {
+        let raw_normal = raw_section
+            .matches(&format!(
+                "drop {local} ty=string fn=release(hew_string_drop)"
+            ))
+            .count();
+        let marker = format!("drop {local} ty=string kind=cow_heap(hew_string_drop)");
+        let (planned_normal, exceptional, max_per_plan) =
+            drop_plan_counts(elaborated_section, &marker);
+        assert_eq!(
+            raw_normal + planned_normal,
+            1,
+            "{name} must release {local} exactly once on successful normal flow:\n\
+             raw:\n{raw_section}\nelaborated:\n{elaborated_section}"
+        );
+        assert!(
+            exceptional > 0 && max_per_plan == 1,
+            "{name} must clean {local} on each applicable exceptional exit without duplicating \
+             it within one plan:\n{elaborated_section}"
+        );
+    }
+}
+
 #[test]
 fn mir_pins_retains_and_noncompeting_drop_authorities() {
     let raw = dump_mir("raw");
@@ -136,105 +176,15 @@ fn mir_pins_retains_and_noncompeting_drop_authorities() {
     for name in ["same_scope", "nested_scope"] {
         let raw_section = function_section(&raw, name);
         let section = function_section(&elaborated, name);
-        assert_eq!(
-            unique_drop_locals(section, "ty=Box kind=enum_in_place").len(),
-            1,
-            "{name} must retain exactly one parent composite authority:\n{section}"
-        );
-        let payload_locals = retained_payload_locals(raw_section, "string.retain_fresh_share ");
-        assert_eq!(
-            payload_locals.len(),
-            2,
-            "{name} must have one transferred payload owner and one retained owner:\n\
-             {raw_section}"
-        );
-        for local in payload_locals {
-            let raw_normal = raw_section
-                .matches(&format!(
-                    "drop {local} ty=string fn=release(hew_string_drop)"
-                ))
-                .count();
-            let marker = format!("drop {local} ty=string kind=cow_heap(hew_string_drop)");
-            let (planned_normal, exceptional, max_per_plan) = drop_plan_counts(section, &marker);
-            assert_eq!(
-                raw_normal + planned_normal,
-                1,
-                "{name} must release {local} exactly once on successful normal flow:\n\
-                 raw:\n{raw_section}\nelaborated:\n{section}"
-            );
-            assert!(
-                exceptional > 0 && max_per_plan == 1,
-                "{name} must give {local} one cleanup in each applicable mutually exclusive \
-                 unwind/cancel/panic plan, never duplicate it within one plan:\n{section}"
-            );
-        }
+        assert_payload_drop_authority(name, raw_section, section, 2);
     }
+
     let chained = function_section(&elaborated, "chained");
-    let chained_raw = function_section(&raw, "chained");
-    let chained_locals = retained_payload_locals(chained_raw, "string.retain_fresh_share ");
-    assert_eq!(
-        unique_drop_locals(chained, "ty=Box kind=enum_in_place").len(),
-        1,
-        "the retained chain must preserve one parent composite authority:\n{chained}"
-    );
-    assert_eq!(
-        chained_locals.len(),
-        3,
-        "the chain must track its transferred payload owner and both retained owners:\n\
-         {chained_raw}"
-    );
-    for local in chained_locals {
-        let raw_normal = chained_raw
-            .matches(&format!(
-                "drop {local} ty=string fn=release(hew_string_drop)"
-            ))
-            .count();
-        let marker = format!("drop {local} ty=string kind=cow_heap(hew_string_drop)");
-        let (planned_normal, exceptional, max_per_plan) = drop_plan_counts(chained, &marker);
-        assert_eq!(
-            raw_normal + planned_normal,
-            1,
-            "the retained chain must release {local} exactly once on successful normal flow:\n\
-             raw:\n{chained_raw}\nelaborated:\n{chained}"
-        );
-        assert!(
-            exceptional > 0 && max_per_plan == 1,
-            "the retained chain must clean {local} on each applicable exceptional exit \
-             without duplicating it within one plan:\n{chained}"
-        );
-    }
-    let direct = function_section(&elaborated, "direct");
+    assert_payload_drop_authority("chained", chained_raw, chained, 3);
+
     let direct_raw = function_section(&raw, "direct");
-    assert_eq!(
-        unique_drop_locals(direct, "ty=Box kind=enum_in_place").len(),
-        1,
-        "the no-handoff control must keep its parent composite authority:\n{direct}"
-    );
-    let direct_locals = retained_payload_locals(direct_raw, "string.retain_fresh_share ");
-    assert_eq!(
-        direct_locals.len(),
-        1,
-        "the direct payload transfer must create no retained share:\n{direct_raw}"
-    );
-    let local = direct_locals[0];
-    let raw_normal = direct_raw
-        .matches(&format!(
-            "drop {local} ty=string fn=release(hew_string_drop)"
-        ))
-        .count();
-    let marker = format!("drop {local} ty=string kind=cow_heap(hew_string_drop)");
-    let (planned_normal, exceptional, max_per_plan) = drop_plan_counts(direct, &marker);
-    assert_eq!(
-        raw_normal + planned_normal,
-        1,
-        "the direct payload owner must release exactly once on successful normal flow:\n\
-         raw:\n{direct_raw}\nelaborated:\n{direct}"
-    );
-    assert!(
-        exceptional > 0 && max_per_plan == 1,
-        "the direct payload owner must have one cleanup on each applicable exceptional exit:\n\
-         {direct}"
-    );
+    let direct = function_section(&elaborated, "direct");
+    assert_payload_drop_authority("direct", direct_raw, direct, 1);
 }
 
 #[cfg_attr(

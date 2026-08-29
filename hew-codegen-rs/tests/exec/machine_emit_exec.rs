@@ -17,11 +17,12 @@
 //!
 //! - A `TcpHandshake`-like machine with two unit states (`Closed`,
 //!   `SynReceived`) and two unit events (`SynReceive`, `AckReceive`).
-//! - A synthesised `TcpHandshake__step` stub that contains two
-//!   `MachineEmitPlaceholder` instructions for event indices 0 and 1,
-//!   then traps (state transitions are not the unit under test here;
+//! - A synthesised unit-returning `TcpHandshake__step` stub that contains two
+//!   `MachineEmitPlaceholder` instructions for event indices 0 and 1
+//!   (state transitions are not the unit under test here;
 //!   `machine_dispatch_codegen.rs` covers that surface).
-//! - A `caller` fn that invokes the stub and returns.
+//! - A unit-signature `caller` fn that invokes the stub and returns, without
+//!   fabricating machine values that the emit-wiring assertion does not need.
 //!
 //! ## Why hand-built MIR rather than source-level pipeline
 //!
@@ -41,7 +42,7 @@
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
-    BasicBlock, FunctionCallConv, Instr, IrPipeline, MachineLayout, MachineVariantLayout, Place,
+    BasicBlock, FunctionCallConv, Instr, IrPipeline, MachineLayout, MachineVariantLayout,
     RawMirFunction, Terminator,
 };
 use hew_runtime::machine_emit::{thread_emit_clear, thread_emit_drain, thread_emit_pending};
@@ -51,27 +52,14 @@ use hew_types::ResolvedTy;
 
 /// Build a minimal `IrPipeline` carrying:
 /// - `TcpHandshake` machine layout: 2 unit states, 2 unit events.
-/// - A `TcpHandshake__step` stub that emits two `MachineEmitPlaceholder`
-///   instructions (indices 0 and 1) before trapping.
+/// - A unit `TcpHandshake__step` stub that emits two
+///   `MachineEmitPlaceholder` instructions (indices 0 and 1).
 /// - A `caller` fn that invokes the step stub.
 ///
-/// The two emit instructions are the substrate under test; the trap
-/// ensures the function body terminates cleanly after the emissions.
+/// The two emit instructions and the call wrapper are the substrate under
+/// test; machine state/event transport is covered by the dispatch tests.
 fn tcp_handshake_emit_pipeline() -> IrPipeline {
     let machine_name = "TcpHandshake".to_string();
-    let event_name = format!("{machine_name}Event");
-    let machine_ty = ResolvedTy::Named {
-        name: machine_name.clone(),
-        args: Vec::new(),
-        builtin: None,
-        is_opaque: false,
-    };
-    let event_ty = ResolvedTy::Named {
-        name: event_name.clone(),
-        args: Vec::new(),
-        builtin: None,
-        is_opaque: false,
-    };
 
     // Two unit states, two unit events.
     let variants = vec!["Closed", "SynReceived"]
@@ -98,23 +86,23 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         events,
     };
 
-    // `TcpHandshake__step(self, event) -> TcpHandshake`:
+    // `TcpHandshake__step() -> ()`:
     //
-    // Block 0: emit event 0, emit event 1, store self into ReturnSlot, Return.
+    // Block 0: emit event 0, emit event 1, Return.
     //
-    // The two MachineEmitPlaceholder instructions are the wiring under test.
-    // The store-back into ReturnSlot and Return let the function exit cleanly
-    // (no trap) so the JIT execution test can drive it without an actor boundary.
+    // A unit signature is sufficient for the wiring under test and avoids the
+    // previous caller loading uninitialized aggregate locals before invoking
+    // MCJIT, which made this oracle intermittently segfault under CI load.
     let step_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::SynthesizedMachineStep {
             machine_name: machine_name.to_string(),
         },
         key: hew_mir::MirCallableKey::for_test(&format!("{machine_name}__step")),
         name: format!("{machine_name}__step"),
-        return_ty: machine_ty.clone(),
+        return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
-        params: vec![machine_ty.clone(), event_ty.clone()],
-        locals: vec![machine_ty.clone(), event_ty.clone()],
+        params: vec![],
+        locals: vec![],
         local_names: Vec::new(),
         local_scopes: Vec::new(),
         local_decl_bytes: Vec::new(),
@@ -135,12 +123,6 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
                     payload: Vec::new(),
                     machine_emit_id: 0xAAAA_BBBB_CCCC_DDDD,
                 },
-                // Store self (local 0 — the unchanged machine value) into
-                // the return slot so Terminator::Return can load from it.
-                Instr::Move {
-                    dest: Place::ReturnSlot,
-                    src: Place::Local(0),
-                },
             ],
             terminator: Terminator::Return,
         }],
@@ -154,7 +136,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
 
-    // `caller()` invokes the step stub with zeroed locals and returns.
+    // `caller()` invokes the unit step stub and returns.
     // Block 0 → Call → Block 1 → Return.
     let caller = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
@@ -163,11 +145,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
         params: vec![],
-        locals: vec![
-            machine_ty.clone(), // 0: machine binding (zeroed)
-            event_ty.clone(),   // 1: event arg (zeroed)
-            machine_ty.clone(), // 2: step return temp
-        ],
+        locals: vec![],
         local_names: Vec::new(),
         local_scopes: Vec::new(),
         local_decl_bytes: Vec::new(),
@@ -184,18 +162,15 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
                     ))
                     .map(hew_mir::CallAuthority::Runtime)
                     .unwrap_or_default(),
-                    args: vec![Place::Local(0), Place::Local(1)],
-                    dest: Some(Place::Local(2)),
+                    args: vec![],
+                    dest: None,
                     next: 1,
                 },
             },
             BasicBlock {
                 id: 1,
                 statements: Vec::new(),
-                instructions: vec![Instr::Move {
-                    dest: Place::Local(0),
-                    src: Place::Local(2),
-                }],
+                instructions: vec![],
                 terminator: Terminator::Return,
             },
         ],
@@ -237,11 +212,10 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
 
 /// Emit the pipeline to a `.ll` file and return the IR text.
 fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
-    let tmp = std::env::temp_dir().join(format!("hew-machine-emit-{module_name}"));
-    std::fs::create_dir_all(&tmp).expect("create scratch dir");
+    let tmp = tempfile::tempdir().expect("create machine-emit scratch dir");
     let options = EmitOptions {
         module_name,
-        out_dir: &tmp,
+        out_dir: tmp.path(),
         native: false,
         wasm: false,
         target_triple: None,
@@ -344,9 +318,8 @@ fn machine_emit_placeholder_lowers_to_push_call() {
 ///    see the inline comment at the mapping site for the platform rationale.
 /// 4. Clear any stale events from prior tests on this thread.
 /// 5. Invoke the `caller` function (which calls the step stub).
-/// 6. The step stub emits event 0 then event 1, stores `self` into the
-///    return slot, and returns cleanly (no trap). `caller` receives the
-///    return value and discards it.
+/// 6. The unit step stub emits event 0 then event 1 and returns cleanly
+///    (no trap); `caller` then returns unit as well.
 /// 7. Assert the outermost keep-exit preserved both events, then drain and
 ///    verify their machine identity and FIFO tag order.
 ///
@@ -369,11 +342,10 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
 
     // ── Compile to .ll ───────────────────────────────────────────────────────
     let pipeline = tcp_handshake_emit_pipeline();
-    let tmp = std::env::temp_dir().join("hew-machine-emit-jit");
-    std::fs::create_dir_all(&tmp).expect("create scratch dir");
+    let tmp = tempfile::tempdir().expect("create machine-emit JIT scratch dir");
     let options = EmitOptions {
         module_name: "machine_emit_jit",
-        out_dir: &tmp,
+        out_dir: tmp.path(),
         native: false,
         wasm: false,
         target_triple: None,
@@ -455,8 +427,8 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
     );
 
     // Invoke `caller` which drives the step stub and triggers two pushes.
-    // The step stub returns cleanly (no trap path): after the two emit
-    // instructions it stores `self` into the return slot and returns.
+    // The unit step stub returns cleanly (no trap path) after the two emit
+    // instructions.
     //
     // SAFETY: `caller` is compiled as `fn() -> i8` (unit mapped to i8 by
     // the codegen); the JIT-compiled code is for the host triple.

@@ -2558,7 +2558,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn active_mode_teardown_releases_all_consumed_connections() {
-        const CONNECTIONS: usize = 128;
+        // The ownership invariant is independent of population size. Keep the
+        // fixture below macOS's default 256-fd soft limit while retaining
+        // enough registrations to exercise bulk teardown.
+        const CONNECTIONS: usize = 32;
         const ACTOR_KEY: usize = 0xAC71_0EED;
 
         let _guard = REACTOR_TEST_MUTEX

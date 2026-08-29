@@ -2747,22 +2747,12 @@ fn checked_join_rearm_fixture() -> CheckedMirFunction {
     use crate::model::{OwnerId, OwnershipEvent, OwnershipGuardKind};
 
     let binding = BindingId(180);
-    let initial = OwnerId {
+    let generation = |generation| OwnerId {
         binding,
-        generation: 0,
+        generation,
     };
-    let branch = OwnerId {
-        binding,
-        generation: 1,
-    };
-    let joined = OwnerId {
-        binding,
-        generation: 2,
-    };
-    let rearmed = OwnerId {
-        binding,
-        generation: 3,
-    };
+    let (initial, branch, joined, rearmed) =
+        (generation(0), generation(1), generation(2), generation(3));
     let place = Place::Local(15);
     let flag = Place::Local(16);
     let recipe = checked_test_string_recipe();
@@ -2792,6 +2782,16 @@ fn checked_join_rearm_fixture() -> CheckedMirFunction {
         ty: ResolvedTy::String,
     })];
     reset_instructions.extend(publish(branch));
+    // Each predecessor witnesses the generation it carries into the join.
+    let carry = |owner| {
+        Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+            owner,
+            place,
+            target: 3,
+        })
+    };
+    reset_instructions.push(carry(branch));
+    let passthrough_instructions = vec![carry(initial)];
     let mut join_instructions = vec![Instr::OwnershipEvent(OwnershipEvent::Join {
         incoming: vec![initial, branch],
         replacement: joined,
@@ -2827,7 +2827,7 @@ fn checked_join_rearm_fixture() -> CheckedMirFunction {
         BasicBlock {
             id: 2,
             statements: vec![],
-            instructions: vec![],
+            instructions: passthrough_instructions,
             terminator: Terminator::Goto { target: 3 },
         },
         BasicBlock {

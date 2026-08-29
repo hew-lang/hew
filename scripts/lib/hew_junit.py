@@ -5,7 +5,7 @@ This module is the schema authority shared by the corpus ratchet and compiled
 Hew shard orchestration. As a command it prints one structured identity per
 test, followed by the report totals::
 
-    <outcome>\t<source-path>::<test-name>
+    <outcome>\t<source-path>::<test-name>[\t<failure-kind>]
     __SUMMARY__\t<total>\t<failures>\t<skipped>
 
 ``--runner-exit`` additionally verifies the CLI status contract: a completed
@@ -24,6 +24,9 @@ import sys
 import xml.etree.ElementTree as ET
 
 
+FAILURE_KINDS = frozenset({"compile", "runtime", "timeout", "launch"})
+
+
 class JUnitError(ValueError):
     """A Hew JUnit document violates the producer's schema contract."""
 
@@ -33,6 +36,7 @@ class JUnitTestCase:
     classname: str
     name: str
     outcome: str
+    failure_kind: str | None
     failure_message: str
     failure_text: str
     system_out: str
@@ -46,8 +50,23 @@ class JUnitReport:
     skipped: int
 
 
-def parse(path: Path) -> JUnitReport:
+def canonical_classname(classname: str, root: Path) -> str:
+    """Normalize a testcase source path against its invocation root."""
+    canonical_root = root.resolve()
+    source = Path(classname)
+    if not source.is_absolute():
+        source = canonical_root / source
+    source = source.resolve()
+    try:
+        source = source.relative_to(canonical_root)
+    except ValueError:
+        pass
+    return source.as_posix()
+
+
+def parse(path: Path, identity_root: Path | None = None) -> JUnitReport:
     """Read one complete Hew JUnit report and validate its declared totals."""
+    identity_root = identity_root or Path.cwd()
     try:
         document = path.read_text(encoding="utf-8")
     except OSError as error:
@@ -75,10 +94,11 @@ def parse(path: Path) -> JUnitReport:
     failures = 0
     skipped = 0
     for element in root.iter("testcase"):
-        classname = element.get("classname", "")
+        raw_classname = element.get("classname", "")
         name = element.get("name", "")
-        if not classname or not name:
+        if not raw_classname or not name:
             raise JUnitError(f"JUnit testcase in {path} is missing classname or name")
+        classname = canonical_classname(raw_classname, identity_root)
         identity = (classname, name)
         if identity in identities:
             raise JUnitError(
@@ -91,17 +111,28 @@ def parse(path: Path) -> JUnitReport:
         is_skipped = element.find("skipped") is not None
         if failure is not None:
             outcome = "FAILED"
+            failure_kind = failure.get("type", "")
+            if failure_kind not in FAILURE_KINDS:
+                expected = ", ".join(sorted(FAILURE_KINDS))
+                raise JUnitError(
+                    f"JUnit failure has missing or unsupported semantic type: "
+                    f"{path}: {classname}::{name}: {failure_kind!r}; "
+                    f"expected one of {expected}"
+                )
             failures += 1
         elif is_skipped:
             outcome = "ignored"
+            failure_kind = None
             skipped += 1
         else:
             outcome = "ok"
+            failure_kind = None
         testcases.append(
             JUnitTestCase(
                 classname=classname,
                 name=name,
                 outcome=outcome,
+                failure_kind=failure_kind,
                 failure_message=(
                     failure.get("message", "") if failure is not None else ""
                 ),
@@ -127,13 +158,8 @@ def parse(path: Path) -> JUnitReport:
 
 def testcase_identity(testcase: JUnitTestCase, root: Path) -> str:
     """Return a portable path-qualified identity for one testcase."""
-    file = Path(testcase.classname)
-    if file.is_absolute():
-        try:
-            file = file.resolve().relative_to(root.resolve())
-        except ValueError:
-            pass
-    return f"{file.as_posix()}::{testcase.name}"
+    classname = canonical_classname(testcase.classname, root)
+    return f"{classname}::{testcase.name}"
 
 
 def expected_exit_code(report: JUnitReport) -> int:
@@ -142,10 +168,12 @@ def expected_exit_code(report: JUnitReport) -> int:
 
 
 def render_outcomes(report: JUnitReport, root: Path) -> str:
-    lines = [
-        f"{testcase.outcome}\t{testcase_identity(testcase, root)}"
-        for testcase in report.testcases
-    ]
+    lines = []
+    for testcase in report.testcases:
+        line = f"{testcase.outcome}\t{testcase_identity(testcase, root)}"
+        if testcase.failure_kind is not None:
+            line += f"\t{testcase.failure_kind}"
+        lines.append(line)
     lines.append(f"__SUMMARY__\t{report.tests}\t{report.failures}\t{report.skipped}")
     return "\n".join(lines) + "\n"
 
@@ -174,7 +202,8 @@ def main(argv: list[str]) -> int:
         return 2
 
     try:
-        report = parse(path)
+        identity_root = Path.cwd()
+        report = parse(path, identity_root)
         expected = expected_exit_code(report)
         if runner_exit is not None and runner_exit != expected:
             raise JUnitError(
@@ -185,7 +214,7 @@ def main(argv: list[str]) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
-    sys.stdout.write(render_outcomes(report, Path.cwd()))
+    sys.stdout.write(render_outcomes(report, identity_root))
     return 0
 
 

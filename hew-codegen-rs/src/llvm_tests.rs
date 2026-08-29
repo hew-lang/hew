@@ -9,6 +9,39 @@ use hew_mir::{
 use inkwell::values::AnyValue;
 
 #[test]
+fn cleanup_unwind_strategy_is_target_capability_authority() {
+    for triple in [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-gnu",
+    ] {
+        assert_eq!(
+            cleanup_capabilities_for_target(triple),
+            CleanupTargetCapabilities {
+                unwind_strategy: CleanupUnwindStrategy::StructuredLlvm,
+                includes_unwind_plans: true,
+            },
+            "{triple} supports LLVM structured unwind"
+        );
+    }
+    for triple in [
+        "wasm32-unknown-unknown",
+        "wasm32-wasi",
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+    ] {
+        assert_eq!(
+            cleanup_capabilities_for_target(triple),
+            CleanupTargetCapabilities {
+                unwind_strategy: CleanupUnwindStrategy::CrashOwnerRegistry,
+                includes_unwind_plans: !triple.starts_with("wasm32"),
+            },
+            "{triple} requires the typed crash-owner registry"
+        );
+    }
+}
+
+#[test]
 fn target_machine_optimization_follows_requested_level() {
     assert!(matches!(
         target_machine_optimization_level(OptLevel::O0),
@@ -3349,44 +3382,70 @@ fn join_owned_replies_stage_until_atomic_result_publication() {
         lambda_captures: vec![],
     }];
 
-    let ctx = Context::create();
-    let module = build_module(&ctx, &pipeline, "join_owned_staging")
-        .expect("owned join staging module must build");
-    module.verify().expect("owned join staging module verify");
-    let main = module
-        .get_function("main")
-        .expect("main")
-        .print_to_string()
-        .to_string();
+    for triple in cleanup_strategy_test_triples() {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module =
+            build_module_for_target(&ctx, &pipeline, "join_owned_staging", Some(&machine), None)
+                .unwrap_or_else(|error| panic!("{triple}: owned join staging build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: owned join staging verify: {error}"));
+        let main_symbol = if triple.starts_with("wasm32") {
+            "__original_main"
+        } else {
+            "main"
+        };
+        let main = module
+            .get_function(main_symbol)
+            .unwrap_or_else(|| panic!("{triple}: {main_symbol} function"))
+            .print_to_string()
+            .to_string();
 
-    let first_stage = main
-        .find("%join_reply_wait_0 = call ptr @hew_reply_wait")
-        .expect("first successful wait must stage its raw reply buffer");
-    let second_stage = main
-        .find("%join_reply_wait_1 = call ptr @hew_reply_wait")
-        .expect("second successful wait must stage its raw reply buffer");
-    let publish = main
-        .find("%join_reply_value_0 = load ptr")
-        .expect("final tuple publication");
-    assert!(
-        first_stage < second_stage && second_stage < publish,
-        "no final result field may be published before every reply is staged:\n{main}"
-    );
-    assert!(
-        !main.contains("hew_cont_crash_cleanup"),
-        "native structured unwind must not use the legacy owner registry:\n{main}"
-    );
+        let first_stage = main
+            .find("%join_reply_wait_0 = call ptr @hew_reply_wait")
+            .unwrap_or_else(|| {
+                panic!("{triple}: first successful wait must stage its raw reply buffer:\n{main}")
+            });
+        let second_stage = main
+            .find("%join_reply_wait_1 = call ptr @hew_reply_wait")
+            .unwrap_or_else(|| {
+                panic!("{triple}: second successful wait must stage its raw reply buffer:\n{main}")
+            });
+        let publish = main
+            .find("%join_reply_value_0 = load ptr")
+            .expect("final tuple publication");
+        assert!(
+            first_stage < second_stage && second_stage < publish,
+            "{triple}: no final result field may be published before every reply is staged:\n{main}"
+        );
+        match cleanup_capabilities_for_target(&triple).unwind_strategy {
+            CleanupUnwindStrategy::StructuredLlvm => assert!(
+                !main.contains("hew_cont_crash_cleanup"),
+                "{triple}: structured unwind must not use the owner registry:\n{main}"
+            ),
+            CleanupUnwindStrategy::CrashOwnerRegistry => {
+                assert_registry_cleanup_uses_typed_drop(
+                    &module,
+                    &main,
+                    "call void @__hew_tuple_drop_inplace_tuple_string_string",
+                    &triple,
+                );
+            }
+        }
 
-    let second_failure = main
-        .find("join_reply_null_1:")
-        .map(|start| &main[start..])
-        .expect("second-branch failure block");
-    assert!(
-        second_failure.contains("call void @__hew_reply_drop_string(")
-            && second_failure.contains("call void @free(ptr %join_err_prior_reply_load_1_0)"),
-        "a later branch failure must destroy and free every earlier staged \
-         owned reply before trapping:\n{second_failure}"
-    );
+        let second_failure = main
+            .find("join_reply_null_1:")
+            .map(|start| &main[start..])
+            .expect("second-branch failure block");
+        assert!(
+            second_failure.contains("call void @__hew_reply_drop_string(")
+                && second_failure.contains("call void @free(ptr %join_err_prior_reply_load_1_0)"),
+            "{triple}: a later branch failure must destroy and free every earlier staged \
+             owned reply before trapping:\n{second_failure}"
+        );
+    }
 }
 
 /// Two ActorAsk arms (no AfterTimer): emit shows exactly 2 channel
@@ -5525,24 +5584,45 @@ fn native_direct_call_uses_llvm_cleanup_unwind_edge() {
     pipeline.raw_mir.insert(0, callee);
     pipeline.elaborated_mir.push(elab);
 
-    let ctx = Context::create();
-    let module = build_module(&ctx, &pipeline, "native_unwind_cleanup")
-        .expect("ownership-aware invoke module must build");
-    module.verify().expect("invoke cleanup IR must verify");
-    let ir = module.print_to_string().to_string();
-    assert!(
-        ir.contains("invoke i8 @may_unwind"),
-        "missing invoke:\n{ir}"
-    );
-    assert!(
-        ir.contains("landingpad { ptr, i32 }"),
-        "missing landingpad:\n{ir}"
-    );
-    assert!(
-        ir.contains("call void @hew_string_drop"),
-        "missing drop:\n{ir}"
-    );
-    assert!(ir.contains("resume { ptr, i32 }"), "missing resume:\n{ir}");
+    for triple in cleanup_strategy_test_triples() {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "native_unwind_cleanup",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: ownership-aware call module: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: cleanup IR verify: {error}"));
+        let ir = module.print_to_string().to_string();
+        let caller = llvm_defined_function_body(&ir, "invoke_owner");
+        match cleanup_capabilities_for_target(&triple).unwind_strategy {
+            CleanupUnwindStrategy::StructuredLlvm => assert!(
+                caller.contains("invoke i8 @may_unwind")
+                    && caller.contains("landingpad { ptr, i32 }")
+                    && caller.contains("call void @hew_string_drop")
+                    && caller.contains("resume { ptr, i32 }"),
+                "{triple}: structured cleanup must invoke, drop, and resume:\n{caller}"
+            ),
+            CleanupUnwindStrategy::CrashOwnerRegistry => {
+                assert!(
+                    caller.contains("call i8 @may_unwind"),
+                    "{triple}: the fallback target must emit an ordinary call:\n{caller}"
+                );
+                assert_registry_cleanup_uses_typed_drop(
+                    &module,
+                    caller,
+                    "call void @hew_string_drop",
+                    &triple,
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -10301,10 +10381,12 @@ fn main() {
         pipeline.diagnostics
     );
 
-    for (triple, usize_ir, fat_size, fat_align) in [
-        (native_emission_triple(), "i64", 16, 8),
-        ("wasm32-wasi".to_string(), "i32", 8, 4),
-    ] {
+    for triple in cleanup_strategy_test_triples() {
+        let (usize_ir, fat_size, fat_align) = if triple.starts_with("wasm32") {
+            ("i32", 8, 4)
+        } else {
+            ("i64", 16, 8)
+        };
         let ctx = Context::create();
         let machine = target_machine_for_triple(&triple)
             .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
@@ -10323,22 +10405,26 @@ fn main() {
             )),
             "{triple}: direct call argument must heap-promote its concrete payload:\n{ir}"
         );
-        if triple.starts_with("wasm32") {
-            assert!(
-                ir.contains("call i64 @hew_cont_crash_cleanup_arm(i64")
-                    && ir.contains(&format!(
-                        ", i64 {fat_size}, i64 {fat_align}, ptr @__hew_frame_cleanup_"
-                    )),
-                "{triple}: the fallback target must arm typed cleanup with its layout:\n{ir}"
-            );
-        } else {
-            assert!(
-                !ir.contains("hew_cont_crash_cleanup")
-                    && ir.contains(" invoke i8 @inspect")
-                    && ir.contains("landingpad { ptr, i32 }")
-                    && ir.contains("resume { ptr, i32 }"),
-                "{triple}: native calls must use LLVM structured unwind cleanup:\n{ir}"
-            );
+        match cleanup_capabilities_for_target(&triple).unwind_strategy {
+            CleanupUnwindStrategy::CrashOwnerRegistry => {
+                assert!(
+                    ir.contains("call i64 @hew_cont_crash_cleanup_arm(i64")
+                        && ir.contains(&format!(
+                            ", i64 {fat_size}, i64 {fat_align}, ptr @__hew_frame_cleanup_"
+                        ))
+                        && ir.contains(" call i8 @inspect"),
+                    "{triple}: the fallback target must arm typed cleanup with its layout:\n{ir}"
+                );
+            }
+            CleanupUnwindStrategy::StructuredLlvm => {
+                assert!(
+                    !ir.contains("hew_cont_crash_cleanup")
+                        && ir.contains(" invoke i8 @inspect")
+                        && ir.contains("landingpad { ptr, i32 }")
+                        && ir.contains("resume { ptr, i32 }"),
+                    "{triple}: structured-EH calls must use LLVM unwind cleanup:\n{ir}"
+                );
+            }
         }
         assert!(
             ir.contains("call void @hew_dyn_box_free(ptr %dyn_drop_data_ptr"),
@@ -12768,6 +12854,72 @@ fn llvm_defined_function_body<'a>(ir: &'a str, name: &str) -> &'a str {
     &tail[..end]
 }
 
+fn cleanup_strategy_test_triples() -> Vec<String> {
+    let candidates = [
+        native_emission_triple(),
+        "wasm32-wasi".to_string(),
+        "x86_64-pc-windows-msvc".to_string(),
+    ];
+    let mut triples = Vec::new();
+    for triple in candidates {
+        if !triples.contains(&triple) {
+            triples.push(triple);
+        }
+    }
+    triples
+}
+
+fn assert_registry_cleanup_uses_typed_drop(
+    module: &LlvmModule<'_>,
+    body: &str,
+    drop_call: &str,
+    triple: &str,
+) {
+    assert!(
+        body.contains("%helper_crash_cleanup_token_")
+            && body.contains("call i64 @hew_cont_crash_cleanup_arm")
+            && !body.contains("landingpad { ptr, i32 }")
+            && !body.contains("resume { ptr, i32 }"),
+        "{triple}: the fallback target must register typed owners without LLVM-EH blocks:\n{body}"
+    );
+    let referenced_thunks = body
+        .lines()
+        .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
+        .filter_map(|line| {
+            let tail = line.split_once("ptr @__hew_frame_cleanup_")?.1;
+            let suffix = tail
+                .split(|character: char| {
+                    character == ',' || character == ')' || character.is_whitespace()
+                })
+                .next()?;
+            Some(format!("__hew_frame_cleanup_{suffix}"))
+        })
+        .collect::<HashSet<_>>();
+    assert!(
+        !referenced_thunks.is_empty(),
+        "{triple}: the tested body must pass a typed thunk to its registry arm:\n{body}"
+    );
+    let referenced_thunk_bodies = referenced_thunks
+        .iter()
+        .map(|symbol| {
+            module
+                .get_function(symbol)
+                .unwrap_or_else(|| {
+                    panic!("{triple}: body references missing cleanup thunk `{symbol}`")
+                })
+                .print_to_string()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        referenced_thunk_bodies
+            .iter()
+            .any(|thunk| thunk.contains(drop_call)),
+        "{triple}: an arm from the tested body must reference a thunk containing \
+         `{drop_call}`:\n{referenced_thunk_bodies:#?}"
+    );
+}
+
 /// Build a coroutine `IrPipeline` whose bb0 carries a `SuspendKind::StreamSend`
 /// forwarding a `string`-typed value over a duplex-handle sink — the exact
 /// shape `build_stream_producer_pump` mints for a `receive gen fn -> string`.
@@ -13470,7 +13622,7 @@ fn ordinary_helper_uses_native_unwind_plans_and_wasm_fallback_registry() {
         "grounded helper owner topology drifted"
     );
 
-    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+    for triple in cleanup_strategy_test_triples() {
         let ctx = Context::create();
         let machine = target_machine_for_triple(&triple)
             .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
@@ -13500,15 +13652,28 @@ fn ordinary_helper_uses_native_unwind_plans_and_wasm_fallback_registry() {
             .lines()
             .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
             .collect::<Vec<_>>();
-        if triple.starts_with("wasm32") {
-            assert_eq!(token_count, 6, "{triple}: fallback owner tokens:\n{helper}");
+        let cleanup = cleanup_capabilities_for_target(&triple);
+        if cleanup.unwind_strategy == CleanupUnwindStrategy::CrashOwnerRegistry {
+            let (expected_tokens, expected_arms) = if cleanup.includes_unwind_plans {
+                (8, 13)
+            } else {
+                (6, 11)
+            };
+            assert_eq!(
+                token_count, expected_tokens,
+                "{triple}: fallback owner tokens:\n{helper}"
+            );
             // The local-9 bytes generation is transferred into Bundle without
             // an intervening reachable WASM cleanup edge, so the Bundle token
             // is its next cleanup authority rather than a redundant side slot.
             // Locals 7 and 17 occur only in native `ExitPath::Unwind` plans;
             // WASM cannot enter those landing pads and therefore must not
             // invent registry escrows for them either.
-            assert_eq!(arms.len(), 11, "{triple}: fallback owner arms:\n{helper}");
+            assert_eq!(
+                arms.len(),
+                expected_arms,
+                "{triple}: fallback owner arms:\n{helper}"
+            );
             assert!(arms.iter().all(|line| line.contains(", i32 1, i32 0)")));
         } else {
             assert_eq!(token_count, 0, "native EH must not allocate owner tokens");
@@ -13827,23 +13992,51 @@ fn helper_owner_move_uses_path_sensitive_native_cleanup() {
         .expect("source-owner to destination-owner Move");
     assert_ne!(transfer.0, transfer.1);
 
-    let ctx = Context::create();
-    let module =
-        build_module(&ctx, &pipeline, "helper_owner_transfer").expect("transfer module build");
-    module.verify().expect("transfer module verify");
-    let helper = module
-        .get_function("helper_transfer")
-        .expect("helper_transfer LLVM function")
-        .print_to_string()
-        .to_string();
-    assert!(
-        !helper.contains("hew_cont_crash_cleanup")
-            && helper.contains(" invoke ")
-            && helper.contains("landingpad { ptr, i32 }")
-            && helper.contains("resume { ptr, i32 }"),
-        "the native helper must derive cleanup from path-sensitive MIR ownership, \
-         with no dynamic owner-token bookkeeping:\n{helper}"
-    );
+    for triple in cleanup_strategy_test_triples() {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "helper_owner_transfer",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: transfer module build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: transfer module verify: {error}"));
+        let helper = module
+            .get_function("helper_transfer")
+            .expect("helper_transfer LLVM function")
+            .print_to_string()
+            .to_string();
+        match cleanup_capabilities_for_target(&triple).unwind_strategy {
+            CleanupUnwindStrategy::StructuredLlvm => assert!(
+                !helper.contains("hew_cont_crash_cleanup")
+                    && helper.contains(" invoke ")
+                    && helper.contains("landingpad { ptr, i32 }")
+                    && helper.contains("resume { ptr, i32 }"),
+                "{triple}: the helper must derive structured cleanup from path-sensitive MIR \
+                 ownership with no dynamic owner-token bookkeeping:\n{helper}"
+            ),
+            CleanupUnwindStrategy::CrashOwnerRegistry => {
+                assert!(
+                    helper.contains(" call ")
+                        && helper.contains("call i1 @hew_cont_crash_cleanup_deactivate")
+                        && helper.contains("call i1 @hew_cont_crash_cleanup_retire"),
+                    "{triple}: owner transfer must deactivate and retire fallback authority:\n{helper}"
+                );
+                assert_registry_cleanup_uses_typed_drop(
+                    &module,
+                    &helper,
+                    "call void @hew_string_drop",
+                    &triple,
+                );
+            }
+        }
+    }
 }
 
 fn pipeline_from_helper_projection_snapshot_transfer_source() -> IrPipeline {
@@ -13965,7 +14158,7 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
          exit-cleanup drop-plan descriptor: {consume_elab:#?}"
     );
 
-    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+    for triple in cleanup_strategy_test_triples() {
         let ctx = Context::create();
         let machine = target_machine_for_triple(&triple)
             .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
@@ -14002,32 +14195,69 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
         // path) — the invariant under test here (neutralize before close)
         // stays covered; only the escrow bookkeeping it used to route
         // through is gone.
+        let neutralize_line = helper
+            .lines()
+            .find(|line| {
+                line.contains("store %Witness zeroinitializer")
+                    && line.contains("ptr %machine_variant_field_ptr")
+            })
+            .unwrap_or_else(|| {
+                panic!("{triple}: missing exact projected source-slot neutralize:\n{helper}")
+            });
         let neutralize = helper
-            .find("store %Witness zeroinitializer")
-            .unwrap_or_else(|| panic!("{triple}: missing projected payload neutralize:\n{helper}"));
+            .find(neutralize_line)
+            .expect("selected projected neutralize line belongs to the helper");
+        let cleanup = cleanup_capabilities_for_target(&triple);
+        let close_opcode = match cleanup.unwind_strategy {
+            CleanupUnwindStrategy::StructuredLlvm => "invoke",
+            CleanupUnwindStrategy::CrashOwnerRegistry => "call",
+        };
+        let close_line = helper
+            .lines()
+            .find(|line| {
+                line.contains(&format!("%call_result = {close_opcode} i8"))
+                    && line.contains("@\"Witness::close\"")
+            })
+            .unwrap_or_else(|| {
+                panic!("{triple}: missing target-appropriate transferred-owner close:\n{helper}")
+            });
         let close = helper
-            .find("@\"Witness::close\"")
-            .unwrap_or_else(|| panic!("{triple}: missing transferred owner close:\n{helper}"));
+            .find(close_line)
+            .expect("selected transferred-owner close belongs to the helper");
 
         assert!(
             neutralize < close,
             "{triple}: the projected payload must be neutralized before the \
              transferred owner closes it:\n{helper}"
         );
-        assert!(
-            !helper.contains("helper_crash_cleanup_token_8"),
-            "{triple}: a Discharge-intent projected owner closes its resource at \
-             the discharge site itself and must not register a separate Witness \
-             crash-cleanup escrow; an enclosing Pair root may independently \
-             retain cancellation cleanup for its residual string:\n{helper}"
-        );
-        if triple == "wasm32-wasi" {
-            assert!(
-                helper.contains("helper_crash_cleanup_token_0")
-                    && helper.contains("@__hew_enum_drop_inplace_Pair"),
-                "{triple}: the enclosing Pair must retain its independent \
-                 Cancel/Return cleanup escrow for the residual string:\n{helper}"
-            );
+        match cleanup.unwind_strategy {
+            CleanupUnwindStrategy::StructuredLlvm => assert!(
+                !helper.contains("helper_crash_cleanup_token_0")
+                    && !helper.contains("helper_crash_cleanup_token_8"),
+                "{triple}: LLVM-EH must carry both owners without registry tokens:\n{helper}"
+            ),
+            CleanupUnwindStrategy::CrashOwnerRegistry => {
+                assert!(
+                    helper.contains("helper_crash_cleanup_token_0")
+                        && helper.contains("@__hew_enum_drop_inplace_Pair"),
+                    "{triple}: the enclosing Pair must retain its independent \
+                     Cancel/Return cleanup escrow for the residual string:\n{helper}"
+                );
+                assert_eq!(
+                    helper.contains("helper_crash_cleanup_token_8"),
+                    cleanup.includes_unwind_plans,
+                    "{triple}: only a fallback target with reachable native unwind plans \
+                     may escrow the projected Witness through its call boundary:\n{helper}"
+                );
+                if cleanup.includes_unwind_plans {
+                    assert_registry_cleanup_uses_typed_drop(
+                        &module,
+                        &helper,
+                        "call i8 @\"Witness::close\"",
+                        &triple,
+                    );
+                }
+            }
         }
         assert!(
             helper.contains("@hew_panic_msg") && helper.contains("cancel_exit"),
@@ -14194,7 +14424,7 @@ fn returned_bytes_keeps_crash_owner_until_return_transfer_native_and_wasm32() {
         "successful ReturnSlot transfer must suppress the caller-frame release: {elab:#?}"
     );
 
-    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+    for triple in cleanup_strategy_test_triples() {
         let ctx = Context::create();
         let machine = target_machine_for_triple(&triple)
             .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
@@ -14217,7 +14447,9 @@ fn returned_bytes_keeps_crash_owner_until_return_transfer_native_and_wasm32() {
         let Place::Local(returned_local) = returned else {
             unreachable!("filtered to local return source")
         };
-        if triple.starts_with("wasm32") {
+        if cleanup_capabilities_for_target(&triple).unwind_strategy
+            == CleanupUnwindStrategy::CrashOwnerRegistry
+        {
             assert!(
                 builder.contains(&format!("%helper_crash_cleanup_token_{returned_local}"))
                     && builder.contains("call i1 @hew_cont_crash_cleanup_deactivate")
@@ -14228,21 +14460,11 @@ fn returned_bytes_keeps_crash_owner_until_return_transfer_native_and_wasm32() {
                 "{triple}: the fallback registry must hold the owner through the loan \
                  and retire it only at return transfer:\n{builder}"
             );
-            let cleanup_thunks = module
-                .get_functions()
-                .filter(|function| {
-                    function
-                        .get_name()
-                        .to_string_lossy()
-                        .starts_with("__hew_frame_cleanup_")
-                })
-                .map(|function| function.print_to_string().to_string())
-                .collect::<Vec<_>>();
-            assert!(
-                cleanup_thunks
-                    .iter()
-                    .any(|thunk| thunk.contains("call void @hew_bytes_drop")),
-                "{triple}: fallback cleanup must retain the typed bytes release ritual"
+            assert_registry_cleanup_uses_typed_drop(
+                &module,
+                &builder,
+                "call void @hew_bytes_drop",
+                &triple,
             );
         } else {
             assert!(
@@ -14309,7 +14531,7 @@ fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
         "the bytes.clear unwind edge must retain the pre-call owner: {helper_elab:#?}"
     );
 
-    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+    for triple in cleanup_strategy_test_triples() {
         let ctx = Context::create();
         let machine = target_machine_for_triple(&triple)
             .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
@@ -14333,7 +14555,9 @@ fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
         let clear = helper
             .find("@hew_bytes_clear")
             .unwrap_or_else(|| panic!("{triple}: missing bytes clear call:\n{helper}"));
-        if triple.starts_with("wasm32") {
+        if cleanup_capabilities_for_target(&triple).unwind_strategy
+            == CleanupUnwindStrategy::CrashOwnerRegistry
+        {
             let deactivate = helper[clear..]
                 .find("call i1 @hew_cont_crash_cleanup_deactivate")
                 .map(|offset| clear + offset)
@@ -15167,7 +15391,6 @@ fn coroutine_state_replacement_scratch_stays_in_alloca_prologue() {
 
 #[test]
 fn owned_state_source_transfer_rejection_is_process_fatal_before_live_store() {
-    let ctx = Context::create();
     let symbol = "OwnedStateActor__recv__replace";
     let mut layout = unit_suspendable_layout(symbol, 23);
     layout.param_tys = vec![ResolvedTy::String];
@@ -15207,42 +15430,82 @@ fn owned_state_source_transfer_rejection_is_process_fatal_before_live_store() {
             lambda_captures: Vec::new(),
         });
 
-    let module = build_module(&ctx, &pipeline, "owned_state_transfer")
-        .expect("owned state transfer module must build");
-    let ir = module.print_to_string().to_string();
-    let body = llvm_defined_function_body(&ir, symbol);
-    let begin = body
-        .find("@hew_dispatch_state_cleanup_begin_replace")
-        .expect("fatal begin-replace call");
-    let materialize_line = body
-        .lines()
-        .find(|line| line.contains("store ptr") && line.contains("ptr %state_f0_replacement"))
-        .unwrap_or_else(|| panic!("missing exact replacement materialization:\n{body}"));
-    let materialize = body
-        .find(materialize_line)
-        .expect("materialization line belongs to function body");
-    let old_release = body
-        .find("call void @hew_string_drop")
-        .expect("old state owner release");
-    let live_store_line = body
-        .lines()
-        .find(|line| line.contains("store ptr") && line.contains("%actor_state_field_0_ptr"))
-        .unwrap_or_else(|| panic!("missing live actor-state store:\n{body}"));
-    let live_store = body
-        .find(live_store_line)
-        .expect("live store line belongs to function body");
-    assert!(
-        begin < materialize && materialize < old_release && old_release < live_store,
-        "state replacement must order begin < materialize < old release < live store:\n{body}"
-    );
-    assert!(
-        !body.contains("hew_dispatch_state_cleanup_prepare_transfer")
-            && !body.contains("hew_cont_crash_cleanup"),
-        "native lexical owners must not use source-token transfer bookkeeping:\n{body}"
-    );
-    module
-        .verify()
-        .unwrap_or_else(|e| panic!("owned state transfer module failed verify: {e}"));
+    for triple in cleanup_strategy_test_triples() {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "owned_state_transfer",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: owned state transfer build: {error:?}"));
+        let ir = module.print_to_string().to_string();
+        let body = llvm_defined_function_body(&ir, symbol);
+        let begin = body
+            .find("@hew_dispatch_state_cleanup_begin_replace")
+            .expect("fatal begin-replace call");
+        let materialize_line = body
+            .lines()
+            .find(|line| line.contains("store ptr") && line.contains("ptr %state_f0_replacement"))
+            .unwrap_or_else(|| panic!("missing exact replacement materialization:\n{body}"));
+        let materialize = body
+            .find(materialize_line)
+            .expect("materialization line belongs to function body");
+        let old_release = body
+            .find("call void @hew_string_drop")
+            .expect("old state owner release");
+        let live_store_line = body
+            .lines()
+            .find(|line| line.contains("store ptr") && line.contains("%actor_state_field_0_ptr"))
+            .unwrap_or_else(|| panic!("missing live actor-state store:\n{body}"));
+        let live_store = body
+            .find(live_store_line)
+            .expect("live store line belongs to function body");
+        assert!(
+            begin < materialize && materialize < old_release && old_release < live_store,
+            "{triple}: state replacement must order begin < materialize < old release < live store:\n{body}"
+        );
+        match cleanup_capabilities_for_target(&triple).unwind_strategy {
+            CleanupUnwindStrategy::StructuredLlvm => assert!(
+                !body.contains("hew_dispatch_state_cleanup_prepare_transfer")
+                    && !body.contains("hew_cont_crash_cleanup"),
+                "{triple}: structured lexical cleanup must not use source-token transfer:\n{body}"
+            ),
+            CleanupUnwindStrategy::CrashOwnerRegistry => {
+                let prepare_transfer = body
+                    .find("call i1 @hew_dispatch_state_cleanup_prepare_transfer")
+                    .unwrap_or_else(|| {
+                        panic!("{triple}: fallback replacement must transfer source authority:\n{body}")
+                    });
+                assert!(
+                    old_release < prepare_transfer && prepare_transfer < live_store,
+                    "{triple}: fallback authority transfer must follow old-owner release and \
+                     precede the live-state store:\n{body}"
+                );
+                let rejected = body
+                    .find("state_f0_crash_prepare_transfer_rejected:")
+                    .map(|start| &body[start..])
+                    .expect("fallback transfer rejection block");
+                assert!(
+                    rejected.contains("call void @hew_dispatch_state_cleanup_abort_invariant()")
+                        && rejected.contains("unreachable"),
+                    "{triple}: source-authority rejection must terminate the process:\n{rejected}"
+                );
+                assert_registry_cleanup_uses_typed_drop(
+                    &module,
+                    body,
+                    "call void @hew_string_drop",
+                    &triple,
+                );
+            }
+        }
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: owned state transfer verify: {error}"));
+    }
 }
 
 /// A run-to-completion handler's trampoline arm is byte-identical to the

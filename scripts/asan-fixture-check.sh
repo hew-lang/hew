@@ -51,15 +51,12 @@
 #       Existing retained field/container reads plus aggregate ingress,
 #       duplicating return, local co-own, borrowed-param co-own, and an escaping
 #       partner. Missing retains surface as refcount UAF; excess retains leak.
-#   composite-drop leak-oracle shapes (#2488)
-#       Three already-clean vertical-slice fixtures covering the #2439 composite
-#       yield-release and #2462 match-scrutinee enum-payload-release drop
-#       mechanisms: an owned enum payload crossing the generator pump's yield
-#       send path (tag-dispatched in-place drop thunk), the break-edge release
-#       of an owned record on a cancelled `for await ... break` stream, and a
-#       match-arm destructured call-result payload released exactly once per
-#       loop back-edge. A refcount underflow in any would double-free a
-#       String/Bytes header — invisible to macOS `leaks`, caught here by ASan.
+#   composite-drop leak-oracle shape (#2462)
+#       A match-arm destructured call-result payload released exactly once per
+#       loop back-edge. A refcount underflow would double-free its String/Bytes
+#       header — invisible to macOS `leaks`, caught here by ASan. The three
+#       receive-generator probes remain exact compiler refusals under #3104 and
+#       are not claimed as active sanitizer coverage.
 #   resource-in-enum shapes (#2641)
 #       A match-consumed resource payload with heap-owning sibling variants and
 #       an actor-state resource enum overwritten Loaded→Broken. Both must remain
@@ -91,9 +88,9 @@ ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${ROOT}/scripts/lib/corpus-nonempty.sh"
 
 asan_or_lsan_reported() {
-  local report="$1"
-  grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
-    <<< "${report}"
+    local report="$1"
+    grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
+        <<<"${report}"
 }
 
 # The deliberate generated-code leak is the proof that this gate has a working
@@ -102,30 +99,30 @@ asan_or_lsan_reported() {
 # This runs before the Linux/toolchain guards so every host can prove the
 # fail-closed classifier without building an instrumented compiler.
 if [[ "${1:-}" == "--selftest" ]]; then
-  if [[ "$#" -ne 1 ]]; then
-    echo "usage: scripts/asan-fixture-check.sh [--selftest | --llvm-version <N>]" >&2
-    exit 2
-  fi
-  if ! asan_or_lsan_reported "==42==ERROR: LeakSanitizer: detected memory leaks"; then
-    echo "asan-fixture-check selftest: failed to accept a LeakSanitizer report" >&2
-    exit 1
-  fi
-  if asan_or_lsan_reported "probe exited 137 after an unrelated trap"; then
-    echo "asan-fixture-check selftest: unmarked non-zero exit falsely passed as ASan evidence" >&2
-    exit 1
-  fi
-  if asan_or_lsan_reported ""; then
-    echo "asan-fixture-check selftest: empty report falsely passed as ASan evidence" >&2
-    exit 1
-  fi
-  echo "asan-fixture-check selftest: PASS (only a sanitizer diagnostic certifies the sentinel)"
-  exit 0
+    if [[ "$#" -ne 1 ]]; then
+        echo "usage: scripts/asan-fixture-check.sh [--selftest | --llvm-version <N>]" >&2
+        exit 2
+    fi
+    if ! asan_or_lsan_reported "==42==ERROR: LeakSanitizer: detected memory leaks"; then
+        echo "asan-fixture-check selftest: failed to accept a LeakSanitizer report" >&2
+        exit 1
+    fi
+    if asan_or_lsan_reported "probe exited 137 after an unrelated trap"; then
+        echo "asan-fixture-check selftest: unmarked non-zero exit falsely passed as ASan evidence" >&2
+        exit 1
+    fi
+    if asan_or_lsan_reported ""; then
+        echo "asan-fixture-check selftest: empty report falsely passed as ASan evidence" >&2
+        exit 1
+    fi
+    echo "asan-fixture-check selftest: PASS (only a sanitizer diagnostic certifies the sentinel)"
+    exit 0
 fi
 
 # ── Platform guard ────────────────────────────────────────────────────────
 if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "asan-fixture-check: skipped on $(uname -s) (use the macOS leaks oracle)" >&2
-  exit 0
+    echo "asan-fixture-check: skipped on $(uname -s) (use the macOS leaks oracle)" >&2
+    exit 0
 fi
 
 # ── Parse arguments and environment ──────────────────────────────────────
@@ -133,30 +130,36 @@ LLVM_VERSION="${LLVM_VERSION:-}"
 SANITIZER_TARGET="${SANITIZER_RUST_TARGET:-x86_64-unknown-linux-gnu}"
 
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --llvm-version) LLVM_VERSION="$2"; shift 2 ;;
-    *) echo "asan-fixture-check: unknown argument: $1" >&2; exit 1 ;;
-  esac
+    case "$1" in
+    --llvm-version)
+        LLVM_VERSION="$2"
+        shift 2
+        ;;
+    *)
+        echo "asan-fixture-check: unknown argument: $1" >&2
+        exit 1
+        ;;
+    esac
 done
 
 # ── Tool availability ─────────────────────────────────────────────────────
 if ! command -v clang >/dev/null 2>&1; then
-  echo "asan-fixture-check: clang not found — install llvm/clang" >&2
-  exit 1
+    echo "asan-fixture-check: clang not found — install llvm/clang" >&2
+    exit 1
 fi
 
 RUSTUP_TOOLCHAINS=$(rustup toolchain list 2>/dev/null)
-if ! grep -q nightly <<< "${RUSTUP_TOOLCHAINS}"; then
-  echo "asan-fixture-check: nightly toolchain not installed — run: rustup toolchain install nightly" >&2
-  exit 1
+if ! grep -q nightly <<<"${RUSTUP_TOOLCHAINS}"; then
+    echo "asan-fixture-check: nightly toolchain not installed — run: rustup toolchain install nightly" >&2
+    exit 1
 fi
 
 # Locate the best available llvm-symbolizer for human-readable ASan reports.
 if [[ -n "${LLVM_VERSION}" ]]; then
-  ASAN_SYMBOLIZER_PATH="/usr/lib/llvm-${LLVM_VERSION}/bin/llvm-symbolizer"
+    ASAN_SYMBOLIZER_PATH="/usr/lib/llvm-${LLVM_VERSION}/bin/llvm-symbolizer"
 else
-  ASAN_SYMBOLIZER_PATH="$(find /usr/lib -name llvm-symbolizer -path '*/llvm-*/bin/*' 2>/dev/null \
-    | sort -V | tail -1 || true)"
+    ASAN_SYMBOLIZER_PATH="$(find /usr/lib -name llvm-symbolizer -path '*/llvm-*/bin/*' 2>/dev/null |
+        sort -V | tail -1 || true)"
 fi
 export ASAN_SYMBOLIZER_PATH
 
@@ -179,10 +182,10 @@ trap cleanup_supp_stage EXIT
 cp "${ROOT}/hew-runtime/lsan.supp" "${SUPP_STAGE_DIR}/lsan.supp"
 LSAN_SUPP="${SUPP_STAGE_DIR}/lsan.supp"
 if printf '%s' "${LSAN_SUPP}" | grep -q ' '; then
-  echo "asan-fixture-check: staged suppressions path still contains a space:" >&2
-  echo "  ${LSAN_SUPP}" >&2
-  echo "  set TMPDIR to a space-free directory and re-run." >&2
-  exit 1
+    echo "asan-fixture-check: staged suppressions path still contains a space:" >&2
+    echo "  ${LSAN_SUPP}" >&2
+    echo "  set TMPDIR to a space-free directory and re-run." >&2
+    exit 1
 fi
 
 # ── Step 1: build ASan-instrumented hew + libhew.a ───────────────────────
@@ -197,8 +200,8 @@ fi
 echo "=== asan-fixture-check: building ASan hew + libhew.a (nightly, may be slow on a cold cache) ==="
 
 CARGO_TARGET_DIR="${ASAN_FIXTURE_TARGET_DIR}" \
-RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
-  cargo +nightly build \
+    RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
+    cargo +nightly build \
     --target "${SANITIZER_TARGET}" \
     -p hew-cli \
     -p hew-lib \
@@ -209,10 +212,10 @@ ASAN_HEW="${ASAN_BIN_DIR}/hew"
 ASAN_LIBHEW="${ASAN_BIN_DIR}/libhew.a"
 
 for f in "${ASAN_HEW}" "${ASAN_LIBHEW}"; do
-  if [[ ! -f "${f}" ]]; then
-    echo "asan-fixture-check: expected build artefact not found: ${f}" >&2
-    exit 1
-  fi
+    if [[ ! -f "${f}" ]]; then
+        echo "asan-fixture-check: expected build artefact not found: ${f}" >&2
+        exit 1
+    fi
 done
 
 echo "  hew binary : ${ASAN_HEW}"
@@ -228,96 +231,96 @@ echo "  libhew.a   : ${ASAN_LIBHEW}"
 # --emit-obj (object emission only; link flags are for the link step which we
 # override manually here).
 compile_asan_fixture() {
-  local label="$1"
-  local src="$2"
-  local out_bin="$3"
+    local label="$1"
+    local src="$2"
+    local out_bin="$3"
 
-  local stem
-  stem="$(basename "${src}" .hew)"
-  local obj_file="${WORK_DIR}/${stem}.o"
+    local stem
+    stem="$(basename "${src}" .hew)"
+    local obj_file="${WORK_DIR}/${stem}.o"
 
-  echo "  EMIT-OBJ ${label}"
+    echo "  EMIT-OBJ ${label}"
 
-  # The ASan hew binary finds the ASan libhew.a next to itself; use it here
-  # for the emission step so codegen is consistent with the library ABI.
-  ( cd "${WORK_DIR}" && \
-    "${ASAN_HEW}" build --emit-obj "${src}" 2>&1 | sed 's/^/    /' )
+    # The ASan hew binary finds the ASan libhew.a next to itself; use it here
+    # for the emission step so codegen is consistent with the library ABI.
+    (cd "${WORK_DIR}" &&
+        "${ASAN_HEW}" build --emit-obj "${src}" 2>&1 | sed 's/^/    /')
 
-  if [[ ! -f "${obj_file}" ]]; then
-    echo "asan-fixture-check: expected object ${obj_file} not found after --emit-obj" >&2
-    return 1
-  fi
+    if [[ ! -f "${obj_file}" ]]; then
+        echo "asan-fixture-check: expected object ${obj_file} not found after --emit-obj" >&2
+        return 1
+    fi
 
-  echo "  LINK     ${label}"
+    echo "  LINK     ${label}"
 
-  # Link with clang -fsanitize=address.  The -fsanitize=address flag tells
-  # clang to pull in the ASan runtime (libclang_rt.asan-x86_64.a) and wire
-  # __asan_init.  Without it the binary links cleanly but ASan is not
-  # initialised — all leaks are silently missed.
-  #
-  # libhew.a is listed twice: once to resolve the object's direct runtime
-  # references, and once after any extra objects for backward references
-  # (mirrors the two-listing pattern in hew-cli/src/link.rs).
-  clang \
-    -fsanitize=address \
-    -fno-omit-frame-pointer \
-    -target "${SANITIZER_TARGET}" \
-    "${obj_file}" \
-    "${@:4}" \
-    "${ASAN_LIBHEW}" \
-    -lpthread -ldl -lm \
-    "${ASAN_LIBHEW}" \
-    -o "${out_bin}"
+    # Link with clang -fsanitize=address.  The -fsanitize=address flag tells
+    # clang to pull in the ASan runtime (libclang_rt.asan-x86_64.a) and wire
+    # __asan_init.  Without it the binary links cleanly but ASan is not
+    # initialised — all leaks are silently missed.
+    #
+    # libhew.a is listed twice: once to resolve the object's direct runtime
+    # references, and once after any extra objects for backward references
+    # (mirrors the two-listing pattern in hew-cli/src/link.rs).
+    clang \
+        -fsanitize=address \
+        -fno-omit-frame-pointer \
+        -target "${SANITIZER_TARGET}" \
+        "${obj_file}" \
+        "${@:4}" \
+        "${ASAN_LIBHEW}" \
+        -lpthread -ldl -lm \
+        "${ASAN_LIBHEW}" \
+        -o "${out_bin}"
 
-  if [[ ! -f "${out_bin}" ]]; then
-    echo "asan-fixture-check: linker produced no output at ${out_bin}" >&2
-    return 1
-  fi
+    if [[ ! -f "${out_bin}" ]]; then
+        echo "asan-fixture-check: linker produced no output at ${out_bin}" >&2
+        return 1
+    fi
 }
 
 # ── Helper: run one binary under ASan/LSan ────────────────────────────────
 # Returns 0 if the binary exits cleanly with no ASan/LSan findings.
 # Returns 1 otherwise.
 run_asan_fixture() {
-  local label="$1"
-  local bin="$2"
-  local expected_exit="${3:-0}"
+    local label="$1"
+    local bin="$2"
+    local expected_exit="${3:-0}"
 
-  echo "  RUN      ${label}"
+    echo "  RUN      ${label}"
 
-  local actual_exit=0
-  local log_prefix="${bin}.asan"
+    local actual_exit=0
+    local log_prefix="${bin}.asan"
 
-  ASAN_OPTIONS="detect_leaks=1:log_path=${log_prefix}" \
-  ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
-  LSAN_OPTIONS="suppressions=${LSAN_SUPP}" \
-  HEW_WORKERS=1 \
-    "${bin}" >/dev/null 2>/dev/null || actual_exit=$?
+    ASAN_OPTIONS="detect_leaks=1:log_path=${log_prefix}" \
+        ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
+        LSAN_OPTIONS="suppressions=${LSAN_SUPP}" \
+        HEW_WORKERS=1 \
+        "${bin}" >/dev/null 2>/dev/null || actual_exit=$?
 
-  # Collect all per-PID log files written by ASan.
-  local asan_output=""
-  for f in "${log_prefix}".*; do
-    [[ -f "${f}" ]] || continue
-    asan_output+="$(cat "${f}")"$'\n'
-    rm -f "${f}"
-  done
+    # Collect all per-PID log files written by ASan.
+    local asan_output=""
+    for f in "${log_prefix}".*; do
+        [[ -f "${f}" ]] || continue
+        asan_output+="$(cat "${f}")"$'\n'
+        rm -f "${f}"
+    done
 
-  # An ASan/LSan finding always contains one of these marker strings.
-  # Use a here-string to avoid a printf | grep -q pipeline: under set -o pipefail
-  # grep -q closes stdin after the first match, sending SIGPIPE to printf, which
-  # makes the pipeline exit 141 (false negative) on large reports.
-  if asan_or_lsan_reported "${asan_output}"; then
-    echo "    FAIL ${label}: ASan/LSan reported findings:" >&2
-    printf '%s\n' "${asan_output}" | sed 's/^/    /' >&2
-    return 1
-  fi
+    # An ASan/LSan finding always contains one of these marker strings.
+    # Use a here-string to avoid a printf | grep -q pipeline: under set -o pipefail
+    # grep -q closes stdin after the first match, sending SIGPIPE to printf, which
+    # makes the pipeline exit 141 (false negative) on large reports.
+    if asan_or_lsan_reported "${asan_output}"; then
+        echo "    FAIL ${label}: ASan/LSan reported findings:" >&2
+        printf '%s\n' "${asan_output}" | sed 's/^/    /' >&2
+        return 1
+    fi
 
-  if [[ "${actual_exit}" -ne "${expected_exit}" ]]; then
-    echo "    FAIL ${label}: expected exit ${expected_exit}, got ${actual_exit}" >&2
-    return 1
-  fi
+    if [[ "${actual_exit}" -ne "${expected_exit}" ]]; then
+        echo "    FAIL ${label}: expected exit ${expected_exit}, got ${actual_exit}" >&2
+        return 1
+    fi
 
-  echo "    PASS ${label}: exit ${actual_exit}, no ASan/LSan findings"
+    echo "    PASS ${label}: exit ${actual_exit}, no ASan/LSan findings"
 }
 
 # ── Helper: run one binary expecting an ASan/LSan finding ─────────────────
@@ -326,56 +329,56 @@ run_asan_fixture() {
 # is detected — an unrelated trap/non-zero exit is not evidence that the
 # sanitizer caught the deliberate leak.
 run_asan_fixture_expect_leak() {
-  local label="$1"
-  local bin="$2"
-  local log_prefix="${bin}.asan"
+    local label="$1"
+    local bin="$2"
+    local log_prefix="${bin}.asan"
 
-  echo "  RUN      ${label} (expect LSan finding)"
+    echo "  RUN      ${label} (expect LSan finding)"
 
-  local actual_exit=0
-  ASAN_OPTIONS="detect_leaks=1:log_path=${log_prefix}" \
-  ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
-  HEW_WORKERS=1 \
-    "${bin}" >/dev/null 2>/dev/null || actual_exit=$?
+    local actual_exit=0
+    ASAN_OPTIONS="detect_leaks=1:log_path=${log_prefix}" \
+        ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
+        HEW_WORKERS=1 \
+        "${bin}" >/dev/null 2>/dev/null || actual_exit=$?
 
-  local asan_output=""
-  for f in "${log_prefix}".*; do
-    [[ -f "${f}" ]] || continue
-    asan_output+="$(cat "${f}")"$'\n'
-    rm -f "${f}"
-  done
+    local asan_output=""
+    for f in "${log_prefix}".*; do
+        [[ -f "${f}" ]] || continue
+        asan_output+="$(cat "${f}")"$'\n'
+        rm -f "${f}"
+    done
 
-  # Also capture stderr directly in case log_path was not respected.
-  local asan_stderr=""
-  ASAN_OPTIONS="detect_leaks=1" \
-  ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
-    "${bin}" >/dev/null 2>"${log_prefix}.stderr" || true
-  asan_stderr="$(cat "${log_prefix}.stderr" 2>/dev/null || true)"
-  rm -f "${log_prefix}.stderr"
+    # Also capture stderr directly in case log_path was not respected.
+    local asan_stderr=""
+    ASAN_OPTIONS="detect_leaks=1" \
+        ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
+        "${bin}" >/dev/null 2>"${log_prefix}.stderr" || true
+    asan_stderr="$(cat "${log_prefix}.stderr" 2>/dev/null || true)"
+    rm -f "${log_prefix}.stderr"
 
-  # Combine both capture buffers into one string so we can use a here-string
-  # predicate.  A printf | grep -q pipeline is unsafe under set -o pipefail:
-  # grep -q closes stdin after the first match, SIGPIPE reaches printf, and the
-  # pipeline exits 141 instead of 0 on any large report (false negative).
-  local combined_asan="${asan_output}"$'\n'"${asan_stderr}"
-  local gate_fired=false
-  if asan_or_lsan_reported "${combined_asan}"; then
-    gate_fired=true
-  fi
-
-  if "${gate_fired}"; then
-    echo "    PASS ${label}: gate correctly caught deliberate generated-code leak (exit ${actual_exit})"
-    return 0
-  else
-    echo "    FAIL ${label}: gate did NOT report the deliberate 1 KiB malloc leak" >&2
-    if [[ "${actual_exit}" -ne 0 ]]; then
-      echo "    The probe exited ${actual_exit}, but an unmarked non-zero exit is not sanitizer evidence." >&2
+    # Combine both capture buffers into one string so we can use a here-string
+    # predicate.  A printf | grep -q pipeline is unsafe under set -o pipefail:
+    # grep -q closes stdin after the first match, SIGPIPE reaches printf, and the
+    # pipeline exits 141 instead of 0 on any large report (false negative).
+    local combined_asan="${asan_output}"$'\n'"${asan_stderr}"
+    local gate_fired=false
+    if asan_or_lsan_reported "${combined_asan}"; then
+        gate_fired=true
     fi
-    echo "    This means ASan/LSan is not firing on compiled Hew binaries." >&2
-    echo "    Check: -fsanitize=address at both compile and link steps." >&2
-    echo "    Binary: ${bin}" >&2
-    return 1
-  fi
+
+    if "${gate_fired}"; then
+        echo "    PASS ${label}: gate correctly caught deliberate generated-code leak (exit ${actual_exit})"
+        return 0
+    else
+        echo "    FAIL ${label}: gate did NOT report the deliberate 1 KiB malloc leak" >&2
+        if [[ "${actual_exit}" -ne 0 ]]; then
+            echo "    The probe exited ${actual_exit}, but an unmarked non-zero exit is not sanitizer evidence." >&2
+        fi
+        echo "    This means ASan/LSan is not firing on compiled Hew binaries." >&2
+        echo "    Check: -fsanitize=address at both compile and link steps." >&2
+        echo "    Binary: ${bin}" >&2
+        return 1
+    fi
 }
 
 # ── Step 2: compile the clean and leak-probe fixtures ────────────────────
@@ -519,17 +522,17 @@ compile_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_C
 CLI_LINK_BIN="${WORK_DIR}/asan_fixture_clean_probe_cli_link"
 echo "  CLI-LINK clean-probe (HEW_SANITIZE_ADDRESS=1 hew build)"
 HEW_SANITIZE_ADDRESS=1 \
-  "${ASAN_HEW}" build "${CLEAN_SRC}" -o "${CLI_LINK_BIN}" 2>&1 | sed 's/^/    /'
+    "${ASAN_HEW}" build "${CLEAN_SRC}" -o "${CLI_LINK_BIN}" 2>&1 | sed 's/^/    /'
 if [[ ! -f "${CLI_LINK_BIN}" ]]; then
-  echo "asan-fixture-check: HEW_SANITIZE_ADDRESS=1 hew build produced no binary at ${CLI_LINK_BIN}" >&2
-  exit 1
+    echo "asan-fixture-check: HEW_SANITIZE_ADDRESS=1 hew build produced no binary at ${CLI_LINK_BIN}" >&2
+    exit 1
 fi
 echo "  VERIFY   CLI-linked binary contains ASan/LSan runtime symbols"
 CLI_LINK_SYMS=$(nm -D "${CLI_LINK_BIN}" 2>/dev/null)
-if ! grep -q "__asan_init\|__lsan_" <<< "${CLI_LINK_SYMS}"; then
-  echo "asan-fixture-check: CLI-linked binary does not contain __asan_init / __lsan_ symbols" >&2
-  echo "    Check: HEW_SANITIZE_ADDRESS=1 must add -fsanitize=address at the clang link step." >&2
-  exit 1
+if ! grep -q "__asan_init\|__lsan_" <<<"${CLI_LINK_SYMS}"; then
+    echo "asan-fixture-check: CLI-linked binary does not contain __asan_init / __lsan_ symbols" >&2
+    echo "    Check: HEW_SANITIZE_ADDRESS=1 must add -fsanitize=address at the clang link step." >&2
+    exit 1
 fi
 echo "    PASS CLI-link: binary contains ASan/LSan runtime symbols (__asan_init / __lsan_*)"
 
@@ -542,9 +545,9 @@ fail=0
 
 # ── Gate 1: clean fixture (--emit-obj path) MUST produce zero findings ───
 if run_asan_fixture "clean-probe" "${CLEAN_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 # ── Gate 2: Hew generated-code leak-probe MUST produce a LSan finding ────
@@ -554,9 +557,9 @@ fi
 # that the gate would have caught the historical array-repeat Vec<string>/
 # Vec<record> leaks.
 if run_asan_fixture_expect_leak "leak-probe (Hew generated-code)" "${LEAK_BIN}"; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 # ── Gate 3: clean fixture (HEW_SANITIZE_ADDRESS=1 hew build path) ─────────
@@ -564,9 +567,9 @@ fi
 # HEW_SANITIZE_ADDRESS=1) under ASan/LSan.  Proves the CLI flag integration is
 # exercised by this gate, not only the manual clang path.
 if run_asan_fixture "clean-probe (CLI link path)" "${CLI_LINK_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 # ── Gate 4: crash+restart clean probe MUST produce zero findings, exit 43 ─
@@ -574,33 +577,33 @@ fi
 # CrashInfo.message and returns CrashAction::Restart. The crash-message
 # clone/drop (hew_string_clone / CrashInfo record drop) must balance the
 # supervisor's str_to_malloc/free_cstring with no double-free, no leak, no OOB.
-# Exit 42 = the restarted child's init value; any ASan/LSan finding (or a non-42
-# exit) fails the gate.
+# Exit 43 is the restarted-child success sentinel; any ASan/LSan finding (or a
+# non-43 exit) fails the gate.
 if run_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_BIN}" 43; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 # ── Gate 5: bytes retain-on-share mint points MUST be ASan/LSan-clean ─────
 if run_asan_fixture "bytes COW retain-on-share (A240 S1)" "${BYTES_COW_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 # ── Gate 6: string retain-on-share mint points MUST be ASan/LSan-clean ────
 if run_asan_fixture "string retain-on-share" "${STRING_COW_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 # ── Gate 7: match-scrutinee composite drop MUST be ASan/LSan-clean (#2462) ─
 if run_asan_fixture "match-scrutinee enum payload (call loop)" "${ENUM_PAYLOAD_LOOP_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 # ── Gate 8: admitted fresh-producer call scrutinee MUST be ASan/LSan-clean (#2648) ─
@@ -609,85 +612,85 @@ fi
 # admit path is leak-clean under ASan; a double-mint (the #2648 double-free) would
 # surface here as a heap-use-after-free on the payload header.
 if run_asan_fixture "admitted fresh-producer call scrutinee (#2648)" "${CALL_SCRUTINEE_FRESH_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "resource enum match-consume (#2641)" "${ENUM_RESOURCE_MATCH_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOURCE_STATE_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "owned-Vec element-store temp (push/set move-in)" "${VEC_ELEM_STORE_TEMP_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "HashMap entries owned-pair snapshot" "${HASHMAP_ENTRIES_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "owned-Vec retained param-embed temp (push/set/Arena)" "${VEC_PARAM_EMBED_TEMP_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "fresh Vec index projection" "${FRESH_VEC_INDEX_PROJECTION_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "Rc/Weak graph replacement lifecycle" "${RC_WEAK_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "iterative string merge ownership" "${SORT_STRINGS_MERGE_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "owned string return carrier" "${OWNED_STRING_RETURN_CARRIER_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "drop-only Receiver Vec lifecycle" "${VEC_RECEIVER_DROP_ONLY_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 if run_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_BIN}" 0; then
-  pass=$((pass + 1))
+    pass=$((pass + 1))
 else
-  fail=$((fail + 1))
+    fail=$((fail + 1))
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo ""
 echo "=== asan-fixture-check: ${pass} passed, ${fail} failed ==="
 if [[ "${fail}" -ne 0 ]]; then
-  exit 1
+    exit 1
 fi
 
 # Every verdict above is spelled out by hand, so this gate cannot enumerate an
 # empty corpus — but it CAN shrink one deleted block at a time, and "0 passed,
 # 0 failed" is a clean exit, so reject an empty verdict set.
-corpus_nonempty_assert "asan-fixture-gates" "$(( pass + fail ))"
+corpus_nonempty_assert "asan-fixture-gates" "$((pass + fail))"

@@ -165,13 +165,13 @@ repros/p0c_method_value_failclosed.hew
 
 # repro-wip (#3094): fluent consumed-resource transfer ends the child's owner
 # generation before the carried handoff
-repros/3094_consume_param_transfer_builder.hew
+repros/3094_consume_param_transfer_builder.hew E_MIR_CHECK
 
 # repro-wip (#3104): receive-generator suspension cleanup retains a stale drop
 # after transferring an owned record/enum yield
-repros/3104_receive_gen_fn_owned_enum_yield.hew
-repros/3104_receive_gen_fn_owned_record_yield.hew
-repros/3104_receive_gen_fn_record_stream_break.hew
+repros/3104_receive_gen_fn_owned_enum_yield.hew E_MIR_CHECK
+repros/3104_receive_gen_fn_owned_record_yield.hew E_MIR_CHECK
+repros/3104_receive_gen_fn_record_stream_break.hew E_MIR_CHECK
 
 # ── tests/ownership-balance/ ───────────────────────────────────────────────
 

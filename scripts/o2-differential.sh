@@ -5,11 +5,12 @@
 # `.hew` program must behave IDENTICALLY at -O0 and -O2. The optimizer may
 # reshape IR arbitrarily; it must never change what a program DOES.
 #
-# WHAT it proves: RUNTIME identity (path-qualified identity + per-test outcome),
-# NOT IR/ll identity — `default<O2>` reshapes IR by design, so byte identity is
-# meaningless here. A divergence between the O0 and O2 run IS a miscompile and a
-# FULL STOP: root-cause it to the upstream UB (a missed lifetime marker, a wrong
-# ABI attribute, an aliasing violation), NEVER weaken the pipeline.
+# WHAT it proves: RUNTIME identity (path-qualified identity + per-test outcome +
+# semantic failure kind), NOT IR/ll identity — `default<O2>` reshapes IR by
+# design, so byte identity is meaningless here. A divergence between the O0 and
+# O2 run IS a miscompile and a FULL STOP: root-cause it to the upstream UB (a
+# missed lifetime marker, a wrong ABI attribute, an aliasing violation), NEVER
+# weaken the pipeline.
 #
 # HOW: runs `hew test tests/hew/` twice over the same binary — once at the O0
 # default, once with `HEW_OPT_LEVEL=2` forcing the whole corpus through the O2
@@ -118,9 +119,9 @@ fi
 
 # Extract sorted path-qualified outcomes from the same JUnit schema CI reads.
 # The full per-test outcome set (not just the count) is the comparison key — a
-# miscompile that flips one test from PASS to FAIL (or vice versa, or changes
-# which tests fail) is caught, including swaps between same-named tests in
-# different source files.
+# miscompile that flips one test from PASS to FAIL, changes the failure kind,
+# or changes which test fails is caught, including swaps between same-named
+# tests in different source files.
 run_outcomes() {
     local opt_env="$1"
     local label="$2"
@@ -130,13 +131,17 @@ run_outcomes() {
     local rc=0
     env HEW_OPT_LEVEL="$opt_env" "$HEW_BIN" test "$TESTS_DIR" --format junit \
         >"$report" 2>"$stderr" || rc=$?
-    if ! parsed="$(python3 "$HEW_JUNIT_PY" --runner-exit "$rc" "$report")"; then
+    if ! parsed="$("${PYTHON:-python3}" "$HEW_JUNIT_PY" --runner-exit "$rc" "$report")"; then
         echo "__INVALID_REPORT__"
         cat "$stderr" >&2
         return
     fi
     printf '%s\n' "$parsed" |
-        awk -F'\t' '$1 != "__SUMMARY__" { print "test " $2 " ... " $1 }' |
+        awk -F'\t' '$1 != "__SUMMARY__" {
+            line = "test " $2 " ... " $1
+            if ($3 != "") line = line "\t" $3
+            print line
+        }' |
         sort
 }
 

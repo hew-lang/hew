@@ -847,6 +847,7 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
     // that diagnostic into the same line-scoped form LLDB reports; every
     // other debugger error remains fatal.
     let gdb_reports_unavailable = dbg == "gdb"
+        && out.status.code() == Some(1)
         && stderr
             .lines()
             .any(|line| line.contains("value has been optimized out"));

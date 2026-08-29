@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
+use serde::Deserialize;
 
 use crate::Result;
 
@@ -15,6 +16,8 @@ struct Options {
     output: PathBuf,
     platform: String,
     runner_exit: i32,
+    full_inventory: Option<PathBuf>,
+    selected_inventory: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -91,6 +94,52 @@ struct Report {
     counts: Counts,
 }
 
+#[derive(Debug, Deserialize)]
+struct InventoryDocument {
+    #[serde(rename = "test-count")]
+    test_count: usize,
+    #[serde(rename = "rust-suites")]
+    rust_suites: BTreeMap<String, InventorySuite>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InventorySuite {
+    #[serde(rename = "binary-id")]
+    binary_id: String,
+    status: String,
+    testcases: BTreeMap<String, InventoryCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InventoryCase {
+    ignored: bool,
+    #[serde(rename = "filter-match")]
+    filter_match: InventoryFilter,
+}
+
+#[derive(Debug, Deserialize)]
+struct InventoryFilter {
+    status: String,
+}
+
+#[derive(Debug)]
+struct FilteredInventories {
+    full: BTreeSet<Identity>,
+    selected: BTreeSet<Identity>,
+}
+
+impl FilteredInventories {
+    fn new(full: BTreeSet<Identity>, selected: BTreeSet<Identity>) -> Result<Self> {
+        if let Some(unexpected) = selected.difference(&full).next() {
+            return Err(format!(
+                "selected nextest inventory contains a test absent from the full inventory: {}",
+                unexpected.label()
+            ));
+        }
+        Ok(Self { full, selected })
+    }
+}
+
 type Expected = (Outcome, String);
 
 #[derive(Debug, Default)]
@@ -158,7 +207,34 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         let ledger = fs::read_to_string(&options.ledger)
             .map_err(|err| format!("read {}: {err}", options.ledger.display()))?;
         let expected = parse_ledger(&ledger, &options.platform)?;
-        Ok(evaluate(&report, expected, options.runner_exit))
+        let filtered_inventories = match (
+            options.full_inventory.as_ref(),
+            options.selected_inventory.as_ref(),
+        ) {
+            (None, None) => None,
+            (Some(full_path), Some(selected_path)) => {
+                let full_json = fs::read_to_string(full_path)
+                    .map_err(|err| format!("read {}: {err}", full_path.display()))?;
+                let full = parse_inventory(&full_json, &full_path.display().to_string())?;
+                let selected_json = fs::read_to_string(selected_path)
+                    .map_err(|err| format!("read {}: {err}", selected_path.display()))?;
+                let selected =
+                    parse_inventory(&selected_json, &selected_path.display().to_string())?;
+                Some(FilteredInventories::new(full, selected)?)
+            }
+            _ => {
+                return Err(
+                    "--full-inventory and --selected-inventory must be provided together"
+                        .to_string(),
+                )
+            }
+        };
+        Ok(evaluate(
+            &report,
+            expected,
+            options.runner_exit,
+            filtered_inventories.as_ref(),
+        ))
     })();
 
     let evaluation = match result {
@@ -187,7 +263,7 @@ pub(super) fn run(args: &[String]) -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "usage: cargo run -p xtask -- nextest-ratchet --junit <raw.xml> --ledger <ledger.tsv> --output <ratchet.xml> --platform <name> --runner-exit <code>"
+    "usage: cargo run -p xtask -- nextest-ratchet --junit <raw.xml> --ledger <ledger.tsv> --output <ratchet.xml> --platform <name> --runner-exit <code> [--full-inventory <nextest-list.json> --selected-inventory <nextest-list.json>]"
 }
 
 fn parse_options(args: &[String]) -> Result<Options> {
@@ -197,7 +273,13 @@ fn parse_options(args: &[String]) -> Result<Options> {
         let flag = args[index].as_str();
         if !matches!(
             flag,
-            "--junit" | "--ledger" | "--output" | "--platform" | "--runner-exit"
+            "--junit"
+                | "--ledger"
+                | "--output"
+                | "--platform"
+                | "--runner-exit"
+                | "--full-inventory"
+                | "--selected-inventory"
         ) {
             return Err(format!("unknown nextest-ratchet option: {flag}"));
         }
@@ -223,6 +305,12 @@ fn parse_options(args: &[String]) -> Result<Options> {
         runner_exit: get("--runner-exit")?
             .parse()
             .map_err(|_| "--runner-exit must be an integer".to_string())?,
+        full_inventory: values
+            .get("--full-inventory")
+            .map(|value| PathBuf::from(*value)),
+        selected_inventory: values
+            .get("--selected-inventory")
+            .map(|value| PathBuf::from(*value)),
     })
 }
 
@@ -569,10 +657,68 @@ fn parse_ledger(text: &str, platform: &str) -> Result<BTreeMap<Identity, Expecte
     Ok(selected)
 }
 
+fn parse_inventory(text: &str, source: &str) -> Result<BTreeSet<Identity>> {
+    if text.trim().is_empty() {
+        return Err(format!("nextest inventory {source} is empty"));
+    }
+    let inventory: InventoryDocument = serde_json::from_str(text)
+        .map_err(|error| format!("parse nextest inventory {source}: {error}"))?;
+    let mut enumerated = 0usize;
+    let mut runnable = BTreeSet::new();
+    for (suite_key, suite) in inventory.rust_suites {
+        if suite.binary_id != suite_key || suite.binary_id.is_empty() {
+            return Err(format!(
+                "nextest inventory {source} suite key {suite_key:?} does not match binary-id {:?}",
+                suite.binary_id
+            ));
+        }
+        if suite.status != "listed" && !suite.status.starts_with("skipped") {
+            return Err(format!(
+                "nextest inventory {source} suite {suite_key:?} has unknown status {:?}",
+                suite.status
+            ));
+        }
+        if suite.status.starts_with("skipped") && !suite.testcases.is_empty() {
+            return Err(format!(
+                "nextest inventory {source} skipped suite {suite_key:?} contains testcases"
+            ));
+        }
+        for (test_name, testcase) in suite.testcases {
+            enumerated = enumerated
+                .checked_add(1)
+                .ok_or_else(|| format!("nextest inventory {source} testcase count overflow"))?;
+            if test_name.is_empty() {
+                return Err(format!(
+                    "nextest inventory {source} suite {suite_key:?} contains an empty test name"
+                ));
+            }
+            let filter_status = testcase.filter_match.status;
+            let matches = match filter_status.as_str() {
+                "matches" => true,
+                "mismatch" => false,
+                _ => return Err(format!(
+                    "nextest inventory {source} testcase {suite_key} :: {test_name} has unknown filter-match status {filter_status:?}"
+                )),
+            };
+            if !testcase.ignored && matches {
+                runnable.insert(Identity(suite.binary_id.clone(), test_name));
+            }
+        }
+    }
+    if inventory.test_count != enumerated {
+        return Err(format!(
+            "nextest inventory {source} count mismatch: declared {}, found {enumerated}",
+            inventory.test_count
+        ));
+    }
+    Ok(runnable)
+}
+
 fn evaluate(
     report: &Report,
     mut expected: BTreeMap<Identity, Expected>,
     runner_exit: i32,
+    filtered_inventories: Option<&FilteredInventories>,
 ) -> Evaluation {
     let mut result = Evaluation::default();
     for (identity, case) in &report.cases {
@@ -616,6 +762,11 @@ fn evaluate(
         }
     }
     for (identity, (outcome, reason)) in expected {
+        if filtered_inventories.is_some_and(|inventories| {
+            inventories.full.contains(&identity) && !inventories.selected.contains(&identity)
+        }) {
+            continue;
+        }
         result.failures.push(format!(
             "expected {} is absent: {} ({})",
             outcome.ledger_name().unwrap(),
@@ -702,6 +853,32 @@ mod tests {
         .unwrap()
     }
 
+    fn inventory(cases: &[(&str, bool, &str)], count: usize) -> String {
+        let testcases = cases
+            .iter()
+            .map(|(name, ignored, filter_status)| {
+                (
+                    (*name).to_string(),
+                    serde_json::json!({
+                        "ignored": ignored,
+                        "filter-match": { "status": filter_status },
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        serde_json::json!({
+            "test-count": count,
+            "rust-suites": {
+                "bin": {
+                    "binary-id": "bin",
+                    "status": "listed",
+                    "testcases": testcases,
+                },
+            },
+        })
+        .to_string()
+    }
+
     #[test]
     fn exact_failure_matches_and_unexpected_pass_does_not() {
         let report = scan(&xml(
@@ -712,12 +889,12 @@ mod tests {
             0,
         ))
         .unwrap();
-        let exact = evaluate(&report, ledger("failure"), 100);
+        let exact = evaluate(&report, ledger("failure"), 100, None);
         assert!(exact.exact());
         assert_eq!(exact.matched.len(), 1);
 
         let pass = scan(&xml("<testcase name=\"test\"/>", 1, 0, 0, 0)).unwrap();
-        assert!(!evaluate(&pass, ledger("failure"), 0).exact());
+        assert!(!evaluate(&pass, ledger("failure"), 0, None).exact());
     }
 
     #[test]
@@ -730,10 +907,10 @@ mod tests {
             0,
         ))
         .unwrap();
-        let changed = evaluate(&report, ledger("failure"), 100);
+        let changed = evaluate(&report, ledger("failure"), 100, None);
         assert!(changed.failures[0].contains("changed from failure to timeout"));
-        assert!(!evaluate(&report, BTreeMap::new(), 100).exact());
-        assert!(!evaluate(&report, ledger("timeout"), 0).exact());
+        assert!(!evaluate(&report, BTreeMap::new(), 100, None).exact());
+        assert!(!evaluate(&report, ledger("timeout"), 0, None).exact());
     }
 
     #[test]
@@ -752,7 +929,9 @@ mod tests {
                 0,
             ))
             .unwrap();
-            assert!(!evaluate(&report, ledger("failure"), 100).errors.is_empty());
+            assert!(!evaluate(&report, ledger("failure"), 100, None)
+                .errors
+                .is_empty());
         }
 
         let report = scan(&xml(
@@ -763,7 +942,9 @@ mod tests {
             0,
         ))
         .unwrap();
-        assert!(!evaluate(&report, BTreeMap::new(), 0).errors.is_empty());
+        assert!(!evaluate(&report, BTreeMap::new(), 0, None)
+            .errors
+            .is_empty());
     }
 
     #[test]
@@ -798,6 +979,98 @@ mod tests {
         .is_err());
         assert!(parse_ledger("linx\tfailure\tbin\ta\tone", "linux").is_err());
         assert!(parse_ledger("", "solaris").is_err());
+    }
+
+    #[test]
+    fn filtered_run_ignores_only_known_runnable_tests_absent_from_junit() {
+        let report = scan(&xml("<testcase name=\"selected\"/>", 1, 0, 0, 0)).unwrap();
+        let full = parse_inventory(
+            &inventory(
+                &[("test", false, "matches"), ("selected", false, "matches")],
+                2,
+            ),
+            "counterfactual",
+        )
+        .unwrap();
+        let selected = parse_inventory(
+            &inventory(
+                &[("test", false, "mismatch"), ("selected", false, "matches")],
+                2,
+            ),
+            "counterfactual",
+        )
+        .unwrap();
+        let filtered = FilteredInventories::new(full.clone(), selected).unwrap();
+        assert!(evaluate(&report, ledger("failure"), 0, Some(&filtered)).exact());
+
+        let stale_inventories = FilteredInventories::new(BTreeSet::new(), BTreeSet::new()).unwrap();
+        let stale = evaluate(&report, ledger("failure"), 0, Some(&stale_inventories));
+        assert!(stale.failures[0].contains("expected failure is absent"));
+
+        let selected_but_missing = FilteredInventories::new(full.clone(), full).unwrap();
+        let missing = evaluate(&report, ledger("failure"), 0, Some(&selected_but_missing));
+        assert!(
+            missing.failures[0].contains("expected failure is absent"),
+            "a selected test missing from JUnit must not be mistaken for a filter exclusion"
+        );
+        assert!(!evaluate(&report, ledger("failure"), 0, None).exact());
+    }
+
+    #[test]
+    fn inventory_cannot_hide_an_expected_test_that_ran_or_is_not_runnable() {
+        let pass = scan(&xml("<testcase name=\"test\"/>", 1, 0, 0, 0)).unwrap();
+        let full = parse_inventory(
+            &inventory(&[("test", false, "matches")], 1),
+            "counterfactual",
+        )
+        .unwrap();
+        let available = FilteredInventories::new(full.clone(), full).unwrap();
+        assert!(!evaluate(&pass, ledger("failure"), 0, Some(&available)).exact());
+
+        let unrelated = scan(&xml("<testcase name=\"selected\"/>", 1, 0, 0, 0)).unwrap();
+        for testcase in [("test", true, "matches"), ("test", false, "mismatch")] {
+            let unavailable =
+                parse_inventory(&inventory(&[testcase], 1), "counterfactual").unwrap();
+            let inventories = FilteredInventories::new(unavailable.clone(), unavailable).unwrap();
+            assert!(!evaluate(&unrelated, ledger("failure"), 0, Some(&inventories)).exact());
+        }
+    }
+
+    #[test]
+    fn selected_inventory_must_be_a_subset_of_the_full_inventory() {
+        let selected = BTreeSet::from([Identity("bin".into(), "test".into())]);
+        assert!(FilteredInventories::new(BTreeSet::new(), selected).is_err());
+    }
+
+    #[test]
+    fn inventory_parser_fails_closed_on_schema_and_count_drift() {
+        assert!(parse_inventory("", "counterfactual").is_err());
+        assert!(parse_inventory(
+            &inventory(&[("test", false, "matches")], 2),
+            "counterfactual"
+        )
+        .is_err());
+        assert!(parse_inventory(
+            &inventory(&[("test", false, "future")], 1),
+            "counterfactual"
+        )
+        .is_err());
+        assert!(parse_inventory(
+            r#"{"test-count":0,"rust-suites":{"wrong":{"binary-id":"bin","status":"listed","testcases":{}}}}"#,
+            "counterfactual"
+        )
+        .is_err());
+        assert!(parse_inventory(
+            r#"{"test-count":0,"rust-suites":{"bin":{"binary-id":"bin","status":"skipped-default-filter","testcases":{}}}}"#,
+            "counterfactual"
+        )
+        .unwrap()
+        .is_empty());
+        assert!(parse_inventory(
+            r#"{"test-count":1,"rust-suites":{"bin":{"binary-id":"bin","status":"skipped-default-filter","testcases":{"test":{"ignored":false,"filter-match":{"status":"matches"}}}}}}"#,
+            "counterfactual"
+        )
+        .is_err());
     }
 
     #[test]

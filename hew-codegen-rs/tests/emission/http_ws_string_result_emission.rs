@@ -12,6 +12,10 @@ use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
+use crate::ir_assertions::{
+    assert_consumed_string_result_cleanup, assert_target_call, cleanup_strategy,
+};
+
 const MEASURED: &[(&str, usize)] = &[
     ("hew_http_request_body_string", 2),
     ("hew_http_request_header", 2),
@@ -68,7 +72,7 @@ fn source() -> String {
     source
 }
 
-fn emit_ll(source: &str) -> String {
+fn emit_ll(source: &str, target_triple: Option<&str>, slug: &str) -> String {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -89,14 +93,17 @@ fn emit_ll(source: &str) -> String {
         "MIR diagnostics must be empty before codegen: {:#?}",
         pipeline.diagnostics
     );
-    let out_dir = std::env::temp_dir().join("hew-http-ws-string-result-emission");
-    std::fs::create_dir_all(&out_dir).expect("create codegen out_dir");
+    let prefix = format!("hew-http-ws-string-result-emission-{slug}-");
+    let out_dir = tempfile::Builder::new()
+        .prefix(&prefix)
+        .tempdir()
+        .expect("create codegen out_dir");
     let options = EmitOptions {
         module_name: "http_ws_string_result_emission",
-        out_dir: &out_dir,
+        out_dir: out_dir.path(),
         native: false,
         wasm: false,
-        target_triple: None,
+        target_triple,
         debug: false,
         opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
@@ -123,90 +130,54 @@ fn function_ir<'a>(ll: &'a str, name: &str) -> &'a str {
     &body[..end + 2]
 }
 
-fn block_ir<'a>(function_ir: &'a str, label: &str) -> &'a str {
-    let marker = format!("\n{label}:");
-    let start = function_ir
-        .find(&marker)
-        .unwrap_or_else(|| panic!("LLVM function must contain block `{label}`:\n{function_ir}"))
-        + 1;
-    let body = &function_ir[start..];
-    let end = body.find("\n\n").unwrap_or(body.len());
-    &body[..end]
-}
-
-fn assert_consumed_string_result_cleanup(ir: &str, caller: &str, producer: &str) {
-    assert!(
-        ir.contains(&format!("invoke ptr @{producer}(")),
-        "{caller}: must invoke the canonical string producer `{producer}`:\n{ir}"
-    );
-    let release_blocks = ir
-        .split("\n\n")
-        .filter(|block| block.contains("call void @hew_string_drop("))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        release_blocks.len(),
-        2,
-        "{caller}: must have one normal and one mutually-exclusive unwind release block:\n{ir}"
-    );
-    assert_eq!(
-        release_blocks
-            .iter()
-            .filter(|block| block.contains("ret i64 "))
-            .count(),
-        1,
-        "{caller}: exactly one release block must be the normal return path:\n{ir}"
-    );
-    assert_eq!(
-        release_blocks
-            .iter()
-            .filter(|block| block.contains("resume "))
-            .count(),
-        1,
-        "{caller}: exactly one release block must be the unwind path:\n{ir}"
-    );
-    for block in release_blocks {
-        assert_eq!(
-            block.matches("call void @hew_string_drop(").count(),
-            1,
-            "{caller}: an executable cleanup path must release exactly once:\n{block}"
-        );
-        assert!(
-            block.contains("store ptr null"),
-            "{caller}: each release path must neutralize the temporary slot:\n{block}"
-        );
-    }
-    let producer_unwind = block_ir(ir, "invoke.cleanup");
-    assert_eq!(
-        producer_unwind
-            .matches("call void @hew_string_drop(")
-            .count(),
-        0,
-        "{caller}: producer unwind precedes result materialization and must not release:\n\
-         {producer_unwind}"
-    );
-}
-
 #[test]
 fn measured_http_ws_results_emit_exactly_one_release_through_forwarders() {
     let source = source();
-    let ll = emit_ll(&source);
-    for (symbol, _) in MEASURED {
-        let suffix = symbol.strip_prefix("hew_").unwrap();
-        let direct = format!("direct_{suffix}");
-        assert_consumed_string_result_cleanup(function_ir(&ll, &direct), &direct, symbol);
-        let wrapper = format!("wrap_{suffix}");
-        let forwarded = format!("forwarded_{suffix}");
-        assert_consumed_string_result_cleanup(function_ir(&ll, &forwarded), &forwarded, &wrapper);
+    for (slug, target_triple) in [
+        ("host", None),
+        ("windows-msvc", Some("x86_64-pc-windows-msvc")),
+    ] {
+        let ll = emit_ll(&source, target_triple, slug);
+        let strategy = cleanup_strategy(&ll);
+        for (symbol, _) in MEASURED {
+            let suffix = symbol.strip_prefix("hew_").unwrap();
+            let direct = format!("direct_{suffix}");
+            assert_consumed_string_result_cleanup(
+                &ll,
+                function_ir(&ll, &direct),
+                &direct,
+                symbol,
+                2,
+                1,
+            );
+            let wrapper = format!("wrap_{suffix}");
+            let forwarded = format!("forwarded_{suffix}");
+            assert_consumed_string_result_cleanup(
+                &ll,
+                function_ir(&ll, &forwarded),
+                &forwarded,
+                &wrapper,
+                1,
+                2,
+            );
 
-        let ir = function_ir(&ll, &wrapper);
-        assert!(
-            ir.contains(&format!("invoke ptr @{symbol}(")),
-            "{wrapper}: must invoke the canonical runtime producer `{symbol}`:\n{ir}"
-        );
-        assert_eq!(
-            ir.matches("call void @hew_string_drop(").count(),
-            0,
-            "{wrapper}: forwarding `{symbol}` must not release it early:\n{ir}"
-        );
+            let ir = function_ir(&ll, &wrapper);
+            assert_target_call(
+                ir,
+                strategy,
+                &format!("ptr @{symbol}("),
+                &format!("{wrapper}'s canonical runtime producer"),
+            );
+            assert_eq!(
+                ir.matches("call void @hew_string_drop(").count(),
+                0,
+                "{wrapper}: forwarding `{symbol}` must not release it early:\n{ir}"
+            );
+            assert!(
+                ir.contains("store ptr null") && !ir.contains("hew_cont_crash_cleanup"),
+                "{wrapper}: return transfer must neutralize its staging slot without \
+                 retaining frame-local cleanup authority:\n{ir}"
+            );
+        }
     }
 }

@@ -15,6 +15,8 @@ use hew_mir::{
 };
 use hew_types::{BuiltinType, ResolvedTy};
 
+use crate::ir_assertions::{assert_target_call, cleanup_strategy, target_call_count};
+
 /// Build a minimal pipeline that exercises the three E4 codegen seams:
 /// the `hew_duplex_pair` out-param call, the `hew_duplex_send` message
 /// call, and the `hew_duplex_close` drop ritual. The locals layout
@@ -251,8 +253,16 @@ fn duplex_runtime_decls_match_c_abi_shapes() {
 fn duplex_exemplar_emits_one_call_per_site() {
     let pipeline = duplex_exemplar_pipeline();
     let ll = emit_textual_ll(&pipeline, "duplex_call_sites");
-    let pair_calls = ll.matches("invoke i32 @hew_duplex_pair").count();
-    let send_calls = ll.matches("invoke i32 @hew_duplex_send").count();
+    let strategy = cleanup_strategy(&ll);
+    assert_target_call(
+        &ll,
+        strategy,
+        "i32 @hew_duplex_pair",
+        "duplex pair construction",
+    );
+    assert_target_call(&ll, strategy, "i32 @hew_duplex_send", "duplex send");
+    let pair_calls = target_call_count(&ll, strategy, "i32 @hew_duplex_pair");
+    let send_calls = target_call_count(&ll, strategy, "i32 @hew_duplex_send");
     let close_calls = ll.matches("call i32 @hew_duplex_close").count();
     assert_eq!(
         pair_calls, 1,

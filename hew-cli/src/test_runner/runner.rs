@@ -77,10 +77,54 @@ const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum TestOutcome {
     /// Test passed.
     Passed,
-    /// Test failed with an error message.
-    Failed(String),
+    /// Test failed with a semantic kind and diagnostic.
+    Failed(TestFailure),
     /// Test was ignored (not run).
     Ignored,
+}
+
+impl TestOutcome {
+    pub(crate) fn failed(kind: TestFailureKind, message: impl Into<String>) -> Self {
+        Self::Failed(TestFailure {
+            kind,
+            message: message.into(),
+        })
+    }
+}
+
+/// Stable stage at which a compiled Hew test failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestFailureKind {
+    /// The synthetic test program could not be compiled.
+    Compile,
+    /// The compiled program ran and reported failure.
+    Runtime,
+    /// The compiled program exceeded its execution deadline.
+    Timeout,
+    /// The compiled program could not be started.
+    Launch,
+}
+
+impl TestFailureKind {
+    /// Stable `JUnit` value consumed by the compiled-test ratchets.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Compile => "compile",
+            Self::Runtime => "runtime",
+            Self::Timeout => "timeout",
+            Self::Launch => "launch",
+        }
+    }
+}
+
+/// Diagnostic attached to a failed compiled Hew test.
+#[derive(Debug)]
+pub struct TestFailure {
+    /// Semantic stage at which the test failed.
+    pub kind: TestFailureKind,
+    /// Human-readable diagnostic; not part of the ratchet identity.
+    pub message: String,
 }
 
 /// Result of a single test execution.
@@ -237,7 +281,10 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                     failed += 1;
                     results.push(TestResult {
                         test: (*test).clone(),
-                        outcome: TestOutcome::Failed(format!("cannot read {file}: {e}")),
+                        outcome: TestOutcome::failed(
+                            TestFailureKind::Compile,
+                            format!("cannot read {file}: {e}"),
+                        ),
                         output: String::new(),
                         duration: Duration::ZERO,
                     });
@@ -325,7 +372,10 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                 for test in file_tests {
                     result_slots[result_index] = Some(TestResult {
                         test: test.clone(),
-                        outcome: TestOutcome::Failed(format!("cannot read {file}: {error}")),
+                        outcome: TestOutcome::failed(
+                            TestFailureKind::Compile,
+                            format!("cannot read {file}: {error}"),
+                        ),
                         output: String::new(),
                         duration: Duration::ZERO,
                     });
@@ -511,11 +561,12 @@ fn run_single_test(
         Ok(artifact) => artifact,
         Err(msg) => {
             let outcome = if test.should_panic {
-                TestOutcome::Failed(format!(
-                    "compile error (expected panic, got compile error): {msg}"
-                ))
+                TestOutcome::failed(
+                    TestFailureKind::Compile,
+                    format!("compile error (expected panic, got compile error): {msg}"),
+                )
             } else {
-                TestOutcome::Failed(format!("compile error: {msg}"))
+                TestOutcome::failed(TestFailureKind::Compile, format!("compile error: {msg}"))
             };
             return TestResult {
                 test: test.clone(),
@@ -535,8 +586,9 @@ fn run_single_test(
             if test.should_panic {
                 TestResult {
                     test: test.clone(),
-                    outcome: TestOutcome::Failed(
-                        "expected test to panic, but it completed successfully".into(),
+                    outcome: TestOutcome::failed(
+                        TestFailureKind::Runtime,
+                        "expected test to panic, but it completed successfully",
                     ),
                     output: stdout,
                     duration,
@@ -566,7 +618,7 @@ fn run_single_test(
                 };
                 TestResult {
                     test: test.clone(),
-                    outcome: TestOutcome::Failed(msg),
+                    outcome: TestOutcome::failed(TestFailureKind::Runtime, msg),
                     output: stdout,
                     duration,
                 }
@@ -574,16 +626,22 @@ fn run_single_test(
         }
         Ok(crate::process::BinaryRunOutcome::Timeout) => TestResult {
             test: test.clone(),
-            outcome: TestOutcome::Failed(format!(
-                "test timed out after {}",
-                crate::process::format_timeout(timeout)
-            )),
+            outcome: TestOutcome::failed(
+                TestFailureKind::Timeout,
+                format!(
+                    "test timed out after {}",
+                    crate::process::format_timeout(timeout)
+                ),
+            ),
             output: String::new(),
             duration,
         },
         Err(e) => TestResult {
             test: test.clone(),
-            outcome: TestOutcome::Failed(format!("cannot execute test binary: {e}")),
+            outcome: TestOutcome::failed(
+                TestFailureKind::Launch,
+                format!("cannot execute test binary: {e}"),
+            ),
             output: String::new(),
             duration,
         },
@@ -691,8 +749,8 @@ mod tests {
             .results
             .iter()
             .filter_map(|result| match &result.outcome {
-                TestOutcome::Failed(reason) => {
-                    Some(format!("{} FAILED: {reason}", result.test.name))
+                TestOutcome::Failed(failure) => {
+                    Some(format!("{} FAILED: {}", result.test.name, failure.message))
                 }
                 TestOutcome::Ignored => Some(format!("{} ignored", result.test.name)),
                 TestOutcome::Passed => None,
@@ -720,21 +778,23 @@ mod tests {
     fn run_inline_with_timeout(source: &str, timeout: Duration) -> TestSummary {
         let result = hew_parser::parse(source);
         let tests = discovery::discover_tests(&result.program, "<inline>");
-        // Write source to a unique temp file so the runner can read it.
-        let thread_name = std::thread::current()
-            .name()
-            .unwrap_or("unknown")
-            .replace("::", "_");
-        let tmp = std::env::temp_dir().join(format!("hew_test_inline_{thread_name}.hew"));
-        std::fs::write(&tmp, source).unwrap();
+        // Keep each invocation's source isolated from concurrent test processes
+        // and worktrees. The directory handle removes it after `run_tests`
+        // finishes, while the stable `.hew` basename preserves source semantics.
+        let source_dir = tempfile::Builder::new()
+            .prefix("hew_test_inline_")
+            .tempdir()
+            .expect("create inline test source directory");
+        let source_path = source_dir.path().join("inline.hew");
+        std::fs::write(&source_path, source).expect("write inline test source");
         let tests: Vec<TestCase> = tests
             .into_iter()
             .map(|mut t| {
-                t.file = tmp.display().to_string();
+                t.file = source_path.display().to_string();
                 t
             })
             .collect();
-        run_tests(
+        let summary = run_tests(
             &tests,
             TestRunOptions {
                 filter: None,
@@ -745,7 +805,9 @@ mod tests {
                 jobs: 1,
                 sir_mode: crate::compile::SirMode::Disabled,
             },
-        )
+        );
+        drop(source_dir);
+        summary
     }
 
     #[test]
@@ -814,9 +876,46 @@ fn test_bad_eq() {
 ",
         );
         assert_eq!(summary.failed, 1, "{}", describe(&summary));
-        if let TestOutcome::Failed(msg) = &summary.results[0].outcome {
-            assert!(msg.contains("assert_eq"), "error message: {msg}");
+        if let TestOutcome::Failed(failure) = &summary.results[0].outcome {
+            assert_eq!(failure.kind, TestFailureKind::Runtime);
+            assert!(
+                failure.message.contains("assert_eq"),
+                "error message: {}",
+                failure.message
+            );
         }
+    }
+
+    #[test]
+    fn compile_failure_has_compile_kind() {
+        if !require_codegen() {
+            return;
+        }
+        let summary = run_inline(
+            r#"
+#[test]
+fn test_compile_failure() {
+    let value: i64 = "not an integer";
+    assert_eq(value, 0);
+}
+"#,
+        );
+        assert_eq!(summary.failed, 1, "{}", describe(&summary));
+        match &summary.results[0].outcome {
+            TestOutcome::Failed(failure) => {
+                assert_eq!(failure.kind, TestFailureKind::Compile);
+                assert!(!failure.message.is_empty());
+            }
+            outcome => panic!("expected compile failure, got {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn failure_kind_junit_values_are_stable() {
+        assert_eq!(TestFailureKind::Compile.as_str(), "compile");
+        assert_eq!(TestFailureKind::Runtime.as_str(), "runtime");
+        assert_eq!(TestFailureKind::Timeout.as_str(), "timeout");
+        assert_eq!(TestFailureKind::Launch.as_str(), "launch");
     }
 
     #[test]
@@ -890,7 +989,10 @@ fn test_timeout() {
         );
         assert_eq!(summary.failed, 1, "{}", describe(&summary));
         match &summary.results[0].outcome {
-            TestOutcome::Failed(message) => assert!(message.contains("timed out after 100ms")),
+            TestOutcome::Failed(failure) => {
+                assert_eq!(failure.kind, TestFailureKind::Timeout);
+                assert!(failure.message.contains("timed out after 100ms"));
+            }
             outcome => panic!("expected timeout failure, got {outcome:?}"),
         }
     }

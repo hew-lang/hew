@@ -24,7 +24,10 @@ def identity(index: int) -> str:
 
 
 def write_junit(
-    path: Path, identities: list[str], failed: set[str] | None = None
+    path: Path,
+    identities: list[str],
+    failed: set[str] | None = None,
+    failure_kind: str = "runtime",
 ) -> None:
     failed = failed or set()
     root = ET.Element(
@@ -45,7 +48,12 @@ def write_junit(
         classname, name = value.rsplit("::", 1)
         testcase = ET.SubElement(suite, "testcase", classname=classname, name=name)
         if value in failed:
-            failure = ET.SubElement(testcase, "failure", message="forced assertion")
+            failure = ET.SubElement(
+                testcase,
+                "failure",
+                type=failure_kind,
+                message="forced assertion",
+            )
             failure.text = "forced diagnostic text"
             system_out = ET.SubElement(testcase, "system-out")
             system_out.text = "forced fixture output"
@@ -147,6 +155,31 @@ class CompiledHewShardTests(unittest.TestCase):
         result = self.aggregate("differential", expect=1)
         self.assertIn("O0/O2 shard outcomes differ", result.stderr)
 
+    def test_o2_failure_kind_drift_fails(self) -> None:
+        values = self.full[0::SHARDS]
+        failed = {values[0]}
+        for actual_kind in ("runtime", "timeout", "launch"):
+            with self.subTest(actual_kind=actual_kind):
+                write_junit(
+                    self.reports / "hew-o0-shard-1.xml",
+                    values,
+                    failed=failed,
+                    failure_kind="compile",
+                )
+                write_junit(
+                    self.reports / "hew-o2-shard-1.xml",
+                    values,
+                    failed=failed,
+                    failure_kind=actual_kind,
+                )
+
+                result = self.aggregate("differential", expect=1)
+                self.assertIn("O0/O2 shard outcomes differ", result.stderr)
+                self.assertIn(
+                    f"O0=compile O2={actual_kind}",
+                    result.stderr,
+                )
+
     def test_unexpected_o0_failure_fails_ratchet(self) -> None:
         values = self.full[0::SHARDS]
         write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={values[0]})
@@ -163,14 +196,14 @@ class CompiledHewShardTests(unittest.TestCase):
             and value.rsplit("::", 1)[1] == tracked.rsplit("::", 1)[1]
         ]
         self.assertTrue(same_name)
-        self.expected.write_text(f"{tracked}\n", encoding="utf-8")
+        self.expected.write_text(f"{tracked} runtime\n", encoding="utf-8")
         write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={tracked})
 
         self.assertIn("ratchet passed", self.aggregate("ratchet").stdout)
 
     def test_expected_failure_must_belong_to_the_inventory(self) -> None:
         self.expected.write_text(
-            "tests/hew/not_present_test.hew::test_missing\n", encoding="utf-8"
+            "tests/hew/not_present_test.hew::test_missing compile\n", encoding="utf-8"
         )
 
         result = self.aggregate("ratchet", expect=1)
@@ -178,10 +211,50 @@ class CompiledHewShardTests(unittest.TestCase):
 
     def test_duplicate_expected_failure_is_rejected(self) -> None:
         tracked = self.full[0]
-        self.expected.write_text(f"{tracked}\n{tracked}\n", encoding="utf-8")
+        self.expected.write_text(
+            f"{tracked} compile\n{tracked} compile\n", encoding="utf-8"
+        )
 
         result = self.aggregate("ratchet", expect=1)
         self.assertIn("duplicate identities", result.stderr)
+
+    def test_expected_failure_kind_must_match(self) -> None:
+        values = self.full[0::SHARDS]
+        tracked = values[0]
+        self.expected.write_text(f"{tracked} compile\n", encoding="utf-8")
+        for actual_kind in ("runtime", "timeout", "launch"):
+            with self.subTest(actual_kind=actual_kind):
+                write_junit(
+                    self.reports / "hew-o0-shard-1.xml",
+                    values,
+                    failed={tracked},
+                    failure_kind=actual_kind,
+                )
+
+                result = self.aggregate("ratchet", expect=1)
+                self.assertIn("failure kinds differ", result.stderr)
+                self.assertIn(
+                    f"expected=compile actual={actual_kind}",
+                    result.stderr,
+                )
+
+    def test_expected_failure_requires_a_supported_kind(self) -> None:
+        tracked = self.full[0]
+        self.expected.write_text(f"{tracked} crash\n", encoding="utf-8")
+
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("unsupported failure kind", result.stderr)
+
+    def test_junit_failure_requires_a_semantic_type(self) -> None:
+        values = self.full[0::SHARDS]
+        path = self.reports / "hew-o0-shard-1.xml"
+        write_junit(path, values, failed={values[0]})
+        tree = ET.parse(path)
+        tree.find(".//failure").attrib.pop("type")
+        tree.write(path, encoding="unicode", xml_declaration=True)
+
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("missing or unsupported semantic type", result.stderr)
 
     def test_report_names_the_failed_shard_test_and_diagnostic(self) -> None:
         values = self.full[0::SHARDS]
@@ -189,6 +262,7 @@ class CompiledHewShardTests(unittest.TestCase):
         result = self.report()
         self.assertIn("COMPILED_HEW_FAILURE shard=1 suite=O0", result.stdout)
         self.assertIn(f"test={values[0]}", result.stdout)
+        self.assertIn("kind=runtime", result.stdout)
         self.assertIn("forced assertion", result.stdout)
         self.assertIn("forced diagnostic text", result.stdout)
         self.assertIn("forced fixture output", result.stdout)

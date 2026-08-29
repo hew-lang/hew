@@ -520,6 +520,58 @@ pub enum OptLevel {
     O2,
 }
 
+/// How a target preserves lexical cleanup when a call does not return normally.
+///
+/// Most native targets use LLVM's structured `invoke`/landing-pad machinery.
+/// Wasm targets and Windows MSVC use Hew's typed crash-owner registry instead:
+/// Wasm has no native unwinder, while Inkwell does not currently expose the
+/// Windows funclet builders required to emit valid MSVC EH IR.
+///
+/// This is the production authority for choosing between those two lowering
+/// paths. Target-sensitive tests should query it rather than treating every
+/// non-Wasm target as an LLVM-EH target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupUnwindStrategy {
+    /// Emit LLVM `invoke`, landing-pad cleanup, and `resume` edges.
+    StructuredLlvm,
+    /// Emit ordinary calls and retain cleanup through the typed runtime registry.
+    CrashOwnerRegistry,
+}
+
+/// Cleanup capabilities that affect target-specific owner discovery and lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupTargetCapabilities {
+    /// The executable cleanup mechanism for non-returning calls.
+    pub unwind_strategy: CleanupUnwindStrategy,
+    /// Whether MIR `ExitPath::Unwind` plans are reachable on this target.
+    ///
+    /// MSVC retains these plans in its fallback registry because Rust may
+    /// unwind through a scheduler boundary. Wasm omits them because traps end
+    /// the instance and cancellation travels over a distinct explicit edge.
+    pub includes_unwind_plans: bool,
+}
+
+/// Return the cleanup capabilities supported by `target_triple`.
+#[must_use]
+pub fn cleanup_capabilities_for_target(target_triple: &str) -> CleanupTargetCapabilities {
+    if target_triple.starts_with("wasm32") {
+        CleanupTargetCapabilities {
+            unwind_strategy: CleanupUnwindStrategy::CrashOwnerRegistry,
+            includes_unwind_plans: false,
+        }
+    } else if target_triple.contains("windows-msvc") {
+        CleanupTargetCapabilities {
+            unwind_strategy: CleanupUnwindStrategy::CrashOwnerRegistry,
+            includes_unwind_plans: true,
+        }
+    } else {
+        CleanupTargetCapabilities {
+            unwind_strategy: CleanupUnwindStrategy::StructuredLlvm,
+            includes_unwind_plans: true,
+        }
+    }
+}
+
 impl OptLevel {
     /// Parse a CLI `--opt-level` value (`"0"` or `"2"`) into the enum.
     /// Returns `None` for any other value so the caller fails closed.
@@ -36177,12 +36229,14 @@ fn lower_function<'ctx>(
                 .collect()
         })
         .unwrap_or_default();
-    let unwind_enabled = !emit_wasm_entry_alias
-        && !llvm_mod
-            .get_triple()
-            .as_str()
-            .to_string_lossy()
-            .contains("windows-msvc");
+    let module_triple = llvm_mod
+        .get_triple()
+        .as_str()
+        .to_string_lossy()
+        .into_owned();
+    let cleanup_capabilities = cleanup_capabilities_for_target(&module_triple);
+    let unwind_enabled =
+        cleanup_capabilities.unwind_strategy == CleanupUnwindStrategy::StructuredLlvm;
     // Native LLVM-EH destroys every ordinary live local in its `invoke`
     // cleanup, so it normally needs no out-of-band owner registry. One edge is
     // not an invoke: FunctionEntry cooperate cancellation is synthesized here,
@@ -36215,7 +36269,7 @@ fn lower_function<'ctx>(
         func,
         elab,
         has_suspend,
-        !emit_wasm_entry_alias,
+        cleanup_capabilities.includes_unwind_plans,
         record_field_resolved_tys,
         enum_layouts,
         fn_symbols,

@@ -2,6 +2,9 @@
 // Add new structural-behaviour tests under `tests/structural/`, wire them into this
 // file via #[path] — do not create a new top-level tests/*.rs file.
 
+#[path = "ir_assertions.rs"]
+mod ir_assertions;
+
 #[path = "structural/actor_send_status_check.rs"]
 mod actor_send_status_check;
 #[path = "structural/bytes_extern_fail_closed.rs"]

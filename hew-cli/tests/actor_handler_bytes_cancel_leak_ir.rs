@@ -127,6 +127,17 @@ fn fn_body(ll: &str, needle: &str) -> Option<String> {
     None
 }
 
+fn emitted_cleanup_strategy(ll: &str) -> hew_codegen_rs::CleanupUnwindStrategy {
+    let triple = ll
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("target triple = \"")
+                .and_then(|value| value.strip_suffix('"'))
+        })
+        .unwrap_or_else(|| panic!("emitted LLVM IR must declare its target triple:\n{ll}"));
+    hew_codegen_rs::cleanup_capabilities_for_target(triple).unwind_strategy
+}
+
 /// Isolate the `cancel_exit:` block's own instructions — from its label line
 /// to the next label line (or the function's closing brace) — so the drop
 /// assertion cannot be satisfied by a `hew_bytes_drop` call that lives on
@@ -399,26 +410,103 @@ fn specialized_string_get_uses_the_terminator_unwind_plan() {
         .expect("tempdir");
     let ll = compile_and_read_ll(STRING_GET_UNWIND_SOURCE, dir.path(), "string_get_unwind");
     let body = fn_body(&ll, "@string_get_probe").expect("missing string_get_probe definition");
-    assert!(
-        body.contains("invoke i32 @hew_string_index")
-            && body.contains("landingpad { ptr, i32 }")
-            && body.contains("call void @hew_string_drop"),
-        "the specialized StringGet lowerer must inherit its MIR call-site invoke and cleanup:\n{body}"
-    );
-    assert!(
-        !body.lines().any(|line| {
-            line.trim_start()
-                .starts_with("%string_get_codepoint = call i32 @hew_string_index")
-        }),
-        "hew_string_index must never remain a plain call inside StringGet:\n{body}"
-    );
+
+    match emitted_cleanup_strategy(&ll) {
+        hew_codegen_rs::CleanupUnwindStrategy::CrashOwnerRegistry => {
+            let lines: Vec<_> = body.lines().collect();
+            let arm = lines
+                .iter()
+                .position(|line| {
+                    line.contains("call i64 @hew_cont_crash_cleanup_arm")
+                        && line.contains("ptr %local_2")
+                })
+                .expect("fallback target must arm cleanup authority for the owned string slot");
+            let arm_token = lines[arm]
+                .trim_start()
+                .split_once(" = call i64 @hew_cont_crash_cleanup_arm")
+                .map(|(token, _)| token)
+                .expect("fallback cleanup arm must return an SSA token");
+            let token_store_marker = format!("store i64 {arm_token}, ptr ");
+            let token_store = lines
+                .iter()
+                .enumerate()
+                .skip(arm + 1)
+                .find(|(_, line)| line.trim_start().starts_with(&token_store_marker))
+                .map(|(index, _)| index)
+                .expect("fallback cleanup arm token must be stored");
+            let token_slot = lines[token_store]
+                .trim_start()
+                .strip_prefix(&token_store_marker)
+                .and_then(|rest| rest.split(',').next())
+                .expect("fallback cleanup arm token must use a named slot");
+            let call = lines
+                .iter()
+                .position(|line| {
+                    line.trim_start()
+                        .starts_with("%string_get_codepoint = call i32 @hew_string_index")
+                })
+                .expect("fallback target must emit a non-EH string-index call");
+            let token_load_marker = format!("load i64, ptr {token_slot},");
+            let (retire_load, retire) = lines
+                .iter()
+                .enumerate()
+                .skip(call + 1)
+                .find_map(|(load_index, line)| {
+                    if !line.contains(&token_load_marker) {
+                        return None;
+                    }
+                    let loaded_token = line
+                        .trim_start()
+                        .split_once(" = load i64,")
+                        .map(|(token, _)| token)?;
+                    let retire_marker =
+                        format!("@hew_cont_crash_cleanup_retire(i64 {loaded_token})");
+                    let retire_index = lines
+                        .iter()
+                        .enumerate()
+                        .skip(load_index + 1)
+                        .find(|(_, line)| line.contains(&retire_marker))
+                        .map(|(index, _)| index)?;
+                    Some((load_index, retire_index))
+                })
+                .expect("fallback target must retire the token returned by the owned-string arm");
+            let drop = lines
+                .iter()
+                .position(|line| line.contains("call void @hew_string_drop"))
+                .expect("fallback target must release the owned string on normal return");
+            assert!(
+                arm < token_store
+                    && token_store < call
+                    && call < retire_load
+                    && retire_load < retire
+                    && retire < drop,
+                "the fallback target must keep the `%local_2` crash-cleanup token armed across \
+                 StringGet, then retire that token before the normal release:\n{body}"
+            );
+        }
+        hew_codegen_rs::CleanupUnwindStrategy::StructuredLlvm => {
+            assert!(
+                body.contains("invoke i32 @hew_string_index")
+                    && body.contains("landingpad { ptr, i32 }")
+                    && body.contains("call void @hew_string_drop"),
+                "the specialized StringGet lowerer must inherit its MIR call-site invoke and cleanup:\n{body}"
+            );
+            assert!(
+                !body.lines().any(|line| {
+                    line.trim_start()
+                        .starts_with("%string_get_codepoint = call i32 @hew_string_index")
+                }),
+                "hew_string_index must never remain a plain call on a structured-EH target:\n{body}"
+            );
+        }
+    }
 }
 
 /// A trap-capable runtime ABI call is a real CFG split. The normal successor
 /// commits ownership; the unwind edge destroys the pre-call bytes generation.
 #[cfg_attr(
     not(target_os = "macos"),
-    ignore = "exact leak proof needs macOS leaks(1); structural invoke proof remains covered on every host"
+    ignore = "exact leak proof needs macOS leaks(1); target-appropriate structural cleanup remains covered on every host"
 )]
 #[test]
 fn bytes_set_oob_runtime_call_invokes_owned_unwind_cleanup() {

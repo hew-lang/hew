@@ -44,6 +44,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
 source "$ROOT/scripts/lib/corpus-nonempty.sh"
+# shellcheck source=scripts/lib/diagnostic-code-set.sh
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/diagnostic-code-set.sh"
 CORPUS="$ROOT/examples/v05/checked-mir"
 GOLDEN="$CORPUS/golden"
 MANIFEST="$GOLDEN/MANIFEST.sha256"
@@ -80,11 +83,6 @@ expected_corpus_refusal_code() {
     [[ "$EXPECTED_REFUSAL_CODE" =~ ^E_[A-Z0-9_]+$ ]]
 }
 
-diagnostic_log_contains_code() {
-    local log="$1" code="$2"
-    LC_ALL=C grep -Eq "(^|[^A-Z0-9_])${code}([^A-Z0-9_]|$)" "$log"
-}
-
 run_dump() {
     local stage="$1" fixture="$2" output="$3" error="$4"
     LAST_DUMP_STATUS=0
@@ -98,7 +96,7 @@ dump_is_expected_refusal() {
     # Hew's structured diagnostic exit is 1. Anything else is a crash, panic,
     # shell failure, or otherwise a different failure class.
     [[ "$status" -eq 1 ]] || return 1
-    diagnostic_log_contains_code "$error" "$EXPECTED_REFUSAL_CODE"
+    diagnostic_log_has_exact_code "$error" "$EXPECTED_REFUSAL_CODE"
 }
 
 report_unexpected_dump_failure() {

@@ -70,7 +70,7 @@
 #   make structural-lint — pinned ast-grep scan + compiler authority ratchets
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
 #   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
-#   make clean        — remove build/, target/
+#   make clean        — remove generated build and test artifacts
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
@@ -106,7 +106,11 @@ actionlint:
 
 # Repository scripts require Python 3.12+ (PEP 701 and stdlib tomllib).
 # Override with `make PYTHON=/path/to/python3.12 <target>` when needed.
+ifeq ($(OS),Windows_NT)
+PYTHON ?= python
+else
 PYTHON ?= python3
+endif
 PYTHON_VERSION_CHECK := $(shell $(PYTHON) -c 'import sys; version = ".".join(map(str, sys.version_info[:3])); print(("ok" if sys.version_info >= (3, 12) else "unsupported") + " " + version)' 2>/dev/null)
 PYTHON_VERSION := $(word 2,$(PYTHON_VERSION_CHECK))
 
@@ -213,9 +217,22 @@ TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
 # process signal, setup error, or malformed report. Release gates use the same
 # nextest invocation through `test-strict`, but require an all-pass exit.
 NEXTEST_WORKSPACE_FILTER ?=
-NEXTEST_WORKSPACE_ARGS := --workspace --exclude hew-cabi --profile ci --no-fail-fast
+NEXTEST_WORKSPACE_SELECTION_ARGS := --workspace --exclude hew-cabi --profile ci
+NEXTEST_WORKSPACE_ARGS := $(NEXTEST_WORKSPACE_SELECTION_ARGS) --no-fail-fast
+NEXTEST_FULL_INVENTORY := $(CARGO_TARGET_ROOT)/nextest-full-inventory.json
+NEXTEST_SELECTED_INVENTORY := $(CARGO_TARGET_ROOT)/nextest-selected-inventory.json
+NEXTEST_RATCHET_INVENTORY_ARGS :=
+NEXTEST_PREPARE_FULL_INVENTORY := :
+NEXTEST_PREPARE_SELECTED_INVENTORY := :
 ifneq ($(strip $(NEXTEST_WORKSPACE_FILTER)),)
+# Ask nextest for both sides of the selection boundary. The ratchet may ignore
+# an absent expected test only when the unfiltered inventory still contains it
+# and the exact active filter excludes it; a selected test missing from JUnit
+# remains a hard error.
 NEXTEST_WORKSPACE_ARGS += --filterset '$(NEXTEST_WORKSPACE_FILTER)'
+NEXTEST_RATCHET_INVENTORY_ARGS := --full-inventory "$(NEXTEST_FULL_INVENTORY)" --selected-inventory "$(NEXTEST_SELECTED_INVENTORY)"
+NEXTEST_PREPARE_FULL_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --message-format json > "$(NEXTEST_FULL_INVENTORY)"
+NEXTEST_PREPARE_SELECTED_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --filterset '$(NEXTEST_WORKSPACE_FILTER)' --message-format json > "$(NEXTEST_SELECTED_INVENTORY)"
 endif
 NEXTEST_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/junit.xml
 NEXTEST_RATCHET_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/ratchet.xml
@@ -918,7 +935,9 @@ assemble-release: require-host-cargo-target release-host libhew-cross-release-li
 # would be linked against freshly-emitted coro objects and fail with
 # undefined-symbol errors on a target dir carried across commits.
 test: test-artifacts ## Test: run the ratcheted Rust workspace test suite
-	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)"
+	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)" "$(NEXTEST_FULL_INVENTORY)" "$(NEXTEST_SELECTED_INVENTORY)"
+	@$(NEXTEST_PREPARE_FULL_INVENTORY)
+	@$(NEXTEST_PREPARE_SELECTED_INVENTORY)
 	@status=0; \
 		$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS) || status=$$?; \
 		cargo xtask nextest-ratchet \
@@ -926,10 +945,10 @@ test: test-artifacts ## Test: run the ratcheted Rust workspace test suite
 			--ledger "$(NEXTEST_FAILURE_LEDGER)" \
 			--output "$(NEXTEST_RATCHET_JUNIT)" \
 			--platform "$(NEXTEST_PLATFORM)" \
-			--runner-exit "$$status"
+			--runner-exit "$$status" $(NEXTEST_RATCHET_INVENTORY_ARGS)
 
 test-strict: test-artifacts ## Test: run the Rust workspace test suite with no known failures
-	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)"
+	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)" "$(NEXTEST_FULL_INVENTORY)" "$(NEXTEST_SELECTED_INVENTORY)"
 	$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS)
 
 # Canonical local macOS memory authority. This is deliberately named as a local
@@ -1148,7 +1167,7 @@ test-hew-ratchet:
 else
 test-hew-ratchet: hew-native ## Test: run compiled Hew suites against their ratchet
 	@echo "==> Running Hew test suite (ratcheted)"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+	PYTHON="$(PYTHON)" HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 endif
 
@@ -1219,12 +1238,12 @@ test-o2-differential:
 else
 test-o2-differential: hew-native
 	@echo "==> Running -O0-vs-O2 differential-exec parity gate"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+	PYTHON="$(PYTHON)" HEW_BIN="$(DEBUG_DIR)/hew" scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 endif
 
 o2-differential-selftest:
-	bash scripts/o2-differential-selftest.sh
+	PYTHON="$(PYTHON)" bash scripts/o2-differential-selftest.sh
 
 # Shell only; no artifacts.
 
@@ -1842,6 +1861,21 @@ uninstall:
 # ── Cleanup ─────────────────────────────────────────────────────────────────
 
 clean: ## Develop: remove generated build and test artifacts
-	rm -rf $(BUILD_DIR)
+	rm -rf -- $(BUILD_DIR)
 	cargo clean
-	rm -rf $(COV_DIR)
+	rm -rf -- $(COV_DIR) \
+		"$(CURDIR)/.tmp/compile-out" \
+		"$(CURDIR)/.tmp/doc-fences" \
+		"$(CURDIR)/.tmp/core-matrix-regen" \
+		"$(CURDIR)/.tmp/forced-cancel-gate-out" \
+		"$(CURDIR)/.tmp/asan-fixture-out" \
+		"$(CURDIR)/.tmp/tool-tmp"
+	rm -f -- \
+		"$(CURDIR)/.tmp/vertical-slice-accept-output.txt" \
+		"$(CURDIR)/.tmp/vertical-slice-reject-output.txt" \
+		"$(CURDIR)/.tmp/vertical-slice.stdout" \
+		"$(CURDIR)/.tmp/vertical-slice.stderr" \
+		"$(CURDIR)/.tmp/vertical-slice-remote-pid-old-verb.hew" \
+		"$(CURDIR)/.tmp/pkg-import-actual.txt" \
+		"$(CURDIR)/.tmp/scanner-test-input.txt" \
+		"$(CURDIR)/.tmp/stdlib-io-scanner-oracle-input.txt"

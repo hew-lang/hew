@@ -5,17 +5,18 @@
 # outcome, or unlisted failure makes the ratchet fail. Signals and setup errors
 # cannot be accepted. Release gates do not read this file.
 linux,macos,freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
+linux,macos,freebsd	failure	hew-cli::measured_os_io_string_retention_canary	shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases	#3079 derives unwind cleanup from exact live owner states
 *	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
 *	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
 *	failure	hew-cli::branch_divergent_return_drop_ir	normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice	#3118 releases branch-local siblings on normal edges
 linux,macos,freebsd	failure	hew-cli::divergent_return_resource_leak_oracle	raw_and_elaborated_mir_attribute_only_unselected_resource_members	#3079 derives return-arm resource drops from exact owner states
 linux,macos,freebsd	failure	hew-cli::divergent_selection_arm_ownership_oracle	source_read_after_selection_does_not_over_release	#3079 makes selected-arm ownership path-sensitive
-linux,macos,freebsd	failure	hew-cli::funcupdate_consume_semantics	accept_carry_nested_and_collection_bearing_tuples	#3124 transfers nested owned projections out of parent cleanup
+linux,macos	failure	hew-cli::funcupdate_consume_semantics	accept_carry_nested_and_collection_bearing_tuples	#3124 transfers nested owned projections out of parent cleanup
 linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
 linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
-linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	captured_binding_borrow_only_is_valid	#2523 preserves captured borrow-only payload authority
-linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	field_place_borrow_only_keeps_scrutinee_live	#2523 preserves field-place borrow-only payload authority
-linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	nested_enum_borrow_only_is_valid	#2523 preserves nested borrow-only payload authority
+linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	captured_binding_borrow_only_is_valid	#2523 preserves captured borrow-only payload authority
+linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	field_place_borrow_only_keeps_scrutinee_live	#2523 preserves field-place borrow-only payload authority
+linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	nested_enum_borrow_only_is_valid	#2523 preserves nested borrow-only payload authority
 linux,macos,freebsd	failure	hew-cli::nested_enum_whole_forward_handoff_leak_oracle	raw_and_elaborated_mir_pin_forwarding_shapes_and_single_drop_authority	#3079 removes competing nested-enum drop authorities
 linux,macos,freebsd	failure	hew-cli::nested_lexical_enum_payload_overwrite_leak_oracle	raw_mir_pins_release_authority_and_fail_closed_controls	#3079 keeps one parent-or-payload overwrite authority
 linux,macos,freebsd	failure	hew-cli::nested_projection_chain_leak_oracle	escaped_return_record_excludes_the_owner_composite	#3124 excludes escaped leaves from parent cleanup
@@ -31,7 +32,7 @@ linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_extra
 linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_extracted_then_consumed_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
 linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_extracted_then_restored_into_local_aggregate_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
 linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_in_local_tuple_consumed_by_for_in_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_in_local_tuple_not_extracted_keeps_source_drop	#3119 transfers generator ownership through aggregates
+linux,macos	failure	hew-codegen-rs::exec	generator_exec::generator_in_local_tuple_not_extracted_keeps_source_drop	#3119 transfers generator ownership through aggregates
 linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_nested_aggregate_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
 linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_reaggregated_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
 linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_reaggregated_record_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
@@ -41,36 +42,92 @@ linux,macos,freebsd	failure	hew-codegen-rs::exec	vec_owned_element_routing_exec:
 linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::contextual_file_sink_binders_close_once_per_exit	#3114 closes each contextual Sink binder on its selected exits
 linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::guard_shapes_over_a_contextual_sink_write_and_close_on_every_path	#3114 keeps the Sink carrier live through failed guards
 linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::guarded_match_arm_hands_the_live_sink_to_the_selected_arm	#3114 hands the live Sink to exactly the selected guarded arm
-*	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3113 closes every returned owned-handle field exactly once
-windows	failure	hew-codegen-rs	llvm::tests::borrowed_dyn_coercion_temp_drops_in_caller_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations
-windows	failure	hew-codegen-rs	llvm::tests::helper_owner_move_uses_path_sensitive_native_cleanup	#3117 uses one target-capability authority for unwind expectations
-windows	failure	hew-codegen-rs	llvm::tests::helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations
-windows	failure	hew-codegen-rs	llvm::tests::join_owned_replies_stage_until_atomic_result_publication	#3117 uses one target-capability authority for unwind expectations
-windows	failure	hew-codegen-rs	llvm::tests::helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations
-windows	failure	hew-codegen-rs	llvm::tests::native_direct_call_uses_llvm_cleanup_unwind_edge	#3117 uses one target-capability authority for unwind expectations
-windows	failure	hew-codegen-rs	llvm::tests::owned_state_source_transfer_rejection_is_process_fatal_before_live_store	#3117 uses one target-capability authority for unwind expectations
-windows	failure	hew-codegen-rs	llvm::tests::ordinary_helper_uses_native_unwind_plans_and_wasm_fallback_registry	#3117 uses one target-capability authority for unwind expectations
-windows	failure	hew-codegen-rs	llvm::tests::returned_bytes_keeps_crash_owner_until_return_transfer_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations
-windows	failure	hew-codegen-rs::emission	http_ws_string_result_emission::measured_http_ws_results_emit_exactly_one_release_through_forwarders	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	quic_string_result_emission::measured_quic_results_emit_exactly_one_release_through_forwarders	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	stdlib_builtins_emission::builtins_assert_family_declares_runtime_symbols	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	stdlib_builtins_emission::builtins_sleep_declares_duration_runtime_symbol	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	stdlib_builtins_emission::builtins_sleep_until_declares_instant_runtime_symbol	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	task_abi_emission::task_abi_emission_task_scope_spawn_paired_with_task_new	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	user_fn_emission::call_i64_user_fn_emits_call_instruction	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	user_fn_emission::unsafe_audited_extern_string_temp_emits_one_release	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	vec_index_emission::continuation_path_calls_hew_vec_get_i64	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	vec_index_emission::entry_block_calls_hew_vec_len	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	vec_slice_emission::continuation_calls_slice_range_i64	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::emission	vec_slice_emission::entry_calls_hew_vec_len_for_end_check	#3117 aligns host emission tests with Windows fallback unwind
-windows	failure	hew-codegen-rs::structural	emit_duplex_pair::duplex_exemplar_emits_one_call_per_site	#3117 aligns host structural tests with Windows fallback unwind
-windows	failure	hew-cli::await_e2e	async_http_roundtrip_serves_and_fetches_under_both_pools	#3115 finishes Windows teardown without stack overflow
-windows	failure	hew-cli::await_e2e	closure_no_await_stays_on_the_direct_call_path_under_both_pools	#3115 finishes Windows teardown without stack overflow
+linux,macos,windows	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3113 closes every returned owned-handle field exactly once
+macos	failure	hew-cli::actor_handler_unused_owned_param_leak_oracle	mutable_direct_record_transfer_then_overwrite_uses_only_overwrite_flag	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::arena_stdlib_leak_oracle	stdlib_arena_holder_insert_remove_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
+macos	failure	hew-cli::bytes_drop_leak_oracle	bytes_field_load_share_no_per_frame_leak_slope	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	borrow_capture_read_after_freed_exactly_once_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	borrow_capture_read_after_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	borrow_capture_record_read_after_freed_exactly_once_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	borrow_capture_record_read_after_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	borrow_capture_two_shares_freed_exactly_once_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	borrow_capture_two_shares_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	nested_closure_parameter_control_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	parameter_record_capture_both_fields_freed_exactly_once_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	parameter_record_capture_both_fields_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	parameter_record_capture_one_field_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	return_closure_captures_enum_freed_exactly_once_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	return_closure_captures_enum_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	return_closure_captures_record_freed_exactly_once_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	return_closure_captures_record_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	return_closure_captures_string_freed_exactly_once_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	return_closure_captures_string_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	return_closure_captures_vec_freed_exactly_once_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	return_closure_captures_vec_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	string_parameter_capture_control_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_counter_factory_no_per_frame_leak_slope	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_env_of_env_no_per_frame_leak_slope	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_flat_owned_capture_no_per_frame_leak_slope	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_owned_type_param_no_per_frame_leak_slope	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_fresh_call_result_into_field_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_in_struct_leak_oracle	store_and_drop_struct_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::collection_borrowed_cow_ingress_leak_oracle	reassigned_param_ingress_reads_back_exact_values	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::composite_yield_leak_oracle	enum_yield_destructure_freed_exactly_once_under_malloc_scribble	#3104 removes stale suspension cleanup after owned yields
+macos	failure	hew-cli::composite_yield_leak_oracle	enum_yield_stream_drain_leak_slope_below_tolerance	#3104 removes stale suspension cleanup after owned yields
+macos	failure	hew-cli::composite_yield_leak_oracle	record_yield_break_freed_exactly_once_under_malloc_scribble	#3104 removes stale suspension cleanup after owned yields
+macos	failure	hew-cli::composite_yield_leak_oracle	record_yield_stream_freed_exactly_once_under_malloc_scribble	#3104 removes stale suspension cleanup after owned yields
+macos	failure	hew-cli::composite_yield_leak_oracle	record_yield_stream_leak_slope_below_tolerance	#3104 removes stale suspension cleanup after owned yields
+macos	failure	hew-cli::divergent_return_resource_leak_oracle	divergent_and_same_member_returns_run_clean_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::divergent_return_resource_leak_oracle	divergent_record_resource_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::divergent_return_resource_leak_oracle	divergent_tuple_resource_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::divergent_selection_arm_ownership_oracle	fresh_arm_does_not_under_release	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::divergent_selection_arm_ownership_oracle	nested_arms_does_not_under_release	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::divergent_selection_arm_ownership_oracle	record_field_does_not_under_release	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::divergent_selection_arm_ownership_oracle	return_position_does_not_under_release	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::divergent_selection_arm_ownership_oracle	source_read_after_selection_does_not_over_release_under_poisoned_allocator	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::divergent_selection_arm_ownership_oracle	source_read_after_selection_does_not_under_release	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::enum_callee_consume_drop_leak_oracle	move_out_via_let_share_does_not_double_free	#3078 keeps non-resource call arguments borrow-by-default
+macos	failure	hew-cli::enum_resource_variant_leak_oracle	projected_resource_close_then_crash_releases_source_snapshot_once	#3070 closes composite resource fields exactly once
+macos	failure	hew-cli::enum_resource_variant_leak_oracle	resource_record_enum_payload_closes_exactly_once	#3070 closes composite resource fields exactly once
+macos	failure	hew-cli::escaped_sibling_field_drop_leak_oracle	escaped_field_not_dropped_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
+macos	failure	hew-cli::for_in_vec_iter_leak_oracle	vec_iter_cursor_transfer_and_reassign_has_zero_leak_endpoints	#3120 makes Vec iterator cleanup path-sensitive
+macos	failure	hew-cli::fstring_interp_temp_leak_oracle	fstring_conditional_var_param_return_survives_malloc_scribble	#2901 admits safe direct-call representation mutation
+macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_actor_record_param_suspended_teardown_has_zero_leaks	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_and_closure_env_clone_are_malloc_scribble_clean	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_closure_env_clone_has_zero_leaks	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::imported_machine_ownership_leak_oracle	imported_machine_payload_is_not_released_twice	#3105 releases imported machine records on every exit
+macos	failure	hew-cli::imported_machine_ownership_leak_oracle	imported_machine_payload_release_slope_stays_flat	#3105 releases imported machine records on every exit
+macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_deep_tree_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_inline_wrapped_child_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_inline_wrapped_child_no_corruption_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_loop_build_consume_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_loop_build_consume_no_corruption_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_mutual_recursion_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_single_leaf_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_var_overwrite_loop_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_var_overwrite_loop_no_corruption_under_malloc_scribble	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::nested_lexical_enum_payload_overwrite_leak_oracle	low_and_high_closed_alias_overwrites_are_exactly_leak_clean	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::nested_lexical_enum_payload_overwrite_leak_oracle	overwrite_ownership_controls_do_not_double_free_or_read_poison	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::nested_projection_chain_leak_oracle	escaped_return_record_no_double_free_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
+macos	failure	hew-cli::nested_projection_chain_leak_oracle	escaped_return_tuple_no_double_free_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
+macos	failure	hew-cli::nested_projection_chain_leak_oracle	match_intermediate_return_leaf_no_double_free_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
+macos	failure	hew-cli::nested_projection_chain_leak_oracle	match_intermediate_return_tuple_no_double_free_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
+macos	failure	hew-cli::nested_vec_get_clone_leak_oracle	get_clone_bind_len_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::nested_vec_get_clone_leak_oracle	get_clone_for_in_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::param_record_field_loop_drop_leak_oracle	rvalue_rooted_projection_cursor_still_frees_its_snapshot	#3120 makes Vec iterator cleanup path-sensitive
+macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_reassign_does_not_under_release	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_weak_reassign_does_not_under_release	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_after_ingress_does_not_under_release	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_under_release	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::recv_loop_leak_oracle	carry_continue_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::recv_loop_leak_oracle	carry_for_await_bytes_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::string_result_retention_leak_oracle	ordinary_helper_snapshot_raw_trap_has_zero_leak_slope	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::tuple_record_enum_container_drop_leak_oracle	empty_enum_carrier_helper_releases_payload_and_tuple_sibling_on_both_paths	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consumed_bound_local_moves_in	#3095 emits one Vec index ownership handoff
+macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consumed_bound_local_no_per_frame_leak_slope	#3095 emits one Vec index ownership handoff
+macos	failure	hew-cli::vec_iter_method_escape_leak_oracle	iter_source_freed_under_cursor_no_uaf_under_malloc_scribble	#3120 makes Vec iterator cleanup path-sensitive
+macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	arena_insert_remove_param_embed_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
 windows	failure	hew-cli::run_e2e	run_generic_vec_into_iter_static_dispatch_outputs_first_value	#3115 tracks the Windows nonzero-exit teardown seam
-windows	failure	hew-cli::run_e2e	run_imports_json_fluent_builders_round_trip	#3115 tracks the Windows nonzero-exit teardown seam
-windows	failure	hew-cli::run_e2e	suspended_actor_fresh_state_handoff_closes_each_child_once	#3115 tracks the Windows nonzero-exit teardown seam
 windows	failure	hew-cli::run_e2e	var_self_cowvalue_receiver_survives_storeback_without_double_drop	#3115 tracks the Windows nonzero-exit teardown seam
 windows	failure	hew-cli::run_e2e	var_self_generic_static_dispatch_second_next_observes_mutated_receiver	#3115 tracks the Windows nonzero-exit teardown seam
-windows	failure	hew-cli::run_e2e	tcp_loopback_read_string_roundtrip_returns_written_bytes	#3115 tracks the Windows nonzero-exit teardown seam
-windows	failure	hew-cli::quic_service_smoke_e2e	quic_service_example_round_trip_succeeds	#3115 tracks the Windows nonzero-exit teardown seam
-windows	failure	hew-cli::run_e2e	run_imports_json_opaque_handle_round_trips	#3121 diagnoses the Windows JSON opaque-handle child failure

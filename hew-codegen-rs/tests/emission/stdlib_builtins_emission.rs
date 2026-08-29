@@ -4,6 +4,8 @@ use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
+use crate::ir_assertions::{assert_target_call, cleanup_strategy};
+
 fn emit_ll(source: &str, module_name: &str) -> String {
     emit_ll_with_registry(source, module_name, ModuleRegistry::new(vec![]))
 }
@@ -101,9 +103,11 @@ fn builtins_assert_family_declares_runtime_symbols() {
         ll.contains("declare void @hew_assert_ne_i64(i64, i64)"),
         "assert_ne(i64, i64) must declare hew_assert_ne_i64:\n{ll}"
     );
-    assert!(
-        ll.contains("invoke void @hew_assert(i8 "),
-        "assert(true) must invoke hew_assert through the unwind-capable i8 bool ABI:\n{ll}"
+    assert_target_call(
+        &ll,
+        cleanup_strategy(&ll),
+        "void @hew_assert(i8 ",
+        "assert(true) through the i8 bool ABI",
     );
 }
 
@@ -145,9 +149,11 @@ fn builtins_sleep_declares_duration_runtime_symbol() {
         ll.contains("declare void @hew_sleep_ns(i64)"),
         "sleep(duration) must declare hew_sleep_ns with the catalog ABI:\n{ll}"
     );
-    assert!(
-        ll.contains("invoke void @hew_sleep_ns(i64 "),
-        "sleep(0ns) must invoke hew_sleep_ns through the unwind-capable terminal-call ABI:\n{ll}"
+    assert_target_call(
+        &ll,
+        cleanup_strategy(&ll),
+        "void @hew_sleep_ns(i64 ",
+        "sleep(0ns) through the terminal-call ABI",
     );
 }
 
@@ -168,9 +174,11 @@ fn builtins_sleep_until_declares_instant_runtime_symbol() {
         ll.contains("declare void @hew_sleep_until_ns(i64)"),
         "sleep_until(instant) must declare hew_sleep_until_ns with the catalog ABI:\n{ll}"
     );
-    assert!(
-        ll.contains("invoke void @hew_sleep_until_ns(i64 "),
-        "sleep_until(t) must invoke hew_sleep_until_ns through the unwind-capable terminal-call ABI:\n{ll}"
+    assert_target_call(
+        &ll,
+        cleanup_strategy(&ll),
+        "void @hew_sleep_until_ns(i64 ",
+        "sleep_until(t) through the terminal-call ABI",
     );
 }
 

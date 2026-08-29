@@ -2,6 +2,9 @@
 // Add new emission-behaviour tests under `tests/emission/`, wire them into this
 // file via #[path] — do not create a new top-level tests/*.rs file.
 
+#[path = "ir_assertions.rs"]
+mod ir_assertions;
+
 #[path = "emission/char_emission.rs"]
 mod char_emission;
 #[path = "emission/cooperate_emission.rs"]

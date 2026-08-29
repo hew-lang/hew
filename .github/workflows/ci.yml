@@ -564,8 +564,8 @@ jobs:
       - name: Build Hew runtime library for PDB e2e
         run: cargo build -p hew-lib --release
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Verify Windows CodeView PDB emission
         shell: pwsh
@@ -640,9 +640,6 @@ jobs:
           if (-not $wasmLd) { throw "wasm-ld not found on PATH (expected from the LLVM ${env:LLVM_VERSION} install)" }
           & $wasmLd.Source --version
           if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
-
-      - name: Build WASI test libraries
-        run: cargo build -p hew-runtime -p hew-std --target wasm32-wasip1 --no-default-features
 
       - name: Run full Rust workspace tests
         # Run the full workspace nextest on every event so a native-linking or

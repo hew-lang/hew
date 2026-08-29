@@ -200,8 +200,8 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Run Rust workspace tests
         # line-tables-only: the release build + debug test workspace + WASM +
@@ -346,8 +346,8 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Run Rust workspace tests
         env:
@@ -453,8 +453,8 @@ jobs:
           command -v wasm-ld
           wasm-ld --version
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Run Rust workspace tests
         # Leak-oracle binaries drive macOS leaks(1) with MallocScribble and
@@ -499,6 +499,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
+          targets: wasm32-wasip1
           tools: nextest@0.9.120
           cache-shared-key: build-test-windows
 
@@ -547,8 +548,8 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $bin
           & (Join-Path $bin "wasmtime.exe") --version
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Run Rust workspace tests
         run: >-
@@ -666,7 +667,7 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked --version 0.9.120
 
-            gmake stdlib
+            gmake test-artifacts
 
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \

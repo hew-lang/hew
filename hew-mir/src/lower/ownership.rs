@@ -1911,6 +1911,31 @@ impl Builder {
                 return;
             }
         }
+        // A composite result (`match`/`if` value) is published at the head of
+        // its join block, after every arm has already moved its value into
+        // `place`. An arm whose source is a live exact owner (a consumed
+        // payload binding such as `__try_ok`) must end that generation at its
+        // own Move: the fresh join generation minted below is then the sole
+        // owner of the slot. Without this handoff the arm owner relocates into
+        // `place` and two live generations share one Place.
+        if self.instructions.is_empty() {
+            for source in self.composite_join_predecessor_move_sources(place) {
+                let mut owners = self.owned_locals.iter().filter(|entry| {
+                    entry.ty == ty
+                        && entry.disposition == Disposition::ScopeExit
+                        && self.binding_locals.get(&entry.binding) == Some(&source)
+                });
+                let Some(owner) = owners.next().cloned().filter(|_| owners.next().is_none()) else {
+                    continue;
+                };
+                self.set_owned_local_consumed_post_lowering(
+                    owner.binding,
+                    Some(place),
+                    DischargeSite::BindingMoved,
+                );
+                self.typed_produced_value_handoffs.insert((source, place));
+            }
+        }
         let binding = self.adopt_synthetic_owned_local(
             "__hew_produced_value",
             expr.site,
@@ -2147,6 +2172,39 @@ impl Builder {
                 DischargeSite::InlineRelease,
             );
         }
+    }
+
+    /// The source of each predecessor arm's final physical Move into `place`,
+    /// for every finished block that falls through into the current (join)
+    /// block. A Move immediately preceded by a retain of its source is an
+    /// independent `+1` share, not a relocation of the source generation, and
+    /// is skipped: the source owner stays live and the join owns the share.
+    fn composite_join_predecessor_move_sources(&self, place: Place) -> Vec<Place> {
+        self.pending_blocks
+            .iter()
+            .filter(|block| {
+                matches!(
+                    block.terminator,
+                    Terminator::Goto { target } if target == self.current_block_id
+                )
+            })
+            .filter_map(|block| {
+                let (index, source) = block.instructions.iter().enumerate().rev().find_map(
+                    |(index, instruction)| match instruction {
+                        Instr::Move { dest, src } if *dest == place => Some((index, *src)),
+                        _ => None,
+                    },
+                )?;
+                let retained_copy = index > 0
+                    && match &block.instructions[index - 1] {
+                        Instr::StringRetain { value, .. } | Instr::BytesRetain { value } => {
+                            *value == source
+                        }
+                        _ => false,
+                    };
+                (!retained_copy && matches!(source, Place::Local(_))).then_some(source)
+            })
+            .collect()
     }
 
     /// Move (not clone) an existing receiver owner to a receiver-identity

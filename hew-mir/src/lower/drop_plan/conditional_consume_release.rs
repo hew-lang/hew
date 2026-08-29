@@ -304,7 +304,7 @@ fn report_unplaceable_releases(builder: &mut Builder, unplaceable: Vec<Unplaceab
             kind: MirDiagnosticKind::DropPlanUndetermined {
                 block: release.predecessor,
                 reason: format!(
-                    "`{name}` ({owner:?} at {place:?}) is moved on one path into block {target} and still owned on the path from block {predecessor}; the owning path needs a release on that edge but {what}",
+                    "`{name}` ({owner} at {place:?}) is moved on one path into block {target} and still owned on the path from block {predecessor}; the owning path needs a release on that edge but {what}",
                     owner = release.owner,
                     place = release.place,
                     target = release.target,

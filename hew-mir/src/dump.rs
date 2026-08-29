@@ -1944,8 +1944,14 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             name,
             reason,
         } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
-        MirDiagnosticKind::ObligationBalanceUnverified { function, reason } => {
-            format!("ObligationBalanceUnverified {function} {reason:?}")
+        MirDiagnosticKind::LoweringInvariant {
+            function,
+            rule,
+            block,
+            detail,
+        } => {
+            let block = block.map_or_else(String::new, |block| format!(" bb{block}"));
+            format!("LoweringInvariant {function}{block} {rule} {detail:?}")
         }
         MirDiagnosticKind::ContextBoundaryViolation {
             function,
@@ -1953,18 +1959,6 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             kind,
             reason,
         } => format!("ContextBoundaryViolation {function} bb{block} {kind} {reason:?}"),
-        MirDiagnosticKind::DischargeAuthorityMissing {
-            function,
-            block,
-            authority,
-            reason,
-        } => format!("DischargeAuthorityMissing {function} bb{block} {authority:?} {reason:?}"),
-        MirDiagnosticKind::DischargeAuthorityDrift {
-            function,
-            block,
-            name,
-            reason,
-        } => format!("DischargeAuthorityDrift {function} bb{block} {name} {reason:?}"),
         MirDiagnosticKind::ContextBindingEscapes { place, block } => {
             format!("ContextBindingEscapes {} bb{block}", render_place(place))
         }

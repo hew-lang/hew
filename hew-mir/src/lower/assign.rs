@@ -662,7 +662,7 @@ impl Builder {
                             name: name.clone(),
                             site: target.site,
                         },
-                        note: format!("assignment target binding {binding:?} has no MIR place"),
+                        note: format!("assignment target binding {binding} has no MIR place"),
                     });
                 }
             }

@@ -128,13 +128,13 @@ use self::drop_plan::{
     binder_read_is_borrow_safe_terminator, builtin_method_arg_is_move_ingress, check_to_diagnostic,
     classify_closure_pair_rhs, classify_dyn_trait_storage, cow_value_leaf_drop_symbol,
     describe_vec_element, dyn_rebind_source_binding, elaborate,
-    field_override_uses_record_field_drop, render_owned_handle_ty, resource_drop_fn, seal_checked,
-    stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow, ty_is_closure_pair,
-    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
-    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_stream_handle, ty_is_vec,
-    validate_discharge_authority, validate_drop_plan, validate_ownership_events,
-    validate_unwind_cleanup_coverage, vec_iter_init_vec_source_expr,
-    vec_iter_let_cursor_owns_handle,
+    field_override_uses_record_field_drop, project_findings, render_owned_handle_ty,
+    resource_drop_fn, seal_checked, stream_handle_drop_descriptor,
+    string_binder_read_is_user_fn_borrow, ty_is_closure_pair, ty_is_generator_handle,
+    ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
+    ty_is_local_collection_handle, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    validate_drop_plan, validate_ownership_events, validate_unwind_cleanup_coverage,
+    vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
 };
 pub use self::drop_plan::{crash_only_cleanup_drop, drop_kind_for_test_only};
 pub(crate) use self::facts::*;
@@ -14068,42 +14068,35 @@ pub(crate) fn lower_function(
         .opaque_resources()
         .map(|lifecycle| lifecycle.resource_declaration.full_path().to_string())
         .collect();
-    for check in detect_opaque_resource_field_misuse(
+    // Every verifier finding for this function is gathered here and projected
+    // once at the end (`project_findings`): one diagnostic per unbalanced
+    // owner, at most one internal-compiler-error per function.
+    let mut findings: Vec<MirCheck> = detect_opaque_resource_field_misuse(
         &raw.blocks,
         &builder.locals,
         &builder.binding_locals,
         &opaque_resource_names,
-    )
-    .into_iter()
-    .chain(detect_builtin_handle_record_field_overwrite(
+    );
+    findings.extend(detect_builtin_handle_record_field_overwrite(
         &raw.blocks,
         &builder.locals,
         &builder.binding_locals,
         &builder.record_field_orders,
-    )) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
+    ));
     if let Some(layout) = current_actor_name.and_then(|name| actor_layouts.get(name)) {
         if let Some(kinds) = layout.state_field_clone_kinds.as_deref() {
-            for check in detect_actor_state_resource_overwrite(
+            findings.extend(detect_actor_state_resource_overwrite(
                 &raw.blocks,
                 kinds,
                 &layout.state_field_names,
                 &layout.state_field_tys,
-            )
-            .into_iter()
-            .chain(detect_actor_state_handle_consume(
+            ));
+            findings.extend(detect_actor_state_handle_consume(
                 &raw.blocks,
                 kinds,
                 &layout.state_field_names,
                 &layout.state_field_tys,
-            )) {
-                if let Some(diag) = check_to_diagnostic(&check) {
-                    diagnostics.push(diag);
-                }
-            }
+            ));
         }
     }
 
@@ -14131,11 +14124,7 @@ pub(crate) fn lower_function(
         let (entries, exits) = drop_plan::exact_owner_states(&checked.blocks);
         eprintln!("HEW_DEBUG_OWNER_STATES entries={entries:#?} exits={exits:#?}");
     }
-    for check in validate_ownership_events(&checked) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
+    findings.extend(validate_ownership_events(&checked));
     // Drop-elaboration pass. Consumes the CheckedMirFunction we just
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
     // are the authoritative description of what fires on every exit.
@@ -14157,28 +14146,17 @@ pub(crate) fn lower_function(
     // upgrades into a `MirDiagnostic` via `check_to_diagnostic`, and
     // the CLI rejects the program before codegen runs. LESSONS:
     // cleanup-all-exits, boundary-fail-closed.
-    for check in validate_drop_plan(&elaborated) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
+    findings.extend(validate_drop_plan(&elaborated));
     // Ownership-SSA exceptional-edge gate: every call must have one normal
     // successor and one cleanup successor before the backend may lower it to
     // LLVM `invoke`. Missing or duplicated cleanup is a compiler error.
-    for check in validate_unwind_cleanup_coverage(&elaborated, &raw) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
+    findings.extend(validate_unwind_cleanup_coverage(&elaborated, &raw));
     // Physical neutralization is codegen mechanics, not ownership authority.
     // Keep only the local fail-closed shape check: every ownership-moving
     // neutralize operation must name its destination. Exact OwnerId state and
     // cleanup admission are validated from the Checked-MIR event stream above.
-    for check in validate_discharge_authority(&elaborated, &raw) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
+    findings.extend(validate_discharge_authority(&elaborated, &raw));
+    diagnostics.extend(project_findings(findings));
     LoweredFunction {
         raw,
         checked,

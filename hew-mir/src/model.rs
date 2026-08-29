@@ -4812,6 +4812,15 @@ pub struct OwnerId {
     pub generation: u32,
 }
 
+impl std::fmt::Display for OwnerId {
+    /// Compact `b<binding>#<generation>` form for verifier findings. The
+    /// derived `Debug` shape (`OwnerId { binding: BindingId(..), .. }`) is
+    /// for dumps only and must never reach a user-facing diagnostic.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}#{}", self.binding, self.generation)
+    }
+}
+
 /// Immutable destructor authority for one ownership generation.
 ///
 /// Lowering may use type/layout registries while Raw MIR is still mutable, but
@@ -8007,33 +8016,27 @@ pub enum MirDiagnosticKind {
         name: String,
         reason: String,
     },
-    /// S1 obligation-balance verdict unreached: surfaced from
-    /// `MirCheck::ObligationBalanceUnverified`. The discharge-interval fixpoint
-    /// exceeded its iteration cap before converging, so the function's balance
-    /// is undecided. Unconditional hard error — the gate fails closed rather
-    /// than certify an unverified function.
-    ObligationBalanceUnverified { function: String, reason: String },
+    /// A lowering/verifier invariant failed: the Checked or Elaborated MIR the
+    /// compiler built for `function` is inconsistent with itself. Surfaced
+    /// from `MirCheck::ObligationBalanceUnverified`,
+    /// `MirCheck::DischargeAuthorityMissing`, and
+    /// `MirCheck::DischargeAuthorityDrift` — every finding whose cause is a
+    /// compiler defect, never the user's program. Reported through the
+    /// internal-compiler-error channel (`E_MIR_ICE`), at most once per
+    /// function; `rule` names the verifier rule (`ownership-place`,
+    /// `edge-carry`, `obligation-balance-unverified`, ...) and `detail` is the
+    /// rule's own prose, rendered with `Display` identities only.
+    LoweringInvariant {
+        function: String,
+        rule: String,
+        block: Option<u32>,
+        detail: String,
+    },
     /// Execution-context carrier marker validation failed.
     ContextBoundaryViolation {
         function: String,
         block: u32,
         kind: &'static str,
-        reason: String,
-    },
-    /// Discharge-authority carriage: a `NeutralizePayloadSlot` whose authority
-    /// requires a transferee reached elaboration without one (fail-closed).
-    DischargeAuthorityMissing {
-        function: String,
-        block: u32,
-        authority: NeutralizeAuthority,
-        reason: String,
-    },
-    /// Discharge-authority corroboration drift: a carried discharge fact
-    /// disagrees with the independently re-derived discharge set.
-    DischargeAuthorityDrift {
-        function: String,
-        block: u32,
-        name: String,
         reason: String,
     },
     /// A context-derived place escaped past `ExitContext`.

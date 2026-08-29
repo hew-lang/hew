@@ -20,7 +20,7 @@ mod conditional_consume_release;
 mod diagnostic_projection;
 
 pub(super) use conditional_consume_release::materialize_conditional_consume_releases;
-pub(super) use diagnostic_projection::check_to_diagnostic;
+pub(super) use diagnostic_projection::{check_to_diagnostic, project_findings};
 
 /// Drop-elaboration pass over a `CheckedMirFunction`.
 ///
@@ -271,7 +271,7 @@ pub(super) fn owner_definition_drop_recipe(
     {
         let element = args
             .first()
-            .unwrap_or_else(|| panic!("owner {owner:?} defines Vec without an element type"));
+            .unwrap_or_else(|| panic!("owner {owner} defines Vec without an element type"));
         let release = match builder.classify_vec_element_release(element) {
             crate::ownership::VecElementRelease::Plain => {
                 crate::ownership::CowHeapRelease::VecPlain
@@ -303,7 +303,7 @@ pub(super) fn owner_definition_drop_recipe(
             .get(&owner.binding)
             .copied()
             .unwrap_or_else(|| {
-                panic!("owner {owner:?} defines dyn Trait without a storage discriminator")
+                panic!("owner {owner} defines dyn Trait without a storage discriminator")
             });
         (DropKind::TraitObject { storage }, None)
     } else if ty_is_indirect_enum(ty, &builder.enum_layouts) {
@@ -761,7 +761,7 @@ pub(super) fn derive_drop_plans_from_replay(
     {
         assert!(
             recipes.insert(owner, recipe).is_none(),
-            "owner {owner:?} publishes more than one destructor recipe"
+            "owner {owner} publishes more than one destructor recipe"
         );
     }
     let guards = blocks
@@ -1474,7 +1474,7 @@ fn goto_edge_carry_checks(
                 block: block.id,
                 name: "edge-carry".to_owned(),
                 reason: format!(
-                    "owner {owner:?} at {place:?} is live on the Goto edge to block {target} but no EdgeCarry preserves it"
+                    "owner {owner} at {place:?} is live on the Goto edge to block {target} but no EdgeCarry preserves it"
                 ),
             });
         }
@@ -1490,7 +1490,7 @@ fn goto_edge_carry_checks(
             block: block.id,
             name: "edge-carry".to_owned(),
             reason: format!(
-                "EdgeCarry names {owner:?} at {place:?} on the Goto edge to block {target}, but that generation is not live there"
+                "EdgeCarry names {owner} at {place:?} on the Goto edge to block {target}, but that generation is not live there"
             ),
         });
     }
@@ -1562,7 +1562,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         function: checked.name.clone(),
                         block: block.id,
                         name: "ownership-recipe".to_owned(),
-                        reason: format!("owner {owner:?} has more than one definition site"),
+                        reason: format!("owner {owner} has more than one definition site"),
                     });
                 }
             }
@@ -1585,7 +1585,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         block: block.id,
                         name: "ownership-generation".to_owned(),
                         reason: format!(
-                            "owner {owner:?} publishes conflicting cleanup guards: {prior_kind:?}@{prior_flag:?} and {kind:?}@{flag:?}"
+                            "owner {owner} publishes conflicting cleanup guards: {prior_kind:?}@{prior_flag:?} and {kind:?}@{flag:?}"
                         ),
                     });
                 }
@@ -1618,7 +1618,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     block: ENTRY_BLOCK_ID,
                     name: "ownership-recipe".to_owned(),
                     reason: format!(
-                        "owner {owner:?} is defined as {ty}, but its destructor recipe names {}",
+                        "owner {owner} is defined as {ty}, but its destructor recipe names {}",
                         recipe.ty
                     ),
                 }),
@@ -1627,7 +1627,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     block: ENTRY_BLOCK_ID,
                     name: "ownership-recipe".to_owned(),
                     reason: format!(
-                        "owner {owner:?} must publish exactly one destructor recipe, found {}",
+                        "owner {owner} must publish exactly one destructor recipe, found {}",
                         recipes.len()
                     ),
                 }),
@@ -1635,7 +1635,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     function: checked.name.clone(),
                     block: ENTRY_BLOCK_ID,
                     name: "ownership-recipe".to_owned(),
-                    reason: format!("owner {owner:?} has no definition-site destructor recipe"),
+                    reason: format!("owner {owner} has no definition-site destructor recipe"),
                 }),
             }
         }
@@ -1646,7 +1646,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     block: ENTRY_BLOCK_ID,
                     name: "ownership-recipe".to_owned(),
                     reason: format!(
-                        "destructor recipe for {owner:?} has no matching owner definition"
+                        "destructor recipe for {owner} has no matching owner definition"
                     ),
                 });
             }
@@ -1687,7 +1687,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     .any(|(live_owner, _)| live_owner.binding == owner.binding)
                     .then(|| {
                         format!(
-                            "owner {owner:?} is minted while another generation of that binding is already live"
+                            "owner {owner} is minted while another generation of that binding is already live"
                         )
                     }),
                 OwnershipEvent::Transfer {
@@ -1698,7 +1698,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     to_ty,
                 } => match live.get(owner) {
                     None => Some(format!(
-                        "owner {owner:?} is transferred after its generation ended"
+                        "owner {owner} is transferred after its generation ended"
                     )),
                     Some(actual) if actual != from => {
                         let paired_relocation = to == &Some(*actual)
@@ -1707,19 +1707,20 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                             None
                         } else {
                             Some(format!(
-                                "owner {owner:?} is transferred from {from:?}, but Checked MIR records its current place as {actual:?}"
+                                "owner {owner} is transferred from {from:?}, but Checked MIR records its current place as {actual:?}"
                             ))
                         }
                     }
                     Some(_) if to_owner.is_some() && to.is_none() => Some(format!(
-                        "owner {owner:?} transfers to a new owner without a destination place"
+                        "owner {owner} transfers to a new owner without a destination place"
                     )),
                     Some(_) if to_owner.is_some() != to_ty.is_some() => Some(format!(
-                        "owner {owner:?} transfer successor identity/type authority is incomplete"
+                        "owner {owner} transfer successor identity/type authority is incomplete"
                     )),
                     Some(_) if to_owner.is_some_and(|next| live.contains_key(&next)) => {
                         Some(format!(
-                            "owner {owner:?} transfers into an already-live owner generation {to_owner:?}"
+                            "owner {owner} transfers into an already-live owner generation {}",
+                            owner_list(to_owner.iter())
                         ))
                     }
                     Some(_) => None,
@@ -1731,31 +1732,31 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         None
                     }
                     None => Some(format!(
-                        "owner {owner:?} is relocated after its generation ended"
+                        "owner {owner} is relocated after its generation ended"
                     )),
                     Some(actual) if actual != from && actual != to => Some(format!(
-                        "owner {owner:?} is relocated from {from:?}, but Checked MIR records its current place as {actual:?}"
+                        "owner {owner} is relocated from {from:?}, but Checked MIR records its current place as {actual:?}"
                     )),
                     Some(_) => None,
                 },
                 OwnershipEvent::Release { owner, place } => match live.get(owner) {
                     None => Some(format!(
-                        "owner {owner:?} is released after its generation ended"
+                        "owner {owner} is released after its generation ended"
                     )),
                     Some(actual) if actual != place => Some(format!(
-                        "owner {owner:?} is released from {place:?}, but Checked MIR records its current place as {actual:?}"
+                        "owner {owner} is released from {place:?}, but Checked MIR records its current place as {actual:?}"
                     )),
                     Some(_) => None,
                 },
                 OwnershipEvent::GuardedRelease { owner, place, flag } => {
                     if published_guards.get(owner).map(|(published, _)| published) != Some(flag) {
                         Some(format!(
-                            "guarded release for {owner:?} names {flag:?}, but that owner publishes {:?}",
+                            "guarded release for {owner} names {flag:?}, but that owner publishes {:?}",
                             published_guards.get(owner).map(|(published, _)| published)
                         ))
                     } else if live.get(owner).is_some_and(|actual| actual != place) {
                         Some(format!(
-                            "guarded release for {owner:?} names {place:?}, but Checked MIR records its current place as {:?}",
+                            "guarded release for {owner} names {place:?}, but Checked MIR records its current place as {:?}",
                             live.get(owner)
                         ))
                     } else {
@@ -1764,10 +1765,10 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 }
                 OwnershipEvent::DemoteToAlias { owner, place } => match live.get(owner) {
                     None => Some(format!(
-                        "owner {owner:?} is demoted after its generation ended"
+                        "owner {owner} is demoted after its generation ended"
                     )),
                     Some(actual) if actual != place => Some(format!(
-                        "owner {owner:?} is demoted at {place:?}, but Checked MIR records its current place as {actual:?}"
+                        "owner {owner} is demoted at {place:?}, but Checked MIR records its current place as {actual:?}"
                     )),
                     Some(_) => None,
                 },
@@ -1781,7 +1782,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         || replacement.generation != previous.generation.saturating_add(1)
                     {
                         Some(format!(
-                            "reset {previous:?} -> {replacement:?} is not the next generation"
+                            "reset {previous} -> {replacement} is not the next generation"
                         ))
                     } else if !(live.contains_key(previous)
                         || (published_guards.contains_key(previous)
@@ -1790,15 +1791,15 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                                 .is_some_and(|state| state.contains(&(*previous, *place)))))
                     {
                         Some(format!(
-                            "reset source {previous:?} is neither live on every incoming path nor conditionally live under its published guard"
+                            "reset source {previous} is neither live on every incoming path nor conditionally live under its published guard"
                         ))
                     } else if live.get(previous).is_some_and(|actual| actual != place) {
                         Some(format!(
-                            "reset source {previous:?} names {place:?}, but Checked MIR records its current place as {:?}",
+                            "reset source {previous} names {place:?}, but Checked MIR records its current place as {:?}",
                             live.get(previous)
                         ))
                     } else if live.contains_key(replacement) {
-                        Some(format!("reset replacement {replacement:?} is already live"))
+                        Some(format!("reset replacement {replacement} is already live"))
                     } else {
                         None
                     }
@@ -1823,35 +1824,37 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         || replacement.generation != previous.generation.saturating_add(1)
                     {
                         Some(format!(
-                            "rearm {previous:?} -> {replacement:?} is not the next generation"
+                            "rearm {previous} -> {replacement} is not the next generation"
                         ))
                     } else if maybe_same_binding.as_slice() != [(*previous, *place)] {
                         Some(format!(
-                            "rearm source {previous:?} is not the sole possibly-live generation at {place:?}: {maybe_same_binding:?}"
+                            "rearm source {previous} is not the sole possibly-live generation at {place:?}: {}",
+                            owner_place_list(maybe_same_binding.iter())
                         ))
                     } else if !exact_same_binding.is_empty()
                         && exact_same_binding.as_slice() != [(*previous, *place)]
                     {
                         Some(format!(
-                            "rearm source {previous:?} has ambiguous exact generations/places {exact_same_binding:?}"
+                            "rearm source {previous} has ambiguous exact generations/places {}",
+                            owner_place_list(exact_same_binding.iter())
                         ))
                     } else if definition_places.get(previous) != Some(place)
                         || definition_places.get(replacement) != Some(place)
                     {
                         Some(format!(
-                            "rearm {previous:?} -> {replacement:?} does not preserve its definition place {place:?}"
+                            "rearm {previous} -> {replacement} does not preserve its definition place {place:?}"
                         ))
                     } else if definition_types.get(previous) != Some(ty)
                         || definition_types.get(replacement) != Some(ty)
                     {
                         Some(format!(
-                            "rearm {previous:?} -> {replacement:?} does not preserve its definition type {ty}"
+                            "rearm {previous} -> {replacement} does not preserve its definition type {ty}"
                         ))
                     } else if !published_guards.contains_key(previous)
                         || published_guards.get(previous) != published_guards.get(replacement)
                     {
                         Some(format!(
-                            "rearm {previous:?} -> {replacement:?} does not preserve one exact cleanup guard"
+                            "rearm {previous} -> {replacement} does not preserve one exact cleanup guard"
                         ))
                     } else if recipes_by_owner.get(previous).map(Vec::as_slice)
                         != recipes_by_owner.get(replacement).map(Vec::as_slice)
@@ -1860,13 +1863,13 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                             .is_none_or(|recipes| recipes.len() != 1)
                     {
                         Some(format!(
-                            "rearm {previous:?} -> {replacement:?} does not preserve one exact destructor recipe"
+                            "rearm {previous} -> {replacement} does not preserve one exact destructor recipe"
                         ))
                     } else if maybe_live.contains(&(*replacement, *place))
                         || live.contains_key(replacement)
                     {
                         Some(format!(
-                            "rearm replacement {replacement:?} is already live before its lineage event"
+                            "rearm replacement {replacement} is already live before its lineage event"
                         ))
                     } else {
                         None
@@ -1874,7 +1877,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 }
                 OwnershipEvent::Guard { owner, flag, .. } => {
                     (!live.contains_key(owner)).then(|| {
-                        format!("cleanup guard {flag:?} is attached after owner {owner:?} ended")
+                        format!("cleanup guard {flag:?} is attached after owner {owner} ended")
                     })
                 }
                 OwnershipEvent::Join {
@@ -1918,17 +1921,21 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                                     .get(owner)
                                     .is_some_and(|recipes| recipes.len() == 1)
                         });
-                    if incoming.is_empty() || !same_binding || !distinct {
+                    let incoming_owners = incoming;
+                    let incoming = owner_list(incoming_owners.iter());
+                    if incoming_owners.is_empty() || !same_binding || !distinct {
                         Some(format!(
-                            "ownership join {incoming:?} -> {replacement:?} is not a non-empty set of distinct same-binding predecessors and successor"
+                            "ownership join {incoming} -> {replacement} is not a non-empty set of distinct same-binding predecessors and successor"
                         ))
                     } else if possible != declared {
                         Some(format!(
-                            "ownership join {incoming:?} -> {replacement:?} does not enumerate its exact possible incoming owners at {place:?}: {possible:?}"
+                            "ownership join {incoming} -> {replacement} does not enumerate its exact possible incoming owners at {place:?}: {}",
+                            owner_place_list(possible.iter())
                         ))
                     } else if !exact_same_binding.is_subset(&declared) {
                         Some(format!(
-                            "ownership join {incoming:?} -> {replacement:?} has ambiguous exact incoming owners {exact_same_binding:?}"
+                            "ownership join {incoming} -> {replacement} has ambiguous exact incoming owners {}",
+                            owner_place_list(exact_same_binding.iter())
                         ))
                     } else if must_binding_entries
                         .get(&block.id)
@@ -1936,17 +1943,17 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         != Some(place)
                     {
                         Some(format!(
-                            "ownership join {incoming:?} -> {replacement:?} has an ownerless or wrong-place incoming path"
+                            "ownership join {incoming} -> {replacement} has an ownerless or wrong-place incoming path"
                         ))
                     } else if live.contains_key(replacement)
                         || maybe_live.contains(&(*replacement, *place))
                     {
                         Some(format!(
-                            "ownership join replacement {replacement:?} is already live before convergence"
+                            "ownership join replacement {replacement} is already live before convergence"
                         ))
                     } else if !metadata_matches {
                         Some(format!(
-                            "ownership join {incoming:?} -> {replacement:?} does not preserve one exact place/type/guard/recipe"
+                            "ownership join {incoming} -> {replacement} does not preserve one exact place/type/guard/recipe"
                         ))
                     } else {
                         None
@@ -1978,7 +1985,8 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     block: block.id,
                     name: "ownership-place".to_owned(),
                     reason: format!(
-                        "place {place:?} has more than one live exact owner generation {owners:?} after instruction {instruction_index}"
+                        "place {place:?} has more than one live exact owner generation {} after instruction {instruction_index}",
+                        owner_list(owners.iter())
                     ),
                 });
             }
@@ -2092,7 +2100,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 let (name, site) = binding_metadata
                     .get(&binding)
                     .cloned()
-                    .unwrap_or_else(|| (format!("{binding:?}"), SiteId(0)));
+                    .unwrap_or_else(|| (binding.to_string(), SiteId(0)));
                 let local_ty = candidates
                     .first()
                     .and_then(|(owner, _)| definition_types.get(owner))
@@ -2105,7 +2113,8 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     local_ty,
                     mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
                     reason: format!(
-                        "conditionally live guarded owner has ambiguous generations/places {candidates:?} on {exit:?}; no frozen cleanup can be admitted"
+                        "conditionally live guarded owner has ambiguous generations/places {} on {exit:?}; no frozen cleanup can be admitted",
+                        owner_place_list(candidates.iter())
                     ),
                 });
             }
@@ -2123,7 +2132,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                                 block: block_id,
                                 name: "checked-ownership-plan".to_owned(),
                                 reason: format!(
-                                    "cleanup at {:?} is guarded by {:?}@{:?}, but live generation {owner:?} carries {:?}",
+                                    "cleanup at {:?} is guarded by {}@{:?}, but live generation {owner} carries {:?}",
                                     drop.place,
                                     guard.owner,
                                     guard.flag,
@@ -2162,7 +2171,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                             block: block_id,
                             name: "ownership-recipe".to_owned(),
                             reason: format!(
-                                "cleanup ritual at {:?} does not equal the definition-site recipe for {owner:?}",
+                                "cleanup ritual at {:?} does not equal the definition-site recipe for {owner}",
                                 drop.place
                             ),
                         }),
@@ -2171,9 +2180,9 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         block: block_id,
                         name: binding_metadata
                             .get(&owner.binding)
-                            .map_or_else(|| format!("{owner:?}"), |(name, _)| name.clone()),
+                            .map_or_else(|| format!("{owner}"), |(name, _)| name.clone()),
                         reason: format!(
-                            "frozen exit plan contains more than one cleanup for exact owner {owner:?} at {:?}",
+                            "frozen exit plan contains more than one cleanup for exact owner {owner} at {:?}",
                             drop.place,
                         ),
                     }),
@@ -2191,8 +2200,9 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         block: block_id,
                         name: "checked-ownership-plan".to_owned(),
                         reason: format!(
-                            "cleanup at {:?} ambiguously matches multiple exact owner generations {candidates:?}",
+                            "cleanup at {:?} ambiguously matches multiple exact owner generations {}",
                             drop.place,
+                            owner_list(candidates.iter())
                         ),
                     }),
                 }
@@ -2218,7 +2228,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 let (name, site) = binding_metadata
                     .get(&owner.binding)
                     .cloned()
-                    .unwrap_or_else(|| (format!("{owner:?}"), SiteId(0)));
+                    .unwrap_or_else(|| (format!("{owner}"), SiteId(0)));
                 findings.push(MirCheck::ObligationUnderReleased {
                     function: checked.name.clone(),
                     blocks: vec![block_id],
@@ -2229,13 +2239,36 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         .map_or_else(|| "<unknown>".to_owned(), ToString::to_string),
                     mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
                     reason: format!(
-                        "frozen exit plan omits the cleanup for live exact owner {owner:?} at {place:?} on {exit:?}"
+                        "frozen exit plan omits the cleanup for live exact owner {owner} at {place:?} on {exit:?}"
                     ),
                 });
             }
         }
     }
     findings
+}
+
+/// Render owner generations for a verifier finding as `[b3#0, b3#1]`.
+/// Findings are surfaced to users through the internal-error channel, so
+/// they carry the `OwnerId` `Display` form, never its `Debug` payload.
+fn owner_list<'a>(owners: impl IntoIterator<Item = &'a crate::model::OwnerId>) -> String {
+    let rendered = owners
+        .into_iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    format!("[{}]", rendered.join(", "))
+}
+
+/// Render `(owner, place)` pairs for a verifier finding as `[b3#0@Local(2)]`.
+fn owner_place_list<'a>(
+    pairs: impl IntoIterator<Item = &'a (crate::model::OwnerId, Place)>,
+) -> String {
+    let mut rendered = pairs
+        .into_iter()
+        .map(|(owner, place)| format!("{owner}@{place:?}"))
+        .collect::<Vec<_>>();
+    rendered.sort();
+    format!("[{}]", rendered.join(", "))
 }
 
 /// Every place that currently carries more than one live exact owner
@@ -2326,10 +2359,89 @@ fn second_mint_over_a_live_place_is_rejected() {
     );
     assert!(
         findings[0].contains("Local(6)")
-            && findings[0].contains("BindingId(2)")
-            && findings[0].contains("BindingId(4294967226)")
+            && findings[0].contains("b2#0")
+            && findings[0].contains("b4294967226#0")
             && findings[0].contains("after instruction 3"),
         "{findings:?}"
+    );
+}
+
+/// The verifier's findings are lowering invariants: they reach the user
+/// through the internal-compiler-error channel, once per function, and they
+/// name owners by their `Display` identity — the derived `Debug` payload
+/// (`OwnerId { binding: BindingId(..) .. }`) never appears.
+#[test]
+fn verifier_findings_project_to_one_internal_error_without_debug_identities() {
+    use crate::model::{MirDiagnosticKind, OwnerId, OwnershipEvent};
+
+    let payload = OwnerId {
+        binding: BindingId(2),
+        generation: 0,
+    };
+    let temp = OwnerId {
+        binding: BindingId(4_294_967_226),
+        generation: 0,
+    };
+    let slot = Place::Local(6);
+    let recipe = checked_test_string_recipe();
+    // Two defects in one function: a second mint over a live place, and a
+    // release of an owner whose generation never existed.
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: payload,
+            place: slot,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: payload,
+            recipe: recipe.clone(),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: temp,
+            place: slot,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: temp,
+            recipe,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Release {
+            owner: OwnerId {
+                binding: BindingId(9),
+                generation: 4,
+            },
+            place: Place::Local(1),
+        }),
+    ]);
+    let findings = validate_ownership_events(&checked);
+    assert!(findings.len() >= 2, "{findings:?}");
+    for finding in &findings {
+        let MirCheck::DischargeAuthorityDrift { reason, .. } = finding else {
+            panic!("unexpected finding {finding:?}");
+        };
+        assert!(
+            !reason.contains("OwnerId {") && !reason.contains("BindingId("),
+            "finding leaks Debug identities: {reason}"
+        );
+    }
+    let diagnostics = project_findings(findings);
+    let [diagnostic] = diagnostics.as_slice() else {
+        panic!("one internal error per function, got {diagnostics:#?}");
+    };
+    let MirDiagnosticKind::LoweringInvariant {
+        function,
+        rule,
+        detail,
+        ..
+    } = &diagnostic.kind
+    else {
+        panic!("expected LoweringInvariant, got {diagnostic:#?}");
+    };
+    assert_eq!(function, &checked.name);
+    assert_eq!(rule, "ownership-place");
+    assert!(
+        detail.contains("b2#0") && detail.contains("b4294967226#0"),
+        "{detail}"
     );
 }
 
@@ -3795,13 +3907,13 @@ fn goto_edge_carry_naming_a_stale_generation_is_rejected() {
     assert!(
         findings
             .iter()
-            .any(|reason| reason.contains("generation: 1") && reason.contains("no EdgeCarry")),
+            .any(|reason| reason.contains("b46#1") && reason.contains("no EdgeCarry")),
         "the live replacement generation has no carry: {findings:?}"
     );
     assert!(
         findings
             .iter()
-            .any(|reason| reason.contains("generation: 0") && reason.contains("not live there")),
+            .any(|reason| reason.contains("b46#0") && reason.contains("not live there")),
         "the stale carry names a retired generation: {findings:?}"
     );
 }
@@ -4237,7 +4349,7 @@ fn future_generation_aggregate_relocation_remains_a_hard_error() {
     assert!(future_findings.iter().any(|finding| matches!(
         finding,
         MirCheck::DischargeAuthorityDrift { reason, .. }
-            if reason.contains(&format!("owner {future:?} is relocated after its generation ended"))
+            if reason.contains(&format!("owner {future} is relocated after its generation ended"))
     )), "a fabricated future-generation relocation must remain a hard error; got {future_findings:?}");
 }
 
@@ -5081,8 +5193,8 @@ fn missing_recipe_diagnostics_follow_source_binding_order() {
     assert_eq!(
         reasons,
         [
-            format!("owner {earlier_owner:?} has no definition-site destructor recipe"),
-            format!("owner {later_owner:?} has no definition-site destructor recipe"),
+            format!("owner {earlier_owner} has no definition-site destructor recipe"),
+            format!("owner {later_owner} has no definition-site destructor recipe"),
         ]
     );
 }
@@ -9527,7 +9639,7 @@ mod replay_plan_tests {
         assert_eq!(
             reasons,
             vec![format!(
-                "owner {a:?} has no definition-site destructor recipe"
+                "owner {a} has no definition-site destructor recipe"
             )]
         );
     }

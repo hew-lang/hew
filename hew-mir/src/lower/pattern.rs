@@ -721,7 +721,7 @@ impl Builder {
                     site,
                 },
                 note: format!(
-                    "generator-yielded binding {binding:?} must lower to a Place::Local-backed \
+                    "generator-yielded binding {binding} must lower to a Place::Local-backed \
                      owner so the yielded heap value can be balanced with {drop_fn:?}; got \
                      {place:?}"
                 ),

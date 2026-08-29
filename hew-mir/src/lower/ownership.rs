@@ -2294,7 +2294,7 @@ impl Builder {
                     construct: "receiver-identity receiver publication missing".to_string(),
                     site: result_site,
                 },
-                note: format!("receiver SiteId {receiver_site:?} has no published MIR place"),
+                note: format!("receiver site {receiver_site} has no published MIR place"),
             });
             return;
         };

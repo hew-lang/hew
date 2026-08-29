@@ -261,8 +261,12 @@ jobs:
           if-no-files-found: error
 
   compiled-hew-aggregate:
-    name: Aggregate compiled Hew suites
-    needs: [compiled-hew-linux, compiled-hew-shards]
+    # This aggregate retains the established required-check name while the
+    # Rust and compiled-Hew suites execute in parallel. GitHub reports a matrix
+    # dependency as successful only when every leg succeeds, so one assertion
+    # here covers all three Rust shards without starting a watcher-only job.
+    name: Build & test (Linux)
+    needs: [compiled-hew-linux, compiled-hew-shards, build-and-test]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -313,9 +317,10 @@ jobs:
         env:
           BUILD_RESULT: ${{ needs.compiled-hew-linux.result }}
           SHARD_RESULT: ${{ needs.compiled-hew-shards.result }}
+          RUST_GATES_RESULT: ${{ needs.build-and-test.result }}
         run: |
           set -euo pipefail
-          for leg in BUILD_RESULT SHARD_RESULT; do
+          for leg in BUILD_RESULT SHARD_RESULT RUST_GATES_RESULT; do
             result="${!leg}"
             if [ "$result" = success ]; then
               continue
@@ -471,36 +476,6 @@ jobs:
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
           check_name: Test Results (Linux shard ${{ matrix.shard }})
-
-  # Keep the established required-check name while allowing the Rust and
-  # compiled-Hew suites to execute in parallel.
-  #
-  # `needs.build-and-test.result` is the aggregate of the three Linux gate
-  # shards: GitHub reports `success` only when every matrix leg succeeded, and
-  # a cancelled, skipped or failed leg leaves it non-success. That is what lets
-  # the shards multiply without touching branch protection — this job's name,
-  # "Build & test (Linux)", remains the single required context.
-  linux-required:
-    name: Build & test (Linux)
-    needs: [build-and-test, compiled-hew-aggregate]
-    if: always()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Require every Linux gate
-        env:
-          RUST_GATES_RESULT: ${{ needs.build-and-test.result }}
-          COMPILED_HEW_RESULT: ${{ needs.compiled-hew-aggregate.result }}
-        run: |
-          set -euo pipefail
-          for leg in RUST_GATES_RESULT COMPILED_HEW_RESULT; do
-            result="${!leg}"
-            if [ "$result" = success ]; then
-              continue
-            fi
-            echo "::error::$leg is '$result' (expected success)"
-            exit 1
-          done
 
   # Code coverage moved off the per-PR path: it was the flakiest required check
   # (cargo-llvm-cov instrumentation + the duplicated target/llvm-cov-target/

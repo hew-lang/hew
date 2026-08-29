@@ -648,3 +648,27 @@ Nuance row (table under the core):
 - **area**: `transfer_join_owners`, `composite_join_relocated_owners` (`hew-mir/src/lower/ownership.rs`)
 - **invariant**: `.Ok(value) => value` gives the arm a Borrowed produced-value fact, so the join saw only the Owned sibling arm's temp and the binder's generation was relocated into the join slot without ever ending; in a loop the next iteration's `Mint` collided with it ("minted while another generation of that binding is already live"). The join now ends every ARM-LOCAL owner (bound in a scope that is no longer active) moved into the join slot, through the same predecessor-move scan the produced-value join uses. Owners of an enclosing scope (`match c { true => a, false => b }`) are deliberately excluded: the divergent-selection passes own them and release the unselected sibling on the other arm; ending them at the join dropped that release and the `UseAfterConsume` for a later read (`divergent_selection_transfer` tests).
 - **evidence**: `c2_let_in_loop.hew`, `var_record_loop.hew`, `loop_project_arm.hew` 0 errors and valgrind-clean; `project_arm_scope_closes_unused_owned_binder_before_loop_reentry` now pins that `x` is transferred at its move and not carried.
+
+### `receiver-identity-after-a-consumed-receiver-is-a-mint` — the returned identity of a `consuming self` receiver is the binding's next generation, not a transfer of the ended one
+
+- **area**: `transfer_identity_owner` (`hew-mir/src/lower/ownership.rs`)
+- **invariant**: a `#[returns_receiver]` call with a `consuming self` receiver ends the receiver generation at the argument handoff in the call block (terminal `Transfer`, the callee owns it on unwind too). The normal successor may not re-publish the result as `Transfer { owner: <ended>, to_owner: <next> }` — one generation would carry two discharges (`DischargeAuthorityDrift`, #3094). Look in the predecessor call block: if it already ended the receiver owner, `Mint` the replacement generation at the result slot; only a receiver the call merely borrowed keeps the normal-edge `Transfer`. The type checker's `preserve_discarded_receiver_identity_chain` (statement-position only) is what makes the borrowed case exist at all.
+- **evidence**: `issue3094_consume_param_builder.hew` 1 → 0 errors, valgrind-clean; `tests/vertical-slice/accept/returns_receiver_consuming_result.hew`.
+
+### `ledger-dispositions-are-path-insensitive` — a sibling arm's body-end release is not evidence at the next arm's destructure
+
+- **area**: `contextual_sink_payload_handoff` (`hew-mir/src/lower/ownership.rs`), the arm-release protocol in `lower_match_enum_tag`
+- **invariant**: `owned_locals[..].disposition` reflects lowering ORDER, not control flow. After the first arm's body-end release retracts the call-carrier scrutinee to `ConsumedAt`, every later arm still destructures a live carrier on its own path. Any admission that reads the carrier's disposition at destructure time is therefore wrong for arms two and up; the path-independent proof is the minted call-carrier fact (`call_scrutinee_carrier_mint_locals`). The symptom was #3114: the second guarded `.Ok(sink)` arm was refused the deferred (guard-edge) handoff, the projection-adoption pass then nulled the payload before the guard, and the unguarded arm wrote through a null sink while the dead binder leaked it.
+- **evidence**: `guarded_arms_null_sink.hew` writes `third` and is valgrind-clean; `tests/vertical-slice/accept/guarded_arms_sink_fallthrough.hew` covers every guard outcome.
+
+### `owned-carrier-params-have-no-owner-id` — the projection-adoption pass must treat a snapshot-dropped parameter as the parent
+
+- **area**: `materialize_explicit_projection_adoptions` (`hew-mir/src/lower/mod.rs`), `append_owned_carrier_param_drops`
+- **invariant**: an owned-carrier parameter is released by a guarded terminal `ValueSnapshotDrop`, never by an `OwnerId`, so a replay-based "one live owner at the projection root" test sees zero parents and skips the slot-clearing neutralize for a payload binder minted from it. `fn f(s: Enum) { match s { Packed(bag) => .. } }` then freed the payload twice (binder scope exit + parameter snapshot drop). `builder.owned_carrier_params` is the parent authority for those roots; the zeroed slot is inert under the snapshot drop for heap-only shapes.
+- **evidence**: `tests/vertical-slice/accept/payload_binder_reused_after_owned_call.hew` (segfaulted on main and at the start of this phase), probes with `Vec<string>` / record payloads and a moved-out binder all valgrind-clean.
+
+### `nearest-use-decides-the-adopted-argument` — do not scan the whole loop body for a consume of the binding
+
+- **area**: `splice_normal_call_ownership_commits` (`hew-mir/src/lower/mod.rs`)
+- **invariant**: whether the source already authored the checker consume for a runtime-adopted argument is a question about THIS argument's use. Scanning every block from which the call is reachable made the whole loop body a witness, so an unrelated consume (before a rebind, or a sibling index assignment) suppressed this call's transition. Walk the call block's unique-predecessor chain backwards (that chain is exactly the bounds check / intervening call lowering split off) and let the nearest `Use` of the binding decide.
+- **evidence**: `tests/vertical-slice/reject/vec_index_assign_reuse_after_rebind.hew`; `issue3095_vec_index_assign_move.hew` still 0.

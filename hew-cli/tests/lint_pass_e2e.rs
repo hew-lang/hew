@@ -21,6 +21,11 @@ const NEEDLESS: &str = "fn main() {\n\
      }\n\
      }\n";
 
+/// A needless range loop followed by another statement. The later statement
+/// is a negative control for the diagnostic span: it must not be rendered as
+/// the source of the loop warning.
+const NEEDLESS_FOLLOWED_BY_STATEMENT: &str = "fn main() {\n    let xs: Vec<i64> = Vec.new();\n    for i in 0..xs.len() {\n        let _ = xs[i];\n    }\n    println(\"unrelated after loop\");\n}\n";
+
 /// The same program with an in-source allow directive on the line above.
 const NEEDLESS_SUPPRESSED: &str = "fn main() {\n\
      let xs: Vec<i64> = Vec.new();\n\
@@ -49,6 +54,36 @@ fn run_check(source: &str, extra_args: &[&str]) -> Output {
         .expect("failed to spawn hew check")
 }
 
+/// Run `hew check` on a program importing a directory module assembled from
+/// `journal.hew` and `recovery.hew`. Only the peer file contains a lint.
+fn run_directory_module_check() -> Output {
+    let dir = tempdir();
+    let journal_dir = dir.path().join("journal");
+    std::fs::create_dir(&journal_dir).unwrap();
+    std::fs::write(
+        dir.path().join("main.hew"),
+        "import journal;\n\nfn main() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        journal_dir.join("journal.hew"),
+        "pub fn open() {\n    println(\"journal primary\");\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        journal_dir.join("recovery.hew"),
+        "pub fn recover() {\n    let names: Vec<string> = Vec.new();\n    for i in 0..names.len() {\n        let _ = names[i];\n    }\n}\n",
+    )
+    .unwrap();
+
+    Command::new(hew_binary())
+        .arg("check")
+        .arg(dir.path().join("main.hew"))
+        .current_dir(repo_root())
+        .output()
+        .expect("failed to spawn hew check")
+}
+
 fn stderr_of(output: &Output) -> String {
     strip_ansi(&String::from_utf8_lossy(&output.stderr))
 }
@@ -64,6 +99,47 @@ fn lint_warning_renders_by_default() {
     assert!(
         stderr.contains("warning:") && stderr.contains(LINT_MESSAGE),
         "expected the needless_range_loop warning to render:\n{stderr}"
+    );
+}
+
+#[test]
+fn needless_range_loop_warning_points_at_loop_header() {
+    let output = run_check(NEEDLESS_FOLLOWED_BY_STATEMENT, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a lint warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("prog.hew:3:9:")
+            && stderr.contains("3 |     for i in 0..xs.len() {")
+            && stderr.contains("|         ^^^^^^^^^^^^^^^^^\n")
+            && stderr.contains(LINT_MESSAGE),
+        "the needless_range_loop warning must point at the loop header:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("unrelated after loop"),
+        "the warning must not point at the following statement:\n{stderr}"
+    );
+}
+
+#[test]
+fn directory_module_lint_points_at_peer_file() {
+    let output = run_directory_module_check();
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a lint warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("recovery.hew:3:9:")
+            && stderr.contains("3 |     for i in 0..names.len() {")
+            && stderr.contains("the loop variable `i` is only used to index `names`"),
+        "the lint must render against the peer file that owns its span:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("journal.hew:") && !stderr.contains("journal primary"),
+        "the primary module file is a negative control for attribution:\n{stderr}"
     );
 }
 

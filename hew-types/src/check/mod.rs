@@ -1913,11 +1913,11 @@ impl Checker {
     /// Run the semantic lint sweep over every function/method body in the
     /// program and collect findings into `out`.
     ///
-    /// Read-only over checker state (`&self`): it scans each module's raw source
+    /// Read-only over checker state (`&self`): it scans each source file
     /// once, walks each item's bodies, builds a [`lints::LintCtx`] carrying the
-    /// resolved-type facts, and tags each finding with the right `module_idx` /
-    /// `source_module`. The module
-    /// walk mirrors `classify_closure_escapes` and the body-check loop in
+    /// resolved-type facts, and tags each finding with the right per-file
+    /// `module_idx` / `source_module`. The module walk mirrors
+    /// `classify_closure_escapes` and the body-check loop in
     /// [`Checker::check_program`] (root items at index 0, then each non-root
     /// module in topo order at a 1-based index, with the same dotted module
     /// name `record_type` stamped onto its spans) so [`SpanKey`] lookups hit
@@ -1970,15 +1970,34 @@ impl Checker {
                     .as_ref()
                     .and_then(|indices| indices.module_base(mod_id))
                     .unwrap_or_default();
-                if let Some(source) = self.lint_sources.source_for(Some(&module_name)) {
-                    self.lint_source(source, module_base, Some(&module_name), levels, out);
+                for (source_idx, source_path) in module.source_paths.iter().enumerate() {
+                    let source_module = if source_idx == 0 {
+                        module_name.clone()
+                    } else {
+                        source_path.display().to_string()
+                    };
+                    let module_idx = span_indices
+                        .as_ref()
+                        .and_then(|indices| indices.path_index(source_path))
+                        .unwrap_or(module_base);
+                    if let Some(source) = self.lint_sources.source_for(Some(&source_module)) {
+                        self.lint_source(source, module_idx, Some(&source_module), levels, out);
+                    }
                 }
                 for (item_idx, (item, _)) in module.items.iter().enumerate() {
                     let module_idx = span_indices
                         .as_ref()
                         .and_then(|indices| indices.item_index(mod_id, item_idx))
                         .unwrap_or(module_base);
-                    self.lint_item(item, module_idx, Some(&module_name), levels, out);
+                    let item_source = program
+                        .module_graph
+                        .as_ref()
+                        .and_then(|mg| mg.item_source(mod_id, item_idx))
+                        .or_else(|| module.source_paths.first());
+                    let source_module = self
+                        .item_file_routing_token(Some(&module_name), item_source)
+                        .unwrap_or_else(|| module_name.clone());
+                    self.lint_item(item, module_idx, Some(&source_module), levels, out);
                 }
             }
         }

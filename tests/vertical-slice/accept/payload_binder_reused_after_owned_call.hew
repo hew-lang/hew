@@ -1,0 +1,40 @@
+// A call never consumes a non-resource argument: an enum payload binder
+// handed by value to a callee that owns its parameter stays usable in the
+// caller afterwards, on every arm.
+type Bag {
+    items: Vec<string>;
+}
+
+enum Source {
+    Named(string);
+    Packed(Bag);
+}
+
+fn count(b: Bag) -> i64 {
+    b.items.len() as i64
+}
+
+fn first(b: Bag) -> string {
+    b.items[0]
+}
+
+fn describe(s: Source) -> string {
+    match s {
+        Source.Named(name) => "named " + name,
+        Source.Packed(bag) => {
+            if count(bag) == 0 {
+                return "empty";
+            }
+            let head = first(bag);
+            head + " of " + f"{count(bag)}"
+        },
+    }
+}
+
+fn main() {
+    let items: Vec<string> = Vec.new();
+    items.push("a");
+    items.push("b");
+    println(describe(Source.Packed(Bag { items: items })));
+    println(describe(Source.Named("n")));
+}

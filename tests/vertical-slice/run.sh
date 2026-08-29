@@ -5918,3 +5918,18 @@ expect_check_fail_contains \
 run_accept_expect_stdout "actor_arg_field_projection_sibling_use"
 run_accept_expect_stdout "actor_arg_value_field_projection"
 run_accept_expect_stdout "actor_state_field_reinit"
+
+# Ownership seams: a `var` record reassigned from a match inside a loop, a
+# payload binder reused after a callee-owned call (a call never consumes a
+# non-resource argument), a `#[returns_receiver]` consuming receiver whose
+# returned identity is the binding's next generation, and guarded `.Ok(sink)`
+# arms whose false guards fall through with the payload intact.
+run_accept_expect_stdout "var_record_reassigned_in_loop"
+run_accept_expect_stdout "payload_binder_reused_after_owned_call"
+run_accept_expect_stdout "returns_receiver_consuming_result"
+run_accept_expect_stdout "guarded_arms_sink_fallthrough"
+
+# The index-assignment move is decided by the argument's own use: an earlier
+# consume of the same binding elsewhere in the loop body neither hides nor
+# duplicates it.
+reject_check_use_after_consume "vec_index_assign_reuse_after_rebind"

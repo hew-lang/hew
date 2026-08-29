@@ -1,0 +1,29 @@
+// Two guarded `.Ok(sink)` arms before the unguarded one: a false guard must
+// fall through with the payload intact, so the arm finally selected writes
+// its text and closes the sink exactly once.
+import std.fs;
+import std.os;
+import std.stream;
+
+fn pick(path: string, first: bool, second: bool) {
+    match stream.to_file(path) {
+        .Ok(sink) if first => {
+            sink.write("first");
+        },
+        .Ok(sink) if second => {
+            sink.write("second");
+        },
+        .Ok(sink) => {
+            sink.write("third");
+        },
+        .Err(e) => println(f"open failed: {e}"),
+    }
+    println(fs.read(path));
+}
+
+fn main() {
+    let base = os.temp_dir() + "/guarded_arms_sink_fallthrough_";
+    pick(base + "a.txt", true, false);
+    pick(base + "b.txt", false, true);
+    pick(base + "c.txt", false, false);
+}

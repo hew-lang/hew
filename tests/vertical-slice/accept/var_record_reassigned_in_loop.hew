@@ -1,0 +1,39 @@
+// A `var` record reassigned inside a loop from a match whose arms produce
+// the value differently (a payload binder, a fresh literal). Each iteration
+// ends the previous generation at the overwrite and the loop back-edge
+// re-arms the next one; no generation may leak or be released twice.
+type Status {
+    state: string;
+    detail: string;
+}
+
+fn fetch(n: i64) -> Result<Status, string> {
+    if n > 0 { Ok(Status { state: "passing", detail: "ok" }) } else { Err("boom") }
+}
+
+fn note(a: string, b: string) { println(a + b); }
+
+fn poll(attempts: i64) -> Result<Status, string> {
+    var last = Status { state: "pending", detail: "start" };
+    for attempt in 0 .. attempts {
+        last = match fetch(attempt) {
+            .Ok(value) => value,
+            .Err(err) => {
+                note(err.clone(), "x");
+                Status { state: "unavailable", detail: err }
+            },
+        };
+        note(last.state.clone(), last.detail.clone());
+        if last.state == "passing" {
+            return Ok(last);
+        }
+    }
+    Ok(last)
+}
+
+fn main() {
+    match poll(2) {
+        .Ok(s) => println(s.state),
+        .Err(e) => println(e),
+    }
+}

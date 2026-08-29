@@ -690,3 +690,10 @@ Nuance row (table under the core):
 
 - **area**: agent tooling; `sccache` (`error writing dependencies to /tmp/sccache…/deps.d: Disk quota exceeded`)
 - **invariant**: when `/tmp` (tmpfs) is at quota the Bash tool captures nothing, heredoc stdin is lost, and it reports exit 1 even for `echo`, while simple commands may still have run. Diagnose with `df -h /tmp` redirected into a repo file; work around with `export TMPDIR=<worktree>/.tmp/tmpdir` for cargo/sccache, redirect every command's output into a file under `.tmp/` and `Read` it back, and append to files with the Edit tool rather than a heredoc. Do not delete other sessions' `/tmp` entries.
+
+### `a-crashed-test-is-not-a-FAIL-row` — nextest prints SIGSEGV/SIGABRT/TIMEOUT in place of FAIL, and a diff regex keyed on FAIL drops crashed tests from both sides
+
+- **area**: test-baseline discipline (`.tmp/ownership-seams/compare-fails.py`, every `baseline-*`/`fails-*` ID list)
+- **invariant**: a failure-set diff over nextest logs must match every terminal failure token (`FAIL|SIG[A-Z]+|ABORT|TIMEOUT`), not `FAIL` alone. `machine_emit_exec::machine_emit_push_populates_thread_queue_in_fifo_order` SIGSEGVed in every recorded run of this lane — including both origin/main baseline runs — yet appeared in NO recorded ID list, so every "new-vs-baseline = empty" verdict silently excluded it and one round reported it as a novel regression when it re-surfaced. Crashes were dropped identically from baseline and candidate sides, which is why the diffs still balanced.
+- **also**: the crash itself is MCJIT symbol resolution — the test binary's `.dynsym` exports no `hew_machine_emit_*` symbols and `add_global_mapping` is not consulted during MCJIT relocation on this host, so the JIT'd `caller` executes `call *%rax` with `%rax = 0` (gdb `disas caller`: `movabs $0x0,%rax`). Recorded in `.tmp/TODO.md`; codegen test-infra lane.
+- **evidence**: `grep SIGSEGV .tmp/ownership-seams/{main-test-15f47a43e,test-main-baseline,test-r2-final,test-r5,f3-make-test,test-final-head}.log` — all name the same test; `readelf --dyn-syms` on the exec test binary shows 0 `machine_emit` entries of 425.

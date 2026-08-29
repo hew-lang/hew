@@ -4,9 +4,7 @@
       "disposition": "allowed",
       "id": "core.stdout",
       "reason": "stdout is captured by the educational sandbox trace",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
+      "required_by": ["sym:core.stdout.println"]
     }
   ],
   "compiler_version": "hew-sandbox-wasm-0.6.0-rc2",
@@ -492,9 +490,7 @@
       ],
       "module": "mod:main",
       "name": "area",
-      "params": [
-        "local:area.0"
-      ],
+      "params": ["local:area.0"],
       "result": "type:i64",
       "span": "span:58-182"
     },
@@ -512,7 +508,7 @@
               ],
               "dst": "local:main.0",
               "op": "const.i64",
-              "span": "span:221-222"
+              "span": "span:222-223"
             },
             {
               "args": [
@@ -523,7 +519,7 @@
               ],
               "dst": "local:main.1",
               "op": "const.i64",
-              "span": "span:224-225"
+              "span": "span:225-226"
             },
             {
               "args": [
@@ -546,7 +542,7 @@
               ],
               "dst": "local:main.2",
               "op": "enum.new",
-              "span": "span:211-226"
+              "span": "span:211-227"
             },
             {
               "args": [
@@ -561,7 +557,7 @@
               ],
               "dst": "local:main.3",
               "op": "call.direct",
-              "span": "span:206-227"
+              "span": "span:206-228"
             },
             {
               "args": [
@@ -576,19 +572,19 @@
               ],
               "dst": null,
               "op": "call.stdlib",
-              "span": "span:198-228"
+              "span": "span:198-229"
             },
             {
               "args": [],
               "dst": "local:main.4",
               "op": "const.unit",
-              "span": "span:198-228"
+              "span": "span:198-229"
             },
             {
               "args": [],
               "dst": "local:main.5",
               "op": "const.unit",
-              "span": "span:182-231"
+              "span": "span:182-232"
             }
           ],
           "params": [],
@@ -601,7 +597,7 @@
               }
             ],
             "op": "return",
-            "span": "span:182-231"
+            "span": "span:182-232"
           }
         }
       ],
@@ -611,42 +607,42 @@
           "id": "local:main.0",
           "mutable": false,
           "name": null,
-          "span": "span:221-222",
+          "span": "span:222-223",
           "type": "type:i64"
         },
         {
           "id": "local:main.1",
           "mutable": false,
           "name": null,
-          "span": "span:224-225",
+          "span": "span:225-226",
           "type": "type:i64"
         },
         {
           "id": "local:main.2",
           "mutable": false,
           "name": null,
-          "span": "span:211-226",
+          "span": "span:211-227",
           "type": "type:Shape"
         },
         {
           "id": "local:main.3",
           "mutable": false,
           "name": null,
-          "span": "span:206-227",
+          "span": "span:206-228",
           "type": "type:i64"
         },
         {
           "id": "local:main.4",
           "mutable": false,
           "name": null,
-          "span": "span:198-228",
+          "span": "span:198-229",
           "type": "type:unit"
         },
         {
           "id": "local:main.5",
           "mutable": false,
           "name": null,
-          "span": "span:182-231",
+          "span": "span:182-232",
           "type": "type:unit"
         }
       ],
@@ -654,7 +650,7 @@
       "name": "main",
       "params": [],
       "result": "type:unit",
-      "span": "span:182-231"
+      "span": "span:182-232"
     }
   ],
   "hew_version": "0.6.0-rc2",
@@ -667,17 +663,12 @@
         "variants": [
           {
             "name": "Circle",
-            "payload": [
-              "type:i64"
-            ],
+            "payload": ["type:i64"],
             "tag": 0
           },
           {
             "name": "Rectangle",
-            "payload": [
-              "type:i64",
-              "type:i64"
-            ],
+            "payload": ["type:i64", "type:i64"],
             "tag": 1
           }
         ]
@@ -878,10 +869,7 @@
     "entry": "mod:main",
     "modules": [
       {
-        "functions": [
-          "fn:area",
-          "fn:main"
-        ],
+        "functions": ["fn:area", "fn:main"],
         "id": "mod:main",
         "imports": [],
         "path": "main",
@@ -889,13 +877,13 @@
       }
     ]
   },
-  "package_id": "pkg:ab778a817fbff46c",
+  "package_id": "pkg:ca9ac1ef00a5277a",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
     "sources": [
       {
-        "content_sha256": "08efba7ac2733b2fb423415e41dfaf3e251cd7f9ca4a5e8cc1bc0828bdae7c3a",
+        "content_sha256": "e6c44753381625d4849d48e74a46a2c303df35d343115b235105a0fc5756aff1",
         "id": "src:main",
         "path": "main.hew"
       }
@@ -1141,11 +1129,11 @@
       },
       {
         "end": {
-          "byte_offset": 231,
+          "byte_offset": 232,
           "column": 2,
           "line": 15
         },
-        "id": "span:182-231",
+        "id": "span:182-232",
         "source_id": "src:main",
         "start": {
           "byte_offset": 182,
@@ -1155,11 +1143,11 @@
       },
       {
         "end": {
-          "byte_offset": 228,
-          "column": 35,
+          "byte_offset": 229,
+          "column": 36,
           "line": 14
         },
-        "id": "span:198-228",
+        "id": "span:198-229",
         "source_id": "src:main",
         "start": {
           "byte_offset": 198,
@@ -1169,11 +1157,11 @@
       },
       {
         "end": {
-          "byte_offset": 227,
-          "column": 34,
+          "byte_offset": 228,
+          "column": 35,
           "line": 14
         },
-        "id": "span:206-227",
+        "id": "span:206-228",
         "source_id": "src:main",
         "start": {
           "byte_offset": 206,
@@ -1183,11 +1171,11 @@
       },
       {
         "end": {
-          "byte_offset": 226,
-          "column": 33,
+          "byte_offset": 227,
+          "column": 34,
           "line": 14
         },
-        "id": "span:211-226",
+        "id": "span:211-227",
         "source_id": "src:main",
         "start": {
           "byte_offset": 211,
@@ -1197,29 +1185,29 @@
       },
       {
         "end": {
-          "byte_offset": 222,
-          "column": 29,
+          "byte_offset": 223,
+          "column": 30,
           "line": 14
         },
-        "id": "span:221-222",
+        "id": "span:222-223",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 221,
-          "column": 28,
+          "byte_offset": 222,
+          "column": 29,
           "line": 14
         }
       },
       {
         "end": {
-          "byte_offset": 225,
-          "column": 32,
+          "byte_offset": 226,
+          "column": 33,
           "line": 14
         },
-        "id": "span:224-225",
+        "id": "span:225-226",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 224,
-          "column": 31,
+          "byte_offset": 225,
+          "column": 32,
           "line": 14
         }
       }
@@ -1232,9 +1220,7 @@
       "id": "sym:core.stdout.println",
       "module": "core.stdout",
       "name": "println",
-      "params": [
-        "type:string"
-      ],
+      "params": ["type:string"],
       "result": "type:unit"
     }
   ]

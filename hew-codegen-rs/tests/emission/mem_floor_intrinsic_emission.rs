@@ -49,7 +49,6 @@ fn floor_pipeline(
     }];
     let locals = params.clone();
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: name.to_string(),

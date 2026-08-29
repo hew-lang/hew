@@ -40,8 +40,8 @@ use crate::model::{
     ParamBoundaryFact, ParamBoundaryMode, ParamCrashCleanupKind, ParamLoanStorage,
     ParamRepresentationEffect, Place, PointerWidth, ProjectedPayloadRejectReason, RawMirFunction,
     RecordLayout, SelectArm, SelectArmKind, SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership,
-    StableActorRole, Strategy, StringRetainCondition, SuspendKind, Terminator, ThirFunction,
-    TraitObjectStorage, TrapKind,
+    StableActorRole, Strategy, StringRetainCondition, SuspendKind, Terminator, TraitObjectStorage,
+    TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::LayoutClass;
@@ -2016,7 +2016,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         }
     }
 
-    let mut thir = Vec::new();
     let mut raw_mir = Vec::new();
     let mut checked_mir = Vec::new();
     let mut elaborated_mir = Vec::new();
@@ -3551,7 +3550,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     crate::model::FunctionCallConv::Default,
                     task_entry_adapter_symbols.clone(),
                 );
-                thir.push(lowered.thir);
                 lowered.raw.source_origin = resolve_source_origin(func.id, module);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
@@ -3559,7 +3557,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                 record_layouts.extend(lowered.record_layouts);
                 flatten_generated_functions(
                     lowered.generated,
-                    &mut thir,
                     &mut raw_mir,
                     &mut checked_mir,
                     &mut elaborated_mir,
@@ -3593,14 +3590,12 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &mut diagnostics,
                 );
                 for lowered in lowered_handlers {
-                    thir.push(lowered.thir);
                     raw_mir.push(lowered.raw);
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
                     flatten_generated_functions(
                         lowered.generated,
-                        &mut thir,
                         &mut raw_mir,
                         &mut checked_mir,
                         &mut elaborated_mir,
@@ -3634,14 +3629,12 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &task_entry_adapter_symbols,
                     &mut diagnostics,
                 ) {
-                    thir.push(lowered.thir);
                     raw_mir.push(lowered.raw);
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
                     flatten_generated_functions(
                         lowered.generated,
-                        &mut thir,
                         &mut raw_mir,
                         &mut checked_mir,
                         &mut elaborated_mir,
@@ -3737,7 +3730,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                         &module.supervisor_child_slots,
                         pointer_width,
                     );
-                    thir.push(lowered.thir);
                     raw_mir.push(lowered.raw);
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
@@ -3803,7 +3795,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             crate::model::FunctionCallConv::Default,
             task_entry_adapter_symbols.clone(),
         );
-        thir.push(lowered.thir);
         lowered.raw.source_origin = resolve_source_origin(mono.key.origin, module);
         raw_mir.push(lowered.raw);
         checked_mir.push(lowered.checked);
@@ -3811,7 +3802,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         record_layouts.extend(lowered.record_layouts);
         flatten_generated_functions(
             lowered.generated,
-            &mut thir,
             &mut raw_mir,
             &mut checked_mir,
             &mut elaborated_mir,
@@ -3946,7 +3936,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     let capabilities = crate::model::ModuleCapabilities::from_raw_mir(&raw_mir, &extern_decls);
 
     IrPipeline {
-        thir,
         raw_mir,
         checked_mir,
         elaborated_mir,
@@ -4110,7 +4099,6 @@ struct ScanCtx<'a> {
 
 #[derive(Debug)]
 pub(crate) struct LoweredFunction {
-    thir: ThirFunction,
     raw: RawMirFunction,
     checked: CheckedMirFunction,
     elaborated: ElaboratedMirFunction,
@@ -4141,7 +4129,6 @@ pub(crate) struct LoweredFunction {
 )]
 fn flatten_generated_functions(
     generated: Vec<LoweredFunction>,
-    thir: &mut Vec<ThirFunction>,
     raw_mir: &mut Vec<RawMirFunction>,
     checked_mir: &mut Vec<CheckedMirFunction>,
     elaborated_mir: &mut Vec<ElaboratedMirFunction>,
@@ -4156,7 +4143,6 @@ fn flatten_generated_functions(
             continue; // duplicate shim from a second use-site — body (and its subtree) already emitted
         }
         let nested = generated.generated;
-        thir.push(generated.thir);
         raw_mir.push(generated.raw);
         checked_mir.push(generated.checked);
         elaborated_mir.push(generated.elaborated);
@@ -4164,7 +4150,6 @@ fn flatten_generated_functions(
         record_layouts.extend(generated.record_layouts);
         flatten_generated_functions(
             nested,
-            thir,
             raw_mir,
             checked_mir,
             elaborated_mir,
@@ -13474,7 +13459,7 @@ pub(in crate::lower) struct FinalizedBody {
     /// the ownership splices that add checker-visible reads, before the carrier
     /// and outbound preparation that rewrites operands. Callers use THIS rather
     /// than re-flattening `blocks`, or the snapshot drifts between body kinds.
-    pub thir_statements: Vec<MirStatement>,
+    pub body_statements: Vec<MirStatement>,
 }
 
 /// THE body-finalization seam. Every body kind finishes here.
@@ -13549,13 +13534,13 @@ pub(in crate::lower) fn finalize_body(
     // blocks are moved into the raw function — params were already named in
     // `lower_params`. Feeds the `-g` variable DIEs.
     prepare_body_transfers(&mut blocks, builder);
-    let thir_statements: Vec<MirStatement> = blocks
+    let body_statements: Vec<MirStatement> = blocks
         .iter()
         .flat_map(|b| b.statements.iter().cloned())
         .collect();
     FinalizedBody {
         blocks,
-        thir_statements,
+        body_statements,
     }
 }
 
@@ -13701,7 +13686,7 @@ pub(crate) fn lower_function(
     // monotone in block id.
     let FinalizedBody {
         blocks,
-        thir_statements,
+        body_statements,
     } = finalize_body(
         &mut builder,
         BodySeal::Cursor(Terminator::Return),
@@ -13711,11 +13696,6 @@ pub(crate) fn lower_function(
             nested_fresh_temp_releases: true,
         },
     );
-    let thir = ThirFunction {
-        name: emit_name.clone(),
-        return_ty: return_ty.clone(),
-        statements: thir_statements,
-    };
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"
@@ -13943,7 +13923,7 @@ pub(crate) fn lower_function(
         dataflow_result.checks.clone(),
         cooperate_sites,
         &builder,
-        &thir.statements,
+        &body_statements,
         &dataflow_result,
         Some(&string_derivation.allowed),
         Some(&bytes_derivation.allowed),
@@ -14009,7 +13989,6 @@ pub(crate) fn lower_function(
         }
     }
     LoweredFunction {
-        thir,
         raw,
         checked,
         elaborated,

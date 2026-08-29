@@ -10,7 +10,7 @@ use super::{
     HirExpr, HirExprKind, HirFn, HirJoin, HirSelect, HirSelectArmKind, HirStmtKind, Instr,
     IntentKind, JoinBranch, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
     RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership,
-    SuspendKind, Terminator, ThirFunction, ValueClass,
+    SuspendKind, Terminator, ValueClass,
 };
 
 fn select_stream_item_ty(ty: ResolvedTy) -> Option<ResolvedTy> {
@@ -398,11 +398,6 @@ impl Builder {
         );
 
         let adapter_return_ty = result_ty.clone();
-        let thir = ThirFunction {
-            name: adapter_symbol.to_string(),
-            return_ty: adapter_return_ty.clone(),
-            statements: vec![],
-        };
         let mut raw = RawMirFunction {
             name: adapter_symbol.to_string(),
             return_ty: adapter_return_ty.clone(),
@@ -453,7 +448,6 @@ impl Builder {
         let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
         LoweredFunction {
-            thir,
             raw,
             checked,
             elaborated,
@@ -991,17 +985,12 @@ impl Builder {
         // future pass cannot be silently absent here either.
         let super::FinalizedBody {
             blocks,
-            thir_statements,
+            body_statements,
         } = super::finalize_body(
             &mut builder,
             super::BodySeal::Cursor(Terminator::Return),
             super::BodyFinalizeSpec::nested_body(),
         );
-        let thir = ThirFunction {
-            name: shim_name.to_string(),
-            return_ty: ResolvedTy::Unit,
-            statements: thir_statements,
-        };
         let mut raw = RawMirFunction {
             name: shim_name.to_string(),
             return_ty: ResolvedTy::Unit,
@@ -1065,7 +1054,7 @@ impl Builder {
             dataflow_result.checks.clone(),
             cooperate_sites,
             &builder,
-            &thir.statements,
+            &body_statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
@@ -1074,7 +1063,6 @@ impl Builder {
         diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
-            thir,
             raw,
             checked,
             elaborated,

@@ -755,12 +755,13 @@ fn nested_vec_iteration_clones_out_while_ordinary_indexing_stays_borrowed() {
     );
 
     let synthetic_value_uses: Vec<_> = pipeline
-        .thir
+        .checked_mir
         .iter()
         .find(|candidate| candidate.name == "iterate_rows")
-        .expect("missing THIR for `iterate_rows`")
-        .statements
+        .expect("missing checked MIR for `iterate_rows`")
+        .blocks
         .iter()
+        .flat_map(|block| block.statements.iter())
         .filter_map(|statement| match statement {
             MirStatement::Use { name, intent, .. } if name.starts_with("__hew_iter_value_") => {
                 Some(*intent)

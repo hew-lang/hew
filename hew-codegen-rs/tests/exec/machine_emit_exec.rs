@@ -208,7 +208,6 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
     };
 
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![step_fn, caller],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),

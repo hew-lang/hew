@@ -93,7 +93,6 @@ fn spawn_pipeline(
     };
 
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![spawn_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],

@@ -429,7 +429,6 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -1764,7 +1763,6 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![invoke, main],
         checked_mir: Vec::new(),
         elaborated_mir: vec![
@@ -1868,7 +1866,6 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
     };
     let blocks = vec![entry, ret];
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
@@ -2008,7 +2005,6 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         terminator: Terminator::Return,
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
@@ -2140,7 +2136,6 @@ fn pipeline_with_user_const_load(
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -2277,7 +2272,6 @@ fn pipeline_with_float_return() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -2413,7 +2407,6 @@ fn actor_handler_signature_leads_with_execution_context_pointer() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![handler],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -2501,7 +2494,6 @@ fn context_field_actor_offset_emits_gep_and_load() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![handler],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -2583,7 +2575,6 @@ fn string_literal_return_builds_and_verifies() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -2867,7 +2858,6 @@ fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeli
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -3084,7 +3074,6 @@ fn pipeline_with_select_arms(
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -4174,7 +4163,6 @@ fn generic_enum_local_resolves_by_mangled_key() {
     };
 
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![func],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -4264,7 +4252,6 @@ fn yield_terminator_lowers_to_coro_suspend_and_publishes_out_pointer() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![gen_body],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -4428,7 +4415,6 @@ fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![gen_body, enclosing],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -4912,7 +4898,6 @@ fn cancellation_token_is_cancelled_emits_runtime_observation_call() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![func],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -5189,7 +5174,6 @@ fn verify_drop_dispatch_resolves_rejects_unresolved_drop_fn() {
         lambda_captures: vec![],
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: Vec::new(),
         checked_mir: Vec::new(),
         elaborated_mir: vec![elab],
@@ -5261,7 +5245,6 @@ fn verify_drop_dispatch_resolves_accepts_runtime_symbol_drop() {
         lambda_captures: vec![],
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: Vec::new(),
         checked_mir: Vec::new(),
         elaborated_mir: vec![elab],
@@ -5319,7 +5302,6 @@ fn wasm_exclusion_scan_flags_runtime_duplex_close_in_elab_drop() {
         lambda_captures: vec![],
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: Vec::new(),
         checked_mir: Vec::new(),
         elaborated_mir: vec![elab],
@@ -5360,7 +5342,6 @@ fn wasm_exclusion_scan_flags_runtime_duplex_close_in_elab_drop() {
 /// the wasm-exclusion-scan regressions.
 fn raw_mir_only_pipeline(body: RawMirFunction) -> IrPipeline {
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![body],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -6215,7 +6196,6 @@ fn wasm_exclusion_scan_ignores_user_fn_close_in_elab_drop() {
         lambda_captures: vec![],
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: Vec::new(),
         checked_mir: Vec::new(),
         elaborated_mir: vec![elab],
@@ -10021,7 +10001,6 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: vec![],
         raw_mir: vec![main],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -10384,7 +10363,6 @@ fn coerce_to_dyn_trait_fails_closed_when_source_slot_disagrees_with_concrete_typ
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: vec![],
         raw_mir: vec![main],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -10502,7 +10480,6 @@ fn coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: vec![],
         raw_mir: vec![main],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -11749,7 +11726,6 @@ fn frame_owned_trait_object_drop_with_drop_fn_fails_closed() {
         lambda_captures: vec![],
     };
     let pipeline = IrPipeline {
-        thir: vec![],
         raw_mir: vec![raw],
         checked_mir: vec![],
         elaborated_mir: vec![elab],
@@ -11893,7 +11869,6 @@ fn single_resource_drop_pipeline(name: &str, resource_ty: ResolvedTy) -> IrPipel
         lambda_captures: vec![],
     };
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![raw],
         checked_mir: vec![],
         elaborated_mir: vec![elab],
@@ -12277,7 +12252,6 @@ fn minimal_pipeline_with_unit_main(with_actor: bool) -> IrPipeline {
         vec![]
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -12654,7 +12628,6 @@ fn pipeline_with_coro_probe() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![probe],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -12800,7 +12773,6 @@ fn pipeline_with_string_stream_send_pump() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![probe],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -14423,7 +14395,6 @@ fn pipeline_with_two_suspends() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![probe],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -14618,7 +14589,6 @@ fn non_ptr_logical_return_coro_fn_compiles_as_ptr_ramp() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![fn_with_non_ptr_return_and_suspend],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -14949,7 +14919,6 @@ fn pipeline_with_actor_handlers(
         state_field_clone_kinds: None,
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir,
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -18620,7 +18589,6 @@ fn closure_env_free_thunk_ir(ownership: hew_mir::ClosureEnvFieldOwnership, modul
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let pipeline = IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![invoke, main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),

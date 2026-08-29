@@ -1,4 +1,4 @@
-//! Local v0.5 THIR/MIR vertical slice.
+//! Local v0.5 MIR vertical slice.
 //!
 //! This crate deliberately models all ladder stages even while the first
 //! executable subset is small. Later slices replace the placeholder lowering
@@ -81,8 +81,8 @@ pub use model::{
     RawValueId, RawValueOp, RecordLayout, RegexLiteral, RuntimeCall, SelectArm, SelectArmKind,
     SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership, StableActorRole, Strategy,
     StringRetainCondition, SupervisorChildLayout, SupervisorConfigParam, SupervisorLayout,
-    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
-    ValueMaterializationReason, WitnessOperand, GEN_BODY_PREFIX, INDIRECT_CLOSURE_CALLEE,
+    SuspendKind, Terminator, TraitObjectStorage, TrapKind, ValueMaterializationReason,
+    WitnessOperand, GEN_BODY_PREFIX, INDIRECT_CLOSURE_CALLEE,
 };
 pub use ownership::{
     AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf,

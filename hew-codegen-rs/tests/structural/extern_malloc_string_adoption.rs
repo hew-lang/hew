@@ -101,7 +101,6 @@ fn pipeline_adopt_extern(malloc_string_return: bool) -> IrPipeline {
     };
 
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![raw],
         checked_mir: vec![checked],
         elaborated_mir: vec![elab],

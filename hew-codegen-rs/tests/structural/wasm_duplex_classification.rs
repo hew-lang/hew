@@ -76,7 +76,6 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         },
     ];
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
@@ -178,7 +177,6 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         terminator: Terminator::Return,
     }];
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),
@@ -270,7 +268,6 @@ fn pipeline_no_duplex() -> IrPipeline {
         terminator: Terminator::Return,
     }];
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),

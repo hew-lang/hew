@@ -239,7 +239,6 @@ fn floor_exec_pipeline() -> IrPipeline {
 
 fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![
             floor_fn(
                 "mem$alloc",

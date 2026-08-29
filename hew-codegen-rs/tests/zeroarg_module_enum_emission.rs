@@ -305,7 +305,6 @@ fn unknown_named_type_still_fails_closed_with_d10() {
     }];
 
     let pipeline = IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "bad_fn".into(),

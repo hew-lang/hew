@@ -7,7 +7,6 @@ use hew_types::ResolvedTy;
 
 fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: Vec::new(),
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),

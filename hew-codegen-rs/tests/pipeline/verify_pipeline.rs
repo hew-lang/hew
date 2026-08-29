@@ -58,7 +58,6 @@ fn pipeline_const_42() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -116,7 +115,6 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),

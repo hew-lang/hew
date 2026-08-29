@@ -99,7 +99,6 @@ impl PointerWidth {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrPipeline {
-    pub thir: Vec<ThirFunction>,
     pub raw_mir: Vec<RawMirFunction>,
     pub checked_mir: Vec<CheckedMirFunction>,
     pub elaborated_mir: Vec<ElaboratedMirFunction>,
@@ -1031,7 +1030,7 @@ pub struct SupervisorLayout {
     pub window: Option<String>,
     /// Mangled symbol of the bootstrap function whose body spawns and
     /// wires the declared children in topological order. The function
-    /// itself is emitted into `IrPipeline.{thir,raw_mir,checked_mir,
+    /// itself is emitted into `IrPipeline.{raw_mir,checked_mir,
     /// elaborated_mir}` like any other `FunctionCallConv::ActorHandler`
     /// function. See `mangle_supervisor_bootstrap`.
     pub bootstrap_symbol: String,
@@ -2695,13 +2694,6 @@ fn ty_layout_carries_owned_handle(
     });
     visited_enum_layouts.remove(&layout.name);
     carries
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ThirFunction {
-    pub name: String,
-    pub return_ty: ResolvedTy,
-    pub statements: Vec<MirStatement>,
 }
 
 /// The per-carrier payload of a collapsed suspension point, stored in the

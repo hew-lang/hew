@@ -11,7 +11,7 @@ use super::{
     DropKind, ElabDrop, FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr,
     IntentKind, LambdaCapture, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement,
     Place, RawMirFunction, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin,
-    StreamProducerPumpCtx, SuspendKind, Terminator, ThirFunction, ValueClass,
+    StreamProducerPumpCtx, SuspendKind, Terminator, ValueClass,
 };
 use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
@@ -946,17 +946,12 @@ impl Builder {
         // predated the pass that releases it.
         let super::FinalizedBody {
             blocks,
-            thir_statements,
+            body_statements,
         } = super::finalize_body(
             &mut builder,
             super::BodySeal::Cursor(Terminator::Return),
             super::BodyFinalizeSpec::nested_body(),
         );
-        let thir = ThirFunction {
-            name: shim_name.to_string(),
-            return_ty: ret_ty.clone(),
-            statements: thir_statements,
-        };
         let mut raw_params = Vec::with_capacity(params.len() + 1);
         raw_params.push(env_ptr_ty);
         raw_params.extend(params.iter().map(|param| self.subst_ty(&param.ty)));
@@ -1021,7 +1016,7 @@ impl Builder {
             dataflow_result.checks.clone(),
             cooperate_sites,
             &builder,
-            &thir.statements,
+            &body_statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
@@ -1030,7 +1025,6 @@ impl Builder {
         diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
-            thir,
             raw,
             checked,
             elaborated,
@@ -1127,17 +1121,12 @@ impl Builder {
         // future pass cannot be silently absent here either.
         let super::FinalizedBody {
             blocks,
-            thir_statements,
+            body_statements,
         } = super::finalize_body(
             &mut builder,
             super::BodySeal::Cursor(Terminator::Return),
             super::BodyFinalizeSpec::nested_body(),
         );
-        let thir = ThirFunction {
-            name: shim_name.to_string(),
-            return_ty: ret_ty.clone(),
-            statements: thir_statements,
-        };
 
         // Build params list: env_ptr_ty first (ClosureInvoke ABI), then user params.
         let mut raw_params = Vec::with_capacity(param_tys.len() + 1);
@@ -1209,7 +1198,7 @@ impl Builder {
             dataflow_result.checks.clone(),
             cooperate_sites,
             &builder,
-            &thir.statements,
+            &body_statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
@@ -1218,7 +1207,6 @@ impl Builder {
         diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
-            thir,
             raw,
             checked,
             elaborated,
@@ -1659,7 +1647,7 @@ impl Builder {
         // (measured on `BodyFinalizeSpec::nested_fresh_temp_releases`).
         let super::FinalizedBody {
             blocks: body_blocks,
-            thir_statements: body_thir_statements,
+            body_statements: nested_body_statements,
         } = super::finalize_body(
             &mut body_builder,
             super::BodySeal::Cursor(Terminator::Return),
@@ -1702,12 +1690,6 @@ impl Builder {
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
             source_origin: SourceOrigin::Unknown,
-        };
-
-        let thir = ThirFunction {
-            name: body_name.clone(),
-            return_ty: body_user_return_ty.clone(),
-            statements: body_thir_statements,
         };
 
         // Synthetic HirFn shell for `check_function` (mirrors `lower_gen_block`).
@@ -1763,7 +1745,7 @@ impl Builder {
             dataflow_result.checks.clone(),
             cooperate_sites,
             &body_builder,
-            &thir.statements,
+            &nested_body_statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
@@ -1772,7 +1754,6 @@ impl Builder {
         body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
-            thir,
             raw,
             checked,
             elaborated,
@@ -2495,7 +2476,7 @@ impl Builder {
         // them, leaking a whole `Vec` per iteration.
         let super::FinalizedBody {
             blocks,
-            thir_statements,
+            body_statements,
         } = super::finalize_body(
             &mut body_builder,
             super::BodySeal::Cursor(Terminator::Return),
@@ -2512,12 +2493,7 @@ impl Builder {
         // is subsumed by the coro frame and removed (RC14).
         let body_locals_with_state = body_builder.locals.clone();
 
-        // Build the THIR/raw/checked/elaborated triple for the body function.
-        let thir = ThirFunction {
-            name: body_name.clone(),
-            return_ty: return_ty.clone(),
-            statements: thir_statements,
-        };
+        // Build the raw/checked/elaborated triple for the body function.
 
         // The gen-body coroutine ramp's formal parameters mirror the leading
         // locals prepended above: `params[0]` is the out-pointer (`*mut Y`, the
@@ -2609,7 +2585,7 @@ impl Builder {
             dataflow_result.checks.clone(),
             cooperate_sites,
             &body_builder,
-            &thir.statements,
+            &body_statements,
             &dataflow_result,
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
@@ -2618,7 +2594,6 @@ impl Builder {
         body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
-            thir,
             raw,
             checked,
             elaborated,

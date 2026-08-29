@@ -110,7 +110,6 @@ fn classified_actor(
 
 fn pipeline_with(actors: Vec<ActorLayout>, records: Vec<RecordLayout>) -> IrPipeline {
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![trivial_main()],
         checked_mir: vec![],
         elaborated_mir: vec![],

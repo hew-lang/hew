@@ -2282,7 +2282,6 @@ mod tests {
 
     fn empty_pipeline() -> IrPipeline {
         IrPipeline {
-            thir: vec![],
             raw_mir: vec![],
             checked_mir: vec![],
             elaborated_mir: vec![],

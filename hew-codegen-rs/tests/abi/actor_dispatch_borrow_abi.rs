@@ -1094,7 +1094,6 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![handler],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),

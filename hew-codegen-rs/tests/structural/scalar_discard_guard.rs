@@ -124,7 +124,6 @@ fn pipeline_discard_extern_owned(
     };
 
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![raw],
         checked_mir: vec![checked],
         elaborated_mir: vec![elab],

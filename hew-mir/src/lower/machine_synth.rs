@@ -12,7 +12,7 @@ use super::{
     HirMachineTransition, HirNodeId, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
     Instr, IntentKind, LoweredFunction, MirDiagnostic, MirDiagnosticKind, ParamOwnershipFacts,
     Place, PointerWidth, RawMirFunction, Rc, ResolvedRef, ResolvedTy, ScopeId, SiteId,
-    SourceOrigin, TaskEntryAdapterSymbols, Terminator, ThirFunction, TrapKind, ValueClass,
+    SourceOrigin, TaskEntryAdapterSymbols, Terminator, TrapKind, ValueClass,
     SENTINEL_CRASH_CODE_BINDING, SENTINEL_CRASH_CODE_NODE, SENTINEL_CRASH_CODE_SITE,
     SENTINEL_CRASH_MESSAGE_BINDING, SENTINEL_DOWN_CRASH_KIND_BINDING,
     SENTINEL_DOWN_LOCAL_SLOT_BINDING, SENTINEL_DOWN_LOCATION_BINDING,
@@ -1702,7 +1702,7 @@ pub(super) fn synthesize_machine_step_fn(
     // like every other, so an ownership pass added there reaches it too.
     let super::FinalizedBody {
         blocks,
-        thir_statements: _,
+        body_statements: _,
     } = super::finalize_body(
         &mut builder,
         super::BodySeal::AlreadyTerminated,
@@ -1736,12 +1736,6 @@ pub(super) fn synthesize_machine_step_fn(
         source_origin: SourceOrigin::SynthesizedMachineStep {
             machine_name: layout_name,
         },
-    };
-
-    let thir = ThirFunction {
-        name: emit_name.clone(),
-        return_ty: return_ty.clone(),
-        statements: Vec::new(),
     };
 
     let mut checked = CheckedMirFunction {
@@ -1779,7 +1773,6 @@ pub(super) fn synthesize_machine_step_fn(
     checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
 
     LoweredFunction {
-        thir,
         raw,
         checked,
         elaborated,

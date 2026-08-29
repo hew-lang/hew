@@ -58,7 +58,6 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
         },
     ];
     IrPipeline {
-        thir: Vec::new(),
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),

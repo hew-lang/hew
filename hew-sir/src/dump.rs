@@ -1,6 +1,47 @@
 use std::fmt::Write as _;
 
-use crate::{SemModule, SemOpKind, SemTerminator};
+use crate::{LoweredModule, SemModule, SemOpKind, SemTerminator, SirLoweringStatus};
+
+/// Deterministic printer for a whole HIR→SIR lowering result.
+///
+/// The IR text alone cannot say why a declaration has no body, so a dump that
+/// prints only bodies is silent about exactly the thing an inspector is
+/// looking for. This prints, ahead of the IR, one stanza per declaration that
+/// failed to lower — every one of them, with its reason — so the surface gap
+/// is visible in full rather than summarised, truncated, or omitted.
+#[must_use]
+pub fn dump_lowering(lowered: &LoweredModule) -> String {
+    let mut out = String::new();
+    if lowered.module.entry_callable.is_none() {
+        out.push_str(
+            "; no entry callable: this module is not a program, so no body was demanded\n",
+        );
+    }
+    for (name, status) in &lowered.statuses {
+        let SirLoweringStatus::Unsupported { reason } = status else {
+            continue;
+        };
+        writeln!(out, "; fn {name}").expect("write to String");
+        writeln!(out, "; unsupported: {reason}").expect("write to String");
+    }
+    // Concrete generic instances have no HIR declaration of their own, so
+    // their failures are only visible through the callable table.
+    for (callable, status) in &lowered.callable_statuses {
+        let SirLoweringStatus::Unsupported { reason } = status else {
+            continue;
+        };
+        let Some(header) = lowered.module.callable(*callable) else {
+            continue;
+        };
+        if !matches!(header.instance, crate::CallableInstance::Generic(_)) {
+            continue;
+        }
+        writeln!(out, "; fn {}", header.symbol).expect("write to String");
+        writeln!(out, "; unsupported: {reason}").expect("write to String");
+    }
+    out.push_str(&dump_sir(&lowered.module));
+    out
+}
 
 /// Deterministic, one-way diagnostic printer for Semantic IR.
 #[must_use]

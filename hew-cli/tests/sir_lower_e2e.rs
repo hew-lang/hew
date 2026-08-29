@@ -6,6 +6,7 @@
 
 mod support;
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -54,6 +55,8 @@ fn main() -> i64 {
 }
 ";
 
+// SIR body lowering is demand-driven from the entry, so an inspection fixture
+// has to be a program: `main` is what puts these two bodies in the dump.
 const SHORT_CIRCUIT_INSPECTION: &str = r"
 fn rhs() -> bool {
     true
@@ -65,6 +68,16 @@ fn sir_and(flag: bool) -> bool {
 
 fn sir_or(flag: bool) -> bool {
     flag || rhs()
+}
+
+fn main() -> i64 {
+    if sir_and(true) {
+        1
+    } else if sir_or(false) {
+        2
+    } else {
+        0
+    }
 }
 ";
 
@@ -729,9 +742,9 @@ fn sir_lower_excludes_unreachable_unsupported_hir_bodies() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unrelated HIR bodies remain outside the current semantic surface")
+        stderr.contains("were never reached from the entry")
             && stderr.contains("were not compiled or used as fallbacks"),
-        "strict SIR must describe the excluded HIR body rather than silently using it:\n{}",
+        "strict SIR must account for the excluded HIR body rather than silently using it:\n{}",
         describe_output(&output),
     );
 }
@@ -781,6 +794,55 @@ fn sir_lower_closed_graph_emits_wasm_llvm() {
     assert!(
         llvm.contains("@main(") && llvm.contains("@twice(") && llvm.contains("@increment("),
         "the WASM frontend must receive definitions for the complete strict SIR component:\n{llvm}",
+    );
+}
+
+/// `--dump-sir` must account for every body it could not lower.
+///
+/// The inspection surface used to print at most six reasons and replace the
+/// rest with a count, which is exactly the case where an inspector needs the
+/// detail. This fixture has seven unsupported bodies for that reason.
+#[test]
+fn sir_dump_reports_every_unsupported_body_not_just_the_first_few() {
+    const UNSUPPORTED_BODIES: usize = 7;
+
+    let mut fixture = String::new();
+    for index in 0..UNSUPPORTED_BODIES {
+        // `var` bindings are outside the initial SIR surface.
+        write!(
+            fixture,
+            "fn helper{index}(value: i64) -> i64 {{\n    var accumulator = value;\n    accumulator\n}}\n\n"
+        )
+        .expect("write to String");
+    }
+    fixture.push_str("fn main() -> i64 {\n    ");
+    fixture.push_str(
+        &(0..UNSUPPORTED_BODIES)
+            .map(|index| format!("helper{index}({index})"))
+            .collect::<Vec<_>>()
+            .join(" + "),
+    );
+    fixture.push_str("\n}\n");
+
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_unsupported_inventory.hew");
+    fs::write(&source, &fixture).expect("write unsupported-body inventory fixture");
+
+    let output = sir_dump(&source);
+    assert_success(
+        &output,
+        "SIR inspection must succeed with unsupported bodies",
+    );
+    let dump = String::from_utf8_lossy(&output.stdout);
+    for index in 0..UNSUPPORTED_BODIES {
+        assert!(
+            dump.contains(&format!("; fn helper{index}\n; unsupported: ")),
+            "`helper{index}` must be reported with its reason:\n{dump}",
+        );
+    }
+    assert!(
+        dump.contains("fn main("),
+        "the dump must still carry the IR it could lower:\n{dump}",
     );
 }
 

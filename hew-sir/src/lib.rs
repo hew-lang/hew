@@ -17,7 +17,7 @@ pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,
     DefUseIndex, Dominators, EdgeRef, RewriteError,
 };
-pub use dump::dump_sir;
+pub use dump::{dump_lowering, dump_sir};
 pub use lower::{lower_module, LoweredModule, SirLoweringStatus};
 pub use model::{
     BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, EffectSummary,

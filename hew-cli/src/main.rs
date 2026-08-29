@@ -333,7 +333,8 @@ fn report_strict_sir_missing_body(
         Some(hew_sir::SirLoweringStatus::Unsupported { reason }) => Some(reason.as_str()),
         Some(
             hew_sir::SirLoweringStatus::Lowered
-            | hew_sir::SirLoweringStatus::GenericTemplate { .. },
+            | hew_sir::SirLoweringStatus::GenericTemplate { .. }
+            | hew_sir::SirLoweringStatus::NotReached,
         )
         | None => module
             .items
@@ -350,7 +351,8 @@ fn report_strict_sir_missing_body(
                 match status {
                     hew_sir::SirLoweringStatus::Unsupported { reason } => Some(reason.as_str()),
                     hew_sir::SirLoweringStatus::Lowered
-                    | hew_sir::SirLoweringStatus::GenericTemplate { .. } => None,
+                    | hew_sir::SirLoweringStatus::GenericTemplate { .. }
+                    | hew_sir::SirLoweringStatus::NotReached => None,
                 }
             }),
     };
@@ -1451,7 +1453,7 @@ fn cmd_dump_sir(a: &args::CompileArgs, json: bool) -> i32 {
     ) else {
         return 1;
     };
-    let dump = hew_sir::dump_sir(&sir.module);
+    let dump = hew_sir::dump_lowering(&sir);
     if json {
         eprint!("{dump}");
     } else {
@@ -1598,29 +1600,32 @@ fn report_sir_lane(report: &SirLaneReport) {
         .iter()
         .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::GenericTemplate { .. }))
         .count();
-    let hir_fallbacks: Vec<_> = report
+    // Reaching this function means the strict component lowered, so no
+    // demanded body failed. What remains to account for is the declarations
+    // the entry never asked about.
+    let not_reached = report
         .sir
         .statuses
         .iter()
-        .filter_map(|(name, status)| match status {
-            hew_sir::SirLoweringStatus::Unsupported { reason } => Some((name, reason)),
-            hew_sir::SirLoweringStatus::Lowered
-            | hew_sir::SirLoweringStatus::GenericTemplate { .. } => None,
-        })
-        .collect();
+        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::NotReached))
+        .count();
     eprintln!(
         "SIR lower: selected {} verified callable(s) from {sir_lowered} monomorphic HIR body/bodies and {sir_templates} generic template(s) across {} HIR function declaration(s); no legacy MIR bodies were lowered",
         report.callables.len(),
         report.sir.statuses.len(),
     );
-    if !hir_fallbacks.is_empty() {
+    if not_reached > 0 {
         eprintln!(
-            "SIR lower: {} unrelated HIR bodies remain outside the current semantic surface; they were not compiled or used as fallbacks",
-            hir_fallbacks.len()
+            "SIR lower: {not_reached} HIR declaration(s) were never reached from the entry; they were not compiled or used as fallbacks"
         );
     }
 }
 
+/// Summarise a `--dump-sir` inspection.
+///
+/// Per-declaration failure reasons belong to the dump itself
+/// ([`hew_sir::dump_lowering`]), which prints every one of them. This line
+/// only counts, so nothing is silently dropped past a detail limit.
 fn report_sir_inspection(sir: &hew_sir::LoweredModule) {
     let lowered = sir
         .statuses
@@ -1632,34 +1637,16 @@ fn report_sir_inspection(sir: &hew_sir::LoweredModule) {
         .iter()
         .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::GenericTemplate { .. }))
         .count();
+    let not_reached = sir
+        .statuses
+        .iter()
+        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::NotReached))
+        .count();
     eprintln!(
-        "SIR inspect: verified {lowered} monomorphic HIR body/bodies and registered {templates} generic template(s) across {} HIR function declaration(s); emitted {} concrete SIR body/bodies",
+        "SIR inspect: verified {lowered} monomorphic HIR body/bodies and registered {templates} generic template(s) across {} HIR function declaration(s); emitted {} concrete SIR body/bodies; {not_reached} declaration(s) the entry never reached",
         sir.statuses.len(),
         sir.module.functions.len()
     );
-    let fallbacks: Vec<_> = sir
-        .statuses
-        .iter()
-        .filter_map(|(name, status)| match status {
-            hew_sir::SirLoweringStatus::Unsupported { reason } => Some((name, reason)),
-            hew_sir::SirLoweringStatus::Lowered
-            | hew_sir::SirLoweringStatus::GenericTemplate { .. } => None,
-        })
-        .collect();
-    report_sir_fallbacks("HIR", &fallbacks);
-}
-
-fn report_sir_fallbacks(kind: &str, fallbacks: &[(&String, &String)]) {
-    const DETAIL_LIMIT: usize = 6;
-    for (name, reason) in fallbacks.iter().take(DETAIL_LIMIT) {
-        eprintln!("SIR {kind} fallback for `{name}`: {reason}");
-    }
-    if fallbacks.len() > DETAIL_LIMIT {
-        eprintln!(
-            "SIR {kind}: {} additional explicit fallbacks (use --dump-sir for the semantic subset)",
-            fallbacks.len() - DETAIL_LIMIT
-        );
-    }
 }
 
 struct CompiledTempExecutable {

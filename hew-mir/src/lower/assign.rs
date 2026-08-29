@@ -118,6 +118,16 @@ impl Builder {
         // between. Consuming `h` here would end its generation before the
         // check and a second time at the call; defer it like every other
         // catalogued consuming runtime argument.
+        //
+        // SHORTCUT. WHY: the deferral set is keyed by the argument's site and
+        // was named for affine extern consumes; the index-assignment value is
+        // not affine, but the consume hook reads only this set, so the site is
+        // toggled in around the single `lower_value_for_move` that reads it.
+        // WHEN: once every consuming runtime argument carries its deferral on
+        // the catalogued call verdict (`arg_consume_verdict`) instead of a
+        // Builder-side site set, the toggle and the set go together. WHAT:
+        // the real solution is one "consume at the normal edge" verdict per
+        // runtime call argument that `lower_value_for_move` consults directly.
         let vec_set_moves_binding = !copy_in
             && matches!(
                 &target.kind,

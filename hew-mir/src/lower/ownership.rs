@@ -3922,7 +3922,7 @@ impl Builder {
         }
         if let (Some(place), Some(generation)) = (
             self.binding_locals.get(&binding).copied(),
-            self.owner_generations.get(&binding).copied(),
+            self.live_owner_generation(binding),
         ) {
             self.push_instr(Instr::OwnershipEvent(
                 crate::model::OwnershipEvent::Transfer {
@@ -3938,6 +3938,20 @@ impl Builder {
             ));
         }
         self.set_owned_local_consumed_post_lowering(binding, transferee, site);
+    }
+
+    /// The binding's current owner generation, unless the ledger already
+    /// demoted it to a byte-copy alias: `DemoteToAlias` ended that generation,
+    /// so no later transfer may name it. `owner_generations` is a latest-mint
+    /// cursor, not a liveness view.
+    pub(crate) fn live_owner_generation(&self, binding: BindingId) -> Option<u32> {
+        let is_alias = self
+            .owned_locals
+            .iter()
+            .any(|entry| entry.binding == binding && entry.disposition == Disposition::AliasOf);
+        (!is_alias)
+            .then(|| self.owner_generations.get(&binding).copied())
+            .flatten()
     }
 
     /// Consume an owner from the explicit instruction-position place rather
@@ -3957,7 +3971,7 @@ impl Builder {
                 value: 1,
             });
         }
-        if let Some(generation) = self.owner_generations.get(&binding).copied() {
+        if let Some(generation) = self.live_owner_generation(binding) {
             self.push_instr(Instr::OwnershipEvent(
                 crate::model::OwnershipEvent::Transfer {
                     owner: crate::model::OwnerId {
@@ -6362,9 +6376,10 @@ impl Builder {
     /// * `call_param_owned_carrier == Some(true)`, minus the two type classes
     ///   `register_owned_call_carrier_param` excludes up front (indirect enums
     ///   and machines, which carry their own move/drop authority);
-    /// * `call_param_consume.is_consume()` **conjoined with**
-    ///   `ty_is_heap_owning_enum_composite` — the #2732 enum-composite callee
-    ///   drop.
+    /// * `call_param_owned_carrier == Some(true)` **conjoined with**
+    ///   `ty_is_heap_owning_enum_composite` — the enum-composite callee drop
+    ///   for a summary-owned parameter the carrier protocol could not admit
+    ///   (already covered by the bullet above).
     ///
     /// The remaining three mints are `ActorHandler`-convention only, so their
     /// caller is the mailbox hand-off in `lower_actor_send`
@@ -6374,15 +6389,14 @@ impl Builder {
     /// refcount into the delivered `BytesTriple`, so `lower_params` registers
     /// a scope-exit owner for it exactly like the other two).
     ///
-    /// The conjunction in the third bullet is load-bearing and was measured:
-    /// `call_param_consume` is a body-escape summary, not a mint predicate. The
-    /// `string::fmt` display shim carries `ProvenConsume` on its `string`
-    /// parameter and mints nothing at all, because the enum-composite type gate
-    /// excludes it. Reading the summary alone refused
-    /// `println(f"…{h.label}…")` for every proven-foreign `h` — a program with
-    /// no double release in it. Refusing where the callee does not mint is not
-    /// "fail closed", it is a false rejection, so the caller-side question is
-    /// asked at precisely the callee-side mint conditions and nowhere else.
+    /// The body-escape bit is a summary, not a mint predicate:
+    /// the `string::fmt` display shim carries CONSUME on its `string`
+    /// parameter and mints nothing at all. Reading that summary here once
+    /// refused `println(f"…{h.label}…")` for every proven-foreign `h` — a
+    /// program with no double release in it. Refusing where the callee does
+    /// not mint is not "fail closed", it is a false rejection, so the
+    /// caller-side question is asked at precisely the callee-side mint
+    /// conditions and nowhere else.
     pub(crate) fn reject_opaque_foreign_call_arg_transfers(
         &mut self,
         callee_item: Option<hew_hir::ItemId>,
@@ -6431,22 +6445,9 @@ impl Builder {
             == Some(true)
             && !crate::lower::drop_plan::ty_is_indirect_enum(&ty, &self.enum_layouts)
             && !self.ty_is_machine(&ty);
-        if carrier {
-            return true;
-        }
-        // Arm 3 — the #2732 heap-owning enum-composite callee drop. Both
-        // conjuncts are required: the summary alone is a body-escape fact, not
-        // a mint predicate.
-        self.param_ownership
-            .call_param_consume
-            .get(&key)
-            .is_some_and(|verdict| verdict.is_consume())
-            && crate::lower::ty_is_heap_owning_enum_composite(
-                &ty,
-                &self.record_field_orders,
-                &self.enum_layouts,
-                self.type_classes.lifecycle_registry(),
-            )
+        // The enum-composite callee drop is gated on the same carrier summary
+        // and adds no mint the carrier arm does not already report.
+        carrier
     }
 
     /// The ONE composite-provenance query every mint site in this builder asks.

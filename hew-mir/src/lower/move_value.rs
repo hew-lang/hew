@@ -156,6 +156,51 @@ impl Builder {
         );
     }
 
+    /// Register a top-level enum payload binder moved out of `scrutinee_local`.
+    ///
+    /// A binder destructured from an owned call carrier (a snapshot-dropped
+    /// parameter, or a projection of one) is a byte-copy alias of the
+    /// carrier's variant slot: the carrier's guarded terminal snapshot drop is
+    /// the single release authority for every slot it still holds, and
+    /// [`Self::note_carrier_payload_binder`] neutralizes the slot on exactly
+    /// the path where the binder escapes. Minting the binder as an owner too
+    /// releases the payload twice (binder scope exit plus the snapshot drop);
+    /// clearing the slot at destructure time instead would null the payload
+    /// before a guard on the arm has selected it. A fresh call scrutinee keeps
+    /// its own arm-release protocol.
+    pub(crate) fn register_owned_payload_binder(
+        &mut self,
+        binding: BindingId,
+        name: String,
+        ty: hew_types::ResolvedTy,
+        warrant: super::owner_mint::OwnerMintWarrant,
+        scrutinee_local: u32,
+        call_scrutinee_owner: Option<&(BindingId, hew_types::ResolvedTy)>,
+    ) {
+        self.register_owned_local(binding, name, ty, warrant);
+        // A borrowed by-value parameter is released by its caller; a binder
+        // over its payload is likewise a byte-copy alias and mints nothing.
+        let alias = call_scrutinee_owner.is_none()
+            && (self.scrutinee_is_owned_carrier(scrutinee_local)
+                || self.borrowed_value_param_locals.contains(&scrutinee_local));
+        if alias {
+            self.set_owned_local_disposition(binding, super::Disposition::AliasOf);
+        }
+    }
+
+    /// Whether a match scrutinee local is an owned call carrier (or projects
+    /// from one) whose terminal snapshot drop releases every payload slot the
+    /// match's binders alias. Such binders never mint an owner of their own;
+    /// [`Self::note_carrier_payload_binder`] gives them the escape authority.
+    pub(crate) fn scrutinee_is_owned_carrier(&self, scrutinee_local: u32) -> bool {
+        let scrutinee = Place::Local(scrutinee_local);
+        match self.owned_carrier_authority(scrutinee) {
+            Some(OwnedCarrierNeutralizeTarget::Whole(root)) => root == scrutinee,
+            Some(OwnedCarrierNeutralizeTarget::Projection { .. }) => true,
+            Some(OwnedCarrierNeutralizeTarget::ScopeExitTuple { .. }) | None => false,
+        }
+    }
+
     /// Propagate whole-carrier release authority into a match payload binder.
     ///
     /// The binder local holds a byte-copy ALIAS of the carrier scrutinee's

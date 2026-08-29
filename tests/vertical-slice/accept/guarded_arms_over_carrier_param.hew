@@ -1,0 +1,40 @@
+// A payload binder of an owned call-carrier parameter is an alias of the
+// parameter's variant slot: a false guard falls through to the next arm with
+// the payload still in place, and the parameter's terminal drop releases
+// every payload the arms did not move out — exactly once per call.
+type Bag {
+    items: Vec<string>;
+}
+
+enum Source {
+    Named(string);
+    Packed(Bag);
+}
+
+fn count(b: Bag) -> i64 {
+    b.items.len() as i64
+}
+
+fn first(b: Bag) -> string {
+    b.items[0]
+}
+
+fn describe(s: Source) -> string {
+    match s {
+        Source.Named(n) if n.len() > 3 => "long " + n,
+        Source.Named(n) => "short " + n,
+        Source.Packed(b) if count(b) == 0 => "empty",
+        Source.Packed(b) => first(b) + f" of {count(b)}",
+    }
+}
+
+fn main() {
+    let items: Vec<string> = Vec.new();
+    items.push("a" + "x");
+    items.push("b");
+    let empty: Vec<string> = Vec.new();
+    println(describe(Source.Packed(Bag { items: items })));
+    println(describe(Source.Packed(Bag { items: empty })));
+    println(describe(Source.Named("n" + "m")));
+    println(describe(Source.Named("long" + "er")));
+}

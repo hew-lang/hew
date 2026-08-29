@@ -4582,14 +4582,17 @@ impl Builder {
         keep_for_drop_elab: bool,
     ) {
         if keep_for_drop_elab {
-            let direct_owned_string_alias =
-                matches!(&origin, ProjectedPayloadOrigin::OwnedBinding(_))
-                    && self
-                        .binding_locals
-                        .get(&binding_id)
-                        .and_then(|place| base_local(*place))
-                        .and_then(|local| self.locals.get(local as usize))
-                        .is_some_and(|ty| matches!(self.subst_ty(ty), ResolvedTy::String));
+            // The overwrite flag guards the BINDER's own release. A binder
+            // dispositioned `AliasOf` (a carrier-parameter payload) mints no
+            // owner, so there is no generation for the guard to attach to.
+            let direct_owned_string_alias = self.live_owner_generation(binding_id).is_some()
+                && matches!(&origin, ProjectedPayloadOrigin::OwnedBinding(_))
+                && self
+                    .binding_locals
+                    .get(&binding_id)
+                    .and_then(|place| base_local(*place))
+                    .and_then(|local| self.locals.get(local as usize))
+                    .is_some_and(|ty| matches!(self.subst_ty(ty), ResolvedTy::String));
             self.projected_payload_provenance.insert(
                 binding_id,
                 ProjectedPayloadProvenance {
@@ -5285,11 +5288,13 @@ impl Builder {
                 if keep_for_drop_elab {
                     let unguarded_payload_move =
                         call_scrutinee_owner.is_some() && arm.guard.is_none() && keep_for_drop_elab;
-                    self.register_owned_local(
+                    self.register_owned_payload_binder(
                         binding.binding,
                         binding.name.clone(),
                         binding_ty.clone(),
                         warrant,
+                        scrutinee_local,
+                        call_scrutinee_owner.as_ref(),
                     );
                     // A path-complete direct-call carrier release owns every
                     // untransferred payload slot on the selected arm. A

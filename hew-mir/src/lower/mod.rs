@@ -23,7 +23,6 @@ use hew_hir::{
     HirVarSelfMethodTarget, IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
-use hew_types::runtime_call::ConsumeVerdict;
 use hew_types::{
     short_name, BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
     NumericMethodOp, NumericSignedness, ProducedValueOwnership, ResolvedTy,
@@ -4046,23 +4045,6 @@ pub(crate) struct ParamOwnershipFacts {
     /// lets owned collection drop elaboration distinguish a genuine handoff from
     /// a call-boundary borrow such as `first<T>(v: Vec<T>) { v.get(0) }`.
     proven_borrow_arg_sites: HashSet<hew_hir::SiteId>,
-    /// `(origin fn ItemId, param index) -> true` iff that parameter (of ANY
-    /// type, not just resources) is CONSUMED by the callee body — returned,
-    /// stored, sent, captured, forwarded to a consuming param, or destructured
-    /// by a `match` scrutinee. The all-parameter body summary that seeds
-    /// `proven_borrow_arg_sites`; unlike `param_consume` it covers non-resource
-    /// composites (a by-value `Result<string, string>` / user enum), which
-    /// `lower_params` needs to decide whether a heap-owning enum-composite param
-    /// is the CALLEE's drop obligation (CONSUME) or the caller's (BORROW). A
-    /// A BORROW param is `ConsumeVerdict::ProvenBorrow`; a param absent from the
-    /// map is treated as BORROW (fail-safe: the caller keeps and drops it, no
-    /// callee double-free). The two consume flavours
-    /// (`ProvenConsume`/`ConservativeConsume`) both mean "callee owns/drops" and
-    /// are byte-identical at every consumer via `is_consume()` — the finer label
-    /// records WHY the param flipped (positive escape proof vs the fail-closed
-    /// forward-to-unproven disjunct) so a later pass can act on the proven-borrow
-    /// tail without re-deriving it.
-    call_param_consume: HashMap<(hew_hir::ItemId, usize), ConsumeVerdict>,
     /// A separate caller/callee contract for parameters whose body carries the
     /// value into an owning sink. Callers prepare an independent owner (or
     /// transfer a proven dead whole local); callees install the inverse
@@ -4104,16 +4086,6 @@ struct ScanCtx<'a> {
     /// root parameter. This is enabled only for the deep call-carrier summary,
     /// never for the legacy borrow/consume table.
     owned_projection_sinks: bool,
-    /// Whether a bare-ref argument forwarded to a free-function parameter is
-    /// treated OPTIMISTICALLY as a borrow, regardless of the target's verdict.
-    /// The normal scan flips such a forward to CONSUME when the target is
-    /// consuming or unproven (the fail-closed disjunct); this flag suppresses
-    /// exactly that disjunct so the scan reports ONLY the positively-proven
-    /// escapes (returned/stored/sent/captured). Used solely to split a converged
-    /// consume verdict into `ProvenConsume` vs `ConservativeConsume` (see
-    /// `refine_call_param_verdicts`); never enabled for the consume/borrow or
-    /// carrier tables that drive move intent.
-    assume_forward_borrows: bool,
     /// The subset of `methods` whose PARAM 0 is a by-value `self` receiver of a
     /// NON-resource type (`collect_borrow_receiver_methods`). Shape A of #2753:
     /// the borrow-site collector records such a receiver's `SiteId` so the
@@ -4705,6 +4677,17 @@ fn prepare_owned_call_carriers(
                         *slot = dest;
                     }
                 }
+                // SHORTCUT. WHY: the callee owns this parameter (its body
+                // stores or returns it), the argument is still live in the
+                // caller, and the value has no total structural clone (a
+                // `dyn Trait` box, a resource composite), so neither cost
+                // strategy — transfer on last use, snapshot clone — can hand
+                // the callee its own copy. WHEN: once a `dyn Trait` clone
+                // ritual (vtable `clone` entry) or a refcounted box share
+                // exists, the clone strategy covers it and this arm goes.
+                // WHAT: the real solution is a third strategy that shares the
+                // box (retain) instead of refusing; the refusal is a cost
+                // limitation, not a legality rule of the call boundary.
                 Ok(false) => builder.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!(
@@ -8264,6 +8247,17 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // names the generation the Builder cursor knew, which on a sibling branch
     // is stale; it is re-keyed only after the phis are sealed, so the early
     // runs leave any slot that already carries one alone.
+    //
+    // SHORTCUT. WHY: the overwrite-release derivation and the ownership phis
+    // each need the other's result (a release must name the phi generation;
+    // the phi must not see a replaced generation as live), and the pipeline
+    // has no fixpoint driver, so the pair is replayed by hand three times at
+    // the points where the intervening passes publish new facts. WHEN: once
+    // reassignment publishes the replaced generation's end as an explicit
+    // event at lowering time (the Raw MIR virtual-value seam, ladder §2.5),
+    // one run after phi sealing is sufficient and the earlier two go. WHAT:
+    // the real solution is a single replay after the event stream is
+    // complete, not a hand-unrolled convergence loop.
     drop_plan::materialize_successor_guard_authority(&mut *blocks);
     drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     materialize_explicit_neutralize_transfers(&mut *blocks, builder);
@@ -10445,17 +10439,6 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
             _ => None,
         })
         .collect::<Vec<_>>();
-    // An owned-carrier parameter is released by its guarded terminal
-    // `ValueSnapshotDrop`, not by an `OwnerId`, so the live-owner scan below
-    // never sees it as the parent. It is still the single release authority
-    // over every payload slot; a binder that adopts one of them must clear
-    // that slot exactly like a binder adopting from a minted owner, or the
-    // terminal snapshot drop releases the payload a second time.
-    let carrier_param_roots = builder
-        .owned_carrier_params
-        .iter()
-        .filter_map(|param| base_local(param.value))
-        .collect::<HashSet<_>>();
     for block in blocks {
         let mut live = entries.get(&block.id).cloned().unwrap_or_default();
         let mut index = 0;
@@ -10473,10 +10456,7 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
                         .iter()
                         .filter(|(_, owner_place)| base_local(*owner_place) == root)
                         .count();
-                    let carrier_param_root =
-                        root.is_some_and(|root| carrier_param_roots.contains(&root));
-                    (root.is_some() && (parent_count == 1 || carrier_param_root))
-                        .then_some((*src, *dest))
+                    (root.is_some() && parent_count == 1).then_some((*src, *dest))
                 }
                 _ => None,
             };
@@ -14835,25 +14815,25 @@ impl Builder {
                 param_is_consumed,
                 param_is_owned_carrier,
             );
-            // #2732 — callee-side drop for a by-value heap-owning ENUM COMPOSITE
-            // param (`Result<T, string>`, `Option<string>`, a user enum with an
-            // owned-payload variant) the body-summary classifies CONSUME: a
-            // `match e { .. }` scrutinee destructures the param, so the caller
-            // moved it in and does NOT drop it. `param_consume` is resource-only,
-            // so such a param was never registered into `owned_locals` and its
-            // heap payload leaked on every consuming path — the enum twin of the
-            // record match-drain callee-drop.
-            //
-            // Register it into `owned_locals` + the body scope, exactly like a
+            // Callee-side drop for a by-value heap-owning ENUM COMPOSITE param
+            // whose callers hand it an owned copy (`param_summary_owned`) but
+            // whose snapshot plan the carrier protocol could not admit
+            // (`register_owned_call_carrier_param` returned false). Register
+            // it into `owned_locals` + the body scope, exactly like a
             // `let`-bound local enum, so its owner mints the tag-aware
-            // `DropKind::EnumInPlace` shell drop on every consuming path. A
-            // match arm that MOVES its payload out into an owning sink
-            // (return / store / send) neutralizes the moved payload slot, so a
-            // move-out arm never double-frees the payload the binder now owns.
-            // Gated on
-            // `call_param_consume` = CONSUME: a BORROW enum param is absent and
-            // stays the caller's drop (#2735 named / #2743 temporary), mutually
-            // exclusive with this callee drop.
+            // `DropKind::EnumInPlace` shell drop on every path. A match arm
+            // that MOVES its payload out into an owning sink (return / store
+            // / send) neutralizes the moved payload slot, so a move-out arm
+            // never double-frees the payload the binder now owns.
+            //
+            // The gate is the owned-carrier summary, never the body-escape
+            // bit the borrow-site collectors read: a call never consumes a
+            // non-resource argument, so a callee whose callers do not hand it
+            // a copy borrows the value and must not release it. A true method
+            // receiver is stripped from the carrier summary for exactly that
+            // reason (`Arena.insert(self, value)` mutates through borrowed
+            // `self`), and a callee drop keyed on the escape summary freed the
+            // caller's receiver payload under it.
             //
             // Records/tuples are deliberately NOT registered here — their owned
             // fields drain through per-field match binders that each own and drop
@@ -14865,11 +14845,7 @@ impl Builder {
             if !param_is_consumed
                 && !param_is_owned_carrier
                 && !actor_message_param
-                && self
-                    .param_ownership
-                    .call_param_consume
-                    .get(&(func.id, i))
-                    .is_some_and(|v| v.is_consume())
+                && param_summary_owned
                 && ty_is_heap_owning_enum_composite(
                     &owned_ty,
                     &self.record_field_orders,

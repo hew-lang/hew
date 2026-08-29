@@ -5928,6 +5928,9 @@ run_accept_expect_stdout "var_record_reassigned_in_loop"
 run_accept_expect_stdout "payload_binder_reused_after_owned_call"
 run_accept_expect_stdout "returns_receiver_consuming_result"
 run_accept_expect_stdout "guarded_arms_sink_fallthrough"
+run_accept_expect_stdout "guarded_arms_over_carrier_param"
+run_accept_expect_stdout "if_let_over_carrier_param"
+run_accept_expect_stdout "value_receiver_reused_after_method"
 
 # The index-assignment move is decided by the argument's own use: an earlier
 # consume of the same binding elsewhere in the loop body neither hides nor

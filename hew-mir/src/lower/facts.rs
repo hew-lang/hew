@@ -3733,9 +3733,9 @@ pub(super) fn vec_iter_record_layout_key(ty: &ResolvedTy) -> Option<String> {
 /// transfer. Either way the `record_init`'s `vec`-field read is NOT an
 /// ownership escape of the source handle the way a user `record_init` field
 /// store is — the cursor never frees what it borrows. Surfacing this field lets
-/// `derive_local_collection_drop_allowed` exempt it from the escape scan so a
+/// `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) exempt it from the escape scan so a
 /// captured place source keeps its own scope-exit drop, and lets
-/// `derive_vec_iter_drop_allowed` decide whether the cursor (rvalue source) or
+/// `derive_vec_iter_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) decide whether the cursor (rvalue source) or
 /// the source binding (place source) is the sole owner that frees the handle.
 pub(super) fn vec_iter_record_init_vec_source(instr: &Instr) -> Option<Place> {
     let Instr::RecordInit { ty, fields, .. } = instr else {

@@ -4,19 +4,17 @@ mod handoff;
 use super::*;
 #[cfg(not(test))]
 use super::{
-    base_local, binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
-    block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
+    base_local, block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
     cow_value_leaf_drop_symbol, dataflow, derive_local_bytes_drop_allowed,
     generator_yield_instr_escapes, generator_yield_terminator_escapes, instr_source_places,
     local_is_used_after, place_is_interior_projection, place_refs_local,
-    propagate_whole_value_alias_roots, propagate_whole_value_alias_roots_excluding_moves,
-    prove_retained_bytes_local_share, shift_instr_spans_on_insert, terminator_source_places,
-    vec_iter_record_init_vec_source, vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap,
-    BasicBlock, BindingId, Builder, BytesDropDerivation, BytesRetainPlacement, BytesRetainSite,
-    ClosureEnvFieldOwnership, DischargeSite, Disposition, DropKind, ElabDrop, FieldOffset, HashMap,
-    HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
-    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
-    StringRetainSite, SuspendKind, Terminator,
+    propagate_whole_value_alias_roots_excluding_moves, prove_retained_bytes_local_share,
+    shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_init_vec_source,
+    vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder,
+    BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
+    DischargeSite, Disposition, DropKind, ElabDrop, FieldOffset, HashMap, HashSet, Instr,
+    IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction, ResolvedTy,
+    SiteId, StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
 };
 use crate::{raw_virtual_operation_class, RawVirtualClass};
 use handoff::instruction_carries_typed_handoff;
@@ -922,52 +920,12 @@ fn corroborated_retained_string_move_dest(
 }
 /// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
 /// retained-return co-owner mint: the instruction immediately before it is an
-/// unconditional `StringRetain`/`BytesRetain` of the SAME `src`.
-///
-/// `retain v; ret = move v` hands the CALLER an independent `+1` on the buffer
-/// while `v`'s original reference stays owned by whatever produced it (there,
-/// an enum composite's variant payload slot). This is the `ReturnSlot`
-/// analogue of `corroborated_retained_string_move_sites`' `Move { dest: Local,
-/// src }` shape: there the destination local is the new owner and the source
-/// stays an alias released by its parent; at a return the caller is the new
-/// owner and the composite keeps release authority. Treating the read as an
-/// ESCAPE excludes the composite's `EnumInPlace` drop, so the retain's extra
-/// reference is never balanced — one leaked payload node per call (the enum
-/// twin of the returned-member retain leak,
-/// `enum_callee_consume_drop_leak_oracle` `move_out_arm`). Consumed by
-/// `derive_enum_composite_drop_allowed`; hosted here beside its retained-move
-/// corroboration siblings.
-pub(super) fn is_retained_return_move(
-    block: &BasicBlock,
-    instr_index: usize,
-    dest: Place,
-    src: Place,
-) -> bool {
-    if !matches!(dest, Place::ReturnSlot) {
-        return false;
-    }
-    let Some(prev) = instr_index
-        .checked_sub(1)
-        .and_then(|i| block.instructions.get(i))
-    else {
-        return false;
-    };
-    matches!(
-        prev,
-        Instr::StringRetain {
-            value,
-            condition: StringRetainCondition::Always,
-        } if *value == src,
-    ) || matches!(prev, Instr::BytesRetain { value } if *value == src)
-}
-/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
-/// retained-return co-owner mint: the instruction immediately before it is an
 /// unconditional `StringRetain` of the SAME `src`.
 ///
 /// `string.retain v; ret = move v` hands the CALLER an independent `+1` on the
 /// buffer while `v`'s producing reference stays owned inside the callee. This is
 /// the `ReturnSlot` twin of `corroborated_retained_string_move_sites`' local
-/// share shape; `derive_enum_composite_drop_allowed` already recognises it for
+/// share shape; `derive_enum_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) already recognises it for
 /// the enum shell drop (`is_retained_return_move`).
 fn string_move_is_retained_return(block: &BasicBlock, instr_index: usize, src: Place) -> bool {
     instr_index
@@ -3803,43 +3761,6 @@ fn uniquely_written_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
         .collect()
 }
 
-/// Close corroborated projection transfer destinations over unambiguous
-/// same-block whole-value `Move` edges. A transferred field may be rebound
-/// before its owning drop, but local reuse or a CFG edge makes a global
-/// exemption unprovable and therefore remains an escape binder.
-pub(super) fn forward_move_closure(blocks: &[BasicBlock], seeds: &HashSet<u32>) -> HashSet<u32> {
-    let uniquely_written_locals = uniquely_written_locals(blocks);
-    let mut closure: HashSet<u32> = seeds
-        .iter()
-        .copied()
-        .filter(|local| uniquely_written_locals.contains(local))
-        .collect();
-
-    for block in blocks {
-        let mut ready = HashSet::new();
-        for instr in &block.instructions {
-            if let Instr::AggregateProjectionNeutralize { transferee, .. } = instr {
-                if let Some(local) = base_local(*transferee) {
-                    if closure.contains(&local) {
-                        ready.insert(local);
-                    }
-                }
-            }
-            if let Instr::Move {
-                dest: Place::Local(dest),
-                src: Place::Local(src),
-            } = instr
-            {
-                if ready.contains(src) && uniquely_written_locals.contains(dest) {
-                    ready.insert(*dest);
-                    closure.insert(*dest);
-                }
-            }
-        }
-    }
-    closure
-}
-
 #[cfg(test)]
 mod aggregate_projection_transfer_dest_tests {
     use super::*;
@@ -4083,118 +4004,6 @@ mod aggregate_projection_transfer_dest_tests {
         assert!(
             missing_taint.contains(&10) && missing_taint.contains(&20),
             "without explicit transfer authority, projection taint must propagate fail closed"
-        );
-    }
-
-    #[test]
-    fn corroborated_transfer_closes_over_forward_moves() {
-        let blocks = [BasicBlock {
-            id: 0,
-            statements: vec![],
-            instructions: vec![
-                Instr::TupleFieldLoad {
-                    tuple: Place::Local(1),
-                    field_index: 0,
-                    dest: Place::Local(10),
-                },
-                Instr::AggregateProjectionNeutralize {
-                    root: Place::Local(1),
-                    fields: vec![0],
-                    transferee: Place::Local(10),
-                    scope_exit_owner: None,
-                },
-                Instr::Move {
-                    dest: Place::Local(20),
-                    src: Place::Local(10),
-                },
-                Instr::Move {
-                    dest: Place::Local(30),
-                    src: Place::Local(20),
-                },
-            ],
-            terminator: Terminator::Return,
-        }];
-
-        assert_eq!(
-            forward_move_closure(&blocks, &aggregate_projection_transfer_dests(&blocks)),
-            HashSet::from([10, 20, 30]),
-            "every forward owner rebind must leave the escape-binder set"
-        );
-    }
-
-    #[test]
-    fn reused_or_cross_block_destinations_do_not_gain_transfer_authority() {
-        let reused_dest = [BasicBlock {
-            id: 0,
-            statements: vec![],
-            instructions: vec![
-                Instr::TupleFieldLoad {
-                    tuple: Place::Local(1),
-                    field_index: 0,
-                    dest: Place::Local(10),
-                },
-                Instr::AggregateProjectionNeutralize {
-                    root: Place::Local(1),
-                    fields: vec![0],
-                    transferee: Place::Local(10),
-                    scope_exit_owner: None,
-                },
-                Instr::Move {
-                    dest: Place::Local(20),
-                    src: Place::Local(10),
-                },
-                Instr::ConstI64 {
-                    dest: Place::Local(20),
-                    value: 0,
-                },
-            ],
-            terminator: Terminator::Return,
-        }];
-        let cross_block = [
-            BasicBlock {
-                id: 0,
-                statements: vec![],
-                instructions: vec![
-                    Instr::TupleFieldLoad {
-                        tuple: Place::Local(1),
-                        field_index: 0,
-                        dest: Place::Local(10),
-                    },
-                    Instr::AggregateProjectionNeutralize {
-                        root: Place::Local(1),
-                        fields: vec![0],
-                        transferee: Place::Local(10),
-                        scope_exit_owner: None,
-                    },
-                ],
-                terminator: Terminator::Goto { target: 1 },
-            },
-            BasicBlock {
-                id: 1,
-                statements: vec![],
-                instructions: vec![Instr::Move {
-                    dest: Place::Local(20),
-                    src: Place::Local(10),
-                }],
-                terminator: Terminator::Return,
-            },
-        ];
-
-        assert_eq!(
-            forward_move_closure(
-                &reused_dest,
-                &aggregate_projection_transfer_dests(&reused_dest)
-            ),
-            HashSet::from([10]),
-            "a reused destination cannot be globally exempted as a transfer owner"
-        );
-        assert_eq!(
-            forward_move_closure(
-                &cross_block,
-                &aggregate_projection_transfer_dests(&cross_block)
-            ),
-            HashSet::from([10]),
-            "a CFG edge lacks the path proof required for a global transfer exemption"
         );
     }
 }
@@ -5422,7 +5231,7 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
 /// leaks one node per call unless released inside the callee
 /// (`enum_callee_consume_drop_leak_oracle` `move_out_via_let_share`). This is the
 /// local-share twin of the enum-shell fix G2 landed in
-/// `derive_enum_composite_drop_allowed`: G2 keeps the shell drop that frees the
+/// `derive_enum_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay): G2 keeps the shell drop that frees the
 /// still-owned original; this adds the share drop that frees the co-owner's
 /// mint. The two are mutually exclusive references, so together the buffer is
 /// released exactly once per outstanding reference.
@@ -8724,85 +8533,6 @@ pub(super) fn bytes_share_sink_places(instr: &Instr) -> Vec<Place> {
         _ => Vec::new(),
     }
 }
-pub(super) fn readmit_retained_bytes_tuple_roots(
-    blocks: &[BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
-    alias_of: &HashMap<u32, u32>,
-    retained_roots: &HashSet<u32>,
-    excluded_roots: &mut HashSet<u32>,
-) {
-    for &retained_root in retained_roots {
-        let root_members: HashSet<u32> = alias_of
-            .iter()
-            .filter_map(|(&local, &root)| (root == retained_root).then_some(local))
-            .collect();
-        let mut escapes = false;
-        for block in blocks {
-            for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if base_local(*src).is_some_and(|local| root_members.contains(&local)) {
-                        let benign = base_local(*dest)
-                            .is_some_and(|local| root_members.contains(&local))
-                            && matches!(dest, Place::Local(_));
-                        if !benign {
-                            escapes = true;
-                            break;
-                        }
-                    }
-                    continue;
-                }
-                if matches!(
-                    instr,
-                    Instr::TupleFieldLoad { .. }
-                        | Instr::BytesRetain { .. }
-                        | Instr::StringRetain { .. }
-                        | Instr::Drop { .. }
-                        | Instr::FieldDropInPlace { .. }
-                ) {
-                    continue;
-                }
-                for place in instr_source_places(instr) {
-                    let Some(local) = base_local(place) else {
-                        continue;
-                    };
-                    if root_members.contains(&local)
-                        && !binder_read_is_borrow_safe_instr(instr, local)
-                    {
-                        escapes = true;
-                        break;
-                    }
-                }
-                if escapes {
-                    break;
-                }
-            }
-            if escapes {
-                break;
-            }
-            for place in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
-                let Some(local) = base_local(place) else {
-                    continue;
-                };
-                if root_members.contains(&local)
-                    && !binder_read_is_borrow_safe_terminator(
-                        &block.terminator,
-                        suspend_kinds.get(&block.id),
-                        local,
-                    )
-                {
-                    escapes = true;
-                    break;
-                }
-            }
-            if escapes {
-                break;
-            }
-        }
-        if !escapes {
-            excluded_roots.remove(&retained_root);
-        }
-    }
-}
 fn apply_bytes_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
@@ -8888,89 +8618,6 @@ fn apply_bytes_retain_sites(
         block.instructions = rewritten;
     }
     *instr_spans = new_spans;
-}
-
-/// Per-binding map from an owned local `bytes` candidate to the block(s)
-/// whose terminator hands its triple to an actor mailbox (`Send` / `Ask` /
-/// `RemoteAsk`, actor-ask arms in `Select` / `SuspendingSelect`, `Join`
-/// branches, and collapsed suspending Ask/RemoteAsk carriers recovered from
-/// `suspend_kinds`) — the forwarding transfer
-/// [`derive_local_bytes_drop_allowed`]'s escape scan already excludes from
-/// `allowed`, whole-function, the moment any block reads it there.
-///
-/// That exclusion is sound for every exit reachable from the transfer block,
-/// but not for a cancellation branch taken before the handler reaches the
-/// transfer. The elaborator uses this map to distinguish those regions.
-///
-/// Fail-closed: an unlocated transfer maps to nothing and stays under the
-/// path-insensitive exclusion. Over-recording only narrows re-admission;
-/// every actor-mailbox carrier and collapsed-suspend side-table entry is
-/// scanned to prevent under-recording.
-pub(super) fn derive_bytes_actor_transfer_blocks(
-    blocks: &[BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
-    owned_locals: &[(BindingId, String, ResolvedTy)],
-    binding_locals: &HashMap<BindingId, Place>,
-) -> HashMap<BindingId, HashSet<u32>> {
-    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
-    for (binding, _name, ty) in owned_locals {
-        if !matches!(ty, ResolvedTy::Bytes) {
-            continue;
-        }
-        let Some(place) = binding_locals.get(binding) else {
-            continue;
-        };
-        let Some(local) = base_local(*place) else {
-            continue;
-        };
-        candidate_local_to_binding.insert(local, *binding);
-    }
-    if candidate_local_to_binding.is_empty() {
-        return HashMap::new();
-    }
-    let alias_of =
-        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
-    let mut transfer_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
-    for block in blocks {
-        let values: Vec<Place> = match &block.terminator {
-            Terminator::Send { value, .. }
-            | Terminator::Ask { value, .. }
-            | Terminator::RemoteAsk { value, .. } => vec![*value],
-            Terminator::Suspend { .. } => match suspend_kinds.get(&block.id) {
-                Some(SuspendKind::Ask { value, .. } | SuspendKind::RemoteAsk { value, .. }) => {
-                    vec![*value]
-                }
-                _ => continue,
-            },
-            Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => arms
-                .iter()
-                .filter_map(|arm| match &arm.kind {
-                    SelectArmKind::ActorAsk { value, .. } => Some(*value),
-                    SelectArmKind::StreamNext { .. }
-                    | SelectArmKind::TaskAwait { .. }
-                    | SelectArmKind::ChannelRecv { .. }
-                    | SelectArmKind::AfterTimer { .. } => None,
-                })
-                .collect(),
-            Terminator::Join { branches, .. } => {
-                branches.iter().map(|branch| branch.value).collect()
-            }
-            _ => continue,
-        };
-        for value in values {
-            let Some(local) = base_local(value) else {
-                continue;
-            };
-            let Some(&root) = alias_of.get(&local) else {
-                continue;
-            };
-            let Some(&binding) = candidate_local_to_binding.get(&root) else {
-                continue;
-            };
-            transfer_blocks.entry(binding).or_default().insert(block.id);
-        }
-    }
-    transfer_blocks
 }
 
 #[expect(

@@ -5935,18 +5935,16 @@ impl Builder {
                 self.push_composite_result_move(result_place, src, result_ty);
             }
             for (binding, place, ty, site) in generator_yield_drop_bindings {
-                if arm_is_fresh_owned_vec_iter_some {
-                    if let Some(kind) = self.generator_yield_plan_drop_kind(&ty) {
-                        self.vec_iter_yield_exit_drops
-                            .push(super::VecIterYieldExitDrop {
-                                binding,
-                                ty: ty.clone(),
-                                kind,
-                                body_start_block: body_start_block_id,
-                                body_end_block: body_end_block_id,
-                                site,
-                            });
-                    }
+                if arm_is_fresh_owned_vec_iter_some
+                    && self.generator_yield_plan_drop_kind(&ty).is_some()
+                {
+                    self.vec_iter_yield_exit_drops
+                        .push(super::VecIterYieldExitDrop {
+                            binding,
+                            body_start_block: body_start_block_id,
+                            body_end_block: body_end_block_id,
+                            site,
+                        });
                 }
                 let is_minted_call_carrier = base_local(place)
                     .is_some_and(|local| self.call_scrutinee_carrier_mint_locals.contains(&local));
@@ -6038,7 +6036,7 @@ impl Builder {
     /// registered owner and frees the loaded heap content through its
     /// recursive tag-aware `DropKind::EnumInPlace` scope-exit drop, which
     /// descends through this nesting depth. For that to hold, the
-    /// `derive_enum_composite_drop_allowed` escape scan must NOT misread the
+    /// `derive_enum_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) escape scan must NOT misread the
     /// reads this method emits as payload escapes: the inner tag is read with
     /// `Place::EnumTag` (a bitcopy discriminant, exempted as a tag read), and
     /// the i64 tag destination is never tainted as a payload binder (the

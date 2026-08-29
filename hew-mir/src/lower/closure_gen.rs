@@ -1018,8 +1018,8 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
@@ -1032,9 +1032,6 @@ impl Builder {
             cooperate_sites,
             &builder,
             &body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
@@ -1204,8 +1201,8 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
@@ -1218,9 +1215,6 @@ impl Builder {
             cooperate_sites,
             &builder,
             &body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
@@ -1753,10 +1747,8 @@ impl Builder {
             .collect();
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
-        let string_derivation =
-            finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
-        let bytes_derivation =
-            finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
@@ -1770,9 +1762,6 @@ impl Builder {
             cooperate_sites,
             &body_builder,
             &nested_body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         body_diagnostics.extend(elaboration_diagnostics);
@@ -2598,10 +2587,8 @@ impl Builder {
             .collect();
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
-        let string_derivation =
-            finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
-        let bytes_derivation =
-            finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
@@ -2615,9 +2602,6 @@ impl Builder {
             cooperate_sites,
             &body_builder,
             &body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         body_diagnostics.extend(elaboration_diagnostics);

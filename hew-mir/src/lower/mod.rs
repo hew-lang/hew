@@ -67,8 +67,6 @@ mod control_flow;
 mod drop_plan;
 mod expr;
 mod facts;
-mod for_await_drop_plan;
-mod machine_own;
 mod machine_synth;
 mod move_value;
 mod owner_mint;
@@ -108,14 +106,9 @@ use self::cfg_util::{
 };
 #[cfg(not(test))]
 use self::composite_own::{
-    apply_escaped_record_sibling_field_drops,
-    derive_borrowed_builtin_handle_projection_alias_bindings,
-    derive_consumed_local_aggregate_member_bindings, derive_enum_composite_drop_allowed,
-    derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
-    derive_owned_record_drop_allowed, derive_owned_tuple_handle_projection_bindings,
-    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
-    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
-    detect_builtin_handle_record_field_overwrite, detect_opaque_resource_field_misuse,
+    apply_escaped_record_sibling_field_drops, derive_local_bytes_drop_allowed,
+    derive_returned_aggregate_member_bindings, detect_builtin_handle_record_field_overwrite,
+    detect_opaque_resource_field_misuse,
 };
 #[cfg(not(test))]
 use self::consts::{
@@ -132,19 +125,17 @@ use self::consts::{
 pub use self::consts::{build_const_descriptors, is_string_const_ty};
 #[cfg(not(test))]
 use self::drop_plan::{
-    affine_release_needs_drop_flag, attribute_payload_binder_root,
-    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
-    builtin_method_arg_is_move_ingress, check_to_diagnostic, classify_closure_pair_rhs,
-    classify_dyn_trait_storage, cow_value_leaf_drop_symbol, describe_vec_element,
-    dyn_rebind_source_binding, elaborate, field_override_uses_record_field_drop,
-    note_payload_escape, propagate_payload_binder_root, render_owned_handle_ty, resource_drop_fn,
-    seal_checked, stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow,
-    ty_is_closure_pair, ty_is_generator_handle, ty_is_heap_owning_enum_composite,
-    ty_is_heap_owning_tuple, ty_is_indirect_enum, ty_is_local_collection_handle,
-    ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
-    validate_drop_plan, validate_ownership_events, validate_unwind_cleanup_coverage,
-    vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
-    vec_iter_yield_abandonment_diagnostics, PayloadBinderRoot,
+    affine_release_needs_drop_flag, binder_read_is_borrow_safe_instr,
+    binder_read_is_borrow_safe_terminator, builtin_method_arg_is_move_ingress, check_to_diagnostic,
+    classify_closure_pair_rhs, classify_dyn_trait_storage, cow_value_leaf_drop_symbol,
+    describe_vec_element, dyn_rebind_source_binding, elaborate,
+    field_override_uses_record_field_drop, render_owned_handle_ty, resource_drop_fn, seal_checked,
+    stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow, ty_is_closure_pair,
+    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
+    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_stream_handle, ty_is_vec,
+    validate_discharge_authority, validate_drop_plan, validate_ownership_events,
+    validate_unwind_cleanup_coverage, vec_iter_init_vec_source_expr,
+    vec_iter_let_cursor_owns_handle, vec_iter_yield_abandonment_diagnostics,
 };
 pub use self::drop_plan::{crash_only_cleanup_drop, drop_kind_for_test_only};
 pub(crate) use self::facts::*;
@@ -160,11 +151,10 @@ use self::machine_synth::{
 #[cfg(not(test))]
 use self::split_consume::{
     alias_projection_chain_owner_seeds, attribute_field_binder_provenance, base_local,
-    binding_ref_target, check_duplex_split_state, close_alias_binders_forward,
-    collect_record_field_binders, descend_match_bound_hop_alias_chain,
-    descend_match_bound_hop_aliases, local_is_byte_copy_aggregate, place_is_interior_projection,
-    place_is_tag_read, propagate_seeded_whole_value_alias_roots_excluding_moves,
-    propagate_whole_value_alias_roots, propagate_whole_value_alias_roots_excluding_moves,
+    binding_ref_target, check_duplex_split_state, collect_record_field_binders,
+    descend_match_bound_hop_alias_chain, local_is_byte_copy_aggregate,
+    place_is_interior_projection, propagate_whole_value_alias_roots,
+    propagate_whole_value_alias_roots_excluding_moves,
 };
 pub use self::suspend_places::instr_source_places;
 pub use self::suspend_places::suspend_kind_source_places;
@@ -178,16 +168,13 @@ use self::suspend_places::{
 };
 #[cfg(not(test))]
 use self::temp_drop::{
-    aggregate_borrowed_ingress_clone_sites, aggregate_projection_transfer_dests,
-    apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops,
-    bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
-    bytes_share_sink_places, classify_actor_state_load_modes,
+    aggregate_borrowed_ingress_clone_sites, apply_nested_fresh_bytes_temp_drops,
+    apply_nested_fresh_string_temp_drops, bytes_interior_producer_dest, bytes_place_is_typed,
+    bytes_runtime_arg_is_borrow, bytes_share_sink_places, classify_actor_state_load_modes,
     close_obligated_borrow_alias_violations, collection_borrow_getter_alias_locals,
-    compute_collection_interior_alias_taint, compute_projection_alias_taint,
-    derive_bytes_actor_transfer_blocks, derive_cow_fresh_borrowed_owner, derive_cow_sole_owner,
-    finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
-    forward_move_closure, interior_alias_receiver_violations, readmit_retained_bytes_tuple_roots,
-    string_call_borrows, string_field_load_producer_dest,
+    compute_collection_interior_alias_taint, finalize_bytes_ownership,
+    finalize_string_local_share_intents, finalize_string_ownership,
+    interior_alias_receiver_violations, string_call_borrows, string_field_load_producer_dest,
 };
 
 /// Maps each original (unsanitized) callee symbol to the adapter symbol
@@ -988,12 +975,6 @@ struct Builder {
     /// second close, and the inline `Instr::Drop` null-stores the slot
     /// (`raii-null-after-move`; the runtime close symbols also null-guard).
     pub(crate) scope_stream_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
-    /// Append-only provenance for a user-owned stream/receiver moved directly
-    /// into a synthetic `for await` cursor. The lexical cursor close is emitted
-    /// inline and may be unreachable when a coroutine is destroyed while
-    /// suspended, so elaboration uses this hand-off to select the live owner on
-    /// each terminal edge.
-    pub(crate) for_await_handle_handoffs: Vec<ForAwaitHandleHandoff>,
     /// Active per-iteration generator-yielded heap value bindings, recorded
     /// while lowering a `for v in gen()` (or `match g.next()`) consuming body so
     /// a `break`/`continue` inside that body frees the current iteration's
@@ -1415,7 +1396,7 @@ struct Builder {
     /// `TupleFieldLoad`, both of which `projection_alias_dest` seeds as
     /// tainted (interior alias of the parent aggregate). Tainted
     /// leaf-`string`/`Vec`/`bytes` locals are excluded from
-    /// `cow_drop_allowed`, so `build_lifo_drops` silently skips their drop
+    /// `cow_drop_allowed`, so `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) silently skips their drop
     /// (the leaf-CoW arm tolerates a missing place rather than panicking).
     /// The taint is correct when the parent aggregate's composite drop still
     /// fires (otherwise the same buffer frees twice), but a consume-marked
@@ -1570,7 +1551,7 @@ struct Builder {
     /// `classify_closure_pair_ingress` (`Borrowed` → `OwnedBinding`). It is
     /// deliberately DISJOINT from `closure_pair_owned`: it is NOT a drop
     /// ledger. Merging it into `closure_pair_owned` would feed
-    /// `derive_closure_pair_drop_allowed` a param that is read only by
+    /// `derive_closure_pair_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) a param that is read only by
     /// `CallClosure` (the benign callee read), which the aliasing scan does not
     /// mark, so an UNSTORED-but-invoked param would gain an erroneous scope-exit
     /// drop — a double-free of an env the param never owned. Two sets, two
@@ -1641,7 +1622,7 @@ struct Builder {
     /// call-result RHS (`HirExprKind::Call`, `CallTraitMethodStatic`,
     /// `CallDynMethod`) returning `dyn Trait`. Binding rebinds inherit the
     /// source binding's recorded storage. The ledger is consumed by
-    /// `build_lifo_drops` to construct the
+    /// `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) to construct the
     /// `DropKind::TraitObject { storage }` discriminator.
     ///
     /// Keys are the `BindingId` of the owning `let`-binding (the same
@@ -1731,7 +1712,7 @@ struct Builder {
     /// (mirroring the affine release-flag discipline): the flag is an
     /// `i64` local zero-initialised at the binding's `let` (dominating every
     /// consume, including loop back-edges) and set to 1 at each consume-use.
-    /// `build_lifo_drops` attaches it as the [`ElabDrop::guard`], so codegen
+    /// `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) attaches it as the [`ElabDrop::guard`], so codegen
     /// gates the release on `flag == 0` — exactly once on a `MaybeConsumed`
     /// join: skipped where the value moved to a new owner, fired where it is
     /// still owned. The per-exit `drops_for_exit` dataflow filter still
@@ -1752,7 +1733,7 @@ struct Builder {
     /// Admission is structural: leaf `string` values use
     /// `cow_value_leaf_drop_symbol`, while `bytes` uses its dedicated
     /// `BytesTriple` admission/drop authority. The consume hook and
-    /// `build_lifo_drops` consult this same map, so allocation, move marking,
+    /// `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) consult this same map, so allocation, move marking,
     /// and guarded release cannot drift.
     pub(crate) actor_message_cow_drop_flags: HashMap<BindingId, Place>,
     /// Mailbox-owned `string` parameters remain lexical owners even when the
@@ -5601,7 +5582,7 @@ fn terminator_mint_writes_local(terminator: &Terminator, local: u32) -> bool {
 ///
 /// The classes admitted here are the ones whose every share lowers as a bare
 /// pointer bitcopy with NO retain (the M-COW spine invariant documented on
-/// `derive_local_collection_drop_allowed`): plain and owned-element `Vec`,
+/// `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)): plain and owned-element `Vec`,
 /// `HashMap` / `HashSet` handles, and owned aggregate records. For those,
 /// exactly one live slot owns a given allocation, so nulling the source at a
 /// transfer leaves exactly one owner and the source's release becomes a
@@ -13952,7 +13933,7 @@ pub(crate) fn lower_function(
         .iter()
         .filter_map(|binding| builder.binding_locals.get(binding).copied())
         .collect();
-    let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+    finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
     canonicalize_retained_copy_owner_transfers(&mut raw.blocks, &actor_message_string_sources);
     materialize_edge_local_retained_join_releases(&mut raw.blocks, &mut builder);
     // Edge-local retirement may allocate scratch storage after Raw MIR first
@@ -13968,7 +13949,7 @@ pub(crate) fn lower_function(
         .collect();
     raw.local_decl_bytes.clone_from(&builder.local_decl_bytes);
     raw.instr_spans.clone_from(&builder.instr_spans);
-    let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+    finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
     canonicalize_retained_copy_owner_transfers(&mut raw.blocks, &actor_message_string_sources);
     let deferred_drop_binding_locals = std::mem::take(&mut builder.deferred_drop_binding_locals);
     builder.binding_locals.extend(deferred_drop_binding_locals);
@@ -14036,9 +14017,6 @@ pub(crate) fn lower_function(
         cooperate_sites,
         &builder,
         &body_statements,
-        &dataflow_result,
-        Some(&string_derivation.allowed),
-        Some(&bytes_derivation.allowed),
     );
     diagnostics.extend(vec_iter_yield_abandonment_diagnostics(
         &checked,
@@ -14142,8 +14120,6 @@ struct ActiveIterationOwner {
 #[derive(Debug, Clone)]
 struct VecIterYieldExitDrop {
     binding: BindingId,
-    ty: ResolvedTy,
-    kind: DropKind,
     body_start_block: u32,
     /// The body-end block already receives the normal inline drop. It is a
     /// region boundary, not part of the abandonment window.
@@ -14276,25 +14252,12 @@ enum FieldLoadClass {
 /// authority) instead of pushed ad hoc at each lowering seam.
 ///
 /// The tracked unit is the whole binding. The `(binding, name, ty)` triple is
-/// the shape every downstream allow-set prover, `build_lifo_drops`, and the
+/// the shape every downstream allow-set prover, `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay), and the
 /// unwired-`Vec`-element diagnostic already consume (via
 /// [`Builder::owned_locals_snapshot`]); the richer facts (`ownership`,
 /// `provenance`, `disposition`) are carried on the value so later drop stages
 /// read a written-down fact rather than re-deriving ownership from the
 /// instruction stream at each pass.
-#[derive(Debug, Clone)]
-pub(crate) struct ForAwaitHandleHandoff {
-    pub(crate) source_binding: BindingId,
-    pub(crate) cursor_binding: BindingId,
-    pub(crate) handoff_block: u32,
-    #[allow(
-        dead_code,
-        reason = "the ledger retains the source witness for diagnostics and future provenance validation"
-    )]
-    pub(crate) site: SiteId,
-    pub(crate) ty: ResolvedTy,
-}
-
 #[derive(Debug, Clone)]
 struct OwnedLocalEntry {
     /// The HIR binding this owned local backs.
@@ -14770,7 +14733,7 @@ impl Builder {
             // record match-drain callee-drop.
             //
             // Register it into `owned_locals` + the body scope, exactly like a
-            // `let`-bound local enum, so `derive_enum_composite_drop_allowed`
+            // `let`-bound local enum, so `derive_enum_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)
             // picks it up and emits the tag-aware `DropKind::EnumInPlace` shell
             // drop on every consuming path. That prover's escape scan already
             // excludes the composite when a match arm MOVES its payload out into
@@ -15597,12 +15560,6 @@ enum ClosurePairIngress {
     AlreadyMoved,
     /// A borrow or unproven shape — refused (fail closed).
     Borrowed { name: Option<String> },
-}
-
-#[derive(Debug, Default)]
-struct MatchBoundHopAliasFacts {
-    owner_of: HashMap<u32, u32>,
-    chain: Vec<(u32, u32, u32)>,
 }
 
 /// Where a record field binder's value came from, as far as the

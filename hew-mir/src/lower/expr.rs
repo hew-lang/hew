@@ -945,7 +945,7 @@ impl Builder {
     /// The owned-locals seed authority: does a binding of type `ty` oblige
     /// scope-exit drop elaboration? `true` admits the binding into the
     /// `owned_locals` candidate ledger every downstream allow-set derivation,
-    /// `unsupported_vec_element_diagnostics`, and `build_lifo_drops` scan.
+    /// `unsupported_vec_element_diagnostics`, and `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) scan.
     /// The verdict is the value-class seed: every class except `BitCopy`
     /// seeds (a `BitCopy` value owns no heap and its copy is free; a `View`
     /// seeds into the no-retain no-op drop arm; a `Linear` seeds so the
@@ -2038,13 +2038,6 @@ impl Builder {
                 let diag_len_before_value = self.diagnostics.len();
                 let value_place = self.lower_let_value(binding.id, value);
                 self.suppress_typed_produced_owner_sites.remove(&value.site);
-                // Record only the desugar's explicit consuming rebind. The
-                // later backend `Move` below verifies that this HIR source and
-                // the synthetic cursor really share the whole-value hand-off.
-                let for_await_handoff_source = (is_for_await_handle_cursor
-                    && value.intent == IntentKind::Consume)
-                    .then(|| dyn_rebind_source_binding(value))
-                    .flatten();
                 // Cascade suppression: a `let` whose initializer failed to lower
                 // (`None`) AFTER emitting its own diagnostic poisons the binding,
                 // so a later `BindingRef` to it stays silent instead of stacking
@@ -2185,7 +2178,7 @@ impl Builder {
                 if dyn_owned {
                     // dyn-trait owned local: classify storage from the RHS
                     // expression shape and push into `owned_locals` with the
-                    // actual `TraitObject` type so `build_lifo_drops` reaches
+                    // actual `TraitObject` type so `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) reaches
                     // the dyn-trait arm. Fail-closed if classification
                     // returns `Err`.
                     match classify_dyn_trait_storage(value, &self.dyn_trait_storage) {
@@ -2275,7 +2268,7 @@ impl Builder {
                     // (either pre-emptively via the lambda-actor
                     // `pending` path above, or via the `Some(src)` arm
                     // below). Keeping the two ledgers in sync is the
-                    // structural invariant that `build_lifo_drops`
+                    // structural invariant that `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay)
                     // depends on: an `owned_locals` entry without a
                     // matching `binding_locals` Place panics drop
                     // elaboration. When `lower_value` returns `None`
@@ -2446,19 +2439,6 @@ impl Builder {
                                 ));
                                 self.borrowed_runtime_result_places.remove(&src);
                                 self.borrowed_runtime_result_places.insert(slot);
-                            }
-                            if let Some(source_binding) = for_await_handoff_source {
-                                if self.binding_locals.get(&source_binding) == Some(&src) {
-                                    self.for_await_handle_handoffs.push(
-                                        super::ForAwaitHandleHandoff {
-                                            source_binding,
-                                            cursor_binding: binding.id,
-                                            handoff_block: self.current_block_id,
-                                            site: value.site,
-                                            ty: binding_ty.clone(),
-                                        },
-                                    );
-                                }
                             }
                         }
                         // Machine sub-structure places (`MachineTag` and
@@ -4539,7 +4519,7 @@ impl Builder {
                 // and the new-record construction.
                 //
                 // Double-drop avoidance: each emitted RecordFieldLoad+Drop temp
-                // appears in `derive_owned_record_drop_allowed`'s `field_binders`
+                // appears in `derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)'s `field_binders`
                 // set AND its `release_owner_bases` set (the Defect-1 guard),
                 // which then excludes the base binding from composite drop —
                 // complementing the existing exclusion from non-overridden field

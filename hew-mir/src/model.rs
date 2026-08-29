@@ -6059,8 +6059,8 @@ pub enum Instr {
     /// An interior field operation: it USES `base`, creates NO dest, and
     /// creates NO alias.  It is by construction BOTH the field extraction and
     /// that field's release, so the record/tuple composite provers
-    /// (`derive_owned_record_drop_allowed` /
-    /// `derive_tuple_composite_drop_allowed` in `lower.rs`) exclude a
+    /// (`derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) /
+    /// `derive_tuple_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) in `lower.rs`) exclude a
     /// candidate root this op addresses — the combined role the safety-drop
     /// temps' `field_binders ∩ release_owner_bases` intersection plays for
     /// the load+drop leaf path — and the enum composite prover exempts it
@@ -7532,7 +7532,7 @@ pub enum DropKind {
     ///
     /// `ElabDrop::drop_fn` must be `None`; the helper symbol is derived from
     /// `ElabDrop::ty`. The MIR elaborator emits this kind ONLY for a tuple the
-    /// fail-closed sole-owner derivation (`derive_tuple_composite_drop_allowed`)
+    /// fail-closed sole-owner derivation (`derive_tuple_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay))
     /// proves still owns its members at scope exit: a tuple whose elements were
     /// moved out (the `__tuple_N` destructure temp) or whose whole value escaped
     /// (returned) is excluded so exactly one owner drops each member. A binding
@@ -7583,7 +7583,7 @@ pub enum DropKind {
     ///
     /// The MIR elaborator emits this kind ONLY for an indirect-enum local
     /// the fail-closed sole-owner derivation
-    /// (`derive_indirect_enum_drop_allowed`) proves still solely owns its
+    /// (`derive_indirect_enum_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)) proves still solely owns its
     /// heap node at scope exit: a binding that is a destructure/projection
     /// alias of a still-live parent node, that escapes (returned, moved into
     /// an aggregate, passed by value to a callee — a borrow that does NOT
@@ -7617,7 +7617,7 @@ pub enum DropKind {
 ///
 /// Populated by the MIR builder at each `dyn Trait` binding's
 /// introducing statement (W3.031 Stage 1) and threaded into the
-/// `DropKind::TraitObject` variant in `build_lifo_drops`. Codegen
+/// `DropKind::TraitObject` variant in `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay). Codegen
 /// (W3.031 Stage 6) reads the discriminator to select the post-
 /// `drop_in_place` release ritual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -329,7 +329,7 @@ fn seed_gate_matches_value_class_authority() {
             true,
         ),
         ("linear-marked named", named("Once"), true),
-        // View seeds (build_lifo_drops elaborates its no-retain no-op arm).
+        // View seeds (never minted, so replay-derived plans schedule no drop).
         (
             "borrow",
             ResolvedTy::Borrow {
@@ -421,7 +421,7 @@ fn collection_handle_predicate_projects_from_heap_leaf() {
 
     // Symbol-agreement tripwire: the leaves' canonical release symbols are
     // exactly the two symbols the collection-handle bucket emits in
-    // `build_lifo_drops` (via `drop_kind_for`).
+    // `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) (via `drop_kind_for`).
     assert_eq!(
         HeapLeaf::HashMap.release_symbol(),
         "hew_hashmap_free_layout",

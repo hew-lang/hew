@@ -453,8 +453,8 @@ impl Builder {
             .iter()
             .filter_map(check_to_diagnostic)
             .collect();
-        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             adapter_symbol.to_string(),
@@ -467,9 +467,6 @@ impl Builder {
             cooperate_sites,
             &builder,
             &[],
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
@@ -1074,8 +1071,8 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
@@ -1088,9 +1085,6 @@ impl Builder {
             cooperate_sites,
             &builder,
             &body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);

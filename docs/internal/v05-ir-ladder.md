@@ -553,6 +553,16 @@ frame, layout, and materialized place where representation requires one;
 Elaborated MIR adds lifetime and cleanup obligations over those already chosen
 places. It does not select storage classes or coroutine representation.
 
+Every exit `DropPlan` is _derived_ from the Checked-MIR `OwnershipEvent`
+stream (`derive_drop_plans_from_replay`): `required(exit)` is the exact set of
+owner generations still live at that exit whose inline release does not
+dominate it, and each becomes one `ElabDrop` through the owner's
+definition-site `DropRecipe` and `Guard`. There is no function-wide LIFO
+template, no allow-set prover, and no per-exit re-admission pass: a value the
+lowering cannot safely drop must not `Mint` an owner (it is neutralized or
+aliased explicitly at the mint site), and a value that mints is dropped on
+every exit where it is still owned.
+
 The `DecisionMap` is a deterministic table of
 `DecisionFact { site_id, kind, chosen_strategy, why, cost_class }` keyed by
 stable `SiteId`. It is attached as top-level function metadata on each

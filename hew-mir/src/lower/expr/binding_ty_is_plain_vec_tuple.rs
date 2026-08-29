@@ -936,7 +936,7 @@ fn classify_field_load_freezes_the_three_way_verdict_table() {
 /// A byte-copy aggregate field projection registers its binder `AliasOf`
 /// with the owner's provenance recorded — and that disposition removes it
 /// from the scope-exit-live view the record/tuple provers and
-/// `build_lifo_drops` read, so the alias emits no composite drop of its own
+/// `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) read, so the alias emits no composite drop of its own
 /// and its base local never seeds the provers' `release_owner_bases` (the
 /// #2375 blanket no longer trips). The entry survives in the whole ledger.
 #[test]

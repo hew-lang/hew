@@ -387,7 +387,7 @@ impl Builder {
                     // skip the release on BOTH the static and the flag-gated
                     // paths: fail-open (leak) is this seam's documented
                     // posture, matching the scope-exit exclusion
-                    // (`derive_owned_record_drop_allowed`) for the identical
+                    // (`derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)) for the identical
                     // aliasing channel. WHEN-OBSOLETE: the COW retain-on-share
                     // spine (every share retained => release always sound).
                     let rhs_may_alias_old = self.reassign_rhs_may_alias_binding(value, *binding);

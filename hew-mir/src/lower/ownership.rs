@@ -8,7 +8,7 @@ use super::{
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, AffineCallConsumeCandidate, BasicBlock,
     BindingId, Builder, BuiltinType, ClosurePairIngress, CmpPred, DecisionFact, DischargeSite,
-    Disposition, FieldLoadClass, FieldOffset, HashMap, HashSet, HirBinding, HirBlock, HirExpr,
+    Disposition, FieldLoadClass, HashMap, HashSet, HirBinding, HirBlock, HirExpr,
     HirExprKind, HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass,
     MirDiagnostic, MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedLocalEntry,
     OwnerMintOrigin, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
@@ -2549,7 +2549,7 @@ impl Builder {
     /// carries its
     /// [`OwnershipDecision::InteriorAlias`]-shaped provenance and is minted
     /// [`Disposition::AliasOf`], so it drops out of the scope-exit-live view the
-    /// drop-elaboration provers and `build_lifo_drops` read: the alias emits no
+    /// drop-elaboration provers and `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) read: the alias emits no
     /// composite drop of its own (the owner's composite frees the whole tree),
     /// and its base local never seeds the record/tuple provers'
     /// `release_owner_bases`, so it no longer trips their Defect-1 blanket
@@ -3556,67 +3556,6 @@ impl Builder {
         let idx = order.iter().position(|(f, _)| f == field)?;
         u32::try_from(idx).ok()
     }
-    /// The `(alias_local, owner_root_local)` pairs for every `AliasOf` ledger
-    /// entry: a `let mid = o.mid` / `let leaf = mid.leaf` byte-copy interior
-    /// alias mapped to the base local of the still-live OWNER root its recorded
-    /// provenance chains to, resolving intermediate aliases to the first
-    /// non-alias owner (a `leaf -> mid -> o` chain resolves both `leaf` and
-    /// `mid` to `o`).
-    ///
-    /// The record and tuple composite provers fold these into their field-
-    /// binder set. The whole-value alias map and the field-load scan they build
-    /// from the instruction stream only reach a ONE-hop alias (`mid` reads the
-    /// root directly, so it is collected); a DEEPER alias (`leaf` reads `mid`,
-    /// not the root) is invisible to them. Without the carried provenance a deep
-    /// alias that ESCAPES into an owning sink (returned, stored into an owning
-    /// record, sent) would leave the owner's composite admitted to free a
-    /// subtree the escapee already handed to the caller — a double-free. Folding
-    /// the recorded alias in, attributed to its owner, excludes exactly that
-    /// owner when the deep alias escapes, and leaves the owner admitted when the
-    /// alias is only read interiorly (the consumed-match path).
-    ///
-    /// An entry whose owner root is not a nameable local is dropped — the prover
-    /// keeps its fail-closed blanket for it (leak, never double-free).
-    pub(crate) fn alias_owner_field_binders(&self) -> Vec<(u32, u32)> {
-        // One hop: each alias's base local -> its recorded provenance root local.
-        // Keyed on the carried alias PROVENANCE, not the live disposition: a
-        // recorded byte-copy alias that is later consumed (moved into the return
-        // slot / a sink) is dispositioned off `AliasOf`, but consuming an alias
-        // moves no ownership — the owner still holds the heap. Its escape must
-        // still exclude the owner, so the provenance keeps it in scope here even
-        // after the disposition flips.
-        let mut one_hop: HashMap<u32, u32> = HashMap::new();
-        for entry in &self.owned_locals {
-            let Some(PlaceProvenance::Local(root_local)) =
-                entry.provenance.as_ref().map(|p| p.root)
-            else {
-                continue;
-            };
-            let Some(alias_local) = self
-                .binding_locals
-                .get(&entry.binding)
-                .and_then(|p| base_local(*p))
-            else {
-                continue;
-            };
-            one_hop.insert(alias_local, root_local);
-        }
-        // Resolve each alias to the ultimate owner by chasing intermediate
-        // aliases. The hop count is bounded by the alias count, so the walk
-        // terminates even if a (malformed) cycle ever appears.
-        let mut resolved = Vec::with_capacity(one_hop.len());
-        for (&alias_local, &first_root) in &one_hop {
-            let mut owner = first_root;
-            for _ in 0..one_hop.len() {
-                match one_hop.get(&owner) {
-                    Some(&next) => owner = next,
-                    None => break,
-                }
-            }
-            resolved.push((alias_local, owner));
-        }
-        resolved
-    }
     /// The `(alias_local, immediate_parent_local, field_ordinal)` triples for
     /// every recorded byte-copy interior alias ([`Disposition::AliasOf`]) whose
     /// provenance is a single record/tuple field projection of a nameable parent
@@ -3659,7 +3598,7 @@ impl Builder {
         chain
     }
     /// The scope-exit-live owned locals as `(binding, name, ty)` tuples — the
-    /// compat shape the twelve allow-set provers, `build_lifo_drops`, and the
+    /// compat shape the twelve allow-set provers, `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay), and the
     /// double-free gate consume. The `Disposition::ScopeExit` filter narrows the
     /// ledger to exactly the bindings the function-exit LIFO pass still owns:
     /// entries retracted by a [`Builder::set_owned_local_disposition`] write
@@ -4074,51 +4013,6 @@ impl Builder {
             .iter()
             .any(|k| !matches!(k, crate::state_clone::StateFieldCloneKind::BitCopy { .. }));
         Ok(has_owned_field.then_some(kinds))
-    }
-    /// Prove that one ordinary record-field overwrite preserves the enclosing
-    /// record's final ownership.
-    ///
-    /// Any droppable field whose overwrite-release is TOTAL and reaches no
-    /// forbidden boundary qualifies — a `string`, `Vec<string>`, owned record,
-    /// inline enum, or bit-copy field. `lower_record_field_store` frees the
-    /// abandoned value before storing the replacement, so the record keeps sole
-    /// ownership of the freshly-stored value and retains its scope-exit
-    /// `RecordInPlace` drop; excluding it here leaked the reassigned owner.
-    /// Every unsupported overwrite (affine `#[resource]`/IO/opaque/indirect-enum
-    /// payload) keeps the fail-closed owner exclusion in
-    /// `derive_owned_record_drop_allowed`, dropping the record by no path rather
-    /// than double-freeing a handle the store could not release.
-    pub(crate) fn record_field_store_preserves_record_owner(
-        &self,
-        record: Place,
-        field_offset: FieldOffset,
-    ) -> bool {
-        let Some(record_local) = base_local(record) else {
-            return false;
-        };
-        let Some(record_ty) = self.locals.get(record_local as usize) else {
-            return false;
-        };
-        let Some(record_key) = user_record_layout_key(record_ty) else {
-            return false;
-        };
-        let Some(fields) = self.lookup_record_field_order(&record_key) else {
-            return false;
-        };
-        let Some((_, field_ty)) = fields.get(field_offset.0 as usize) else {
-            return false;
-        };
-        let field_ty = self.normalize_machine_field_ty(field_ty);
-        let record_layouts = self.record_layouts_for_classification();
-        crate::state_clone::field_overwrite_release_preserves_owner(
-            &field_ty,
-            &record_layouts,
-            &self.enum_layouts,
-            &self.opaque_handle_names,
-            &self.lifecycle_registry,
-            &self.resource_record_names_for_drop_readiness(),
-        )
-        .unwrap_or(false)
     }
     /// Narrow correction for generic records whose inline generic-enum field
     /// owns heap even though the HIR value-class marker still says `BitCopy`.
@@ -5060,7 +4954,7 @@ impl Builder {
     ///
     /// Restricted to the collection classes whose releases are null-tolerant
     /// runtime frees and whose allow-set provers ride the
-    /// `derive_local_collection_drop_allowed` escape scan; every other owned
+    /// `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) escape scan; every other owned
     /// class keeps the legacy path-insensitive retraction (fail-closed: leak
     /// on the not-moved path, never a double-free). A mutable binding that is
     /// also reassigned takes the #2301 `overwrite_guard_flags` path instead —
@@ -5551,7 +5445,7 @@ impl Builder {
     /// `HashSet`, `bytes`, `CoW string` and owned records each gate their
     /// scope-exit release on a per-class escape-scan allow-set that removes a
     /// handle proven to have escaped into an aggregate. `Rc` / `Weak` have no
-    /// such allow-set — `build_lifo_drops`' `AffineResource` arm emits their
+    /// such allow-set — `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay)' `AffineResource` arm emits their
     /// release unconditionally — so the transfer has to be recorded where it
     /// happens.
     ///

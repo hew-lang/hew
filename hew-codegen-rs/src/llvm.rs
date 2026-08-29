@@ -23735,16 +23735,21 @@ fn projection_neutralize_transferee(instr: &Instr) -> Option<Place> {
     }
 }
 
-/// Whether an interior-write marker is the exact handoff that consumes the
-/// whole registered owner. The source slot is neutral after this instruction,
-/// so refreshing its crash snapshot would mint a second owner beside the
-/// transferee.
-fn helper_whole_owner_was_transferred(instr: &Instr, owner: Place) -> bool {
+/// Whether an interior-write marker neutralizes the exact whole registered
+/// owner.
+///
+/// A named transferee is not required for the source lifecycle to end: a
+/// `CallDischargeConsume` records that the callee already released the value
+/// and deliberately has no successor owner. Once the whole source slot is
+/// zeroed, refreshing its typed crash snapshot would resurrect cleanup
+/// authority for a value that no longer exists. Projection neutralizes do not
+/// match the whole-local `owner`, so aggregates with live sibling fields still
+/// refresh normally.
+fn helper_whole_owner_was_neutralized(instr: &Instr, owner: Place) -> bool {
     matches!(
         instr,
         Instr::NeutralizePayloadSlot {
             place,
-            transferee: Some(_),
             ..
         } if *place == owner
     )
@@ -36627,7 +36632,7 @@ fn lower_function<'ctx>(
             // escrow can never retain the moved-out pointer concurrently.
             for place in interior_owner_writes {
                 if !deferred_interior_owner_arms.contains(&place)
-                    && !helper_whole_owner_was_transferred(instr, place)
+                    && !helper_whole_owner_was_neutralized(instr, place)
                 {
                     emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
                 }

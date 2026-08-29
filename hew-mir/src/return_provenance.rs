@@ -1567,6 +1567,10 @@ pub struct ExternContractTable {
     /// would not. Both keys are therefore checked, and either one claims the
     /// callee for the extern contract.
     decl_ids: HashSet<hew_hir::ItemId>,
+    /// Parameter positions carrying an explicit source `consume` contract.
+    /// Extern call sites use endpoint names today, so this shares the
+    /// name-plus-index identity used by the call boundary.
+    consuming_params: HashSet<(String, usize)>,
 }
 
 impl ExternContractTable {
@@ -1584,6 +1588,14 @@ impl ExternContractTable {
     #[must_use]
     pub fn is_extern_id(&self, id: hew_hir::ItemId) -> bool {
         self.decl_ids.contains(&id)
+    }
+
+    /// True when the declared extern parameter at `index` is explicitly
+    /// `consume`. This is distinct from the result and borrowing contracts:
+    /// it authorizes a terminal caller-to-ABI ownership transfer.
+    #[must_use]
+    pub fn extern_param_is_consume(&self, name: &str, index: usize) -> bool {
+        self.consuming_params.contains(&(name.to_owned(), index))
     }
 
     /// True when `name` is a declared extern whose RETURN carries an audited
@@ -1817,6 +1829,7 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
     let mut foreign_names: HashSet<String> = HashSet::new();
     let mut borrowing_arg_names: HashSet<String> = HashSet::new();
     let mut audited_domestic_return_names: HashSet<String> = HashSet::new();
+    let mut consuming_params: HashSet<(String, usize)> = HashSet::new();
     let pointer_free_records = PointerFreeRecords::from_module(module);
     let type_decls: HashMap<&str, &hew_hir::HirTypeDecl> = module
         .items
@@ -1830,6 +1843,11 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
         if let hew_hir::HirItem::ExternFn(ef) = item {
             names.insert(ef.name.clone());
             decl_ids.insert(ef.id);
+            for (index, consumes) in ef.param_consume.iter().copied().enumerate() {
+                if consumes {
+                    consuming_params.insert((ef.name.clone(), index));
+                }
+            }
             if !ef.provenance.is_stdlib() {
                 foreign_decl_ids.insert(ef.id);
                 foreign_names.insert(ef.name.clone());
@@ -1878,6 +1896,7 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
         borrowing_arg_names,
         audited_domestic_return_names,
         decl_ids,
+        consuming_params,
     }
 }
 
@@ -6452,6 +6471,7 @@ mod extern_ownership_opacity {
     fn host_bytes() -> bytes;
     fn host_len(s: string) -> i64;
     fn host_sink(s: string);
+    fn host_take(consume s: string);
 }
 fn hew_mk() -> string { "x" }
 fn main() {}
@@ -6464,12 +6484,35 @@ fn main() {}
     #[test]
     fn every_declared_extern_is_recognised_as_extern() {
         let t = table();
-        for name in ["host_string", "host_bytes", "host_len", "host_sink"] {
+        for name in [
+            "host_string",
+            "host_bytes",
+            "host_len",
+            "host_sink",
+            "host_take",
+        ] {
             assert!(t.is_extern_name(name), "`{name}` must be a known extern");
         }
         assert!(
             !t.is_extern_name("hew_mk"),
             "a Hew-bodied function is not an extern"
+        );
+    }
+
+    #[test]
+    fn explicit_extern_consume_is_parameter_specific() {
+        let t = table();
+        assert!(
+            t.extern_param_is_consume("host_take", 0),
+            "the declared consume parameter must retain its terminal ABI contract"
+        );
+        assert!(
+            !t.extern_param_is_consume("host_sink", 0),
+            "an ordinary extern parameter must not acquire a consume contract"
+        );
+        assert!(
+            !t.extern_param_is_consume("host_take", 1),
+            "consume contracts are parameter-indexed"
         );
     }
 

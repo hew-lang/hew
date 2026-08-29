@@ -10996,7 +10996,7 @@ fn helper_crash_cleanup_consumed_guard_proof_is_conservative() {
 }
 
 #[test]
-fn whole_owner_neutralize_transfers_crash_cleanup_authority() {
+fn whole_owner_neutralize_ends_source_crash_cleanup_authority() {
     use hew_mir::model::NeutralizeAuthority;
 
     let instr = Instr::NeutralizePayloadSlot {
@@ -11004,18 +11004,32 @@ fn whole_owner_neutralize_transfers_crash_cleanup_authority() {
         transferee: Some(Place::Local(1)),
         authority: NeutralizeAuthority::WholeCarrierConsume,
     };
-    assert!(helper_whole_owner_was_transferred(&instr, Place::Local(0)));
-    assert!(!helper_whole_owner_was_transferred(&instr, Place::Local(1)));
+    assert!(helper_whole_owner_was_neutralized(&instr, Place::Local(0)));
+    assert!(!helper_whole_owner_was_neutralized(&instr, Place::Local(1)));
 
-    let no_transferee = Instr::NeutralizePayloadSlot {
+    let discharged_without_transferee = Instr::NeutralizePayloadSlot {
         place: Place::Local(0),
         transferee: None,
-        authority: NeutralizeAuthority::WholeCarrierConsume,
+        authority: NeutralizeAuthority::CallDischargeConsume,
     };
-    assert!(!helper_whole_owner_was_transferred(
-        &no_transferee,
+    assert!(helper_whole_owner_was_neutralized(
+        &discharged_without_transferee,
         Place::Local(0)
     ));
+
+    let projected = Instr::NeutralizePayloadSlot {
+        place: Place::EnumVariant {
+            local: 0,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+        transferee: None,
+        authority: NeutralizeAuthority::MoveOutArmConsume,
+    };
+    assert!(
+        !helper_whole_owner_was_neutralized(&projected, Place::Local(0)),
+        "neutralizing one payload must retain cleanup for the aggregate's live siblings"
+    );
 }
 
 #[test]

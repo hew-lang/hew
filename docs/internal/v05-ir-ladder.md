@@ -573,6 +573,20 @@ exit that runs before MIR's leading parameter `Mint`s execute; its cleanup is
 the set of those parameter owners whose `ParamBoundary` decision fact (part of
 Checked MIR, not a lowering ledger) says the ABI argument arrives owned.
 
+A generation that is moved on one path into a join and still owned on
+another has no admissible plan entry at any later exit (a drop would
+double-free the moved path; omitting it leaks the owning one). Raw MIR
+resolves this before sealing, from the same replay
+(`materialize_conditional_consume_releases`): the release is placed on the
+predecessor edge where the generation is still exactly live, provided the
+owning storage is physically dead on entry to the join (no read reaches it
+before a whole-local redefinition). Guarded generations keep their runtime
+flag and lineage `Join` inputs keep the join rules. Whatever remains — a
+producer that moved a value without publishing its `Transfer`, or an owner
+with no inline-droppable recipe — is reported by the verifier as an unguarded
+generation consumed on some paths and still owned on others, never silently
+dropped from tracking at the join.
+
 The `DecisionMap` is a deterministic table of
 `DecisionFact { site_id, kind, chosen_strategy, why, cost_class }` keyed by
 stable `SiteId`. It is attached as top-level function metadata on each

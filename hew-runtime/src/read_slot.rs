@@ -7,12 +7,13 @@
 //! worker. When the reactor reports the fd ready it reads the available bytes,
 //! deposits the resulting `bytes` value (or an error/EOF status) into the slot,
 //! and wakes the parked continuation via
-//! `crate::scheduler::enqueue_resume(caller_actor, null)` (the same
+//! `crate::scheduler::enqueue_resume_by_incarnation(caller)` (the same
 //! source-agnostic waker the reply path uses). On the resume edge the handler
 //! takes the deposited result out of the slot and binds it.
 //!
 //! Unlike the reply channel there is NO condvar: the only consumer is a parked
-//! coroutine woken by `enqueue_resume`, never a blocked foreign thread. The slot
+//! coroutine woken by the incarnation-keyed wake edge, never a blocked foreign
+//! thread. The slot
 //! is a one-shot atomic cell plus a manual refcount that lets the abandon edge
 //! (handler freed while suspended) free the slot without racing a reactor that
 //! still holds a pointer to it on its `Registration`.

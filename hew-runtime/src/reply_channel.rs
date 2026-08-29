@@ -14,10 +14,11 @@ use crate::await_cancel::{
     hew_await_cancel_complete, hew_await_cancel_free, hew_await_cancel_retain,
 };
 use crate::await_cancel::{hew_await_cancel_status, AwaitCancelStatus, HewAwaitCancel};
+use crate::lifetime::live_actors::ActorIncarnation;
 use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -105,16 +106,23 @@ pub struct HewReplyChannel {
     /// is status-bearing: `hew_reply_channel_failure_kind` names WHY no value
     /// arrived instead of collapsing every failure into "null".
     fail_reason: AtomicI32,
-    /// The waiter-kind discriminator (W6.010). When non-null, the waiter is a
-    /// PARKED CONTINUATION belonging to this actor: a reply wakes it via
-    /// `scheduler::enqueue_resume(caller_actor, ..)` (the suspend edge owns the
-    /// `suspended_cont` handle; the FG3 two-phase park inside `enqueue_resume`
-    /// covers a reply that fires mid-park). When null (the default), the waiter
+    /// The waiter-kind discriminator (W6.010), as the caller's incarnation.
+    /// When set, the waiter is a PARKED CONTINUATION belonging to that exact
+    /// incarnation: a reply wakes it through
+    /// `scheduler::enqueue_resume_by_incarnation` (the suspend edge owns the
+    /// `suspended_cont` handle; the FG3 two-phase park inside the wake covers a
+    /// reply that fires mid-park). Actor id `0` (the default) means the waiter
     /// is a CONDVAR-blocked foreign/main thread woken by `cond.notify_one()`
-    /// (E6 — the foreign-thread ask path stays on the condvar). Set BEFORE the
+    /// (E6 - the foreign-thread ask path stays on the condvar). Set BEFORE the
     /// ask is submitted (so before any possible reply) by
     /// [`hew_reply_channel_set_parked_waiter`].
-    caller_actor: AtomicPtr<HewActor>,
+    ///
+    /// Two scalars rather than one field because the set lands after
+    /// construction: `caller_actor_id` is published last with `Release` and
+    /// read first with `Acquire`, so a reader that sees an id also sees the
+    /// serial that belongs to it.
+    caller_actor_id: AtomicU64,
+    caller_actor_serial: AtomicU64,
     /// Mutex protecting the condvar wait.
     lock: Mutex<()>,
     /// Condvar signalled by [`hew_reply`].
@@ -160,7 +168,8 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         reply_drop_fn: AtomicPtr::new(ptr::null_mut()),
         allocation_failed: AtomicBool::new(false),
         fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
-        caller_actor: AtomicPtr::new(ptr::null_mut()),
+        caller_actor_id: AtomicU64::new(0),
+        caller_actor_serial: AtomicU64::new(0),
         lock: Mutex::new(()),
         cond: Condvar::new(),
         await_cancel: AtomicPtr::new(ptr::null_mut()),
@@ -191,9 +200,16 @@ pub unsafe extern "C" fn hew_reply_channel_set_parked_waiter(
     if ch.is_null() {
         return;
     }
-    // SAFETY: caller guarantees `ch` is a live reply-channel reference.
+    // SAFETY: caller guarantees `ch` is a live reply-channel reference, and
+    // `actor` - when non-null - is the live actor parking on this ask.
     unsafe {
-        (*ch).caller_actor.store(actor, Ordering::Release);
+        let target = ActorIncarnation::of(actor);
+        (*ch)
+            .caller_actor_serial
+            .store(target.spawn_serial(), Ordering::Relaxed);
+        (*ch)
+            .caller_actor_id
+            .store(target.actor_id(), Ordering::Release);
     }
 }
 
@@ -390,15 +406,18 @@ unsafe fn publish_reply_from_sender_ref(
         };
 
         // Waiter-kind branch (W6.010, E5/E6). A parked-continuation waiter
-        // (`caller_actor` non-null) is woken by re-enqueuing its actor; the
+        // (`caller_actor` set) is woken by re-enqueuing its actor; the
         // resumed continuation reads the now-ready reply value from `ch` on its
         // resume edge. A condvar-blocked foreign/main thread (`caller_actor`
         // null — the default, E6) is woken by `cond.notify_one()`. The load is
         // Acquire-paired with the Release store in
         // `hew_reply_channel_set_parked_waiter`, which happens-before the ask
         // submission and therefore before any reply can fire.
-        let caller_actor = (*ch).caller_actor.load(Ordering::Acquire);
-        if caller_actor.is_null() {
+        let caller_actor = ActorIncarnation::from_parts(
+            (*ch).caller_actor_id.load(Ordering::Acquire),
+            (*ch).caller_actor_serial.load(Ordering::Relaxed),
+        );
+        if caller_actor.is_none() {
             // Foreign/main-thread condvar waiter (E6 — unchanged). A condvar
             // waiter re-checks its `ready`/`cancelled` predicate under the lock,
             // so a notify on the losing edge is harmless; it is left ungated.
@@ -411,12 +430,11 @@ unsafe fn publish_reply_from_sender_ref(
             // continuation handle is owned by the scheduler's suspend edge (the
             // `suspended_cont` slot); `enqueue_resume` reads the slot itself and
             // records a `pending_wake` if the reply fired in the FG3 park window
-            // (so a mid-park reply is never lost). The `cont` argument is unused
-            // by the resume edge (the slot is authoritative), so pass null.
-            // SAFETY: `caller_actor` references the live `HewActor` whose
-            // continuation is parked on this ask; the suspend edge keeps it
-            // alive until the resume reclaims the parked continuation.
-            crate::scheduler::enqueue_resume(caller_actor, ptr::null_mut());
+            // (so a mid-park reply is never lost). The wake names the
+            // caller's INCARNATION, so a reply arriving after that caller died
+            // - and after a new actor inherited its allocation - resolves to
+            // nothing and is dropped.
+            crate::scheduler::enqueue_resume_by_incarnation(caller_actor);
         }
         hew_reply_channel_free(ch);
     }

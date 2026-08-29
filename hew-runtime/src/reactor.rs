@@ -60,6 +60,7 @@ use crate::io_time::{
     hew_io_poller_new, hew_io_poller_poll_ready, hew_io_poller_register, hew_io_poller_stop,
     hew_io_poller_unregister, HewIoPoller, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ,
 };
+use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::transport::{
     actor_ref_local_ptr, hew_actor_ref_is_alive, tcp_conn_raw_fd, tcp_conn_read_available,
@@ -151,6 +152,11 @@ struct Registration {
     /// Stable actor identity (`*mut HewActor` as `usize`) for
     /// `reactor_detach_actor` matching on actor teardown.
     actor_key: usize,
+    /// The owning actor's incarnation, captured while it was live at
+    /// registration. Every wake this registration fires names this
+    /// incarnation, so a replacement actor that inherits the allocation (or the
+    /// `actor_key`) is never resumed in its place.
+    actor: ActorIncarnation,
     /// The readiness action (auto-send vs resume — the D-3 seam).
     mode: RegMode,
     /// Set once a terminal close (`on_close` / EOF / error deposit) has been
@@ -174,6 +180,28 @@ struct Registration {
 // `reactor_detach_actor` on `hew_actor_free`) and the slot refcount, not by
 // this impl.
 unsafe impl Send for Registration {}
+
+impl Registration {
+    /// Build a registration, capturing the owning actor's incarnation while the
+    /// actor is still live.
+    ///
+    /// # Safety
+    ///
+    /// `actor_ref`'s local pointer, when non-null, must reference a live actor.
+    unsafe fn new(conn: c_int, actor_ref: HewActorRef, actor_key: usize, mode: RegMode) -> Self {
+        // SAFETY: forwarded from the caller's liveness guarantee.
+        let actor =
+            unsafe { ActorIncarnation::of(actor_ref_local_ptr(&actor_ref).cast::<HewActor>()) };
+        Self {
+            conn,
+            actor_ref,
+            actor_key,
+            actor,
+            mode,
+            closed: false,
+        }
+    }
+}
 
 impl Drop for Registration {
     /// SINGLE AUTHORITY for releasing everything a registration owns. A
@@ -607,6 +635,8 @@ struct ReadySnapshot {
     conn: c_int,
     actor_ref: HewActorRef,
     actor_local: *mut HewActor,
+    /// The registration's captured incarnation — the wake target.
+    actor: ActorIncarnation,
     mode: ReadyMode,
     already_closed: bool,
 }
@@ -751,6 +781,7 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
             // snapshot so liveness can be checked after the lock is released.
             actor_ref: unsafe { std::ptr::read(std::ptr::addr_of!(reg.actor_ref)) },
             actor_local: actor_ref_local_ptr(&reg.actor_ref).cast::<HewActor>(),
+            actor: reg.actor,
             mode: match &reg.mode {
                 RegMode::AutoSend {
                     on_data_type,
@@ -1048,9 +1079,7 @@ fn handle_ready_resume(
     }
 
     if deposit.wake {
-        // SAFETY: `enqueue_resume` re-confirms liveness under the registry lock
-        // and only flips state + enqueues; a freed actor drops the wake.
-        unsafe { crate::scheduler::enqueue_resume(snap.actor_local, std::ptr::null_mut()) };
+        crate::scheduler::enqueue_resume_by_incarnation(snap.actor);
     }
     // One-shot: remove the registration. Dropping the `Registration` releases the
     // REGISTRATION-OWNED slot ref (the `Drop for Registration` single authority
@@ -1142,9 +1171,7 @@ fn handle_ready_accept(
     // checks the cancelled flag before publishing + waking.
     let wake = unsafe { crate::read_slot::read_slot_deposit_handle(read_slot, deposit_handle) };
     if wake {
-        // SAFETY: `enqueue_resume` re-confirms liveness under the registry lock
-        // and only flips state + enqueues; a freed actor drops the wake.
-        unsafe { crate::scheduler::enqueue_resume(snap.actor_local, std::ptr::null_mut()) };
+        crate::scheduler::enqueue_resume_by_incarnation(snap.actor);
     } else if deposit_handle != INVALID_CONNECTION_HANDLE {
         // Deposit FAILED on a real accepted connection: the suspended handler was
         // abandoned/cancelled (cancelled flag set, or a cancellation/deadline won
@@ -1268,7 +1295,7 @@ fn deliver_orphan_close(reg: &Registration) {
             }
         }
         RegMode::Resume { read_slot } => {
-            resume_with_status(actor_local, read_slot, crate::read_slot::ReadStatus::Error);
+            resume_with_status(reg.actor, read_slot, crate::read_slot::ReadStatus::Error);
         }
         RegMode::Accept { read_slot } => {
             // NEW-2: the accept registration never made it into the poller; wake
@@ -1282,10 +1309,8 @@ fn deliver_orphan_close(reg: &Registration) {
                     crate::read_slot::INVALID_CONNECTION_HANDLE,
                 )
             };
-            if should_wake && !actor_local.is_null() {
-                // SAFETY: `enqueue_resume` re-confirms liveness; a freed actor
-                // drops the wake.
-                unsafe { crate::scheduler::enqueue_resume(actor_local, std::ptr::null_mut()) };
+            if should_wake {
+                crate::scheduler::enqueue_resume_by_incarnation(reg.actor);
             }
         }
     }
@@ -1300,7 +1325,7 @@ fn deliver_orphan_close(reg: &Registration) {
 /// Does NOT release the reactor's slot ref — the caller drops the owning
 /// `Registration`, whose `Drop` impl is the single authority for that release.
 fn resume_with_status(
-    actor_local: *mut HewActor,
+    actor: ActorIncarnation,
     read_slot: *mut crate::read_slot::HewReadSlot,
     status: crate::read_slot::ReadStatus,
 ) {
@@ -1308,11 +1333,8 @@ fn resume_with_status(
     // `reactor_await_read`); the deposit checks the cancelled flag before
     // publishing.
     let should_wake = unsafe { crate::read_slot::read_slot_deposit_status(read_slot, status) };
-    if should_wake && !actor_local.is_null() {
-        // SAFETY: `enqueue_resume` does NOT trust the pointer — it re-confirms
-        // liveness under the registry lock and only flips state + enqueues; a
-        // freed actor drops the wake.
-        unsafe { crate::scheduler::enqueue_resume(actor_local, std::ptr::null_mut()) };
+    if should_wake {
+        crate::scheduler::enqueue_resume_by_incarnation(actor);
     }
 }
 
@@ -1532,15 +1554,17 @@ pub(crate) unsafe fn reactor_attach(
         }
     }
 
-    let reg = Registration {
-        conn,
-        actor_ref: snapshot,
-        actor_key,
-        mode: RegMode::AutoSend {
-            on_data_type,
-            on_close_type,
-        },
-        closed: false,
+    // SAFETY: `snapshot` names the actor registering this fd, live here.
+    let reg = unsafe {
+        Registration::new(
+            conn,
+            snapshot,
+            actor_key,
+            RegMode::AutoSend {
+                on_data_type,
+                on_close_type,
+            },
+        )
     };
     REACTOR_STATE.access(|state| {
         state.pending.push(Pending::Add { fd, reg });
@@ -1617,12 +1641,9 @@ pub(crate) unsafe fn reactor_await_read(
         unsafe { crate::read_slot::read_slot_retain(read_slot) };
         state.pending.push(Pending::Add {
             fd,
-            reg: Registration {
-                conn,
-                actor_ref: snapshot,
-                actor_key,
-                mode: RegMode::Resume { read_slot },
-                closed: false,
+            // SAFETY: `snapshot` names the awaiting actor, live here.
+            reg: unsafe {
+                Registration::new(conn, snapshot, actor_key, RegMode::Resume { read_slot })
             },
         });
         true
@@ -1698,14 +1719,11 @@ pub(crate) unsafe fn reactor_await_accept(
         unsafe { crate::read_slot::read_slot_retain(read_slot) };
         state.pending.push(Pending::Add {
             fd,
-            reg: Registration {
-                // The accept registration's `conn` field carries the LISTENER
-                // handle the fd belongs to.
-                conn: listener,
-                actor_ref: snapshot,
-                actor_key,
-                mode: RegMode::Accept { read_slot },
-                closed: false,
+            // The accept registration's `conn` field carries the LISTENER
+            // handle the fd belongs to.
+            // SAFETY: `snapshot` names the awaiting actor, live here.
+            reg: unsafe {
+                Registration::new(listener, snapshot, actor_key, RegMode::Accept { read_slot })
             },
         });
         true
@@ -2012,15 +2030,17 @@ pub(crate) fn inject_registration_for_test(
         state.conn_to_fd.insert(conn, fd);
         state.registry.insert(
             fd,
-            Registration {
-                conn,
-                actor_ref,
-                actor_key,
-                mode: RegMode::AutoSend {
-                    on_data_type: 1,
-                    on_close_type: 2,
-                },
-                closed: false,
+            // SAFETY: the caller passes a live (or remote) actor ref.
+            unsafe {
+                Registration::new(
+                    conn,
+                    actor_ref,
+                    actor_key,
+                    RegMode::AutoSend {
+                        on_data_type: 1,
+                        on_close_type: 2,
+                    },
+                )
             },
         );
     });
@@ -2043,13 +2063,8 @@ pub(crate) fn inject_resume_registration_for_test(
         state.conn_to_fd.insert(conn, fd);
         state.registry.insert(
             fd,
-            Registration {
-                conn,
-                actor_ref,
-                actor_key,
-                mode: RegMode::Resume { read_slot },
-                closed: false,
-            },
+            // SAFETY: the caller passes a live (or remote) actor ref.
+            unsafe { Registration::new(conn, actor_ref, actor_key, RegMode::Resume { read_slot }) },
         );
     });
 }
@@ -2071,13 +2086,8 @@ pub(crate) fn inject_accept_registration_for_test(
         state.conn_to_fd.insert(conn, fd);
         state.registry.insert(
             fd,
-            Registration {
-                conn,
-                actor_ref,
-                actor_key,
-                mode: RegMode::Accept { read_slot },
-                closed: false,
-            },
+            // SAFETY: the caller passes a live (or remote) actor ref.
+            unsafe { Registration::new(conn, actor_ref, actor_key, RegMode::Accept { read_slot }) },
         );
     });
 }
@@ -2126,10 +2136,13 @@ pub(crate) fn handle_ready_accept_for_test(
     read_slot: *mut crate::read_slot::HewReadSlot,
     hard_close: bool,
 ) {
+    // SAFETY: the caller passes a live (or remote) actor ref.
+    let actor = unsafe { ActorIncarnation::of(actor_ref_local_ptr(&actor_ref).cast::<HewActor>()) };
     let snap = ReadySnapshot {
         conn: listener_conn,
         actor_local: actor_ref_local_ptr(&actor_ref).cast::<HewActor>(),
         actor_ref,
+        actor,
         mode: ReadyMode::Accept { read_slot },
         already_closed: false,
     };
@@ -2192,15 +2205,17 @@ pub(crate) fn enqueue_pending_add_for_test(
     REACTOR_STATE.access(|state| {
         state.pending.push(Pending::Add {
             fd,
-            reg: Registration {
-                conn,
-                actor_ref,
-                actor_key,
-                mode: RegMode::AutoSend {
-                    on_data_type: 1,
-                    on_close_type: 2,
-                },
-                closed: false,
+            // SAFETY: the caller passes a live (or remote) actor ref.
+            reg: unsafe {
+                Registration::new(
+                    conn,
+                    actor_ref,
+                    actor_key,
+                    RegMode::AutoSend {
+                        on_data_type: 1,
+                        on_close_type: 2,
+                    },
+                )
             },
         });
     });
@@ -3570,12 +3585,14 @@ mod tests {
         REACTOR_STATE.access(|state| {
             state.pending.push(Pending::Add {
                 fd: 73,
-                reg: Registration {
-                    conn: 74,
-                    actor_ref: dead_actor_ref(),
-                    actor_key: KEY,
-                    mode: RegMode::Resume { read_slot: slot },
-                    closed: false,
+                // SAFETY: a remote ref carries no local actor pointer.
+                reg: unsafe {
+                    Registration::new(
+                        74,
+                        dead_actor_ref(),
+                        KEY,
+                        RegMode::Resume { read_slot: slot },
+                    )
                 },
             });
         });
@@ -3835,15 +3852,17 @@ mod tests {
             set_delivering_actor_for_test(KEY);
             state.registry.insert(
                 rfd,
-                Registration {
-                    conn: 601,
-                    actor_ref: dead_actor_ref(),
-                    actor_key: KEY,
-                    mode: RegMode::AutoSend {
-                        on_data_type: 1,
-                        on_close_type: 2,
-                    },
-                    closed: false,
+                // SAFETY: a remote ref carries no local actor pointer.
+                unsafe {
+                    Registration::new(
+                        601,
+                        dead_actor_ref(),
+                        KEY,
+                        RegMode::AutoSend {
+                            on_data_type: 1,
+                            on_close_type: 2,
+                        },
+                    )
                 },
             );
             // While we still hold the lock, the re-scrub cannot run and the

@@ -37,6 +37,7 @@ use crate::deque::{GlobalQueue, WorkDeque, WorkStealer};
 use crate::deterministic::hew_deterministic_set_seed;
 use crate::execution_context::HewExecutionContext;
 use crate::internal::types::{HewActorState, HewDispatchFn, HewSysDispatchFn};
+use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox::{self, hew_mailbox_has_messages, hew_msg_node_free, HewMailbox};
 use crate::mailbox_header::{HewSysMsg, Origin};
@@ -1493,16 +1494,23 @@ fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::Run
 /// enqueue is race-free: the actor is `Runnable` but not yet on the queue, so
 /// nothing can run it and re-park between the CAS and the consume.
 ///
+/// # Not a wake entry point
+///
+/// A pointer names an ADDRESS, and addresses are recycled, so this cannot be
+/// the edge a readiness source calls: the registry probe below proves the
+/// address is live, never that it still holds the incarnation that parked.
+/// Production reaches this only through [`enqueue_resume_by_incarnation`],
+/// which resolves an [`ActorIncarnation`] and holds a pin over the call. The
+/// scheduler's own unit tests call it directly to exercise the CAS and
+/// pending-wake discipline in isolation.
+///
 /// # Safety
 ///
-/// `actor`, if non-null, may reference a freed `HewActor` — this function does
-/// NOT trust the pointer to be live. It re-confirms liveness against the
-/// `LIVE_ACTORS` registry under the registry lock before dereferencing, so a
-/// stale pointer from an abandoned/late reply is rejected atomically rather than
-/// dereferenced. `cont`, if non-null, must be the continuation parked on
-/// `actor` (a `coro.begin` frame). The caller (a readiness source) owns the wake
-/// edge; the executor owns teardown.
-pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
+/// `actor`, if non-null, must be pinned live by the caller for the duration of
+/// this call. `cont`, if non-null, must be the continuation parked on `actor`
+/// (a `coro.begin` frame). The caller (a readiness source) owns the wake edge;
+/// the executor owns teardown.
+pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_void) {
     if actor.is_null() {
         return;
     }
@@ -1654,6 +1662,38 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
         assert_wake_routes_to_owning_runtime(actor_runtime_id);
         sched_enqueue_owned(entry);
     }
+}
+
+/// Wake the exact actor incarnation a readiness source parked.
+///
+/// This is the single wake edge every readiness source calls: the reactor, the
+/// reply slot, channels, task scopes, await-cancel, supervisor restart-await,
+/// the wire reply, and mailbox block-send admission.
+///
+/// The source records an [`ActorIncarnation`] at park time, not a pointer.
+/// Resolution here refuses two distinct failures and is silent about both,
+/// because dropping the wake is the correct answer to each:
+///
+/// - the id is untracked — the actor died and its own teardown already
+///   destroyed the continuation this wake would have resumed;
+/// - the id resolves but the `spawn_serial` differs — the address (or the id,
+///   after a 2^48 wrap that the spawn allocator refuses anyway) now belongs to
+///   a DIFFERENT incarnation. Waking it would CAS a stranger
+///   `Suspended -> Runnable` with no readiness behind it, and a suspending
+///   `select` resumed that way fabricates a timeout.
+///
+/// The refusal happens before any mutation of the resolved actor, so a stale
+/// wake cannot leave a `pending_wake` marker on the wrong incarnation either.
+/// The pin taken during resolution is held across the enqueue, so the target
+/// cannot die or have its address reused mid-call.
+pub(crate) fn enqueue_resume_by_incarnation(target: ActorIncarnation) {
+    let _ = crate::lifetime::live_actors::with_live_incarnation(target, |pin| {
+        // SAFETY: the pin keeps THIS incarnation's allocation live across the
+        // wake; the free path drains `send_pin_count` before reclaiming it.
+        // `cont` is null because the suspend edge owns the parked handle — the
+        // resume edge reads it from `suspended_cont`, never from here.
+        unsafe { enqueue_resume_pinned(pin.as_ptr(), std::ptr::null_mut()) };
+    });
 }
 
 /// Wake one parked worker.
@@ -4593,6 +4633,7 @@ pub unsafe extern "C" fn hew_sched_metrics_snapshot(out: *mut HewSchedMetrics) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_actor::{stub_actor, TrackedTestActor};
     use std::ptr;
     use std::sync::atomic::AtomicI32;
     use std::sync::Arc;
@@ -4797,97 +4838,6 @@ mod tests {
         }
     }
 
-    /// Helper: build a minimal `HewActor` with sensible defaults.
-    fn stub_actor() -> HewActor {
-        HewActor {
-            sched_link_next: AtomicPtr::new(ptr::null_mut()),
-            id: 1,
-            state: ptr::null_mut(),
-            state_size: 0,
-            dispatch: None,
-            mailbox: ptr::null_mut(),
-            actor_state: AtomicI32::new(HewActorState::Runnable as i32),
-            budget: AtomicI32::new(HEW_MSG_BUDGET),
-            init_state: ptr::null_mut(),
-            init_state_size: 0,
-            coalesce_key_fn: None,
-            terminate_fn: None,
-            state_drop_fn: None,
-            state_clone_fn: None,
-            terminate_called: AtomicBool::new(false),
-            terminate_finished: AtomicBool::new(false),
-            dispatch_active: AtomicBool::new(false),
-            error_code: AtomicI32::new(0),
-            supervisor: ptr::null_mut(),
-            supervisor_child_index: -1,
-            priority: AtomicI32::new(actor::HEW_PRIORITY_NORMAL),
-            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
-            idle_count: AtomicI32::new(0),
-            hibernation_threshold: AtomicI32::new(0),
-            hibernating: AtomicI32::new(0),
-            prof_messages_processed: AtomicU64::new(0),
-            prof_processing_time_ns: AtomicU64::new(0),
-            arena: std::ptr::null_mut(),
-            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
-            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
-            pending_wake: AtomicBool::new(false),
-            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
-            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
-            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-            runtime: ptr::null(),
-            send_pin_count: std::sync::atomic::AtomicU32::new(0),
-            gen_sink: AtomicPtr::new(std::ptr::null_mut()),
-            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
-            spawn_serial: 1,
-            sys_dispatch: None,
-            state_drop_consumed: AtomicBool::new(false),
-            state_drop_borrowed: AtomicBool::new(false),
-            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
-        }
-    }
-
-    /// RAII guard that registers a stub actor in `LIVE_ACTORS` for the duration
-    /// of a test and untracks it on drop. `enqueue_resume` now confirms liveness
-    /// against `LIVE_ACTORS` before waking (the W6.010 caller-actor UAF guard),
-    /// so a wake-expecting test must present its stub as a LIVE actor. Each guard
-    /// assigns a unique `id` so concurrent tests do not collide in the
-    /// process-wide registry.
-    struct TrackedTestActor {
-        ptr: *mut HewActor,
-    }
-
-    impl TrackedTestActor {
-        fn install(mut actor: HewActor) -> Self {
-            actor.id = next_tracked_test_actor_id();
-            // Own the actor through a single raw pointer from `Box::into_raw`
-            // rather than storing a `Box` alongside a derived raw pointer: under
-            // Stacked Borrows, moving the `Box` (e.g. returning `Self`) retags and
-            // invalidates the pointee, so the saved raw tag would be stale. The
-            // `into_raw` pointer keeps valid provenance across the struct move and
-            // `Drop` reconstitutes the `Box` to free it exactly once.
-            let ptr: *mut HewActor = Box::into_raw(Box::new(actor));
-            // SAFETY: `ptr` is a freshly-boxed, fully-initialised actor.
-            assert!(unsafe { crate::lifetime::live_actors::track_actor(ptr) });
-            Self { ptr }
-        }
-
-        fn ptr(&self) -> *mut HewActor {
-            self.ptr
-        }
-
-        /// Untrack the actor WITHOUT freeing the box, modelling a caller actor
-        /// torn down before a late/orphan-retire reply fires. After this returns
-        /// `enqueue_resume(ptr)` must observe the actor as no longer live.
-        fn untrack(&self) {
-            crate::lifetime::live_actors::untrack_actor(self.ptr);
-        }
-    }
-
-    fn next_tracked_test_actor_id() -> u64 {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        NEXT_ID.fetch_add(1, Ordering::Relaxed)
-    }
-
     static BLOCKED_SENDER_REINCARNATION: AtomicPtr<HewActor> = AtomicPtr::new(ptr::null_mut());
 
     fn reincarnate_blocked_sender_at_same_address() {
@@ -4896,52 +4846,9 @@ mod tests {
             !actor_ptr.is_null(),
             "blocked sender reincarnation target must be installed"
         );
-        assert!(crate::lifetime::live_actors::untrack_actor(actor_ptr));
-
-        let mut replacement = stub_actor();
-        replacement.id = next_tracked_test_actor_id();
-        replacement.spawn_serial = 2;
-        replacement
-            .actor_state
-            .store(HewActorState::Suspended as i32, Ordering::Release);
-        replacement.suspended_cont.store(
-            ptr::null_mut::<u8>().wrapping_add(1).cast(),
-            Ordering::Release,
-        );
-        replacement.cont_tag.store(
-            crate::internal::types::ContTag::Parked as i32,
-            Ordering::Release,
-        );
-
-        // SAFETY: the old incarnation is untracked and exclusively owned by
-        // this test. Destroying it returns this exact allocation to the test's
-        // one-slot pool; placement immediately reuses it for the replacement.
-        unsafe {
-            actor_ptr.drop_in_place();
-            actor_ptr.write(replacement);
-        }
-        // SAFETY: the replacement is fully initialized at `actor_ptr` and has
-        // a fresh identity distinct from the destroyed incarnation.
-        assert!(unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) });
-    }
-
-    impl std::ops::Deref for TrackedTestActor {
-        type Target = HewActor;
-        fn deref(&self) -> &HewActor {
-            // SAFETY: `ptr` owns a live, boxed actor for the guard's lifetime.
-            unsafe { &*self.ptr }
-        }
-    }
-
-    impl Drop for TrackedTestActor {
-        fn drop(&mut self) {
-            // Idempotent: `untrack_actor` only removes a matching entry; a
-            // double-untrack (test already called `untrack`) is a no-op.
-            crate::lifetime::live_actors::untrack_actor(self.ptr);
-            // SAFETY: `ptr` came from `Box::into_raw` in `install`; reclaim the
-            // box so the actor is freed exactly once.
-            unsafe { drop(Box::from_raw(self.ptr)) };
-        }
+        // SAFETY: the hook runs on the test thread, which owns this allocation
+        // exclusively while the mailbox resolves the removed waiter.
+        let _ = unsafe { crate::test_actor::reincarnate_parked_in_place(actor_ptr) };
     }
 
     #[test]
@@ -5127,7 +5034,7 @@ mod tests {
 
         // SAFETY: actor is live (tracked) for this scope; sentinel handle is
         // never resumed.
-        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
 
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -5176,7 +5083,7 @@ mod tests {
 
         // SAFETY: `actor_ptr` is a stale (untracked) pointer; `enqueue_resume`
         // must reject it via the registry check rather than dereference it.
-        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
 
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -5371,7 +5278,7 @@ mod tests {
         let actor_ptr = actor.ptr();
 
         // SAFETY: actor is live (tracked); terminal so it is never resumed/enqueued.
-        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
 
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -5419,7 +5326,7 @@ mod tests {
             // SAFETY: actor is live (tracked) for this scope; the sentinel handle
             // is never resumed. The trap fires after the registry lock is
             // released, so it does not poison the live-actor registry.
-            unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+            unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
         }));
         assert!(
             trapped.is_err(),
@@ -5447,7 +5354,7 @@ mod tests {
 
         // SAFETY: actor is live (tracked); null slot means no handle is ever
         // resumed.
-        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
 
         assert!(
             crate::coro_exec::take_pending_wake(&actor),
@@ -5491,7 +5398,7 @@ mod tests {
 
         // SAFETY: actor is live (tracked); the sentinel handle is never resumed
         // (no worker thread exists under NoWorkerSchedulerForTest).
-        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
 
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -5547,7 +5454,7 @@ mod tests {
 
         // SAFETY: actor is live (tracked); the sentinel handle is never
         // resumed (no worker thread exists under NoWorkerSchedulerForTest).
-        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
 
         assert_eq!(
             sched.pop_global(),
@@ -5620,7 +5527,7 @@ mod tests {
         let _hook = EnqueueResumeCasFailHookGuard::install(park_completes_inside_cas_fail_gap);
         // SAFETY: actor is live (tracked); the sentinel handle is never
         // resumed (no worker thread exists under NoWorkerSchedulerForTest).
-        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
 
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -5733,7 +5640,7 @@ mod tests {
 
         // The reactor's resume-mode deposit + wake (what `handle_ready_resume`
         // does on `Data`): build an owned bytes value, deposit it into the slot,
-        // then `enqueue_resume(actor, null)`.
+        // then `enqueue_resume_pinned(actor, null)`.
         let slot = crate::read_slot::hew_read_slot_new();
         let payload = b"reactor-delivered-bytes";
         let payload_len = u32::try_from(payload.len()).expect("payload fits u32");
@@ -5743,7 +5650,7 @@ mod tests {
         let wake = unsafe { crate::read_slot::read_slot_deposit_data(slot, triple) };
         assert!(wake, "a non-cancelled deposit must signal a wake");
         // SAFETY: `actor_ptr` is live (tracked) for this scope.
-        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        unsafe { enqueue_resume_pinned(actor_ptr, ptr::null_mut()) };
 
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -6635,7 +6542,7 @@ mod tests {
         // Wake #1: enqueue_resume → Runnable → activate → resume #1 (Pending) →
         // re-park as Suspended.
         // SAFETY: actor live; parked handle is the executor-owned frame.
-        unsafe { enqueue_resume(actor_ptr, parked_handle) };
+        unsafe { enqueue_resume_pinned(actor_ptr, parked_handle) };
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
             HewActorState::Runnable as i32,
@@ -6651,7 +6558,7 @@ mod tests {
         // Wake #2: enqueue_resume → activate → resume #2 (Ready) → destroy once →
         // settle to Idle (empty mailbox).
         // SAFETY: actor live; same parked handle.
-        unsafe { enqueue_resume(actor_ptr, parked_handle) };
+        unsafe { enqueue_resume_pinned(actor_ptr, parked_handle) };
         activate_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -6726,7 +6633,7 @@ mod tests {
         // still has the 2nd message, so the completed resume settles to Runnable
         // (not Idle) and is re-enqueued.
         // SAFETY: actor live; handle1 is the executor-owned frame.
-        unsafe { enqueue_resume(actor_ptr, handle1) };
+        unsafe { enqueue_resume_pinned(actor_ptr, handle1) };
         activate_actor(actor_ptr);
         assert!(
             actor.suspended_cont.load(Ordering::Acquire).is_null(),
@@ -6758,7 +6665,7 @@ mod tests {
 
         // Wake → resume(Ready) → destroy once → re-arm. Mailbox now empty → Idle.
         // SAFETY: actor live; handle2 is the executor-owned frame.
-        unsafe { enqueue_resume(actor_ptr, handle2) };
+        unsafe { enqueue_resume_pinned(actor_ptr, handle2) };
         activate_actor(actor_ptr);
         assert!(
             actor.suspended_cont.load(Ordering::Acquire).is_null(),
@@ -6867,7 +6774,7 @@ mod tests {
         // Wake it, then run the activation. It takes the resume-before-loop
         // path; the outline latches the stop; the poll reports `Pending`.
         // SAFETY: the actor is live (tracked) and `handle` is its parked frame.
-        unsafe { enqueue_resume(actor_ptr, handle) };
+        unsafe { enqueue_resume_pinned(actor_ptr, handle) };
         activate_actor(actor_ptr);
 
         assert_eq!(

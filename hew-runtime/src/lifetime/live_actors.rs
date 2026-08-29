@@ -549,6 +549,111 @@ pub(crate) fn with_actor_send_by_identity<R>(
     Some(f(&pin))
 }
 
+/// The exact identity of one actor incarnation: the location-transparent `id`
+/// plus the never-reissued [`HewActor::spawn_serial`].
+///
+/// A readiness source that records a wake target records an ADDRESS when it
+/// keeps a `*mut HewActor`. Addresses are recycled: the allocator hands a freed
+/// actor box straight back to the next spawn, so a wake registered by one
+/// incarnation and fired after that incarnation died can resolve to whatever
+/// actor now occupies the address. The registry's pointer probe cannot tell the
+/// two apart — both are tracked-live — so the wake lands on the wrong
+/// incarnation and moves it `Suspended -> Runnable` with no readiness behind
+/// it.
+///
+/// `spawn_serial` is the discriminator that closes it. It comes from a
+/// monotonic allocator that refuses to wrap ([`crate::pid::MAX_ACTOR_SERIAL`]
+/// is a hard spawn failure, not a wrap), so no two incarnations in a process
+/// ever share one. Recording the pair and resolving it through
+/// [`with_live_incarnation`] makes a wake name an incarnation, not an address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ActorIncarnation {
+    actor_id: u64,
+    spawn_serial: u64,
+}
+
+// The whole surface is the native wake edge: wasm32 has its own cooperative
+// scheduler, reply channel and mailbox, and never resolves an incarnation.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl ActorIncarnation {
+    /// No wake target.
+    ///
+    /// Actor id `0` is the runtime's invalid-actor sentinel (`hew_pid_make`
+    /// refuses to mint it), so it can never name a real incarnation. Sources
+    /// that park without an actor — a foreign thread, or an await registered
+    /// before the caller is known — record this.
+    pub(crate) const NONE: Self = Self {
+        actor_id: 0,
+        spawn_serial: 0,
+    };
+
+    /// Capture the incarnation of a live actor, or [`Self::NONE`] for null.
+    ///
+    /// # Safety
+    ///
+    /// `actor`, if non-null, must be live for the duration of this call. Every
+    /// caller records its own actor at park time, where that holds by
+    /// construction.
+    pub(crate) unsafe fn of(actor: *mut HewActor) -> Self {
+        if actor.is_null() {
+            return Self::NONE;
+        }
+        // SAFETY: caller guarantees `actor` is live for this read.
+        unsafe {
+            Self {
+                actor_id: (*actor).id,
+                spawn_serial: (*actor).spawn_serial,
+            }
+        }
+    }
+
+    /// Rebuild an incarnation from its two scalars (an ABI-boundary record).
+    pub(crate) const fn from_parts(actor_id: u64, spawn_serial: u64) -> Self {
+        Self {
+            actor_id,
+            spawn_serial,
+        }
+    }
+
+    /// Whether this records no target at all.
+    pub(crate) const fn is_none(self) -> bool {
+        self.actor_id == 0
+    }
+
+    /// The location-transparent actor id half of the pair.
+    pub(crate) const fn actor_id(self) -> u64 {
+        self.actor_id
+    }
+
+    /// The never-reissued serial half of the pair.
+    pub(crate) const fn spawn_serial(self) -> u64 {
+        self.spawn_serial
+    }
+}
+
+/// Pin the exact incarnation named by `target` and run `f` while it is held.
+///
+/// Returns `None` — and runs nothing — when the incarnation is gone: the id is
+/// untracked, or it now resolves to a DIFFERENT incarnation (a serial
+/// mismatch). Dropping the call is the correct answer in both cases; the dead
+/// incarnation's continuation was destroyed by its own teardown.
+///
+/// The pin is the allocation lease: [`pin_actor_by_id`] takes it under the
+/// registry lock, and the free path drains `send_pin_count` to zero before
+/// reclaiming the box, so `f` cannot race the target into a free or an address
+/// reuse.
+// live on not(wasm32) — the scheduler wake edge; dead on wasm32.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn with_live_incarnation<R>(
+    target: ActorIncarnation,
+    f: impl FnOnce(&ActorPin) -> R,
+) -> Option<R> {
+    if target.is_none() {
+        return None;
+    }
+    with_actor_send_by_identity(target.actor_id, target.spawn_serial, f)
+}
+
 /// Resolve the per-actor-TYPE dispatch function pointer for a live actor id,
 /// returned as an opaque `*const c_void` codec-registry key.
 ///

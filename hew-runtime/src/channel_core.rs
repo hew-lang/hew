@@ -38,6 +38,7 @@ use hew_cabi::sink::TrySendResult;
 use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
 
 use crate::actor::HewActor;
+use crate::lifetime::live_actors::ActorIncarnation;
 use crate::read_slot::{
     hew_read_slot_free, read_slot_deposit_status, read_slot_retain, HewReadSlot, ReadStatus,
 };
@@ -53,9 +54,10 @@ pub const STREAM_AWAIT_READY: i32 = 1;
 /// One parked peer (a consumer awaiting an item, or a producer blocked on a full
 /// ring). The core owns one in-flight ref on `slot`.
 struct Waiter {
-    /// The parked-continuation actor, woken via `enqueue_resume`. Raw and
-    /// possibly-stale: `enqueue_resume` validates liveness, never this code.
-    actor: *mut HewActor,
+    /// The parked-continuation actor's incarnation, woken via
+    /// `enqueue_resume_by_incarnation`. Recorded at park time, when the actor
+    /// is live; if it dies before the wake the identity simply stops resolving.
+    actor: ActorIncarnation,
     /// The readiness slot; the core holds one retained ref while registered.
     slot: *mut HewReadSlot,
     /// A parked producer's pending item, enqueued by the drainer when space
@@ -232,7 +234,7 @@ impl ChannelCore {
     /// # Safety
     ///
     /// `w.slot` must be a slot the core holds an in-flight ref to (released
-    /// here); `w.actor` may be stale (`enqueue_resume` validates it).
+    /// here).
     #[allow(
         clippy::needless_pass_by_value,
         reason = "takes the Waiter by value to consume it: the wake releases the \
@@ -243,9 +245,7 @@ impl ChannelCore {
         // terminal status is the documented reactor-deposit contract.
         let do_wake = unsafe { read_slot_deposit_status(w.slot, ReadStatus::Data) };
         if do_wake {
-            // SAFETY: `enqueue_resume` re-validates `w.actor` under the registry
-            // lock; a freed actor drops the wake with no deref.
-            unsafe { crate::scheduler::enqueue_resume(w.actor, std::ptr::null_mut()) };
+            crate::scheduler::enqueue_resume_by_incarnation(w.actor);
         }
         // Release the core's in-flight ref (the single authority for it).
         // SAFETY: the core owned this ref; nothing else releases it.
@@ -278,6 +278,8 @@ impl ChannelCore {
         // Replace any prior (abandoned) consumer registration; a Stream<T> has a
         // single owner, so a live double-park cannot occur, but a stale slot from
         // a torn-down park must release its ref.
+        // SAFETY: `actor` is the awaiting actor, live for this registration.
+        let actor = unsafe { ActorIncarnation::of(actor) };
         if let Some(prev) = inner.consumer.replace(Waiter {
             actor,
             slot,
@@ -488,6 +490,9 @@ impl ChannelCore {
                 // Full ring: park the producer; it owns `item` across the suspend.
                 // SAFETY: caller holds the creator ref, so the slot is live.
                 unsafe { read_slot_retain(slot) };
+                // SAFETY: `actor` is the sending actor, live for this
+                // registration.
+                let actor = unsafe { ActorIncarnation::of(actor) };
                 inner.producers.push_back(Waiter {
                     actor,
                     slot,

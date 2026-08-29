@@ -297,14 +297,14 @@ fn vec_index_in_machine_transition_body_rejected() {
 
             state Idle;
             state Done;
-            on Go: Idle => Done {
+            on Go: Idle => .Done {
                 let xs: Vec<bytes> = make_byteses();
                 let _: bytes = xs[0];
-                Done
+                .Done
             }
-            on Go: Done => Done;
-            on Reset: Done => Idle;
-            on Reset: Idle => Idle;
+            on Go: Done => .Done;
+            on Reset: Done => .Idle;
+            on Reset: Idle => .Idle;
         }
         ",
     );
@@ -339,10 +339,10 @@ fn vec_index_in_machine_transition_guard_rejected() {
 
             state Idle;
             state Done;
-            on Go: Idle => Done when make_byteses()[0].is_empty() { Done }
-            on Go: Done => Done;
-            on Reset: Done => Idle;
-            on Reset: Idle => Idle;
+            on Go: Idle => .Done when make_byteses()[0].is_empty() { .Done }
+            on Go: Done => .Done;
+            on Reset: Done => .Idle;
+            on Reset: Idle => .Idle;
         }
         ",
     );
@@ -392,10 +392,10 @@ fn machine_state_entry_exit_blocks_are_walked_by_vec_index_gate() {
                 }
             }
             state Done;
-            on Go: Idle => Done;
-            on Go: Done => Done;
-            on Reset: Done => Idle;
-            on Reset: Idle => Idle;
+            on Go: Idle => .Done;
+            on Go: Done => .Done;
+            on Reset: Done => .Idle;
+            on Reset: Idle => .Idle;
         }
         ",
     );

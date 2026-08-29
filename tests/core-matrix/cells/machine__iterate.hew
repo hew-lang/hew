@@ -4,16 +4,16 @@ machine Counter {
     state NonZero { value: i64; }
     on Inc: Zero => NonZero { NonZero { value: 1 } }
     on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Zero }
+    on Reset: NonZero => Zero { .Zero }
     default { state }
 }
 
 fn main() {
     var a = Zero;
-    a.step(Inc);
+    a.step(.Inc);
     var b = Zero;
-    b.step(Inc);
-    b.step(Inc);
+    b.step(.Inc);
+    b.step(.Inc);
     let v: Vec<Counter> = Vec.new();
     v.push(a);
     v.push(b);

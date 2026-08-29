@@ -9,7 +9,7 @@ machine Lifecycle {
     events { Reset; }
     state Start;
     state Running { value: i64; }
-    on Reset: Running => Start { Start }
+    on Reset: Running => .Start { .Start }
     default { state }
 }
 
@@ -70,7 +70,7 @@ machine Lifecycle {
     events { Reset; }
     state Start;
     state Running;
-    on Reset: Running => Start { Start }
+    on Reset: Running => .Start { .Start }
     default { state }
 }
 

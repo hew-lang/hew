@@ -14,12 +14,12 @@ machine Gate {
     state Closed;
     state Opened { tok: Tok; }
     on Open: Closed => Opened { Opened { tok: Tok { id: 1 } } }
-    on Shut: Opened => Closed { Closed }
+    on Shut: Opened => Closed { .Closed }
     default { state }
 }
 
 fn main() {
     var h = Closed;
-    h.step(Open);
+    h.step(.Open);
     println("body");
 }

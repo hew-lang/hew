@@ -4,7 +4,7 @@ machine Counter {
     state NonZero { value: i64; }
     on Inc: Zero => NonZero { NonZero { value: 1 } }
     on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Zero }
+    on Reset: NonZero => Zero { .Zero }
     default { state }
 }
 
@@ -23,7 +23,7 @@ actor Sink {
 
 fn main() {
     var x = Zero;
-    x.step(Inc);
+    x.step(.Inc);
     let s = spawn Sink(hits: 0);
     match await s.take(x) {
         Result.Ok(n) => println(f"hits {n}"),

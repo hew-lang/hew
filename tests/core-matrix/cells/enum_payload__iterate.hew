@@ -5,8 +5,8 @@ enum Shape {
 }
 
 fn main() {
-    let a: Shape = Circle(3);
-    let b: Shape = Circle(4);
+    let a: Shape = .Circle(3);
+    let b: Shape = .Circle(4);
     let v: Vec<Shape> = Vec.new();
     v.push(a);
     v.push(b);

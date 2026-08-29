@@ -5,7 +5,7 @@ enum Shape {
 }
 
 fn main() {
-    let x: Shape = Circle(3);
+    let x: Shape = .Circle(3);
     let v: Vec<Shape> = Vec.new();
     v.push(x);
     match v.get(0) {

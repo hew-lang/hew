@@ -11,5 +11,5 @@ fn area(shape: Shape) -> i64 {
 }
 
 fn main() {
-    println(area(Rectangle(4, 6)));
+    println(area(.Rectangle(4, 6)));
 }

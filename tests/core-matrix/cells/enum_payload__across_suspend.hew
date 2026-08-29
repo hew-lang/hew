@@ -20,7 +20,7 @@ actor Holder {
 }
 
 fn main() {
-    let x: Shape = Circle(3);
+    let x: Shape = .Circle(3);
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
         Result.Ok(n) => println(f"held {n}"),

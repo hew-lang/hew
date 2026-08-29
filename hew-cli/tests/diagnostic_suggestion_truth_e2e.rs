@@ -35,34 +35,35 @@ fn contextual_machine_transition_suggestion_compiles() {
 }
 
 #[test]
-fn bare_machine_transition_retains_contextual_fix_it() {
-    let output = check_fixture("bare_machine_transition.hew");
+fn bare_machine_transition_is_rejected_with_contextual_fix_it() {
+    let output = check_fixture("bare_machine_transition_reject.hew");
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        output.status.success(),
-        "bare machine transition states remain accepted during migration:\n{stderr}"
+        !output.status.success(),
+        "bare machine transition states must be rejected:\n{stderr}"
     );
     assert!(
         stderr.contains("E_BARE_VARIANT_EXPR"),
-        "bare transition target must retain its migration warning:\n{stderr}"
+        "bare transition target must report the bare-variant error:\n{stderr}"
     );
     assert!(
         stderr.contains("replace `On` with `.On`"),
         "bare transition target must suggest contextual syntax:\n{stderr}"
     );
     // The fix-it is only appliable if it is anchored on the text it asks the
-    // author to replace. In `bare_machine_transition.hew`, `On` is the target
-    // of the line-9 transition at column 23 and `Off` the target of line 10 at
-    // column 22 — not the following `on` keyword or the closing brace.
+    // author to replace. In `bare_machine_transition_reject.hew`, `On` is the
+    // target of the line-9 transition at column 23 and `Off` the target of
+    // line 10 at column 22 — not the following `on` keyword or the closing
+    // brace.
     assert!(
         stderr.contains(
-            "bare_machine_transition.hew:9:23: warning: E_BARE_VARIANT_EXPR: bare variant `On`"
+            "bare_machine_transition_reject.hew:9:23: error: E_BARE_VARIANT_EXPR: bare variant `On`"
         ),
         "the `On` fix-it must be anchored on the target state token:\n{stderr}"
     );
     assert!(
         stderr.contains(
-            "bare_machine_transition.hew:10:22: warning: E_BARE_VARIANT_EXPR: bare variant `Off`"
+            "bare_machine_transition_reject.hew:10:22: error: E_BARE_VARIANT_EXPR: bare variant `Off`"
         ),
         "the `Off` fix-it must be anchored on the target state token:\n{stderr}"
     );

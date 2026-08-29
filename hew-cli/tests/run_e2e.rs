@@ -5988,12 +5988,12 @@ fn main() -> i64 {
         return 1;
     }
     let (a, b) = join {
-        worker.score(11, Node(Leaf(1), Leaf(2))),
-        worker.score(22, Node(Leaf(3), Leaf(4))),
+        worker.score(11, .Node(.Leaf(1), .Leaf(2))),
+        worker.score(22, .Node(.Leaf(3), .Leaf(4))),
     };
     let (c, d) = join {
-        worker.score(33, Node(Leaf(5), Leaf(6))),
-        worker.score(44, Node(Leaf(7), Leaf(8))),
+        worker.score(33, .Node(.Leaf(5), .Leaf(6))),
+        worker.score(44, .Node(.Leaf(7), .Leaf(8))),
     };
     print(f"{a},{b},{c},{d}");
     supervisor_stop(sup);

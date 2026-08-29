@@ -5,7 +5,7 @@ enum Shape {
 }
 
 fn main() {
-    let x: Shape = Circle(3);
+    let x: Shape = .Circle(3);
     let y = clone x;
     match y {
         Empty => println("empty"),

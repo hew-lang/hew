@@ -4,7 +4,7 @@ machine Counter {
     state NonZero { value: i64; }
     on Inc: Zero => NonZero { NonZero { value: 1 } }
     on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Zero }
+    on Reset: NonZero => Zero { .Zero }
     default { state }
 }
 
@@ -17,6 +17,6 @@ fn use_it(v: Counter) {
 
 fn main() {
     var x = Zero;
-    x.step(Inc);
+    x.step(.Inc);
     use_it(x);
 }

@@ -1232,11 +1232,11 @@ fn machine_state_resource_payload_rejects() {
         "    events { Open; Shut; }\n",
         "    state Closed;\n",
         "    state Opened { tok: Tok; }\n",
-        "    on Open: Closed => Opened { Opened { tok: Tok { id: 1 } } }\n",
-        "    on Shut: Opened => Closed { Closed }\n",
+        "    on Open: Closed => .Opened { Opened { tok: Tok { id: 1 } } }\n",
+        "    on Shut: Opened => .Closed { .Closed }\n",
         "    default { state }\n",
         "}\n",
-        "fn main() { var h = Closed; h.step(Open); }\n",
+        "fn main() { var h = Closed; h.step(.Open); }\n",
     ));
     assert!(
         errors.iter().any(|e| {
@@ -1261,10 +1261,10 @@ fn machine_state_resource_payload_rejects_transitively() {
         "    events { Open; }\n",
         "    state Closed;\n",
         "    state Opened { w: Wrap; }\n",
-        "    on Open: Closed => Opened { Opened { w: Wrap { t: Tok { id: 1 } } } }\n",
+        "    on Open: Closed => .Opened { Opened { w: Wrap { t: Tok { id: 1 } } } }\n",
         "    default { state }\n",
         "}\n",
-        "fn main() { var h = Closed; h.step(Open); }\n",
+        "fn main() { var h = Closed; h.step(.Open); }\n",
     ));
     assert!(
         errors
@@ -1281,10 +1281,10 @@ fn machine_state_without_resource_payload_is_admitted() {
         "    events { Inc; }\n",
         "    state Zero;\n",
         "    state NonZero { value: i64; }\n",
-        "    on Inc: Zero => NonZero { NonZero { value: 1 } }\n",
+        "    on Inc: Zero => .NonZero { NonZero { value: 1 } }\n",
         "    default { state }\n",
         "}\n",
-        "fn main() { var x = Zero; x.step(Inc); }\n",
+        "fn main() { var x = Zero; x.step(.Inc); }\n",
     ));
     assert!(
         errors.is_empty(),
@@ -1306,10 +1306,10 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
         "    events { Open; }\n",
         "    state Closed;\n",
         "    state Opened { p: Phantom<Tok>; }\n",
-        "    on Open: Closed => Opened { Opened { p: Phantom<Tok> { id: 1 } } }\n",
+        "    on Open: Closed => .Opened { Opened { p: Phantom<Tok> { id: 1 } } }\n",
         "    default { state }\n",
         "}\n",
-        "fn main() { var h = Closed; h.step(Open); }\n",
+        "fn main() { var h = Closed; h.step(.Open); }\n",
     ));
     assert!(
         !errors

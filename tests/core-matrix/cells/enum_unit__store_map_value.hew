@@ -4,7 +4,7 @@ enum Colour {
 }
 
 fn main() {
-    let x: Colour = Red;
+    let x: Colour = .Red;
     let m: HashMap<string, Colour> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {

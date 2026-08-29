@@ -30,7 +30,7 @@ enum Bare {
 }
 
 pub fn main() {
-    let _s: Slot = Full(Handle { id: 1 }, "leaf");
-    let _b: Bare = Held(Handle { id: 2 });
+    let _s: Slot = .Full(Handle { id: 1 }, "leaf");
+    let _b: Bare = .Held(Handle { id: 2 });
     println("body");
 }

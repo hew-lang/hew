@@ -5939,8 +5939,8 @@ fn monomorphic_machine_channel_element_admitted() {
             }
             state Off;
             state On;
-            on Flip: Off => On { On }
-            on Flip: On => Off { Off }
+            on Flip: Off => .On { .On }
+            on Flip: On => .Off { .Off }
         }
 
         fn main() {
@@ -6006,7 +6006,7 @@ fn container_bearing_machine_channel_element_refused() {
             }
             state Empty;
             state Loaded { items: Vec<i64>; }
-            on Load: Empty => Loaded { Buffered.Loaded { items: event.items } }
+            on Load: Empty => .Loaded { Buffered.Loaded { items: event.items } }
             on Load: _ => _ { state }
         }
 

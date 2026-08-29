@@ -1512,7 +1512,7 @@ mod reserved_names {
             }
 
             fn get_error() -> AppError {
-                NotFound("resource missing")
+                .NotFound("resource missing")
             }
 
             fn main() {
@@ -1547,7 +1547,7 @@ mod reserved_names {
             }
 
             fn main() {
-                let s: Status = Timeout;
+                let s: Status = .Timeout;
                 let _b = check_timeout(s);
             }
             ",
@@ -1647,7 +1647,7 @@ mod reserved_names {
             }
 
             fn main() {
-                let t: Task = Pending;
+                let t: Task = .Pending;
                 let _s = describe(t);
             }
             "#,

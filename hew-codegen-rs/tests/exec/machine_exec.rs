@@ -590,8 +590,8 @@ fn counter_machine_example_executes_self_field_increment() {
             "{machine_source}\n\
              fn main() {{\n\
              \x20   var c = Zero;\n\
-             \x20   c.step(Inc);\n\
-             \x20   c.step(Inc);\n\
+             \x20   c.step(.Inc);\n\
+             \x20   c.step(.Inc);\n\
              \x20   println(c.state_name());\n\
              \x20   let value = match c {{\n\
              \x20       NonZero {{ value }} => value,\n\

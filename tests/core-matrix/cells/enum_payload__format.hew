@@ -5,6 +5,6 @@ enum Shape {
 }
 
 fn main() {
-    let x: Shape = Circle(3);
+    let x: Shape = .Circle(3);
     println(f"v={x}");
 }

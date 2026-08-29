@@ -726,6 +726,7 @@ fn typecheck_program_with_diagnostics(
     source: &str,
     input: &str,
     options: &FrontendOptions,
+    mode: FrontendParseMode,
 ) -> Result<(TypeCheckResult, Vec<FrontendDiagnostic>), FrontendFailure> {
     let search_paths = options.module_search_paths.clone().unwrap_or_else(|| {
         hew_types::module_registry::build_module_search_paths_for(options.project_dir.as_deref())
@@ -748,6 +749,9 @@ fn typecheck_program_with_diagnostics(
     }
     if options.repl_fragment {
         checker.set_repl_fragment();
+    }
+    if mode == FrontendParseMode::Migration {
+        checker.set_migration_mode();
     }
     checker.set_lint_levels(options.lint_levels.clone());
     // Install source text so the lint sweep can resolve in-source
@@ -804,7 +808,8 @@ pub fn typecheck_program(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
-    typecheck_program_with_diagnostics(program, source, input, options).map(|(result, _)| result)
+    typecheck_program_with_diagnostics(program, source, input, options, FrontendParseMode::Strict)
+        .map(|(result, _)| result)
 }
 
 /// Resolve imports and type-check an already-parsed in-memory program.
@@ -842,7 +847,13 @@ pub fn check_program(
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
 
-    match typecheck_program_with_diagnostics(&program, source, source_label, options) {
+    match typecheck_program_with_diagnostics(
+        &program,
+        source,
+        source_label,
+        options,
+        FrontendParseMode::Strict,
+    ) {
         Ok((tcr, type_diagnostics)) => {
             diagnostics.extend(type_diagnostics);
             let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
@@ -1846,7 +1857,7 @@ fn run_file_frontend_to_typecheck_with_mode(
     }
 
     let typecheck_result =
-        match typecheck_program_with_diagnostics(&program, &project.source, input, options) {
+        match typecheck_program_with_diagnostics(&program, &project.source, input, options, mode) {
             Ok((result, type_diagnostics)) => {
                 diagnostics.extend(type_diagnostics);
                 result
@@ -1897,14 +1908,19 @@ pub fn run_program_frontend_to_typecheck(
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
 
-    let typecheck_result =
-        match typecheck_program_with_diagnostics(&program, source, source_label, options) {
-            Ok((result, type_diagnostics)) => {
-                diagnostics.extend(type_diagnostics);
-                result
-            }
-            Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
-        };
+    let typecheck_result = match typecheck_program_with_diagnostics(
+        &program,
+        source,
+        source_label,
+        options,
+        FrontendParseMode::Strict,
+    ) {
+        Ok((result, type_diagnostics)) => {
+            diagnostics.extend(type_diagnostics);
+            result
+        }
+        Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
+    };
 
     flatten_file_import_items(&mut program);
     let stdlib_roots = configured_stdlib_roots(options);
@@ -4656,7 +4672,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "    events { Crash; }\n",
             "    state Ready;\n",
             "    state Faulted { code: i64; }\n",
-            "    on Crash: Ready => Faulted {\n",
+            "    on Crash: Ready => .Faulted {\n",
             "        Workflow.Faulted { wrong: 1 }\n",
             "    }\n",
             "    default { state }\n",

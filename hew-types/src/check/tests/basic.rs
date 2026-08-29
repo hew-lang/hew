@@ -65,8 +65,10 @@ fn contextual_variant_reports_ambiguous_expected_owner() {
     }));
 }
 
+/// The expression form is rejected since v0.6.0; the pattern form is a
+/// separate spelling and keeps its deprecation warning.
 #[test]
-fn accepted_bare_variants_emit_migration_warnings() {
+fn bare_variant_expression_errors_while_the_pattern_form_warns() {
     let output = check_source(
         r"
 enum Choice { Present(i64); Absent }
@@ -76,15 +78,47 @@ fn read(value: Choice) -> i64 {
 }
 ",
     );
-    assert!(output.errors.is_empty(), "legacy form remains accepted");
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::BareVariantExpr));
     assert!(output
         .warnings
         .iter()
-        .any(|warning| warning.kind == TypeErrorKind::BareVariantExpr));
+        .all(|warning| warning.kind != TypeErrorKind::BareVariantExpr));
     assert!(output
         .warnings
         .iter()
         .any(|warning| warning.kind == TypeErrorKind::BareVariantPattern));
+}
+
+/// The migrator resolves its rewrites from the checker's own output, so the
+/// downgraded severity must still carry the same kind and suggestions.
+#[test]
+fn migration_mode_downgrades_the_bare_variant_expression_to_a_warning() {
+    let parse_result = hew_parser::parse(
+        r"
+enum Choice { Present(i64) }
+fn contextual() -> Choice { Present(7) }
+",
+    );
+    assert!(
+        parse_result.errors.is_empty(),
+        "migration fixture should parse cleanly, got: {:#?}",
+        parse_result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.set_migration_mode();
+    let output = checker.check_program(&parse_result.program);
+    assert!(
+        output.errors.is_empty(),
+        "migration mode must still type-check a legacy source: {:#?}",
+        output.errors
+    );
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.kind == TypeErrorKind::BareVariantExpr));
 }
 
 #[test]
@@ -96,12 +130,11 @@ fn contextual() -> Choice { Present(7) }
 fn inferred() { let value = Present(9); }
 ",
     );
-    assert!(output.errors.is_empty(), "legacy form remains accepted");
     let suggestions = output
-        .warnings
+        .errors
         .iter()
-        .filter(|warning| warning.kind == TypeErrorKind::BareVariantExpr)
-        .flat_map(|warning| warning.suggestions.iter())
+        .filter(|error| error.kind == TypeErrorKind::BareVariantExpr)
+        .flat_map(|error| error.suggestions.iter())
         .collect::<Vec<_>>();
     assert!(suggestions
         .iter()
@@ -605,7 +638,7 @@ fn enum_ordering_reports_checker_diagnostic() {
 
 #[test]
 fn payload_enum_equality_typechecks_when_structurally_eligible() {
-    let source = "enum Shape {\n    Circle(i64);\n    Empty;\n}\n\nfn main() {\n    let a = Circle(1);\n    let b = Circle(1);\n    let _ = a == b;\n}";
+    let source = "enum Shape {\n    Circle(i64);\n    Empty;\n}\n\nfn main() {\n    let a = Shape.Circle(1);\n    let b = Shape.Circle(1);\n    let _ = a == b;\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -2091,8 +2124,8 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
                 events { Toggle; }
                 state Closed;
                 state Open;
-                on Toggle: Closed => Open { Open }
-                on Toggle: Open => Closed { Closed }
+                on Toggle: Closed => .Open { Open }
+                on Toggle: Open => .Closed { Closed }
             }
             fn main() {}
             ",

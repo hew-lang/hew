@@ -4,14 +4,14 @@ machine Counter {
     state NonZero { value: i64; }
     on Inc: Zero => NonZero { NonZero { value: 1 } }
     on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Zero }
+    on Reset: NonZero => Zero { .Zero }
     default { state }
 }
 
 fn main() {
     var c = Zero;
-    c.step(Inc);
-    c.step(Inc);
+    c.step(.Inc);
+    c.step(.Inc);
     match c {
         Zero => println("zero"),
         NonZero { value } => println(f"n {value}"),

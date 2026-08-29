@@ -4,6 +4,6 @@ pub machine ClashMachine {
     }
     state Idle;
     state Done;
-    on Tick: Idle => Done { Done }
-    on Tick: Done => Idle { Idle }
+    on Tick: Idle => Done { .Done }
+    on Tick: Done => Idle { .Idle }
 }

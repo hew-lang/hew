@@ -141,8 +141,8 @@ fn indirect_enum_actor_messages_use_the_pointer_value_abi() {
 
         fn main() {
             let sink = spawn TestSink;
-            sink.take(Node(Leaf(1), Leaf(2)));
-            sink.tagged(10, Node(Leaf(3), Leaf(4)));
+            sink.take(.Node(.Leaf(1), .Leaf(2)));
+            sink.tagged(10, .Node(.Leaf(3), .Leaf(4)));
         }
         ",
     );
@@ -214,12 +214,12 @@ fn failed_select_and_join_requests_drop_the_unsubmitted_indirect_payload() {
             let worker = sup.worker;
             supervisor_stop(sup);
             let selected = select {
-                reply from worker.score(1, Node(Leaf(2), Leaf(3))) => reply,
+                reply from worker.score(1, .Node(.Leaf(2), .Leaf(3))) => reply,
                 after 1ms => 0,
             };
             let (left, right) = join {
-                worker.score(4, Node(Leaf(5), Leaf(6))),
-                worker.score(7, Node(Leaf(8), Leaf(9))),
+                worker.score(4, .Node(.Leaf(5), .Leaf(6))),
+                worker.score(7, .Node(.Leaf(8), .Leaf(9))),
             };
             selected + left + right
         }
@@ -299,12 +299,12 @@ fn fungible_join_uses_stable_supervisor_role_and_local_pid_submission() {
             worker.boom();
             let _ = await_restart sup.worker;
             let (a, b) = join {
-                worker.score(11, Node(Leaf(1), Leaf(2))),
-                worker.score(22, Node(Leaf(3), Leaf(4))),
+                worker.score(11, .Node(.Leaf(1), .Leaf(2))),
+                worker.score(22, .Node(.Leaf(3), .Leaf(4))),
             };
             let (c, d) = join {
-                worker.score(33, Node(Leaf(5), Leaf(6))),
-                worker.score(44, Node(Leaf(7), Leaf(8))),
+                worker.score(33, .Node(.Leaf(5), .Leaf(6))),
+                worker.score(44, .Node(.Leaf(7), .Leaf(8))),
             };
             a + b + c + d
         }

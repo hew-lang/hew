@@ -1071,7 +1071,10 @@ fn curated_playground_manifest_smoke() {
             .filter(|diagnostic| {
                 !matches!(
                     diagnostic.get("kind").and_then(serde_json::Value::as_str),
-                    Some("E_BARE_VARIANT_EXPR" | "E_BARE_VARIANT_PATTERN")
+                    // The expression form is a hard error since v0.6.0, so a
+                    // curated source carrying one is a real playground
+                    // regression; only the pattern deprecation is tolerated.
+                    Some("E_BARE_VARIANT_PATTERN")
                 )
             })
             .collect();

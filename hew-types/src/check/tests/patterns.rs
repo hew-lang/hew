@@ -1287,7 +1287,7 @@ fn composite_machine_transition_accepts_contextual_target() {
 
             on Connect: Disconnected => .Authenticating;
             on Connect: Authenticating => .Active;
-            on Connect: Active => Disconnected;
+            on Connect: Active => .Disconnected;
         }
         fn main() {}
         ",
@@ -1343,10 +1343,10 @@ fn generic_machine_struct_state_bare_constructor_infers() {
             state Faulted { code: i64; }
 
 
-            on Crash: Running => Faulted {
+            on Crash: Running => .Faulted {
                 Faulted { code: event.code }
             }
-            on Crash: Faulted => Faulted {
+            on Crash: Faulted => .Faulted {
                 state
             }
         }
@@ -1376,10 +1376,10 @@ fn generic_machine_struct_state_qualified_constructor_infers() {
             state Faulted { code: i64; }
 
 
-            on Crash: Running => Faulted {
+            on Crash: Running => .Faulted {
                 Work.Faulted { code: event.code }
             }
-            on Crash: Faulted => Faulted {
+            on Crash: Faulted => .Faulted {
                 state
             }
         }
@@ -1410,16 +1410,16 @@ fn non_generic_machine_struct_state_constructor_regression_free() {
             state Opened { handle: i64; }
 
 
-            on OpenDoor: Closed => Opened {
+            on OpenDoor: Closed => .Opened {
                 Door.Opened { handle: event.id }
             }
-            on CloseDoor: Opened => Closed {
-                Closed
+            on CloseDoor: Opened => .Closed {
+                .Closed
             }
-            on OpenDoor: Opened => Opened {
+            on OpenDoor: Opened => .Opened {
                 state
             }
-            on CloseDoor: Closed => Closed {
+            on CloseDoor: Closed => .Closed {
                 state
             }
         }
@@ -1448,17 +1448,17 @@ fn machine_transition_self_field_reads_source_payload() {
             state NonZero { value: i64; }
 
 
-            on Inc: Zero => NonZero {
+            on Inc: Zero => .NonZero {
                 NonZero { value: 1 }
             }
-            on Inc: NonZero => NonZero reenter {
+            on Inc: NonZero => .NonZero reenter {
                 NonZero { value: self.value + 1 }
             }
-            on Reset: NonZero => Zero {
-                Zero
+            on Reset: NonZero => .Zero {
+                .Zero
             }
-            on Reset: Zero => Zero reenter {
-                Zero
+            on Reset: Zero => .Zero reenter {
+                .Zero
             }
         }
         fn main() {}
@@ -1484,11 +1484,11 @@ fn machine_transition_bare_self_remains_rejected() {
             state Zero;
             state NonZero { value: i64; }
 
-            on Reset: NonZero => Zero {
+            on Reset: NonZero => .Zero {
                 self
             }
-            on Reset: Zero => Zero reenter {
-                Zero
+            on Reset: Zero => .Zero reenter {
+                .Zero
             }
         }
         fn main() {}
@@ -1522,22 +1522,22 @@ fn generic_machine_step_bare_event_propagates_receiver_args() {
             state Running { handle: T; }
 
 
-            on Initialise: Created => Created {
-                Created
+            on Initialise: Created => .Created {
+                .Created
             }
-            on Initialise: Running => Running {
+            on Initialise: Running => .Running {
                 state
             }
-            on Started: Created => Running {
+            on Started: Created => .Running {
                 Running { handle: event.handle }
             }
-            on Started: Running => Running {
+            on Started: Running => .Running {
                 state
             }
         }
         fn main() {
-            var w: Work<i64> = Created;
-            w.step(Initialise);
+            var w: Work<i64> = .Created;
+            w.step(.Initialise);
         }
         ",
     );
@@ -1610,7 +1610,7 @@ fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
         "    events { Tick; }\n",
         "    state Idle;\n",
         "    state Busy;\n",
-        "    on Tick: Idle => Idle {\n",
+        "    on Tick: Idle => .Idle {\n",
         "        let result = compute();\n",
         "        result\n",
         "    }\n",

@@ -3449,6 +3449,15 @@ pub struct Checker {
     /// routinely referenced by a later REPL input, so emitting those warnings
     /// is noise rather than signal. Set only by the eval paths.
     pub(super) repl_fragment: bool,
+    /// Whether the checker is running behind the syntax migrator.
+    ///
+    /// The migrator rewrites a source using the checker's own resolution, so
+    /// it can only fix a legacy spelling the checker was willing to resolve.
+    /// When `true`, the graduated bare-variant expression rule
+    /// (`E_BARE_VARIANT_EXPR`) reports at warning severity instead of error,
+    /// which is what lets `hew fmt --migrate` rewrite a source that `hew check`
+    /// now refuses. Set only by the migration frontend entry point.
+    pub(super) migration_mode: bool,
     /// Whether the checker is currently type-checking a stdlib (or built-in
     /// library) source body.
     ///
@@ -3916,6 +3925,7 @@ impl Checker {
             impl_assoc_type_bindings: HashMap::new(),
             wasm_target: false,
             repl_fragment: false,
+            migration_mode: false,
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
@@ -4000,6 +4010,14 @@ impl Checker {
     /// [`Checker::repl_fragment`].
     pub fn set_repl_fragment(&mut self) {
         self.repl_fragment = true;
+    }
+
+    /// Mark the checker as running behind the syntax migrator, downgrading the
+    /// graduated bare-variant expression rule to a warning so the migrator can
+    /// still resolve and rewrite a legacy source. See
+    /// [`Checker::migration_mode`].
+    pub fn set_migration_mode(&mut self) {
+        self.migration_mode = true;
     }
 
     /// Mark the checker as currently processing a stdlib or built-in library

@@ -468,8 +468,8 @@ machine Holder {
 }
 fn main() {
     var m = Empty;
-    m.step(Bump);
-    m.step(Bump);
+    m.step(.Bump);
+    m.step(.Bump);
     println(m.state_name());
 }
 "#;

@@ -1621,8 +1621,8 @@ fn canonical_module_variants_shadow_builtin_variants() {
         r"
         pub enum AppErr { NotFound(string); Timeout; }
 
-        pub fn payload(msg: string) -> AppErr { NotFound(msg) }
-        pub fn unit() -> AppErr { Timeout }
+        pub fn payload(msg: string) -> AppErr { .NotFound(msg) }
+        pub fn unit() -> AppErr { .Timeout }
         ",
         vec!["shadow".to_string()],
     );

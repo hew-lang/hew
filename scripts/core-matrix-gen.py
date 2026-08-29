@@ -339,7 +339,7 @@ ROWS.append(
         "enum_unit",
         "Colour",
         decls=ENUM_UNIT,
-        mk=lambda n, i: f"let {n}: Colour = {'Red' if i == 0 else 'Green'};",
+        mk=lambda n, i: f"let {n}: Colour = .{'Red' if i == 0 else 'Green'};",
         show=lambda n: (
             f'match {n} {{ Red => println("Red"), Green => println("Green"), }}'
         ),
@@ -360,7 +360,7 @@ ROWS.append(
         "enum_payload",
         "Shape",
         decls=ENUM_PAY,
-        mk=lambda n, i: f"let {n}: Shape = Circle({3 + i});",
+        mk=lambda n, i: f"let {n}: Shape = .Circle({3 + i});",
         show=lambda n: (
             f"match {n} {{\n"
             f'    Empty => println("empty"),\n'
@@ -372,7 +372,7 @@ ROWS.append(
         display=False,
         owns_resource=(
             TOK + "\nenum Held {\n    Nothing;\n    One(Tok);\n}\n",
-            lambda n: f"let {n}: Held = One(Tok {{ id: 1 }});",
+            lambda n: f"let {n}: Held = .One(Tok {{ id: 1 }});",
             ["close 1"],
         ),
     )
@@ -450,7 +450,7 @@ MACHINE = """machine Counter {
     state NonZero { value: i64; }
     on Inc: Zero => NonZero { NonZero { value: 1 } }
     on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Zero }
+    on Reset: NonZero => Zero { .Zero }
     default { state }
 }
 """
@@ -459,7 +459,8 @@ ROWS.append(
         "machine",
         "Counter",
         decls=MACHINE,
-        mk=lambda n, i: f"var {n} = Zero;\n" + "\n".join([f"{n}.step(Inc);"] * (1 + i)),
+        mk=lambda n, i: f"var {n} = Zero;\n"
+        + "\n".join([f"{n}.step(.Inc);"] * (1 + i)),
         show=lambda n: (
             f"match {n} {{\n"
             f'    Zero => println("zero"),\n'
@@ -477,11 +478,11 @@ machine Gate {
     state Closed;
     state Opened { tok: Tok; }
     on Open: Closed => Opened { Opened { tok: Tok { id: 1 } } }
-    on Shut: Opened => Closed { Closed }
+    on Shut: Opened => Closed { .Closed }
     default { state }
 }
 """,
-            lambda n: f"var {n} = Closed;\n{n}.step(Open);",
+            lambda n: f"var {n} = Closed;\n{n}.step(.Open);",
             ["close 1"],
         ),
     )
@@ -987,7 +988,7 @@ OVERRIDES = {
         ["1", "2"],
     ),
     ("machine", "mutate"): OV(
-        "var c = Zero;\nc.step(Inc);\nc.step(Inc);\n"
+        "var c = Zero;\nc.step(.Inc);\nc.step(.Inc);\n"
         'match c {\n    Zero => println("zero"),\n'
         '    NonZero { value } => println(f"n {value}"),\n}',
         ["n 2"],
@@ -1018,7 +1019,7 @@ OVERRIDES = {
         decls=TRAITOBJ,
     ),
     ("machine", "index"): OV(
-        "var c = Zero;\nc.step(Inc);\nlet n = c.state_name();\nprintln(n);",
+        "var c = Zero;\nc.step(.Inc);\nlet n = c.state_name();\nprintln(n);",
         ["NonZero"],
         decls=MACHINE,
     ),

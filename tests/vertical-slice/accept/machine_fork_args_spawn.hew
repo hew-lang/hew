@@ -24,7 +24,7 @@ machine M {
     state Done;
 
     on Tick: Idle => Done {
-        Done
+        .Done
     }
 
     default { state }

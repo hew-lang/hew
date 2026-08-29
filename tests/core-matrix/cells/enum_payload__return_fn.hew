@@ -5,7 +5,7 @@ enum Shape {
 }
 
 fn make() -> Shape {
-    let m: Shape = Circle(3);
+    let m: Shape = .Circle(3);
     m
 }
 

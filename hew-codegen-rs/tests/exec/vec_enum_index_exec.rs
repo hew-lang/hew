@@ -141,9 +141,9 @@ enum Shape {
 
 fn main() {
     let v: Vec<Shape> = Vec.new();
-    v.push(Circle(7));
-    v.push(Dot);
-    v.push(Square(3, 4));
+    v.push(.Circle(7));
+    v.push(.Dot);
+    v.push(.Square(3, 4));
 
     let s0 = v[0];
     let s1 = v[1];

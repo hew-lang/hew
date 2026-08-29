@@ -2412,7 +2412,7 @@ machine Traffic {
     }
 
     state Idle;
-    on Start: Idle => Idle;
+    on Start: Idle => .Idle;
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -2864,7 +2864,7 @@ machine Traffic {
     }
 
     state Idle;
-    on Start: Idle => Idle;
+    on Start: Idle => .Idle;
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);

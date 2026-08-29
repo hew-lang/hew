@@ -29,7 +29,7 @@
   },
   {
     "id": "enums",
-    "starterCode": "// Lesson 8: Enums & Match\n// TODO: Add a Triangle variant and handle it in the match.\n\nenum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn describe(s: Shape) {\n    match s {\n        Circle(r) => println(f\"circle with radius {r}\"),\n        Rectangle(w, h) => println(f\"rectangle {w}x{h}\"),\n    }\n}\n\nfn main() {\n    describe(Circle(5));\n    describe(Rectangle(3, 4));\n}\n"
+    "starterCode": "// Lesson 8: Enums & Match\n// TODO: Add a Triangle variant and handle it in the match.\n\nenum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn describe(s: Shape) {\n    match s {\n        Circle(r) => println(f\"circle with radius {r}\"),\n        Rectangle(w, h) => println(f\"rectangle {w}x{h}\"),\n    }\n}\n\nfn main() {\n    describe(.Circle(5));\n    describe(.Rectangle(3, 4));\n}\n"
   },
   {
     "id": "option-type",
@@ -49,6 +49,6 @@
   },
   {
     "id": "state-machines",
-    "starterCode": "// Lesson 13: State Machines\n// TODO: Toggle the light twice and print each state.\n\nmachine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n\nfn main() -> i64 {\n    var light = Light.Off;\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    0\n}\n"
+    "starterCode": "// Lesson 13: State Machines\n// TODO: Toggle the light twice and print each state.\n\nmachine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => .On;\n    on Toggle: On => .Off;\n}\n\nfn main() -> i64 {\n    var light = Light.Off;\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    0\n}\n"
   }
 ]

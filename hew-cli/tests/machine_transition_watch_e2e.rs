@@ -343,7 +343,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20   receive fn drive(tx: channel.Sender<Transition>) {\n\
          \x20       var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;\n\
          \x20       let before1 = lc.state_name();\n\
-         \x20       lc.step(Initialise);\n\
+         \x20       lc.step(lifecycle.LifecycleEvent.Initialise);\n\
          \x20       let after1 = lc.state_name();\n\
          \x20       if before1 != after1 {\n\
          \x20           tx.send(Transition { from_state: before1, to_state: after1 });\n\
@@ -570,13 +570,13 @@ fn heap_payload_machine_actor_field_steps_clean() {
          \x20   state Failed { reason: string; }\n\
          \n\
          \x20   on Connect: Idle => Open {\n\
-         \x20       Open\n\
+         \x20       Conn.Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
          \x20       Conn.Failed { reason: event.reason }\n\
          \x20   }\n\
          \x20   on Reset: Failed => Idle {\n\
-         \x20       Idle\n\
+         \x20       Conn.Idle\n\
          \x20   }\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
@@ -593,11 +593,11 @@ fn heap_payload_machine_actor_field_steps_clean() {
          \x20   var c: Conn = Conn.Idle;\n\
          \n\
          \x20   receive fn drive() {\n\
-         \x20       c.step(Connect);\n\
+         \x20       c.step(ConnEvent.Connect);\n\
          \x20       println(c.state_name());\n\
          \x20       c.step(ConnEvent.Fail { reason: \"boom\" });\n\
          \x20       println(c.state_name());\n\
-         \x20       c.step(Reset);\n\
+         \x20       c.step(ConnEvent.Reset);\n\
          \x20       println(c.state_name());\n\
          \x20   }\n\
          }\n\
@@ -630,8 +630,8 @@ fn supervisor_child_with_machine_state_fails_closed() {
          \x20   }\n\
          \x20   state Off;\n\
          \x20   state On;\n\
-         \x20   on Flip: Off => On { On }\n\
-         \x20   on Flip: On => Off { Off }\n\
+         \x20   on Flip: Off => On { Light.On }\n\
+         \x20   on Flip: On => Off { Light.Off }\n\
          }\n\
          \n\
          actor Worker {\n\
@@ -696,7 +696,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20   state Failed { reason: string; }\n\
          \n\
          \x20   on Connect: Idle => Open {\n\
-         \x20       Open\n\
+         \x20       Conn.Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
          \x20       Conn.Failed { reason: event.reason }\n\
@@ -713,7 +713,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20   receive fn run() -> i64 {\n\
          \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
          \x20       var c: Conn = Conn.Idle;\n\
-         \x20       c.step(Connect);\n\
+         \x20       c.step(ConnEvent.Connect);\n\
          \x20       tx.send(c);\n\
          \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
          \x20       tx.send(c);\n\
@@ -782,7 +782,7 @@ fn vec_machine_element_refuses_at_compile_time() {
          \x20   state Idle;\n\
          \x20   state Open;\n\
          \x20   state Failed { reason: string; }\n\
-         \x20   on Connect: Idle => Open { Open }\n\
+         \x20   on Connect: Idle => Open { Conn.Open }\n\
          \x20   on Fail: Open => Failed { Conn.Failed { reason: event.reason } }\n\
          \x20   on Connect: _ => _ { state }\n\
          \x20   on Fail: _ => _ { state }\n\
@@ -943,7 +943,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20   state Failed { reason: string; }\n\
          \n\
          \x20   on Connect: Idle => Open {\n\
-         \x20       Open\n\
+         \x20       Conn.Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
          \x20       Conn.Failed { reason: event.reason }\n\
@@ -960,7 +960,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20   receive fn run() -> i64 {\n\
          \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
          \x20       var c: Conn = Conn.Idle;\n\
-         \x20       c.step(Connect);\n\
+         \x20       c.step(ConnEvent.Connect);\n\
          \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
          \x20       tx.send(c);\n\
          \x20       tx.close();\n\

@@ -27,16 +27,16 @@ machine Lifecycle<T: Resource> {
         Active { handle: event.handle }
     }
     on Stop: Active => Idle {
-        Idle
+        .Idle
     }
     on Stop: Idle => Idle reenter {
-        Idle
+        .Idle
     }
     on Start: Active => Active reenter {
         Active { handle: event.handle }
     }
     on Started: Idle => Idle reenter {
-        Idle
+        .Idle
     }
     on Started: Active => Active reenter {
         Active { handle: state.handle }

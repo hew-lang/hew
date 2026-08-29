@@ -177,8 +177,8 @@ fn variant_constructors_preserve_type_args() {
         }
 
         fn main() {
-            let explicit: Maybe<i64> = Just(42);
-            let x = Just(42);
+            let explicit: Maybe<i64> = .Just(42);
+            let x = Maybe.Just(42);
             let y: i64 = x.unwrap();
             let _: Maybe<i64> = explicit;
             let _: i64 = y;

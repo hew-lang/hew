@@ -1,8 +1,8 @@
 fn TestSink__recv__take -> ()
   statements:
-    drop BindingId(3) last ty=string
-    drop BindingId(2) boxed ty=Boxed
-    drop BindingId(1) text ty=string
+    drop BindingId(3) __hew_owner_3 ty=string
+    drop BindingId(2) __hew_owner_2 ty=Boxed
+    drop BindingId(1) __hew_owner_1 ty=string
   drop_plans:
     return[bb0] ->
       drop _3 ty=string kind=cow_heap(hew_string_drop)
@@ -16,20 +16,22 @@ fn main -> ()
     bind BindingId(6) text site=SiteId(2) ty=string
     bind BindingId(4294967231) __hew_produced_value site=SiteId(8) ty=Vec<i64>
     bind BindingId(8) __hew_array_7 site=SiteId(8) ty=Vec<i64>
+    use BindingId(4294967231) __hew_produced_value site=SiteId(8) ty=Vec<i64> intent=Consume
     use BindingId(8) __hew_array_7 site=SiteId(9) ty=Vec<i64> intent=Read
     eval site=SiteId(10) ty=()
     use BindingId(8) __hew_array_7 site=SiteId(11) ty=Vec<i64> intent=Read
     eval site=SiteId(12) ty=()
     use BindingId(8) __hew_array_7 site=SiteId(13) ty=Vec<i64> intent=Read
-    bind BindingId(4294967230) __hew_produced_value site=SiteId(4) ty=Vec<i64>
-    bind BindingId(4294967229) __hew_produced_value site=SiteId(3) ty=Boxed
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(3) ty=Boxed
     bind BindingId(9) boxed site=SiteId(3) ty=Boxed
+    use BindingId(4294967230) __hew_produced_value site=SiteId(3) ty=Boxed intent=Consume
     bind BindingId(10) last site=SiteId(14) ty=string
     use BindingId(4) sink site=SiteId(16) ty=LocalPid<TestSink> intent=Read
     use BindingId(5) n site=SiteId(17) ty=i64 intent=Read
     use BindingId(6) text site=SiteId(18) ty=string intent=Read
     use BindingId(9) boxed site=SiteId(19) ty=Boxed intent=Read
     use BindingId(10) last site=SiteId(20) ty=string intent=Read
+    use BindingId(10) last site=SiteId(20) ty=string intent=Consume
     eval site=SiteId(15) ty=()
     use BindingId(6) text site=SiteId(22) ty=string intent=Read
     eval site=SiteId(21) ty=()
@@ -37,36 +39,54 @@ fn main -> ()
     eval site=SiteId(24) ty=()
     drop BindingId(10) last ty=string
     drop BindingId(9) boxed ty=Boxed
+    drop BindingId(4294967230) __hew_produced_value ty=Boxed
     drop BindingId(8) __hew_array_7 ty=Vec<i64>
+    drop BindingId(4294967231) __hew_produced_value ty=Vec<i64>
     drop BindingId(6) text ty=string
-    drop BindingId(4) sink ty=LocalPid<TestSink>
   drop_plans:
     call[bb0 Vec::new -> bb1] ->
       (none)
+    unwind[bb0 Vec::new] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb0] ->
       (none)
     call[bb1 hew_vec_push_i64 -> bb2] ->
       (none)
+    unwind[bb1 hew_vec_push_i64] ->
+      drop _6 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
     call[bb2 hew_vec_push_i64 -> bb3] ->
       (none)
+    unwind[bb2 hew_vec_push_i64] ->
+      drop _6 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
     send[bb3  -> bb4] ->
       (none)
     call[bb4 println_str -> bb5] ->
       (none)
+    unwind[bb4 println_str] ->
+      drop _11 ty=Boxed kind=record_in_place
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
     call[bb5 hew_vec_push_i64 -> bb6] ->
       (none)
+    unwind[bb5 hew_vec_push_i64] ->
+      drop _11 ty=Boxed kind=record_in_place
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
     return[bb6] ->
       drop _11 ty=Boxed kind=record_in_place
       drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop actor0 ty=LocalPid<TestSink> kind=resource
 
 fn i8::fmt -> string
   statements:
     use BindingId(19) val site=SiteId(98) ty=i8 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(96) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(96) ty=string intent=Consume
     return site=Some(SiteId(96)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -77,9 +97,13 @@ fn i16::fmt -> string
   statements:
     use BindingId(20) val site=SiteId(102) ty=i16 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(100) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(100) ty=string intent=Consume
     return site=Some(SiteId(100)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -90,9 +114,13 @@ fn i32::fmt -> string
   statements:
     use BindingId(21) val site=SiteId(105) ty=i32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(104) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(104) ty=string intent=Consume
     return site=Some(SiteId(104)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -103,9 +131,13 @@ fn i64::fmt -> string
   statements:
     use BindingId(22) val site=SiteId(108) ty=i64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(107) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(107) ty=string intent=Consume
     return site=Some(SiteId(107)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_i64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_i64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -116,9 +148,13 @@ fn u8::fmt -> string
   statements:
     use BindingId(23) val site=SiteId(111) ty=u8 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(110) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(110) ty=string intent=Consume
     return site=Some(SiteId(110)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u8_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u8_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -129,9 +165,13 @@ fn u16::fmt -> string
   statements:
     use BindingId(24) val site=SiteId(114) ty=u16 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(113) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(113) ty=string intent=Consume
     return site=Some(SiteId(113)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_uint_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_uint_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -142,9 +182,13 @@ fn u32::fmt -> string
   statements:
     use BindingId(25) val site=SiteId(117) ty=u32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(116) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(116) ty=string intent=Consume
     return site=Some(SiteId(116)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_uint_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_uint_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -155,9 +199,13 @@ fn u64::fmt -> string
   statements:
     use BindingId(26) val site=SiteId(120) ty=u64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(119) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(119) ty=string intent=Consume
     return site=Some(SiteId(119)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -168,9 +216,13 @@ fn isize::fmt -> string
   statements:
     use BindingId(27) val site=SiteId(124) ty=isize intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(122) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(122) ty=string intent=Consume
     return site=Some(SiteId(122)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_i64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_i64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -181,9 +233,13 @@ fn usize::fmt -> string
   statements:
     use BindingId(28) val site=SiteId(128) ty=usize intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(126) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(126) ty=string intent=Consume
     return site=Some(SiteId(126)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -194,9 +250,13 @@ fn bool::fmt -> string
   statements:
     use BindingId(29) val site=SiteId(131) ty=bool intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(130) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(130) ty=string intent=Consume
     return site=Some(SiteId(130)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_bool_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_bool_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -207,9 +267,13 @@ fn char::fmt -> string
   statements:
     use BindingId(30) val site=SiteId(134) ty=char intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(133) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(133) ty=string intent=Consume
     return site=Some(SiteId(133)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_char_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_char_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -220,9 +284,13 @@ fn f64::fmt -> string
   statements:
     use BindingId(31) val site=SiteId(137) ty=f64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(136) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(136) ty=string intent=Consume
     return site=Some(SiteId(136)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_float_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_float_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -233,9 +301,13 @@ fn f32::fmt -> string
   statements:
     use BindingId(32) val site=SiteId(141) ty=f32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(139) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(139) ty=string intent=Consume
     return site=Some(SiteId(139)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_float_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_float_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -303,14 +375,25 @@ fn duration::fmt -> string
     use BindingId(38) val site=SiteId(159) ty=duration intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(157) ty=string
     bind BindingId(4294967230) __hew_produced_value site=SiteId(156) ty=string
+    use BindingId(4294967230) __hew_produced_value site=SiteId(156) ty=string intent=Consume
     return site=Some(SiteId(156)) ty=string
+    drop BindingId(4294967230) __hew_produced_value ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_duration_nanos -> bb1] ->
+      (none)
+    unwind[bb0 hew_duration_nanos] ->
       (none)
     cancel[bb0] ->
       (none)
     call[bb1 hew_i64_to_string -> bb2] ->
       (none)
-    return[bb2] ->
+    unwind[bb1 hew_i64_to_string] ->
+      (none)
+    call[bb2 hew_string_concat -> bb3] ->
+      (none)
+    unwind[bb2 hew_string_concat] ->
+      drop _2 ty=string kind=cow_heap(hew_string_drop)
+    return[bb3] ->
       (none)
 

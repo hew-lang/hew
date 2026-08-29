@@ -1,4 +1,4 @@
-// Owned-composite yield generalization: a record yield whose field owns heap
+// Reproduction for #3104. Owned-composite yield generalization: a record yield whose field owns heap
 // (`name: string`) crosses the pump's layout-witness send path
 // (LayoutManaged: envelope deep-clone in, ownership move out) with every
 // field intact, and BOTH per-yield copies are released — the pump frees its

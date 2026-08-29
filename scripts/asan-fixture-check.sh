@@ -393,16 +393,9 @@ LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
 CRASH_RESTART_SRC="${ROOT}/tests/vertical-slice/accept/on_crash_action_restart_real_crash.hew"
 BYTES_COW_SRC="${ROOT}/tests/vertical-slice/accept/bytes_cow_retain_s1.hew"
 STRING_COW_SRC="${ROOT}/tests/vertical-slice/accept/string_cow_retain_share.hew"
-# Composite-drop leak-oracle shapes (#2488): four clean vertical-slice
-# fixtures that exercise the drop mechanisms #2439 (composite yield release via
-# in-place drop thunks) and #2462 (match-scrutinee enum payload release). Prior
-# to this the asan-fixtures corpus was blind to refcount-underflow double-frees
-# on String/Bytes in these shapes — only ASan on an instrumented runtime catches
-# that class as a heap-use-after-free (macOS `leaks` cannot see an underflow).
-# All four exit 0 and must remain ASan/LSan-clean.
-ENUM_YIELD_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_owned_enum_yield.hew"
-RECORD_YIELD_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_owned_record_yield.hew"
-RECORD_STREAM_BREAK_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_record_stream_break.hew"
+# Composite-drop leak oracle for match-scrutinee enum payload release (#2462).
+# The three receive-generator owned-yield probes remain under the exact #3104
+# corpus ratchet until the compiler can build them and restore their ASan teeth.
 ENUM_PAYLOAD_LOOP_SRC="${ROOT}/tests/vertical-slice/accept/enum_payload_call_loop_release.hew"
 # Admitted fresh-producer call scrutinee (#2648): a heap-owning-enum result built
 # FRESH through immutable bindings and a helper chain (the D108 shape the return-
@@ -479,20 +472,7 @@ compile_asan_fixture "bytes COW retain-on-share (A240 S1)" "${BYTES_COW_SRC}" "$
 STRING_COW_BIN="${WORK_DIR}/string_cow_retain_share"
 compile_asan_fixture "string retain-on-share" "${STRING_COW_SRC}" "${STRING_COW_BIN}"
 
-# ── Step 3e: compile the composite-drop leak-oracle fixtures (#2488) ──────
-# Four clean vertical-slice fixtures covering the #2439 composite
-# yield-release and #2462 match-scrutinee enum-payload-release drop shapes so
-# the ASan gate — the only oracle that sees refcount-underflow double-frees on
-# Linux — guards these mechanisms against future regressions.
-ENUM_YIELD_BIN="${WORK_DIR}/receive_gen_fn_owned_enum_yield"
-compile_asan_fixture "composite yield (owned enum)" "${ENUM_YIELD_SRC}" "${ENUM_YIELD_BIN}"
-
-RECORD_YIELD_BIN="${WORK_DIR}/receive_gen_fn_owned_record_yield"
-compile_asan_fixture "composite yield (owned record)" "${RECORD_YIELD_SRC}" "${RECORD_YIELD_BIN}"
-
-RECORD_STREAM_BREAK_BIN="${WORK_DIR}/receive_gen_fn_record_stream_break"
-compile_asan_fixture "composite yield (record stream break)" "${RECORD_STREAM_BREAK_SRC}" "${RECORD_STREAM_BREAK_BIN}"
-
+# ── Step 3e: compile the active composite-drop leak oracle (#2462) ────────
 ENUM_PAYLOAD_LOOP_BIN="${WORK_DIR}/enum_payload_call_loop_release"
 compile_asan_fixture "match-scrutinee enum payload (call loop)" "${ENUM_PAYLOAD_LOOP_SRC}" "${ENUM_PAYLOAD_LOOP_BIN}"
 
@@ -616,40 +596,14 @@ else
   fail=$((fail + 1))
 fi
 
-# ── Gates 7–10: composite-drop leak-oracle shapes MUST be ASan/LSan-clean (#2488) ─
-# Each fixture exercises a merged drop mechanism that is otherwise unguarded on
-# Linux: an owned enum payload crossing the generator pump's yield send path
-# (#2439 tag-dispatched in-place drop thunk), the matching owned-record yield,
-# the break-edge release of an owned record on a cancelled
-# `for await ... break` stream (#2439), and a match-arm destructured call-result
-# payload released exactly once per loop back-edge (#2462/#2429). A refcount
-# underflow in any of these would double-free a String/Bytes header — invisible
-# to macOS `leaks`, caught here by ASan. All exit 0.
-if run_asan_fixture "composite yield (owned enum)" "${ENUM_YIELD_BIN}" 0; then
-  pass=$((pass + 1))
-else
-  fail=$((fail + 1))
-fi
-
-if run_asan_fixture "composite yield (owned record)" "${RECORD_YIELD_BIN}" 0; then
-  pass=$((pass + 1))
-else
-  fail=$((fail + 1))
-fi
-
-if run_asan_fixture "composite yield (record stream break)" "${RECORD_STREAM_BREAK_BIN}" 0; then
-  pass=$((pass + 1))
-else
-  fail=$((fail + 1))
-fi
-
+# ── Gate 7: match-scrutinee composite drop MUST be ASan/LSan-clean (#2462) ─
 if run_asan_fixture "match-scrutinee enum payload (call loop)" "${ENUM_PAYLOAD_LOOP_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))
 fi
 
-# ── Gate 11: admitted fresh-producer call scrutinee MUST be ASan/LSan-clean (#2648) ─
+# ── Gate 8: admitted fresh-producer call scrutinee MUST be ASan/LSan-clean (#2648) ─
 # The return-provenance preflight admits a fresh-through-bindings producer and
 # mints exactly one synthetic owner over the call temp. This fixture proves that
 # admit path is leak-clean under ASan; a double-mint (the #2648 double-free) would

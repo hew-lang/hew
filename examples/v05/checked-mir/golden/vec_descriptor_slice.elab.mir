@@ -32,6 +32,7 @@ fn main -> ()
   statements:
     bind BindingId(4294967231) __hew_produced_value site=SiteId(5) ty=Vec<CheckedMirColour>
     bind BindingId(1) colours site=SiteId(5) ty=Vec<CheckedMirColour>
+    use BindingId(4294967231) __hew_produced_value site=SiteId(5) ty=Vec<CheckedMirColour> intent=Consume
     use BindingId(1) colours site=SiteId(8) ty=Vec<CheckedMirColour> intent=Read
     eval site=SiteId(7) ty=()
     use BindingId(1) colours site=SiteId(11) ty=Vec<CheckedMirColour> intent=Read
@@ -41,10 +42,12 @@ fn main -> ()
     use BindingId(1) colours site=SiteId(17) ty=Vec<CheckedMirColour> intent=Read
     bind BindingId(4294967230) __hew_produced_value site=SiteId(16) ty=Vec<CheckedMirColour>
     bind BindingId(2) colour_slice site=SiteId(16) ty=Vec<CheckedMirColour>
+    use BindingId(4294967230) __hew_produced_value site=SiteId(16) ty=Vec<CheckedMirColour> intent=Consume
     use BindingId(2) colour_slice site=SiteId(23) ty=Vec<CheckedMirColour> intent=Read
     eval site=SiteId(20) ty=()
     bind BindingId(4294967229) __hew_produced_value site=SiteId(27) ty=Vec<CheckedMirPoint>
     bind BindingId(3) points site=SiteId(27) ty=Vec<CheckedMirPoint>
+    use BindingId(4294967229) __hew_produced_value site=SiteId(27) ty=Vec<CheckedMirPoint> intent=Consume
     use BindingId(3) points site=SiteId(30) ty=Vec<CheckedMirPoint> intent=Read
     eval site=SiteId(29) ty=()
     use BindingId(3) points site=SiteId(35) ty=Vec<CheckedMirPoint> intent=Read
@@ -52,62 +55,141 @@ fn main -> ()
     use BindingId(3) points site=SiteId(40) ty=Vec<CheckedMirPoint> intent=Read
     bind BindingId(4294967228) __hew_produced_value site=SiteId(39) ty=Vec<CheckedMirPoint>
     bind BindingId(4) point_slice site=SiteId(39) ty=Vec<CheckedMirPoint>
+    use BindingId(4294967228) __hew_produced_value site=SiteId(39) ty=Vec<CheckedMirPoint> intent=Consume
     use BindingId(4) point_slice site=SiteId(46) ty=Vec<CheckedMirPoint> intent=Read
     eval site=SiteId(43) ty=()
     drop BindingId(4) point_slice ty=Vec<CheckedMirPoint>
+    drop BindingId(4294967228) __hew_produced_value ty=Vec<CheckedMirPoint>
     drop BindingId(3) points ty=Vec<CheckedMirPoint>
+    drop BindingId(4294967229) __hew_produced_value ty=Vec<CheckedMirPoint>
     drop BindingId(2) colour_slice ty=Vec<CheckedMirColour>
+    drop BindingId(4294967230) __hew_produced_value ty=Vec<CheckedMirColour>
     drop BindingId(1) colours ty=Vec<CheckedMirColour>
+    drop BindingId(4294967231) __hew_produced_value ty=Vec<CheckedMirColour>
   drop_plans:
     call[bb0 Vec::new -> bb1] ->
+      (none)
+    unwind[bb0 Vec::new] ->
       (none)
     cancel[bb0] ->
       (none)
     call[bb1 hew_vec_push_layout -> bb2] ->
       (none)
+    unwind[bb1 hew_vec_push_layout] ->
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
     call[bb2 hew_vec_push_layout -> bb3] ->
       (none)
+    unwind[bb2 hew_vec_push_layout] ->
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
     call[bb3 hew_vec_push_layout -> bb4] ->
       (none)
+    unwind[bb3 hew_vec_push_layout] ->
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
       drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
-    branch[bb6: bb5/bb7] ->
+    call[bb6 hew_vec_len -> bb7] ->
       (none)
-    branch[bb7: bb8/bb9] ->
+    unwind[bb6 hew_vec_len] ->
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    branch[bb7: bb5/bb8] ->
       (none)
-    panic[bb8] ->
+    call[bb8 hew_vec_slice_range_layout -> bb9] ->
+      (none)
+    unwind[bb8 hew_vec_slice_range_layout] ->
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb9 hew_vec_len -> bb10] ->
+      (none)
+    unwind[bb9 hew_vec_len] ->
       drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
-    call[bb9 checked_mir_colour_tag -> bb10] ->
+    branch[bb10: bb11/bb12] ->
       (none)
-    call[bb10 println_i64 -> bb11] ->
+    panic[bb11] ->
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb12 hew_vec_get_layout -> bb13] ->
       (none)
-    call[bb11 Vec::new -> bb12] ->
+    unwind[bb12 hew_vec_get_layout] ->
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb13 checked_mir_colour_tag -> bb14] ->
       (none)
-    call[bb12 hew_vec_push_layout -> bb13] ->
+    unwind[bb13 checked_mir_colour_tag] ->
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb14 println_i64 -> bb15] ->
       (none)
-    call[bb13 hew_vec_push_layout -> bb14] ->
+    unwind[bb14 println_i64] ->
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb15 Vec::new -> bb16] ->
       (none)
-    branch[bb14: bb15/bb16] ->
+    unwind[bb15 Vec::new] ->
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb16 hew_vec_push_layout -> bb17] ->
       (none)
-    panic[bb15] ->
+    unwind[bb16 hew_vec_push_layout] ->
       drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
       drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
-    branch[bb16: bb15/bb17] ->
+    call[bb17 hew_vec_push_layout -> bb18] ->
       (none)
-    branch[bb17: bb18/bb19] ->
+    unwind[bb17 hew_vec_push_layout] ->
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    branch[bb18: bb19/bb20] ->
       (none)
-    panic[bb18] ->
+    panic[bb19] ->
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb20 hew_vec_len -> bb21] ->
+      (none)
+    unwind[bb20 hew_vec_len] ->
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    branch[bb21: bb19/bb22] ->
+      (none)
+    call[bb22 hew_vec_slice_range_layout -> bb23] ->
+      (none)
+    unwind[bb22 hew_vec_slice_range_layout] ->
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb23 hew_vec_len -> bb24] ->
+      (none)
+    unwind[bb23 hew_vec_len] ->
       drop _34 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
       drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
       drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
-    call[bb19 println_i64 -> bb20] ->
+    branch[bb24: bb25/bb26] ->
       (none)
-    return[bb20] ->
+    panic[bb25] ->
+      drop _34 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb26 hew_vec_get_layout -> bb27] ->
+      (none)
+    unwind[bb26 hew_vec_get_layout] ->
+      drop _34 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    call[bb27 println_i64 -> bb28] ->
+      (none)
+    unwind[bb27 println_i64] ->
+      drop _34 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
+    return[bb28] ->
       drop _34 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
       drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
       drop _14 ty=Vec<CheckedMirColour> kind=cow_heap(hew_vec_free)
@@ -117,9 +199,13 @@ fn i8::fmt -> string
   statements:
     use BindingId(13) val site=SiteId(119) ty=i8 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(117) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(117) ty=string intent=Consume
     return site=Some(SiteId(117)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -130,9 +216,13 @@ fn i16::fmt -> string
   statements:
     use BindingId(14) val site=SiteId(123) ty=i16 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(121) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(121) ty=string intent=Consume
     return site=Some(SiteId(121)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -143,9 +233,13 @@ fn i32::fmt -> string
   statements:
     use BindingId(15) val site=SiteId(126) ty=i32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(125) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(125) ty=string intent=Consume
     return site=Some(SiteId(125)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -156,9 +250,13 @@ fn i64::fmt -> string
   statements:
     use BindingId(16) val site=SiteId(129) ty=i64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(128) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(128) ty=string intent=Consume
     return site=Some(SiteId(128)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_i64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_i64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -169,9 +267,13 @@ fn u8::fmt -> string
   statements:
     use BindingId(17) val site=SiteId(132) ty=u8 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(131) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(131) ty=string intent=Consume
     return site=Some(SiteId(131)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u8_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u8_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -182,9 +284,13 @@ fn u16::fmt -> string
   statements:
     use BindingId(18) val site=SiteId(135) ty=u16 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(134) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(134) ty=string intent=Consume
     return site=Some(SiteId(134)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_uint_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_uint_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -195,9 +301,13 @@ fn u32::fmt -> string
   statements:
     use BindingId(19) val site=SiteId(138) ty=u32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(137) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(137) ty=string intent=Consume
     return site=Some(SiteId(137)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_uint_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_uint_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -208,9 +318,13 @@ fn u64::fmt -> string
   statements:
     use BindingId(20) val site=SiteId(141) ty=u64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(140) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(140) ty=string intent=Consume
     return site=Some(SiteId(140)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -221,9 +335,13 @@ fn isize::fmt -> string
   statements:
     use BindingId(21) val site=SiteId(145) ty=isize intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(143) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(143) ty=string intent=Consume
     return site=Some(SiteId(143)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_i64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_i64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -234,9 +352,13 @@ fn usize::fmt -> string
   statements:
     use BindingId(22) val site=SiteId(149) ty=usize intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(147) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(147) ty=string intent=Consume
     return site=Some(SiteId(147)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -247,9 +369,13 @@ fn bool::fmt -> string
   statements:
     use BindingId(23) val site=SiteId(152) ty=bool intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(151) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(151) ty=string intent=Consume
     return site=Some(SiteId(151)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_bool_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_bool_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -260,9 +386,13 @@ fn char::fmt -> string
   statements:
     use BindingId(24) val site=SiteId(155) ty=char intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(154) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(154) ty=string intent=Consume
     return site=Some(SiteId(154)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_char_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_char_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -273,9 +403,13 @@ fn f64::fmt -> string
   statements:
     use BindingId(25) val site=SiteId(158) ty=f64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(157) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(157) ty=string intent=Consume
     return site=Some(SiteId(157)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_float_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_float_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -286,9 +420,13 @@ fn f32::fmt -> string
   statements:
     use BindingId(26) val site=SiteId(162) ty=f32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(160) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(160) ty=string intent=Consume
     return site=Some(SiteId(160)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_float_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_float_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -356,14 +494,25 @@ fn duration::fmt -> string
     use BindingId(32) val site=SiteId(180) ty=duration intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(178) ty=string
     bind BindingId(4294967230) __hew_produced_value site=SiteId(177) ty=string
+    use BindingId(4294967230) __hew_produced_value site=SiteId(177) ty=string intent=Consume
     return site=Some(SiteId(177)) ty=string
+    drop BindingId(4294967230) __hew_produced_value ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_duration_nanos -> bb1] ->
+      (none)
+    unwind[bb0 hew_duration_nanos] ->
       (none)
     cancel[bb0] ->
       (none)
     call[bb1 hew_i64_to_string -> bb2] ->
       (none)
-    return[bb2] ->
+    unwind[bb1 hew_i64_to_string] ->
+      (none)
+    call[bb2 hew_string_concat -> bb3] ->
+      (none)
+    unwind[bb2 hew_string_concat] ->
+      drop _2 ty=string kind=cow_heap(hew_string_drop)
+    return[bb3] ->
       (none)
 

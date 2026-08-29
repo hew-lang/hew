@@ -15,12 +15,17 @@ fn record_tail -> i64
     cancel[bb0] ->
       (none)
     return[bb1] ->
-      drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop _3 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb2 hew_string_length -> bb3] ->
       (none)
+    unwind[bb2 hew_string_length] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     call[bb3 hew_string_length -> bb4] ->
       (none)
+    unwind[bb3 hew_string_length] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
@@ -29,8 +34,7 @@ fn record_tail -> i64
     goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->
-      drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop _3 ty=string kind=cow_heap(hew_string_drop)
+      (none)
 
 fn record_nontail -> i64
   statements:
@@ -51,12 +55,17 @@ fn record_nontail -> i64
     cancel[bb0] ->
       (none)
     return[bb1] ->
-      drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop _3 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb2 hew_string_length -> bb3] ->
       (none)
+    unwind[bb2 hew_string_length] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     call[bb3 hew_string_length -> bb4] ->
       (none)
+    unwind[bb3 hew_string_length] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
@@ -65,8 +74,7 @@ fn record_nontail -> i64
     goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->
-      drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop _3 ty=string kind=cow_heap(hew_string_drop)
+      (none)
 
 fn tuple_tail -> i64
   statements:
@@ -85,12 +93,17 @@ fn tuple_tail -> i64
     cancel[bb0] ->
       (none)
     return[bb1] ->
-      drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop _3 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb2 hew_string_length -> bb3] ->
       (none)
+    unwind[bb2 hew_string_length] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     call[bb3 hew_string_length -> bb4] ->
       (none)
+    unwind[bb3 hew_string_length] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
@@ -99,8 +112,7 @@ fn tuple_tail -> i64
     goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->
-      drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop _3 ty=string kind=cow_heap(hew_string_drop)
+      (none)
 
 fn tuple_nontail -> i64
   statements:
@@ -121,12 +133,17 @@ fn tuple_nontail -> i64
     cancel[bb0] ->
       (none)
     return[bb1] ->
-      drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop _3 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb2 hew_string_length -> bb3] ->
       (none)
+    unwind[bb2 hew_string_length] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     call[bb3 hew_string_length -> bb4] ->
       (none)
+    unwind[bb3 hew_string_length] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
@@ -135,8 +152,7 @@ fn tuple_nontail -> i64
     goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->
-      drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop _3 ty=string kind=cow_heap(hew_string_drop)
+      (none)
 
 fn borrow_record -> i64
   statements:
@@ -179,23 +195,28 @@ fn main -> i64
     bind BindingId(4294967231) __hew_produced_value site=SiteId(46) ty=string
     bind BindingId(4294967230) __hew_produced_value site=SiteId(49) ty=string
     bind BindingId(4294967229) __hew_produced_value site=SiteId(45) ty=Packet
+    use BindingId(4294967229) __hew_produced_value site=SiteId(45) ty=Packet intent=Consume
     bind BindingId(16) a site=SiteId(44) ty=i64
     bind BindingId(4294967228) __hew_produced_value site=SiteId(55) ty=string
     bind BindingId(4294967227) __hew_produced_value site=SiteId(58) ty=string
     bind BindingId(4294967226) __hew_produced_value site=SiteId(54) ty=Packet
+    use BindingId(4294967226) __hew_produced_value site=SiteId(54) ty=Packet intent=Consume
     bind BindingId(17) b site=SiteId(53) ty=i64
     bind BindingId(4294967225) __hew_produced_value site=SiteId(64) ty=string
     bind BindingId(4294967224) __hew_produced_value site=SiteId(67) ty=string
     bind BindingId(4294967223) __hew_produced_value site=SiteId(63) ty=(string, string)
+    use BindingId(4294967223) __hew_produced_value site=SiteId(63) ty=(string, string) intent=Consume
     bind BindingId(18) c site=SiteId(62) ty=i64
     bind BindingId(4294967222) __hew_produced_value site=SiteId(73) ty=string
     bind BindingId(4294967221) __hew_produced_value site=SiteId(76) ty=string
     bind BindingId(4294967220) __hew_produced_value site=SiteId(72) ty=(string, string)
+    use BindingId(4294967220) __hew_produced_value site=SiteId(72) ty=(string, string) intent=Consume
     bind BindingId(19) d site=SiteId(71) ty=i64
     bind BindingId(4294967219) __hew_produced_value site=SiteId(81) ty=string
     bind BindingId(4294967218) __hew_produced_value site=SiteId(84) ty=string
     bind BindingId(4294967217) __hew_produced_value site=SiteId(80) ty=Packet
     bind BindingId(20) packet site=SiteId(80) ty=Packet
+    use BindingId(4294967217) __hew_produced_value site=SiteId(80) ty=Packet intent=Consume
     use BindingId(20) packet site=SiteId(88) ty=Packet intent=Read
     bind BindingId(21) record_borrow site=SiteId(87) ty=i64
     use BindingId(20) packet site=SiteId(92) ty=Packet intent=Read
@@ -204,6 +225,7 @@ fn main -> i64
     bind BindingId(4294967215) __hew_produced_value site=SiteId(98) ty=string
     bind BindingId(4294967214) __hew_produced_value site=SiteId(94) ty=(string, string)
     bind BindingId(23) tuple site=SiteId(94) ty=(string, string)
+    use BindingId(4294967214) __hew_produced_value site=SiteId(94) ty=(string, string) intent=Consume
     use BindingId(23) tuple site=SiteId(102) ty=(string, string) intent=Read
     bind BindingId(24) tuple_borrow site=SiteId(101) ty=i64
     use BindingId(23) tuple site=SiteId(106) ty=(string, string) intent=Read
@@ -218,72 +240,157 @@ fn main -> i64
     use BindingId(25) tuple_reuse site=SiteId(128) ty=i64 intent=Read
     return site=Some(SiteId(108)) ty=i64
     drop BindingId(23) tuple ty=(string, string)
+    drop BindingId(4294967214) __hew_produced_value ty=(string, string)
+    drop BindingId(4294967215) __hew_produced_value ty=string
+    drop BindingId(4294967216) __hew_produced_value ty=string
     drop BindingId(20) packet ty=Packet
+    drop BindingId(4294967217) __hew_produced_value ty=Packet
+    drop BindingId(4294967218) __hew_produced_value ty=string
+    drop BindingId(4294967219) __hew_produced_value ty=string
+    drop BindingId(4294967220) __hew_produced_value ty=(string, string)
+    drop BindingId(4294967221) __hew_produced_value ty=string
+    drop BindingId(4294967222) __hew_produced_value ty=string
+    drop BindingId(4294967223) __hew_produced_value ty=(string, string)
+    drop BindingId(4294967224) __hew_produced_value ty=string
+    drop BindingId(4294967225) __hew_produced_value ty=string
+    drop BindingId(4294967226) __hew_produced_value ty=Packet
+    drop BindingId(4294967227) __hew_produced_value ty=string
+    drop BindingId(4294967228) __hew_produced_value ty=string
+    drop BindingId(4294967229) __hew_produced_value ty=Packet
+    drop BindingId(4294967230) __hew_produced_value ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
-    call[bb0 record_tail -> bb1] ->
+    call[bb0 hew_string_concat -> bb1] ->
+      (none)
+    unwind[bb0 hew_string_concat] ->
       (none)
     cancel[bb0] ->
       (none)
-    call[bb1 record_nontail -> bb2] ->
+    call[bb1 hew_string_concat -> bb2] ->
       (none)
-    call[bb2 tuple_tail -> bb3] ->
+    unwind[bb1 hew_string_concat] ->
+      drop _2 ty=string kind=cow_heap(hew_string_drop)
+    call[bb2 record_tail -> bb3] ->
       (none)
-    call[bb3 tuple_nontail -> bb4] ->
+    unwind[bb2 record_tail] ->
+      drop _85 ty=Packet kind=record_in_place
+    call[bb3 hew_string_concat -> bb4] ->
       (none)
-    call[bb4 borrow_record -> bb5] ->
+    unwind[bb3 hew_string_concat] ->
       (none)
-    call[bb5 hew_string_length -> bb6] ->
+    call[bb4 hew_string_concat -> bb5] ->
       (none)
-    call[bb6 borrow_tuple -> bb7] ->
+    unwind[bb4 hew_string_concat] ->
+      drop _11 ty=string kind=cow_heap(hew_string_drop)
+    call[bb5 record_nontail -> bb6] ->
       (none)
-    call[bb7 hew_string_length -> bb8] ->
+    unwind[bb5 record_nontail] ->
+      drop _86 ty=Packet kind=record_in_place
+    call[bb6 hew_string_concat -> bb7] ->
       (none)
-    branch[bb8: bb9/bb10] ->
+    unwind[bb6 hew_string_concat] ->
       (none)
-    panic[bb9] ->
+    call[bb7 hew_string_concat -> bb8] ->
+      (none)
+    unwind[bb7 hew_string_concat] ->
+      drop _20 ty=string kind=cow_heap(hew_string_drop)
+    call[bb8 tuple_tail -> bb9] ->
+      (none)
+    unwind[bb8 tuple_tail] ->
+      drop _87 ty=(string, string) kind=tuple_in_place
+    call[bb9 hew_string_concat -> bb10] ->
+      (none)
+    unwind[bb9 hew_string_concat] ->
+      (none)
+    call[bb10 hew_string_concat -> bb11] ->
+      (none)
+    unwind[bb10 hew_string_concat] ->
+      drop _29 ty=string kind=cow_heap(hew_string_drop)
+    call[bb11 tuple_nontail -> bb12] ->
+      (none)
+    unwind[bb11 tuple_nontail] ->
+      drop _88 ty=(string, string) kind=tuple_in_place
+    call[bb12 hew_string_concat -> bb13] ->
+      (none)
+    unwind[bb12 hew_string_concat] ->
+      (none)
+    call[bb13 hew_string_concat -> bb14] ->
+      (none)
+    unwind[bb13 hew_string_concat] ->
+      drop _38 ty=string kind=cow_heap(hew_string_drop)
+    call[bb14 borrow_record -> bb15] ->
+      (none)
+    unwind[bb14 borrow_record] ->
+      drop _43 ty=Packet kind=record_in_place
+    call[bb15 hew_string_length -> bb16] ->
+      (none)
+    unwind[bb15 hew_string_length] ->
+      drop _43 ty=Packet kind=record_in_place
+    call[bb16 hew_string_concat -> bb17] ->
+      (none)
+    unwind[bb16 hew_string_concat] ->
+      drop _43 ty=Packet kind=record_in_place
+    call[bb17 hew_string_concat -> bb18] ->
+      (none)
+    unwind[bb17 hew_string_concat] ->
+      drop _51 ty=string kind=cow_heap(hew_string_drop)
+      drop _43 ty=Packet kind=record_in_place
+    call[bb18 borrow_tuple -> bb19] ->
+      (none)
+    unwind[bb18 borrow_tuple] ->
       drop _56 ty=(string, string) kind=tuple_in_place
       drop _43 ty=Packet kind=record_in_place
-    branch[bb10: bb11/bb12] ->
+    call[bb19 hew_string_length -> bb20] ->
       (none)
-    panic[bb11] ->
+    unwind[bb19 hew_string_length] ->
       drop _56 ty=(string, string) kind=tuple_in_place
       drop _43 ty=Packet kind=record_in_place
-    branch[bb12: bb13/bb14] ->
-      (none)
-    panic[bb13] ->
-      drop _56 ty=(string, string) kind=tuple_in_place
-      drop _43 ty=Packet kind=record_in_place
-    branch[bb14: bb15/bb16] ->
-      (none)
-    branch[bb15: bb17/bb18] ->
-      (none)
-    branch[bb16: bb19/bb20] ->
-      (none)
-    panic[bb17] ->
-      drop _56 ty=(string, string) kind=tuple_in_place
-      drop _43 ty=Packet kind=record_in_place
-    goto[bb18->bb16] ->
-      (none)
-    cancel[bb18] ->
-      drop _56 ty=(string, string) kind=tuple_in_place
-      drop _43 ty=Packet kind=record_in_place
-    branch[bb19: bb21/bb22] ->
-      (none)
-    branch[bb20: bb23/bb24] ->
+    branch[bb20: bb21/bb22] ->
       (none)
     panic[bb21] ->
       drop _56 ty=(string, string) kind=tuple_in_place
       drop _43 ty=Packet kind=record_in_place
-    goto[bb22->bb20] ->
+    branch[bb22: bb23/bb24] ->
       (none)
-    cancel[bb22] ->
+    panic[bb23] ->
       drop _56 ty=(string, string) kind=tuple_in_place
       drop _43 ty=Packet kind=record_in_place
-    goto[bb23->bb25] ->
+    branch[bb24: bb25/bb26] ->
       (none)
-    goto[bb24->bb25] ->
+    panic[bb25] ->
+      drop _56 ty=(string, string) kind=tuple_in_place
+      drop _43 ty=Packet kind=record_in_place
+    branch[bb26: bb27/bb28] ->
       (none)
-    return[bb25] ->
+    branch[bb27: bb29/bb30] ->
+      (none)
+    branch[bb28: bb31/bb32] ->
+      (none)
+    panic[bb29] ->
+      drop _56 ty=(string, string) kind=tuple_in_place
+      drop _43 ty=Packet kind=record_in_place
+    goto[bb30->bb28] ->
+      (none)
+    cancel[bb30] ->
+      drop _56 ty=(string, string) kind=tuple_in_place
+      drop _43 ty=Packet kind=record_in_place
+    branch[bb31: bb33/bb34] ->
+      (none)
+    branch[bb32: bb35/bb36] ->
+      (none)
+    panic[bb33] ->
+      drop _56 ty=(string, string) kind=tuple_in_place
+      drop _43 ty=Packet kind=record_in_place
+    goto[bb34->bb32] ->
+      (none)
+    cancel[bb34] ->
+      drop _56 ty=(string, string) kind=tuple_in_place
+      drop _43 ty=Packet kind=record_in_place
+    goto[bb35->bb37] ->
+      (none)
+    goto[bb36->bb37] ->
+      (none)
+    return[bb37] ->
       drop _56 ty=(string, string) kind=tuple_in_place
       drop _43 ty=Packet kind=record_in_place
 
@@ -291,9 +398,13 @@ fn i8::fmt -> string
   statements:
     use BindingId(34) val site=SiteId(204) ty=i8 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(202) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(202) ty=string intent=Consume
     return site=Some(SiteId(202)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -304,9 +415,13 @@ fn i16::fmt -> string
   statements:
     use BindingId(35) val site=SiteId(208) ty=i16 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(206) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(206) ty=string intent=Consume
     return site=Some(SiteId(206)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -317,9 +432,13 @@ fn i32::fmt -> string
   statements:
     use BindingId(36) val site=SiteId(211) ty=i32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(210) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(210) ty=string intent=Consume
     return site=Some(SiteId(210)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -330,9 +449,13 @@ fn i64::fmt -> string
   statements:
     use BindingId(37) val site=SiteId(214) ty=i64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(213) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(213) ty=string intent=Consume
     return site=Some(SiteId(213)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_i64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_i64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -343,9 +466,13 @@ fn u8::fmt -> string
   statements:
     use BindingId(38) val site=SiteId(217) ty=u8 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(216) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(216) ty=string intent=Consume
     return site=Some(SiteId(216)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u8_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u8_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -356,9 +483,13 @@ fn u16::fmt -> string
   statements:
     use BindingId(39) val site=SiteId(220) ty=u16 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(219) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(219) ty=string intent=Consume
     return site=Some(SiteId(219)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_uint_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_uint_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -369,9 +500,13 @@ fn u32::fmt -> string
   statements:
     use BindingId(40) val site=SiteId(223) ty=u32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(222) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(222) ty=string intent=Consume
     return site=Some(SiteId(222)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_uint_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_uint_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -382,9 +517,13 @@ fn u64::fmt -> string
   statements:
     use BindingId(41) val site=SiteId(226) ty=u64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(225) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(225) ty=string intent=Consume
     return site=Some(SiteId(225)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -395,9 +534,13 @@ fn isize::fmt -> string
   statements:
     use BindingId(42) val site=SiteId(230) ty=isize intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(228) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(228) ty=string intent=Consume
     return site=Some(SiteId(228)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_i64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_i64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -408,9 +551,13 @@ fn usize::fmt -> string
   statements:
     use BindingId(43) val site=SiteId(234) ty=usize intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(232) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(232) ty=string intent=Consume
     return site=Some(SiteId(232)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -421,9 +568,13 @@ fn bool::fmt -> string
   statements:
     use BindingId(44) val site=SiteId(237) ty=bool intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(236) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(236) ty=string intent=Consume
     return site=Some(SiteId(236)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_bool_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_bool_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -434,9 +585,13 @@ fn char::fmt -> string
   statements:
     use BindingId(45) val site=SiteId(240) ty=char intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(239) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(239) ty=string intent=Consume
     return site=Some(SiteId(239)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_char_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_char_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -447,9 +602,13 @@ fn f64::fmt -> string
   statements:
     use BindingId(46) val site=SiteId(243) ty=f64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(242) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(242) ty=string intent=Consume
     return site=Some(SiteId(242)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_float_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_float_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -460,9 +619,13 @@ fn f32::fmt -> string
   statements:
     use BindingId(47) val site=SiteId(247) ty=f32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(245) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(245) ty=string intent=Consume
     return site=Some(SiteId(245)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_float_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_float_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -530,14 +693,25 @@ fn duration::fmt -> string
     use BindingId(53) val site=SiteId(265) ty=duration intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(263) ty=string
     bind BindingId(4294967230) __hew_produced_value site=SiteId(262) ty=string
+    use BindingId(4294967230) __hew_produced_value site=SiteId(262) ty=string intent=Consume
     return site=Some(SiteId(262)) ty=string
+    drop BindingId(4294967230) __hew_produced_value ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_duration_nanos -> bb1] ->
+      (none)
+    unwind[bb0 hew_duration_nanos] ->
       (none)
     cancel[bb0] ->
       (none)
     call[bb1 hew_i64_to_string -> bb2] ->
       (none)
-    return[bb2] ->
+    unwind[bb1 hew_i64_to_string] ->
+      (none)
+    call[bb2 hew_string_concat -> bb3] ->
+      (none)
+    unwind[bb2 hew_string_concat] ->
+      drop _2 ty=string kind=cow_heap(hew_string_drop)
+    return[bb3] ->
       (none)
 

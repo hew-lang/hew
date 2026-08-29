@@ -50,6 +50,7 @@ MANIFEST="$GOLDEN/MANIFEST.sha256"
 HEW_BIN="${HEW_BIN:-$ROOT/target/debug/hew}"
 MODE="${1:-verify}"
 STAGES=(raw elab)
+HEW_CORPUS_EXPECTED_FAILURES="$ROOT/scripts/hew-corpus-expected-failures.txt"
 # Wall-clock cap per fixture. A fixture that stops terminating must fail
 # the gate rather than hang the build; 124/137 land in the transcript and
 # mismatch the committed exit status.
@@ -57,6 +58,57 @@ RUN_TIMEOUT_SECS="${CHECKED_MIR_RUN_TIMEOUT_SECS:-60}"
 # Per-execution environment overlay consumed by execute_fixture; empty for
 # every ordinary fixture run and set only by the leak-oracle counterfactual.
 EXTRA_RUN_ENV=()
+
+# Checked-MIR fixtures are part of the repository-wide `hew check` corpus. Use
+# that corpus's single expected-failure authority when a fixture cannot dump at
+# all; do not create a second allowlist or bless a compiler error as MIR output.
+# A path-only entry is not enough to skip a dump: the shared row must pin a
+# stable `E_*` diagnostic code, and the compiler must return that exact
+# structured refusal with its ordinary exit status. Crashes, panics, and
+# unrelated diagnostics therefore remain hard failures.
+EXPECTED_REFUSAL_CODE=""
+LAST_DUMP_STATUS=0
+
+expected_corpus_refusal_code() {
+    local fixture="$1" relpath
+    relpath="${fixture#"$ROOT"/}"
+    EXPECTED_REFUSAL_CODE="$(
+        awk -v path="$relpath" \
+            '$1 == path && $2 ~ /^E_[A-Z0-9_]+$/ { print $2 }' \
+            "$HEW_CORPUS_EXPECTED_FAILURES"
+    )"
+    [[ "$EXPECTED_REFUSAL_CODE" =~ ^E_[A-Z0-9_]+$ ]]
+}
+
+diagnostic_log_contains_code() {
+    local log="$1" code="$2"
+    LC_ALL=C grep -Eq "(^|[^A-Z0-9_])${code}([^A-Z0-9_]|$)" "$log"
+}
+
+run_dump() {
+    local stage="$1" fixture="$2" output="$3" error="$4"
+    LAST_DUMP_STATUS=0
+    "$HEW_BIN" compile --dump-mir "$stage" "$fixture" \
+        >"$output" 2>"$error" || LAST_DUMP_STATUS=$?
+}
+
+dump_is_expected_refusal() {
+    local fixture="$1" status="$2" error="$3"
+    expected_corpus_refusal_code "$fixture" || return 1
+    # Hew's structured diagnostic exit is 1. Anything else is a crash, panic,
+    # shell failure, or otherwise a different failure class.
+    [[ "$status" -eq 1 ]] || return 1
+    diagnostic_log_contains_code "$error" "$EXPECTED_REFUSAL_CODE"
+}
+
+report_unexpected_dump_failure() {
+    local fixture="$1" name="$2" stage="$3" status="$4" error="$5"
+    echo "CANNOT DUMP: $name ($stage stage; exit $status)" >&2
+    if expected_corpus_refusal_code "$fixture"; then
+        echo "  expected structured refusal: $EXPECTED_REFUSAL_CODE (exit 1)" >&2
+    fi
+    head -20 "$error" >&2
+}
 
 # sha256 over stdin-named files; `sha256sum` on Linux, `shasum -a 256` on
 # macOS. Both print `<hash>  <name>`, so the manifest format is identical.
@@ -66,6 +118,33 @@ sha256_of() {
     else
         shasum -a 256 "$@"
     fi
+}
+
+# A refused fixture has no fresh MIR with which to validate its snapshots. Its
+# raw and elaborated files must therefore still match the manifest that existed
+# before regeneration began. This prevents `golden` from rehashing arbitrary
+# working-tree edits into an unverifiable new baseline.
+verify_preserved_golden_pair() {
+    local name="$1" stage golden_file base recorded_hash actual_hash
+    if [[ ! -f "$MANIFEST" ]]; then
+        echo "CANNOT PRESERVE: $name has a known refusal but $MANIFEST is missing" >&2
+        return 1
+    fi
+    for stage in "${STAGES[@]}"; do
+        golden_file="$GOLDEN/$name.$stage.mir"
+        base="$name.$stage.mir"
+        if [[ ! -f "$golden_file" ]]; then
+            echo "CANNOT PRESERVE: missing last-good golden $base" >&2
+            return 1
+        fi
+        recorded_hash="$(awk -v file="$base" '$2 == file { print $1 }' "$MANIFEST")"
+        actual_hash="$(sha256_of "$golden_file" | awk '{ print $1 }')"
+        if [[ -z "$recorded_hash" || "$recorded_hash" != "$actual_hash" ]]; then
+            echo "CANNOT PRESERVE: $base does not match the prior manifest" >&2
+            echo "  restore or review the last-good pair before regenerating" >&2
+            return 1
+        fi
+    done
 }
 
 # Manifest lines for every committed golden, sorted byte-wise so the file
@@ -83,6 +162,10 @@ render_manifest() {
 if [[ ! -x "$HEW_BIN" ]]; then
     echo "checked-mir-corpus: compiler binary not found at $HEW_BIN" >&2
     echo "build it first (make hew) or set HEW_BIN" >&2
+    exit 2
+fi
+if [[ ! -f "$HEW_CORPUS_EXPECTED_FAILURES" ]]; then
+    echo "checked-mir-corpus: expected-failures authority not found at $HEW_CORPUS_EXPECTED_FAILURES" >&2
     exit 2
 fi
 
@@ -123,7 +206,8 @@ is_crash_status() {
 # exists to catch.
 fixture_has_main() {
     local fixture="$1" dump="$2"
-    if ! "$HEW_BIN" compile --dump-mir raw "$fixture" >"$dump" 2>"$dump.err"; then
+    run_dump raw "$fixture" "$dump" "$dump.err"
+    if [[ "$LAST_DUMP_STATUS" -ne 0 ]]; then
         return 2
     fi
     grep -qE '^fn main\(' "$dump"
@@ -263,13 +347,42 @@ golden)
     trap 'rm -rf "$tmpdir"' EXIT
     changed=()
     added=()
+    staged=()
     unchanged=0
+    known_refusals=0
+
+    # Stage the complete corpus before touching a committed golden. A compiler
+    # failure in any later fixture or in either stage therefore cannot leave a
+    # half-refreshed raw/elab pair (or a partially refreshed corpus) behind.
     for f in "${fixtures[@]}"; do
         name="$(basename "$f" .hew)"
+        refused=0
+        for stage in "${STAGES[@]}"; do
+            fresh="$tmpdir/$name.$stage.mir"
+            error="$tmpdir/$name.$stage.err"
+            run_dump "$stage" "$f" "$fresh" "$error"
+            if [[ "$LAST_DUMP_STATUS" -ne 0 ]]; then
+                if dump_is_expected_refusal \
+                    "$f" "$LAST_DUMP_STATUS" "$error"; then
+                    verify_preserved_golden_pair "$name" || exit 1
+                    echo "  KNOWN   $name ($stage refusal $EXPECTED_REFUSAL_CODE; preserving manifest-verified last-good pair)"
+                    known_refusals=$((known_refusals + 1))
+                    refused=1
+                    break
+                fi
+                report_unexpected_dump_failure \
+                    "$f" "$name" "$stage" "$LAST_DUMP_STATUS" "$error"
+                exit 1
+            fi
+        done
+        [[ "$refused" -eq 1 ]] && continue
+        staged+=("$name")
+    done
+
+    for name in "${staged[@]}"; do
         for stage in "${STAGES[@]}"; do
             golden_file="$GOLDEN/$name.$stage.mir"
             fresh="$tmpdir/$name.$stage.mir"
-            "$HEW_BIN" compile --dump-mir "$stage" "$f" >"$fresh"
             if [[ ! -f "$golden_file" ]]; then
                 added+=("$name.$stage.mir")
             elif cmp -s "$golden_file" "$fresh"; then
@@ -287,7 +400,7 @@ golden)
     # The regeneration report: a golden corpus that moves silently is a
     # corpus that cannot fail for the change regenerating it, so every
     # recapture states what moved before the commit is written.
-    echo "checked-mir-golden: ${#changed[@]} changed, ${#added[@]} new, $unchanged unchanged"
+    echo "checked-mir-golden: ${#changed[@]} changed, ${#added[@]} new, $unchanged unchanged, $known_refusals known refusal(s)"
     for entry in ${added[@]+"${added[@]}"}; do
         echo "  NEW     $entry"
     done
@@ -300,10 +413,13 @@ golden)
     ;;
 verify)
     fail=0
+    verified=0
+    known_refusals=0
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT
     for f in "${fixtures[@]}"; do
         name="$(basename "$f" .hew)"
+        dump_refused=0
         for stage in "${STAGES[@]}"; do
             golden_file="$GOLDEN/$name.$stage.mir"
             if [[ ! -f "$golden_file" ]]; then
@@ -311,13 +427,34 @@ verify)
                 fail=1
                 continue
             fi
-            "$HEW_BIN" compile --dump-mir "$stage" "$f" >"$tmpdir/$name.$stage.mir"
-            if ! diff -u "$golden_file" "$tmpdir/$name.$stage.mir" >"$tmpdir/$name.$stage.diff"; then
+            fresh="$tmpdir/$name.$stage.mir"
+            error="$tmpdir/$name.$stage.err"
+            run_dump "$stage" "$f" "$fresh" "$error"
+            if [[ "$LAST_DUMP_STATUS" -ne 0 ]]; then
+                if dump_is_expected_refusal \
+                    "$f" "$LAST_DUMP_STATUS" "$error"; then
+                    if ! verify_preserved_golden_pair "$name"; then
+                        fail=1
+                    fi
+                    echo "KNOWN REFUSAL: $name ($stage stage; $EXPECTED_REFUSAL_CODE; manifest-verified last-good pair preserved)"
+                    known_refusals=$((known_refusals + 1))
+                else
+                    report_unexpected_dump_failure \
+                        "$f" "$name" "$stage" "$LAST_DUMP_STATUS" "$error"
+                    fail=1
+                fi
+                dump_refused=1
+                break
+            fi
+            if ! diff -u "$golden_file" "$fresh" >"$tmpdir/$name.$stage.diff"; then
                 echo "DUMP DRIFT: $name ($stage stage) — first 40 diff lines:" >&2
                 head -40 "$tmpdir/$name.$stage.diff" >&2
                 fail=1
             fi
         done
+        if [[ "$dump_refused" -eq 0 ]]; then
+            verified=$((verified + 1))
+        fi
     done
     # Stale goldens (golden exists, fixture removed) are an error too:
     # they silently shrink the oracle's coverage.
@@ -350,13 +487,14 @@ verify)
         echo "checked-mir-verify: FAILED" >&2
         exit 1
     fi
-    echo "checked-mir-verify: OK (${#fixtures[@]} fixtures x ${#STAGES[@]} stages byte-identical, manifest in sync)"
+    echo "checked-mir-verify: OK ($verified fixtures x ${#STAGES[@]} stages byte-identical, $known_refusals known refusal(s), manifest in sync)"
     ;;
 run)
     TIMEOUT_BIN="$(resolve_timeout)"
     fail=0
     ran=0
     nonrunnable=0
+    known_refusals=0
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT
     # The leak check below is only evidence if it can still fail. Prove that
@@ -372,8 +510,18 @@ run)
         classification=0
         fixture_has_main "$f" "$tmpdir/$name.raw.mir" || classification=$?
         if [[ "$classification" -eq 2 ]]; then
-            echo "CANNOT CLASSIFY: $HEW_BIN failed to dump raw MIR for $name.hew" >&2
-            head -20 "$tmpdir/$name.raw.mir.err" >&2
+            if dump_is_expected_refusal \
+                "$f" "$LAST_DUMP_STATUS" "$tmpdir/$name.raw.mir.err"; then
+                if ! verify_preserved_golden_pair "$name"; then
+                    fail=1
+                    continue
+                fi
+                echo "KNOWN    $name ($EXPECTED_REFUSAL_CODE; tracked by shared hew-corpus ratchet)"
+                known_refusals=$((known_refusals + 1))
+                continue
+            fi
+            report_unexpected_dump_failure \
+                "$f" "$name" raw "$LAST_DUMP_STATUS" "$tmpdir/$name.raw.mir.err"
             fail=1
             continue
         fi
@@ -430,7 +578,7 @@ run)
         echo "checked-mir-run: FAILED" >&2
         exit 1
     fi
-    echo "checked-mir-run: OK ($ran fixtures executed, $nonrunnable with no main)"
+    echo "checked-mir-run: OK ($ran fixtures executed, $nonrunnable with no main, $known_refusals known refusal(s))"
     ;;
 expect)
     TIMEOUT_BIN="$(resolve_timeout)"

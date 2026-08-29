@@ -521,6 +521,11 @@ impl Builder {
             builtin: None,
             is_opaque: false,
         };
+        // Minted beside the shim symbol, from the SAME encounter order, so the
+        // key of a nested closure records its parent chain instead of the
+        // flattened owner path the symbol spells.
+        let shim_key =
+            self.mint_synthesized_child_key(crate::model::SynthesizedCallable::ClosureInvokeShim);
 
         // Each capture field's `ResolvedTy` is substituted through the
         // per-monomorphisation map: a closure inside `fn f<T>(x: T)` that
@@ -695,8 +700,9 @@ impl Builder {
             dest: env_place,
         });
 
-        let mut lowered =
-            self.lower_closure_shim(&shim_name, &env_ty, params, ret_ty, body, captures);
+        let mut lowered = self.lower_closure_shim(
+            &shim_name, &shim_key, &env_ty, params, ret_ty, body, captures,
+        );
         // The suspendable-callee discriminator: the closure's invoke shim is a
         // coroutine iff its lowered MIR carries a suspend terminator — the
         // IDENTICAL structural fact codegen's `is_coroutine` reads off the same
@@ -814,11 +820,14 @@ impl Builder {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "closure shim construction keeps raw/checked/elaborated MIR snapshots aligned"
+        clippy::too_many_arguments,
+        reason = "closure shim construction keeps raw/checked/elaborated MIR snapshots aligned \
+                  and carries the shim's callable identity beside its emitted symbol"
     )]
     fn lower_closure_shim(
         &self,
         shim_name: &str,
+        key: &crate::model::MirCallableKey,
         env_ty: &ResolvedTy,
         params: &[hew_hir::HirBinding],
         ret_ty: &ResolvedTy,
@@ -841,6 +850,10 @@ impl Builder {
         // a closure body that reads a child slot off a captured supervisor PID.
         let mut builder = Builder {
             current_function_symbol: shim_name.to_string(),
+            // A closure nested inside this shim's body parents its own key
+            // here, so nesting depth is carried by the key chain rather than
+            // recovered from the owner baked into the emitted symbol.
+            current_callable_key: Some(key.clone()),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             ..self.child_builder_tables()
         };
@@ -957,6 +970,7 @@ impl Builder {
         raw_params.extend(params.iter().map(|param| self.subst_ty(&param.ty)));
         let mut raw = RawMirFunction {
             name: shim_name.to_string(),
+            key: key.clone(),
             return_ty: ret_ty.clone(),
             call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             params: raw_params,
@@ -1009,6 +1023,7 @@ impl Builder {
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
+            key.clone(),
             ret_ty.clone(),
             raw.blocks.clone(),
             &raw,
@@ -1062,6 +1077,7 @@ impl Builder {
         &self,
         fn_symbol: &str,
         shim_name: &str,
+        key: &crate::model::MirCallableKey,
         param_tys: &[ResolvedTy],
         ret_ty: &ResolvedTy,
     ) -> LoweredFunction {
@@ -1086,6 +1102,7 @@ impl Builder {
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             pointer_width: self.pointer_width,
             current_function_symbol: shim_name.to_string(),
+            current_callable_key: Some(key.clone()),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             // #2648 — synthetic call wrapper (no user match scrutinees), but the
@@ -1134,6 +1151,7 @@ impl Builder {
         raw_params.extend_from_slice(param_tys);
         let mut raw = RawMirFunction {
             name: shim_name.to_string(),
+            key: key.clone(),
             return_ty: ret_ty.clone(),
             call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             params: raw_params,
@@ -1191,6 +1209,7 @@ impl Builder {
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
+            key.clone(),
             ret_ty.clone(),
             raw.blocks.clone(),
             &raw,
@@ -1350,6 +1369,8 @@ impl Builder {
             .expect("lambda id overflow — closure id counter exhausted");
         let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
         let body_name = format!("__hew_lambda_body_{owner}_{lambda_id}");
+        let body_key =
+            self.mint_synthesized_child_key(crate::model::SynthesizedCallable::LambdaActorBody);
 
         // ── Capture-env synthesis ──
         //
@@ -1541,6 +1562,7 @@ impl Builder {
         // actor's `actor_method_info` exactly as the parent would.
         let mut body_builder = Builder {
             current_function_symbol: body_name.clone(),
+            current_callable_key: Some(body_key.clone()),
             current_function_call_conv: crate::model::FunctionCallConv::LambdaActorBody(shape),
             ..self.child_builder_tables()
         };
@@ -1666,6 +1688,7 @@ impl Builder {
         // (the status code) — see codegen's LambdaActorBody arm.
         let mut raw = RawMirFunction {
             name: body_name.clone(),
+            key: body_key.clone(),
             return_ty: body_user_return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::LambdaActorBody(shape),
             params: vec![
@@ -1738,6 +1761,7 @@ impl Builder {
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             body_name.clone(),
+            body_key.clone(),
             body_user_return_ty.clone(),
             raw.blocks.clone(),
             &raw,
@@ -2057,6 +2081,8 @@ impl Builder {
         // (`RawMirFunction::coroutine_facts`) and this minting site can never
         // drift onto different spellings.
         let body_name = format!("{}{owner}_{gen_id}", crate::model::GEN_BODY_PREFIX);
+        let body_key =
+            self.mint_synthesized_child_key(crate::model::SynthesizedCallable::GeneratorBody);
 
         // Allocate a place in the ENCLOSING function typed as
         // `Generator<yield_ty, return_ty>`.  S3b will replace this with the
@@ -2363,6 +2389,7 @@ impl Builder {
         // construction inside the body.
         let mut body_builder = Builder {
             current_function_symbol: body_name.clone(),
+            current_callable_key: Some(body_key.clone()),
             current_function_call_conv: crate::model::FunctionCallConv::Default,
             in_gen_body: true,
             // A generator body is user code and needs the same complete shared
@@ -2519,6 +2546,7 @@ impl Builder {
         }
         let mut raw = RawMirFunction {
             name: body_name.clone(),
+            key: body_key.clone(),
             return_ty: return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::Default,
             params: gen_body_params,
@@ -2578,6 +2606,7 @@ impl Builder {
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             body_name.clone(),
+            body_key.clone(),
             return_ty.clone(),
             raw.blocks.clone(),
             &raw,

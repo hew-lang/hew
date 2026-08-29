@@ -3340,8 +3340,12 @@ impl Builder {
                     .iter()
                     .any(|f| f.raw.name == shim_name)
                 {
-                    let shim = self
-                        .lower_named_fn_invoke_shim(&fn_symbol, &shim_name, &param_tys, &fn_ret_ty);
+                    let shim_key = self.mint_synthesized_child_key(
+                        crate::model::SynthesizedCallable::NamedFnInvokeShim,
+                    );
+                    let shim = self.lower_named_fn_invoke_shim(
+                        &fn_symbol, &shim_name, &shim_key, &param_tys, &fn_ret_ty,
+                    );
                     self.generated_functions.push(shim);
                 }
                 // Null-env pair: the shim ignores env_ptr entirely (zero

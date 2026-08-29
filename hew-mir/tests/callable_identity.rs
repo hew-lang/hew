@@ -333,7 +333,7 @@ fn synthesized_children(
 }
 
 #[test]
-fn a_named_function_used_as_a_value_is_keyed_under_the_body_that_references_it() {
+fn a_named_function_used_as_a_value_is_keyed_under_the_first_body_that_references_it() {
     let hir = hir_of(
         r"
         fn twice(x: i64) -> i64 { x * 2 }
@@ -359,6 +359,48 @@ fn a_named_function_used_as_a_value_is_keyed_under_the_body_that_references_it()
         *shims[0].1, twice_key,
         "keying the shim under its TARGET would make two references from different \
          bodies collide"
+    );
+}
+
+#[test]
+fn a_named_function_referenced_by_two_bodies_keys_its_one_shim_under_the_first_referencer() {
+    // Counterfactual for the pin above: with TWO bodies referencing `twice` as
+    // a value, `flatten_generated_functions` still dedups the shim module-wide
+    // by emitted name (`lower/mod.rs`), so only one shim is ever emitted — and
+    // its `MirCallableKey` parent is whichever referencing body forked the
+    // shim first (`lower/expr.rs`'s mint site), not the second referencer.
+    // This is the approximation marked at both sites and in `.tmp/TODO.md`.
+    let hir = hir_of(
+        r"
+        fn twice(x: i64) -> i64 { x * 2 }
+        fn apply(f: fn(i64) -> i64, x: i64) -> i64 { f(x) }
+
+        fn first_ref() -> i64 { apply(twice, 4) }
+        fn second_ref() -> i64 { apply(twice, 5) }
+
+        fn main() -> i64 { first_ref() + second_ref() }
+        ",
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    let first_ref_key = raw(&pipeline, "first_ref").key.clone();
+    let second_ref_key = raw(&pipeline, "second_ref").key.clone();
+
+    let shims: Vec<_> = synthesized_children(&pipeline)
+        .into_iter()
+        .filter(|(_, _, child)| matches!(child, SynthesizedCallable::NamedFnInvokeShim(_)))
+        .collect();
+    assert_eq!(
+        shims.len(),
+        1,
+        "two references to the same named fn still dedup to one shim body"
+    );
+    assert_eq!(
+        *shims[0].1, first_ref_key,
+        "the shim is parented on the first referencing body in lowering encounter order"
+    );
+    assert_ne!(
+        *shims[0].1, second_ref_key,
+        "the second referencer reuses the already-minted shim rather than getting its own"
     );
 }
 
@@ -497,6 +539,44 @@ fn a_lambda_actor_body_is_keyed_as_a_child_of_the_spawning_body() {
     assert_eq!(
         *bodies[0].1, main_key,
         "the lambda-actor body is a child of the body that spawned it"
+    );
+}
+
+#[test]
+#[allow(
+    deprecated,
+    reason = "pins the same legacy_reconstruct_from_full_path path machine_synth.rs takes; \
+              production call sites are covered by lower/mod.rs's module-level allow"
+)]
+fn an_actor_receive_handler_is_keyed_by_its_reconstructed_declaration_not_synthesized() {
+    // Representative pin for the eight `machine_synth.rs` sites (receive
+    // handlers, init/lifecycle hooks, supervisor bootstrap) that mint a
+    // synthetic `HirFn` whose `declaration` is
+    // `DefId::legacy_reconstruct_from_full_path("<Actor>::<handler>")` rather
+    // than a resolver-minted id (`HirActorReceiveFn` carries none — see
+    // `identity.rs`'s module doc and `.tmp/TODO.md`). Unlike the shim/adapter
+    // producers, this handler is lowered as an ordinary non-generic `HirFn`,
+    // so its key is `Monomorphic` over that reconstructed declaration — NOT
+    // `Synthesized` — even though the declaration itself is fabricated.
+    let hir = hir_of(
+        r"
+        actor Prices {
+            receive fn update(price: i64) {}
+        }
+        ",
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    let handler = raw(&pipeline, "Prices__recv__update");
+
+    assert_eq!(
+        handler.key.instance,
+        MirCallableInstance::Monomorphic,
+        "a receive handler is a plain body realization, not a synthesized child"
+    );
+    assert_eq!(
+        handler.key.declaration,
+        DefId::legacy_reconstruct_from_full_path("Prices::update"),
+        "the handler's key is anchored on the qualified path machine_synth.rs reconstructs"
     );
 }
 

@@ -250,7 +250,7 @@ fn hashmap_keys_bytes_rejected_by_key_branch_with_one_exact_diagnostic() {
     );
     assert_single_check_error_with_exact_diagnostic(
         &output,
-        "`HashMap<bytes, i64>.keys()` is not yet supported: projecting key type `bytes` into an owned `Vec` is not lowered; supported projection key types are scalar primitives, `string`, and Copy record/enum types",
+        "`bytes` cannot be used as a HashMap key yet: duplicate-key insertion cannot release the caller-owned bytes key on the overwrite path; use `string` or a supported fixed-width key",
     );
 }
 

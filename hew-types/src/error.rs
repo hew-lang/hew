@@ -658,8 +658,10 @@ pub enum TypeErrorKind {
     /// `DuplicateDefinition` (two defs in one module): the name resolves to
     /// several valid defs across modules.
     AmbiguousType,
-    /// A bare variant expression remains accepted during the dotted-path
-    /// migration but should use contextual or owner-qualified spelling.
+    /// A bare variant expression: rejected since v0.6.0 in favour of the
+    /// contextual (`.Variant`) or owner-qualified (`Type.Variant`) spelling.
+    /// Reported at warning severity only behind `hew fmt --migrate`, which
+    /// needs the checker's resolution to rewrite the source.
     BareVariantExpr,
     /// A bare variant pattern remains accepted during the dotted-path
     /// migration but should use contextual or owner-qualified spelling.

@@ -1779,9 +1779,10 @@ on Toggle: .Off => .On;
 
 The **target** is an expression checked against the machine's state enum, so it
 takes the contextual form: `=> .On`, `=> .Faulted { code: event.code }`. The bare
-form still parses and still works, but it warns with `E_BARE_VARIANT_EXPR` and a
-fix-it that inserts the dot — the same migration every other
-enum-in-expected-type position is on. A `_` target (paired with a body that
+form still parses, but since v0.6.0 it is rejected with `E_BARE_VARIANT_EXPR` and
+a fix-it that inserts the dot — the same rule every other
+enum-in-expected-type position follows. Run `hew fmt --migrate` to apply the
+fix-its across a legacy source. A `_` target (paired with a body that
 computes the next state) is a wildcard rather than a variant, so it takes no dot.
 
 ```hew

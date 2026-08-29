@@ -724,7 +724,7 @@ impl Checker {
             self.lookup_variant_constructor(constructor_name)
         {
             if contextual_name.is_none() && !func_name.contains("::") {
-                self.warn_bare_variant_expr(&func_name, &format!(".{func_name}"), span);
+                self.report_bare_variant_expr(&func_name, &format!(".{func_name}"), span);
             }
             let mut inferred_args = self.expected_constructor_type_args(
                 &resolved_expected,
@@ -1602,7 +1602,11 @@ impl Checker {
         let constructor_match = self.lookup_variant_constructor(constructor_name);
         if let Some((type_name, expected_params, type_params)) = constructor_match {
             if !func_name.contains("::") {
-                self.warn_bare_variant_expr(&func_name, &format!("{type_name}.{func_name}"), span);
+                self.report_bare_variant_expr(
+                    &func_name,
+                    &format!("{type_name}.{func_name}"),
+                    span,
+                );
             }
             // A selectively-imported enum/struct type used only as a variant
             // constructor (`Status::Ok(m)`) never reached the unused-import

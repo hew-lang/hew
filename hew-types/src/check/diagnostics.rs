@@ -5,18 +5,34 @@
 use super::*;
 
 impl Checker {
-    pub(super) fn warn_bare_variant_expr(&mut self, name: &str, replacement: &str, span: &Span) {
-        self.warnings.push(TypeError {
-            severity: crate::error::Severity::Warning,
+    /// Reject a bare variant used in expression position.
+    ///
+    /// The dotted spellings (`.Variant`, `Type.Variant`) are the language, so
+    /// this is a hard error from v0.6.0. The syntax migrator is the sanctioned
+    /// way past it, and the migrator can only rewrite a source the checker
+    /// resolved, so migration mode keeps the pre-0.6.0 warning severity — the
+    /// one entry point that is allowed to see a legacy source through.
+    pub(super) fn report_bare_variant_expr(&mut self, name: &str, replacement: &str, span: &Span) {
+        let diagnostic = TypeError {
+            severity: if self.migration_mode {
+                crate::error::Severity::Warning
+            } else {
+                crate::error::Severity::Error
+            },
             kind: TypeErrorKind::BareVariantExpr,
             span: span.clone(),
             message: format!(
-                "E_BARE_VARIANT_EXPR: bare variant `{name}` is deprecated; use `.{name}` when the surrounding type selects the enum, or qualify the variant with its type"
+                "E_BARE_VARIANT_EXPR: bare variant `{name}` is not an expression; use `.{name}` when the surrounding type selects the enum, or qualify the variant with its type"
             ),
             notes: Vec::new(),
             suggestions: vec![format!("replace `{name}` with `{replacement}`")],
             source_module: self.current_module.clone(),
-        });
+        };
+        if self.migration_mode {
+            self.warnings.push(diagnostic);
+        } else {
+            self.errors.push(diagnostic);
+        }
     }
 
     pub(super) fn warn_bare_variant_pattern(&mut self, name: &str, span: &Span) {

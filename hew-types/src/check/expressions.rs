@@ -2068,7 +2068,7 @@ impl Checker {
                 let replacement = ty
                     .type_name()
                     .map_or_else(|| format!(".{name}"), |owner| format!("{owner}.{name}"));
-                self.warn_bare_variant_expr(name, &replacement, span);
+                self.report_bare_variant_expr(name, &replacement, span);
             }
             ty
         } else {
@@ -4134,7 +4134,7 @@ impl Checker {
                     && (variant_after_owner.is_some() || !name.contains("::"));
                 if is_unit_variant {
                     if !name.contains("::") {
-                        self.warn_bare_variant_expr(name, &format!(".{name}"), span);
+                        self.report_bare_variant_expr(name, &format!(".{name}"), span);
                     }
                     self.enforce_type_def_instantiation_bounds(
                         expected_type_name,

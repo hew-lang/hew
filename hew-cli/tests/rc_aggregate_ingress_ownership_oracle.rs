@@ -439,15 +439,15 @@ machine Cell {{
         let shared: Rc<Node> = Rc.new(Node {{ id: 7 }});
         Full {{ r: shared }}
     }}
-    on Drain: Full => Empty {{ Empty }}
+    on Drain: Full => Empty {{ Cell.Empty }}
     default {{ state }}
 }}
 
 fn main() -> i64 {{
     var total: i64 = 0;
     for _seed in 0..{frames} {{
-        var c = Empty;
-        c.step(Fill);
+        var c: Cell = .Empty;
+        c.step(.Fill);
         match c {{
             Empty => {{ total = total + 0; }}
             Full {{ r }} => {{ total = total + r.get().id; }}

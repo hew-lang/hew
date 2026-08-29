@@ -665,7 +665,7 @@ const ASK_REPLY_INDIRECT_ENUM_SOURCE: &str = "\
 indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
 fn val(t: Tree) -> i64 { match t { Leaf(n) => n, Node(l, r) => val(l) + val(r), } }\n\
 actor SlowReplier {\n\
-\x20   receive fn fetch() -> Tree { Node(Leaf(1), Leaf(2)) }\n\
+\x20   receive fn fetch() -> Tree { Tree.Node(Tree.Leaf(1), Tree.Leaf(2)) }\n\
 }\n\
 actor Driver {\n\
 \x20   var slow: LocalPid<SlowReplier>;\n\

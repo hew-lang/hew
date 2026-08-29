@@ -108,9 +108,9 @@ fn vec_payload_free_enum_constructs_and_pushes_bitcopy() {
 
         fn main() {
             let v: Vec<Color> = Vec.new();
-            v.push(Red);
-            v.push(Green);
-            v.push(Blue);
+            v.push(.Red);
+            v.push(.Green);
+            v.push(.Blue);
             println(v.len());
         }
         "#,
@@ -132,8 +132,8 @@ fn vec_scalar_payload_enum_constructs_and_pushes_bitcopy() {
 
         fn main() {
             let v: Vec<Tag> = Vec.new();
-            v.push(A(1));
-            v.push(B(2));
+            v.push(.A(1));
+            v.push(.B(2));
             println(v.len());
         }
         "#,
@@ -155,7 +155,7 @@ fn vec_array_literal_owned_enum_runs() {
         enum Shape { Circle(i64); Named(string) }
 
         fn main() {
-            let v: Vec<Shape> = [Circle(3), Named("box")];
+            let v: Vec<Shape> = [.Circle(3), .Named("box")];
             for s in v {
                 match s {
                     Circle(r) => println("circle"),

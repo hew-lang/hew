@@ -6508,17 +6508,16 @@ impl Builder {
     /// frame-owned (a fresh per-iteration count from the clone-out / recv),
     /// but its release authority is the per-iteration BODY-END drop, not the
     /// function-scope owner. A static `Consume` here suppresses no local
-    /// scope-exit drop; what it does instead is poison the dataflow —
-    /// `MaybeConsumed` at any abandonment exit inside the body region walls
-    /// the program off behind the `vec_iter_yield_abandonment` NYI, and the
-    /// body-end drop is separately suppressed by the escape scan, leaking the
-    /// binder's count on the not-taken path.
+    /// scope-exit drop; it ends the binder's generation on one path only, and
+    /// the body-end drop is separately suppressed by the escape scan, so the
+    /// replay-derived edge release is the only thing standing between the
+    /// not-taken path and a leaked count.
     ///
-    /// The retain pairing keeps every count balanced with no dataflow
+    /// The retain pairing keeps every count balanced with no path
     /// ambiguity: clone `+1` (binder), retain `+1` (collection's own count),
-    /// body-end drop `-1`, collection teardown `-1`. The binder stays `Live`
-    /// on every path, so the abandonment analysis has nothing conditional to
-    /// reject and the cancel/panic exit drops keep firing.
+    /// body-end drop `-1`, collection teardown `-1`. The binder stays live
+    /// on every path, so no edge release is needed and the cancel/panic exit
+    /// drops keep firing.
     pub(crate) fn retain_yield_binder_cow_collection_ingress(
         &mut self,
         operand: &HirExpr,

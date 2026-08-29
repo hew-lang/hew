@@ -510,9 +510,84 @@ fn borrowed_projection_prefix_stores_reject_while_cursor_active() {
     }
 }
 
+/// The single `Release` of the conditionally consumed `Vec<i64>` yield binder
+/// (the owner that is both transferred and released), as `(block, place)`,
+/// asserting the releasing block also carries the physical buffer free.
+fn conditionally_consumed_vec_release(raw: &RawMirFunction) -> (u32, Place) {
+    let events = raw.blocks.iter().flat_map(|block| {
+        block
+            .instructions
+            .iter()
+            .map(move |instr| (block.id, instr))
+    });
+    let vec_i64 = hew_types::ResolvedTy::named_builtin(
+        "Vec",
+        hew_types::BuiltinType::Vec,
+        vec![hew_types::ResolvedTy::I64],
+    );
+    let minted: Vec<_> = events
+        .clone()
+        .filter_map(|(_, instr)| match instr {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Mint { owner, ty, .. })
+                if *ty == vec_i64 =>
+            {
+                Some(*owner)
+            }
+            _ => None,
+        })
+        .collect();
+    let transferred: Vec<_> = events
+        .clone()
+        .filter_map(|(_, instr)| match instr {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer { owner, .. })
+                if minted.contains(owner) =>
+            {
+                Some(*owner)
+            }
+            _ => None,
+        })
+        .collect();
+    let released: Vec<_> = events
+        .filter_map(|(block, instr)| match instr {
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Release { owner, place })
+                if transferred.contains(owner) =>
+            {
+                Some((block, *place))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        released.len(),
+        1,
+        "the moved binder is released exactly once, on the owning edge: {released:?}"
+    );
+    let (release_block, release_place) = released[0];
+    let block = raw
+        .blocks
+        .iter()
+        .find(|block| block.id == release_block)
+        .expect("release block exists");
+    assert!(
+        block.instructions.iter().any(|instr| matches!(
+            instr,
+            Instr::Drop { place, drop_fn: Some(DropFnSpec::Release("hew_vec_free")), .. }
+                if *place == release_place
+        )),
+        "the edge release carries the physical buffer free: {:#?}",
+        block.instructions
+    );
+    (release_block, release_place)
+}
+
 #[test]
-fn vec_iter_yield_cancel_cleanup_is_path_exact_or_rejected() {
-    let pipeline = pipeline_allowing_mir_diagnostics(
+fn vec_iter_yield_conditionally_consumed_is_released_on_its_owning_edge() {
+    // The yield binder is moved on the `then` path and still owned on the
+    // `else` path. Ownership replay places its release on the owning edge
+    // into the join, so every later exit (the second inner loop's
+    // cancellation points, the function return) sees the generation ended on
+    // both paths and the program is accepted with no leak and no double free.
+    let pipeline = pipeline(
         r"
         fn branch_selective(values: Vec<Vec<i64>>, ticks: Vec<i64>, move_value: bool) {
             for value in values {
@@ -532,18 +607,15 @@ fn vec_iter_yield_cancel_cleanup_is_path_exact_or_rejected() {
         ",
     );
 
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|candidate| candidate.name == "branch_selective")
+        .expect("missing raw MIR for `branch_selective`");
+    let (release_block, _) = conditionally_consumed_vec_release(raw);
     assert!(
-        pipeline.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct
-                    == "conditionally moved VecIter yield across an abandonment point"
-        ) && diagnostic
-            .note
-            .contains("omitting the release would leak the live path")),
-        "a joined cancellation point with MaybeConsumed payload authority must fail \
-         closed instead of leaking one predecessor or double-freeing the other: {:#?}",
-        pipeline.diagnostics
+        raw.blocks.iter().any(|block| block.id == release_block),
+        "the release lands in a reachable block"
     );
 
     let function = pipeline
@@ -574,9 +646,10 @@ fn vec_iter_yield_cancel_cleanup_is_path_exact_or_rejected() {
         .collect();
     assert_eq!(
         cancel_payload_drops.len(),
-        5,
-        "each cancellation point in the else-only inner loop has definite Live \
-         authority and must release the payload; the later joined MaybeConsumed \
+        4,
+        "each cancellation point inside the else-only inner loop has definite \
+         live authority and must release the payload; the checkpoint on the \
+         loop's exit edge follows the inline edge release, and the later joined \
          loop must receive no unconditional payload drop: {:#?}",
         function.drop_plans
     );

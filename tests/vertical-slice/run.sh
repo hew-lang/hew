@@ -880,11 +880,8 @@ expect_check_fail_contains \
     "used after it was consumed" \
     "hashmap_owned_string_double_insert"
 # ...and a NON-CoW yield binder (Vec<i64> element) conditionally moved across
-# an abandonment point still hits the vec-iter abandonment wall.
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/vec_iter_yield_owned_conditional_move.hew" \
-    "conditionally moved VecIter yield across an abandonment point" \
-    "vec_iter_yield_owned_conditional_move"
+# an abandonment point is released exactly once on the still-owning edge.
+run_accept_expect_stdout "vec_iter_yield_owned_conditional_move"
 # Boundary: a record key with an owned Vec<T> field stays rejected fail-closed.
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/hashmap_key_owned_vec_field.hew" \

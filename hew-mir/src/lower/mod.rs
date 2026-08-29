@@ -135,7 +135,7 @@ use self::drop_plan::{
     ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_stream_handle, ty_is_vec,
     validate_discharge_authority, validate_drop_plan, validate_ownership_events,
     validate_unwind_cleanup_coverage, vec_iter_init_vec_source_expr,
-    vec_iter_let_cursor_owns_handle, vec_iter_yield_abandonment_diagnostics,
+    vec_iter_let_cursor_owns_handle,
 };
 pub use self::drop_plan::{crash_only_cleanup_drop, drop_kind_for_test_only};
 pub(crate) use self::facts::*;
@@ -1023,11 +1023,6 @@ struct Builder {
         u32,
         usize,
     )>,
-    /// Fresh `Some(x)` payload owners produced by the synthetic `VecIter`
-    /// `next()` match. Their normal body/explicit-edge release is emitted
-    /// inline; this bounded ledger restores authority only for abandoning
-    /// exits reached while the consuming body still owns the payload.
-    pub(crate) vec_iter_yield_exit_drops: Vec<VecIterYieldExitDrop>,
     /// MIR locals of every fresh per-frame yield/recv payload binder
     /// (`for x in vec`, generator drive, receiver read — the `Some(x)` arms
     /// that schedule a body-end release and retract the binding to
@@ -13986,6 +13981,10 @@ pub(crate) fn lower_function(
     raw.instr_spans.clone_from(&builder.instr_spans);
     finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
     canonicalize_retained_copy_owner_transfers(&mut raw.blocks, &actor_message_string_sources);
+    // An owner moved on one path into a join and still owned on another is
+    // released on the owning edge, derived from replay; after this every
+    // unguarded generation is either exactly live or ended at each join.
+    drop_plan::materialize_conditional_consume_releases(&mut raw.blocks, &mut builder);
     // The event stream is final: publish the Goto edge witnesses replay and
     // the `edge-carry` verifier rule will be checked against.
     materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut builder);
@@ -14057,11 +14056,6 @@ pub(crate) fn lower_function(
         &builder,
         &body_statements,
     );
-    diagnostics.extend(vec_iter_yield_abandonment_diagnostics(
-        &checked,
-        &builder.vec_iter_yield_exit_drops,
-        &dataflow_result,
-    ));
     if std::env::var("HEW_DEBUG_CHECKED_FUNCTION")
         .is_ok_and(|filter| checked.name.contains(&filter))
     {
@@ -14154,16 +14148,6 @@ struct ActiveIterationOwner {
     name: String,
     site: SiteId,
     ty: ResolvedTy,
-}
-
-#[derive(Debug, Clone)]
-struct VecIterYieldExitDrop {
-    binding: BindingId,
-    body_start_block: u32,
-    /// The body-end block already receives the normal inline drop. It is a
-    /// region boundary, not part of the abandonment window.
-    body_end_block: u32,
-    site: SiteId,
 }
 
 /// Accumulated lexical-scope facts for one HIR `ScopeId`, built incrementally

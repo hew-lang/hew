@@ -62,18 +62,23 @@ fn walk_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
 
 #[test]
 fn is_type_pattern_lowers_to_bool_true_literal() {
-    // `holder is Holder` where `holder: Holder` is a user `type` decl —
+    // `holder is Holder` where `holder: Holder` is a user `enum` decl —
     // the checker has recorded the static type-pattern match, so HIR
     // lowers the comparison to a `Bool(true)` literal. Any `else` branch
     // gated on the negation is therefore dead at the HIR level.
+    //
+    // The receiver is an enum rather than a `type Foo { ... }` record
+    // because `is` on a record is rejected by the checker (#3108), and a
+    // rejected program records no type-pattern entry to read here.
     let output = lower(
         r"
-        pub type Holder {
-            v: i64;
+        pub enum Holder {
+            One;
+            Two;
         }
 
         fn main() {
-            let holder = Holder { v: 1 };
+            let holder = Holder.One;
             let _eq: bool = holder is Holder;
         }
         ",
@@ -118,13 +123,14 @@ fn is_value_pattern_lowers_to_identity_compare() {
     // runtime `IdentityCompare` form, NOT to a literal.
     let output = lower(
         r"
-        pub type Holder {
-            v: i64;
+        pub enum Holder {
+            One;
+            Two;
         }
 
         fn main() {
-            let a = Holder { v: 1 };
-            let b = Holder { v: 2 };
+            let a = Holder.One;
+            let b = Holder.Two;
             let _eq: bool = a is b;
         }
         ",

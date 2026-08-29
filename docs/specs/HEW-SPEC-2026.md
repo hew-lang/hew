@@ -5072,7 +5072,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 7. Bitwise XOR: `^`
 8. Bitwise OR: `|`
 9. Relational: `<`, `<=`, `>`, `>=`
-10. Equality: `==`, `!=`, `is` (`is` = reference identity on heap handles; `expr is TypeName` = static-only type check; rejected on string/scalars/records/tuples; regex matching is via `Pattern.is_match`)
+10. Equality: `==`, `!=`, `is` (`is` = reference identity on heap handles; `expr is TypeName` = static-only type check; rejected with `E_IS_VALUE_TYPE` on scalars, `string`, tuples, and `type Name { ... }` record declarations — records are copy-on-write values with no pointer identity, so `==` is the comparison for them; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered)

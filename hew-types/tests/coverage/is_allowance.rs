@@ -1,11 +1,15 @@
 //! Identity-comparison (`is`) allowance set and value-type rejection (slice D-2).
 //!
-//! Covers the checker rule from plan §D-D2:
+//! Covers the checker rule (HEW-SPEC-2026 §operator precedence, entry 10):
+//! `is` is reference identity on heap *handles*, never on values.
 //!
-//! * Allowed: machines, actors/actor refs, `Vec`/`HashMap`/`HashSet`, `bytes`,
-//!   user `type Foo { ... }` declarations.
+//! * Allowed: machines, actors/actor refs, `Vec`/`HashMap`/`HashSet`, `bytes`.
 //! * Rejected with `E_IS_VALUE_TYPE`: scalars (`i64`, `bool`, `char`, floats),
-//!   `string`, and tuples.
+//!   `string`, tuples, and user `type Foo { ... }` record declarations.
+//!   Records are copy-on-write values under the v0.5 value model
+//!   (`docs/v05/ownership.md` — structural `==`, no pointer identity), so the
+//!   checker is the last word on them; the codegen-front `IdentityCompare`
+//!   legality check is an unreachable backstop, not a user diagnostic (#3108).
 //! * Cross-type mismatches collapse into `TypeErrorKind::Mismatch`.
 //! * Move/consumed-self follows the existing use-after-move rule (plan §D-D4).
 //!
@@ -127,20 +131,132 @@ fn bytes_is_bytes_accepted() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// REJECTED: user `type Foo { ... }` records are values, not handles (#3108)
+// ---------------------------------------------------------------------------
+
+/// A `type Foo { ... }` declaration is a copy-on-write *value* under the v0.5
+/// value model, so `p is q` has no identity to compare. Before #3108 the
+/// checker admitted it and the program died in the codegen front with a
+/// span-less `E_CODEGEN_FRONT_FAIL_CLOSED`; the checker must be the last word.
 #[test]
-fn user_type_decl_is_user_type_decl_accepted() {
-    // `type Foo { ... }` declares a heap-backed Struct in the runtime; `is`
-    // is valid (plan §D-D2).
-    assert_clean(
+fn record_type_is_record_type_rejected() {
+    assert_has_e_is_value_type(
         r"
-            type Holder {
-                v: i64;
+            type Point {
+                x: i64;
             }
 
             fn main() {
-                let p = Holder { v: 1 };
-                let q = Holder { v: 1 };
+                let p = Point { x: 1 };
+                let q = Point { x: 1 };
                 let _eq: bool = p is q;
+            }
+        ",
+    );
+}
+
+/// One mistake, one diagnostic: `p is q` on two `Point` values is a single
+/// misuse of the operator, so the two operands must not each raise a
+/// byte-identical rejection.
+#[test]
+fn record_type_rejection_is_reported_once_per_expression() {
+    let output = typecheck_isolated(
+        r"
+            type Point {
+                x: i64;
+            }
+
+            fn main() {
+                let p = Point { x: 1 };
+                let q = Point { x: 1 };
+                let _eq: bool = p is q;
+            }
+        ",
+    );
+    let count = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("E_IS_VALUE_TYPE"))
+        .count();
+    assert_eq!(
+        count, 1,
+        "expected exactly one E_IS_VALUE_TYPE, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Counter-case for the de-duplication above: two *different* value types each
+/// name their own type, so each still earns its own diagnostic. Without this
+/// the de-duplication could silently collapse to "report the LHS only".
+#[test]
+fn distinct_value_type_operands_are_each_reported() {
+    let output = typecheck_isolated(
+        r#"
+            fn main() {
+                let a: i64 = 1;
+                let b: string = "x";
+                let _eq: bool = a is b;
+            }
+        "#,
+    );
+    let count = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("E_IS_VALUE_TYPE"))
+        .count();
+    assert_eq!(
+        count, 2,
+        "expected one E_IS_VALUE_TYPE per distinct value type, got: {:#?}",
+        output.errors
+    );
+}
+
+/// The diagnostic has to be actionable: it names the offending type and points
+/// at `==`, the operator that does compare two records.
+#[test]
+fn record_type_rejection_names_the_type_and_suggests_equality() {
+    let output = typecheck_isolated(
+        r"
+            type Point {
+                x: i64;
+            }
+
+            fn main() {
+                let p = Point { x: 1 };
+                let q = Point { x: 1 };
+                let _eq: bool = p is q;
+            }
+        ",
+    );
+    let named = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("E_IS_VALUE_TYPE"))
+        .filter(|e| e.message.contains("Point") && e.message.contains("`==`"))
+        .count();
+    assert!(
+        named > 0,
+        "expected an E_IS_VALUE_TYPE naming `Point` and `==`, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Negative control for the rejection: `==` on the very same record is the
+/// supported comparison and must stay clean, so the diagnostic's advice is
+/// truthful rather than a dead end.
+#[test]
+fn record_type_structural_equality_still_accepted() {
+    assert_clean(
+        r"
+            type Point {
+                x: i64;
+            }
+
+            fn main() {
+                let p = Point { x: 1 };
+                let q = Point { x: 1 };
+                let _eq: bool = p == q;
             }
         ",
     );
@@ -266,22 +382,20 @@ fn vec_int_is_vec_string_rejected_as_mismatch() {
 
 #[test]
 fn is_after_actor_send_reads_sender_snapshot_source() {
-    let src = r#"
-        type Payload { data: string; }
-
+    let src = r"
         actor SnapshotSink {
             let _id: i64;
-            receive fn consume(p: Payload) {}
+            receive fn consume(p: bytes) {}
         }
 
         fn main() {
             let s = spawn SnapshotSink(_id: 0);
-            let h = Payload { data: "hello" };
-            let q = Payload { data: "world" };
+            let h = bytes.new();
+            let q = bytes.new();
             s.consume(h);
             let _eq: bool = h is q;
         }
-    "#;
+    ";
     let output = typecheck_isolated(src);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -293,19 +407,20 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
 #[test]
 fn is_type_pattern_static_tautology_emits_redundant_is_warning() {
     // Static-tautology: `holder is Holder` where `holder: Holder` is a
-    // user `type` declaration. The checker records the type-pattern in
+    // user `enum` declaration. The checker records the type-pattern in
     // `is_type_patterns`, HIR lowers it to `HirLiteral::Bool(true)`, and
     // any `else` branch gated on the negation is dead. A `RedundantIs`
     // warning surfaces this so the user is told before they wonder why
     // their else-branch never runs.
     let output = common::typecheck_isolated(
         r"
-            type Holder {
-                v: i64;
+            enum Holder {
+                One;
+                Two;
             }
 
             fn main() {
-                let holder = Holder { v: 1 };
+                let holder = Holder.One;
                 let _eq: bool = holder is Holder;
             }
         ",
@@ -325,16 +440,18 @@ fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
     // flag the Mismatch (and not the static-tautology warning).
     let output = common::typecheck_isolated(
         r"
-            type Holder {
-                v: i64;
+            enum Holder {
+                One;
+                Two;
             }
 
-            type Other {
-                w: i64;
+            enum Other {
+                Three;
+                Four;
             }
 
             fn main() {
-                let holder = Holder { v: 1 };
+                let holder = Holder.One;
                 let _eq: bool = holder is Other;
             }
         ",
@@ -375,12 +492,13 @@ fn is_type_pattern_requires_identifier_lhs_emits_invalid_operation() {
     // doesn't fire first.
     let output = common::typecheck_isolated(
         r"
-            type Holder {
-                v: i64;
+            enum Holder {
+                One;
+                Two;
             }
 
             fn make() -> Holder {
-                Holder { v: 1 }
+                Holder.One
             }
 
             fn main() {

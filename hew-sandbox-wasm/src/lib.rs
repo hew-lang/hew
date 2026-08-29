@@ -1605,13 +1605,13 @@ fn main() {
 
     #[test]
     fn is_operator_is_reserved_runtime_feature() {
+        // The operands are `Vec` handles, not a record: `is` on a record is a
+        // checker rejection (E_IS_VALUE_TYPE, #3108), and this test is about
+        // the sandbox profile reserving the operator, not about the value
+        // model. A record receiver would never reach the profile check.
         assert_profile_rejection(
             r#"
-type Node {
-    value: i64;
-}
-
-fn same(left: Node, right: Node) -> bool {
+fn same(left: Vec<i64>, right: Vec<i64>) -> bool {
     left is right
 }
 

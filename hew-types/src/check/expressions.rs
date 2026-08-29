@@ -746,11 +746,11 @@ impl Checker {
 
             // Identity comparison: `lhs is rhs` (slice D-2).
             //
-            // Allowed receivers per plan §D-D2: machines, actors/actor refs,
-            // heap-backed `Vec`/`HashMap`/`HashSet`/`bytes`, and user `type`
-            // declarations (`TypeDefKind::Struct`/`Enum`, both Rc-backed in
-            // the runtime). Rejected with `E_IS_VALUE_TYPE`: scalars, `String`,
-            // `record` types, tuples, ranges, fn/closures.
+            // Allowed receivers: machines, actors/actor refs, heap-backed
+            // `Vec`/`HashMap`/`HashSet`/`bytes`, and user `enum` declarations.
+            // Rejected with `E_IS_VALUE_TYPE`: scalars, `String`, `type
+            // Foo { ... }` record declarations, `record` types, tuples,
+            // ranges, fn/closures.
             //
             // Result is always `bool`. Cross-class mismatches (e.g.
             // `LocalPid<T> is Vec<int>`) collapse into a single
@@ -9598,10 +9598,15 @@ impl Checker {
         let lhs_ok = self.is_identity_capable(&lhs_resolved);
         let rhs_ok = self.is_identity_capable(&rhs_resolved);
 
+        // One rejection per `is` expression when both operands resolve to the
+        // same value type: two carets carrying a byte-identical message about
+        // one type reads as two separate bugs. Operands of *different* value
+        // types still get one diagnostic each, since each names its own type.
+        let same_value_type = !lhs_ok && !rhs_ok && lhs_resolved == rhs_resolved;
         if !lhs_ok {
             self.report_is_value_type(&lhs.1, &lhs_resolved);
         }
-        if !rhs_ok {
+        if !rhs_ok && !same_value_type {
             self.report_is_value_type(&rhs.1, &rhs_resolved);
         }
 
@@ -9657,10 +9662,13 @@ impl Checker {
         let lhs_ok = self.is_identity_capable(&lhs_resolved);
         let rhs_ok = self.is_identity_capable(&rhs_resolved);
 
+        // Same de-duplication as the value form: `a is i64` where `a: i64`
+        // names one type, so it gets one diagnostic.
+        let same_value_type = !lhs_ok && !rhs_ok && lhs_resolved == rhs_resolved;
         if !lhs_ok {
             self.report_is_value_type(&lhs.1, &lhs_resolved);
         }
-        if !rhs_ok {
+        if !rhs_ok && !same_value_type {
             self.report_is_value_type(&rhs.1, &rhs_resolved);
         }
 
@@ -9720,9 +9728,10 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             span,
             format!(
-                "`is` requires an identity-bearing operand; `{}` is a value type \
-                 (E_IS_VALUE_TYPE) — use `==` for value comparison; `is` checks \
-                 identity for heap-backed types only",
+                "`is` compares identity, and `{}` is a value type \
+                 (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` \
+                 applies to handles such as actor references and \
+                 `Vec`/`HashMap`/`HashSet`",
                 ty.user_facing()
             ),
         );
@@ -9737,10 +9746,10 @@ impl Checker {
     ///   `LocalPid<T>`.
     /// * Heap-backed collections: `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`.
     /// * `bytes`.
-    /// * User `type Foo { ... }` declarations (`TypeDefKind::Struct` and
-    ///   `TypeDefKind::Enum`), which are Rc-backed in the runtime.
+    /// * User `enum` declarations (`TypeDefKind::Enum`).
     ///
-    /// Returns `false` for value types: scalars, `String`, `record` types,
+    /// Returns `false` for value types: scalars, `String`, `type Foo { ... }`
+    /// record declarations (`TypeDefKind::Struct`), `record` types,
     /// tuples, arrays, slices, ranges, durations, functions, closures, and
     /// trait objects. Caller is responsible for handling `Ty::Var` / `Ty::Error`
     /// before invoking this predicate.
@@ -9761,16 +9770,24 @@ impl Checker {
                 if builtin.is_some_and(BuiltinType::is_collection) {
                     return true;
                 }
-                // User type declarations: machines, actors, and user
-                // `type Foo { ... }` (Struct/Enum, Rc-backed). `Record` is
-                // explicitly rejected as a value type.
+                // A `type Foo { ... }` record declaration
+                // (`TypeDefKind::Struct`) is not identity-capable: under the
+                // v0.5 value model a record is a copy-on-write value with
+                // structural `==` and no pointer identity
+                // (`docs/v05/ownership.md`), and the codegen front has no
+                // `IdentityCompare` lowering for its representation. The
+                // checker owns that answer, so the codegen-front legality
+                // check stays an unreachable backstop (#3108).
+                //
+                // Machines, actors and enums stay in the set: only the record
+                // answer is settled here. `is` on an `enum` or `machine` value
+                // still reaches the codegen-front check today; whether they are
+                // value-class too is a separate language decision, tracked as
+                // follow-up on #3108.
                 if let Some(td) = self.type_defs.get(name) {
                     return matches!(
                         td.kind,
-                        TypeDefKind::Machine
-                            | TypeDefKind::Actor
-                            | TypeDefKind::Struct
-                            | TypeDefKind::Enum
+                        TypeDefKind::Machine | TypeDefKind::Actor | TypeDefKind::Enum
                     );
                 }
                 false

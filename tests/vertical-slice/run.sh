@@ -760,7 +760,7 @@ run_accept_expect_status "vec_iter_escape_async" 42
 # spawn/message/reply boundary. The actor-state escape is statically impossible.
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/vec_iter_actor_field_non_send.hew" \
-    "type is not Send" \
+    "keep the resource inside one owning actor and send that actor a message instead" \
     "vec_iter_actor_field_non_send"
 
 # g12-B (CLOSED): `for x in s` over a HashSet snapshots the set's elements into

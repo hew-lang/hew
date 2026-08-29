@@ -167,6 +167,10 @@ At rc1 the feature is not yet user-visible; only the **seam** is reserved:
 - sending a resource-shaped value is a fail-closed compile error today (there is
   no unsound window before the kind ships).
 
+Use the [owning-actor pattern](../hew-language-guide.md#own-a-resource-with-an-actor):
+open the resource inside one actor, keep it in that actor's state, and send the
+actor ordinary operation messages instead of sending the resource.
+
 Reserving the seam now — rather than the whole feature — closes the retrofit
 danger (generics silently assuming every type is copyable) while keeping the
 affine kind itself severable as the first post-rc1 ownership feature.
@@ -177,11 +181,11 @@ The entire ownership model rejects your program in exactly **three** places. Eac
 wall names the binding, its state, and the span that put it there, and each ships
 a one-line escape:
 
-| Wall                     | When it fires                         | Escape                                                             |
-| ------------------------ | ------------------------------------- | ------------------------------------------------------------------ |
-| mutation of a `let`      | you mutate a value bound with `let`   | declare it `var`                                                   |
-| clone of a non-cloneable | you `clone` a value with no copy path | restructure now; the `resource` lifecycle later                    |
-| send of a non-sendable   | you send a resource-shaped value      | use the owning-actor pattern; lifts when `resource` transfer ships |
+| Wall                     | When it fires                         | Escape                                                                                                                      |
+| ------------------------ | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| mutation of a `let`      | you mutate a value bound with `let`   | declare it `var`                                                                                                            |
+| clone of a non-cloneable | you `clone` a value with no copy path | restructure now; the `resource` lifecycle later                                                                             |
+| send of a non-sendable   | you send a resource-shaped value      | use the [owning-actor pattern](../hew-language-guide.md#own-a-resource-with-an-actor); lifts when `resource` transfer ships |
 
 There is no fourth wall. Use-after-send of a value is **not** an error (send takes
 a snapshot); use-after-call is **not** an error (calls borrow). The model has no

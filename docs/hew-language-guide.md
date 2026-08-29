@@ -137,12 +137,12 @@ fn main() {
 
 Use `as` for all defined numeric conversions: widening, narrowing, int↔float, and signed↔unsigned. Integer narrowing keeps the target width's low bits. Integer→float and float→float casts round to the target float type. Float→int casts truncate toward zero for in-range finite values and use defined saturation for every edge case:
 
-| Source value | Signed result | Unsigned result |
-| --- | --- | --- |
-| In-range finite | Truncated toward 0 | Truncated toward 0 |
-| `+Inf` or greater than the target maximum | Target maximum | Target maximum |
-| `-Inf` or less than the target minimum | Target minimum | `0` |
-| `NaN` | `0` | `0` |
+| Source value                              | Signed result      | Unsigned result    |
+| ----------------------------------------- | ------------------ | ------------------ |
+| In-range finite                           | Truncated toward 0 | Truncated toward 0 |
+| `+Inf` or greater than the target maximum | Target maximum     | Target maximum     |
+| `-Inf` or less than the target minimum    | Target minimum     | `0`                |
+| `NaN`                                     | `0`                | `0`                |
 
 Use `.try_to_X()` when a conversion must fail instead of losing information. It returns `Option<X>` and produces `Some` only when the value round-trips through the target type exactly.
 
@@ -843,10 +843,10 @@ fn main() {
 }
 ```
 
-| Declaration | How to exit non-zero |
-|-------------|----------------------|
-| `fn main() -> i32` | return the code as the last expression or with `return N;` |
-| `fn main() -> i64` | same — return the code value |
+| Declaration        | How to exit non-zero                                           |
+| ------------------ | -------------------------------------------------------------- |
+| `fn main() -> i32` | return the code as the last expression or with `return N;`     |
+| `fn main() -> i64` | same — return the code value                                   |
 | `fn main()` (unit) | call `exit(N)` explicitly; the function itself can only exit 0 |
 
 Shell pipelines and `&&` chains read the exit code — write `main() -> i32` for any program that signals failure to the caller. `assert(false)`, `panic(...)`, and traps (div-by-zero) all exit non-zero via the runtime trap handler and do not need an explicit return.
@@ -1080,11 +1080,11 @@ Compose records by nesting; access depth-chains directly. Every field must be su
 
 > **Syntax callout — this trips up almost everyone:**
 >
-> | Context | Separator |
-> |---------|-----------|
-> | `type` field definitions | `;` (semicolon) — idiomatic; `,` also accepted |
-> | `enum` variant separators | `;` (semicolon) — required; `,` is an error |
-> | Record construction literals | `,` (comma) — required; `;` is an error |
+> | Context                      | Separator                                      |
+> | ---------------------------- | ---------------------------------------------- |
+> | `type` field definitions     | `;` (semicolon) — idiomatic; `,` also accepted |
+> | `enum` variant separators    | `;` (semicolon) — required; `,` is an error    |
+> | Record construction literals | `,` (comma) — required; `;` is an error        |
 >
 > ```hew
 > // Definition — semicolons throughout (idiomatic)
@@ -1353,6 +1353,7 @@ fn main() {
 **2. `scope{}` body for concurrent tasks** — use `scope{}` with `fork` for structured concurrency. `await` suspensions inside a `scope{}` do not block its sibling forks:
 
 <!-- doctest: skip -->
+
 ```hew
 scope {
     fork { result_a = work_a(); };
@@ -1364,6 +1365,7 @@ scope {
 **3. `await` as a value in non-statement positions is rejected** — `await` cannot be used as a function argument, binary operand, or let-binding right-hand side nested inside a larger expression. Bind the awaited result to a `let` first:
 
 <!-- doctest: skip -->
+
 ```hew
 // Wrong: await as function argument
 // println(await actor.method());   // compile error
@@ -1410,6 +1412,45 @@ fn main() {
 ```
 
 Put post-spawn initialization in `#[on(start)]` and teardown in `#[on(stop)]`. Both take no params; fields are in scope by bare name. They are plain fns, not receive fns. `#[on(start)]` appears at most once; `#[on(stop)]` may repeat.
+
+### Own a resource with an actor
+
+Keep a file, socket, or other non-sendable value inside one actor. Open it in
+the actor's startup code, send ordinary data in messages, and release it when
+the actor stops. The resource never crosses an actor boundary; callers share
+the actor handle instead.
+
+```hew
+actor FileWriter {
+    // Stand-in for the private descriptor of a file or socket.
+    var descriptor: i64 = -1;
+
+    #[on(start)]
+    fn open() {
+        descriptor = 7;
+    }
+
+    receive fn write(line: string) {
+        println(f"sink {descriptor}: {line}");
+    }
+
+    #[on(stop)]
+    fn close() {
+        println(f"closed sink {descriptor}");
+        descriptor = -1;
+    }
+}
+
+fn main() {
+    let writer = spawn FileWriter(descriptor: -1);
+    writer.write("service started");
+}
+```
+
+Do not put the sink or socket in a message. Give every operation that needs it
+a `receive fn` on its owning actor, then send the operation's sendable inputs.
+Replace the stand-in assignments and prints with the library operations that
+open, use, and close the real resource.
 
 ### #[on(crash)] hook
 
@@ -1703,7 +1744,7 @@ A machine is a value type. State constructors use a machine-qualified dotted for
 > `default`, every `(state, event)` pair not covered by an explicit `on`
 > rule is a compile error — this is what makes a machine an exhaustive
 > state/event matrix instead of an ad-hoc set of handlers. `default { state
-> }` exists because most machines have far more legal no-op transitions
+}` exists because most machines have far more legal no-op transitions
 > (an `Ajar` door ignoring a second `Open`) than meaningful ones, and
 > writing every one of those out by hand is pure noise. The trade-off:
 > `default` is all-or-nothing per machine, not per state. Adding it makes
@@ -1716,7 +1757,7 @@ A machine is a value type. State constructors use a machine-qualified dotted for
 > transitions in a machine should be hard errors and others should be
 > silent no-ops, the only current option is to omit `default` and write out
 > every cell explicitly, including the no-op ones (`on Bump: Dead => Dead
-> reenter { state }`), so the compiler forces you to make each one a
+reenter { state }`), so the compiler forces you to make each one a
 > deliberate decision.
 
 ### Transition heads: the source is a pattern, the target is an expression
@@ -2053,6 +2094,7 @@ A monomorphic function exported from another module can be passed as a
 first-class value; its type is recovered from the declared signature.
 
 <!-- doctest: skip -->
+
 ```hew
 import math_utils;
 
@@ -2073,18 +2115,19 @@ fn main() {
 Where `math_utils.hew` exports:
 
 <!-- doctest: skip -->
+
 ```hew
 pub fn add_one(x: i64) -> i64 { x + 1 }
 pub fn square(x: i64) -> i64 { x * x }
 pub fn identity<T>(x: T) -> T { x }
 ```
 
-> **Generic functions are not usable as values.** Capturing a *generic*
+> **Generic functions are not usable as values.** Capturing a _generic_
 > function as a value fails in both directions. From another module
 > (`let id: fn(i64) -> i64 = math_utils.identity;`) it is rejected with
 > ``E_NOT_YET_IMPLEMENTED: MIR lowering for named function
-> `math_utils$identity` used as a value (only non-generic named functions are
-> currently supported)``. From the current module it is rejected earlier, as a
+`math_utils$identity` used as a value (only non-generic named functions are
+currently supported)``. From the current module it is rejected earlier, as a
 > type mismatch (``expected `fn(i64) -> i64`, found `fn(T) -> T` ``). Calling
 > an imported generic directly (`math_utils.identity(5)`) works normally —
 > only the value position is closed. Write a monomorphic wrapper when you need
@@ -2403,7 +2446,7 @@ fn main() {
 
 Use Go-style named receivers: the first parameter whose type matches the impl target is the receiver (no `self` keyword required — the parameter can be named anything, including `self`). The receiver is consumed by value.
 
-A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the *trait* comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. They do not yet resolve when the implementing type is ALSO imported from a directory module (e.g. `import gm.{ Dog };` where `Dog` and its `impl Greet for Dog` both live in `gm`) — calling an inherited default on that receiver fails with `no method 'greet' on 'gm.Dog'` rather than falling back to the trait's default body; that gap is tracked separately.
+A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. They do not yet resolve when the implementing type is ALSO imported from a directory module (e.g. `import gm.{ Dog };` where `Dog` and its `impl Greet for Dog` both live in `gm`) — calling an inherited default on that receiver fails with `no method 'greet' on 'gm.Dog'` rather than falling back to the trait's default body; that gap is tracked separately.
 
 ### Display trait (fmt) for f-string interpolation
 
@@ -2707,15 +2750,15 @@ fn main() {
 
 **`type_of()` constants** — `type_of()` returns an `i32` tag:
 
-| Value | Type |
-|-------|------|
-| 0 | null |
-| 1 | bool |
-| 2 | i64 (integer) |
-| 3 | f64 (float) |
-| 4 | string |
-| 5 | array |
-| 6 | object |
+| Value | Type          |
+| ----- | ------------- |
+| 0     | null          |
+| 1     | bool          |
+| 2     | i64 (integer) |
+| 3     | f64 (float)   |
+| 4     | string        |
+| 5     | array         |
+| 6     | object        |
 
 ```hew
 import std.encoding.json;
@@ -2803,6 +2846,7 @@ A config missing `port` traps with `missing required field: port` instead of ret
 ### Importing your own modules
 
 <!-- doctest: skip -->
+
 ```hew
 import "helpers.hew";
 
@@ -2837,10 +2881,10 @@ invisible outside its defining file.
 **Reserved-word module path segments.** A dotted path segment may be a
 keyword: `import src.workflow.machine.{Thing};`. Bare and selective imports
 parse and resolve normally, as do `type` and `trait` segments.
-The remaining restriction is on the *binding*, not the path — a bare
+The remaining restriction is on the _binding_, not the path — a bare
 `import src.workflow.machine;` binds the module under the name `machine`,
 and writing `machine.Thing` is then a parse error
-(`` unexpected `.` in block ``). The same is true of `actor`. Use the
+(``unexpected `.` in block``). The same is true of `actor`. Use the
 selective (`.{Name}`) form for a keyword-named module, or reach it via the quoted string-path import form above. Wildcard imports are retired.
 
 ### `pub const` — module-level constants
@@ -2981,7 +3025,7 @@ Structural equality over a float field is **bitwise**, not IEEE numeric. The
 compiler compares the raw bit patterns of the two floats, so:
 
 - it is **reflexive**: `x == x` holds for every value, including `NaN`. Two
-  `NaN` values compare *equal* when their bit patterns are identical.
+  `NaN` values compare _equal_ when their bit patterns are identical.
 - `+0.0` and `-0.0` are **distinct** (their bit patterns differ), so a record
   holding `+0.0` is not equal to one holding `-0.0`.
 
@@ -3047,6 +3091,7 @@ comparing raw buffer bytes, which would produce unreliable results for
 refcounted heap handles:
 
 <!-- doctest: skip -->
+
 ```hew
 type Packet { data: bytes; }
 // Packet { data: bytes } == Packet { data: bytes }
@@ -3441,14 +3486,14 @@ The `| after duration` timeout combinator works with the two blocking network
 operations, converting a plain suspend into a timed suspend that returns
 `Result` on expiry:
 
-| Suspend form | Return type |
-| --- | --- |
-| `await conn.read_string()` | `string` |
-| `await conn.read_string() \| after d` | `Result<string, IoError>` |
-| `await conn.read()` | `bytes` |
-| `await conn.read() \| after d` | `Result<bytes, IoError>` |
-| `await ln.accept()` | `net.Connection` |
-| `await ln.accept() \| after d` | `Result<net.Connection, IoError>` |
+| Suspend form                          | Return type                       |
+| ------------------------------------- | --------------------------------- |
+| `await conn.read_string()`            | `string`                          |
+| `await conn.read_string() \| after d` | `Result<string, IoError>`         |
+| `await conn.read()`                   | `bytes`                           |
+| `await conn.read() \| after d`        | `Result<bytes, IoError>`          |
+| `await ln.accept()`                   | `net.Connection`                  |
+| `await ln.accept() \| after d`        | `Result<net.Connection, IoError>` |
 
 If explicit runtime shutdown begins while a deadline-form read or accept is
 already parked, it resumes as `Err(NetError.Cancelled(0))`. Its own deadline
@@ -3458,6 +3503,7 @@ surface and retain their existing fail-closed empty/invalid value behaviour.
 Use inside a `scope` body to bound how long a handler waits for a peer:
 
 <!-- doctest: skip -->
+
 ```hew
 scope {
     fork {
@@ -3542,6 +3588,7 @@ it never becomes the peer's identity and may differ on every node.
 Call all identity and pinning operations before `Node.start`:
 
 <!-- doctest: skip -->
+
 ```hew
 Node.set_transport("quic-mesh");
 Node.load_keys("node.key");
@@ -3559,6 +3606,7 @@ credential is rejected before the peer becomes routable.
 A client selects its local pin when connecting:
 
 <!-- doctest: skip -->
+
 ```hew
 Node.connect("2@127.0.0.1:9000");
 ```
@@ -3586,6 +3634,7 @@ Registry names are discovery aliases. Repointing a name affects future
 Remote monitors deliver one typed notification through `#[on(down)]`:
 
 <!-- doctest: skip -->
+
 ```hew
 import std.link_monitor.{DownNotification, DownReason};
 
@@ -3690,7 +3739,7 @@ fn add_two_positive_numbers_returns_sum() {
 
 `hew test <path>` (a file or a directory) discovers every function tagged
 `#[test]` and runs each in its own isolated compiled program. A file is a
-*test file* — eligible for discovery at all — when its name ends in
+_test file_ — eligible for discovery at all — when its name ends in
 `_test.hew`, or when it lives inside a directory named `tests/`; a `#[test]`
 function in a plain, non-matching file is never discovered, silently.
 Running `hew test .` over a directory recurses and aggregates every
@@ -3711,7 +3760,7 @@ default.
 
 > **Discovery is per-file, not per-project.** A `#[test]` fn in a file that
 > doesn't end in `_test.hew` and isn't under `tests/` is invisible to `hew
-> test` — no warning, no error, it's simply never found. If a suite's pass
+test` — no warning, no error, it's simply never found. If a suite's pass
 > count looks lower than expected, run `hew test <path> --list` first to see
 > exactly what was discovered before debugging individual tests.
 

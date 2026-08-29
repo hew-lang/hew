@@ -2101,6 +2101,42 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     }),
                 }
             }
+            // The inverse direction: every required owner with a usable
+            // definition-site recipe must be discharged by exactly one plan
+            // entry. An owner without a single recipe is already reported at
+            // its definition site, and a place shared by two required
+            // generations is already the `ownership-place` finding, so only
+            // sole-owner, recipe-bearing omissions are new.
+            let mut omitted = required
+                .iter()
+                .filter(|(owner, place)| {
+                    !matched.contains(*owner)
+                        && recipes_by_owner
+                            .get(*owner)
+                            .is_some_and(|recipes| recipes.len() == 1)
+                        && required.values().filter(|other| *other == *place).count() == 1
+                })
+                .collect::<Vec<_>>();
+            omitted.sort_by_key(|(owner, _)| (owner.binding.0, owner.generation));
+            for (owner, place) in omitted {
+                let (name, site) = binding_metadata
+                    .get(&owner.binding)
+                    .cloned()
+                    .unwrap_or_else(|| (format!("{owner:?}"), SiteId(0)));
+                findings.push(MirCheck::ObligationUnderReleased {
+                    function: checked.name.clone(),
+                    blocks: vec![block_id],
+                    site,
+                    name,
+                    local_ty: definition_types
+                        .get(owner)
+                        .map_or_else(|| "<unknown>".to_owned(), ToString::to_string),
+                    mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
+                    reason: format!(
+                        "frozen exit plan omits the cleanup for live exact owner {owner:?} at {place:?} on {exit:?}"
+                    ),
+                });
+            }
         }
     }
     findings
@@ -2246,6 +2282,40 @@ fn generation_ending_transfer_before_join_mint_is_one_owner_per_place() {
         }),
     ]);
     assert_eq!(one_owner_per_place_findings(&checked), Vec::<String>::new());
+}
+
+/// Lower the `quote(when()?)` shape end to end: a `?`-payload owner
+/// (`__try_ok`) is the source of one arm's Move into the call-argument slot,
+/// and the join publication mints the argument temp over that same slot. The
+/// producer must end the payload generation at its Move; this pins that
+/// `composite_join_predecessor_move_sources` keeps doing so rather than the
+/// hand-built streams above, which insert the Transfer themselves.
+#[test]
+fn try_payload_forwarded_into_a_call_argument_join_has_one_owner_per_place() {
+    let source = r#"
+fn quote(s: string) -> string { "\"" + s + "\"" }
+fn when() -> Result<string, string> { Ok("now") }
+
+fn build(kind: string) -> Result<string, string> {
+    let event = "{\"type\":" + quote(kind) + ",\"time\":" + quote(when()?) + "}";
+    Ok(event)
+}
+"#;
+    let module = crate::return_provenance::tests::lower_source(source);
+    let pipeline = crate::lower_hir_module(&module);
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "build")
+        .expect("checked build");
+    // Mutation oracle: with the join scan disabled this reports
+    // "place Local(N) has more than one live exact owner generation".
+    assert_eq!(one_owner_per_place_findings(checked), Vec::<String>::new());
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "fixture must lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
 }
 
 #[test]
@@ -9315,6 +9385,40 @@ mod replay_plan_tests {
         // The replay-derived plan for the same stream is the accepted form.
         let derived = plans_for(&blocks);
         assert!(validate_ownership_events(&checked(blocks, derived)).is_empty());
+    }
+
+    #[test]
+    fn plan_omitting_a_live_owner_cleanup_is_rejected_by_the_verifier() {
+        let a = owner(1);
+        let blocks = vec![block(
+            0,
+            vec![mint(a, Place::Local(4)), recipe(a, 0)],
+            Terminator::Return,
+        )];
+        let derived = plans_for(&blocks);
+        assert_eq!(
+            plan(&derived, &ExitPath::Return { block: 0 }).drops.len(),
+            1,
+            "replay derives exactly one cleanup for the live owner"
+        );
+        assert!(validate_ownership_events(&checked(blocks.clone(), derived)).is_empty());
+        let empty_plan = vec![(ExitPath::Return { block: 0 }, DropPlan { drops: vec![] })];
+        let findings = validate_ownership_events(&checked(blocks, empty_plan));
+        let omissions = findings
+            .iter()
+            .filter(|finding| {
+                matches!(
+                    finding,
+                    MirCheck::ObligationUnderReleased { reason, .. }
+                        if reason.contains("omits the cleanup for live exact owner")
+                            && reason.contains("Local(4)")
+                )
+            })
+            .count();
+        assert_eq!(
+            omissions, 1,
+            "a live recipe-bearing owner with no plan entry must be rejected once: {findings:?}"
+        );
     }
 }
 

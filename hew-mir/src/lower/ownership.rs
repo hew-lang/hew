@@ -2179,6 +2179,21 @@ impl Builder {
     /// block. A Move immediately preceded by a retain of its source is an
     /// independent `+1` share, not a relocation of the source generation, and
     /// is skipped: the source owner stays live and the join owns the share.
+    ///
+    /// SHORTCUT (structural scan, not an ownership fact).
+    /// WHY: arm lowering does not record "this Move relocates a live owner
+    /// generation" as an event, so the join publication has to recover it by
+    /// re-reading the predecessor blocks; the retain exemption enumerates the
+    /// `+1` share instructions (`StringRetain`/`BytesRetain`) because those are
+    /// the only retains an arm emits directly before its result Move today.
+    /// WHEN: delete once every arm Move that relocates an owner emits its own
+    /// generation-ending event at the Move site (the ladder's virtual-value /
+    /// `Place` seam, `Materialize { reason }`), at which point the join derives
+    /// from replay and no predecessor scan is needed. A new retain variant
+    /// that precedes an arm Move fails closed here as an `ownership-place`
+    /// verifier finding, never as a silent double owner.
+    /// WHAT: the real solution is a per-arm "value relocated into the join
+    /// slot" event produced by the arm lowering itself.
     fn composite_join_predecessor_move_sources(&self, place: Place) -> Vec<Place> {
         self.pending_blocks
             .iter()

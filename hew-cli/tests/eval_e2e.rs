@@ -398,24 +398,6 @@ fn eval_sir_lower_rejects_an_unadmitted_fragment_without_legacy_fallback() {
     );
 }
 
-/// Shadow mode remains an observable differential oracle while the strict
-/// lane grows. Eval must report what it checked instead of silently using the
-/// established emitted pipeline.
-#[test]
-fn eval_sir_shadow_reports_candidate_coverage() {
-    let output = Command::new(hew_binary())
-        .args(["eval", "--sir-shadow", "1 + 2"])
-        .current_dir(repo_root())
-        .output()
-        .expect("run hew eval --sir-shadow");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("SIR shadow: verified"),
-        "eval shadow mode must report its candidate coverage: {stderr}"
-    );
-}
-
 #[test]
 fn eval_std_observe_reads_runtime_metric() {
     require_codegen();

@@ -1707,6 +1707,26 @@ fn is_leaf_function(blocks: &[BasicBlock]) -> bool {
 /// Kept distinct so the legacy raw-MIR scheduler stays behaviorally aligned
 /// with its historic numeric heuristic, including for unusual hand-built CFG
 /// fixtures. SIR alone opts into dominance-based latch recognition.
+///
+/// KNOWN MISCLASSIFICATION (size metric): the size test below counts
+/// `MirStatement` entries, and the strict SIR lane refuses any raw block that
+/// carries one (`hew-mir/src/sir.rs`, "raw bbN carries legacy MIR statements").
+/// Every SIR-produced function therefore measures zero, so a call-free,
+/// loop-free SIR body is classified a leaf and receives no cooperate site no
+/// matter how large it is.
+///
+/// WHY IT STANDS: SIR's current surface is straight-line scalar code, whose
+/// bodies are genuinely short and genuinely leaves, so the classification is
+/// accidentally right for everything the strict lane can lower today.
+///
+/// WHEN IT BREAKS: S5, which brings loops and mutable locals — the first
+/// slice able to produce a large call-free SIR body. The back-edge clause
+/// catches looping bodies, not big straight-line ones.
+///
+/// REAL FIX: measure the size of the stream the function is actually built
+/// from — the backend `Instr` count, or an op count carried as a SIR fact —
+/// instead of the checker-authority statement stream, with a red test that a
+/// large call-free SIR function still receives its entry safepoint.
 fn is_structural_leaf_function(
     blocks: &[BasicBlock],
     loop_back_edge_blocks: &HashSet<u32>,

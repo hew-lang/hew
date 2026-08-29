@@ -262,30 +262,22 @@ fn render_pipeline_mir_lints(
     had_error
 }
 
+/// What the strict SIR lane realized: the verified semantic module it started
+/// from and the closed set of callables it owns through raw/checked MIR. The
+/// lane never consults an established MIR body, so there is no second
+/// realization shape to distinguish here.
 #[derive(Debug)]
 struct SirLaneReport {
     sir: hew_sir::LoweredModule,
-    realization: SirLaneRealization,
-}
-
-/// The intentionally different roles of the temporary shadow oracle and the
-/// strict cutover lane. Only `Shadow` is permitted to consult established MIR
-/// bodies; `Strict` starts from verified SIR and owns the complete selected
-/// call graph through raw/checked MIR.
-#[derive(Debug)]
-enum SirLaneRealization {
-    Shadow(hew_mir::SirMirLoweringReport),
-    Strict { callables: Vec<hew_sir::CallableId> },
+    callables: Vec<hew_sir::CallableId>,
 }
 
 /// Choose a body-lowering lane after HIR has been verified.
 ///
-/// `Shadow` remains a temporary differential oracle: it is allowed to build
-/// the established pipeline and compare a candidate realization. `Lower` is
-/// deliberately different: it builds a closed direct-call component from SIR
-/// and never asks the legacy HIR→MIR body lowerer for a function/template.
-/// This makes an unsupported reachable feature a clear compilation error,
-/// not a long-lived mixed-lowering compatibility path.
+/// `Lower` builds a closed direct-call component from SIR and never asks the
+/// legacy HIR→MIR body lowerer for a function/template. This makes an
+/// unsupported reachable feature a clear compilation error, not a long-lived
+/// mixed-lowering compatibility path.
 fn lower_verified_hir_to_pipeline(
     module: &hew_hir::HirModule,
     tco: &hew_types::TypeCheckOutput,
@@ -299,42 +291,12 @@ fn lower_verified_hir_to_pipeline(
             pipeline.attach_lowering_facts(tco);
             Ok((pipeline, None))
         }
-        compile::SirMode::Shadow => {
-            let mut pipeline =
-                hew_mir::lower_hir_module_with_facts(module, mir_pointer_width(target));
-            pipeline.attach_lowering_facts(tco);
-            let sir = lower_verified_hir_to_sir(module)?;
-            let mut candidate = pipeline.clone();
-            let bridge = hew_mir::apply_sir_to_pipeline(&sir.module, &mut candidate);
-            if bridge.lowered_count() > 0 {
-                if let Err(error) = hew_codegen_rs::validate_codegen_front_for_triple(
-                    &candidate,
-                    target.normalized_triple(),
-                ) {
-                    eprintln!("SIR shadow candidate backend-front validation failed: {error}");
-                    return Err(());
-                }
-            }
-            Ok((
-                pipeline,
-                Some(SirLaneReport {
-                    sir,
-                    realization: SirLaneRealization::Shadow(bridge),
-                }),
-            ))
-        }
         compile::SirMode::Lower => {
             let sir = lower_verified_hir_to_sir(module)?;
-            let entry = sir.module.entry_callable.ok_or_else(|| {
-                eprintln!(
-                    "SIR strict lowering requires a root-unit scalar `main` with a resolved callable"
-                );
+            let component = hew_mir::lower_entry_component(&sir.module).map_err(|error| {
+                eprintln!("SIR strict lowering failed: {error}");
+                report_strict_sir_missing_body(module, &sir, error.missing_body);
             })?;
-            let component =
-                hew_mir::lower_closed_scalar_component(&sir.module, &[entry]).map_err(|error| {
-                    eprintln!("SIR strict lowering failed: {error}");
-                    report_strict_sir_missing_body(module, &sir, error.missing_body);
-                })?;
             let callables = component.callables().to_vec();
             let pipeline = component.into_pipeline();
             if let Err(error) = hew_codegen_rs::validate_codegen_front_for_triple(
@@ -344,13 +306,7 @@ fn lower_verified_hir_to_pipeline(
                 eprintln!("SIR strict backend-front validation failed: {error}");
                 return Err(());
             }
-            Ok((
-                pipeline,
-                Some(SirLaneReport {
-                    sir,
-                    realization: SirLaneRealization::Strict { callables },
-                }),
-            ))
+            Ok((pipeline, Some(SirLaneReport { sir, callables })))
         }
     }
 }
@@ -377,7 +333,8 @@ fn report_strict_sir_missing_body(
         Some(hew_sir::SirLoweringStatus::Unsupported { reason }) => Some(reason.as_str()),
         Some(
             hew_sir::SirLoweringStatus::Lowered
-            | hew_sir::SirLoweringStatus::GenericTemplate { .. },
+            | hew_sir::SirLoweringStatus::GenericTemplate { .. }
+            | hew_sir::SirLoweringStatus::NotReached,
         )
         | None => module
             .items
@@ -394,7 +351,8 @@ fn report_strict_sir_missing_body(
                 match status {
                     hew_sir::SirLoweringStatus::Unsupported { reason } => Some(reason.as_str()),
                     hew_sir::SirLoweringStatus::Lowered
-                    | hew_sir::SirLoweringStatus::GenericTemplate { .. } => None,
+                    | hew_sir::SirLoweringStatus::GenericTemplate { .. }
+                    | hew_sir::SirLoweringStatus::NotReached => None,
                 }
             }),
     };
@@ -591,7 +549,7 @@ fn lower_file_to_mir_for_target(
         options.sir_mode,
     )?;
     if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report, options.sir_mode);
+        report_sir_lane(report);
     }
     if render_pipeline_mir_diagnostics(
         &verified.state.program,
@@ -914,7 +872,7 @@ pub(crate) fn compile_native_binary(
 ) -> Result<(), ()> {
     let (pipeline, sir_report) = lower_file_to_mir_with_options(input, None, options)?;
     if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report, options.sir_mode);
+        report_sir_lane(report);
     }
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = bin_path
@@ -1030,7 +988,7 @@ pub(crate) fn compile_native_from_program_with_paths(
     let (pipeline, sir_report) =
         lower_verified_hir_to_pipeline(&lower_output.module, &tco, &target, options.sir_mode)?;
     if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report, options.sir_mode);
+        report_sir_lane(report);
     }
     if render_pipeline_mir_diagnostics(
         &state.program,
@@ -1495,7 +1453,7 @@ fn cmd_dump_sir(a: &args::CompileArgs, json: bool) -> i32 {
     ) else {
         return 1;
     };
-    let dump = hew_sir::dump_sir(&sir.module);
+    let dump = hew_sir::dump_lowering(&sir);
     if json {
         eprint!("{dump}");
     } else {
@@ -1522,7 +1480,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     };
 
     if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report, sir_mode);
+        report_sir_lane(report);
     }
 
     // Dump path: print the requested MIR stage and exit. Useful for
@@ -1624,7 +1582,12 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     0
 }
 
-fn report_sir_lane(report: &SirLaneReport, mode: compile::SirMode) {
+/// Render the per-callable outcome of strict SIR lowering.
+///
+/// `SirLaneReport` is constructed only inside the `SirMode::Lower` arm of
+/// `lower_verified_hir_to_pipeline`, so reaching this function already proves
+/// the strict lane ran; there is no mode to re-test.
+fn report_sir_lane(report: &SirLaneReport) {
     let sir_lowered = report
         .sir
         .statuses
@@ -1637,54 +1600,32 @@ fn report_sir_lane(report: &SirLaneReport, mode: compile::SirMode) {
         .iter()
         .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::GenericTemplate { .. }))
         .count();
-    if mode == compile::SirMode::Disabled {
-        return;
-    }
-    let hir_fallbacks: Vec<_> = report
+    // Reaching this function means the strict component lowered, so no
+    // demanded body failed. What remains to account for is the declarations
+    // the entry never asked about.
+    let not_reached = report
         .sir
         .statuses
         .iter()
-        .filter_map(|(name, status)| match status {
-            hew_sir::SirLoweringStatus::Unsupported { reason } => Some((name, reason)),
-            hew_sir::SirLoweringStatus::Lowered
-            | hew_sir::SirLoweringStatus::GenericTemplate { .. } => None,
-        })
-        .collect();
-    match &report.realization {
-        SirLaneRealization::Shadow(bridge) => {
-            eprintln!(
-                "SIR shadow: verified {sir_lowered} monomorphic HIR body/bodies and registered {sir_templates} generic template(s) across {} HIR function declaration(s); realized {}/{} concrete SIR body/bodies through raw MIR",
-                report.sir.statuses.len(),
-                bridge.lowered_count(),
-                report.sir.module.functions.len(),
-            );
-            let raw_fallbacks: Vec<_> = bridge
-                .statuses
-                .iter()
-                .filter_map(|(name, status)| match status {
-                    hew_mir::SirMirLoweringStatus::Unsupported { reason } => Some((name, reason)),
-                    hew_mir::SirMirLoweringStatus::Lowered => None,
-                })
-                .collect();
-            report_sir_fallbacks("HIR", &hir_fallbacks);
-            report_sir_fallbacks("raw-MIR", &raw_fallbacks);
-        }
-        SirLaneRealization::Strict { callables } => {
-            eprintln!(
-                "SIR lower: selected {} verified callable(s) from {sir_lowered} monomorphic HIR body/bodies and {sir_templates} generic template(s) across {} HIR function declaration(s); no legacy MIR bodies were lowered",
-                callables.len(),
-                report.sir.statuses.len(),
-            );
-            if !hir_fallbacks.is_empty() {
-                eprintln!(
-                    "SIR lower: {} unrelated HIR bodies remain outside the current semantic surface; they were not compiled or used as fallbacks",
-                    hir_fallbacks.len()
-                );
-            }
-        }
+        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::NotReached))
+        .count();
+    eprintln!(
+        "SIR lower: selected {} verified callable(s) from {sir_lowered} monomorphic HIR body/bodies and {sir_templates} generic template(s) across {} HIR function declaration(s); no legacy MIR bodies were lowered",
+        report.callables.len(),
+        report.sir.statuses.len(),
+    );
+    if not_reached > 0 {
+        eprintln!(
+            "SIR lower: {not_reached} HIR declaration(s) were never reached from the entry; they were not compiled or used as fallbacks"
+        );
     }
 }
 
+/// Summarise a `--dump-sir` inspection.
+///
+/// Per-declaration failure reasons belong to the dump itself
+/// ([`hew_sir::dump_lowering`]), which prints every one of them. This line
+/// only counts, so nothing is silently dropped past a detail limit.
 fn report_sir_inspection(sir: &hew_sir::LoweredModule) {
     let lowered = sir
         .statuses
@@ -1696,34 +1637,16 @@ fn report_sir_inspection(sir: &hew_sir::LoweredModule) {
         .iter()
         .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::GenericTemplate { .. }))
         .count();
+    let not_reached = sir
+        .statuses
+        .iter()
+        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::NotReached))
+        .count();
     eprintln!(
-        "SIR inspect: verified {lowered} monomorphic HIR body/bodies and registered {templates} generic template(s) across {} HIR function declaration(s); emitted {} concrete SIR body/bodies",
+        "SIR inspect: verified {lowered} monomorphic HIR body/bodies and registered {templates} generic template(s) across {} HIR function declaration(s); emitted {} concrete SIR body/bodies; {not_reached} declaration(s) the entry never reached",
         sir.statuses.len(),
         sir.module.functions.len()
     );
-    let fallbacks: Vec<_> = sir
-        .statuses
-        .iter()
-        .filter_map(|(name, status)| match status {
-            hew_sir::SirLoweringStatus::Unsupported { reason } => Some((name, reason)),
-            hew_sir::SirLoweringStatus::Lowered
-            | hew_sir::SirLoweringStatus::GenericTemplate { .. } => None,
-        })
-        .collect();
-    report_sir_fallbacks("HIR", &fallbacks);
-}
-
-fn report_sir_fallbacks(kind: &str, fallbacks: &[(&String, &String)]) {
-    const DETAIL_LIMIT: usize = 6;
-    for (name, reason) in fallbacks.iter().take(DETAIL_LIMIT) {
-        eprintln!("SIR {kind} fallback for `{name}`: {reason}");
-    }
-    if fallbacks.len() > DETAIL_LIMIT {
-        eprintln!(
-            "SIR {kind}: {} additional explicit fallbacks (use --dump-sir for the semantic subset)",
-            fallbacks.len() - DETAIL_LIMIT
-        );
-    }
 }
 
 struct CompiledTempExecutable {
@@ -3136,31 +3059,36 @@ mod embedded_stdlib_tests {
     }
 }
 
-/// Driver-boundary coverage for the single canonical SIR module shared by
-/// inspection, shadow evidence, and strict lowering.
+/// Driver-boundary coverage for the canonical SIR module the strict lane
+/// realizes.
 ///
 /// Keep this at the private driver boundary rather than making production
 /// reports carry pass statistics solely for test observability.  The report
-/// already retains the exact SIR module passed into each SIR-backed lane.
+/// already retains the exact SIR module passed into the strict component.
 #[cfg(test)]
 mod sir_driver_tests {
-    use super::{compile, lower_verified_hir_to_pipeline, target, SirLaneRealization};
+    use super::{compile, lower_verified_hir_to_pipeline, target};
     use hew_hir::{lower_program_host_target, ResolutionCtx};
+    use hew_mir::model::{Instr, RawValueOp, Terminator};
     use hew_sir::{SemOpKind, SemTerminator};
     use hew_types::{module_registry::ModuleRegistry, Checker};
 
+    /// The arm values are deliberately neither `0` nor `1`: the condition
+    /// `true` itself lowers to `ConstI64 { value: 1 }` into a `Bool` local, so
+    /// a fixture returning `1` from its unselected arm could not tell a
+    /// surviving dead arm from the live condition constant.
     const DIRECT_CONSTANT_CFG: &str = r"
         fn main() -> i64 {
             if true {
-                0
+                7
             } else {
-                1
+                9
             }
         }
     ";
 
     #[test]
-    fn shadow_and_strict_receive_the_same_canonical_sir_module() {
+    fn strict_lane_realizes_the_canonicalized_sir_module() {
         let parsed = hew_parser::parse(DIRECT_CONSTANT_CFG);
         assert!(
             parsed.errors.is_empty(),
@@ -3183,18 +3111,26 @@ mod sir_driver_tests {
         let target = target::TargetSpec::from_requested(None)
             .expect("host target must be available to the driver test");
 
-        let (shadow_pipeline, shadow_report) = lower_verified_hir_to_pipeline(
-            &lowered.module,
-            &type_check,
-            &target,
-            compile::SirMode::Shadow,
-        )
-        .expect("shadow lane must accept the scalar constant CFG");
-        let shadow_report = shadow_report.expect("shadow lane must retain its SIR report");
-        assert!(matches!(
-            &shadow_report.realization,
-            SirLaneRealization::Shadow(_)
-        ));
+        // Negative control: the un-canonicalized HIR -> SIR lowering really does
+        // produce the branch and the unselected constant, so the assertions
+        // below pin canonicalization rather than an already-empty CFG.
+        let raw_sir = hew_sir::lower_module(&lowered.module);
+        let raw_main = sir_main(&raw_sir.module);
+        assert!(
+            raw_main
+                .blocks
+                .iter()
+                .any(|block| matches!(&block.terminator, SemTerminator::Branch { .. })),
+            "the fixture must start with a real semantic branch: {raw_main:#?}"
+        );
+        assert!(
+            raw_main
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .any(|operation| matches!(&operation.kind, SemOpKind::ConstI64(9))),
+            "the fixture must start with the unselected arm present: {raw_main:#?}"
+        );
 
         let (strict_pipeline, strict_report) = lower_verified_hir_to_pipeline(
             &lowered.module,
@@ -3204,26 +3140,48 @@ mod sir_driver_tests {
         )
         .expect("strict lane must accept the scalar constant CFG");
         let strict_report = strict_report.expect("strict lane must retain its SIR report");
-        assert!(matches!(
-            &strict_report.realization,
-            SirLaneRealization::Strict { .. }
-        ));
 
-        // The shadow artifact intentionally remains legacy MIR, whereas the
-        // strict artifact is SIR-owned. The retained semantic input must be
-        // identical in both cases: it is the canonical CFG passed to the
-        // candidate bridge or strict component, not an inspector-only copy.
-        assert_eq!(shadow_report.sir.module, strict_report.sir.module);
-        let main = shadow_report
-            .sir
-            .module
-            .functions
-            .iter()
-            .find(|function| function.name == "main")
-            .expect("constant CFG fixture must retain its SIR main body");
+        // What the backend actually receives. The report retains whatever
+        // module the component was handed, so asserting on the report alone
+        // cannot tell a realized canonicalization apart from an inspector-only
+        // rewrite; these assertions are on the artifact itself.
+        assert_eq!(strict_pipeline.raw_mir.len(), 1);
+        let realized_main = &strict_pipeline.raw_mir[0];
+        assert_eq!(realized_main.name, "main");
+        assert!(
+            matches!(&realized_main.blocks[0].terminator, Terminator::Goto { .. }),
+            "the canonical single edge must survive into realized raw MIR: {realized_main:#?}"
+        );
+        assert!(
+            realized_main
+                .blocks
+                .iter()
+                .all(|block| !matches!(&block.terminator, Terminator::Branch { .. })),
+            "realized raw MIR must carry no conditional branch: {realized_main:#?}"
+        );
+        assert!(
+            realized_main
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .all(|instruction| !defines_i64_constant(instruction, 9)),
+            "the unselected arm must not be realized in raw MIR: {realized_main:#?}"
+        );
+        assert!(
+            realized_main
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .any(|instruction| defines_i64_constant(instruction, 7)),
+            "the selected arm must still be realized in raw MIR: {realized_main:#?}"
+        );
+
+        // And the retained module is that same canonical CFG, not a separate
+        // inspector copy taken before the pass.
+        let main = sir_main(&strict_report.sir.module);
         assert!(
             matches!(&main.blocks[0].terminator, SemTerminator::Goto(_)),
-            "the direct constant branch must be canonicalized before both lanes: {main:#?}"
+            "the direct constant branch must be canonicalized before strict lowering: {main:#?}"
         );
         assert!(
             main.blocks
@@ -3235,17 +3193,26 @@ mod sir_driver_tests {
             main.blocks
                 .iter()
                 .flat_map(|block| &block.ops)
-                .all(|operation| { !matches!(&operation.kind, SemOpKind::ConstI64(1)) }),
-            "the unselected arm must be compacted before the SIR-backed lanes: {main:#?}"
+                .all(|operation| { !matches!(&operation.kind, SemOpKind::ConstI64(9)) }),
+            "the unselected arm must be compacted before strict lowering: {main:#?}"
         );
+    }
 
-        assert!(
-            shadow_pipeline
-                .raw_mir
-                .iter()
-                .any(|function| function.name == "main"),
-            "shadow must retain the established main body as its emitted artifact"
-        );
-        assert_eq!(strict_pipeline.raw_mir.len(), 1);
+    /// `true` when `instruction` materializes `value` as an `i64`, in either the
+    /// place-based or the virtual-value form.
+    fn defines_i64_constant(instruction: &Instr, value: i64) -> bool {
+        match instruction {
+            Instr::ConstI64 { value: found, .. }
+            | Instr::Value(RawValueOp::ConstI64 { value: found, .. }) => *found == value,
+            _ => false,
+        }
+    }
+
+    fn sir_main(module: &hew_sir::SemModule) -> &hew_sir::SemFunction {
+        module
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("constant CFG fixture must retain its SIR main body")
     }
 }

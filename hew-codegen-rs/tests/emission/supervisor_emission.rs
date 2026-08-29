@@ -179,7 +179,6 @@ fn supervisor_pipeline() -> IrPipeline {
     };
 
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![bootstrap_fn.clone(), main_fn.clone()],
         // Keep `checked_mir` empty — the build_module skip-set bypasses
         // lower_function for the bootstrap symbol, and `main`'s body has no
@@ -500,7 +499,6 @@ fn on_crash_pipeline() -> IrPipeline {
     };
 
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![on_crash_fn, bootstrap_fn, main_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -841,7 +839,6 @@ fn nested_supervisor_pipeline() -> IrPipeline {
     };
 
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![root_fn, inner_fn, main_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -1048,7 +1045,6 @@ fn pool_then_static_pipeline() -> IrPipeline {
     };
 
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![bootstrap_fn, main_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],

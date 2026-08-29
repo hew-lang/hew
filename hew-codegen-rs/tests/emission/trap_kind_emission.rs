@@ -82,7 +82,6 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
         terminator: Terminator::Trap { kind },
     }];
     let pipeline = IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "trap_probe".to_string(),

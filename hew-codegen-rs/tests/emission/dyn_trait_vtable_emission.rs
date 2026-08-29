@@ -144,7 +144,6 @@ fn vtable_instance(
 
 fn pipeline_with(raw_mir: Vec<RawMirFunction>, registry: Vec<DynVtableInstance>) -> IrPipeline {
     IrPipeline {
-        thir: vec![],
         raw_mir,
         checked_mir: vec![],
         elaborated_mir: vec![],

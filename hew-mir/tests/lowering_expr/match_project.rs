@@ -143,14 +143,34 @@ fn cow_drop_places(drops: &[ElabDrop]) -> std::collections::HashSet<hew_mir::Pla
         .collect()
 }
 
-fn source_consume_count(pipeline: &IrPipeline, name: &str, source_name: &str) -> usize {
+/// The checked-MIR statement stream for one function.
+///
+/// Checked MIR carries the ownership-event statements produced by lowering;
+/// the assertions below read intent/binding facts out of that stream.
+///
+/// SEAM: this re-flattens the blocks rather than reading lowering's own
+/// snapshot (`FinalizedBody::body_statements`, crate-private and unreachable
+/// from an integration test). The two coincide only because every pass between
+/// that snapshot and checked MIR rewrites `instructions`, never `statements`.
+/// See the SEAM note on `body_statements` in `hew-mir/src/lower/mod.rs`: a pass
+/// that starts editing statements after finalization changes what these
+/// assertions mean.
+fn checked_statements<'a>(
+    pipeline: &'a IrPipeline,
+    name: &str,
+) -> impl Iterator<Item = &'a MirStatement> {
     pipeline
-        .thir
+        .checked_mir
         .iter()
         .find(|function| function.name == name)
-        .unwrap_or_else(|| panic!("function `{name}` not found in THIR"))
-        .statements
+        .unwrap_or_else(|| panic!("function `{name}` not found in checked MIR"))
+        .blocks
         .iter()
+        .flat_map(|block| block.statements.iter())
+}
+
+fn source_consume_count(pipeline: &IrPipeline, name: &str, source_name: &str) -> usize {
+    checked_statements(pipeline, name)
         .filter(|statement| {
             matches!(
                 statement,
@@ -637,13 +657,7 @@ fn tuple(t: (i64, i64, i64)) -> i64 {
     );
 
     let bind_counts = |name: &str| {
-        pipeline
-            .thir
-            .iter()
-            .find(|function| function.name == name)
-            .unwrap_or_else(|| panic!("function `{name}` not found in THIR"))
-            .statements
-            .iter()
+        checked_statements(&pipeline, name)
             .filter(|statement| matches!(statement, MirStatement::Bind { .. }))
             .count()
     };
@@ -698,13 +712,7 @@ fn main() -> i64 {
         0
     );
     assert_eq!(
-        pipeline
-            .thir
-            .iter()
-            .find(|function| function.name == "main")
-            .expect("main THIR")
-            .statements
-            .iter()
+        checked_statements(&pipeline, "main")
             .filter(|statement| matches!(statement, MirStatement::Bind { name, .. } if name == "l"))
             .count(),
         0
@@ -1092,13 +1100,7 @@ fn whole_case(tag: i64) -> i64 {
         vec![1, 1]
     );
     assert_eq!(
-        pipeline
-            .thir
-            .iter()
-            .find(|function| function.name == "whole_case")
-            .expect("whole_case THIR")
-            .statements
-            .iter()
+        checked_statements(&pipeline, "whole_case")
             .filter(
                 |statement| matches!(statement, MirStatement::Bind { name, .. } if name == "whole")
             )

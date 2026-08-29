@@ -48,9 +48,9 @@ struct SirMirLowered {
 
 /// A closed, self-contained scalar SIR call-graph realization.
 ///
-/// Unlike the temporary shadow bridge, this component has no raw-MIR
-/// template input. SIR owns each callable's symbol, signature, and parameter
-/// ABI facts; this lowering independently creates both raw and checked MIR.
+/// This component takes no raw-MIR template input. SIR owns each callable's
+/// symbol, signature, and parameter ABI facts; this lowering independently
+/// creates both raw and checked MIR.
 /// A driver either installs the entire selected call graph or reports its
 /// unsupported boundary — it never silently mixes a SIR caller with a legacy
 /// body inside the selected closure.
@@ -128,28 +128,26 @@ impl std::fmt::Display for SirMirLoweringError {
 
 impl std::error::Error for SirMirLoweringError {}
 
-/// Per-function outcome when a SIR module is applied to an existing MIR
-/// pipeline.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SirMirLoweringStatus {
-    Lowered,
-    Unsupported { reason: String },
-}
-
-/// Deterministic summary of a SIR → MIR application attempt.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SirMirLoweringReport {
-    pub statuses: Vec<(String, SirMirLoweringStatus)>,
-}
-
-impl SirMirLoweringReport {
-    #[must_use]
-    pub fn lowered_count(&self) -> usize {
-        self.statuses
-            .iter()
-            .filter(|(_, status)| matches!(status, SirMirLoweringStatus::Lowered))
-            .count()
-    }
+/// Lower the closed scalar component reachable from the module's resolved
+/// entry callable.
+///
+/// This is the only program-selection entry point strict SIR lowering has.
+/// The entry is
+/// the identity HIR published and SIR joined on; a module that carries no
+/// entry fact is not an executable program and is refused here with a typed
+/// error rather than being rescued by a name lookup.
+///
+/// # Errors
+///
+/// Returns a deterministic refusal when the module carries no entry callable,
+/// or when [`lower_closed_scalar_component`] refuses the entry's component.
+pub fn lower_entry_component(module: &SemModule) -> Result<SirMirComponent, SirMirLoweringError> {
+    let entry = module.entry_callable.ok_or_else(|| {
+        SirMirLoweringError::unsupported(
+            "strict SIR lowering requires a resolved entry callable; this module carries no HIR entry declaration",
+        )
+    })?;
+    lower_closed_scalar_component(module, &[entry])
 }
 
 /// Lower a closed scalar direct-call component without consulting legacy MIR.
@@ -181,6 +179,9 @@ pub fn lower_closed_scalar_component(
         ));
     }
 
+    // One association for the whole closure: the walk below asks for a body
+    // once per callable it reaches, and the realization loop asks again.
+    let bodies = module.function_index();
     let mut selected = BTreeSet::new();
     let mut pending = roots
         .iter()
@@ -200,7 +201,7 @@ pub fn lower_closed_scalar_component(
             ))
         })?;
         validate_direct_callable(callable)?;
-        let function = unique_function_for_callable(module, callable_id).ok_or_else(|| {
+        let function = bodies.function(callable_id).ok_or_else(|| {
             SirMirLoweringError::missing_body(
                 callable_id,
                 format!(
@@ -221,7 +222,7 @@ pub fn lower_closed_scalar_component(
     let mut checked_mir = Vec::with_capacity(selected.len());
     let mut elaborated_mir = Vec::with_capacity(selected.len());
     for callable_id in &selected {
-        let function = unique_function_for_callable(module, *callable_id).ok_or_else(|| {
+        let function = bodies.function(*callable_id).ok_or_else(|| {
             SirMirLoweringError::unsupported(format!(
                 "selected SIR callable {} lost its body during component realization",
                 callable_id.0
@@ -281,7 +282,7 @@ fn lower_verified_sir_function(
         VirtualRawLowerer::new(function)?.finish()
     } else {
         let collected = CollectedValues::from_function(function)?;
-        let mut lowerer = RawLowerer::new(function, collected, Some(module))?;
+        let mut lowerer = RawLowerer::new(function, collected, module)?;
         for block in &function.blocks {
             lowerer.lower_block(block)?;
         }
@@ -1039,15 +1040,6 @@ fn sir_parameter_decisions(
         .collect()
 }
 
-fn unique_function_for_callable(module: &SemModule, callable: CallableId) -> Option<&SemFunction> {
-    let mut matches = module
-        .functions
-        .iter()
-        .filter(|function| function.callable == callable);
-    let function = matches.next()?;
-    matches.next().is_none().then_some(function)
-}
-
 fn direct_callees(function: &SemFunction) -> impl Iterator<Item = CallableId> + '_ {
     function.blocks.iter().flat_map(|block| {
         block
@@ -1070,345 +1062,6 @@ fn format_callable_path(module: &SemModule, path: &[CallableId]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" → ")
-}
-
-/// Lower every executable SIR function possible into `pipeline`.
-///
-/// The caller normally begins with the established HIR → MIR pipeline. This
-/// adapter replaces only independently lowerable scalar/CFG functions,
-/// preserves every module-level layout/runtime fact, and keeps the established
-/// raw/checked MIR for all other functions while the cutover is in progress.
-/// A replacement receives a fresh, explicit zero-drop elaborated body. Retaining
-/// a plan authored for a different CFG would be unsound, but omitting
-/// elaborated MIR would perpetuate a legacy codegen compatibility shortcut.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the temporary bridge keeps module verification, per-function eligibility, and atomic pipeline replacement together so a partial candidate cannot obscure the transition boundary"
-)]
-#[must_use]
-pub fn apply_sir_to_pipeline(
-    module: &SemModule,
-    pipeline: &mut IrPipeline,
-) -> SirMirLoweringReport {
-    let mut report = SirMirLoweringReport::default();
-    if let Some(diagnostic) = hew_sir::verify_module(module).into_iter().next() {
-        let reason = format!(
-            "SIR module verifier rejected the candidate before MIR realization: {:?}",
-            diagnostic.kind
-        );
-        report
-            .statuses
-            .extend(module.functions.iter().map(|function| {
-                (
-                    function.name.clone(),
-                    SirMirLoweringStatus::Unsupported {
-                        reason: reason.clone(),
-                    },
-                )
-            }));
-        return report;
-    }
-    let mut changed = false;
-
-    for function in &module.functions {
-        let matching_raw: Vec<_> = pipeline
-            .raw_mir
-            .iter()
-            .enumerate()
-            .filter_map(|(index, raw)| (raw.name == function.name).then_some(index))
-            .collect();
-        let [raw_index] = matching_raw.as_slice() else {
-            let reason = if matching_raw.is_empty() {
-                "no unique established raw-MIR function matches this SIR function"
-            } else {
-                "multiple established raw-MIR functions match this SIR function"
-            };
-            report.statuses.push((
-                function.name.clone(),
-                SirMirLoweringStatus::Unsupported {
-                    reason: reason.to_string(),
-                },
-            ));
-            continue;
-        };
-
-        let matching_checked: Vec<_> = pipeline
-            .checked_mir
-            .iter()
-            .enumerate()
-            .filter_map(|(index, checked)| (checked.name == function.name).then_some(index))
-            .collect();
-        if !pipeline.checked_mir.is_empty() && matching_checked.len() != 1 {
-            report.statuses.push((
-                function.name.clone(),
-                SirMirLoweringStatus::Unsupported {
-                    reason: "established checked MIR does not have one matching function"
-                        .to_string(),
-                },
-            ));
-            continue;
-        }
-        let Some(callable) = module.callable(function.callable) else {
-            report.statuses.push((
-                function.name.clone(),
-                SirMirLoweringStatus::Unsupported {
-                    reason: "SIR function has no resolved callable for raw-MIR verification"
-                        .to_string(),
-                },
-            ));
-            continue;
-        };
-        let template = pipeline.raw_mir[*raw_index].clone();
-        match lower_sir_function_with_template(function, callable, &template) {
-            Ok(mut lowered) => {
-                // The initial scalar SIR subset is acyclic and has no calls,
-                // so it creates no scheduler sites of its own.  Preserve the
-                // established site plan exactly during this transition rather
-                // than deriving one from raw block numbering: SIR edge
-                // forwarders are deliberately inserted after their targets,
-                // which used to look like false back-edges to the legacy
-                // numeric heuristic.  A later SIR effect/CFG scheduling pass
-                // replaces this bridge; it is not a second long-term policy.
-                let uses_virtual_values = raw_uses_virtual_values(&lowered.raw);
-                if uses_virtual_values && !lowered.checked.cooperate_sites.is_empty() {
-                    report.statuses.push((
-                        function.name.clone(),
-                        SirMirLoweringStatus::Unsupported {
-                            reason: "value-only SIR realization unexpectedly introduced a scheduler cooperate site"
-                                .to_string(),
-                        },
-                    ));
-                    continue;
-                }
-                if !uses_virtual_values {
-                    if let Some(&checked_index) = matching_checked.first() {
-                        let established_sites =
-                            &pipeline.checked_mir[checked_index].cooperate_sites;
-                        if !cooperate_sites_apply_to(&lowered.raw, established_sites) {
-                            report.statuses.push((
-                            function.name.clone(),
-                            SirMirLoweringStatus::Unsupported {
-                                reason: "established scheduler cooperate sites do not map to the SIR-realized CFG"
-                                    .to_string(),
-                            },
-                        ));
-                            continue;
-                        }
-                        lowered
-                            .checked
-                            .cooperate_sites
-                            .clone_from(established_sites);
-                    } else if !lowered.checked.cooperate_sites.is_empty() {
-                        report.statuses.push((
-                        function.name.clone(),
-                        SirMirLoweringStatus::Unsupported {
-                            reason: "SIR realization would introduce scheduler cooperate sites without a scheduling-fact bridge"
-                                .to_string(),
-                        },
-                    ));
-                        continue;
-                    }
-                }
-                // The scheduler bridge can replace the candidate's structural
-                // cooperation facts with the established legacy facts. Build
-                // elaboration only after that reconciliation so every
-                // injected cancellation exit has the same plan in Checked and
-                // Elaborated MIR.
-                match zero_drop_elaboration(&lowered.raw, &lowered.checked) {
-                    Ok(elaborated) => {
-                        lowered.checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
-                        lowered.elaborated = elaborated;
-                    }
-                    Err(error) => {
-                        report.statuses.push((
-                            function.name.clone(),
-                            SirMirLoweringStatus::Unsupported {
-                                reason: error.reason,
-                            },
-                        ));
-                        continue;
-                    }
-                }
-                if uses_virtual_values {
-                    if let Err(error) = verify_strict_sir_virtual_raw_checked(
-                        callable,
-                        &lowered.raw,
-                        &lowered.checked,
-                    ) {
-                        report.statuses.push((
-                            function.name.clone(),
-                            SirMirLoweringStatus::Unsupported {
-                                reason: error.reason,
-                            },
-                        ));
-                        continue;
-                    }
-                    if let Err(error) = verify_strict_sir_virtual_elaboration(
-                        &lowered.raw,
-                        &lowered.checked,
-                        &lowered.elaborated,
-                    ) {
-                        report.statuses.push((
-                            function.name.clone(),
-                            SirMirLoweringStatus::Unsupported {
-                                reason: error.reason,
-                            },
-                        ));
-                        continue;
-                    }
-                }
-                let SirMirLowered {
-                    raw,
-                    checked,
-                    elaborated,
-                } = lowered;
-                pipeline.raw_mir[*raw_index] = raw;
-                if let Some(&checked_index) = matching_checked.first() {
-                    pipeline.checked_mir[checked_index] = checked;
-                }
-                pipeline
-                    .elaborated_mir
-                    .retain(|elaborated| elaborated.name != function.name);
-                pipeline.elaborated_mir.push(elaborated);
-                report
-                    .statuses
-                    .push((function.name.clone(), SirMirLoweringStatus::Lowered));
-                changed = true;
-            }
-            Err(error) => report.statuses.push((
-                function.name.clone(),
-                SirMirLoweringStatus::Unsupported {
-                    reason: error.reason,
-                },
-            )),
-        }
-    }
-
-    if changed {
-        pipeline.capabilities =
-            ModuleCapabilities::from_raw_mir(&pipeline.raw_mir, &pipeline.extern_decls);
-        pipeline.lint_warnings = crate::liveness::run_mir_lints(&pipeline.raw_mir);
-        pipeline.debug_assert_capabilities_current();
-    }
-    report
-}
-
-fn cooperate_sites_apply_to(raw: &RawMirFunction, sites: &[crate::CooperateSite]) -> bool {
-    sites.iter().all(|site| {
-        raw.blocks.iter().any(|block| block.id == site.bb_id)
-            && match site.kind {
-                crate::CooperateKind::FunctionEntry => site.bb_id == 0,
-                // The first executable SIR slice rejects cyclic CFGs, so a
-                // legacy loop site cannot truthfully survive its realization.
-                crate::CooperateKind::LoopBackEdge => false,
-            }
-    })
-}
-
-/// Lower a verified semantic SSA function to scalar raw MIR using an
-/// established raw function as ABI/parameter-boundary template.
-///
-/// The template is not an instruction source: its body, locals, statements,
-/// decisions, debug-local names, and drop plans are discarded. It supplies
-/// only ABI identity that this first SIR slice does not yet preserve (the
-/// default-call ABI classification and finalized parameter boundary facts).
-/// SIR itself carries the source span and source origin. Those parameter facts
-/// are copied exactly into both replacement raw/checked functions; no
-/// source-operation ownership decisions are copied onto SIR-generated storage.
-///
-/// # Errors
-///
-/// Returns an explicit unsupported reason whenever the function needs a
-/// semantic fact not carried by the initial SIR value/CFG subset.
-fn lower_sir_function_with_template(
-    function: &SemFunction,
-    callable: &SemCallable,
-    template: &RawMirFunction,
-) -> Result<SirMirLowered, SirMirLoweringError> {
-    if let Some(diagnostic) = hew_sir::verify_function(function).into_iter().next() {
-        return Err(SirMirLoweringError::unsupported(format!(
-            "SIR verifier rejected function `{}`: {:?}",
-            function.name, diagnostic.kind
-        )));
-    }
-    if function.callable != callable.id {
-        return Err(SirMirLoweringError::unsupported(
-            "SIR function callable does not match the template bridge callable",
-        ));
-    }
-    let parameter_decisions = validate_template(function, template)?;
-    let (locals, blocks) = if function_uses_virtual_tuple_values(function) {
-        VirtualRawLowerer::new(function)?.finish()
-    } else {
-        let collected = CollectedValues::from_function(function)?;
-        let mut lowerer = RawLowerer::new(function, collected, None)?;
-        for block in &function.blocks {
-            lowerer.lower_block(block)?;
-        }
-        lowerer.finish()?
-    };
-
-    let raw = RawMirFunction {
-        name: template.name.clone(),
-        return_ty: function.return_ty.clone(),
-        call_conv: template.call_conv,
-        params: function
-            .params
-            .iter()
-            .map(|param| param.ty.clone())
-            .collect(),
-        locals,
-        // SIR records operation provenance, but it intentionally does not yet
-        // carry source binding identity/lexical scopes. Leaving these empty is
-        // truthful; copying HIR-authored debug metadata onto different storage
-        // would create a false debugger view.
-        local_names: Vec::new(),
-        local_scopes: Vec::new(),
-        local_decl_bytes: Vec::new(),
-        scope_table: Vec::new(),
-        blocks,
-        decisions: parameter_decisions.clone(),
-        intrinsic_id: None,
-        await_deadline_ns: std::collections::HashMap::new(),
-        suspend_kinds: std::collections::HashMap::new(),
-        lambda_actor_user_param_locals: Vec::new(),
-        span: Some((
-            u32::try_from(function.span.start).unwrap_or(u32::MAX),
-            u32::try_from(function.span.end).unwrap_or(u32::MAX),
-        )),
-        instr_spans: std::collections::BTreeMap::new(),
-        source_origin: raw_source_origin(&function.source_origin),
-    };
-    let mut checked = CheckedMirFunction {
-        name: raw.name.clone(),
-        return_ty: raw.return_ty.clone(),
-        blocks: raw.blocks.clone(),
-        decisions: parameter_decisions,
-        checks: crate::validate_context_markers(&raw),
-        // Template-backed shadow realization is still SIR CFG production:
-        // edge-forwarding blocks do not preserve the legacy raw-MIR numeric
-        // allocation convention. `apply_sir_to_pipeline` may retain an
-        // established schedule only when it maps truthfully; candidate-local
-        // scheduling itself must remain structural.
-        cooperate_sites: dataflow::compute_structural_cooperate_sites(&raw.blocks),
-        ownership_elaboration: None,
-    };
-    if raw_uses_virtual_values(&raw) {
-        verify_strict_sir_virtual_raw_checked(callable, &raw, &checked)?;
-    }
-    let elaborated = zero_drop_elaboration(&raw, &checked)?;
-    checked.ownership_elaboration = Some(Box::new(elaborated.clone()));
-    if raw_uses_virtual_values(&raw) {
-        // The template bridge uses the same strict value-only Raw body. Its
-        // elaboration must therefore prove the same explicit no-drop contract
-        // before it can replace an established function in the pipeline.
-        verify_strict_sir_virtual_elaboration(&raw, &checked, &elaborated)?;
-    }
-    Ok(SirMirLowered {
-        raw,
-        checked,
-        elaborated,
-    })
 }
 
 /// Build the explicit elaborated artifact for the initial SIR value-only
@@ -1562,144 +1215,6 @@ fn raw_source_origin(origin: &FunctionSourceOrigin) -> crate::SourceOrigin {
         FunctionSourceOrigin::Foreign(module) => crate::SourceOrigin::Foreign(module.clone()),
         FunctionSourceOrigin::Unknown => crate::SourceOrigin::Unknown,
     }
-}
-
-fn validate_template(
-    function: &SemFunction,
-    template: &RawMirFunction,
-) -> Result<Vec<crate::DecisionFact>, SirMirLoweringError> {
-    if template.name != function.name {
-        return Err(SirMirLoweringError::unsupported(
-            "SIR function name does not match the established raw-MIR ABI template",
-        ));
-    }
-    if template.call_conv != FunctionCallConv::Default {
-        return Err(SirMirLoweringError::unsupported(
-            "only ordinary default-call-convention functions are executable through initial SIR lowering",
-        ));
-    }
-    if template.intrinsic_id.is_some()
-        || !template.await_deadline_ns.is_empty()
-        || !template.suspend_kinds.is_empty()
-        || !template.lambda_actor_user_param_locals.is_empty()
-    {
-        return Err(SirMirLoweringError::unsupported(
-            "functions carrying intrinsic, suspension, or actor ABI facts remain on the established MIR path",
-        ));
-    }
-    if template.return_ty != function.return_ty {
-        return Err(SirMirLoweringError::unsupported(
-            "SIR return type does not match the established raw-MIR ABI template",
-        ));
-    }
-    let sir_params: Vec<_> = function.params.iter().map(|param| &param.ty).collect();
-    let template_params: Vec<_> = template.params.iter().collect();
-    if sir_params != template_params {
-        return Err(SirMirLoweringError::unsupported(
-            "SIR parameter types do not match the established raw-MIR ABI template",
-        ));
-    }
-    if !matches!(function.entry, BlockId(0)) {
-        return Err(SirMirLoweringError::unsupported(
-            "the initial raw-MIR bridge requires SIR entry block bb0",
-        ));
-    }
-    if !is_supported_return_type(&function.return_ty) {
-        return Err(SirMirLoweringError::unsupported(format!(
-            "return type `{}` is not yet a scalar SIR-to-MIR value",
-            function.return_ty.user_facing()
-        )));
-    }
-    if sir_cfg_has_cycle(function) {
-        return Err(SirMirLoweringError::unsupported(
-            "cyclic SIR CFGs remain deferred until scheduler sites derive from SIR effects and CFG rather than legacy statement counts",
-        ));
-    }
-    template_parameter_decisions(function, template)
-}
-
-fn template_parameter_decisions(
-    function: &SemFunction,
-    template: &RawMirFunction,
-) -> Result<Vec<crate::DecisionFact>, SirMirLoweringError> {
-    let mut facts = template
-        .decisions
-        .iter()
-        .filter(|decision| matches!(decision.strategy, Strategy::ParamBoundary(_)))
-        .cloned()
-        .collect::<Vec<_>>();
-    facts.sort_unstable_by_key(|decision| match decision.strategy {
-        Strategy::ParamBoundary(fact) => fact.param_index,
-        _ => unreachable!("filtered to parameter-boundary decisions"),
-    });
-    if facts.len() != function.params.len() {
-        return Err(SirMirLoweringError::unsupported(
-            "established raw-MIR ABI template lacks one finalized parameter-boundary fact per SIR parameter",
-        ));
-    }
-    let parameter_count = u32::try_from(function.params.len()).map_err(|_| {
-        SirMirLoweringError::unsupported("SIR parameter count exceeds raw-MIR ABI limits")
-    })?;
-    for (expected_index, (decision, parameter)) in facts.iter().zip(&function.params).enumerate() {
-        let Strategy::ParamBoundary(fact) = decision.strategy else {
-            unreachable!("filtered to parameter-boundary decisions");
-        };
-        if fact.param_index != u32::try_from(expected_index).expect("index fits after count check")
-            || fact.param_count != parameter_count
-            || decision.ty != parameter.ty
-        {
-            return Err(SirMirLoweringError::unsupported(
-                "established parameter-boundary facts do not match the SIR ABI signature",
-            ));
-        }
-    }
-    Ok(facts)
-}
-
-fn sir_cfg_has_cycle(function: &SemFunction) -> bool {
-    let mut states = BTreeMap::<BlockId, VisitState>::new();
-    let by_id = function
-        .blocks
-        .iter()
-        .map(|block| (block.id, block))
-        .collect::<BTreeMap<_, _>>();
-    has_cycle_from(function.entry, &by_id, &mut states)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VisitState {
-    Visiting,
-    Visited,
-}
-
-fn has_cycle_from(
-    block_id: BlockId,
-    by_id: &BTreeMap<BlockId, &SemBlock>,
-    states: &mut BTreeMap<BlockId, VisitState>,
-) -> bool {
-    match states.get(&block_id) {
-        Some(VisitState::Visiting) => return true,
-        Some(VisitState::Visited) => return false,
-        None => {}
-    }
-    states.insert(block_id, VisitState::Visiting);
-    let Some(block) = by_id.get(&block_id) else {
-        // The SIR verifier diagnoses an unknown successor.  Keep this adapter
-        // failure separate and let its normal edge validation report it.
-        states.insert(block_id, VisitState::Visited);
-        return false;
-    };
-    let mut has_cycle = false;
-    block.terminator.visit_successors(|edge| {
-        if !has_cycle && has_cycle_from(edge.target, by_id, states) {
-            has_cycle = true;
-        }
-    });
-    if has_cycle {
-        return true;
-    }
-    states.insert(block_id, VisitState::Visited);
-    false
 }
 
 fn is_supported_return_type(ty: &ResolvedTy) -> bool {
@@ -2093,7 +1608,7 @@ struct PendingBlock {
 
 struct RawLowerer<'a> {
     function: &'a SemFunction,
-    module: Option<&'a SemModule>,
+    module: &'a SemModule,
     value_types: BTreeMap<ValueId, ResolvedTy>,
     block_args: BTreeMap<BlockId, Vec<BlockArg>>,
     value_places: BTreeMap<ValueId, Place>,
@@ -2106,7 +1621,7 @@ impl<'a> RawLowerer<'a> {
     fn new(
         function: &'a SemFunction,
         collected: CollectedValues,
-        module: Option<&'a SemModule>,
+        module: &'a SemModule,
     ) -> Result<Self, SirMirLoweringError> {
         let mut locals = Vec::new();
         let mut value_places = BTreeMap::new();
@@ -2228,11 +1743,7 @@ impl<'a> RawLowerer<'a> {
         args: &[Operand],
         results: &[ValueDef],
     ) -> Result<(), SirMirLoweringError> {
-        let module = self.module.ok_or_else(|| {
-            SirMirLoweringError::unsupported(
-                "the temporary SIR shadow bridge does not lower direct calls; use the strict SIR component",
-            )
-        })?;
+        let module = self.module;
         let callable = module.callable(callee).ok_or_else(|| {
             SirMirLoweringError::unsupported(format!(
                 "SIR call targets unknown callable {}",
@@ -2775,47 +2286,6 @@ mod tests {
         }
     }
 
-    fn template(name: &str, params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> RawMirFunction {
-        let parameter_count = u32::try_from(params.len()).expect("test parameter count fits u32");
-        let decisions = params
-            .iter()
-            .enumerate()
-            .map(|(index, ty)| crate::DecisionFact {
-                site: SiteId(u32::try_from(index).expect("test parameter index fits u32")),
-                ty: ty.clone(),
-                value_class: ValueClass::BitCopy,
-                intent: IntentKind::Unknown,
-                strategy: Strategy::ParamBoundary(crate::ParamBoundaryFact {
-                    param_index: u32::try_from(index).expect("test parameter index fits u32"),
-                    param_count: parameter_count,
-                    caller_visible_projection: false,
-                    mode: crate::ParamBoundaryMode::BorrowReadOnly,
-                }),
-                why: "test parameter boundary".to_string(),
-            })
-            .collect();
-        RawMirFunction {
-            name: name.to_string(),
-            return_ty,
-            call_conv: FunctionCallConv::Default,
-            params,
-            locals: Vec::new(),
-            local_names: Vec::new(),
-            local_scopes: Vec::new(),
-            local_decl_bytes: Vec::new(),
-            scope_table: Vec::new(),
-            blocks: Vec::new(),
-            decisions,
-            intrinsic_id: None,
-            await_deadline_ns: std::collections::HashMap::new(),
-            suspend_kinds: std::collections::HashMap::new(),
-            lambda_actor_user_param_locals: Vec::new(),
-            span: None,
-            instr_spans: std::collections::BTreeMap::new(),
-            source_origin: crate::SourceOrigin::Unknown,
-        }
-    }
-
     fn definition(id: u32, ty: ResolvedTy) -> ValueDef {
         ValueDef {
             id: ValueId(id),
@@ -3174,65 +2644,6 @@ mod tests {
     }
 
     #[test]
-    fn shadow_bridge_realizes_tuple_values_through_the_verified_virtual_lane() {
-        let function = strict_virtual_tuple_projection_function();
-        let module = test_module(vec![function.clone()]);
-        let template = template("main", Vec::new(), ResolvedTy::I64);
-        let mut pipeline = IrPipeline {
-            raw_mir: vec![template.clone()],
-            checked_mir: vec![CheckedMirFunction {
-                name: template.name.clone(),
-                return_ty: template.return_ty.clone(),
-                blocks: Vec::new(),
-                decisions: template.decisions.clone(),
-                checks: Vec::new(),
-                cooperate_sites: Vec::new(),
-                ownership_elaboration: None,
-            }],
-            elaborated_mir: vec![ElaboratedMirFunction {
-                name: template.name,
-                return_ty: template.return_ty,
-                statements: Vec::new(),
-                decisions: Vec::new(),
-                blocks: Vec::new(),
-                drop_plans: Vec::new(),
-                coroutine: None,
-                lambda_captures: Vec::new(),
-            }],
-            ..IrPipeline::default()
-        };
-
-        let report = apply_sir_to_pipeline(&module, &mut pipeline);
-        assert_eq!(report.lowered_count(), 1, "{report:#?}");
-        let raw = pipeline
-            .raw_mir
-            .first()
-            .expect("shadow bridge must replace the main raw body");
-        let checked = pipeline
-            .checked_mir
-            .first()
-            .expect("shadow bridge must install matching checked MIR");
-        let elaborated = pipeline
-            .elaborated_mir
-            .first()
-            .expect("shadow bridge must install matching elaborated MIR");
-        let callable = module
-            .callable(function.callable)
-            .expect("test callable must exist");
-
-        assert!(raw.locals.is_empty());
-        assert!(raw.blocks[0]
-            .instructions
-            .iter()
-            .any(|instruction| matches!(instruction, Instr::Value(RawValueOp::TupleMake { .. }))));
-        verify_strict_sir_virtual_raw_checked(callable, raw, checked).expect(
-            "shadow virtual body must pass the same raw/checked verifier as strict lowering",
-        );
-        verify_strict_sir_virtual_elaboration(raw, checked, elaborated)
-            .expect("shadow virtual body must pass the no-drop elaboration verifier");
-    }
-
-    #[test]
     fn strict_post_lowering_verifier_rejects_bad_cfg_target() {
         let function = strict_i64_identity_function();
         let module = test_module(vec![function.clone()]);
@@ -3287,50 +2698,42 @@ mod tests {
         assert_eq!(block.successor, None);
     }
 
+    /// The zero-drop elaboration is total for strict SIR bodies, but a
+    /// scheduler fact naming a semantic `Unreachable` block is stale rather
+    /// than something elaboration may quietly skip: codegen injects the
+    /// cancellation branch before the terminator, which would leave a
+    /// plan-free endpoint carrying an executable exit.
     #[test]
-    fn shadow_bridge_rejects_a_scheduler_site_for_semantic_unreachable_atomically() {
+    fn zero_drop_elaboration_rejects_a_cooperate_site_on_semantic_unreachable() {
         let function = strict_unreachable_function();
-        let raw = template("semantic_unreachable", Vec::new(), ResolvedTy::Unit);
-        let checked = CheckedMirFunction {
-            name: "semantic_unreachable".to_string(),
-            return_ty: ResolvedTy::Unit,
-            blocks: Vec::new(),
-            decisions: Vec::new(),
-            checks: Vec::new(),
-            cooperate_sites: vec![crate::CooperateSite {
-                bb_id: 0,
-                kind: crate::CooperateKind::FunctionEntry,
-            }],
-            ownership_elaboration: None,
-        };
-        let elaborated = ElaboratedMirFunction {
-            name: "semantic_unreachable".to_string(),
-            return_ty: ResolvedTy::Unit,
-            statements: Vec::new(),
-            decisions: Vec::new(),
-            blocks: Vec::new(),
-            drop_plans: Vec::new(),
-            coroutine: None,
-            lambda_captures: Vec::new(),
-        };
-        let mut pipeline = IrPipeline {
-            raw_mir: vec![raw.clone()],
-            checked_mir: vec![checked.clone()],
-            elaborated_mir: vec![elaborated.clone()],
-            ..IrPipeline::default()
-        };
+        let module = test_module(vec![function.clone()]);
+        let lowered = lower_sir_function(&module, &function)
+            .expect("a semantic unreachable is a legal strict SIR endpoint");
+        assert!(matches!(
+            lowered.raw.blocks[0].terminator,
+            Terminator::Unreachable
+        ));
 
-        let report = apply_sir_to_pipeline(&test_module(vec![function]), &mut pipeline);
+        let mut stale = lowered.checked.clone();
+        stale.cooperate_sites = vec![crate::CooperateSite {
+            bb_id: lowered.raw.blocks[0].id,
+            kind: crate::CooperateKind::FunctionEntry,
+        }];
+        let error = zero_drop_elaboration(&lowered.raw, &stale)
+            .expect_err("a cooperate site on a semantic unreachable block must fail closed");
+        assert!(
+            error
+                .reason
+                .contains("cooperate site for semantic unreachable bb0"),
+            "{}",
+            error.reason
+        );
 
-        assert_eq!(report.lowered_count(), 0, "{report:#?}");
-        assert_eq!(pipeline.raw_mir, vec![raw]);
-        assert_eq!(pipeline.checked_mir, vec![checked]);
-        assert_eq!(pipeline.elaborated_mir, vec![elaborated]);
-        assert!(report.statuses.iter().all(|(_, status)| matches!(
-            status,
-            SirMirLoweringStatus::Unsupported { reason }
-                if reason.contains("cooperate site for semantic unreachable bb0")
-        )));
+        // Negative control: without the stale scheduler fact the same body
+        // elaborates, so the refusal above is the site rule and not a
+        // body-shape rejection.
+        zero_drop_elaboration(&lowered.raw, &lowered.checked)
+            .expect("the unmodified strict body must still elaborate");
     }
 
     #[test]
@@ -3480,13 +2883,9 @@ mod tests {
             ],
         };
 
-        let callable = test_callable(&function);
-        let lowered = lower_sir_function_with_template(
-            &function,
-            &callable,
-            &template("f", vec![ResolvedTy::I64, ResolvedTy::I64], ResolvedTy::I64),
-        )
-        .expect("the scalar SSA diamond should lower to raw MIR");
+        let module = test_module(vec![function.clone()]);
+        let lowered = lower_sir_function(&module, &function)
+            .expect("the scalar SSA diamond should lower to raw MIR");
 
         assert!(lowered.raw.blocks.len() > function.blocks.len());
         assert_eq!(lowered.raw.span, Some((12, 96)));
@@ -3614,14 +3013,12 @@ mod tests {
             }],
         };
 
-        let callable = test_callable(&function);
-        let error = lower_sir_function_with_template(
-            &function,
-            &callable,
-            &template("bad_entry", Vec::new(), ResolvedTy::I64),
-        )
-        .expect_err("a malformed SIR entry must fail before raw MIR exists");
-        assert!(error.reason.contains("SIR verifier rejected function"));
+        let module = test_module(vec![function.clone()]);
+        let error = lower_sir_function(&module, &function)
+            .expect_err("a malformed SIR entry must fail before raw MIR exists");
+        assert!(error
+            .reason
+            .contains("SIR module verifier rejected function"));
         assert!(error.reason.contains("EntryBlockArgs"));
     }
 
@@ -3736,17 +3133,9 @@ mod tests {
                 },
             ],
         };
-        let callable = test_callable(&function);
-        let lowered = lower_sir_function_with_template(
-            &function,
-            &callable,
-            &template(
-                "swap",
-                vec![ResolvedTy::I64, ResolvedTy::I64, ResolvedTy::Bool],
-                ResolvedTy::I64,
-            ),
-        )
-        .expect("a scalar branch with block arguments should lower");
+        let module = test_module(vec![function.clone()]);
+        let lowered = lower_sir_function(&module, &function)
+            .expect("a scalar branch with block arguments should lower");
 
         let forwarders: Vec<_> = lowered
             .raw
@@ -4153,96 +3542,7 @@ mod tests {
     }
 
     #[test]
-    fn replacing_a_scalar_body_removes_stale_elaboration() {
-        let function = SemFunction {
-            id: ItemId(0),
-            callable: CallableId(0),
-            declaration: DefId::for_test("constant"),
-            name: "constant".to_string(),
-            span: 0..0,
-            source_origin: FunctionSourceOrigin::Unknown,
-            params: Vec::new(),
-            return_ty: ResolvedTy::I64,
-            entry: BlockId(0),
-            blocks: vec![SemBlock {
-                id: BlockId(0),
-                args: Vec::new(),
-                ops: vec![op(
-                    0,
-                    definition(0, ResolvedTy::I64),
-                    SemOpKind::ConstI64(42),
-                )],
-                terminator: SemTerminator::Return {
-                    value: Some(operand(0)),
-                },
-            }],
-        };
-        let raw = template("constant", Vec::new(), ResolvedTy::I64);
-        let checked = CheckedMirFunction {
-            name: "constant".to_string(),
-            return_ty: ResolvedTy::I64,
-            blocks: Vec::new(),
-            decisions: Vec::new(),
-            checks: Vec::new(),
-            // The candidate's structural analysis has no site for this
-            // trivial constant return, while the temporary shadow bridge
-            // preserves this established entry site. Its elaboration must be
-            // rebuilt after that scheduler reconciliation.
-            cooperate_sites: vec![crate::CooperateSite {
-                bb_id: 0,
-                kind: crate::CooperateKind::FunctionEntry,
-            }],
-            ownership_elaboration: None,
-        };
-        let mut pipeline = IrPipeline {
-            raw_mir: vec![raw],
-            checked_mir: vec![checked],
-            elaborated_mir: vec![crate::ElaboratedMirFunction {
-                name: "constant".to_string(),
-                return_ty: ResolvedTy::I64,
-                statements: Vec::new(),
-                decisions: Vec::new(),
-                blocks: Vec::new(),
-                drop_plans: Vec::new(),
-                coroutine: None,
-                lambda_captures: Vec::new(),
-            }],
-            ..IrPipeline::default()
-        };
-
-        let report = apply_sir_to_pipeline(&test_module(vec![function]), &mut pipeline);
-        assert_eq!(report.lowered_count(), 1, "{report:#?}");
-        assert_eq!(pipeline.elaborated_mir.len(), 1);
-        assert_eq!(pipeline.elaborated_mir[0].name, "constant");
-        assert!(matches!(
-            pipeline.elaborated_mir[0].drop_plans.as_slice(),
-            [
-                (ExitPath::Return { block: 0 }, return_plan),
-                (ExitPath::Cancel { block: 0 }, cancel_plan),
-            ] if return_plan.drops.is_empty() && cancel_plan.drops.is_empty()
-        ));
-        assert!(matches!(
-            pipeline.checked_mir[0].cooperate_sites.as_slice(),
-            [crate::CooperateSite {
-                bb_id: 0,
-                kind: crate::CooperateKind::FunctionEntry,
-            }]
-        ));
-        assert_eq!(pipeline.elaborated_mir[0].blocks.len(), 1);
-        assert!(matches!(
-            pipeline.raw_mir[0].blocks[0].instructions.as_slice(),
-            [
-                Instr::ConstI64 { value: 42, .. },
-                Instr::Move {
-                    dest: Place::ReturnSlot,
-                    ..
-                }
-            ]
-        ));
-    }
-
-    #[test]
-    fn module_verification_prevents_duplicate_functions_from_mutating_mir() {
+    fn module_verification_rejects_two_bodies_for_one_callable() {
         let function = SemFunction {
             id: ItemId(0),
             callable: CallableId(0),
@@ -4268,20 +3568,70 @@ mod tests {
         };
         let mut duplicate = function.clone();
         duplicate.id = ItemId(1);
-        let raw = template("duplicate", Vec::new(), ResolvedTy::I64);
-        let mut pipeline = IrPipeline {
-            raw_mir: vec![raw.clone()],
-            ..IrPipeline::default()
+
+        // Negative control: one body for the callable is a legal component.
+        lower_closed_scalar_component(&test_module(vec![function.clone()]), &[CallableId(0)])
+            .expect("a single body for the callable must realize");
+
+        let error = lower_closed_scalar_component(
+            &test_module(vec![function, duplicate]),
+            &[CallableId(0)],
+        )
+        .expect_err("two bodies for one callable must fail module verification");
+        assert!(
+            error.reason.contains("SIR module verifier rejected"),
+            "{}",
+            error.reason
+        );
+    }
+
+    /// The strict lane selects a program from the entry fact alone. Removing
+    /// the fact must refuse with a typed error, not fall through to some other
+    /// root body, and not go looking for a callable named `main`.
+    #[test]
+    fn entry_component_lowering_fails_closed_without_an_entry_fact() {
+        let function = SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("main"),
+            name: "main".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::RootUnit,
+            params: Vec::new(),
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![op(
+                    0,
+                    definition(0, ResolvedTy::I64),
+                    SemOpKind::ConstI64(42),
+                )],
+                terminator: SemTerminator::Return {
+                    value: Some(operand(0)),
+                },
+            }],
         };
+        let mut module = test_module(vec![function]);
 
-        let report = apply_sir_to_pipeline(&test_module(vec![function, duplicate]), &mut pipeline);
+        // Positive control: with the entry fact present this exact module is a
+        // program, so the refusal below is about the fact and nothing else.
+        let component = lower_entry_component(&module)
+            .expect("an entry fact must select the component it names");
+        assert_eq!(component.callables(), &[CallableId(0)]);
 
-        assert_eq!(report.lowered_count(), 0, "{report:#?}");
-        assert_eq!(pipeline.raw_mir, vec![raw]);
-        assert!(report.statuses.iter().all(|(_, status)| matches!(
-            status,
-            SirMirLoweringStatus::Unsupported { reason }
-                if reason.contains("SIR module verifier rejected")
-        )));
+        module.entry_callable = None;
+        let error = lower_entry_component(&module)
+            .expect_err("a module with no entry fact is not an executable program");
+        assert!(
+            error.reason.contains("no HIR entry declaration"),
+            "{}",
+            error.reason
+        );
+        assert_eq!(
+            error.missing_body, None,
+            "a missing entry fact is not a missing SIR body"
+        );
     }
 }

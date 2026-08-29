@@ -27,6 +27,7 @@ use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, ResolvedTy};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
+        entry_declaration: None,
         items,
         // This handcrafted fixture bypasses HIR checking, so it has no typed
         // producer ownership facts to carry into MIR lowering.

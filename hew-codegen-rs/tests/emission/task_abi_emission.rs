@@ -60,7 +60,6 @@ fn pipeline_with_task_abi_call(
     ];
 
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "probe".to_string(),
@@ -168,7 +167,6 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         terminator: Terminator::Return,
     };
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
@@ -279,7 +277,6 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         terminator: Terminator::Return,
     };
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
@@ -411,7 +408,6 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         terminator: Terminator::Return,
     };
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
@@ -669,7 +665,6 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
     ];
     let locals = vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))];
     let pipeline = IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "probe".to_string(),

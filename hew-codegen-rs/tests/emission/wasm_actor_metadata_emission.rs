@@ -139,7 +139,6 @@ fn spawn_pipeline() -> IrPipeline {
     };
 
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![spawn_fn, handler_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],

@@ -106,7 +106,6 @@ fn pipeline_with(
     record_layouts: Vec<RecordLayout>,
 ) -> IrPipeline {
     IrPipeline {
-        thir: vec![],
         raw_mir,
         checked_mir: vec![],
         elaborated_mir: vec![],

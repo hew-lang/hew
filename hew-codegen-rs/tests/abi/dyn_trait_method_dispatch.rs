@@ -61,7 +61,6 @@ fn dyn_trait_ty(trait_name: &str) -> ResolvedTy {
 
 fn empty_pipeline(raw_mir: Vec<RawMirFunction>) -> IrPipeline {
     IrPipeline {
-        thir: vec![],
         raw_mir,
         checked_mir: vec![],
         elaborated_mir: vec![],

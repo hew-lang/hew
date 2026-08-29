@@ -2826,10 +2826,10 @@ mod tests {
             EvalBackendOptions {
                 target: Some("wasm32-wasi"),
                 jit_mode: None,
-                sir_mode: crate::compile::SirMode::Shadow,
+                sir_mode: crate::compile::SirMode::Lower,
             },
         );
-        assert_eq!(wasm.sir_mode, crate::compile::SirMode::Shadow);
+        assert_eq!(wasm.sir_mode, crate::compile::SirMode::Lower);
         assert!(wasm.repl_fragment);
         assert_eq!(wasm.target.as_deref(), Some("wasm32-wasi"));
     }

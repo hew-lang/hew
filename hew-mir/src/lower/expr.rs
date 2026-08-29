@@ -2606,7 +2606,7 @@ impl Builder {
                 // Seal the current basic block with Terminator::Return so
                 // codegen actually emits an early return at this program
                 // point. Codegen consumes the block terminator (not the
-                // `MirStatement::Return` THIR marker), so without sealing
+                // `MirStatement::Return` statement marker), so without sealing
                 // the block here the post-`return` statements would
                 // continue executing — turning `return` into a no-op.
                 // Start a fresh cursor block to hold any source code

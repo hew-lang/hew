@@ -49,15 +49,15 @@ source / package graph
 
 The design question at every boundary is deliberately narrow:
 
-| Layer | Question it answers |
-| --- | --- |
-| AST | What did the programmer write? |
-| HIR | What does it mean in Hew? |
-| Normalized HIR | What is its canonical structured Hew form? |
-| SIR | What semantic values, effects, and control flow exist? |
-| MIR | How are those values represented, owned, transported, and destroyed? |
-| LLVM IR | What low-level computation should execute? |
-| LLVM backend | How does this target machine execute it? |
+| Layer          | Question it answers                                                  |
+| -------------- | -------------------------------------------------------------------- |
+| AST            | What did the programmer write?                                       |
+| HIR            | What does it mean in Hew?                                            |
+| Normalized HIR | What is its canonical structured Hew form?                           |
+| SIR            | What semantic values, effects, and control flow exist?               |
+| MIR            | How are those values represented, owned, transported, and destroyed? |
+| LLVM IR        | What low-level computation should execute?                           |
+| LLVM backend   | How does this target machine execute it?                             |
 
 `Normalized HIR` is primarily an invariant/state of HIR, not a requirement for
 a second, giant Rust type hierarchy. It remains recognizable as Hew; ordinary
@@ -68,7 +68,7 @@ because they are structured.
 
 - **Ownership realization belongs in CFG MIR.** Every successful precedent (Rust MIR,
   Swift SIL/OSSA, Flang FIR) decides ownership in a CFG IR with explicit
-  `Place`s.  Doing it on a typed AST means reinventing CFG analysis on a tree.
+  `Place`s. Doing it on a typed AST means reinventing CFG analysis on a tree.
 - **Typed HIR retires `Ty::Var`.** The fail-closed gate ("no `Ty::Var`
   survives into codegen") is a structural verifier before SIR, not a post-hoc
   sweep.
@@ -108,10 +108,9 @@ execution mode may skip, duplicate, or substitute semantic lowering.
 ### 1.2 SIR hard-cutover contract
 
 The current SIR bridge is bounded migration evidence, not a permanent dual
-pipeline. `--sir-shadow` is a temporary differential oracle, and `--sir-lower`
-is a temporary selector for the migrated SIR domain. Neither is a release-mode
-compatibility promise. Unsupported SIR surface is an implementation gap, not a
-reason for a permanent hidden legacy fallback.
+pipeline. `--sir-lower` is a temporary selector for the migrated SIR domain,
+not a release-mode compatibility promise. Unsupported SIR surface is an
+implementation gap, not a reason for a permanent hidden legacy fallback.
 
 The first strict domain is already template-free: a closed reachable graph of
 ordinary, non-generic direct calls with scalar read-only parameters and scalar
@@ -139,16 +138,23 @@ ABI/calling-convention choices from the semantic callable table and target
 layout. LLVM lowering consumes that header; SIR retains only the semantic
 callable relation.
 
-The temporary shadow adapter remains a scalar CFG differential probe and does
-not realize direct SIR calls through its legacy Raw-MIR template. Shadow
-success is therefore not evidence for direct-call correctness. Until the old
-body-lowering branch is deleted, each strict domain must instead carry an
-execution-parity test against the established lane.
+The shadow adapter is gone. It was a candidate-buildability probe: it built a
+SIR candidate through a legacy Raw-MIR template, discarded it, and shipped the
+legacy pipeline anyway, so its success was never evidence for direct-call
+correctness. Its flag, its per-function legacy fallback, and its corpus harness
+are deleted rather than kept as a second lane. `--sir-lower` is now the only
+SIR selector and it fails closed: a body outside the strict domain is a typed
+error, never a silent legacy body. Until the old body-lowering branch is
+deleted, each strict domain must carry an execution-parity test against the
+established lane — a strict compile that merely succeeds proves nothing about
+the surface it does not own.
 
-The following scaffolding is a deletion target: raw-function name matching,
-`lower_sir_function_with_template(..., RawMirFunction template)`, copied parameter-boundary
-and scheduler facts, per-function legacy fallback, SIR mode flags, and the
-shadow corpus harness. The normal CLI flips only after all of these gates hold:
+The following scaffolding is still a deletion target: the transitional
+symbol/default-convention carrier above (the strict raw header's name is still
+`SemCallable::symbol`, checked by `verify_strict_sir_raw_checked` in
+`hew-mir/src/sir.rs`), the `--sir-lower` selector itself, and the legacy
+HIR → Raw-MIR body-lowering branch. The normal CLI flips only after all of
+these gates hold:
 
 1. SIR owns verified callable identity, semantic signature, source provenance,
    effect summary, and semantic parameter-use facts. The transitional
@@ -177,16 +183,16 @@ mixed-artifact fallback.
 
 ### 1.3 Incremental acceptance gates
 
-| Milestone | Acceptance criterion |
-| --- | --- |
-| SIR foundation | A scalar function with a conditional lowers to typed SSA blocks and block arguments, verifies definition/dominance, edge arity and types, lowers mechanically to Raw MIR, and preserves behavior across the existing suite. |
-| SIR infrastructure | A pass can inspect and replace uses, erase an operation, rewrite an edge, and add/remove a block argument; every pass supports verify/dump before and after, timing, and pass bisection. |
-| Basic optimization | CFG simplification, SCCP, DCE, copy propagation, and local GVN operate on SIR rather than asking LLVM to recover the semantic CFG. |
-| Generic instances | A single normalized-HIR instance service deduplicates concrete function/type instances and selected implementation evidence, including recursive instances; the resulting concrete SIR bodies contain no layout or ABI facts. |
-| Value semantics | Tuples, records, and variants remain abstract values: an unused construction can disappear before MIR and no SIR operation observes a byte offset, physical tag, or payload layout. |
-| Closures | `closure.make` plus `closure.call` can eliminate a non-escaping closure allocation before it reaches MIR. |
-| Machines, actors, and async | Known machine transitions can specialize; actor messages remain typed semantic values; every suspension is an explicit SIR CFG terminator before runtime/coroutine lowering. |
-| Full cutover | Normal compilation has exactly `HIR → normalized HIR → SIR → Raw MIR → Checked MIR → Elaborated MIR → LLVM`; bridge flags, templates, shadow harnesses, and legacy body-lowering branches are deleted. |
+| Milestone                   | Acceptance criterion                                                                                                                                                                                                          |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SIR foundation              | A scalar function with a conditional lowers to typed SSA blocks and block arguments, verifies definition/dominance, edge arity and types, lowers mechanically to Raw MIR, and preserves behavior across the existing suite.   |
+| SIR infrastructure          | A pass can inspect and replace uses, erase an operation, rewrite an edge, and add/remove a block argument; every pass supports verify/dump before and after, timing, and pass bisection.                                      |
+| Basic optimization          | CFG simplification, SCCP, DCE, copy propagation, and local GVN operate on SIR rather than asking LLVM to recover the semantic CFG.                                                                                            |
+| Generic instances           | A single normalized-HIR instance service deduplicates concrete function/type instances and selected implementation evidence, including recursive instances; the resulting concrete SIR bodies contain no layout or ABI facts. |
+| Value semantics             | Tuples, records, and variants remain abstract values: an unused construction can disappear before MIR and no SIR operation observes a byte offset, physical tag, or payload layout.                                           |
+| Closures                    | `closure.make` plus `closure.call` can eliminate a non-escaping closure allocation before it reaches MIR.                                                                                                                     |
+| Machines, actors, and async | Known machine transitions can specialize; actor messages remain typed semantic values; every suspension is an explicit SIR CFG terminator before runtime/coroutine lowering.                                                  |
+| Full cutover                | Normal compilation has exactly `HIR → normalized HIR → SIR → Raw MIR → Checked MIR → Elaborated MIR → LLVM`; bridge flags, templates, shadow harnesses, and legacy body-lowering branches are deleted.                        |
 
 ### Design axioms
 
@@ -397,8 +403,8 @@ can construct representation or storage.
 
 Optimization-safety verifier ledger:
 
-| Rewrite | Required proof | Counterfactual evidence |
-| --- | --- | --- |
+| Rewrite                     | Required proof                                                                                                                 | Counterfactual evidence                                                                                                                                                                                   |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Constant-CFG region discard | Every newly unreachable block has no value or ownership use carrying a drop obligation and no operation with a `MayTrap` edge. | `optimize_cfg` proves ordinary structural verification accepts a folded candidate with a discarded trapping arm, while the discard-safety verifier rejects it and leaves the original function unchanged. |
 
 **Dump:** `hew compile --dump-sir`.
@@ -468,7 +474,7 @@ MIR. The no-drop virtual domain still produces a verified explicit zero-drop
 Elaborated MIR body; it is not allowed to skip a stage.
 
 Raw MIR consumes resolved HIR type/value-class facts and SIR use modes. Its
-physical operations have not yet been *proven* correct by ownership/concurrency
+physical operations have not yet been _proven_ correct by ownership/concurrency
 analysis.
 
 **Must not own:** `LLVMTypeRef`, LLVM calling-convention or attribute IDs,
@@ -504,7 +510,7 @@ borrow/suspension legality, actor-send escape/concurrency safety, and
 cooperation requirements. It validates the physical strategy selected in Raw
 MIR; it does not own generic ABI or representation policy.
 
-**The fail-closed boundary for value semantics.**  Diagnostics fire here in
+**The fail-closed boundary for value semantics.** Diagnostics fire here in
 value-cost language (see §4.3).
 
 **Must not own:** drop elaboration, cleanup blocks, code emission.
@@ -598,20 +604,20 @@ diagnostic instead of falling back silently.
 
 ### 3.1 Value classes
 
-Every type in Hew v0.5 belongs to exactly one **ValueClass**.  Classification
+Every type in Hew v0.5 belongs to exactly one **ValueClass**. Classification
 is structural — propagated through fields — unless the type declares a marker.
 
-| ValueClass       | User-facing name | Marker          | Description |
-|------------------|------------------|-----------------|-------------|
-| `BitCopy`        | Copy             | (structural)    | Strict bit-copy; no destructor, no COW, no refcount.  Integers, bools, floats, chars, unit, tuples and fixed-arrays of Copy types.  **Not** "anything cheap to copy" — COW values are a separate class. |
-| `CowValue`       | Value            | `@value` (opt)  | Value semantics with COW implementation.  String, Vec<T>, Map<K,V>, Set<T>, and user structs whose fields are all Copy or Value (default for user structs).  Refcounted backing; mutation triggers `ensure_unique`. |
-| `PersistentShare`| Shareable        | (stdlib types)  | Explicitly shared persistent data structures (HAMT maps/sets, RRB vectors).  Structural sharing across versions; reads are cheap; writes produce a new version.  Always safe to share; no COW needed. |
-| `AffineResource` | Resource         | `@linear` / `@resource` | At-most-one-owner resources: file handles, sockets, channels, capability handles.  No refcount, no COW.  Consumed on last use; sharing is a checker error. |
-| `View`           | View             | (compiler-only) | Borrowed read-only window into another value.  Users do not name Views in v0.5 surface syntax; they appear as method receivers and iterator yields.  Compiler proves View does not outlive its producer. |
+| ValueClass        | User-facing name | Marker                  | Description                                                                                                                                                                                                       |
+| ----------------- | ---------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BitCopy`         | Copy             | (structural)            | Strict bit-copy; no destructor, no COW, no refcount. Integers, bools, floats, chars, unit, tuples and fixed-arrays of Copy types. **Not** "anything cheap to copy" — COW values are a separate class.             |
+| `CowValue`        | Value            | `@value` (opt)          | Value semantics with COW implementation. String, Vec<T>, Map<K,V>, Set<T>, and user structs whose fields are all Copy or Value (default for user structs). Refcounted backing; mutation triggers `ensure_unique`. |
+| `PersistentShare` | Shareable        | (stdlib types)          | Explicitly shared persistent data structures (HAMT maps/sets, RRB vectors). Structural sharing across versions; reads are cheap; writes produce a new version. Always safe to share; no COW needed.               |
+| `AffineResource`  | Resource         | `@linear` / `@resource` | At-most-one-owner resources: file handles, sockets, channels, capability handles. No refcount, no COW. Consumed on last use; sharing is a checker error.                                                          |
+| `View`            | View             | (compiler-only)         | Borrowed read-only window into another value. Users do not name Views in v0.5 surface syntax; they appear as method receivers and iterator yields. Compiler proves View does not outlive its producer.            |
 
 **User struct default:** a user struct is `CowValue` if all its fields are
 Copy or Value, `BitCopy` if all its fields are Copy, and requires `@linear` /
-`@resource` to be `AffineResource`.  The user may spell `@value` explicitly
+`@resource` to be `AffineResource`. The user may spell `@value` explicitly
 to pin the classification (rarely needed).
 
 ### 3.2 Surface syntax
@@ -627,11 +633,11 @@ The v0.5 surface is Swift/Kotlin-shaped, not Rust-shaped:
   `UserRequestedCopy`, silences hidden-copy note); `consume(x)` explicitly
   consumes `x` (subsequent use rejected).
 - **Record update:** `{ ..record, field: v }` — produces a new value;
-  source record unaffected.  For Value records: cow_share + ensure_unique.
+  source record unaffected. For Value records: cow_share + ensure_unique.
   For Copy records: bit-copy with field replaced (free).
 - **Containers:** `[1, 2, 3]` and `{"k": v}` literals produce `CowValue`
-  collections.  Mutation through a `var` binding does ensure_unique-then-mutate.
-- **Strings:** `String` is `CowValue`.  String slices are `View`.
+  collections. Mutation through a `var` binding does ensure_unique-then-mutate.
+- **Strings:** `String` is `CowValue`. String slices are `View`.
   No user-facing distinction between "owned" and "borrowed" string.
 - **Resources:** declared at the type with `@linear` (single-owner, no drop
   side effect) or `@resource` (single-owner, has a drop side effect — file
@@ -650,16 +656,16 @@ Checked MIR proves the selected realization legal. Users never type these
 operation names; diagnostics and the Ownership Plan Report may expose their
 cost in user-facing terms.
 
-| Operation         | When chosen | Cost class |
-|-------------------|-------------|------------|
-| `borrow_read`     | Immutable read; no refcount touch.  View / COW-share-read. | Free |
-| `move`            | Last use; transfer ownership without copy. | Free |
-| `cow_share`       | Shared use of a CowValue; bumps refcount. | RefcountTouch |
-| `ensure_unique`   | Prepare a CowValue for mutation; clones if refcount > 1. | OAlloc (conditional) |
-| `materialize`     | Deep copy / clone-now.  Only operation with unbounded cost. | OCopyN |
-| `consume_call`    | Pass to a callee that takes ownership. | OResourceTransfer |
-| `drop`            | Deterministic destructor; explicit in Elaborated MIR. | (implicit) |
-| `freeze`          | Immutable snapshot of a `var` for crossing a yield/send boundary. | Free |
+| Operation       | When chosen                                                       | Cost class           |
+| --------------- | ----------------------------------------------------------------- | -------------------- |
+| `borrow_read`   | Immutable read; no refcount touch. View / COW-share-read.         | Free                 |
+| `move`          | Last use; transfer ownership without copy.                        | Free                 |
+| `cow_share`     | Shared use of a CowValue; bumps refcount.                         | RefcountTouch        |
+| `ensure_unique` | Prepare a CowValue for mutation; clones if refcount > 1.          | OAlloc (conditional) |
+| `materialize`   | Deep copy / clone-now. Only operation with unbounded cost.        | OCopyN               |
+| `consume_call`  | Pass to a callee that takes ownership.                            | OResourceTransfer    |
+| `drop`          | Deterministic destructor; explicit in Elaborated MIR.             | (implicit)           |
+| `freeze`        | Immutable snapshot of a `var` for crossing a yield/send boundary. | Free                 |
 
 ### 3.4 Actor / concurrency rules
 
@@ -668,24 +674,24 @@ is validated in Checked MIR after SIR has retained the typed actor handle,
 resolved `ActorMethodId`, and typed semantic message:
 
 - **Transfer mode:** last-use of an owned value; sender loses access, receiver
-  gains it.  Cheapest path.  For AffineResource, the only valid send mode.
+  gains it. Cheapest path. For AffineResource, the only valid send mode.
 - **Share mode:** CowValue or PersistentShare; sender retains access, receiver
-  gets a refcount bump.  Safe: COW guarantees no observable mutation across
+  gets a refcount bump. Safe: COW guarantees no observable mutation across
   aliases.
-- **Materialize mode:** deep copy on send.  Used when the value is reachable
+- **Materialize mode:** deep copy on send. Used when the value is reachable
   from the sender after the send and is not COW/persistent, or when an explicit
   `copy(x)` is used.
-- **AffineResource sends:** consume-or-error.  Either the resource is last-used
+- **AffineResource sends:** consume-or-error. Either the resource is last-used
   at the send site (transfer) or the send is rejected.
 
 **`actor_scope { … }`** (v0.5 opt-in primitive): spawns child actors whose
-lifetimes are bounded by the scope.  On scope exit, the runtime guarantees all
+lifetimes are bounded by the scope. On scope exit, the runtime guarantees all
 child actors have drained their mailboxes and their resources have been dropped.
 Lowers to a `hew.scope` op with attached actor-cleanup edges in Elaborated MIR.
 The unstructured `spawn` path remains available.
 
 **Refcount strategy:** actor-local non-atomic RC with cross-actor promotion
-(v0.5 decision).  COW values that cross an actor boundary (share mode) are
+(v0.5 decision). COW values that cross an actor boundary (share mode) are
 promoted to a shared atomic refcount; actor-local values use a cheaper
 non-atomic counter.
 
@@ -694,6 +700,7 @@ non-atomic counter.
 A generator may hold an immutable read across `yield` if and only if Checked
 MIR proves the underlying value cannot be mutated through any other path during
 the suspension:
+
 - No `var` aliasing of the captured value reachable through any other path.
 - No actor message can reach the value during suspension.
 
@@ -706,7 +713,7 @@ mode appears in the Ownership Plan Report.
 ### 3.6 Diagnostic vocabulary (user-facing)
 
 Internal vocabulary (`move`, `borrow`, `lifetime`, `'a`) does **not** appear
-in user-facing diagnostics.  User diagnostics use:
+in user-facing diagnostics. User diagnostics use:
 
 - "value `s` is read here"
 - "value `s` is mutated here"
@@ -735,7 +742,7 @@ hew explain ownership <file>
 ```
 
 Prints a deterministic per-site classification table for the file's functions,
-grouped by function, ordered by SiteId.  Each row:
+grouped by function, ordered by SiteId. Each row:
 `site → kind → value-class → strategy → cost → why`.
 
 A summary footer reports the function's hidden-copy budget (sum of `OCopyN`
@@ -745,7 +752,7 @@ and `OAlloc` sites) and flags any site over the per-function budget threshold.
 hew build --emit-decisions=json
 ```
 
-Emits the same DecisionMap as newline-delimited JSON keyed by SiteId.  Schema
+Emits the same DecisionMap as newline-delimited JSON keyed by SiteId. Schema
 versioned; round-trip tested.
 
 ```
@@ -795,9 +802,9 @@ require a dialect attribute system.
 ### 4.3 Hidden-copy budget
 
 Each function carries an implicit budget for `materialize` and
-`ensure_unique`-with-clone sites.  Default: **note-level** at the first hidden
+`ensure_unique`-with-clone sites. Default: **note-level** at the first hidden
 materialize per function in non-test code (user-confirmed default; configurable
-per-crate).  Explicit `copy(x)` and `consume(x)` never count against the budget.
+per-crate). Explicit `copy(x)` and `consume(x)` never count against the budget.
 
 ### 4.4 LSP surfaces
 
@@ -814,7 +821,7 @@ per-crate).  Explicit `copy(x)` and `consume(x)` never count against the budget.
 ## 5. Corpus and worked examples
 
 `tests/corpus/v05-value-model/` contains hand-written fixture files and their
-companion `.ownership-plan.txt` expected reports.  These are **implementation
+companion `.ownership-plan.txt` expected reports. These are **implementation
 targets** for the v0.5 value-model checker and Elaborated MIR implementation:
 the checker must produce output matching the companion files byte-for-byte
 (modulo source locations).
@@ -848,5 +855,5 @@ make release      # release: builds hew + stdlib
 
 ---
 
-*This document is an internal engineering reference.  The public-facing
-language specification is `docs/specs/HEW-SPEC-2026.md`.*
+_This document is an internal engineering reference. The public-facing
+language specification is `docs/specs/HEW-SPEC-2026.md`._

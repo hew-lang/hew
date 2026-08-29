@@ -3,10 +3,10 @@ use hew_parser::ast::BinaryOp;
 use hew_sir::{
     build_def_use, dump_sir, replace_all_uses, replace_use, verify_function_in_module,
     verify_module, BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, EffectSummary,
-    FunctionSourceOrigin, OpId, Operand, OperandSlot, Provenance, RewriteError, SemAbiParam,
-    SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind, UseMode, UseSite, ValueDef,
-    ValueId,
+    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, RewriteError,
+    SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
+    SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
+    SirInstanceKey, UseMode, UseSite, ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
 
@@ -285,6 +285,79 @@ fn block_arguments_are_ssa_join_values() {
     let dump = dump_sir(&module);
     assert!(dump.contains("bb3(%10: i64):"));
     assert!(dump.contains("goto bb3(%6)"));
+}
+
+/// The callable-to-body association is the one place the "exactly one body"
+/// rule lives. A callable claimed by two bodies must be refused rather than
+/// resolved to whichever body happens to come first.
+#[test]
+fn the_function_index_refuses_a_callable_claimed_by_two_bodies() {
+    let function = unit_function(
+        0,
+        "claimed",
+        "claimed",
+        FunctionSourceOrigin::Unknown,
+        Vec::new(),
+    );
+    let mut duplicate = function.clone();
+    duplicate.id = ItemId(1);
+
+    // Negative control: one body for the callable resolves.
+    let single = module(vec![function.clone()]);
+    assert_eq!(
+        single
+            .function_index()
+            .function(CallableId(0))
+            .map(|body| body.id),
+        Some(ItemId(0)),
+    );
+
+    let ambiguous = module(vec![function, duplicate]);
+    assert!(
+        ambiguous.function_index().function(CallableId(0)).is_none(),
+        "two bodies for one callable must not resolve to an arbitrary winner"
+    );
+    assert!(
+        !verify_module(&ambiguous).is_empty(),
+        "and the module itself must be rejected"
+    );
+}
+
+/// A callable that legitimately has no body — the entry closure never demanded
+/// one — is an absence, not a malformed table.
+#[test]
+fn the_function_index_reports_a_bodyless_callable_as_absent() {
+    let mut module = module(vec![unit_function(
+        0,
+        "present",
+        "present",
+        FunctionSourceOrigin::Unknown,
+        Vec::new(),
+    )]);
+    module.callables.push(SemCallable {
+        id: CallableId(1),
+        function: ItemId(1),
+        declaration: DefId::for_test("headerless"),
+        instance: CallableInstance::Monomorphic,
+        symbol: "headerless".to_string(),
+        source_origin: FunctionSourceOrigin::Unknown,
+        signature: SemSignature {
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+        },
+        call_conv: SemCallConv::Default,
+        kind: SemCallableKind::HewDirect,
+        effect_summary: EffectSummary::Unknown,
+    });
+
+    let index = module.function_index();
+    assert!(index.function(CallableId(0)).is_some());
+    assert!(index.function(CallableId(1)).is_none());
+    assert!(
+        verify_module(&module).is_empty(),
+        "a bodyless callable header is legal: {:#?}",
+        verify_module(&module)
+    );
 }
 
 #[test]
@@ -806,8 +879,45 @@ fn verifier_rejects_duplicate_semantic_and_emitted_function_identities() {
     )));
 }
 
+/// Naming is not part of the entry boundary: HIR owns entry identity and SIR
+/// only joins on the id it published. Neither the declaration path nor the
+/// emitted symbol may decide whether a callable is the entry.
+///
+/// The negative controls for the rules that *do* survive live in
+/// [`verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_abi`].
 #[test]
-fn verifier_requires_entry_to_be_canonical_parameterless_root_main_with_portable_abi() {
+fn verifier_admits_an_entry_whose_declaration_and_symbol_are_not_spelled_main() {
+    let non_main = entry_module(unit_function(
+        0,
+        "helper",
+        "helper",
+        FunctionSourceOrigin::RootUnit,
+        Vec::new(),
+    ));
+    assert!(
+        verify_module(&non_main).is_empty(),
+        "an entry whose declaration is not spelled `main` must satisfy the same shape rule: {:#?}",
+        verify_module(&non_main)
+    );
+
+    let renamed_symbol = entry_module(unit_function(
+        0,
+        "main",
+        "not_main",
+        FunctionSourceOrigin::RootUnit,
+        Vec::new(),
+    ));
+    assert!(
+        verify_module(&renamed_symbol).is_empty(),
+        "the emitted entry symbol is a linkage decision codegen owns, not a SIR entry rule: {:#?}",
+        verify_module(&renamed_symbol)
+    );
+}
+
+/// The entry boundary is a *shape* rule: root-unit provenance, no parameters,
+/// and a portable exit status.
+#[test]
+fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_abi() {
     let valid = entry_module(unit_function(
         0,
         "main",
@@ -821,18 +931,24 @@ fn verifier_requires_entry_to_be_canonical_parameterless_root_main_with_portable
         verify_module(&valid)
     );
 
-    let non_main = entry_module(unit_function(
+    let foreign_entry = entry_module(unit_function(
         0,
-        "helper",
-        "helper",
-        FunctionSourceOrigin::RootUnit,
+        "main",
+        "main",
+        FunctionSourceOrigin::Foreign("dep".to_string()),
         Vec::new(),
     ));
-    assert!(verify_module(&non_main).iter().any(|diagnostic| matches!(
-        &diagnostic.kind,
-        SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
-            if reason.contains("canonical root-unit source `main`")
-    )));
+    assert!(
+        verify_module(&foreign_entry)
+            .iter()
+            .any(|diagnostic| matches!(
+                &diagnostic.kind,
+                SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
+                    if reason.contains("root-unit callable")
+            )),
+        "provenance, not spelling, is what the entry rule fails closed on: {:#?}",
+        verify_module(&foreign_entry)
+    );
 
     let parameterized_main = entry_module(unit_function(
         0,
@@ -850,21 +966,6 @@ fn verifier_requires_entry_to_be_canonical_parameterless_root_main_with_portable
             &diagnostic.kind,
             SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
                 if reason.contains("parameterless")
-        )));
-
-    let wrong_symbol = entry_module(unit_function(
-        0,
-        "main",
-        "not_main",
-        FunctionSourceOrigin::RootUnit,
-        Vec::new(),
-    ));
-    assert!(verify_module(&wrong_symbol)
-        .iter()
-        .any(|diagnostic| matches!(
-            &diagnostic.kind,
-            SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
-                if reason.contains("emitted `main` symbol")
         )));
 
     let bool_main = SemFunction {
@@ -1507,4 +1608,46 @@ fn verifier_rejects_nonread_operands_at_every_scalar_cfg_boundary() {
             "missing exact non-Read diagnostic for {site:?}: {diagnostics:#?}"
         );
     }
+}
+
+/// The entry is the program's one monomorphic root body.
+///
+/// A generic instance can satisfy every other entry shape rule — root-unit
+/// provenance, listed as a root, parameterless, unit return — and must still
+/// be refused: a specialization is one of many bodies derived from a template,
+/// so there is no single source body for the native and WASI entry adapters to
+/// name. Production lowering cannot build this shape today (generic callables
+/// never reach the branch that assigns `entry_callable`), which is exactly why
+/// the rule needs a hand-built module to be provable at all.
+#[test]
+fn verifier_refuses_a_generic_instance_as_the_module_entry() {
+    let monomorphic = entry_module(unit_function(
+        0,
+        "main",
+        "main",
+        FunctionSourceOrigin::RootUnit,
+        Vec::new(),
+    ));
+    assert!(
+        verify_module(&monomorphic).is_empty(),
+        "control: the same module with a monomorphic entry must verify clean: {:#?}",
+        verify_module(&monomorphic)
+    );
+
+    let mut generic = monomorphic;
+    generic.callables[0].instance = CallableInstance::Generic(SirInstanceKey {
+        template: GenericTemplateId {
+            declaration: DefId::for_test("main"),
+        },
+        type_args: vec![ResolvedTy::I64],
+    });
+    assert!(
+        verify_module(&generic).iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
+                if reason.contains("monomorphic source body")
+        )),
+        "changing only the entry callable's instance kind must fail the entry rule closed: {:#?}",
+        verify_module(&generic)
+    );
 }

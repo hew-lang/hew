@@ -754,13 +754,18 @@ fn nested_vec_iteration_clones_out_while_ordinary_indexing_stays_borrowed() {
         "VecIter::next must never borrow a nested collection from its snapshot: {iter_calls:?}"
     );
 
+    // SEAM: re-flattens the checked blocks instead of reading lowering's own
+    // statement snapshot (`FinalizedBody::body_statements`, crate-private). The
+    // two coincide only because no pass between finalization and checked MIR
+    // edits `block.statements` — see the SEAM note in `hew-mir/src/lower/mod.rs`.
     let synthetic_value_uses: Vec<_> = pipeline
-        .thir
+        .checked_mir
         .iter()
         .find(|candidate| candidate.name == "iterate_rows")
-        .expect("missing THIR for `iterate_rows`")
-        .statements
+        .expect("missing checked MIR for `iterate_rows`")
+        .blocks
         .iter()
+        .flat_map(|block| block.statements.iter())
         .filter_map(|statement| match statement {
             MirStatement::Use { name, intent, .. } if name.starts_with("__hew_iter_value_") => {
                 Some(*intent)

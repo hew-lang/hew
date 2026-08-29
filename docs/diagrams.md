@@ -21,8 +21,9 @@ contracts.
 flowchart TD
     SRC["source.hew"] --> AST["AST<br/>(hew-parser)<br/><i>syntactic only; no resolution</i>"]
     AST --> HIR["Resolved HIR<br/>(hew-hir)<br/><i>names, scopes, imports, capabilities</i>"]
-    HIR --> THIR["THIR<br/>(hew-hir, fully typed)<br/><i>monomorphised types; ValueClass per type</i>"]
-    THIR --> RMIR["Raw MIR<br/>(hew-mir, CFG)<br/><i>SSA/places; value-model ops; not yet proven</i>"]
+    HIR --> RMIR["Raw MIR<br/>(hew-mir, CFG)<br/><i>SSA/places; value-model ops; not yet proven</i>"]
+    HIR -. "--sir-lower (strict lane, migrated surface only)" .-> SIR["SIR<br/>(hew-sir, semantic SSA)<br/><i>typed blocks + block args; no layout or ABI facts</i>"]
+    SIR -.-> RMIR
     RMIR --> CMIR["Checked MIR<br/>(hew-mir)<br/><b>ownership proven; fail-closed gate</b>"]
     CMIR --> EMIR["Elaborated MIR<br/>(hew-mir)<br/><i>explicit Drop edges; cleanup CFG</i>"]
     EMIR --> LLVM["LLVM IR<br/>(hew-codegen-rs / Inkwell)<br/><i>direct emission from proven MIR facts</i>"]
@@ -66,10 +67,10 @@ stateDiagram-v2
 
 **Preemption budget (3-level hierarchy):**
 
-| Level             | Budget                                       | Mechanism                                                          |
-| ----------------- | -------------------------------------------- | ------------------------------------------------------------------ |
-| Message budget    | `HEW_MSG_BUDGET = 256` messages/activation   | Coarse scheduler preemption — yield after 256 messages             |
-| Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` safepoints at function entry and loop back-edges |
+| Level             | Budget                                       | Mechanism                                                                                      |
+| ----------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Message budget    | `HEW_MSG_BUDGET = 256` messages/activation   | Coarse scheduler preemption — yield after 256 messages                                         |
+| Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` safepoints at function entry and loop back-edges                 |
 | Cooperative yield | Per-continuation                             | `llvm.coro.suspend` (`hew_cont_resume`) on `await` of a `fork`-spawned task in a `scope` block |
 
 **Actor dispatch signature** (§9.1.1):
@@ -307,15 +308,15 @@ flowchart LR
 
 **EnvelopeFrame fields:**
 
-| CDDL key | Field | Type | Notes |
-| --- | --- | --- | --- |
-| 1 | `version` | `uint` | Must equal `2`; unknown versions rejected |
-| 2 | `frame_type` | `uint` | `0` = control, `1` = envelope |
-| 3 | `target` | `Location / nil` | Exact destination; nil only for replies |
-| 4 | `source` | `Location / nil` | Exact authenticated sender when present |
-| 5 | `msg_type` | `int` | Signed; valid range `0..=2^30-1` |
-| 6 | `payload` | `bstr` | Serialised message body (see §6.2) |
-| 7 | `request_id` | `uint` | `0` = fire-and-forget; `> 0` = ask/reply |
+| CDDL key | Field        | Type             | Notes                                     |
+| -------- | ------------ | ---------------- | ----------------------------------------- |
+| 1        | `version`    | `uint`           | Must equal `2`; unknown versions rejected |
+| 2        | `frame_type` | `uint`           | `0` = control, `1` = envelope             |
+| 3        | `target`     | `Location / nil` | Exact destination; nil only for replies   |
+| 4        | `source`     | `Location / nil` | Exact authenticated sender when present   |
+| 5        | `msg_type`   | `int`            | Signed; valid range `0..=2^30-1`          |
+| 6        | `payload`    | `bstr`           | Serialised message body (see §6.2)        |
+| 7        | `request_id` | `uint`           | `0` = fire-and-forget; `> 0` = ask/reply  |
 
 `Location` is the map `{ 1: node-id bstr(16), 2: non-zero actor slot,
 3: non-zero u32 session incarnation }`. Route slots never appear in this map.

@@ -26,6 +26,14 @@ pub enum SirLoweringStatus {
     Unsupported {
         reason: String,
     },
+    /// The declaration has an admitted SIR callable header but the entry
+    /// closure never reached it, so no body was attempted.
+    ///
+    /// This is distinct from [`Self::Unsupported`]: nothing is known about
+    /// whether the body would lower, and nothing needed to be. Reporting it as
+    /// its own outcome keeps "outside the current semantic surface" from
+    /// absorbing "irrelevant to this program".
+    NotReached,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +60,19 @@ impl LoweredModule {
     }
 }
 
+/// Lower the SIR bodies the program actually needs.
+///
+/// The callable *table* is still built eagerly over every admitted
+/// declaration — it is the resolved direct-call authority, and a header must
+/// exist before a call can name it. Body lowering, by contrast, is
+/// demand-driven: it starts at the module's entry callable and follows
+/// resolved call edges, exactly like the strict component closure in
+/// `hew_mir::lower_closed_scalar_component`. A declaration the entry cannot
+/// reach is reported [`SirLoweringStatus::NotReached`] and costs nothing, so
+/// an unsupported body in an unrelated corner of the module can neither
+/// consume lowering effort nor be mistaken for a fact about this program.
+///
+/// A module with no entry callable is not a program: it lowers no bodies.
 #[must_use]
 pub fn lower_module(module: &HirModule) -> LoweredModule {
     // The HIR monomorphisation registry remains deliberately unused here.
@@ -59,10 +80,8 @@ pub fn lower_module(module: &HirModule) -> LoweredModule {
     // `SiteId -> call_site_type_args` fact, applies the enclosing semantic
     // substitution, and creates its own closed instance worklist.
     let mut service = InstanceService::new(module);
-    for callable in service.monomorphic_callables() {
-        service.lower_monomorphic(callable);
-    }
-    service.lower_pending_instances();
+    service.request_entry();
+    service.lower_pending();
 
     let statuses = module
         .items
@@ -138,7 +157,14 @@ struct CallableTable<'a> {
     monomorphic_by_declaration: HashMap<DefId, CallableId>,
     templates: HashMap<DefId, GenericTemplate<'a>>,
     functions_by_item: HashMap<hew_hir::ItemId, &'a HirFn>,
-    ineligible: HashMap<hew_hir::ItemId, String>,
+    /// Why a declaration was refused a SIR callable header, keyed by the
+    /// declaration a call would name.
+    ///
+    /// A refused declaration has no header, so no resolved call can reach it
+    /// and no body is ever demanded of it. The reason is therefore reported at
+    /// the call site that needed it — where it is actionable — rather than as
+    /// a standing complaint about every unused declaration in the module.
+    ineligible: HashMap<DefId, String>,
 }
 
 impl<'a> CallableTable<'a> {
@@ -160,7 +186,7 @@ impl<'a> CallableTable<'a> {
             functions_by_item.insert(function.id, function);
             let Some(symbol) = direct_symbols.get(&function.declaration) else {
                 ineligible.insert(
-                    function.id,
+                    function.declaration.clone(),
                     format!(
                         "HIR direct-call symbol index has no exact symbol for declaration `{}`",
                         function.declaration.full_path()
@@ -172,7 +198,7 @@ impl<'a> CallableTable<'a> {
                 let signature = match generic_template_signature(function) {
                     Ok(signature) => signature,
                     Err(reason) => {
-                        ineligible.insert(function.id, reason);
+                        ineligible.insert(function.declaration.clone(), reason);
                         continue;
                     }
                 };
@@ -182,7 +208,7 @@ impl<'a> CallableTable<'a> {
                 let source_origin = function_source_origin(module, function);
                 if templates.contains_key(&function.declaration) {
                     ineligible.insert(
-                        function.id,
+                        function.declaration.clone(),
                         format!(
                             "duplicate generic HIR template declaration `{}` has no unambiguous SIR template authority",
                             function.declaration.full_path()
@@ -212,7 +238,7 @@ impl<'a> CallableTable<'a> {
             let signature = match scalar_callable_signature(function) {
                 Ok(signature) => signature,
                 Err(reason) => {
-                    ineligible.insert(function.id, reason);
+                    ineligible.insert(function.declaration.clone(), reason);
                     continue;
                 }
             };
@@ -241,9 +267,14 @@ impl<'a> CallableTable<'a> {
             );
             if source_origin == FunctionSourceOrigin::RootUnit {
                 root_unit_callables.push(id);
-                if function.declaration.full_path() == "main" {
-                    entry_callable = Some(id);
-                }
+            }
+            // Entry selection joins on HIR's resolved entry declaration. SIR
+            // never re-applies the language's entry rule, so it never compares
+            // a declaration path or an emitted symbol against "main". A fact
+            // that names a non-root declaration is admitted here and rejected
+            // by the verifier's entry rule rather than silently dropped.
+            if module.entry_declaration.as_ref() == Some(&function.declaration) {
+                entry_callable = Some(id);
             }
             monomorphic_by_declaration.insert(function.declaration.clone(), id);
             callables.push(SemCallable {
@@ -287,7 +318,8 @@ const SIR_GENERIC_INSTANCE_CAP: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CallableState {
-    Monomorphic,
+    /// A header exists but the entry closure has not asked for its body.
+    Unreached,
     Queued,
     Lowering,
     Lowered,
@@ -323,7 +355,7 @@ impl<'a> InstanceService<'a> {
         Self {
             module,
             table,
-            states: vec![CallableState::Monomorphic; count],
+            states: vec![CallableState::Unreached; count],
             statuses: vec![None; count],
             by_instance: HashMap::new(),
             used_templates: std::collections::HashSet::new(),
@@ -332,24 +364,30 @@ impl<'a> InstanceService<'a> {
         }
     }
 
-    fn monomorphic_callables(&self) -> Vec<CallableId> {
-        self.table
-            .callables
-            .iter()
-            .map(|callable| callable.id)
-            .collect()
-    }
-
     fn callable(&self, id: CallableId) -> Option<&SemCallable> {
         self.table.callable(id)
     }
 
-    fn lower_monomorphic(&mut self, callable: CallableId) {
-        let result = self.lower_callable(callable);
-        self.record_callable_result(callable, result);
+    /// Seed the worklist with the module's resolved entry callable.
+    ///
+    /// A module without one is not an executable program, so it has no demand
+    /// and lowers nothing.
+    fn request_entry(&mut self) {
+        if let Some(entry) = self.table.entry_callable {
+            self.request_body(entry);
+        }
     }
 
-    fn lower_pending_instances(&mut self) {
+    /// Record demand for one callable's body, once.
+    fn request_body(&mut self, callable: CallableId) {
+        if self.state(callable) != Some(CallableState::Unreached) {
+            return;
+        }
+        self.set_state(callable, CallableState::Queued);
+        self.pending.push_back(callable);
+    }
+
+    fn lower_pending(&mut self) {
         while let Some(callable) = self.pending.pop_front() {
             if self.state(callable) != Some(CallableState::Queued) {
                 continue;
@@ -468,12 +506,20 @@ impl<'a> InstanceService<'a> {
             .monomorphic_by_declaration
             .get(declaration)
             .copied()
-            .ok_or_else(|| {
-                format!(
+            .ok_or_else(|| match self.table.ineligible.get(declaration) {
+                Some(reason) => format!(
+                    "direct callee `{}` has no scalar default-call SIR callable: {reason}",
+                    declaration.full_path()
+                ),
+                None => format!(
                     "direct callee `{}` has no scalar default-call SIR callable",
                     declaration.full_path()
-                )
+                ),
             })?;
+        // Resolving a call edge is what makes the callee reachable, so this is
+        // where its body becomes demanded. Generic callees go through
+        // `request_instance`, which queues the instance it mints.
+        self.request_body(id);
         self.callable(id)
             .cloned()
             .ok_or_else(|| format!("SIR callable {id:?} is absent from its deterministic table"))
@@ -580,25 +626,25 @@ impl<'a> InstanceService<'a> {
             .get(&function.declaration)
             .copied()
         {
-            return self
-                .statuses
-                .get(usize::try_from(callable.0).expect("SIR callable id exceeds usize"))
-                .cloned()
-                .flatten()
-                .unwrap_or_else(|| SirLoweringStatus::Unsupported {
-                    reason: "SIR callable header was never lowered".to_string(),
-                });
+            return self.callable_status(callable);
         }
-        SirLoweringStatus::Unsupported {
-            reason: self
-                .table
-                .ineligible
-                .get(&function.id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    "function has no deterministic SIR direct-call entry".to_string()
-                }),
-        }
+        // No admitted header: no resolved call can name this declaration, so
+        // the entry closure never demanded a body from it. Why the header was
+        // refused belongs to the call site that wanted it.
+        SirLoweringStatus::NotReached
+    }
+
+    /// The recorded outcome for one admitted callable header.
+    ///
+    /// A header the entry closure never demanded has no recorded status; that
+    /// is [`SirLoweringStatus::NotReached`], never a body failure.
+    fn callable_status(&self, callable: CallableId) -> SirLoweringStatus {
+        let index = usize::try_from(callable.0).expect("SIR callable id exceeds usize");
+        self.statuses
+            .get(index)
+            .cloned()
+            .flatten()
+            .unwrap_or(SirLoweringStatus::NotReached)
     }
 
     fn template_instance_counts(&self, declaration: &DefId) -> (usize, usize) {
@@ -628,7 +674,7 @@ impl<'a> InstanceService<'a> {
         let Self {
             table,
             used_templates,
-            functions,
+            mut functions,
             ..
         } = self;
         let generic_templates = table
@@ -636,6 +682,11 @@ impl<'a> InstanceService<'a> {
             .into_iter()
             .filter(|template| used_templates.contains(&template.id))
             .collect();
+        // Bodies are produced in demand order, which depends on the entry's
+        // call graph. Publishing them in callable order instead keeps the
+        // module — and every dump taken from it — a function of the program,
+        // not of the traversal that discovered it.
+        functions.sort_unstable_by_key(|function| function.callable);
         SemModule {
             callables: table.callables,
             generic_templates,
@@ -649,17 +700,7 @@ impl<'a> InstanceService<'a> {
         self.table
             .callables
             .iter()
-            .map(|callable| {
-                let index = usize::try_from(callable.id.0).expect("SIR callable id exceeds usize");
-                (
-                    callable.id,
-                    self.statuses[index].clone().unwrap_or_else(|| {
-                        SirLoweringStatus::Unsupported {
-                            reason: "SIR callable header was never lowered".to_string(),
-                        }
-                    }),
-                )
-            })
+            .map(|callable| (callable.id, self.callable_status(callable.id)))
             .collect()
     }
 }

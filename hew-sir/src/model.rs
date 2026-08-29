@@ -374,9 +374,11 @@ pub struct SemModule {
     /// from [`Self::entry_callable`], so unrelated root bodies do not block a
     /// selected program.
     pub root_unit_callables: Vec<CallableId>,
-    /// Checked root-unit entry callable, if its signature belongs to the
-    /// current SIR surface. HIR establishes this from the root source `main`
-    /// declaration once; strict selection never rediscovers it by symbol.
+    /// Resolved entry callable, projected from `HirModule::entry_declaration`.
+    /// HIR applies the language's entry rule once and publishes the
+    /// declaration id; SIR only joins on it. Neither lowering nor the verifier
+    /// rediscovers an entry from a declaration path or an emitted symbol, so a
+    /// program whose entry is not spelled `main` selects exactly as well.
     pub entry_callable: Option<CallableId>,
     pub functions: Vec<SemFunction>,
 }
@@ -421,15 +423,68 @@ impl SemModule {
             .find(|template| &template.id == id)
     }
 
-    /// Return the lowered SIR body for `id`, if the body was in the current
-    /// supported surface slice.  Absence is meaningful to strict call-graph
-    /// selection and is not a malformed callable-table condition by itself.
+    /// Build the callable-to-body association once.
+    ///
+    /// Every consumer that needs a body for a resolved callable goes through
+    /// this. Walking `functions` per lookup made whole-module work quadratic
+    /// and invited each caller to reinvent the "exactly one body" rule.
     #[must_use]
-    pub fn function_for_callable(&self, id: CallableId) -> Option<&SemFunction> {
-        self.callable(id)?;
-        self.functions
-            .iter()
-            .find(|function| function.callable == id)
+    pub fn function_index(&self) -> SemFunctionIndex<'_> {
+        let mut by_callable = vec![BodySlot::Absent; self.callables.len()];
+        for (position, function) in self.functions.iter().enumerate() {
+            let Ok(slot) = usize::try_from(function.callable.0) else {
+                continue;
+            };
+            let Some(entry) = by_callable.get_mut(slot) else {
+                continue;
+            };
+            *entry = match entry {
+                BodySlot::Absent => BodySlot::One(position),
+                BodySlot::One(_) | BodySlot::Ambiguous => BodySlot::Ambiguous,
+            };
+        }
+        SemFunctionIndex {
+            module: self,
+            by_callable,
+        }
+    }
+}
+
+/// Which body in `SemModule::functions` realizes a callable.
+#[derive(Debug, Clone, Copy)]
+enum BodySlot {
+    Absent,
+    One(usize),
+    /// More than one body claims the callable. The module is malformed
+    /// (`crate::verify_module` reports it); the index refuses the id rather
+    /// than picking a winner by position.
+    Ambiguous,
+}
+
+/// A module's callable-to-body association, built once by
+/// [`SemModule::function_index`].
+#[derive(Debug)]
+pub struct SemFunctionIndex<'m> {
+    module: &'m SemModule,
+    by_callable: Vec<BodySlot>,
+}
+
+impl<'m> SemFunctionIndex<'m> {
+    /// Return the lowered SIR body for `callable`.
+    ///
+    /// Absence is meaningful to strict call-graph selection — a callable may
+    /// legitimately have no body — and is not by itself a malformed table.
+    #[must_use]
+    pub fn function(&self, callable: CallableId) -> Option<&'m SemFunction> {
+        self.module.callable(callable)?;
+        let slot = self
+            .by_callable
+            .get(usize::try_from(callable.0).ok()?)
+            .copied()?;
+        let BodySlot::One(position) = slot else {
+            return None;
+        };
+        self.module.functions.get(position)
     }
 }
 

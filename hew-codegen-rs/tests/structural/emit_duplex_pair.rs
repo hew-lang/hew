@@ -109,7 +109,6 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
         },
     ];
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "main".to_string(),

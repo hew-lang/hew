@@ -13,9 +13,10 @@ are wire-rejected or handled as composites.
 ## Canonical string
 
 `canonical_string()` on `ResolvedTy` is the single source of truth for:
+
 - monomorphisation symbol mangling (replaces ad-hoc per-call-site string building)
 - `PrimitiveWireKind::Nested(name)` carriage on the wire
-- IR dump identity in `hew dump-thir` / `hew dump-mir=*`
+- IR dump identity in `hew compile --dump-sir` / `--dump-mir <stage>`
 
 ## Fail-closed rules
 

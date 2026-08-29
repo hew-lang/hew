@@ -1,31 +1,17 @@
-//! End-to-end contracts for the experimental Semantic IR lane.
+//! End-to-end contracts for the strict Semantic IR lane.
 //!
-//! `--sir-shadow` must exercise and verify the temporary SIR → raw-MIR
-//! candidate while leaving the established raw-MIR dump byte-for-byte
-//! authoritative. `--sir-lower` is intentionally stronger: it must compile a
-//! closed SIR call graph without constructing legacy function bodies.
+//! `--sir-lower` must compile a closed SIR call graph without constructing
+//! legacy function bodies: a reachable unsupported feature is a compilation
+//! error, never a fallback onto the established MIR path.
 
 mod support;
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
 use support::{assert_success, describe_output, hew_binary, repo_root, require_codegen};
-
-const SCALAR_DIAMOND: &str = r"
-fn sir_scalar_add(x: i64, y: i64) -> i64 {
-    x + y
-}
-
-fn sir_scalar_diamond(x: i64) -> i64 {
-    if x > 0 {
-        42
-    } else {
-        23
-    }
-}
-";
 
 const CLOSED_DIRECT_CALLS: &str = r"
 fn main() -> i64 {
@@ -69,6 +55,8 @@ fn main() -> i64 {
 }
 ";
 
+// SIR body lowering is demand-driven from the entry, so an inspection fixture
+// has to be a program: `main` is what puts these two bodies in the dump.
 const SHORT_CIRCUIT_INSPECTION: &str = r"
 fn rhs() -> bool {
     true
@@ -80,6 +68,16 @@ fn sir_and(flag: bool) -> bool {
 
 fn sir_or(flag: bool) -> bool {
     flag || rhs()
+}
+
+fn main() -> i64 {
+    if sir_and(true) {
+        1
+    } else if sir_or(false) {
+        2
+    } else {
+        0
+    }
 }
 ";
 
@@ -109,12 +107,16 @@ fn main() -> i64 {
 /// The first SIR optimization proof: both semantic branch arms are initially
 /// present, but the direct `true` condition lets SIR retain only the selected
 /// CFG edge before any Raw MIR representation is chosen.
+/// The unselected arm is `9`, not `1`: the condition `true` is realized as
+/// `const.i64 1` in raw MIR, so a `1` there could not be told apart from a
+/// surviving dead arm. The selected arm stays `0` so the compiled fixture
+/// still exits successfully.
 const CONSTANT_CFG_CANONICALIZATION: &str = r"
 fn main() -> i64 {
     if true {
         0
     } else {
-        1
+        9
     }
 }
 ";
@@ -225,60 +227,6 @@ fn llvm_function_section<'a>(llvm: &'a str, name: &str) -> &'a str {
     let rest = &llvm[start..];
     let end = rest.find("\n}").map_or(rest.len(), |index| index + 2);
     &rest[..end]
-}
-
-fn scalar_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = support::tempdir();
-    let source = dir.path().join("sir_scalar_diamond.hew");
-    fs::write(&source, SCALAR_DIAMOND).expect("write scalar SIR fixture");
-    (dir, source)
-}
-
-/// Shadow mode constructs, verifies, and backend-front validates the SIR
-/// candidate, but emits the established raw MIR unchanged.  This protects the
-/// initial migration against accidentally selecting the candidate in the
-/// default/shadow lane.
-#[test]
-fn sir_shadow_keeps_established_raw_mir_authoritative() {
-    let (_dir, source) = scalar_fixture();
-    let baseline = raw_mir_dump(&source, None);
-    let shadow = raw_mir_dump(&source, Some("--sir-shadow"));
-
-    assert_success(&baseline, "baseline raw MIR dump must succeed");
-    assert_success(&shadow, "SIR shadow raw MIR dump must succeed");
-    assert_eq!(
-        baseline.stdout,
-        shadow.stdout,
-        "--sir-shadow must retain the established raw MIR output\n\
-         baseline:\n{}\n\
-         shadow:\n{}",
-        String::from_utf8_lossy(&baseline.stdout),
-        String::from_utf8_lossy(&shadow.stdout),
-    );
-
-    let stderr = String::from_utf8_lossy(&shadow.stderr);
-    assert!(
-        stderr.contains("SIR shadow: verified"),
-        "shadow run must report that its SIR lane was verified:\n{}",
-        describe_output(&shadow),
-    );
-    assert!(
-        !stderr.contains("realized 0/"),
-        "the eligible scalar arithmetic function must be realized through the SIR-to-raw-MIR adapter:\n{}",
-        describe_output(&shadow),
-    );
-
-    let shadow_dump = String::from_utf8_lossy(&shadow.stdout);
-    let established = function_section(&shadow_dump, "sir_scalar_add");
-    assert!(
-        established.contains("stmt: use"),
-        "shadow output must still be the established statement-oriented lowering:\n{established}",
-    );
-    let established_diamond = function_section(&shadow_dump, "sir_scalar_diamond");
-    assert!(
-        established_diamond.contains("branch "),
-        "the shadow fixture must exercise an established scalar CFG body:\n{established_diamond}",
-    );
 }
 
 /// Lower mode owns a closed direct-call graph. It must construct fresh bodies
@@ -629,11 +577,11 @@ fn sir_lower_generic_direct_call_graph_compiles_and_runs() {
     );
 }
 
-/// Shadow intentionally cannot realize direct calls through its legacy raw-MIR
-/// template, so strict direct-call behavior is compared directly with the
-/// established compiler rather than inferred from a shadow success. This is
-/// temporary migration evidence: once SIR becomes the normal path, the legacy
-/// half of this comparison is deleted with its body lowerer.
+/// Strict direct-call behaviour is compared against the established compiler
+/// on the same source, because nothing inside the strict lane can attest to
+/// its own correctness here. This is temporary migration evidence: once SIR
+/// becomes the normal path, the established half of the comparison is deleted
+/// with its body lowerer.
 #[test]
 fn sir_lower_matches_established_execution_for_closed_direct_call_graph() {
     require_codegen();
@@ -794,9 +742,9 @@ fn sir_lower_excludes_unreachable_unsupported_hir_bodies() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unrelated HIR bodies remain outside the current semantic surface")
+        stderr.contains("were never reached from the entry")
             && stderr.contains("were not compiled or used as fallbacks"),
-        "strict SIR must describe the excluded HIR body rather than silently using it:\n{}",
+        "strict SIR must account for the excluded HIR body rather than silently using it:\n{}",
         describe_output(&output),
     );
 }
@@ -846,6 +794,55 @@ fn sir_lower_closed_graph_emits_wasm_llvm() {
     assert!(
         llvm.contains("@main(") && llvm.contains("@twice(") && llvm.contains("@increment("),
         "the WASM frontend must receive definitions for the complete strict SIR component:\n{llvm}",
+    );
+}
+
+/// `--dump-sir` must account for every body it could not lower.
+///
+/// The inspection surface used to print at most six reasons and replace the
+/// rest with a count, which is exactly the case where an inspector needs the
+/// detail. This fixture has seven unsupported bodies for that reason.
+#[test]
+fn sir_dump_reports_every_unsupported_body_not_just_the_first_few() {
+    const UNSUPPORTED_BODIES: usize = 7;
+
+    let mut fixture = String::new();
+    for index in 0..UNSUPPORTED_BODIES {
+        // `var` bindings are outside the initial SIR surface.
+        write!(
+            fixture,
+            "fn helper{index}(value: i64) -> i64 {{\n    var accumulator = value;\n    accumulator\n}}\n\n"
+        )
+        .expect("write to String");
+    }
+    fixture.push_str("fn main() -> i64 {\n    ");
+    fixture.push_str(
+        &(0..UNSUPPORTED_BODIES)
+            .map(|index| format!("helper{index}({index})"))
+            .collect::<Vec<_>>()
+            .join(" + "),
+    );
+    fixture.push_str("\n}\n");
+
+    let dir = support::tempdir();
+    let source = dir.path().join("sir_unsupported_inventory.hew");
+    fs::write(&source, &fixture).expect("write unsupported-body inventory fixture");
+
+    let output = sir_dump(&source);
+    assert_success(
+        &output,
+        "SIR inspection must succeed with unsupported bodies",
+    );
+    let dump = String::from_utf8_lossy(&output.stdout);
+    for index in 0..UNSUPPORTED_BODIES {
+        assert!(
+            dump.contains(&format!("; fn helper{index}\n; unsupported: ")),
+            "`helper{index}` must be reported with its reason:\n{dump}",
+        );
+    }
+    assert!(
+        dump.contains("fn main("),
+        "the dump must still carry the IR it could lower:\n{dump}",
     );
 }
 
@@ -901,9 +898,9 @@ fn sir_dump_preserves_short_circuit_control_flow() {
     );
 }
 
-/// `--dump-sir`, shadow evidence, and strict lowering must all consume the
-/// same canonical semantic CFG. This proves the first actual SIR pass is not
-/// an inspector-only transformation or a second compiler lane.
+/// `--dump-sir` and strict lowering must consume the same canonical semantic
+/// CFG. This proves the first actual SIR pass is not an inspector-only
+/// transformation or a second compiler lane.
 #[test]
 fn sir_canonicalizes_direct_constant_cfg_before_strict_lowering() {
     require_codegen();
@@ -921,16 +918,8 @@ fn sir_canonicalizes_direct_constant_cfg_before_strict_lowering() {
         "a direct constant branch must become one semantic edge:\n{main}",
     );
     assert!(
-        !main.contains("const 1"),
+        !main.contains("const 9"),
         "the unreachable source arm must be gone from canonical SIR:\n{main}",
-    );
-
-    let shadow = raw_mir_dump(&source, Some("--sir-shadow"));
-    assert_success(&shadow, "canonical SIR shadow evidence must succeed");
-    assert!(
-        String::from_utf8_lossy(&shadow.stderr).contains("SIR shadow: verified"),
-        "shadow must consume the same verified canonical SIR module:\n{}",
-        describe_output(&shadow),
     );
 
     let lowered = raw_mir_dump(&source, Some("--sir-lower"));
@@ -940,6 +929,24 @@ fn sir_canonicalizes_direct_constant_cfg_before_strict_lowering() {
         lowered_stderr.contains("no legacy MIR bodies were lowered"),
         "strict canonicalization must remain on the SIR body path:\n{}",
         describe_output(&lowered),
+    );
+
+    // The canonical CFG must reach the artifact the backend consumes, not stop
+    // at the inspector: a compile that merely succeeds cannot distinguish a
+    // canonicalized raw body from an un-canonicalized one.
+    let lowered_dump = String::from_utf8_lossy(&lowered.stdout);
+    let lowered_main = function_section(&lowered_dump, "main");
+    assert!(
+        lowered_main.contains("goto") && !lowered_main.contains("branch"),
+        "strict raw MIR must carry the canonical single edge:\n{lowered_main}",
+    );
+    assert!(
+        !lowered_main.contains("const.i64 9"),
+        "the unselected arm must not be realized in strict raw MIR:\n{lowered_main}",
+    );
+    assert!(
+        lowered_main.contains("const.i64 0"),
+        "the selected arm must still be realized in strict raw MIR:\n{lowered_main}",
     );
 
     let mut compile = Command::new(hew_binary());

@@ -650,18 +650,12 @@ fn verify_callable_table<'a>(
                     reason: "entry callable must be a listed root-unit callable".to_string(),
                 }));
             }
-            Some(callable) if callable.declaration.full_path() != "main" => {
+            Some(callable) if !matches!(callable.instance, CallableInstance::Monomorphic) => {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
                     callable: entry,
-                    reason: "entry callable must resolve to the canonical root-unit source `main` declaration"
-                        .to_string(),
-                }));
-            }
-            Some(callable) if callable.symbol != "main" => {
-                diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
-                    callable: entry,
-                    reason: "entry callable must retain the canonical emitted `main` symbol"
-                        .to_string(),
+                    reason:
+                        "entry callable must be a monomorphic source body, not a generic instance"
+                            .to_string(),
                 }));
             }
             Some(callable) if !callable.signature.params.is_empty() => {

@@ -89,7 +89,8 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         Some("main")
     );
     let main = module
-        .function_for_callable(entry)
+        .function_index()
+        .function(entry)
         .expect("selected entry must have a lowered scalar SIR body");
     let callee = main
         .blocks
@@ -137,7 +138,8 @@ fn unit_direct_call_is_a_zero_result_sir_operation() {
     assert!(
         lowered
             .module
-            .function_for_callable(unit_helper.id)
+            .function_index()
+            .function(unit_helper.id)
             .is_some(),
         "unit return alone must not prevent its function body from reaching SIR"
     );
@@ -147,7 +149,8 @@ fn unit_direct_call_is_a_zero_result_sir_operation() {
         .expect("unit main is still the root entry callable");
     let main = lowered
         .module
-        .function_for_callable(entry)
+        .function_index()
+        .function(entry)
         .expect("unit main must lower to a SIR body");
     assert_eq!(main.return_ty, hew_types::ResolvedTy::Unit);
     let call = main
@@ -248,7 +251,8 @@ fn unit_direct_call_in_an_explicit_return_is_a_control_transfer_not_a_discarded_
         .expect("the unit main must retain a root callable");
     let main = lowered
         .module
-        .function_for_callable(entry)
+        .function_index()
+        .function(entry)
         .expect("the unit main must lower to SIR");
     assert!(
         main.blocks
@@ -306,7 +310,8 @@ fn recursive_scalar_call_resolves_to_its_own_callable_id() {
         .find(|callable| callable.symbol == "countdown")
         .expect("recursive declaration must have a callable-table entry");
     let function = module
-        .function_for_callable(countdown.id)
+        .function_index()
+        .function(countdown.id)
         .expect("recursive callable must have a lowered SIR body");
     let recursive_callee = function
         .blocks
@@ -462,7 +467,8 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         .expect("main must request relay<i64>");
     let relay_body = lowered
         .module
-        .function_for_callable(relay_i64.id)
+        .function_index()
+        .function(relay_i64.id)
         .expect("concrete relay<i64> body must be lowered");
     let relay_callees = relay_body
         .blocks
@@ -481,7 +487,8 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         .expect("main must request countdown<i64>");
     let countdown_body = lowered
         .module
-        .function_for_callable(countdown_i64.id)
+        .function_index()
+        .function(countdown_i64.id)
         .expect("concrete countdown<i64> body must be lowered");
     assert!(countdown_body
         .blocks
@@ -592,7 +599,8 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
     for (caller, expected_callee) in [(even, odd.id), (odd, even.id)] {
         let body = lowered
             .module
-            .function_for_callable(caller.id)
+            .function_index()
+            .function(caller.id)
             .expect("every predeclared concrete generic header must receive a body");
         assert!(
             body.blocks

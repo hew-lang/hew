@@ -59,7 +59,6 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
         },
     ];
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "probe".to_string(),
@@ -159,7 +158,6 @@ fn pipeline_with_task_new_call() -> IrPipeline {
         },
     ];
     IrPipeline {
-        thir: vec![],
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             name: "probe".to_string(),

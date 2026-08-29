@@ -1280,10 +1280,12 @@ ASAN_SYMBOLIZER ?= $(shell ls /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | 
 # The runtime crate is instrumented but the prebuilt sysroot is not. Nightly
 # Rust rejects that sanitizer ABI mismatch unless it is explicitly allowed;
 # this lane intentionally measures Hew's runtime rather than rebuilding std.
+# Hew installs its own per-worker alternate signal stack. Asking compiler-rt to
+# manage a competing stack makes it unmap Hew's heap-backed stack at thread exit.
 asan:
 	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
-	ASAN_OPTIONS="detect_leaks=1" \
+	ASAN_OPTIONS="detect_leaks=1:use_sigaltstack=0" \
 	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
 	LSAN_OPTIONS="suppressions=lsan.supp" \
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib -- --test-threads=1

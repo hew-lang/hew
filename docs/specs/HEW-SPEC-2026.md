@@ -4537,9 +4537,9 @@ AST                       — concrete syntax, no name resolution
     │  resolve
     ▼
 Resolved HIR              — names, scopes, capabilities resolved;
-    │  type check          stable BindingId / SiteId carriage
-    ▼
-THIR                      — every expression carries its concrete type;
+    │  type check          stable BindingId / SiteId carriage;
+    ▼                       every expression carries its concrete type
+SIR                       — semantic SSA: typed values, effects, CFG;
     │  lower               monomorphisation and trait-dispatch done
     ▼
 Raw MIR                   — real CFG, real Places, real terminators
@@ -4565,10 +4565,10 @@ Native object / WASM
   use site resolves to a binding or to a `NameNotFound` diagnostic.
   Capabilities (Send, Frozen, Copy) attach here. Module structure is
   fully resolved.
-- **THIR.** Every expression carries its concrete `Ty`. No `Ty::Var`
-  survives this stage — the boundary is fail-closed. Generic functions
-  are monomorphised at use sites; trait dispatch resolves to concrete
-  implementations; closure signatures are explicit; aggregate
+- **SIR.** Semantic SSA: typed values, effects, and the CFG. No `Ty::Var`
+  survives Resolved HIR — the boundary is fail-closed before SIR is built.
+  Generic functions are monomorphised at use sites; trait dispatch resolves
+  to concrete implementations; closure signatures are explicit; aggregate
   initialiser type arguments are carried.
 - **Raw MIR.** The function body is a control-flow graph of basic
   blocks with real terminators (`Goto`, `Branch`, `Return`, `Drop`,
@@ -4935,7 +4935,9 @@ summarises what is shipped and stable.
 - `PartitionPolicy::FailFast` and partition-detected-dead resolution for
   pending remote asks.
 - SWIM-based membership with quarantine and incarnation-gated readmission.
-- Two-process CI harness (13/13) as the distributed proving gate.
+- Two-process CI harness covering cross-node send/ask, monitor/link
+  semantics, partition handling, and SWIM membership as the distributed
+  proving gate.
 
 Authentication tokens and supervisor-capability enforcement are not yet
 runtime-enforced; see `HEW-DIST-SPEC.md` §rc1-notes for the current
@@ -5333,7 +5335,7 @@ If you want this to be directly executable as an engineering project, the next m
   normative — `dns`, `tls`, `quic`, `websocket`, `xml`/`yaml`/`toml`/`csv`,
   `regex`, `process`, `compress` — move to HEW-FUTURE.md §3.
 - **MIR ladder.** §8 (compilation model) is rewritten around the new IR
-  ladder: AST → Resolved HIR → THIR → Raw MIR → Checked MIR → Elaborated
+  ladder: AST → Resolved HIR → SIR → Raw MIR → Checked MIR → Elaborated
   MIR → LLVM IR via inkwell. The v0.4 Rust-frontend / C++ backend /
   MessagePack-AST pipeline is no longer the design.
 - **Deferred to next edition.** Generators (`async gen fn` /

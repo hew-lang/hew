@@ -99,21 +99,20 @@ Edition 2026 ships supervisor strategies (`one_for_one`, `one_for_all`,
 hot-swap upgrades, dynamic strategy changes, supervisor introspection
 APIs — are deferred.
 
-### 1.6 Generators (`gen fn`, `async gen fn`, `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`)
+### 1.6 Generators (`Lazy<T>`, `#[prefetch(N)]`)
 
-**[Scalar-parameter + fn-typed-parameter forms live in v0.5 / remaining forms deferred]**
+**[`gen fn`, `async gen fn`, and `receive gen fn` live in v0.5 / remaining forms deferred]**
 
-Zero-parameter `gen fn` functions compile and run. The LLVM coroutine machinery,
-`yield`, `.next()`, and `for x in generator()` are all live. Parameterized `gen fn`
-with scalar parameters (e.g. `n: i64`) and fn-typed parameters are also live — the
-Cluster 1 parameter/capture lowering that unblocked these shipped and the
-`gen_fn_param_capture` and `gen_fn_fn_typed_param` vertical-slice fixtures pass.
+`gen fn` functions compile and run, including parameterized forms with scalar
+parameters (e.g. `n: i64`) and fn-typed parameters. The LLVM coroutine
+machinery, `yield`, `.next()`, and `for x in generator()` are all live.
+`async gen fn` returning `AsyncGenerator<Y>` consumed with `for await` is
+also live. `receive gen fn` on actors returning `Stream<Y>` backed by
+mailbox protocol (cross-actor streaming with natural backpressure) is live
+as well — the `receive_gen_fn_*` vertical-slice fixtures pass.
 
 Remaining deferred:
 
-- `async gen fn` returning `AsyncGenerator<Y>` with `for await`.
-- `receive gen fn` on actors returning `Stream<Y>` backed by mailbox
-  protocol (cross-actor streaming with natural backpressure).
 - `Lazy<T>` for memoised one-shot computations.
 - `#[prefetch(N)]` attribute as an optimisation hint on cross-actor
   generators.

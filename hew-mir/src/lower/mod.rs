@@ -10445,6 +10445,17 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
             _ => None,
         })
         .collect::<Vec<_>>();
+    // An owned-carrier parameter is released by its guarded terminal
+    // `ValueSnapshotDrop`, not by an `OwnerId`, so the live-owner scan below
+    // never sees it as the parent. It is still the single release authority
+    // over every payload slot; a binder that adopts one of them must clear
+    // that slot exactly like a binder adopting from a minted owner, or the
+    // terminal snapshot drop releases the payload a second time.
+    let carrier_param_roots = builder
+        .owned_carrier_params
+        .iter()
+        .filter_map(|param| base_local(param.value))
+        .collect::<HashSet<_>>();
     for block in blocks {
         let mut live = entries.get(&block.id).cloned().unwrap_or_default();
         let mut index = 0;
@@ -10462,7 +10473,10 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
                         .iter()
                         .filter(|(_, owner_place)| base_local(*owner_place) == root)
                         .count();
-                    (root.is_some() && parent_count == 1).then_some((*src, *dest))
+                    let carrier_param_root =
+                        root.is_some_and(|root| carrier_param_roots.contains(&root));
+                    (root.is_some() && (parent_count == 1 || carrier_param_root))
+                        .then_some((*src, *dest))
                 }
                 _ => None,
             };

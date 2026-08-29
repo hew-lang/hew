@@ -21,7 +21,7 @@
   },
   {
     "id": "machine",
-    "snippet": "machine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n\nfn main() -> i64 {\n    var light = Light.Off;\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    0\n}\n"
+    "snippet": "machine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => .On;\n    on Toggle: On => .Off;\n}\n\nfn main() -> i64 {\n    var light = Light.Off;\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    0\n}\n"
   },
   {
     "id": "match",
@@ -41,7 +41,7 @@
   },
   {
     "id": "enum",
-    "snippet": "enum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn main() {\n    let shape = Circle(5);\n    match shape {\n        Circle(r) => println(r * r * 3),\n        Rectangle(w, h) => println(w * h),\n    }\n}\n"
+    "snippet": "enum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn main() {\n    let shape = Shape.Circle(5);\n    match shape {\n        Circle(r) => println(r * r * 3),\n        Rectangle(w, h) => println(w * h),\n    }\n}\n"
   },
   {
     "id": "for-loop",

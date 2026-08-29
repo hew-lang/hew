@@ -134,12 +134,12 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "enum unit-variant construction + dispatch",
-        probe: "enum Op { Double; }\nfn apply(op: Op, x: i64) -> i64 {\n    match op { Double => x * 2 }\n}\nfn main() {\n    println(f\"{apply(Double, 5)}\");\n}\n",
+        probe: "enum Op { Double; }\nfn apply(op: Op, x: i64) -> i64 {\n    match op { Double => x * 2 }\n}\nfn main() {\n    println(f\"{apply(.Double, 5)}\");\n}\n",
         coverage: Coverage::Parity("function_composition"),
     },
     Construct {
         id: "match with constructor-payload patterns",
-        probe: "enum Box { Has(i64); Empty; }\nfn unwrap(b: Box) -> i64 {\n    match b { Has(x) => x, Empty => 0 }\n}\nfn main() {\n    println(unwrap(Has(7)));\n}\n",
+        probe: "enum Box { Has(i64); Empty; }\nfn unwrap(b: Box) -> i64 {\n    match b { Has(x) => x, Empty => 0 }\n}\nfn main() {\n    println(unwrap(.Has(7)));\n}\n",
         coverage: Coverage::Parity("pattern_matching"),
     },
     Construct {
@@ -177,7 +177,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "machine new/step/state_name",
-        probe: "machine Light {\n    events { Next; }\n    state Red;\n    state Green;\n    on Next: Red => Green;\n    on Next: Green => Red;\n}\nfn main() {\n    let m = Light.Red;\n    println(m.state_name());\n}\n",
+        probe: "machine Light {\n    events { Next; }\n    state Red;\n    state Green;\n    on Next: Red => .Green;\n    on Next: Green => .Red;\n}\nfn main() {\n    let m = Light.Red;\n    println(m.state_name());\n}\n",
         coverage: Coverage::Parity("traffic_light"),
     },
     Construct {
@@ -237,7 +237,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "match with wildcard arm",
-        probe: "enum C { A; B; }\nfn name(c: C) -> string {\n    match c { A => \"a\", _ => \"other\" }\n}\nfn main() {\n    println(name(B));\n}\n",
+        probe: "enum C { A; B; }\nfn name(c: C) -> string {\n    match c { A => \"a\", _ => \"other\" }\n}\nfn main() {\n    println(name(.B));\n}\n",
         coverage: Coverage::Parity("wildcard_match"),
     },
     Construct {
@@ -279,17 +279,17 @@ const CONSTRUCTS: &[Construct] = &[
         // scrutinee is a separate, still-NotYetRunnable construct (`enum.tag`
         // dispatch traps on a non-enum value), so this probe isolates the
         // statement-position lowering #1901 made runnable.
-        probe: "enum Color { Red; Green; }\nfn main() {\n    let c: Color = Green;\n    match c {\n        Red => println(\"stop\"),\n        Green => println(\"go\"),\n    }\n    return;\n}\n",
+        probe: "enum Color { Red; Green; }\nfn main() {\n    let c: Color = .Green;\n    match c {\n        Red => println(\"stop\"),\n        Green => println(\"go\"),\n    }\n    return;\n}\n",
         coverage: Coverage::Parity("stmt_match"),
     },
     Construct {
         id: "match arm guard (guarded enum arm)",
-        probe: "enum L { Hi(i64); Lo(i64); }\nfn f(l: L) -> i64 {\n    match l { Hi(n) if n > 50 => 2, Hi(_) => 1, Lo(_) => 0 }\n}\nfn main() { println(f(Hi(99))); }\n",
+        probe: "enum L { Hi(i64); Lo(i64); }\nfn f(l: L) -> i64 {\n    match l { Hi(n) if n > 50 => 2, Hi(_) => 1, Lo(_) => 0 }\n}\nfn main() { println(f(.Hi(99))); }\n",
         coverage: Coverage::Parity("match_guard_parity"),
     },
     Construct {
         id: "match arm guard (non-last guarded catch-all)",
-        probe: "enum L { Hi(i64); Lo(i64); }\nfn never() -> bool { 1 == 2 }\nfn main() {\n    let l: L = Lo(7);\n    match l { Hi(n) if n > 50 => println(\"high\"), _ if never() => println(\"never\"), _ => println(\"fallback\") }\n    return;\n}\n",
+        probe: "enum L { Hi(i64); Lo(i64); }\nfn never() -> bool { 1 == 2 }\nfn main() {\n    let l: L = .Lo(7);\n    match l { Hi(n) if n > 50 => println(\"high\"), _ if never() => println(\"never\"), _ => println(\"fallback\") }\n    return;\n}\n",
         coverage: Coverage::Parity("match_guard_catch_all_fallthrough"),
     },
     Construct {
@@ -298,7 +298,7 @@ const CONSTRUCTS: &[Construct] = &[
         // effects. The pattern is a constructor-with-binding (the runnable form
         // the stmt_if_let case proves); a unit-variant `if let` binds no payload
         // and exercises a different path. Pinned to the stmt_if_let case.
-        probe: "enum Wrapped { Value(i64); Empty; }\nfn main() {\n    let w: Wrapped = Value(7);\n    if let Value(n) = w {\n        println(f\"value {n}\");\n    }\n    return;\n}\n",
+        probe: "enum Wrapped { Value(i64); Empty; }\nfn main() {\n    let w: Wrapped = .Value(7);\n    if let Value(n) = w {\n        println(f\"value {n}\");\n    }\n    return;\n}\n",
         coverage: Coverage::Parity("stmt_if_let"),
     },
 
@@ -409,7 +409,7 @@ const CONSTRUCTS: &[Construct] = &[
         // { y }`) is the separate "value-position if-let" construct below, which
         // joins the arm values on a result local. This row covers only the
         // discarded-result / no-else form.
-        probe: "enum Box { Has(i64); Empty; }\nfn describe(b: Box) {\n    if let Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(Has(9));\n    describe(Empty);\n}\n",
+        probe: "enum Box { Has(i64); Empty; }\nfn describe(b: Box) {\n    if let Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(.Has(9));\n    describe(.Empty);\n}\n",
         coverage: Coverage::Parity("stmt_if_let"),
     },
     Construct {
@@ -421,7 +421,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `Expr::If`. Before #1901's follow-up this silently yielded unit
         // regardless of the matched value (a G1-class silent-wrong hole); it now
         // runs at parity. Pinned to the if_let_value case.
-        probe: "enum Wrapped { Value(i64); Empty; }\nfn pick(w: Wrapped) -> i64 {\n    let v = if let Value(n) = w { n } else { 0 };\n    v\n}\nfn main() {\n    println(pick(Value(7)));\n    println(pick(Empty));\n}\n",
+        probe: "enum Wrapped { Value(i64); Empty; }\nfn pick(w: Wrapped) -> i64 {\n    let v = if let Value(n) = w { n } else { 0 };\n    v\n}\nfn main() {\n    println(pick(.Value(7)));\n    println(pick(.Empty));\n}\n",
         coverage: Coverage::Parity("if_let_value"),
     },
     Construct {
@@ -457,7 +457,7 @@ const CONSTRUCTS: &[Construct] = &[
         // variants compare equal and any difference compares unequal — matching
         // native structural equality semantics. Subsumed by the record_equality
         // parity case which exercises both records and payload enums.
-        probe: "enum Shape { Circle(i64); Square(i64); }\nfn main() {\n    let s1 = Circle(5);\n    let s2 = Circle(5);\n    let s3 = Square(5);\n    println(s1 == s2);\n    println(s1 == s3);\n}\n",
+        probe: "enum Shape { Circle(i64); Square(i64); }\nfn main() {\n    let s1 = Shape.Circle(5);\n    let s2 = Shape.Circle(5);\n    let s3 = Shape.Square(5);\n    println(s1 == s2);\n    println(s1 == s3);\n}\n",
         coverage: Coverage::Parity("record_equality"),
     },
     Construct {

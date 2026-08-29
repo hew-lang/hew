@@ -651,11 +651,11 @@ fn classify(s: Score) -> string {
 }
 
 fn main() {
-    println(classify(High(95)));
-    println(classify(High(70)));
-    println(classify(Low(5)));
-    println(classify(Low(40)));
-    println(classify(Zero));
+    println(classify(.High(95)));
+    println(classify(.High(70)));
+    println(classify(.Low(5)));
+    println(classify(.Low(40)));
+    println(classify(.Zero));
 }
 "#;
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
@@ -708,7 +708,7 @@ fn classify(s: Score) -> string {
 }
 
 fn main() {
-    println(classify(Low(5)));
+    println(classify(.Low(5)));
 }
 "#;
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
@@ -1492,8 +1492,8 @@ enum Shape {
 }
 
 fn main() {
-    let a: Shape = Circle(1);
-    let b: Shape = Circle(1);
+    let a: Shape = .Circle(1);
+    let b: Shape = .Circle(1);
     println(a == b);
 }
 ";
@@ -1591,8 +1591,8 @@ machine Boxed<T> {
     }
     state Idle;
     state Full;
-    on Store: Idle => Full;
-    on Store: Full => Full;
+    on Store: Idle => .Full;
+    on Store: Full => .Full;
 }
 
 fn main() {
@@ -2029,7 +2029,7 @@ fn main() {
             r"
 enum Wrapped { Value(i64); Empty; }
 fn main() {
-    let w: Wrapped = Value(7);
+    let w: Wrapped = .Value(7);
     if let Value(n) = w {
         println(n);
     }
@@ -2240,11 +2240,13 @@ fn main() {
     }
 
     #[test]
-    fn bare_unit_enum_variant_as_call_arg_emits_enum_new() {
-        // Regression: bare unit-variant identifiers in expression position (e.g.
-        // `apply(Double, 5)` where Double is a unit variant) were previously
-        // lowered as `const.unit` instead of `enum.new`, causing a runtime trap.
-        // Verify that passing a unit variant as a call argument emits `enum.new`.
+    fn bare_unit_enum_variant_as_call_arg_is_rejected() {
+        // The bare-variant expression rule graduated to a hard error in
+        // v0.6.0 (#3084): a unit-variant identifier used bare as a call
+        // argument no longer compiles at all, so the `const.unit` vs.
+        // `enum.new` lowering choice this test used to regress on is moot for
+        // this spelling. Pin the rejection; the emission path it used to
+        // cover is exercised by the dotted positive control below.
         set_test_hewpath();
         let source = r#"
 enum Op { Add; Sub; }
@@ -2262,17 +2264,54 @@ fn main() {
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
             .expect("compile should not throw");
         assert!(
+            output.bytecode.is_none(),
+            "bare unit-variant call arg should not emit bytecode; got {:#?}",
+            output.bytecode
+        );
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == "error" && d.kind == "E_BARE_VARIANT_EXPR"),
+            "expected E_BARE_VARIANT_EXPR, got {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    fn dotted_unit_enum_variant_as_call_arg_emits_enum_new() {
+        // Positive control for `bare_unit_enum_variant_as_call_arg_is_rejected`:
+        // the dotted spelling of the same shape must still lower a unit-variant
+        // call argument to `enum.new`, not `const.unit` — this is the emission
+        // path the retired bare-form regression test used to cover.
+        set_test_hewpath();
+        let source = r#"
+enum Op { Add; Sub; }
+fn apply(op: Op, x: i64, y: i64) -> i64 {
+    match op {
+        Add => x + y,
+        Sub => x - y,
+    }
+}
+fn main() {
+    println(f"{apply(.Add, 10, 3)}");
+    println(f"{apply(.Sub, 10, 3)}");
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
             output.diagnostics.iter().all(|d| d.severity != "error"),
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
         let bytecode = output.bytecode.expect("bytecode must be emitted");
         let ops = all_instruction_ops(&bytecode);
-        // `enum.new` must appear: the bare `Add` and `Sub` identifiers used as
-        // call arguments must be lowered as unit-variant constructions, not const.unit.
+        // `enum.new` must appear: the dotted `Add`/`Sub` used as call
+        // arguments must be lowered as unit-variant constructions, not const.unit.
         assert!(
             ops.contains(&"enum.new"),
-            "bare unit-variant as call arg must emit enum.new; ops: {ops:?}"
+            "dotted unit-variant as call arg must emit enum.new; ops: {ops:?}"
         );
     }
 

@@ -10,6 +10,11 @@ readme = "../README.md"
 keywords = ["hew", "compiler", "mir"]
 categories = ["compilers"]
 
+[features]
+# Exposes fixture-only callable identities to test builds. Production builds
+# leave this disabled, so `MirCallableKey::for_test` is absent from the API.
+test = ["hew-types/test"]
+
 [dependencies]
 hew-hir = { path = "../hew-hir" }
 hew-sir = { path = "../hew-sir" }
@@ -22,6 +27,9 @@ siphasher = "1"
 hew-types = { path = "../hew-types" }
 
 [dev-dependencies]
+# Self dev-dependency so `hew-mir/tests/*` link a lib built with the
+# fixture-identity feature; production `cargo build` never enables it.
+hew-mir = { path = ".", features = ["test"] }
 hew-types = { path = "../hew-types", features = ["test"] }
 
 # Property-based testing for per-Return drop-plan live-set narrowing.

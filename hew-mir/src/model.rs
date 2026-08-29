@@ -14,6 +14,7 @@ use hew_types::{
     WireLayoutTable,
 };
 
+pub use crate::identity::{MirCallableInstance, MirCallableKey, SynthesizedCallable};
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
 
 /// Distinguishes shared (read-only, may alias) from mutable (unique,

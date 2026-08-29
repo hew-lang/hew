@@ -12,6 +12,7 @@ pub mod dump;
 pub mod dyn_vtable_registry;
 pub mod faint;
 pub mod ffi_contracts;
+pub mod identity;
 pub mod liveness;
 pub mod lower;
 pub mod model;

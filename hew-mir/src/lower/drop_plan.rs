@@ -3777,6 +3777,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
         &definition_places,
     ));
     let guarded_owners = published_guards.keys().copied().collect::<HashSet<_>>();
+    let mut reported_shared_places = HashSet::<(Place, Vec<OwnerId>)>::new();
     for block in &checked.blocks {
         let Some(mut live) = entries.get(&block.id).cloned() else {
             continue;
@@ -4087,6 +4088,19 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
             }
             apply_exact_owner_ops(std::slice::from_ref(instruction), &mut live);
             apply_maybe_owner_ops(std::slice::from_ref(instruction), &mut maybe_live);
+            for (place, owners) in shared_exact_owner_places(&live) {
+                if !reported_shared_places.insert((place, owners.clone())) {
+                    continue;
+                }
+                findings.push(MirCheck::DischargeAuthorityDrift {
+                    function: checked.name.clone(),
+                    block: block.id,
+                    name: "ownership-place".to_owned(),
+                    reason: format!(
+                        "place {place:?} has more than one live exact owner generation {owners:?} after instruction {instruction_index}"
+                    ),
+                });
+            }
             match event {
                 OwnershipEvent::Mint { owner, .. }
                 | OwnershipEvent::Transfer { owner, .. }
@@ -4338,6 +4352,173 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
         }
     }
     findings
+}
+
+/// Every place that currently carries more than one live exact owner
+/// generation, with those generations in a canonical order.
+///
+/// Checked MIR admits at most one live exact owner per `Place` at any program
+/// point: a second generation over the same bytes makes every later cleanup
+/// match the place ambiguously and the balance fixpoint fail closed. Lowering
+/// hands a value from one generation to the next with `Transfer`/`Reset`/
+/// `Rearm`/`Join`; a bare second `Mint` or `Relocate` onto a live place is a
+/// lowering defect, never a user error.
+fn shared_exact_owner_places(live: &ExactOwnerState) -> Vec<(Place, Vec<crate::model::OwnerId>)> {
+    let mut by_place = HashMap::<Place, Vec<crate::model::OwnerId>>::new();
+    for (owner, place) in live {
+        by_place.entry(*place).or_default().push(*owner);
+    }
+    let mut shared = by_place
+        .into_iter()
+        .filter(|(_, owners)| owners.len() > 1)
+        .collect::<Vec<_>>();
+    for (_, owners) in &mut shared {
+        owners.sort_by_key(|owner| (owner.binding.0, owner.generation));
+    }
+    shared.sort_by_key(|(place, _)| format!("{place:?}"));
+    shared
+}
+
+#[cfg(test)]
+fn one_owner_per_place_findings(checked: &CheckedMirFunction) -> Vec<String> {
+    validate_ownership_events(checked)
+        .into_iter()
+        .filter_map(|finding| match finding {
+            MirCheck::DischargeAuthorityDrift { name, reason, .. } if name == "ownership-place" => {
+                Some(reason)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn second_mint_over_a_live_place_is_rejected() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let payload = OwnerId {
+        binding: BindingId(2),
+        generation: 0,
+    };
+    let temp = OwnerId {
+        binding: BindingId(4_294_967_226),
+        generation: 0,
+    };
+    let slot = Place::Local(6);
+    let recipe = checked_test_string_recipe();
+    // The pre-fix `quote(when()?)` stream: the `__try_ok` payload owner is
+    // relocated into the call-argument slot and the join then mints the
+    // argument temp over the same slot.
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: payload,
+            place: Place::Local(13),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: payload,
+            recipe: recipe.clone(),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Relocate {
+            owner: payload,
+            from: Place::Local(13),
+            to: slot,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: temp,
+            place: slot,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: temp,
+            recipe,
+        }),
+    ]);
+    let findings = one_owner_per_place_findings(&checked);
+    assert_eq!(
+        findings.len(),
+        1,
+        "one finding per shared place, not one per later instruction: {findings:?}"
+    );
+    assert!(
+        findings[0].contains("Local(6)")
+            && findings[0].contains("BindingId(2)")
+            && findings[0].contains("BindingId(4294967226)")
+            && findings[0].contains("after instruction 3"),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn generation_ending_transfer_before_join_mint_is_one_owner_per_place() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let payload = OwnerId {
+        binding: BindingId(2),
+        generation: 0,
+    };
+    let temp = OwnerId {
+        binding: BindingId(4_294_967_226),
+        generation: 0,
+    };
+    let slot = Place::Local(6);
+    let recipe = checked_test_string_recipe();
+    // The fixed stream: the arm's Move hands the payload generation off
+    // (`Transfer` to the slot with no successor owner) before the join mints
+    // the argument temp there.
+    let checked = checked_with_ownership_events(vec![
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: payload,
+            place: Place::Local(13),
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: payload,
+            recipe: recipe.clone(),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Transfer {
+            owner: payload,
+            from: Place::Local(13),
+            to: Some(slot),
+            to_owner: None,
+            to_ty: None,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: temp,
+            place: slot,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: temp,
+            recipe,
+        }),
+    ]);
+    assert_eq!(one_owner_per_place_findings(&checked), Vec::<String>::new());
+}
+
+#[test]
+fn distinct_places_with_one_owner_each_are_not_shared() {
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    let recipe = checked_test_string_recipe();
+    let mut events = Vec::new();
+    for (binding, local) in [(BindingId(3), 7), (BindingId(4), 8)] {
+        let owner = OwnerId {
+            binding,
+            generation: 0,
+        };
+        events.push(Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner,
+            place: Place::Local(local),
+            ty: ResolvedTy::String,
+        }));
+        events.push(Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner,
+            recipe: recipe.clone(),
+        }));
+    }
+    let checked = checked_with_ownership_events(events);
+    assert_eq!(one_owner_per_place_findings(&checked), Vec::<String>::new());
 }
 
 #[cfg(test)]

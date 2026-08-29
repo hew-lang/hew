@@ -50,8 +50,8 @@ pub(super) fn check(ctx: &LintCtx, levels: &LintLevels, body: &Block, out: &mut 
 // ── candidate discovery ──────────────────────────────────────────────
 
 fn find_in_block(ctx: &LintCtx, levels: &LintLevels, block: &Block, out: &mut Vec<TypeError>) {
-    for (stmt, span) in &block.stmts {
-        find_in_stmt(ctx, levels, stmt, span, out);
+    for (stmt, _) in &block.stmts {
+        find_in_stmt(ctx, levels, stmt, out);
     }
     if let Some(trailing) = &block.trailing_expr {
         find_in_expr(ctx, levels, &trailing.0, out);
@@ -62,13 +62,7 @@ fn find_in_block(ctx: &LintCtx, levels: &LintLevels, block: &Block, out: &mut Ve
     clippy::too_many_lines,
     reason = "statement visitor enumerates every block-bearing stmt shape"
 )]
-fn find_in_stmt(
-    ctx: &LintCtx,
-    levels: &LintLevels,
-    stmt: &Stmt,
-    span: &hew_parser::ast::Span,
-    out: &mut Vec<TypeError>,
-) {
+fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<TypeError>) {
     match stmt {
         Stmt::For {
             is_await,
@@ -78,7 +72,7 @@ fn find_in_stmt(
             ..
         } => {
             // Test this loop, then descend so nested range loops are found too.
-            try_flag(ctx, levels, *is_await, pattern, iterable, body, span, out);
+            try_flag(ctx, levels, *is_await, pattern, iterable, body, out);
             find_in_expr(ctx, levels, &iterable.0, out);
             find_in_block(ctx, levels, body, out);
         }
@@ -154,7 +148,7 @@ fn find_in_else(
     out: &mut Vec<TypeError>,
 ) {
     if let Some(if_stmt) = &else_block.if_stmt {
-        find_in_stmt(ctx, levels, &if_stmt.0, &if_stmt.1, out);
+        find_in_stmt(ctx, levels, &if_stmt.0, out);
     }
     if let Some(block) = &else_block.block {
         find_in_block(ctx, levels, block, out);
@@ -245,7 +239,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
 
 /// If this `for` loop is `for i in 0 .. coll.len()` over a lintable collection
 /// `coll`, run the precision scan and emit when the rewrite is valid.
-#[allow(clippy::too_many_arguments, reason = "destructured `Stmt::For` fields")]
 fn try_flag(
     ctx: &LintCtx,
     levels: &LintLevels,
@@ -253,7 +246,6 @@ fn try_flag(
     pattern: &Spanned<Pattern>,
     iterable: &Spanned<Expr>,
     body: &Block,
-    for_span: &hew_parser::ast::Span,
     out: &mut Vec<TypeError>,
 ) {
     if is_await {
@@ -319,7 +311,7 @@ fn try_flag(
     ctx.emit(
         levels,
         LintId::NeedlessRangeLoop,
-        for_span,
+        &(pattern.1.start..iterable.1.end),
         format!("the loop variable `{idx}` is only used to index `{coll}`"),
         format!("iterate the collection directly: `for {elem} in {coll} {{ … }}`"),
         out,

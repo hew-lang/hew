@@ -21,6 +21,11 @@ const NEEDLESS: &str = "fn main() {\n\
      }\n\
      }\n";
 
+/// A needless range loop followed by another statement. The later statement
+/// is a negative control for the diagnostic span: it must not be rendered as
+/// the source of the loop warning.
+const NEEDLESS_FOLLOWED_BY_STATEMENT: &str = "fn main() {\n    let xs: Vec<i64> = Vec.new();\n    for i in 0..xs.len() {\n        let _ = xs[i];\n    }\n    println(\"unrelated after loop\");\n}\n";
+
 /// The same program with an in-source allow directive on the line above.
 const NEEDLESS_SUPPRESSED: &str = "fn main() {\n\
      let xs: Vec<i64> = Vec.new();\n\
@@ -64,6 +69,27 @@ fn lint_warning_renders_by_default() {
     assert!(
         stderr.contains("warning:") && stderr.contains(LINT_MESSAGE),
         "expected the needless_range_loop warning to render:\n{stderr}"
+    );
+}
+
+#[test]
+fn needless_range_loop_warning_points_at_loop_header() {
+    let output = run_check(NEEDLESS_FOLLOWED_BY_STATEMENT, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a lint warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("prog.hew:3:9:")
+            && stderr.contains("3 |     for i in 0..xs.len() {")
+            && stderr.contains("|         ^^^^^^^^^^^^^^^^^\n")
+            && stderr.contains(LINT_MESSAGE),
+        "the needless_range_loop warning must point at the loop header:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("unrelated after loop"),
+        "the warning must not point at the following statement:\n{stderr}"
     );
 }
 

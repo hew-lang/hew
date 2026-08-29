@@ -1015,38 +1015,12 @@ impl Builder {
                 // the post-CFG carrier pass (`prepare_owned_call_carriers`)
                 // picks the COST strategy from liveness — transfer on a proven
                 // last use, otherwise a snapshot clone — and never changes what
-                // this caller may do with the binding afterwards. A borrowing
-                // callee simply reads the caller-owned value.
-                if self.callee_param_is_owned_carrier(callee_item, index) {
-                    return self.lower_value(arg);
-                }
+                // this caller may do with the binding afterwards, nor which
+                // lowering funnel the argument takes here. A borrowing callee
+                // simply reads the caller-owned value.
                 self.lower_method_arg_value(arg, false)
             })
             .collect()
-    }
-
-    /// True when `lower_params` will mint a scope-exit owner over parameter
-    /// `index` of `callee_item` from the body-escape summary alone (the
-    /// `OwnedCarrier` boundary mode). The affine `#[resource]` CONSUME
-    /// parameter is excluded: it is a source-level move with its own funnel.
-    fn callee_param_is_owned_carrier(
-        &self,
-        callee_item: Option<hew_hir::ItemId>,
-        index: usize,
-    ) -> bool {
-        callee_item.is_some_and(|item| {
-            self.param_ownership
-                .param_consume
-                .get(&(item, index))
-                .copied()
-                != Some(true)
-                && self
-                    .param_ownership
-                    .call_param_owned_carrier
-                    .get(&(item, index))
-                    .copied()
-                    == Some(true)
-        })
     }
 }
 

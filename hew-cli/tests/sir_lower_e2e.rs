@@ -1,9 +1,8 @@
-//! End-to-end contracts for the experimental Semantic IR lane.
+//! End-to-end contracts for the strict Semantic IR lane.
 //!
-//! `--sir-shadow` must exercise and verify the temporary SIR → raw-MIR
-//! candidate while leaving the established raw-MIR dump byte-for-byte
-//! authoritative. `--sir-lower` is intentionally stronger: it must compile a
-//! closed SIR call graph without constructing legacy function bodies.
+//! `--sir-lower` must compile a closed SIR call graph without constructing
+//! legacy function bodies: a reachable unsupported feature is a compilation
+//! error, never a fallback onto the established MIR path.
 
 mod support;
 
@@ -12,20 +11,6 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use support::{assert_success, describe_output, hew_binary, repo_root, require_codegen};
-
-const SCALAR_DIAMOND: &str = r"
-fn sir_scalar_add(x: i64, y: i64) -> i64 {
-    x + y
-}
-
-fn sir_scalar_diamond(x: i64) -> i64 {
-    if x > 0 {
-        42
-    } else {
-        23
-    }
-}
-";
 
 const CLOSED_DIRECT_CALLS: &str = r"
 fn main() -> i64 {
@@ -225,60 +210,6 @@ fn llvm_function_section<'a>(llvm: &'a str, name: &str) -> &'a str {
     let rest = &llvm[start..];
     let end = rest.find("\n}").map_or(rest.len(), |index| index + 2);
     &rest[..end]
-}
-
-fn scalar_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = support::tempdir();
-    let source = dir.path().join("sir_scalar_diamond.hew");
-    fs::write(&source, SCALAR_DIAMOND).expect("write scalar SIR fixture");
-    (dir, source)
-}
-
-/// Shadow mode constructs, verifies, and backend-front validates the SIR
-/// candidate, but emits the established raw MIR unchanged.  This protects the
-/// initial migration against accidentally selecting the candidate in the
-/// default/shadow lane.
-#[test]
-fn sir_shadow_keeps_established_raw_mir_authoritative() {
-    let (_dir, source) = scalar_fixture();
-    let baseline = raw_mir_dump(&source, None);
-    let shadow = raw_mir_dump(&source, Some("--sir-shadow"));
-
-    assert_success(&baseline, "baseline raw MIR dump must succeed");
-    assert_success(&shadow, "SIR shadow raw MIR dump must succeed");
-    assert_eq!(
-        baseline.stdout,
-        shadow.stdout,
-        "--sir-shadow must retain the established raw MIR output\n\
-         baseline:\n{}\n\
-         shadow:\n{}",
-        String::from_utf8_lossy(&baseline.stdout),
-        String::from_utf8_lossy(&shadow.stdout),
-    );
-
-    let stderr = String::from_utf8_lossy(&shadow.stderr);
-    assert!(
-        stderr.contains("SIR shadow: verified"),
-        "shadow run must report that its SIR lane was verified:\n{}",
-        describe_output(&shadow),
-    );
-    assert!(
-        !stderr.contains("realized 0/"),
-        "the eligible scalar arithmetic function must be realized through the SIR-to-raw-MIR adapter:\n{}",
-        describe_output(&shadow),
-    );
-
-    let shadow_dump = String::from_utf8_lossy(&shadow.stdout);
-    let established = function_section(&shadow_dump, "sir_scalar_add");
-    assert!(
-        established.contains("stmt: use"),
-        "shadow output must still be the established statement-oriented lowering:\n{established}",
-    );
-    let established_diamond = function_section(&shadow_dump, "sir_scalar_diamond");
-    assert!(
-        established_diamond.contains("branch "),
-        "the shadow fixture must exercise an established scalar CFG body:\n{established_diamond}",
-    );
 }
 
 /// Lower mode owns a closed direct-call graph. It must construct fresh bodies
@@ -901,9 +832,9 @@ fn sir_dump_preserves_short_circuit_control_flow() {
     );
 }
 
-/// `--dump-sir`, shadow evidence, and strict lowering must all consume the
-/// same canonical semantic CFG. This proves the first actual SIR pass is not
-/// an inspector-only transformation or a second compiler lane.
+/// `--dump-sir` and strict lowering must consume the same canonical semantic
+/// CFG. This proves the first actual SIR pass is not an inspector-only
+/// transformation or a second compiler lane.
 #[test]
 fn sir_canonicalizes_direct_constant_cfg_before_strict_lowering() {
     require_codegen();
@@ -923,14 +854,6 @@ fn sir_canonicalizes_direct_constant_cfg_before_strict_lowering() {
     assert!(
         !main.contains("const 1"),
         "the unreachable source arm must be gone from canonical SIR:\n{main}",
-    );
-
-    let shadow = raw_mir_dump(&source, Some("--sir-shadow"));
-    assert_success(&shadow, "canonical SIR shadow evidence must succeed");
-    assert!(
-        String::from_utf8_lossy(&shadow.stderr).contains("SIR shadow: verified"),
-        "shadow must consume the same verified canonical SIR module:\n{}",
-        describe_output(&shadow),
     );
 
     let lowered = raw_mir_dump(&source, Some("--sir-lower"));

@@ -46,15 +46,10 @@ pub struct Cli {
 /// compiler lane than `compile` and `build`.
 #[derive(Debug, Args, Clone, Copy, Default)]
 pub struct SirModeArgs {
-    /// Run the experimental HIR → SIR → raw-MIR candidate lane and verify it
-    /// at the backend front gate, while keeping established MIR as the emitted
-    /// artifact.
-    #[arg(long = "sir-shadow", conflicts_with = "sir_lower")]
-    pub sir_shadow: bool,
     /// Compile a closed scalar direct-call graph through SIR → raw/checked MIR
     /// with no legacy function-body lowering. A reachable unsupported feature
     /// is an explicit error; it never falls back to established MIR.
-    #[arg(long = "sir-lower", conflicts_with = "sir_shadow")]
+    #[arg(long = "sir-lower")]
     pub sir_lower: bool,
 }
 
@@ -64,8 +59,6 @@ impl SirModeArgs {
     pub fn mode(self) -> crate::compile::SirMode {
         if self.sir_lower {
             crate::compile::SirMode::Lower
-        } else if self.sir_shadow {
-            crate::compile::SirMode::Shadow
         } else {
             crate::compile::SirMode::Disabled
         }
@@ -158,10 +151,7 @@ pub struct CompileArgs {
     pub sir: SirModeArgs,
     /// Emit the verified Semantic IR subset and exit. Unsupported functions are
     /// reported explicitly; no MIR or LLVM artifacts are emitted.
-    #[arg(
-        long = "dump-sir",
-        conflicts_with_all = ["dump_mir", "sir_lower", "sir_shadow"]
-    )]
+    #[arg(long = "dump-sir", conflicts_with_all = ["dump_mir", "sir_lower"])]
     pub dump_sir: bool,
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
     #[arg(long, value_name = "TRIPLE")]
@@ -748,17 +738,13 @@ impl WatchArgs {
 /// SIR mode selection for `hew watch`.
 ///
 /// A check-only watch deliberately stops before MIR/SIR realization. Requiring
-/// `--run` at parse time prevents `--sir-lower` or `--sir-shadow` from being
-/// accepted and then silently doing nothing.
+/// `--run` at parse time prevents `--sir-lower` from being accepted and then
+/// silently doing nothing.
 #[derive(Debug, Args, Clone, Copy, Default)]
 pub struct WatchSirModeArgs {
-    /// Run the experimental HIR → SIR → raw-MIR candidate lane while keeping
-    /// established MIR as the emitted artifact.
-    #[arg(long = "sir-shadow", conflicts_with = "sir_lower", requires = "run")]
-    pub sir_shadow: bool,
     /// Compile the watched program through the strict closed SIR direct-call
     /// lane. Reachable unsupported features are errors, never fallbacks.
-    #[arg(long = "sir-lower", conflicts_with = "sir_shadow", requires = "run")]
+    #[arg(long = "sir-lower", requires = "run")]
     pub sir_lower: bool,
 }
 
@@ -766,8 +752,6 @@ impl WatchSirModeArgs {
     pub fn mode(self) -> crate::compile::SirMode {
         if self.sir_lower {
             crate::compile::SirMode::Lower
-        } else if self.sir_shadow {
-            crate::compile::SirMode::Shadow
         } else {
             crate::compile::SirMode::Disabled
         }
@@ -1008,17 +992,13 @@ mod tests {
             SirMode::Disabled
         );
 
-        let shadow = Cli::try_parse_from(["hew", "test", "--sir-shadow"])
-            .expect("test should preserve --sir-shadow");
+        let lowered = Cli::try_parse_from(["hew", "test", "--sir-lower"])
+            .expect("test should preserve --sir-lower");
         assert_eq!(
-            command_sir_mode(shadow.command.expect("test command should be present")),
-            SirMode::Shadow
+            command_sir_mode(lowered.command.expect("test command should be present")),
+            SirMode::Lower
         );
 
-        assert!(
-            Cli::try_parse_from(["hew", "run", "sample.hew", "--sir-shadow", "--sir-lower",])
-                .is_err()
-        );
         assert!(Cli::try_parse_from(
             ["hew", "compile", "sample.hew", "--dump-sir", "--sir-lower",]
         )
@@ -1033,10 +1013,6 @@ mod tests {
         ])
         .is_err());
         assert!(Cli::try_parse_from(["hew", "watch", "sample.hew", "--sir-lower"]).is_err());
-        assert!(Cli::try_parse_from(["hew", "watch", "sample.hew", "--sir-shadow"]).is_err());
-        assert!(
-            Cli::try_parse_from(["hew", "eval", "--sir-shadow", "--sir-lower", "1 + 2"]).is_err()
-        );
     }
 
     fn command_sir_mode(command: Command) -> SirMode {

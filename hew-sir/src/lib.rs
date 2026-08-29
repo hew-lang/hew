@@ -2,9 +2,9 @@
 //!
 //! SIR is the value-oriented SSA layer between resolved HIR and the existing
 //! ownership/layout MIR ladder.  It deliberately contains no `Place`, alloca,
-//! ABI carrier, byte-offset, or LLVM operation.  The initial shadow lane is a
-//! temporary cutover proof for a conservative subset; each supported family
-//! moves onto SIR -> MIR and deletes its established HIR -> MIR body lowering.
+//! ABI carrier, byte-offset, or LLVM operation.  The strict `--sir-lower` lane
+//! owns a conservative subset today; each supported family moves onto
+//! SIR -> MIR and deletes its established HIR -> MIR body lowering.
 
 mod analysis;
 mod dump;

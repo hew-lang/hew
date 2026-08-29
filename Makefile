@@ -80,7 +80,7 @@
 .PHONY: assemble assemble-release stage-release-package pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure sir-shadow-verify
+.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 
@@ -557,7 +557,7 @@ ci-shard-1: observe-functional-test test-cabi test-compiler-lifecycle \
 
 ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-leak-oracle-selftest test-opaque-resource-lifecycle-matrix-external \
-	sir-shadow-verify test-ownership-balance-corpus \
+	test-ownership-balance-corpus \
 	test-ownership-balance-runner-selftest stdlib-user-build-clean \
 	test-asan-fixture-selftest hew-fmt-property stdlib-lint
 
@@ -1017,16 +1017,6 @@ checked-mir-run: hew-native
 
 checked-mir-expect: hew-native
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh expect
-
-# Temporary cutover proof for the SIR insertion lane; not a permanent dual
-# pipeline.  It compiles each standalone LL-oracle fixture twice: once through
-# the established HIR → MIR ladder and once through HIR → SIR → candidate raw
-# MIR, while retaining the established output as the observable result.  The
-# driver compares stdout, diagnostics (after removing only SIR's explicit
-# coverage report), exit status, and requires nonzero SIR realization coverage.
-# Retire it when SIR lowering becomes the default and the established path goes.
-sir-shadow-verify: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/sir-shadow-corpus.sh
 
 # Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
 # pure codegen refactor (dedup, extract-helper, file-split) emits zero changed

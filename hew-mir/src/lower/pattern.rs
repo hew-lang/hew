@@ -645,7 +645,7 @@ impl Builder {
     /// pickers cannot drift on the fail-closed boundary
     /// (`dedup-semantic-boundary`).
     ///
-    /// The `Unsupported` domain splits two ways, drawing the SAME boundary
+    /// The `Unsupported` domain splits three ways, drawing the SAME boundary
     /// as the compile reject `unsupported_vec_element_walk`:
     ///   - `NoReleaseProtocol` with no owned-ABI release
     ///     (`!elem_is_owned_abi_releasable`) — a `bytes` fat triple or an
@@ -660,11 +660,11 @@ impl Builder {
     ///     harvest-independent `elem_is_owned_abi_releasable` authority and
     ///     emit `hew_vec_free_owned`; a buffer-only free would leak every
     ///     element payload.
-    ///
-    /// An element that owns NO heap as a flat element (a free `TypeParam` in
-    /// a generic skeleton, `Unit`, a bare runtime view) is classified `Plain`
-    /// by the heap-ownership authority, so un-monomorphised generic `Vec<T>`
-    /// bodies keep the buffer-only free.
+    ///   - `UnenumeratedShape` — the element owns NO heap as a flat element
+    ///     (a free `TypeParam` in a generic skeleton, `Unit`, a bare runtime
+    ///     view) — the buffer-only free IS the complete release; refusing
+    ///     would reject un-monomorphised generic `Vec<T>` bodies that
+    ///     instantiate to plain elements.
     fn vec_release_symbol_verdict(&self, elem: &ResolvedTy) -> ReleaseSymbolVerdict {
         #[allow(
             clippy::match_same_arms,
@@ -681,7 +681,10 @@ impl Builder {
             {
                 ReleaseSymbolVerdict::Wired("hew_vec_free_owned")
             }
-            VecElementRelease::Unsupported(reason) => ReleaseSymbolVerdict::Unwired(reason),
+            VecElementRelease::Unsupported(reason @ FailClosedReason::NoReleaseProtocol) => {
+                ReleaseSymbolVerdict::Unwired(reason)
+            }
+            VecElementRelease::Unsupported(_) => ReleaseSymbolVerdict::Wired("hew_vec_free"),
         }
     }
 

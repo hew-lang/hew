@@ -349,18 +349,33 @@ fn assert_nonconsuming_shell_paths(
         Terminator::Call { next, .. } => *next,
         _ => unreachable!("block selected by call terminator"),
     };
-    for exit in [
-        ExitPath::Unwind {
-            block: failed_call.id,
-            callee: "println_str".to_string(),
-        },
-        ExitPath::Cancel { block: failed_next },
-    ] {
-        assert!(
-            exit_has_drop(p, "main", &exit, parent_place, DropKind::EnumInPlace,),
-            "the non-consuming Failed path must retain shell cleanup at {exit:?}"
-        );
-    }
+    // Unwinding out of the println leaves the shell owned: the arm has not
+    // reached its release yet, so the exit must clean it up.
+    let unwind = ExitPath::Unwind {
+        block: failed_call.id,
+        callee: "println_str".to_string(),
+    };
+    assert!(
+        exit_has_drop(p, "main", &unwind, parent_place, DropKind::EnumInPlace),
+        "the non-consuming Failed path must retain shell cleanup at {unwind:?}"
+    );
+    // The Loaded arm consumes the shell and the Failed arm does not, so the
+    // shell is conditionally consumed at their join. Lowering releases it
+    // inline on the Failed edge (before the loop back-edge, where the next
+    // iteration mints a fresh generation over the same place), and the
+    // back-edge cancellation checkpoint runs after that release — dropping
+    // there again would double-free.
+    let back_edge_cancel = ExitPath::Cancel { block: failed_next };
+    assert!(
+        !exit_has_drop(
+            p,
+            "main",
+            &back_edge_cancel,
+            parent_place,
+            DropKind::EnumInPlace
+        ),
+        "cancellation after the Failed edge's inline shell release must not close it again"
+    );
     let invalid_tag = function
         .blocks
         .iter()

@@ -446,10 +446,12 @@ fn collection_handle_predicate_projects_from_heap_leaf() {
 /// (`Unwired`): the per-element release for those shapes is unwired, so
 /// every consulting site must refuse the construct at compile time —
 /// never emit the buffer-only `hew_vec_free` over owned element nodes.
-/// An unsubstituted `Vec<T>` classifies `Plain` (the heap-ownership
-/// authority reports no drop obligation for a free type parameter), so the
-/// buffer free IS its complete release and un-monomorphised generic bodies
-/// are not refused; every remaining `Unsupported` verdict is `Unwired`.
+/// The residual `Unsupported(UnenumeratedShape)` sub-domain deliberately
+/// keeps the buffer-only verdict, drawing the same boundary as the compile
+/// reject `unsupported_vec_element_walk`:
+///   - `UnenumeratedShape` (`Vec<T>` unsubstituted): the element owns no
+///     heap as a flat element, so the buffer free IS the complete
+///     release — refusing would reject un-monomorphised generic bodies;
 ///
 /// A registered heap-owning record observed without this function's
 /// harvest key is instead classified harvest-independently and released
@@ -540,10 +542,11 @@ fn yield_and_field_pickers_match_legacy_symbol_table() {
             Unwired(FailClosedReason::NoReleaseProtocol),
             Unwired(FailClosedReason::NoReleaseProtocol),
         ),
-        // Vec arm — a free type parameter owns no heap by the authority and
-        // keeps the buffer-only verdict through the Plain bucket.
+        // Vec arm — the residual Unsupported sub-domain that keeps the
+        // buffer-only verdict (the boundary
+        // `unsupported_vec_element_walk` draws; see the test doc).
         (
-            "Vec<T> unsubstituted (Plain)",
+            "Vec<T> unsubstituted (Unsupported/UnenumeratedShape)",
             vec_of(ResolvedTy::TypeParam {
                 name: "T".to_string(),
             }),
@@ -615,9 +618,8 @@ fn yield_and_field_pickers_match_legacy_symbol_table() {
         );
     }
 
-    // The Unsupported rows above carry exactly one fail-closed reason: the
-    // unwired release protocol. A free type parameter is Plain, never a
-    // fallback from an Unsupported verdict.
+    // The Unsupported rows above carry exactly the two fail-closed
+    // reasons: the unwired release protocols and the anti-drift sentinel.
     assert_eq!(
         builder.classify_vec_element_release(&ResolvedTy::Bytes),
         VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
@@ -630,7 +632,7 @@ fn yield_and_field_pickers_match_legacy_symbol_table() {
         builder.classify_vec_element_release(&ResolvedTy::TypeParam {
             name: "T".to_string(),
         }),
-        VecElementRelease::Plain
+        VecElementRelease::Unsupported(FailClosedReason::UnenumeratedShape)
     );
     // The releasable-boundary row rides `NoReleaseProtocol` too — it is
     // the `elem_is_owned_abi_releasable` exclusion, not the reason, that

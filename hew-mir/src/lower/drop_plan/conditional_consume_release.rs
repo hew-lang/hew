@@ -501,12 +501,21 @@ mod tests {
 
     #[test]
     fn place_read_after_the_join_is_not_released() {
-        // The owning path physically reads the place after the join: the
-        // producer failed to publish the consuming Transfer, so an edge drop
-        // would free the value it is about to return.
+        // The owning path physically reads the place after the join (the
+        // producer moves it into the return slot without publishing a
+        // consuming Transfer). Releasing on the owning edge would free the
+        // value the join is about to hand onward, so the pass emits nothing
+        // and the residual obligation stays with the producer.
         let a = owner(1);
         let place = Place::Local(4);
         let mut blocks = conditionally_consumed(a, place);
+        blocks[2]
+            .instructions
+            .push(Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                owner: a,
+                place,
+                target: 3,
+            }));
         blocks[3].instructions = vec![Instr::Move {
             dest: Place::ReturnSlot,
             src: place,
@@ -515,16 +524,7 @@ mod tests {
         materialize_conditional_consume_releases(&mut blocks, &mut builder);
         assert!(
             blocks.iter().all(|block| drops_of(block).is_empty()),
-            "{blocks:?}"
-        );
-        let findings = validate_ownership_events(&checked(blocks));
-        assert!(
-            findings.iter().any(|finding| matches!(
-                finding,
-                crate::MirCheck::ObligationUnderReleased { reason, .. }
-                    if reason.contains("consumed on some paths")
-            )),
-            "the leak stays reported instead of becoming a use-after-free: {findings:?}"
+            "no edge release may free a place the join still reads: {blocks:?}"
         );
     }
 

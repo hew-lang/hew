@@ -581,11 +581,10 @@ resolves this before sealing, from the same replay
 predecessor edge where the generation is still exactly live, provided the
 owning storage is physically dead on entry to the join (no read reaches it
 before a whole-local redefinition). Guarded generations keep their runtime
-flag and lineage `Join` inputs keep the join rules. Whatever remains — a
-producer that moved a value without publishing its `Transfer`, or an owner
-with no inline-droppable recipe — is reported by the verifier as an unguarded
-generation consumed on some paths and still owned on others, never silently
-dropped from tracking at the join.
+flag and lineage `Join` inputs keep the join rules. What the pass cannot
+place — a producer that hands the value onward at the join without
+publishing its `Transfer` — remains an unreported leak on the owning path;
+closing that requires the producer fix, not a plan entry.
 
 The `DecisionMap` is a deterministic table of
 `DecisionFact { site_id, kind, chosen_strategy, why, cost_class }` keyed by

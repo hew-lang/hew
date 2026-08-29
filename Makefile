@@ -265,9 +265,8 @@ NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(CROSS_NATIVE_LIB_TRIPLES)
 # and TSan lanes here remain as local entry points for nightly coverage.
 #
 # Default to the host triple so `make asan` works on any sanitizer-capable
-# host (darwin-arm64, linux-x86_64, ...).  Nightly CI invokes `cargo +nightly
-# test --target x86_64-unknown-linux-gnu` directly rather than via `make
-# asan`, so changing this default does not affect the CI lane.
+# host (darwin-arm64, linux-x86_64, ...). CI selects its explicit runner target
+# through `SANITIZER_RUST_TARGET` while retaining this single command authority.
 SANITIZER_RUST_TARGET ?= $(HOST_TRIPLE)
 RUNTIME_ASAN_TARGET_DIR := target/sanitizer-runtime-asan
 RUNTIME_TSAN_TARGET_DIR := target/sanitizer-runtime-tsan
@@ -1278,9 +1277,12 @@ ASAN_SYMBOLIZER ?= $(shell ls /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | 
 # hew-runtime test binary with cwd = the package dir (hew-runtime/), so the bare
 # filename `lsan.supp` resolves correctly and never contains a space regardless
 # of the absolute worktree location.
+# The runtime crate is instrumented but the prebuilt sysroot is not. Nightly
+# Rust rejects that sanitizer ABI mismatch unless it is explicitly allowed;
+# this lane intentionally measures Hew's runtime rather than rebuilding std.
 asan:
 	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
-	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes" \
+	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
 	ASAN_OPTIONS="detect_leaks=1" \
 	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
 	LSAN_OPTIONS="suppressions=lsan.supp" \

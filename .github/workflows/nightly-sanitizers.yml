@@ -101,29 +101,9 @@ jobs:
           restore-keys: runtime-asan-${{ runner.os }}-
 
       - name: Run hew-runtime ASan tests
-        env:
-          CARGO_TARGET_DIR: target/sanitizer-runtime-asan
-          RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer
-          ASAN_OPTIONS: detect_leaks=1
-          # Bare relative filename, not an absolute ${{ github.workspace }} path:
-          # cargo runs the -p hew-runtime test binary with cwd = hew-runtime/, so
-          # `suppressions=lsan.supp` resolves to hew-runtime/lsan.supp without
-          # embedding the runner's workspace path. A workspace whose absolute
-          # path contains a space (self-hosted runner under /Volumes/Extreme SSD/
-          # ...) would otherwise make the sanitizer parse the space as a
-          # key=value separator and abort with "expected '=' in LSAN_OPTIONS".
-          LSAN_OPTIONS: suppressions=lsan.supp
-          ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-${{ env.LLVM_VERSION }}/bin/llvm-symbolizer
-        run: |
-          # -Cunsafe-allow-abi-mismatch=sanitizer silences the hard ABI-mismatch
-          # error between the sanitizer-instrumented hew-runtime crates and the
-          # prebuilt (uninstrumented) sysroot std.  The prebuilt std stays
-          # uninstrumented — acceptable because these jobs detect data races and
-          # leaks in hew-runtime's own code, not in std.
-          cargo +nightly test \
-            --target x86_64-unknown-linux-gnu \
-            -p hew-runtime \
-            --lib
+        # Make owns the sanitizer flags, target directory, suppressions,
+        # symbolizer selection, and serial test execution used by release CI.
+        run: make asan SANITIZER_RUST_TARGET=x86_64-unknown-linux-gnu
 
   # ─────────────────────────────────────────────────────────────────────────
   # Compiled .hew fixture ASan — leak detection for generated code

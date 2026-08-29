@@ -1172,13 +1172,14 @@ impl Checker {
     }
 
     pub(super) fn report_invalid_actor_send(&mut self, ty: &Ty, span: &Span) {
-        self.report_error(
+        self.report_error_with_suggestions(
             TypeErrorKind::InvalidSend,
             span,
             format!(
                 "cannot send `{}` to actor: type is not Send",
                 ty.user_facing()
             ),
+            vec!["keep the resource inside one owning actor and send that actor a message instead — see the language guide, 'Own a resource with an actor'".to_string()],
         );
     }
 

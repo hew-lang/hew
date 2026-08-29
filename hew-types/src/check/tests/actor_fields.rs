@@ -4,6 +4,53 @@
 )]
 pub(super) use super::*;
 
+const OWNING_ACTOR_HELP: &str = "keep the resource inside one owning actor and send that actor a message instead — see the language guide, 'Own a resource with an actor'";
+
+#[test]
+fn non_send_actor_state_points_to_the_owning_actor_pattern() {
+    let output = check_source(
+        r"
+actor Holder {
+    let value: Rc<i64>;
+    receive fn count() -> i64 { value.strong_count() }
+}
+
+fn main() {
+    let holder = spawn Holder(value: Rc.new(1));
+    let _ = await holder.count();
+}
+",
+    );
+    let invalid_send = output
+        .errors
+        .iter()
+        .find(|error| matches!(error.kind, TypeErrorKind::InvalidSend))
+        .expect("a non-Send actor-state value must be rejected");
+    assert_eq!(invalid_send.suggestions, [OWNING_ACTOR_HELP]);
+}
+
+#[test]
+fn sendable_actor_state_has_no_owning_actor_help() {
+    let output = check_source(
+        r"
+actor Holder {
+    let value: i64;
+    receive fn get() -> i64 { value }
+}
+
+fn main() {
+    let holder = spawn Holder(value: 1);
+    let _ = await holder.get();
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "ordinary sendable actor state must cross the boundary without resource guidance: {:#?}",
+        output.errors
+    );
+}
+
 // ── Actor field mutability enforcement ──────────────────────────────────
 //
 // `var` fields are writable everywhere; `let` and bare fields may only be

@@ -13,6 +13,7 @@
 // Harness verb: hew compile
 // Expected diagnostic:
 //   - "cannot send `VecIter<i64>` to actor: type is not Send"
+//   - "keep the resource inside one owning actor and send that actor a message instead"
 
 actor Holder {
     var cur: VecIter<i64>;

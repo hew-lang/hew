@@ -68,6 +68,7 @@ fn invalid_name(path: &str) -> io::Error {
     )
 }
 
+#[cfg(any(unix, test))]
 fn utf8_package_name<'a>(name: &'a [u8], path: &str) -> Result<&'a str, io::Error> {
     std::str::from_utf8(name).map_err(|_| invalid_name(path))
 }

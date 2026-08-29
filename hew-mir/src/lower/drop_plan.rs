@@ -92,6 +92,7 @@ use vec_iter_yield_abandonment::vec_iter_yield_body_region;
 )]
 pub(super) fn derive_elaboration(
     name: &str,
+    key: &crate::model::MirCallableKey,
     return_ty: &ResolvedTy,
     blocks: &[BasicBlock],
     cooperate_sites: &[CooperateSite],
@@ -2413,6 +2414,7 @@ pub(super) fn derive_elaboration(
     (
         ElaboratedMirFunction {
             name: name.to_owned(),
+            key: key.clone(),
             return_ty: return_ty.clone(),
             statements: elaborated_statements,
             decisions: builder.decisions.clone(),
@@ -3402,6 +3404,7 @@ pub(super) fn materialize_exact_overwrite_releases(blocks: &mut [BasicBlock]) {
 )]
 pub(super) fn seal_checked(
     name: String,
+    key: crate::model::MirCallableKey,
     return_ty: ResolvedTy,
     blocks: Vec<BasicBlock>,
     _raw: &RawMirFunction,
@@ -3416,6 +3419,7 @@ pub(super) fn seal_checked(
 ) -> (CheckedMirFunction, Vec<MirDiagnostic>) {
     let (mut ownership_elaboration, mut diagnostics) = derive_elaboration(
         &name,
+        &key,
         &return_ty,
         &blocks,
         &cooperate_sites,
@@ -3441,6 +3445,7 @@ pub(super) fn seal_checked(
     }
     let checked = CheckedMirFunction {
         name,
+        key,
         return_ty,
         blocks,
         decisions,
@@ -4338,6 +4343,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
 #[cfg(test)]
 fn checked_with_ownership_events(events: Vec<Instr>) -> CheckedMirFunction {
     CheckedMirFunction {
+        key: crate::model::MirCallableKey::for_test("ownership_event_falsifier"),
         name: "ownership_event_falsifier".to_owned(),
         return_ty: ResolvedTy::Unit,
         blocks: vec![BasicBlock {
@@ -4384,6 +4390,7 @@ fn checked_recipe_fixture(
         Instr::OwnershipEvent(crate::model::OwnershipEvent::DropRecipe { owner, recipe })
     }));
     CheckedMirFunction {
+        key: crate::model::MirCallableKey::for_test("recipe_invariant"),
         name: "recipe_invariant".to_owned(),
         return_ty: ResolvedTy::Unit,
         blocks: vec![BasicBlock {
@@ -4396,6 +4403,7 @@ fn checked_recipe_fixture(
         checks: vec![],
         cooperate_sites: vec![],
         ownership_elaboration: Some(Box::new(ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("recipe_invariant"),
             name: "recipe_invariant".to_owned(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -5273,6 +5281,7 @@ fn cleanup_block_projection_is_rebuilt_from_exact_panic_plan() {
         guard: None,
     };
     let mut elaboration = ElaboratedMirFunction {
+        key: crate::model::MirCallableKey::for_test("cleanup_projection"),
         name: "cleanup_projection".to_owned(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -5315,6 +5324,7 @@ fn checked_ownership_plan_replays_without_builder_state() {
         }),
     ]);
     checked.ownership_elaboration = Some(Box::new(ElaboratedMirFunction {
+        key: crate::model::MirCallableKey::for_test(&checked.name),
         name: checked.name.clone(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -5375,6 +5385,7 @@ fn checked_ownership_plan_requires_explicit_guard_event() {
         }
         let mut checked = checked_with_ownership_events(events);
         checked.ownership_elaboration = Some(Box::new(ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test(&checked.name),
             name: checked.name.clone(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -5485,6 +5496,7 @@ fn checked_ownership_plan_rejects_stale_generation_guard() {
         }),
     ]);
     checked.ownership_elaboration = Some(Box::new(ElaboratedMirFunction {
+        key: crate::model::MirCallableKey::for_test(&checked.name),
         name: checked.name.clone(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -6085,6 +6097,7 @@ fn guarded_terminal_join_admits_one_unique_conditional_generation() {
         },
     ];
     let mut elaboration = ElaboratedMirFunction {
+        key: crate::model::MirCallableKey::for_test("guarded_one_generation"),
         name: "guarded_one_generation".to_owned(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -6107,6 +6120,7 @@ fn guarded_terminal_join_admits_one_unique_conditional_generation() {
         }]
     );
     let checked = CheckedMirFunction {
+        key: crate::model::MirCallableKey::for_test(&elaboration.name),
         name: elaboration.name.clone(),
         return_ty: ResolvedTy::Unit,
         blocks,
@@ -6223,6 +6237,7 @@ fn guarded_terminal_join_rejects_ambiguous_conditional_reset_generation() {
         },
     ];
     let mut elaboration = ElaboratedMirFunction {
+        key: crate::model::MirCallableKey::for_test("guarded_ambiguous_generation"),
         name: "guarded_ambiguous_generation".to_owned(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -6239,6 +6254,7 @@ fn guarded_terminal_join_rejects_ambiguous_conditional_reset_generation() {
         "two generations for one binding/place must not acquire cleanup authority"
     );
     let checked = CheckedMirFunction {
+        key: crate::model::MirCallableKey::for_test(&elaboration.name),
         name: elaboration.name.clone(),
         return_ty: ResolvedTy::Unit,
         blocks,
@@ -7481,6 +7497,7 @@ fn checked_owner_recipe_rebuilds_the_exact_exit_without_builder_state() {
         terminator: Terminator::Return,
     }];
     let mut elaboration = ElaboratedMirFunction {
+        key: crate::model::MirCallableKey::for_test("recipe_replay"),
         name: "recipe_replay".to_owned(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -7513,6 +7530,7 @@ fn checked_owner_recipe_rebuilds_the_exact_exit_without_builder_state() {
     assert_eq!(elaboration.drop_plans[0].1.drops.len(), 1);
     assert_eq!(elaboration.drop_plans[0].1.drops[0].place, place);
     let checked = CheckedMirFunction {
+        key: crate::model::MirCallableKey::for_test("recipe_replay"),
         name: "recipe_replay".to_owned(),
         return_ty: ResolvedTy::Unit,
         blocks,
@@ -7543,6 +7561,7 @@ fn missing_checked_owner_recipe_cannot_materialize_a_destructor() {
         terminator: Terminator::Return,
     }];
     let mut elaboration = ElaboratedMirFunction {
+        key: crate::model::MirCallableKey::for_test("missing_recipe"),
         name: "missing_recipe".to_owned(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -7561,6 +7580,7 @@ fn missing_checked_owner_recipe_cannot_materialize_a_destructor() {
     rebuild_drop_plans_from_owner_recipes(&blocks, &[], &Builder::default(), &mut elaboration);
     assert!(elaboration.drop_plans[0].1.drops.is_empty());
     let checked = CheckedMirFunction {
+        key: crate::model::MirCallableKey::for_test("missing_recipe"),
         name: "missing_recipe".to_owned(),
         return_ty: ResolvedTy::Unit,
         blocks,
@@ -7618,6 +7638,7 @@ fn missing_owner_diagnostics_follow_source_binding_order() {
         terminator: Terminator::Return,
     }];
     let checked = CheckedMirFunction {
+        key: crate::model::MirCallableKey::for_test("source_order"),
         name: "source_order".to_owned(),
         return_ty: ResolvedTy::Unit,
         blocks,
@@ -7625,6 +7646,7 @@ fn missing_owner_diagnostics_follow_source_binding_order() {
         checks: vec![],
         cooperate_sites: vec![],
         ownership_elaboration: Some(Box::new(ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("source_order"),
             name: "source_order".to_owned(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -15071,6 +15093,7 @@ mod field_drop_in_place_verifier {
 
     fn elab_with_drops(drops: Vec<ElabDrop>) -> ElaboratedMirFunction {
         ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("synthetic"),
             name: "synthetic".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],

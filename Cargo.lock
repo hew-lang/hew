@@ -1878,6 +1878,7 @@ name = "hew-mir"
 version = "0.6.0-rc2"
 dependencies = [
  "hew-hir",
+ "hew-mir",
  "hew-parser",
  "hew-runtime",
  "hew-sir",

@@ -2931,6 +2931,15 @@ impl SourceOrigin {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawMirFunction {
     pub name: String,
+    /// Resolver-anchored identity of the callable this function realizes.
+    ///
+    /// The single authority every cross-stage join is being moved onto:
+    /// `name` beside it is the presentation/linkage alias and may repeat
+    /// across distinct callables (an imported module's function beside a
+    /// local one, a synthesized child of a same-named parent). Minted by the
+    /// producer from `HirFn::declaration` / `SemCallable::declaration` plus
+    /// the instance discriminator — never reconstructed from a symbol.
+    pub key: MirCallableKey,
     pub return_ty: ResolvedTy,
     pub call_conv: FunctionCallConv,
     /// Declared parameter types in declaration order. `params[i]` is the
@@ -6631,6 +6640,15 @@ pub struct CooperateSite {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedMirFunction {
     pub name: String,
+    /// Resolver-anchored identity of the callable this function realizes.
+    ///
+    /// The single authority every cross-stage join is being moved onto:
+    /// `name` beside it is the presentation/linkage alias and may repeat
+    /// across distinct callables (an imported module's function beside a
+    /// local one, a synthesized child of a same-named parent). Minted by the
+    /// producer from `HirFn::declaration` / `SemCallable::declaration` plus
+    /// the instance discriminator — never reconstructed from a symbol.
+    pub key: MirCallableKey,
     pub return_ty: ResolvedTy,
     /// CFG basic blocks, mirroring `RawMirFunction.blocks`. Slice 1 of
     /// the CFG-construction lane carries a single entry block (id 0)
@@ -6941,6 +6959,15 @@ impl ObligationMintProvenance {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElaboratedMirFunction {
     pub name: String,
+    /// Resolver-anchored identity of the callable this function realizes.
+    ///
+    /// The single authority every cross-stage join is being moved onto:
+    /// `name` beside it is the presentation/linkage alias and may repeat
+    /// across distinct callables (an imported module's function beside a
+    /// local one, a synthesized child of a same-named parent). Minted by the
+    /// producer from `HirFn::declaration` / `SemCallable::declaration` plus
+    /// the instance discriminator — never reconstructed from a symbol.
+    pub key: MirCallableKey,
     pub return_ty: ResolvedTy,
     /// Checker-authority statement stream, retained for compatibility with the
     /// existing `--dump-mir elab` consumers and for snapshot continuity.
@@ -7988,6 +8015,17 @@ pub enum MirDiagnosticKind {
         actor: String,
         field: String,
         site: SiteId,
+    },
+    /// Two lowered bodies in one module carry the same [`MirCallableKey`].
+    ///
+    /// Callable identity is the key every cross-stage join is being moved
+    /// onto, so a duplicate makes that join ambiguous. Reported with both
+    /// emitted symbols so the author can see which two bodies collided; the
+    /// symbols are presentation only — the collision is decided on the key.
+    CallableKeyCollision {
+        declaration: String,
+        first_symbol: String,
+        second_symbol: String,
     },
     /// Two actor receive handlers, or a handler and an existing function symbol,
     /// resolved to the same emitted MIR symbol.

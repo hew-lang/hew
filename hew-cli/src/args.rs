@@ -149,8 +149,12 @@ pub struct CompileArgs {
     pub dump_mir: Option<String>,
     #[command(flatten)]
     pub sir: SirModeArgs,
-    /// Emit the verified Semantic IR subset and exit. Unsupported functions are
-    /// reported explicitly; no MIR or LLVM artifacts are emitted.
+    /// Emit the verified Semantic IR subset and exit. The subset is what the
+    /// entry reaches: lowering is demand-driven, so a compilation unit with no
+    /// entry emits no bodies at all, and a declaration the entry never calls is
+    /// reported as unreached rather than lowered. Every body the entry demands
+    /// but SIR cannot lower is reported explicitly with its reason. No MIR or
+    /// LLVM artifacts are emitted.
     #[arg(long = "dump-sir", conflicts_with_all = ["dump_mir", "sir_lower"])]
     pub dump_sir: bool,
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.

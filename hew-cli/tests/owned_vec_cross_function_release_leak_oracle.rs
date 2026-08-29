@@ -26,7 +26,7 @@ use support::{describe_output, require_codegen};
 
 fn generator_yield_source(frames: usize) -> String {
     format!(
-        "record HeapRow {{\n\
+        "type HeapRow {{\n\
          \x20   payload: [i64],\n\
          \x20   value: i64,\n\
          }}\n\
@@ -54,7 +54,7 @@ fn generator_yield_source(frames: usize) -> String {
 
 fn field_reassignment_source(frames: usize) -> String {
     format!(
-        "record HeapRow {{\n\
+        "type HeapRow {{\n\
          \x20   payload: [i64],\n\
          \x20   value: i64,\n\
          }}\n\

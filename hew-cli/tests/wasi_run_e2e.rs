@@ -414,7 +414,7 @@ fn main() {
 //
 // The same program is run natively below; the two stdouts must match
 // byte-for-byte (native↔wasm parity).
-const HASHMAP_HASHSET_LAYOUT_SOURCE: &str = r#"record Point {
+const HASHMAP_HASHSET_LAYOUT_SOURCE: &str = r#"type Point {
     x: i64,
     y: i64
 }

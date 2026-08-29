@@ -870,7 +870,7 @@ fn a_hew_wrapper_around_an_opaque_extern_sees_no_caller_release() {
 /// This is the non-string heap class (a record element) observed through the
 /// one field the runtime representation lets us count exactly. Measured against
 /// the pre-fix compiler it reports `releases=8` over eight frames.
-const VEC_INGRESS_RECORD_WRAPPER: &str = r#"record Holder { label: string }
+const VEC_INGRESS_RECORD_WRAPPER: &str = r#"type Holder { label: string }
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1054,7 +1054,7 @@ fn a_vec_push_of_a_wrapped_extern_record_sees_no_caller_release() {
 /// in the program could account for the decrement.
 ///
 /// Measured against the pre-fix compiler this reports `releases=8`.
-const BORROWING_CALLEE_RECORD_WRAPPER: &str = r#"record Holder { label: string }
+const BORROWING_CALLEE_RECORD_WRAPPER: &str = r#"type Holder { label: string }
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1144,7 +1144,7 @@ fn a_wrapped_extern_record_in_a_borrowing_argument_sees_no_caller_release() {
 /// through its taint row. Measured against the pre-fix compiler this fixture
 /// reports `releases=8` over eight frames AND STILL EXITS 0 — the exact count
 /// is what catches it.
-const MATCH_WRAPPED_EXTERN_ENUM: &str = r#"record Holder { label: string }
+const MATCH_WRAPPED_EXTERN_ENUM: &str = r#"type Holder { label: string }
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1309,7 +1309,7 @@ fn a_match_over_a_domestic_enum_keeps_working() {
 /// `Holder` the host had just returned.
 ///
 /// Measured against the pre-fix compiler this fixture reports `releases=8`.
-const RECORD_LITERAL_EMBEDDING_A_DIRECT_EXTERN: &str = r#"record Holder { label: string }
+const RECORD_LITERAL_EMBEDDING_A_DIRECT_EXTERN: &str = r#"type Holder { label: string }
 type Outer { inner: Holder, tag: i64 }
 
 extern "C" {
@@ -1506,7 +1506,7 @@ fn build_expecting_failure(dir: &Path, name: &str, source: &str, lib: Option<&Pa
 /// needs a copy-in hashmap ingress (a `hew_hashmap_insert_owned` that clones
 /// the value the way `hew_vec_push_owned` does), at which point this seam
 /// becomes a route choice like the Vec one rather than a refusal.
-const HASHMAP_INSERT_OF_A_WRAPPED_EXTERN_RECORD: &str = r#"record Holder { label: string }
+const HASHMAP_INSERT_OF_A_WRAPPED_EXTERN_RECORD: &str = r#"type Holder { label: string }
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1544,7 +1544,7 @@ fn a_hashmap_insert_of_a_wrapped_extern_record_is_refused() {
 /// COUNTERFACTUAL for F3: the identical program over a DOMESTIC producer must
 /// still compile, still move in, and still run clean. Reverting the reject makes
 /// the case above compile; widening it into a blanket stop makes this one fail.
-const HASHMAP_INSERT_OF_A_DOMESTIC_RECORD: &str = r#"record Holder { label: string }
+const HASHMAP_INSERT_OF_A_DOMESTIC_RECORD: &str = r#"type Holder { label: string }
 
 fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
 
@@ -1589,7 +1589,7 @@ fn a_hashmap_insert_of_a_domestic_record_still_compiles_and_runs() {
 /// gives a binder over an opaque foreign producer a scope-exit release the
 /// program never earned — the same defect as F1/F2, reached through the
 /// simplest construct in the language.
-const LET_BOUND_DIRECT_EXTERN_RECORD: &str = r#"record Holder { label: string }
+const LET_BOUND_DIRECT_EXTERN_RECORD: &str = r#"type Holder { label: string }
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1661,7 +1661,7 @@ fn a_let_bound_extern_record_sees_no_caller_release() {
 /// The same binder, but the foreign value is first placed in a fresh container
 /// — the fact has to travel WITH the binder, not just be read off the
 /// initializer at the moment of binding.
-const LET_BOUND_EXTERN_RECORD_INSIDE_A_CONTAINER: &str = r#"record Holder { label: string }
+const LET_BOUND_EXTERN_RECORD_INSIDE_A_CONTAINER: &str = r#"type Holder { label: string }
 type Outer { inner: Holder, tag: i64 }
 
 extern "C" {

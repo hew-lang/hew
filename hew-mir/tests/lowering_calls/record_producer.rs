@@ -79,7 +79,7 @@ fn all_instrs(pl: &IrPipeline, fn_name: &str) -> Vec<Instr> {
 #[test]
 fn struct_init_emits_record_init_with_two_fields() {
     let pl = pipeline_no_tc(
-        "record Point { x: i64, y: i64 }
+        "type Point { x: i64, y: i64 }
          fn make() -> i64 {
              let p = Point { x: 1, y: 2 };
              0
@@ -131,7 +131,7 @@ fn struct_init_emits_record_init_with_two_fields() {
 #[test]
 fn field_access_emits_record_field_load_at_correct_offset() {
     let pl = pipeline_with_tc(
-        "record Point { x: i64, y: i64 }
+        "type Point { x: i64, y: i64 }
          fn get_x() -> i64 {
              let p = Point { x: 1, y: 2 };
              p.x
@@ -177,7 +177,7 @@ fn field_access_emits_record_field_load_at_correct_offset() {
 #[test]
 fn struct_init_functional_update_loads_base_fields_and_emits_record_init() {
     let pl = pipeline_no_tc(
-        "record Point { x: i64, y: i64 }
+        "type Point { x: i64, y: i64 }
          fn update_x() -> i64 {
              let base = Point { x: 3, y: 4 };
              let p = Point { x: 5, ..base };

@@ -641,7 +641,7 @@ fn a_reassigned_binding_captured_through_an_enclosing_env_takes_no_owner() {
 #[test]
 fn an_escaping_capture_that_can_be_neither_owned_nor_shared_is_refused() {
     let p = pipeline_with_tc(
-        r"record Blob { payload: bytes }
+        r"type Blob { payload: bytes }
 
 fn mk() -> Blob {
     let b: bytes = bytes.new();

@@ -124,7 +124,7 @@ fn collection_overwrite_source(frames: usize) -> String {
 /// static literal would make the alias guard vacuous.
 fn record_functional_update_source(frames: usize) -> String {
     format!(
-        "record Inner {{\n\
+        "type Inner {{\n\
          \x20   note: string,\n\
          }}\n\
          \n\
@@ -180,7 +180,7 @@ fn record_functional_update_source(frames: usize) -> String {
 /// double-frees the heap-built string.
 fn nested_record_alias_source(frames: usize) -> String {
     format!(
-        "record Leaf {{\n\
+        "type Leaf {{\n\
          \x20   text: string,\n\
          }}\n\
          \n\
@@ -225,7 +225,7 @@ fn nested_record_alias_source(frames: usize) -> String {
 /// shape, but through `emit_overwrite_neutralize_enum`.
 fn enum_payload_alias_source(frames: usize) -> String {
     format!(
-        "record Leaf {{\n\
+        "type Leaf {{\n\
          \x20   text: string,\n\
          }}\n\
          \n\

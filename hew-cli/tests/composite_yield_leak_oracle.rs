@@ -60,7 +60,7 @@ use support::{describe_output, require_codegen};
 fn record_yield_loop_source(frames: usize) -> String {
     let expected_total = frames * (frames.saturating_sub(1)) / 2;
     format!(
-        "record Item {{\n\
+        "type Item {{\n\
          \x20   name: string,\n\
          \x20   value: i64,\n\
          }}\n\
@@ -91,7 +91,7 @@ fn record_yield_loop_source(frames: usize) -> String {
 fn record_yield_field_read_loop_source(frames: usize) -> String {
     let expected_total = frames * (frames.saturating_sub(1)) / 2;
     format!(
-        "record Item {{\n\
+        "type Item {{\n\
          \x20   name: string,\n\
          \x20   value: i64,\n\
          }}\n\
@@ -186,7 +186,7 @@ fn record_yield_break_loop_source(frames: usize) -> String {
     // Sum of 0..=frames-1 plus the breaking iteration's value (== frames).
     let expected_total = frames * (frames.saturating_sub(1)) / 2 + frames;
     format!(
-        "record Item {{\n\
+        "type Item {{\n\
          \x20   name: string,\n\
          \x20   value: i64,\n\
          }}\n\

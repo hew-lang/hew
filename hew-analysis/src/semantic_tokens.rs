@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn record_declaration_name_is_type_and_declaration() {
-        let source = "record Point { x: i32, y: i32 }";
+        let source = "type Point { x: i32, y: i32 }";
         let point = build_semantic_tokens(source)
             .into_iter()
             .find(|t| &source[t.start..t.start + t.length] == "Point")

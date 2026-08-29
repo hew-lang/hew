@@ -119,7 +119,7 @@ fn try_emit_ll(source: &str, module_name: &str) -> Result<String, String> {
 #[test]
 fn record_layout_registers_named_struct_in_field_order() {
     let ll = emit_ll_with_checker(
-        "record Point { x: i64, y: i64 }
+        "type Point { x: i64, y: i64 }
          fn main() -> i64 {
              let p = Point { x: 1, y: 2 };
              0
@@ -142,7 +142,7 @@ fn record_layout_registers_named_struct_in_field_order() {
 #[test]
 fn record_init_emits_alloca_and_per_field_gep_store() {
     let ll = emit_ll_with_checker(
-        "record Point { x: i64, y: i64 }
+        "type Point { x: i64, y: i64 }
          fn main() -> i64 {
              let p = Point { x: 1, y: 2 };
              0
@@ -181,7 +181,7 @@ fn record_init_emits_alloca_and_per_field_gep_store() {
 #[test]
 fn record_field_load_emits_gep_and_load() {
     let ll = emit_ll_with_checker(
-        "record Point { x: i64, y: i64 }
+        "type Point { x: i64, y: i64 }
          fn get_x() -> i64 {
              let p = Point { x: 1, y: 2 };
              p.x
@@ -213,7 +213,7 @@ fn record_field_load_emits_gep_and_load() {
 #[test]
 fn record_functional_update_loads_base_field_and_stores_new() {
     let ll = emit_ll_with_checker(
-        "record Point { x: i64, y: i64 }
+        "type Point { x: i64, y: i64 }
          fn update_x() -> i64 {
              let base = Point { x: 3, y: 4 };
              let p = Point { x: 5, ..base };
@@ -249,7 +249,7 @@ fn record_pipeline_module_verifies() {
     // Reaching this assertion at all means `emit_module` returned Ok,
     // which means `Module::verify()` was clean.
     let ll = emit_ll_with_checker(
-        "record Point { x: i64, y: i64 }
+        "type Point { x: i64, y: i64 }
          fn main() -> i64 {
              let p = Point { x: 7, y: 11 };
              p.y

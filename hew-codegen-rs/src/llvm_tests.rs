@@ -13165,7 +13165,7 @@ fn suspending_closure_with_typed_owners_is_rejected_before_codegen() {
         (
             "record",
             pipeline_from_typed_owner_suspending_closure_source(
-                "record Packet { text: string, data: bytes }",
+                "type Packet { text: string, data: bytes }",
                 r#"let owner = Packet {
                     text: "record-owner".to_upper(),
                     data: "record-bytes".to_bytes(),

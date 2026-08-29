@@ -115,7 +115,7 @@ fn string_field_source(frames: usize) -> String {
 /// Post-fix: the old `buf` is released via `hew_bytes_drop`.
 fn bytes_field_source(frames: usize) -> String {
     format!(
-        "record ByteHolder {{\n\
+        "type ByteHolder {{\n\
          \x20   buf: bytes,\n\
          \x20   count: i64,\n\
          }}\n\
@@ -228,7 +228,7 @@ fn callee_scope_resource_string_sibling_source(frames: usize) -> String {
 
 fn direct_bytes_field_store_source(frames: usize) -> String {
     format!(
-        "record Holder {{ payload: bytes }}\n\
+        "type Holder {{ payload: bytes }}\n\
          fn main() -> i64 {{\n\
          \x20   var h = Holder {{ payload: \"initial\".to_bytes() }};\n\
          \x20   var i: i64 = 0;\n\
@@ -248,7 +248,7 @@ fn direct_bytes_field_store_source(frames: usize) -> String {
 /// Post-fix: the old `items` is released via `hew_vec_free`.
 fn vec_field_source(frames: usize) -> String {
     format!(
-        "record VecHolder {{\n\
+        "type VecHolder {{\n\
          \x20   items: Vec<i64>,\n\
          \x20   tag: i64,\n\
          }}\n\
@@ -276,7 +276,7 @@ fn vec_field_source(frames: usize) -> String {
 /// Post-fix: the old `m` is released via `hew_hashmap_free_layout`.
 fn hashmap_field_source(frames: usize) -> String {
     format!(
-        "record MapHolder {{\n\
+        "type MapHolder {{\n\
          \x20   m: HashMap<string, i64>,\n\
          \x20   tag: i64,\n\
          }}\n\
@@ -304,7 +304,7 @@ fn hashmap_field_source(frames: usize) -> String {
 /// Post-fix: the old `s` is released via `hew_hashset_free_layout`.
 fn hashset_field_source(frames: usize) -> String {
     format!(
-        "record SetHolder {{\n\
+        "type SetHolder {{\n\
          \x20   s: HashSet<i64>,\n\
          \x20   tag: i64,\n\
          }}\n\

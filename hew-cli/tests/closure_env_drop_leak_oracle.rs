@@ -213,7 +213,7 @@ const SCOPE_MOVE_CLOSURE_OWNED_CAPTURE: &str =
 /// Taking an independent SHARE does survive it: the generator env releases its
 /// owner at destruction, the closure env holds its own retained share, and
 /// `after=11` prints from live memory.
-const GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR: &str = r#"record Holder { label: string }
+const GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR: &str = r#"type Holder { label: string }
 
 fn make() -> Generator<fn() -> i64, ()> {
     let h = Holder { label: "first" + " value" };
@@ -238,7 +238,7 @@ fn main() -> i64 {
 /// generator env's owner — releases the wrong allocation or releases one
 /// allocation twice; the poisoned allocator turns either into an abort before
 /// the checksum prints.
-const GEN_TRANSITIVE_CAPTURE_AFTER_REASSIGN: &str = r#"record Holder { label: string }
+const GEN_TRANSITIVE_CAPTURE_AFTER_REASSIGN: &str = r#"type Holder { label: string }
 
 fn run(f: fn() -> i64) -> i64 { f() }
 

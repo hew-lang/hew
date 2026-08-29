@@ -3,7 +3,7 @@
 ## What is happening
 
 Hew is entering the v0.5 compiler-foundation cutover. The goal is a clean,
-typed intermediate-representation stack — Resolved HIR → THIR → Raw MIR —
+typed intermediate-representation stack — Resolved HIR → SIR → Raw MIR —
 that replaces the legacy codegen walker and the wrapper-shape registry that
 grew up around it.
 

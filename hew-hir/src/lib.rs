@@ -1,5 +1,5 @@
 //! HIR is the first IR layer after parsing. It gives every binding and
-//! value-bearing expression a stable identity before later THIR/MIR ownership
+//! value-bearing expression a stable identity before later MIR ownership
 //! analysis attaches value-model decisions.
 
 pub mod builtin_type_classes;

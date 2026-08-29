@@ -138,16 +138,23 @@ ABI/calling-convention choices from the semantic callable table and target
 layout. LLVM lowering consumes that header; SIR retains only the semantic
 callable relation.
 
-The temporary shadow adapter remains a scalar CFG differential probe and does
-not realize direct SIR calls through its legacy Raw-MIR template. Shadow
-success is therefore not evidence for direct-call correctness. Until the old
-body-lowering branch is deleted, each strict domain must instead carry an
-execution-parity test against the established lane.
+The shadow adapter is gone. It was a candidate-buildability probe: it built a
+SIR candidate through a legacy Raw-MIR template, discarded it, and shipped the
+legacy pipeline anyway, so its success was never evidence for direct-call
+correctness. Its flag, its per-function legacy fallback, and its corpus harness
+are deleted rather than kept as a second lane. `--sir-lower` is now the only
+SIR selector and it fails closed: a body outside the strict domain is a typed
+error, never a silent legacy body. Until the old body-lowering branch is
+deleted, each strict domain must carry an execution-parity test against the
+established lane — a strict compile that merely succeeds proves nothing about
+the surface it does not own.
 
-The following scaffolding is a deletion target: raw-function name matching,
-`lower_sir_function_with_template(..., RawMirFunction template)`, copied parameter-boundary
-and scheduler facts, per-function legacy fallback, SIR mode flags, and the
-shadow corpus harness. The normal CLI flips only after all of these gates hold:
+The following scaffolding is still a deletion target: the transitional
+symbol/default-convention carrier above (the strict raw header's name is still
+`SemCallable::symbol`, checked by `verify_strict_sir_raw_checked` in
+`hew-mir/src/sir.rs`), the `--sir-lower` selector itself, and the legacy
+HIR → Raw-MIR body-lowering branch. The normal CLI flips only after all of
+these gates hold:
 
 1. SIR owns verified callable identity, semantic signature, source provenance,
    effect summary, and semantic parameter-use facts. The transitional

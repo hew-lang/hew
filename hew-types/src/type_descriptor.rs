@@ -4,7 +4,7 @@
 //! parallel representation. This module attaches the contract surface:
 //! `canonical_string()` (the single mangling source), `is_native_wire()` (true
 //! iff the type maps to a non-`Nested` primitive wire kind), and
-//! `from_ty_strict_generic_args` (the fail-closed conversion for THIR→MIR
+//! `from_ty_strict_generic_args` (the fail-closed conversion for checker-output→MIR
 //! layer transitions that must not silently accept un-arged generic types).
 //!
 //! LESSONS upheld: `checker-output-boundary`, `checker-authority`,
@@ -185,7 +185,7 @@ impl ResolvedTy {
         )
     }
 
-    /// Fail-closed conversion for the THIR→MIR layer transition.
+    /// Fail-closed conversion for the checker-output→MIR layer transition.
     ///
     /// Like [`ResolvedTy::from_ty`] but additionally validates that a
     /// `Ty::Named` type has exactly `expected_arity` type arguments. This

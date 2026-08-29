@@ -112,16 +112,32 @@ fn pid_is_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-// WHY: no dependency-light way to query pid liveness on Windows — the
-// `sysinfo` crate pulls a full process-table scan for one boolean, which is
-// heavy for a startup sweep.
-// WHEN: revisit if Windows leak reports show STALE_AGE alone isn't bounding
-// growth tightly enough.
-// WHAT: a real check would call `OpenProcess` + `GetExitCodeProcess` (or
-// `GetProcessTimes`) via `windows-sys`, behind this same function signature.
-#[cfg(not(unix))]
-fn pid_is_alive(_pid: u32) -> bool {
-    true // unknown liveness treated as alive; STALE_AGE is the sole sweep signal
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE,
+    };
+
+    // SAFETY: `OpenProcess` is called with a plain integer pid and no
+    // pointers; the returned handle (if any) is closed below before this
+    // function returns on every path.
+    let handle: HANDLE = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        // ERROR_INVALID_PARAMETER: no process with this pid exists - dead.
+        // Anything else (e.g. access denied): the process exists but we
+        // can't query it - treat as alive, mirroring the Unix EPERM case.
+        return unsafe { GetLastError() } != ERROR_INVALID_PARAMETER;
+    }
+    let mut exit_code: u32 = 0;
+    // SAFETY: `handle` was just returned non-null by `OpenProcess` above and
+    // is closed unconditionally after this call.
+    let got_exit_code = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+    unsafe { CloseHandle(handle) };
+    // If we couldn't read the exit code, don't guess dead - treat as alive.
+    got_exit_code == 0 || exit_code == STILL_ACTIVE as u32
 }
 
 #[cfg(test)]
@@ -161,9 +177,15 @@ mod tests {
         let root = tempfile::tempdir().expect("create sweep-test root");
         let old_dir = root.path().join(format!("{}-old", std::process::id()));
         std::fs::create_dir(&old_dir).expect("create aged entry");
+        // `std::fs::File::open` + `set_modified` fails on Windows for a
+        // directory target (`PermissionDenied`, os error 5): opening a
+        // directory as a plain file handle doesn't grant the attribute-write
+        // access needed to change its mtime there. `filetime::set_file_mtime`
+        // uses the platform-correct call for a directory (on Windows, an
+        // explicit `FILE_FLAG_BACKUP_SEMANTICS` open), so it works on every
+        // supported OS.
         let old_mtime = SystemTime::now() - (STALE_AGE + Duration::from_mins(1));
-        std::fs::File::open(&old_dir)
-            .and_then(|f| f.set_modified(old_mtime))
+        filetime::set_file_mtime(&old_dir, filetime::FileTime::from_system_time(old_mtime))
             .expect("backdate aged entry's mtime");
 
         sweep_stale_run_dirs(root.path());

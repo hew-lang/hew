@@ -46,8 +46,15 @@ wasmparser = "0.252.0"
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 fd-lock.workspace = true
+filetime = "0.2"
 hew-testutil = { path = "../hew-testutil" }
 object = "0.39"
 finl_unicode = { version = "=1.4.0", default-features = false, features = [

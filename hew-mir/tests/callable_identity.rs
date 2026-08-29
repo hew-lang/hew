@@ -592,7 +592,7 @@ fn a_machine_step_is_keyed_by_the_machine_declaration_and_its_type_arguments() {
             events { ev; }
             state Start;
             state Mid;
-            on ev: Start => Mid { Mid }
+            on ev: Start => Mid { .Mid }
             on ev: _ => _ { state }
         }
 

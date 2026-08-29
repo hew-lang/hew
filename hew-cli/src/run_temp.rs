@@ -115,10 +115,10 @@ fn pid_is_alive(pid: u32) -> bool {
 #[cfg(windows)]
 fn pid_is_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE,
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, STILL_ACTIVE,
     };
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE,
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     // SAFETY: `OpenProcess` is called with a plain integer pid and no

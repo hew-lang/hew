@@ -2324,7 +2324,10 @@ impl Builder {
             });
             return;
         }
-        let call_predecessor = self.pending_blocks.iter().any(|block| {
+        // The owners the call block already ended with a terminal Transfer:
+        // a `consuming self` receiver hands its generation to the callee at
+        // the argument (the callee owns it, on unwind too).
+        let call_predecessor = self.pending_blocks.iter().find(|block| {
             matches!(
                 &block.terminator,
                 Terminator::Call {
@@ -2337,17 +2340,36 @@ impl Builder {
                     && args.contains(&receiver_place)
             )
         });
+        let ended_at_call: Option<HashSet<crate::model::OwnerId>> = call_predecessor.map(|block| {
+            block
+                .instructions
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        to: None,
+                        ..
+                    }) => Some(*owner),
+                    _ => None,
+                })
+                .collect()
+        });
         for (binding, owner_ty) in owners {
             let generation = self.owner_generations.get(&binding).copied().unwrap_or(0);
             let owner = crate::model::OwnerId {
                 binding,
                 generation,
             };
-            if call_predecessor {
+            if let Some(ended_at_call) = &ended_at_call {
                 let replacement = crate::model::OwnerId {
                     binding,
                     generation: generation.saturating_add(1),
                 };
+                // The returned identity of an already-ended receiver is a
+                // fresh owner from the caller's side: publish it as the
+                // binding's next generation minted at the result slot, never
+                // as a transfer out of the generation the call block ended.
+                let receiver_ended_at_call = ended_at_call.contains(&owner);
                 self.owner_generations
                     .insert(binding, replacement.generation);
                 self.push_bind_statement(
@@ -2363,18 +2385,26 @@ impl Builder {
                 {
                     entry.disposition = Disposition::ScopeExit;
                 }
-                // The caller retains cleanup authority if the call unwinds.
-                // Only the normal successor commits receiver consumption and
-                // publishes the returned identity as the next generation.
-                self.push_instr(Instr::OwnershipEvent(
+                let event = if receiver_ended_at_call {
+                    crate::model::OwnershipEvent::Mint {
+                        owner: replacement,
+                        place: result_place,
+                        ty: owner_ty,
+                    }
+                } else {
+                    // A borrowed receiver keeps caller cleanup authority
+                    // through the call (and its unwind). Only the normal
+                    // successor commits the receiver and publishes the
+                    // returned identity as the next generation.
                     crate::model::OwnershipEvent::Transfer {
                         owner,
                         from: receiver_place,
                         to: Some(result_place),
                         to_owner: Some(replacement),
                         to_ty: Some(owner_ty),
-                    },
-                ));
+                    }
+                };
+                self.push_instr(Instr::OwnershipEvent(event));
             } else if receiver_place != result_place {
                 // `lower_value_for_move` conservatively records a consuming
                 // binding reference before the typed produced-value fact is

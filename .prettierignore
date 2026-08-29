@@ -35,3 +35,6 @@ docs/specs/HEW-SPEC-2026.md
 docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md
 docs/specs/MACHINE-SPEC.md
 docs/wasm-capability-matrix.md
+# Root-level engineering logs, hand-wrapped (same rationale as above).
+LESSONS.md
+JOURNEY.md

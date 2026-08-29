@@ -1,12 +1,8 @@
-// ll-oracle corpus fixture: thunks — closures (native + wasm32).
+// Compiler corpus fixture: thunks and closure storage.
 //
-// Exercises the thunks concern of hew-codegen-rs/src/llvm.rs:
-// closure capture, higher-order fn passing, the closure call thunk
-// emitters, and the inplace clone/drop thunk declarations
-// (get_or_declare_*_clone_inplace / *_overwrite_release). Stays within
-// the wasm32-safe surface (no lambda-actor spawn; that is native-only
-// per issue #1451). Proves the thunk-emission surface is byte-identical
-// across a pure codegen refactor.
+// Collects closure capture and higher-order function source shapes for
+// compiler checking and raw-MIR parity. Focused codegen tests own closure-call
+// and clone/drop thunk invariants.
 fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
     f(x)
 }

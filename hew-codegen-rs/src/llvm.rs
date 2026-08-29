@@ -23941,10 +23941,8 @@ fn initialize_helper_crash_cleanup_guards(
     // the parameter test below, so whether the guard starts live or consumed.
     // `helper_crash_cleanup_owners` is a `HashMap`, so iterating it directly
     // made both depend on hash order: the same compiler emitted a different
-    // instruction sequence on consecutive runs of the same input, which is a
-    // reproducibility break and left the byte-identity oracle unable to hold a
-    // golden for any fixture reaching this path. Order by the owning local so
-    // one program has one lowering.
+    // instruction sequence on consecutive runs of the same input. Order by
+    // the owning local so one program has one reproducible lowering.
     let mut owners: Vec<_> = fn_ctx.helper_crash_cleanup_owners.iter().collect();
     owners.sort_by_key(|(place, _)| match place {
         Place::Local(local) => *local,

@@ -1,4 +1,4 @@
-// ll-oracle corpus fixture: suspend-carrier source-place derivation.
+// Compiler corpus fixture: suspend-carrier source-place derivation.
 //
 // Exercises the MIR suspend-carrier derivation in hew-mir/src/lower.rs:
 // `terminator_is_suspend_carrier`, `suspend_kind_source_places`,
@@ -6,10 +6,9 @@
 // `held` is an owned heap string set BEFORE the first `yield` and read AFTER
 // the resume, so it is live across the suspend point and must be tracked as a
 // carrier place (spilled into the coroutine frame, released on the abandoned /
-// early-drop edge rather than leaked). Stays on the generator (not actor)
-// surface so it compiles for both native and wasm32. Proves the suspend
-// source-place + carrier-drop derivation stays byte-identical across the
-// lower.rs file-split.
+// early-drop edge rather than leaked). This corpus preserves the generator
+// suspend-carrier shape and raw-MIR parity; focused ownership tests own the
+// release invariant.
 fn main() -> i64 {
     let g = gen {
         let held = "carried" + " across";

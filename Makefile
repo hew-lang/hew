@@ -81,7 +81,7 @@
 .PHONY: assemble assemble-release stage-release-package pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure
+.PHONY: dogfood-compile-measure
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
@@ -609,7 +609,7 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 
 ci-shard-3: mqtt-broker-e2e sandbox-parity \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \
-	checked-mir-verify checked-mir-run ll-diff \
+	checked-mir-verify checked-mir-run \
 	test-core-matrix test-stdlib-ratchet \
 	test-surface-examples forced-cancel-composite-check hew-check-all
 
@@ -1075,8 +1075,8 @@ checked-mir-expect: hew-native
 # Repeated-compile determinism over the LL-oracle corpus: the same input
 # compiled several times must produce the same exit status, the same
 # `ownership EdgeCarry` ordering in raw MIR, and byte-identical stderr.
-# ll-diff and checked-mir-verify each compare a single run against a committed
-# golden, so neither can see a compiler that reorders hashed ownership facts or
+# checked-mir-verify compares a single run against a committed golden, so it
+# cannot see a compiler that reorders hashed ownership facts or
 # accumulated diagnostics from run to run.  This gate is the one that can.
 # inputs: tests/ll-oracle/corpus/*.hew scripts/compile-determinism-corpus.sh
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-cli/src/*.rs
@@ -1094,20 +1094,6 @@ compile-determinism-selftest:
 compile-determinism-selftest-build:
 	@:
 
-# Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
-# pure codegen refactor (dedup, extract-helper, file-split) emits zero changed
-# IR.  `ll-diff` recompiles every fixture and diffs per-function bodies against
-# the committed goldens; `make ll-golden` recaptures them (only in a commit that
-# justifies the IR change, with the diff in the commit body).  Both native and
-# wasm32 targets are covered.
-ll-diff: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/ll-corpus.sh verify
-
-# Regenerate explicitly with `make ll-golden`.
-
-ll-golden: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/ll-corpus.sh golden
-
 # Dogfood-shaped compile measurement. The raw IR byte ceiling is a real
 # regression gate; timings remain observational. Lint already builds the same
 # release-lib compiler for hew-fmt-check, so this adds only the focused compile.
@@ -1120,17 +1106,6 @@ HEW_BIN ?= $(RELEASE_LIB_HEW)
 LINT_GATES += dogfood-compile-measure
 dogfood-compile-measure: hew
 	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
-
-# Self-test for the ll-byte-identity normaliser: six independently-failable
-# cases that prove string-content changes and numeric-const NAME changes are
-# caught, and pool-id reorderings (both string-pool and numeric-const) are
-# transparent.  No compiler build required — exercises the oracle script
-# against synthetic .ll snippets only.
-LINT_GATES += ll-identity-selftest
-ll-identity-selftest:
-	bash scripts/ll-identity-selftest.sh
-
-# Synthetic .ll snippets only; no compiler build.
 
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
 # QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).

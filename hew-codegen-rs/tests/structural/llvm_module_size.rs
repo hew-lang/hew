@@ -11,8 +11,8 @@
 //!
 //! This ratchet fails closed if `llvm.rs` grows past a hard ceiling. When it
 //! trips, the fix is to carve a coherent concern cluster out into (or into a
-//! new) sibling module — NOT to raise the ceiling. The `make ll-diff`
-//! byte-identity oracle proves such a carve changes zero emitted IR.
+//! new) sibling module — NOT to raise the ceiling. Focused codegen tests and
+//! the compiled Hew suites validate the affected behaviour after a carve.
 
 use std::path::Path;
 
@@ -38,7 +38,7 @@ fn llvm_module_stays_under_line_ceiling() {
         line_count <= CEILING,
         "src/llvm.rs is {line_count} lines, over the {CEILING}-line ceiling. \
          Carve a concern module out; do not raise the ceiling without a split \
-         plan. The `make ll-diff` byte-identity oracle proves a pure-move carve \
-         emits identical IR."
+         plan. Run the focused codegen tests and compiled Hew suites after the \
+         split."
     );
 }

@@ -1,11 +1,9 @@
-// ll-oracle corpus fixture: arith — integer widths, casts, arithmetic.
+// Compiler corpus fixture: arith — integer widths, casts, arithmetic.
 //
-// Exercises the arith concern of hew-codegen-rs/src/llvm.rs:
-// integer narrowing/widening casts (as i8/u8/i16/u16/i32/i64), signed
-// and unsigned arithmetic, shift operations, bitwise ops, and the
-// division/modulo paths that emit the trap-on-zero guard. Proves the
-// arithmetic lowering surface is byte-identical across a pure codegen
-// refactor.
+// Collects integer narrowing/widening casts (as i8/u8/i16/u16/i32/i64),
+// signed and unsigned arithmetic, shift operations, bitwise operations, and
+// division/modulo source shapes for compiler checking and raw-MIR parity.
+// Focused codegen tests own emitted-operation and trap invariants.
 fn add_i32(a: i32, b: i32) -> i32 {
     a + b
 }

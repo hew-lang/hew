@@ -79,8 +79,8 @@
 #   `vec_string_projection_forward_has_one_release_per_exit` pins exactly one
 #   release per exceptional edge, one inline overwrite release, and none on the
 #   return edge.
-#   Refreshed at the rc1 identity-substrate stage E, together with the ll-oracle
-#   and checked-mir goldens (the RC branch's committed goldens had gone stale
+#   Refreshed at the rc1 identity-substrate stage E together with the
+#   checked-mir goldens (the RC branch's committed goldens had gone stale
 #   under the whole RC stack; every lane since gated capture-vs-capture, and
 #   this is the one regen window). The delta here is a single class: a
 #   producing call now publishes `bind __hew_produced_value` at the call site

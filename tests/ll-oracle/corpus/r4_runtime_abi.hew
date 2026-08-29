@@ -1,10 +1,8 @@
-// ll-oracle corpus fixture: runtime_abi — runtime-call-heavy program.
+// Compiler corpus fixture: runtime_abi — runtime-call-heavy program.
 //
-// Exercises the runtime_abi concern of hew-codegen-rs/src/llvm.rs:
-// the lower_call_runtime_abi 49-arm dispatcher. Touches the Vec, HashMap,
-// HashSet, string, and bytes runtime families — each arm is a distinct
-// intern_runtime_decl + build_call chain. Proves the runtime-abi dispatch
-// surface is byte-identical across a pure codegen refactor.
+// Collects runtime-call-heavy Vec, HashMap, HashSet, string, and bytes source
+// shapes for compiler checking and raw-MIR parity. Focused codegen and ABI
+// tests own the emitted runtime-call invariants.
 // Borrowed-parameter collection ingress: the by-value string parameter is
 // caller-borrowed, so the MOVE ingress emits `hew_string_clone` before the
 // insert. The reassigned variant crosses the generation boundary — the fresh

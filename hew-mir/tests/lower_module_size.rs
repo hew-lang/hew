@@ -5,8 +5,8 @@
 //! if any concern file grows past the hard ceiling. Three ownership-cutover
 //! modules temporarily carry exact no-growth caps above the default; new files
 //! and every other concern remain under the hard ceiling. Carve each inventoried
-//! module into coherent sibling modules and remove its exception, proving the
-//! move with the `scripts/ll-corpus.sh` byte-identity oracle.
+//! module into coherent sibling modules and remove its exception, then run the
+//! focused lowering, codegen, and compiled Hew suites.
 //!
 //! The walk is recursive: a concern carved into `src/lower/<concern>/` is a
 //! sibling module one directory deeper, not an escape hatch from the ceiling.
@@ -88,8 +88,8 @@ fn lower_modules_stay_under_line_ceiling() {
             is_within_ceiling(relative, line_count),
             "{} is {line_count} lines, over its {ceiling}-line ceiling. \
              Carve a coherent lowering concern into a sibling module; do not \
-             widen its cap. The `scripts/ll-corpus.sh` byte-identity oracle \
-             proves a pure-move carve emits identical IR.",
+             widen its cap. Run the focused lowering, codegen, and compiled \
+             Hew suites after the split.",
             path.display()
         );
     }

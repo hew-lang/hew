@@ -1,4 +1,4 @@
-// ll-oracle corpus fixture: composite owned-record drop derivation.
+// Compiler corpus fixture: composite owned-record drop derivation.
 //
 // Exercises the MIR composite drop-allowed + double-free derivation in
 // hew-mir/src/lower.rs: `derive_owned_record_drop_allowed`,
@@ -8,8 +8,8 @@
 // `Vec<string>` (`hew_vec_free_owned`). The record's drop glue
 // (`__hew_record_drop_inplace_Bundle`) must release BOTH members exactly
 // once, and `parts` moved into the record must NOT be double-dropped at its
-// own scope exit. Proves the composite field-drop derivation and the
-// double-free gate stay byte-identical across the lower.rs file-split.
+// own scope exit. This corpus preserves the input shape and raw-MIR parity;
+// focused ownership tests own the release invariant.
 type Bundle {
     label: string;
     parts: Vec<string>;

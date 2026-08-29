@@ -1,12 +1,8 @@
-// ll-oracle corpus fixture: layout — record + enum lowering.
+// Compiler corpus fixture: layout — record + enum lowering.
 //
-// Exercises the layout concern of hew-codegen-rs/src/llvm.rs:
-// record field stores/loads (get_field_value / store_field_value),
-// enum tag emission, Vec<record> layout path (hew_vec_new_with_layout,
-// hew_vec_push_layout, hew_vec_get_layout), and HashMap<string,record>
-// layout path (hew_hashmap_new_with_layout, hew_hashmap_insert_layout,
-// hew_hashmap_get_layout). Proves the layout-dispatch surface is
-// byte-identical across a pure codegen refactor.
+// Collects record field access, enum variants, Vec<record>, and
+// HashMap<string, record> source shapes for compiler checking and raw-MIR
+// parity. Focused layout/codegen tests own emitted ABI invariants.
 type Point {
     x: i64;
     y: i64;

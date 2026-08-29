@@ -24,8 +24,8 @@ compiler configuration nor a compatibility contract. The cutover contract in
 
 Hew v0.5 compiles through an explicit sequence of representations. Each layer
 has a distinct owner, verifier or diagnostic class, and an eventual
-deterministic text dump. Today the CLI exposes `hew compile --dump-sir` and
-`hew compile --dump-mir raw|checked|elab`; AST/HIR dumps are planned cutover
+deterministic text dump. Today the CLI exposes `hew tool compile --dump-sir` and
+`hew tool compile --dump-mir raw|checked|elab`; AST/HIR dumps are planned cutover
 tooling, not current commands.
 
 **Status convention:** this document defines the required final architecture.
@@ -101,7 +101,7 @@ compile / run / build / debug / test / watch --run / eval
 Target choice begins no earlier than the MIR/LLVM boundary. Native, Wasm, and
 embedded builds are target outputs; ORC JIT is an execution mode over the same
 verified LLVM IR, not a second middle end. Inspection modes may intentionally
-stop after a layer. [current] `hew compile --dump-sir` and `--dump-mir
+stop after a layer. [current] `hew tool compile --dump-sir` and `--dump-mir
 raw|checked|elab` do so today; AST/HIR inspection exits are planned. No
 execution mode may skip, duplicate, or substitute semantic lowering.
 
@@ -407,7 +407,7 @@ Optimization-safety verifier ledger:
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Constant-CFG region discard | Every newly unreachable block has no value or ownership use carrying a drop obligation and no operation with a `MayTrap` edge. | `optimize_cfg` proves ordinary structural verification accepts a folded candidate with a discarded trapping arm, while the discard-safety verifier rejects it and leaves the original function unchanged. |
 
-**Dump:** `hew compile --dump-sir`.
+**Dump:** `hew tool compile --dump-sir`.
 
 ### 2.5 Raw MIR (`hew-mir::raw`)
 
@@ -487,7 +487,7 @@ an LLVM-specific backend.
 is dominated by its definition, every site has a chosen value-model operation
 (no "unclassified").
 
-**Dump:** [current] `hew compile --dump-mir raw`.
+**Dump:** [current] `hew tool compile --dump-mir raw`.
 
 #### Current raw coroutine substrate
 
@@ -519,7 +519,7 @@ value-cost language (see §4.3).
 at <span> but read at <span>", "two mutations alias the same value", "affine
 resource `c` would be shared across an actor send — consume or materialize".
 
-**Dump:** [current] `hew compile --dump-mir checked` (annotation overlay: `// read-share`,
+**Dump:** [current] `hew tool compile --dump-mir checked` (annotation overlay: `// read-share`,
 `// move (last use)`, `// ensure-unique → mutate`, `// materialize`, etc.).
 
 ---
@@ -547,7 +547,7 @@ tables.
 no `Drop` of a moved-out place; cleanup-block dominance; coroutine frame-slot
 type matches yield value-class; DecisionMap is total and SiteIds are stable.
 
-**Dump:** [current] `hew compile --dump-mir elab` (includes explicit drop / cleanup-block section
+**Dump:** [current] `hew tool compile --dump-mir elab` (includes explicit drop / cleanup-block section
 and DecisionMap).
 
 ---
@@ -573,7 +573,7 @@ legalization; instruction selection; or machine policy.
 unsupported MIR constructs, missing locals, unresolved runtime symbols, and
 LLVM verifier failures.
 
-**Dump:** textual `.ll` plus any requested MIR dump (`hew compile
+**Dump:** textual `.ll` plus any requested MIR dump (`hew tool compile
 --dump-mir raw|checked|elab`).
 
 ---
@@ -844,7 +844,7 @@ the Checked MIR and Elaborated MIR stages.
 
 ## 7. Building the v0.5 spine
 
-At hard cutover, `hew compile` runs the v0.5 Rust
+At hard cutover, `hew tool compile` runs the v0.5 Rust
 HIR/SIR/MIR/codegen-rs path. The backend is a normal Cargo dependency of `hew`;
 no retired C++ backend build step is involved:
 

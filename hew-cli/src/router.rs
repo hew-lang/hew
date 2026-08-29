@@ -1,9 +1,9 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use clap::Parser;
+use clap::FromArgMatches;
 
-use crate::args::{self, Cli, Command};
+use crate::args::{self, Cli, Command, ToolSubcommand};
 
 pub(crate) trait CommandDispatcher {
     fn compile(&mut self, args: &args::CompileArgs);
@@ -19,7 +19,7 @@ pub(crate) trait CommandDispatcher {
     fn machine(&mut self, args: &args::MachineCommand);
     fn fmt(&mut self, args: &args::FmtArgs);
     fn init(&mut self, args: &args::InitArgs);
-    fn playground(&mut self, args: &args::PlaygroundCommand);
+    fn playground_verify(&mut self, args: &args::PlaygroundVerifyArgs);
     fn completions(&mut self, args: &args::CompletionsArgs);
     fn version(&mut self);
     fn help(&mut self);
@@ -83,8 +83,8 @@ impl CommandDispatcher for MainCommandDispatcher {
         crate::cmd_init(args);
     }
 
-    fn playground(&mut self, args: &args::PlaygroundCommand) {
-        crate::playground::cmd_playground(args);
+    fn playground_verify(&mut self, args: &args::PlaygroundVerifyArgs) {
+        crate::playground::cmd_playground_verify(args);
     }
 
     fn completions(&mut self, args: &args::CompletionsArgs) {
@@ -98,7 +98,7 @@ impl CommandDispatcher for MainCommandDispatcher {
     fn help(&mut self) {
         // No subcommand — shouldn't normally happen since clap shows help,
         // but handle gracefully.
-        let _ = <Cli as clap::CommandFactory>::command().print_help();
+        let _ = crate::help::hew_command().print_help();
         eprintln!();
         std::process::exit(1);
     }
@@ -135,7 +135,13 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Machine(args)) => dispatcher.machine(args),
         Some(Command::Fmt(args)) => dispatcher.fmt(args),
         Some(Command::Init(args)) => dispatcher.init(args),
-        Some(Command::Playground(args)) => dispatcher.playground(args),
+        Some(Command::Playground(args)) => match &args.command {
+            args::PlaygroundSubcommand::Verify(verify) => dispatcher.playground_verify(verify),
+        },
+        Some(Command::Tool(tool)) => match &tool.command {
+            ToolSubcommand::Compile(args) => dispatcher.compile(args),
+            ToolSubcommand::PlaygroundVerify(args) => dispatcher.playground_verify(args),
+        },
         Some(Command::Completions(args)) => dispatcher.completions(args),
         Some(Command::Version) => dispatcher.version(),
         Some(Command::Observe(args)) => dispatcher.observe(args),
@@ -150,13 +156,20 @@ where
     I: IntoIterator<Item = OsString>,
 {
     let raw_args: Vec<OsString> = args.into_iter().collect();
-    match Cli::try_parse_from(raw_args.clone()) {
+    match parse_from(raw_args.clone()) {
         Ok(cli) => Ok(cli),
         Err(error) => match compile_fallback_args(&raw_args) {
-            Some(fallback_args) => Cli::try_parse_from(fallback_args),
+            Some(fallback_args) => parse_from(fallback_args),
             None => Err(error),
         },
     }
+}
+
+/// Parse through [`crate::help::hew_command`] rather than `Cli::try_parse_from`
+/// so the command that answers `--help` is the command that parses.
+fn parse_from(args: Vec<OsString>) -> Result<Cli, clap::Error> {
+    let matches = crate::help::hew_command().try_get_matches_from(args)?;
+    Cli::from_arg_matches(&matches)
 }
 
 fn compile_fallback_args(raw_args: &[OsString]) -> Option<Vec<OsString>> {
@@ -251,6 +264,59 @@ mod tests {
             compile_fallback_args(&[OsString::from("hew"), OsString::from("version")]),
             None
         );
+    }
+
+    /// The `hew tool compile` spelling must be the same parse as the old
+    /// top-level one, flags and all - the move is a rename of the surface, not
+    /// a change to the harness.
+    #[test]
+    fn tool_compile_parses_identically_to_the_hidden_compile_alias() {
+        let argv = ["--dump-mir", "raw", "sample.hew"];
+
+        let namespaced = parse_compile(["hew", "tool", "compile"].into_iter().chain(argv));
+        let alias = parse_compile(["hew", "compile"].into_iter().chain(argv));
+
+        assert_eq!(format!("{namespaced:?}"), format!("{alias:?}"));
+        assert_eq!(namespaced.dump_mir.as_deref(), Some("raw"));
+        assert_eq!(namespaced.input, PathBuf::from("sample.hew"));
+    }
+
+    /// The old spellings still parse for the Makefile and the release scripts,
+    /// and the negative control is that a reader is not offered them: the help
+    /// never says `playground`.
+    #[test]
+    fn hidden_aliases_parse_but_are_absent_from_the_help() {
+        let alias = try_parse_cli_with_compile_fallback(
+            ["hew", "playground", "verify"]
+                .into_iter()
+                .map(OsString::from),
+        )
+        .expect("`hew playground verify` should still parse");
+        assert!(matches!(
+            alias.command,
+            Some(crate::args::Command::Playground(_))
+        ));
+
+        let help = crate::help::hew_command().render_help().to_string();
+        assert!(
+            !help.contains("playground"),
+            "the retired spelling should not be offered in help:\n{help}"
+        );
+    }
+
+    fn parse_compile<'a>(argv: impl Iterator<Item = &'a str>) -> CompileArgs {
+        let cli = try_parse_cli_with_compile_fallback(argv.map(OsString::from))
+            .expect("compile arguments should parse");
+        match cli.command {
+            Some(crate::args::Command::Compile(compile)) => compile,
+            Some(crate::args::Command::Tool(tool)) => match tool.command {
+                crate::args::ToolSubcommand::Compile(compile) => compile,
+                crate::args::ToolSubcommand::PlaygroundVerify(_) => {
+                    panic!("expected a compile command, got playground-verify")
+                }
+            },
+            other => panic!("expected a compile command, got {other:?}"),
+        }
     }
 
     #[test]
@@ -350,6 +416,28 @@ mod tests {
         dispatch_command(Some(&command), &mut dispatcher);
 
         assert_eq!(dispatcher.calls, vec!["wire"]);
+    }
+
+    #[test]
+    fn dispatch_command_routes_tool_namespace_to_the_same_handlers() {
+        let command = crate::args::Command::Tool(crate::args::ToolCommand {
+            command: crate::args::ToolSubcommand::Compile(CompileArgs {
+                input: PathBuf::from("sample.hew"),
+                emit_dir: None,
+                emit_llvm: false,
+                dump_mir: None,
+                sir: SirModeArgs::default(),
+                dump_sir: false,
+                target: None,
+                opt_level: "0".to_string(),
+                format: crate::args::DiagnosticFormat::Text,
+            }),
+        });
+        let mut dispatcher = RecordingDispatcher::default();
+
+        dispatch_command(Some(&command), &mut dispatcher);
+
+        assert_eq!(dispatcher.calls, vec!["compile:sample.hew"]);
     }
 
     #[test]
@@ -455,8 +543,8 @@ mod tests {
             self.calls.push("init".to_string());
         }
 
-        fn playground(&mut self, _args: &crate::args::PlaygroundCommand) {
-            self.calls.push("playground".to_string());
+        fn playground_verify(&mut self, _args: &crate::args::PlaygroundVerifyArgs) {
+            self.calls.push("playground-verify".to_string());
         }
 
         fn completions(&mut self, args: &CompletionsArgs) {

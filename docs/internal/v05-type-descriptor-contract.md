@@ -16,7 +16,7 @@ are wire-rejected or handled as composites.
 
 - monomorphisation symbol mangling (replaces ad-hoc per-call-site string building)
 - `PrimitiveWireKind::Nested(name)` carriage on the wire
-- IR dump identity in `hew compile --dump-sir` / `--dump-mir <stage>`
+- IR dump identity in `hew tool compile --dump-sir` / `--dump-mir <stage>`
 
 ## Fail-closed rules
 

@@ -1,8 +1,6 @@
 //! `hew` — the Hew programming language compiler driver.
 //!
 //! ```text
-//! hew compile file.hew [--emit-dir DIR] [--dump-mir raw|elab] [--target wasm32-unknown-unknown]
-//!                                  # Run the v0.5 IR ladder and emit native or WASM
 //! hew run [file.hew|DIR] [-- args...]
 //!                                  # Compile and run a package or explicit file
 //! hew debug file.hew [-- args...]  # Compile through v0.5 native codegen and launch a debugger
@@ -20,7 +18,8 @@
 //! hew fmt --check file.hew         # Check formatting (CI mode)
 //! hew init [name] [--lib|--actor]  # Scaffold a manifest-first project (hew.toml + source)
 //! hew add <pkg> / hew install / …  # Package-manager commands (see hew --help)
-//! hew playground verify            # Verify runnable playground examples
+//! hew tool compile file.hew        # Run the v0.5 IR ladder and emit native or WASM
+//! hew tool playground-verify       # Verify runnable playground examples
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
 //! hew observe [args...]             # Launch the TUI actor observer (delegates to hew-observe)
@@ -34,6 +33,7 @@ mod diagnostic_json;
 mod doc;
 mod eval;
 mod explain_cow;
+mod help;
 mod jit;
 mod link;
 mod machine;

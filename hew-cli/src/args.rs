@@ -68,6 +68,11 @@ impl SirModeArgs {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Compile a .hew file through the v0.5 IR ladder.
+    ///
+    /// Superseded by `hew tool compile`. Kept as a hidden alias so the
+    /// Makefile, release scripts, and the bare `hew <file>.hew` fallback keep
+    /// working while they migrate.
+    #[command(hide = true)]
     Compile(CompileArgs),
     /// Compile and run a .hew file.
     Run(RunArgs),
@@ -96,7 +101,13 @@ pub enum Command {
     /// Scaffold a manifest-first project (`hew.toml` + starter source + merged `.gitignore`).
     Init(InitArgs),
     /// Curated playground example tools.
+    ///
+    /// Superseded by `hew tool playground-verify`. Kept as a hidden alias so
+    /// CI keeps working while it migrates.
+    #[command(hide = true)]
     Playground(PlaygroundCommand),
+    /// Compiler-internal tools.
+    Tool(ToolCommand),
     /// Print shell completion script.
     Completions(CompletionsArgs),
     /// Print version info.
@@ -927,6 +938,29 @@ pub struct PlaygroundVerifyArgs {
     /// Per-example execution timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, default_value = "30", value_name = "DURATION")]
     pub timeout: String,
+}
+
+// ---------------------------------------------------------------------------
+// Tool
+// ---------------------------------------------------------------------------
+
+/// The compiler-internal surface: harnesses the compiler team drives, not
+/// commands a Hew program's author reaches for. Keeping them behind one
+/// namespace lets the public help stay about building and shipping code.
+#[derive(Debug, Args)]
+pub struct ToolCommand {
+    #[command(subcommand)]
+    pub command: ToolSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ToolSubcommand {
+    /// Compile a .hew file through the v0.5 IR ladder.
+    Compile(CompileArgs),
+    /// Compile and run each runnable playground example and verify its stdout
+    /// against the checked-in `.expected` file.
+    #[command(name = "playground-verify")]
+    PlaygroundVerify(PlaygroundVerifyArgs),
 }
 
 // ---------------------------------------------------------------------------

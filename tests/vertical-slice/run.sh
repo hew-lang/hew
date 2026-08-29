@@ -107,24 +107,32 @@ run_compiled_binary() {
     fi
 }
 
+last_accept_status=0
+
+run_accept_capture_status() {
+    local fixture="$1"
+    shift
+    echo "RUN ${fixture}"
+    compile_accept "${fixture}"
+    local bin="${ROOT}/.tmp/compile-out/${fixture}"
+    last_accept_status=0
+    # Time-bound the fixture binary: a non-terminating fixture (e.g. an actor
+    # that never exits) must surface as a failure, not hang CI. 124/137 from
+    # timeout statuses are retained for the caller's exact disposition assertion.
+    if run_compiled_binary "${bin}" "${stdout_output}" "${stderr_output}" "$@"; then
+        last_accept_status=0
+    else
+        last_accept_status=$?
+    fi
+}
+
 run_accept_expect_status() {
     local fixture="$1"
     local expected_status="$2"
     shift 2
-    echo "RUN ${fixture}"
-    compile_accept "${fixture}"
-    local bin="${ROOT}/.tmp/compile-out/${fixture}"
-    local status=0
-    # Time-bound the fixture binary: a non-terminating fixture (e.g. an actor
-    # that never exits) must surface as a failure, not hang CI. 124/137 from
-    # `timeout` then fail the exit-code assertion below rather than blocking.
-    if run_compiled_binary "${bin}" "${stdout_output}" "${stderr_output}" "$@"; then
-        status=0
-    else
-        status=$?
-    fi
-    if [[ "${status}" -ne "${expected_status}" ]]; then
-        echo "expected ${fixture} to exit ${expected_status}, got ${status}" >&2
+    run_accept_capture_status "${fixture}" "$@"
+    if [[ "${last_accept_status}" -ne "${expected_status}" ]]; then
+        echo "expected ${fixture} to exit ${expected_status}, got ${last_accept_status}" >&2
         cat "${accept_output}" >&2
         cat "${stdout_output}" >&2
         cat "${stderr_output}" >&2
@@ -3441,11 +3449,13 @@ run_accept_expect_stdout "receive_gen_fn_stream_early_return_close"
 # Assert a receive-gen fault fixture against its exact disposition. The desired
 # path carries the stream-fault diagnostic and the designed trap, never an
 # allocator abort. The one #2865 call below instead pins the current active-
-# frame corruption and misaligned-pointer abort; any other output still fails.
-# Both paths exit 134, so status alone cannot distinguish them.
+# frame corruption and its two observed terminal signals; any other output,
+# status, or yielded-value count still fails.
 assert_receive_gen_stream_faulted() {
     local fixture="$1"
-    local known_cleanup_issue="${2:-}"
+    local actual_status="$2"
+    local expected_stdout="$3"
+    local known_cleanup_issue="${4:-}"
     if grep -qE 'double free|free\(\): |corrupted|malloc\(\): |munmap_chunk|tcache|Invalid free' \
         "${stderr_output}"; then
         echo "${fixture}: heap allocator abort on the fault-cleanup path (double-free/corruption)" >&2
@@ -3454,7 +3464,7 @@ assert_receive_gen_stream_faulted() {
     fi
     if ! grep -qF -- 'receive-gen stream: producer actor' "${stderr_output}"; then
         if [[ -n "${known_cleanup_issue}" ]]; then
-            local normalized_stderr expected_stderr
+            local normalized_stderr expected_abort_stderr expected_fault_stderr known_disposition
             normalized_stderr="$(awk '
                 /panicked at hew-runtime\/src\/cont.rs:[0-9]+:[0-9]+:/ {
                     print "panic: hew-runtime/src/cont.rs"; next
@@ -3466,16 +3476,27 @@ assert_receive_gen_stream_faulted() {
                     print "misaligned pointer dereference: address must be a multiple of 0x8 but is <address>"; next
                 }
                 $0 == "thread caused non-unwinding panic. aborting." { print; next }
+                $0 == "hew: fatal synchronous hardware fault" { print; next }
                 $0 == "stack backtrace:" || /^[[:space:]]*[0-9]+:/ || /^[[:space:]]+at / || /^[[:space:]]*$/ { next }
                 { print "UNEXPECTED: " $0 }
             ' "${stderr_output}")"
-            expected_stderr=$'panic: hew-runtime/src/cont.rs\ntracked coroutine destroy returned with a mismatched active-frame stack\npanic: hew-runtime/src/cont.rs\nmisaligned pointer dereference: address must be a multiple of 0x8 but is <address>\nthread caused non-unwinding panic. aborting.'
-            if [[ "${normalized_stderr}" == "${expected_stderr}" ]] &&
-                [[ "$(cat "${stdout_output}")" == "1" ]]; then
+            expected_abort_stderr=$'panic: hew-runtime/src/cont.rs\ntracked coroutine destroy returned with a mismatched active-frame stack\npanic: hew-runtime/src/cont.rs\nmisaligned pointer dereference: address must be a multiple of 0x8 but is <address>\nthread caused non-unwinding panic. aborting.'
+            expected_fault_stderr=$'panic: hew-runtime/src/cont.rs\ntracked coroutine destroy returned with a mismatched active-frame stack\nhew: fatal synchronous hardware fault'
+            known_disposition=false
+            if [[ "${actual_status}" -eq 134 &&
+                "${normalized_stderr}" == "${expected_abort_stderr}" ]]; then
+                known_disposition=true
+            elif [[ "${actual_status}" -eq 139 &&
+                "${normalized_stderr}" == "${expected_fault_stderr}" ]]; then
+                known_disposition=true
+            fi
+            if [[ "${known_disposition}" == true &&
+                "$(cat "${stdout_output}")" == "${expected_stdout}" ]]; then
                 echo "KNOWN ${fixture} (#${known_cleanup_issue}: receive-generator crash cleanup corrupts its active frame)"
                 return
             fi
             echo "${fixture}: #${known_cleanup_issue} changed from the exact active-frame corruption diagnostic" >&2
+            echo "exit status: ${actual_status}" >&2
             printf '%s\n' "${normalized_stderr}" >&2
             cat "${stdout_output}" >&2
             exit 1
@@ -3484,29 +3505,46 @@ assert_receive_gen_stream_faulted() {
         cat "${stderr_output}" >&2
         exit 1
     fi
+    if [[ "${actual_status}" -ne 134 ]]; then
+        echo "expected ${fixture} to exit 134 after the receive-gen fault, got ${actual_status}" >&2
+        cat "${stderr_output}" >&2
+        exit 1
+    fi
+    if [[ "$(cat "${stdout_output}")" != "${expected_stdout}" ]]; then
+        echo "expected ${fixture} stdout to be '${expected_stdout}'" >&2
+        cat "${stdout_output}" >&2
+        exit 1
+    fi
     if [[ -n "${known_cleanup_issue}" ]]; then
         echo "${fixture}: #${known_cleanup_issue} is fixed; remove this known-failure ratchet" >&2
         exit 1
     fi
+    echo "PASS ${fixture}"
 }
 
 # Fault (producer crash): the desired contract reports the stream fault after
 # the first yielded value and frees the running coroutine frame exactly once.
-# #2865 currently corrupts the active-frame stack during that cleanup, emits no
-# stream-fault diagnostic, then aborts on a misaligned pointer. The assertion
-# below admits only that exact known failure until the cleanup authority lands.
-run_accept_expect_status "receive_gen_fn_fault_trap" 134
-assert_receive_gen_stream_faulted "receive_gen_fn_fault_trap" 2865
+# #2865 currently corrupts the active-frame stack during that cleanup and emits
+# no stream-fault diagnostic. Depending on which corrupted cleanup wins the
+# race, the process either aborts on a misaligned pointer (134) or reaches the
+# synchronous-fault handler (139). The assertion admits only those two exact
+# diagnostics, statuses, and the one value yielded before the fault.
+run_accept_capture_status "receive_gen_fn_fault_trap"
+assert_receive_gen_stream_faulted "receive_gen_fn_fault_trap" "${last_accept_status}" 1 2865
 
 # Fault (producer teardown): an actor stopped (via `supervisor_stop`)
 # while its stream is live and undrained must fault-close the stream on the
 # consumer's next resume — not a hang, not a silent EOF. Same fault mechanism
 # and exit code as the crash case above; the deterministic buffered-value
-# count (8, the receive-gen stream capacity) is asserted via stdout. Here the
-# generator is SUSPENDED at teardown, the mirror case to the running-crash
-# fixture above.
-run_accept_expect_status "receive_gen_fn_teardown_fault" 134
-assert_receive_gen_stream_faulted "receive_gen_fn_teardown_fault"
+# sequence is asserted via stdout: the value drained before teardown (`0`),
+# then all eight values buffered while the producer parks (`1` through `8`).
+# Here the generator is SUSPENDED at teardown, the mirror case to the
+# running-crash fixture above.
+run_accept_capture_status "receive_gen_fn_teardown_fault"
+assert_receive_gen_stream_faulted \
+    "receive_gen_fn_teardown_fault" \
+    "${last_accept_status}" \
+    $'0\n1\n2\n3\n4\n5\n6\n7\n8'
 
 # Owned actor-state fields are snapshotted through the same clone-total plan as
 # direct generator parameters.

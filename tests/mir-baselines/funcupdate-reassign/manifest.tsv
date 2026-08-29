@@ -104,10 +104,10 @@
 #   ORDER is nondeterministic (map iteration), so the harness splits both
 #   sides into per-function chunks (column-0 `fn ` lines) and sorts by
 #   signature line; (2) within each chunk, BindingId/SiteId values are
-#   renumbered in first-occurrence order; (3) trailing newline bytes are
-#   discarded because the emitter may append one final blank line. Within-chunk
-#   content order is preserved, so a reordered drop inside a chunk remains
-#   detectable.
+#   renumbered in first-occurrence order; (3) blank separators after each
+#   function are normalized because the emitter's final empty line otherwise
+#   follows whichever function map iteration emits last. Within-function content
+#   order is preserved, so a reordered drop inside a chunk remains detectable.
 #
 # Purpose: the Coarse freshness summary (`compute_fn_returns_fresh_owner` /
 # `return_value_may_alias_borrow`) feeds the destructive-funcupdate base gate

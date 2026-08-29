@@ -11,7 +11,7 @@
 //! (`hew compile --dump-mir elab`) under only recorded normalizations: the
 //! dump's FUNCTION ORDER is nondeterministic (map iteration), so both sides
 //! are split into per-function chunks and sorted by signature line before the
-//! byte comparison; and the emitter's terminal blank line is discarded.
+//! byte comparison; and blank separators after each function are discarded.
 //! Intra-function text must otherwise match exactly.
 //!
 //! Fail-closed manifest discipline:
@@ -128,9 +128,10 @@ fn funcupdate_reassign_elab_mir_matches_committed_baselines() {
 /// header), and rejoin: (1) sort chunks by signature line because dump
 /// FUNCTION ORDER is nondeterministic (map iteration); (2) renumber
 /// `BindingId(n)` / `SiteId(n)` values within each chunk in first-occurrence
-/// order because they depend on module iteration order; and (3) drop only
-/// trailing newline bytes because the dump emitter may add one final empty
-/// line. Within-chunk content order is preserved, so a reordered drop inside a
+/// order because they depend on module iteration order; and (3) normalize the
+/// blank separators after each function because the dump emitter's final empty
+/// line otherwise follows whichever function map iteration emits last.
+/// Within-function content order is preserved, so a reordered drop inside a
 /// chunk remains detectable; everything else must match byte-for-byte —
 /// opcodes, drop plans, local structure.
 fn normalize_fn_order(dump: &str) -> String {
@@ -139,13 +140,14 @@ fn normalize_fn_order(dump: &str) -> String {
     let mut current = String::new();
     for line in dump.lines() {
         if line.starts_with("fn ") && !current.is_empty() {
-            chunks.push(std::mem::take(&mut current));
+            let chunk = std::mem::take(&mut current);
+            chunks.push(format!("{}\n", chunk.trim_end_matches('\n')));
         }
         current.push_str(line);
         current.push('\n');
     }
     if !current.is_empty() {
-        chunks.push(current);
+        chunks.push(format!("{}\n", current.trim_end_matches('\n')));
     }
     let mut chunks: Vec<String> = chunks
         .iter()
@@ -199,16 +201,21 @@ fn first_diff(expected: &str, live: &str) -> String {
 }
 
 #[test]
-fn terminal_blank_normalization_does_not_hide_intra_function_drift() {
+fn function_separator_normalization_does_not_hide_intra_function_drift() {
     let baseline = "fn probe -> ()\n  statements:\n    eval site=SiteId(1) ty=()\n";
     assert_eq!(
         normalize_fn_order(baseline),
         normalize_fn_order(&format!("{baseline}\n")),
         "the optional final empty dump line is non-semantic"
     );
+    assert_eq!(
+        normalize_fn_order(&format!("{baseline}\nfn other -> ()\n")),
+        normalize_fn_order(&format!("fn other -> ()\n\n{baseline}\n")),
+        "the final empty line must not follow a function through order normalization"
+    );
     assert_ne!(
         normalize_fn_order(baseline),
         normalize_fn_order("fn probe -> ()\n\n  statements:\n    eval site=SiteId(1) ty=()\n"),
-        "only terminal newlines are normalized; an interior blank remains MIR drift"
+        "an interior blank remains MIR drift"
     );
 }

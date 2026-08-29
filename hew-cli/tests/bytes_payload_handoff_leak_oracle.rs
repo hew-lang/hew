@@ -1,17 +1,22 @@
 //! Exact ownership oracle for a retained local copy of a matched enum's
 //! `bytes` payload.
 //!
-//! The destructure binder aliases the parent's rc=1 payload. A local copy
-//! therefore needs one explicit retain: the destination balances that new
-//! reference, while the parent enum continues to balance the original. The
-//! direct control emits no retain and keeps only the parent drop.
+//! Destructuring transfers the parent's rc=1 payload into the payload binder
+//! and neutralizes the enum slot. A local copy therefore needs one explicit
+//! retain: the binder balances the original reference and the destination
+//! balances the new one. The direct control emits no retain.
 
 #![cfg(unix)]
 
+#[path = "support/payload_handoff_mir.rs"]
+mod payload_handoff_mir;
 mod support;
 
 use std::process::Command;
 
+use payload_handoff_mir::{
+    drop_plan_counts, function_section, retained_payload_locals, unique_drop_locals,
+};
 use support::leak_slope::{
     compile_to_native, measure_leaks_exact, run_probe_witness, run_under_malloc_scribble,
     HIGH_FRAMES, LOW_FRAMES,
@@ -97,26 +102,6 @@ fn dump_mir(stage: &str) -> String {
     String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
 }
 
-fn function_section<'a>(dump: &'a str, name: &str) -> &'a str {
-    let marker = format!("fn {name}");
-    let start = dump
-        .find(&marker)
-        .unwrap_or_else(|| panic!("missing `{marker}` in MIR dump:\n{dump}"));
-    let tail = &dump[start..];
-    tail.find("\nfn ").map_or(tail, |next| &tail[..next])
-}
-
-fn unique_drop_locals<'a>(section: &'a str, marker: &str) -> Vec<&'a str> {
-    let mut locals = section
-        .lines()
-        .filter(|line| line.contains(marker))
-        .filter_map(|line| line.split_whitespace().nth(1))
-        .collect::<Vec<_>>();
-    locals.sort_unstable();
-    locals.dedup();
-    locals
-}
-
 #[test]
 fn mir_pins_retain_and_noncompeting_drop_authorities() {
     let raw = dump_mir("raw");
@@ -136,27 +121,68 @@ fn mir_pins_retain_and_noncompeting_drop_authorities() {
 
     let elaborated = dump_mir("elab");
     for name in ["same_scope", "nested_scope"] {
+        let raw_section = function_section(&raw, name);
         let section = function_section(&elaborated, name);
         assert_eq!(
             unique_drop_locals(section, "ty=Blob kind=enum_in_place").len(),
             1,
-            "{name} must keep exactly one parent payload authority:\n{section}"
+            "{name} must keep exactly one parent composite authority:\n{section}"
         );
+        let payload_locals = retained_payload_locals(raw_section, "bytes.retain ");
         assert_eq!(
-            unique_drop_locals(section, "ty=bytes kind=cow_heap(hew_bytes_drop)").len(),
-            1,
-            "{name} must balance the retained destination exactly once:\n{section}"
+            payload_locals.len(),
+            2,
+            "{name} must have one transferred payload owner and one retained owner:\n\
+             {raw_section}"
         );
+        for local in payload_locals {
+            let raw_normal = raw_section
+                .matches(&format!("drop {local} ty=bytes fn=release(hew_bytes_drop)"))
+                .count();
+            let marker = format!("drop {local} ty=bytes kind=cow_heap(hew_bytes_drop)");
+            let (planned_normal, exceptional, max_per_plan) = drop_plan_counts(section, &marker);
+            assert_eq!(
+                raw_normal + planned_normal,
+                1,
+                "{name} must release {local} exactly once on successful normal flow:\n\
+                 raw:\n{raw_section}\nelaborated:\n{section}"
+            );
+            assert!(
+                exceptional > 0 && max_per_plan == 1,
+                "{name} must give {local} one cleanup in each applicable mutually exclusive \
+                 unwind/cancel/panic plan, never duplicate it within one plan:\n{section}"
+            );
+        }
     }
     let direct = function_section(&elaborated, "direct");
+    let direct_raw = function_section(&raw, "direct");
     assert_eq!(
         unique_drop_locals(direct, "ty=Blob kind=enum_in_place").len(),
         1,
-        "the direct control must keep its parent authority:\n{direct}"
+        "the direct control must keep its parent composite authority:\n{direct}"
+    );
+    let direct_locals = retained_payload_locals(direct_raw, "bytes.retain ");
+    assert_eq!(
+        direct_locals.len(),
+        1,
+        "the direct payload transfer must create no retained share:\n{direct_raw}"
+    );
+    let local = direct_locals[0];
+    let raw_normal = direct_raw
+        .matches(&format!("drop {local} ty=bytes fn=release(hew_bytes_drop)"))
+        .count();
+    let marker = format!("drop {local} ty=bytes kind=cow_heap(hew_bytes_drop)");
+    let (planned_normal, exceptional, max_per_plan) = drop_plan_counts(direct, &marker);
+    assert_eq!(
+        raw_normal + planned_normal,
+        1,
+        "the direct payload owner must release exactly once on successful normal flow:\n\
+         raw:\n{direct_raw}\nelaborated:\n{direct}"
     );
     assert!(
-        unique_drop_locals(direct, "ty=bytes kind=cow_heap(hew_bytes_drop)").is_empty(),
-        "the unretained payload alias must not gain a competing drop:\n{direct}"
+        exceptional > 0 && max_per_plan == 1,
+        "the direct payload owner must have one cleanup on each applicable exceptional exit:\n\
+         {direct}"
     );
 }
 

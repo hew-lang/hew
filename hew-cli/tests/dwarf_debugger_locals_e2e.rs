@@ -839,12 +839,26 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
         command
     };
     let out = run_bounded_command(cmd, format!("{dbg} untaken conditional reassignment"));
-    let text = String::from_utf8_lossy(&out.stdout);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // GDB treats an unavailable value requested by `printf` as a command
+    // error and therefore exits 1 in batch mode.  That is the exact honest
+    // state this test admits, not a failed debug session.  Normalize only
+    // that diagnostic into the same line-scoped form LLDB reports; every
+    // other debugger error remains fatal.
+    let gdb_reports_unavailable = dbg == "gdb"
+        && stderr
+            .lines()
+            .any(|line| line.contains("value has been optimized out"));
     assert!(
-        out.status.success(),
-        "{dbg} failed while debugging conditional handler:\n{text}\n{}",
-        String::from_utf8_lossy(&out.stderr)
+        out.status.success() || gdb_reports_unavailable,
+        "{dbg} failed while debugging conditional handler:\n{stdout}\n{stderr}"
     );
+    let text = if gdb_reports_unavailable {
+        format!("{stdout}\ns = <optimized out>\n")
+    } else {
+        stdout.into_owned()
+    };
     // The never-executed branch's value must not be presented; pointer-render
     // scoped so the source listing's `s = \"high\"` line cannot trip it.
     assert!(

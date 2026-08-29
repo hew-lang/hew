@@ -131,7 +131,8 @@ impl std::error::Error for SirMirLoweringError {}
 /// Lower the closed scalar component reachable from the module's resolved
 /// entry callable.
 ///
-/// This is the strict lane's only program-selection entry point. The entry is
+/// This is the only program-selection entry point strict SIR lowering has.
+/// The entry is
 /// the identity HIR published and SIR joined on; a module that carries no
 /// entry fact is not an executable program and is refused here with a typed
 /// error rather than being rescued by a name lookup.

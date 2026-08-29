@@ -1582,7 +1582,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     0
 }
 
-/// Render the strict SIR lane's per-callable outcome.
+/// Render the per-callable outcome of strict SIR lowering.
 ///
 /// `SirLaneReport` is constructed only inside the `SirMode::Lower` arm of
 /// `lower_verified_hir_to_pipeline`, so reaching this function already proves

@@ -1,0 +1,16 @@
+// Accept + run: a file-imported pub free function reached three ways from one
+// program — bare call, module-qualified call, and first-class value. All three
+// must bind the one body the declaration realizes.
+//
+// Harness verb: check + run, stdout compared to .expected
+import "file_import_fn_value_and_call_lib.hew";
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn main() {
+    println(twice(3));
+    println(file_import_fn_value_and_call_lib.twice(5));
+    println(apply(twice, 4));
+}

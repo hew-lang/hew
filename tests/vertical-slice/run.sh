@@ -5264,6 +5264,15 @@ grep -q 'UseAfterConsume' "${reject_output}"
 # or weak linkage!".
 run_check_run_expect_stdout file_import_trait_impl
 
+# Regression: a file-imported pub FREE function used both as a direct call and
+# as a first-class value must resolve to ONE body. The fourth-pass module-graph
+# walk used to re-lower it under the module-qualified spelling as well, so the
+# module carried two bodies for one declaration; the direct call bound the
+# qualified spelling while the fn-value shim bound the bare one, and any attempt
+# to keep a single body broke whichever consumer lost. Both consumers must now
+# see the one body the source-order pass emits.
+run_check_run_expect_stdout file_import_fn_value_and_call
+
 # Regression: trait DEFAULT methods reached through a file import must resolve
 # on the implementing type and lower. Two gaps compounded: the checker gated
 # the imported trait's `trait_defs` entry on `pub`, so the impl inherited no

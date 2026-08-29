@@ -291,6 +291,21 @@ impl Builder {
     /// is already owned by a *different* original callee symbol, appends a
     /// numeric disambiguation suffix so every distinct callee still gets its
     /// own, uniquely named adapter.
+    ///
+    /// APPROXIMATION — the adapter is deduped MODULE-wide by callee symbol, but
+    /// its `MirCallableKey` parent is the body that happened to fork the callee
+    /// first. WHY: one adapter body per callee is what codegen wants (a second
+    /// identical adapter would be a duplicate LLVM symbol), and the parent is
+    /// only ever read as part of a unique identity, never as "the body that
+    /// owns this adapter". Encounter order is deterministic for a fixed input,
+    /// so the key is stable — `compile-determinism-verify` covers that. WHEN
+    /// this stops being good enough: as soon as a consumer treats the parent as
+    /// ownership (e.g. attributing the adapter's drops or diagnostics to the
+    /// parent body), because two forking bodies would then disagree about which
+    /// of them owns it. WHAT replaces it: parent the adapter on the CALLEE's
+    /// key — it is a per-callee artifact, not a per-caller one — which needs
+    /// the callee's `MirCallableKey` in hand at the fork site rather than only
+    /// its emitted symbol.
     fn ensure_task_entry_adapter(&mut self, callee_symbol: &str, result_ty: &ResolvedTy) -> String {
         if let Some(existing) = self.task_entry_adapter_symbols.borrow().get(callee_symbol) {
             return existing.clone();
@@ -322,7 +337,14 @@ impl Builder {
         self.task_entry_adapter_symbols
             .borrow_mut()
             .insert(callee_symbol.to_string(), adapter_symbol.clone());
-        let lowered = self.synthesize_task_entry_adapter(callee_symbol, &adapter_symbol, result_ty);
+        let adapter_key =
+            self.mint_synthesized_child_key(crate::model::SynthesizedCallable::TaskEntryAdapter);
+        let lowered = self.synthesize_task_entry_adapter(
+            callee_symbol,
+            &adapter_symbol,
+            &adapter_key,
+            result_ty,
+        );
         self.generated_functions.push(lowered);
         adapter_symbol
     }
@@ -376,12 +398,14 @@ impl Builder {
         &self,
         callee_symbol: &str,
         adapter_symbol: &str,
+        key: &crate::model::MirCallableKey,
         result_ty: &ResolvedTy,
     ) -> LoweredFunction {
         let blocks = Self::task_entry_adapter_blocks(callee_symbol, result_ty);
 
         let mut builder = Builder {
             current_function_symbol: adapter_symbol.to_string(),
+            current_callable_key: Some(key.clone()),
             current_function_call_conv: crate::model::FunctionCallConv::TaskEntry,
             ..self.child_builder_tables()
         };
@@ -400,6 +424,7 @@ impl Builder {
         let adapter_return_ty = result_ty.clone();
         let mut raw = RawMirFunction {
             name: adapter_symbol.to_string(),
+            key: key.clone(),
             return_ty: adapter_return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::TaskEntry,
             params: vec![],
@@ -433,6 +458,7 @@ impl Builder {
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             adapter_symbol.to_string(),
+            key.clone(),
             adapter_return_ty,
             raw.blocks.clone(),
             &raw,
@@ -863,7 +889,10 @@ impl Builder {
             dest: env_place,
         });
 
-        let lowered = self.synthesize_fork_entry_shim(&callee_sym, &shim_name, &arg_tys, &env_ty);
+        let shim_key =
+            self.mint_synthesized_child_key(crate::model::SynthesizedCallable::ForkEntryShim);
+        let lowered =
+            self.synthesize_fork_entry_shim(&callee_sym, &shim_name, &shim_key, &arg_tys, &env_ty);
         self.generated_functions.push(lowered);
 
         let task_place = self.alloc_local(task_ty.clone());
@@ -918,6 +947,7 @@ impl Builder {
         &self,
         callee_symbol: &str,
         shim_name: &str,
+        key: &crate::model::MirCallableKey,
         arg_tys: &[ResolvedTy],
         env_ty: &ResolvedTy,
     ) -> LoweredFunction {
@@ -936,6 +966,7 @@ impl Builder {
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             pointer_width: self.pointer_width,
             current_function_symbol: shim_name.to_string(),
+            current_callable_key: Some(key.clone()),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             // #2648 — synthetic call wrapper (no user match scrutinees), but the
@@ -993,6 +1024,7 @@ impl Builder {
         );
         let mut raw = RawMirFunction {
             name: shim_name.to_string(),
+            key: key.clone(),
             return_ty: ResolvedTy::Unit,
             call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             params: vec![env_ptr_ty],
@@ -1047,6 +1079,7 @@ impl Builder {
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
+            key.clone(),
             ResolvedTy::Unit,
             raw.blocks.clone(),
             &raw,

@@ -26,6 +26,7 @@ fn fn_with_terminators(name: &str, terminators: Vec<Terminator>) -> RawMirFuncti
         .collect();
     RawMirFunction {
         source_origin: SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(name),
         name: name.to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,

@@ -60,6 +60,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -80,6 +81,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty,
             blocks,

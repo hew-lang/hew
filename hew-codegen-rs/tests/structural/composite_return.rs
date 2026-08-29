@@ -66,6 +66,7 @@ fn option_some_pipeline() -> IrPipeline {
     // MIR: local_0: Option<i64>, local_1: i64 (tag), local_2: i64 (payload)
     let maybe_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: option_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -171,6 +172,7 @@ fn option_string_pipeline() -> IrPipeline {
     };
     let greet_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: option_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -331,6 +333,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
     // Minimal MIR: fn send() -> Envelope<i64> { /* unreachable body — rejected before emit */ }
     let send_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: envelope_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -414,6 +417,7 @@ fn generic_enum_bitcopy_arg_heap_variant_lowers() {
 fn bytes_return_pipeline() -> IrPipeline {
     let make_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Bytes,
         call_conv: FunctionCallConv::Default,
@@ -490,6 +494,7 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
     let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::Bytes]);
     let make_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: tuple_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -580,6 +585,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
     };
     let make_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: pair_ty.clone(),
         call_conv: FunctionCallConv::Default,

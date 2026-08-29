@@ -231,6 +231,39 @@ fn synth_call_with_unresolved_callable_callee(name: &str) -> HirExpr {
     }
 }
 
+/// A checker-resolved user call: the callee spells `name`, but the authority is
+/// `declaration`, exactly as MIR reads it.
+fn synth_user_call(name: &str, item_id: u32, declaration: &str) -> HirExpr {
+    let callee = HirExpr {
+        node: HirNodeId(0),
+        site: SiteId(0),
+        ty: ResolvedTy::Function {
+            params: Vec::new(),
+            ret: Box::new(ResolvedTy::Unit),
+        },
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: name.to_string(),
+            resolved: ResolvedRef::Item(ItemId(item_id)),
+        },
+        span: dummy_span(),
+    };
+    HirExpr {
+        node: HirNodeId(1),
+        site: SiteId(1),
+        ty: ResolvedTy::Unit,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Call {
+            target: hew_types::CallTarget::User(hew_types::DefId::for_test(declaration)),
+            callee: Box::new(callee),
+            args: Vec::new(),
+        },
+        span: dummy_span(),
+    }
+}
+
 fn synth_fn_with_tail(name: &str, item_id: u32, tail: HirExpr) -> HirItem {
     HirItem::Function(HirFn {
         id: ItemId(item_id),
@@ -329,6 +362,72 @@ fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
             .iter()
             .all(|d| !matches!(d.kind, HirDiagnosticKind::CallableUnsupportedInMir { .. })),
         "expected no CallableUnsupportedInMir when callee is in callable set, got: {diagnostics:?}"
+    );
+}
+
+/// A `HirItem::Function` named `emitted_name` realizing declaration `declaration`.
+fn emitted_body(declaration: &str, emitted_name: &str, item_id: u32) -> HirItem {
+    HirItem::Function(HirFn {
+        id: ItemId(item_id),
+        node: HirNodeId(0),
+        declaration: hew_types::DefId::for_test(declaration),
+        name: emitted_name.to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_ty: ResolvedTy::Unit,
+        is_generator: false,
+        intrinsic_id: None,
+        body: unit_block_with_tail(HirExpr {
+            node: HirNodeId(0),
+            site: SiteId(0),
+            ty: ResolvedTy::Unit,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(hew_hir::HirLiteral::Unit),
+            span: dummy_span(),
+        }),
+        span: dummy_span(),
+    })
+}
+
+#[test]
+fn user_call_is_admitted_by_its_declaration_not_by_the_callee_spelling() {
+    // The file-import shape: an imported `pub fn` is called through its
+    // module-qualified spelling but its one body is emitted under the
+    // source-declared name. MIR resolves this call through
+    // `direct_call_symbols[declaration]` and never reads the spelling, so the
+    // gate must admit it on the same authority.
+    let target = emitted_body("lib.twice", "twice", 99);
+    let main = synth_fn_with_tail("main", 0, synth_user_call("lib$twice", 99, "lib.twice"));
+
+    let diagnostics = run_call_shape_gates_for_test(&[target, main], &[]);
+
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| !matches!(d.kind, HirDiagnosticKind::CallableUnsupportedInMir { .. })),
+        "a call to an emitted declaration must be admitted whatever the callee spells: \
+         {diagnostics:?}"
+    );
+}
+
+#[test]
+fn user_call_to_a_declaration_with_no_emitted_body_is_still_rejected() {
+    // The negative control: re-keying the gate onto declaration identity must
+    // not admit a call whose declaration realizes no body. Here the module
+    // emits a body whose SPELLING matches the callee, so a name-only gate would
+    // wave this through — the declaration is what makes it a refusal.
+    let decoy = emitted_body("other.twice", "lib$twice", 99);
+    let main = synth_fn_with_tail("main", 0, synth_user_call("lib$twice", 99, "lib.twice"));
+
+    let diagnostics = run_call_shape_gates_for_test(&[decoy, main], &[]);
+
+    assert!(
+        diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            HirDiagnosticKind::CallableUnsupportedInMir { name } if name == "lib$twice"
+        )),
+        "a declaration with no emitted body must fail closed: {diagnostics:?}"
     );
 }
 
@@ -501,6 +600,7 @@ fn call_shape_in_machine_transition_guard_rejected() {
     let machine = HirItem::Machine(HirMachineDecl {
         id: ItemId(0),
         node: HirNodeId(0),
+        declaration: hew_types::DefId::for_test("Gate"),
         name: "Gate".to_string(),
         defining_module: None,
         type_params: Vec::new(),

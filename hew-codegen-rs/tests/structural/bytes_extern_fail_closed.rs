@@ -80,6 +80,7 @@ fn pipeline_with_extern(
 
     let raw = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("probe"),
         name: "probe".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -99,6 +100,7 @@ fn pipeline_with_extern(
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let checked = CheckedMirFunction {
+        key: hew_mir::MirCallableKey::for_test("probe"),
         name: "probe".to_string(),
         return_ty: ResolvedTy::Unit,
         blocks: blocks.clone(),
@@ -108,6 +110,7 @@ fn pipeline_with_extern(
         ownership_elaboration: None,
     };
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test("probe"),
         name: "probe".to_string(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],

@@ -63,6 +63,7 @@ fn send_status_pipeline() -> IrPipeline {
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("send_probe"),
             name: "send_probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -83,6 +84,7 @@ fn send_status_pipeline() -> IrPipeline {
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("send_probe"),
             name: "send_probe".to_string(),
             return_ty: ResolvedTy::Unit,
             blocks: raw_blocks.clone(),
@@ -92,6 +94,7 @@ fn send_status_pipeline() -> IrPipeline {
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("send_probe"),
             name: "send_probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],

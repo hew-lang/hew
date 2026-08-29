@@ -38,6 +38,7 @@ use hew_types::{BuiltinType, ResolvedTy};
 fn trivial_main() -> RawMirFunction {
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,

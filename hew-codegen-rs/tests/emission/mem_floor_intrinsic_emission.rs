@@ -51,6 +51,7 @@ fn floor_pipeline(
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test(name),
             name: name.to_string(),
             return_ty: return_ty.clone(),
             call_conv: FunctionCallConv::Default,
@@ -71,6 +72,7 @@ fn floor_pipeline(
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test(name),
             name: name.to_string(),
             return_ty: return_ty.clone(),
             blocks: placeholder,
@@ -80,6 +82,7 @@ fn floor_pipeline(
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test(name),
             name: name.to_string(),
             return_ty,
             statements: vec![],

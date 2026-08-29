@@ -316,6 +316,7 @@ fn select_arm_read_keeps_predecessor_store_live() {
     ];
     let func = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("select_arm_liveness_probe"),
         name: "select_arm_liveness_probe".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -426,6 +427,7 @@ fn select_arm_no_read_leaves_store_dead() {
     ];
     let func = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("select_arm_dead_probe"),
         name: "select_arm_dead_probe".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,

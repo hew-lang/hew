@@ -86,6 +86,7 @@ fn traffic_light_uses_i8_tagged_union_struct() {
     let mut pipeline = empty_pipeline(vec![traffic_light_layout()]);
     pipeline.raw_mir = vec![RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -180,6 +181,7 @@ fn generic_machine_event_tag_load_uses_concrete_layout_key() {
     }]);
     pipeline.raw_mir = vec![RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("generic_machine_event_tag"),
         name: "generic_machine_event_tag".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -226,6 +228,7 @@ fn repeated_machine_uses_share_one_named_struct_definition() {
     let mut pipeline = empty_pipeline(vec![traffic_light_layout()]);
     pipeline.raw_mir = vec![RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -279,6 +282,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
     }]);
     pipeline.raw_mir = vec![RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -335,6 +339,7 @@ fn constructor_pipeline() -> IrPipeline {
     };
     let main_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,

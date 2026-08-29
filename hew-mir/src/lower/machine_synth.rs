@@ -241,7 +241,8 @@ fn lower_actor_receive_handlers(
             node: actor.node,
             declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                 "{}::{}",
-                actor.name, handler.name
+                actor.qualified_name(),
+                handler.name
             )),
             name: format!("{}::{}", actor.name, handler.name),
             type_params: Vec::new(),
@@ -256,6 +257,7 @@ fn lower_actor_receive_handlers(
             lower_function(
                 &synthetic_fn,
                 emit_name,
+                crate::model::MirCallableKey::declared(synthetic_fn.declaration.clone()),
                 HashMap::new(),
                 type_classes,
                 record_field_orders,
@@ -434,7 +436,7 @@ fn lower_actor_init_handler(
         node: actor.node,
         declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
             "{}::init",
-            actor.name
+            actor.qualified_name()
         )),
         name: format!("{}::init", actor.name),
         type_params: Vec::new(),
@@ -449,6 +451,7 @@ fn lower_actor_init_handler(
         lower_function(
             &synthetic_fn,
             emit_name,
+            crate::model::MirCallableKey::declared(synthetic_fn.declaration.clone()),
             HashMap::new(),
             type_classes,
             record_field_orders,
@@ -532,7 +535,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
@@ -547,6 +551,7 @@ fn lower_actor_lifecycle_handlers(
                     lower_function(
                         &synthetic_fn,
                         emit_name,
+                        crate::model::MirCallableKey::declared(synthetic_fn.declaration.clone()),
                         HashMap::new(),
                         type_classes,
                         record_field_orders,
@@ -591,7 +596,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
@@ -606,6 +612,7 @@ fn lower_actor_lifecycle_handlers(
                     lower_function(
                         &synthetic_fn,
                         emit_name,
+                        crate::model::MirCallableKey::declared(synthetic_fn.declaration.clone()),
                         HashMap::new(),
                         type_classes,
                         record_field_orders,
@@ -872,7 +879,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
@@ -887,6 +895,7 @@ fn lower_actor_lifecycle_handlers(
                     lower_function(
                         &synthetic_fn,
                         emit_name,
+                        crate::model::MirCallableKey::declared(synthetic_fn.declaration.clone()),
                         HashMap::new(),
                         type_classes,
                         record_field_orders,
@@ -990,7 +999,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
@@ -1005,6 +1015,7 @@ fn lower_actor_lifecycle_handlers(
                     lower_function(
                         &synthetic_fn,
                         emit_name,
+                        crate::model::MirCallableKey::declared(synthetic_fn.declaration.clone()),
                         HashMap::new(),
                         type_classes,
                         record_field_orders,
@@ -1113,7 +1124,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
@@ -1128,6 +1140,7 @@ fn lower_actor_lifecycle_handlers(
                     lower_function(
                         &synthetic_fn,
                         emit_name,
+                        crate::model::MirCallableKey::declared(synthetic_fn.declaration.clone()),
                         HashMap::new(),
                         type_classes,
                         record_field_orders,
@@ -1363,6 +1376,12 @@ pub(super) fn synthesize_machine_step_fn(
     pointer_width: PointerWidth,
 ) -> LoweredFunction {
     let emit_name = mangle_machine_step(&layout_name);
+    // The step dispatch has no source declaration of its own: it is the one
+    // synthesized child of THIS machine declaration realized at THESE type
+    // arguments, so two instantiations of one generic machine keep distinct
+    // identities without consulting the mangled layout name.
+    let key = crate::model::MirCallableKey::instance(md.declaration.clone(), type_args.to_vec())
+        .child(crate::model::SynthesizedCallable::MachineStep);
 
     let self_ty = ResolvedTy::Named {
         name: md.qualified_name(),
@@ -1407,6 +1426,7 @@ pub(super) fn synthesize_machine_step_fn(
         supervisor_child_slots: supervisor_child_slots.clone(),
         pointer_width,
         current_function_symbol: emit_name.clone(),
+        current_callable_key: Some(key.clone()),
         ..Builder::default()
     };
     for (param, arg) in md.type_params.iter().zip(type_args.iter()) {
@@ -1715,6 +1735,7 @@ pub(super) fn synthesize_machine_step_fn(
 
     let raw = RawMirFunction {
         name: emit_name.clone(),
+        key: key.clone(),
         return_ty: return_ty.clone(),
         call_conv: crate::model::FunctionCallConv::Default,
         params,
@@ -1740,6 +1761,7 @@ pub(super) fn synthesize_machine_step_fn(
 
     let mut checked = CheckedMirFunction {
         name: emit_name.clone(),
+        key: key.clone(),
         return_ty: return_ty.clone(),
         blocks: blocks.clone(),
         decisions: Vec::new(),
@@ -1762,6 +1784,7 @@ pub(super) fn synthesize_machine_step_fn(
         .collect();
     let elaborated = ElaboratedMirFunction {
         name: emit_name,
+        key,
         return_ty,
         statements: Vec::new(),
         decisions: Vec::new(),
@@ -2643,6 +2666,7 @@ pub(super) fn lower_supervisor_bootstrap(
     Some(lower_function(
         &synthetic_fn,
         emit_name,
+        crate::model::MirCallableKey::declared(synthetic_fn.declaration.clone()),
         HashMap::new(),
         type_classes,
         record_field_orders,

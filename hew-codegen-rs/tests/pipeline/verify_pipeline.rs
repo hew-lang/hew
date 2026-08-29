@@ -24,6 +24,7 @@ fn pipeline_const_42() -> IrPipeline {
     let return_ty = ResolvedTy::I64;
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: return_ty.clone(),
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -90,6 +91,7 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
     let return_ty = ResolvedTy::Array(Box::new(ResolvedTy::I64), 2);
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: return_ty.clone(),
         call_conv: hew_mir::FunctionCallConv::Default,

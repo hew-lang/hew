@@ -151,6 +151,7 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::EscapingCaptureAliasesEnclosingEnv { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
+        | hew_mir::MirDiagnosticKind::CallableKeyCollision { .. }
         | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
         | hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid { .. }
         | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { .. }
@@ -607,6 +608,7 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. } => {
             "ActorHandlerSymbolCollision"
         }
+        hew_mir::MirDiagnosticKind::CallableKeyCollision { .. } => "CallableKeyCollision",
         hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. } => {
             "ActorStateCloneClassificationFailed"
         }
@@ -707,6 +709,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
+        | hew_mir::MirDiagnosticKind::CallableKeyCollision { .. }
         | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
         | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. }
         | hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. }
@@ -880,6 +883,14 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         } => format!(
             "actor handler symbol `{symbol}` is produced by both {existing} and {duplicate}"
         ),
+        hew_mir::MirDiagnosticKind::CallableKeyCollision {
+            declaration,
+            first_symbol,
+            second_symbol,
+        } => format!(
+            "declaration `{declaration}` was lowered twice under one callable identity, \
+             emitted as `{first_symbol}` and `{second_symbol}`"
+        ),
         hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed {
             actor,
             field_name,
@@ -1008,6 +1019,10 @@ fn mir_block_list(blocks: &[u32]) -> String {
         .join(", ")
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per MirDiagnosticKind variant; the length tracks the diagnostic surface"
+)]
 fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
     let mut notes = vec![format!("MIR kind: {}", mir_kind_name(&diagnostic.kind))];
     match &diagnostic.kind {
@@ -1096,6 +1111,7 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
+        | hew_mir::MirDiagnosticKind::CallableKeyCollision { .. }
         | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. }
         | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => {}

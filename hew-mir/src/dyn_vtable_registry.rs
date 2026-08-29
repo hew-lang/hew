@@ -161,6 +161,7 @@ mod tests {
 
     fn make_func(name: &str, instrs: Vec<Instr>) -> RawMirFunction {
         RawMirFunction {
+            key: crate::model::MirCallableKey::for_test(name),
             name: name.to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,

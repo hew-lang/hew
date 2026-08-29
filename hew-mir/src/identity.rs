@@ -1,0 +1,211 @@
+//! Resolver-anchored callable identity for the three MIR function types.
+//!
+//! Every MIR function carries a [`MirCallableKey`]: the resolver-minted
+//! declaration identity of the source body it realizes, plus the semantic
+//! instance discriminator that separates one realization of that declaration
+//! from another (a generic instance, the abstract origin, a synthesized child).
+//!
+//! WHY this exists: the pipeline used to identify a function by its emitted
+//! `name` alone, so every join between Raw/Checked/Elaborated MIR and codegen
+//! compared presentation strings. Two callables with equal names — an imported
+//! module's function and a local one, two generic instances whose mangling
+//! collides, a synthesized closure of a same-named parent — are
+//! indistinguishable to such a join, which is why the retain-by-name and
+//! fail-open joins downstream exist at all.
+//!
+//! The key is deliberately NOT constructible from a symbol string: identity is
+//! minted once and projected here. There is no `From<String>` and no
+//! constructor that takes an emitted name.
+//!
+//! "Minted once" describes the PROJECTION, not yet the source of the value
+//! projected: every key is built from exactly one `declaration` field, read
+//! once, with no name-based reconstruction at this layer. That field's
+//! identity is not uniformly resolver-native today. `HirFn::declaration` and
+//! `HirMachineDecl::declaration` are both built by hew-hir with
+//! `DefId::legacy_reconstruct_from_full_path` over the owner's qualified path
+//! (`hew-hir/src/lower.rs`, `lower_fn_with_name_and_impl_params` and
+//! `lower_machine`) — a real,
+//! resolver-adjacent identity keyed on the dotted source path, but not yet a
+//! resolver-minted id — and the SIR bridge projects `SemCallable::declaration`
+//! on top of that same value. It is furthest from exact for the bodies MIR
+//! synthesizes for an actor's receive handlers, init and lifecycle hooks, or
+//! for a supervisor's bootstrap: those HIR nodes publish no declaration
+//! identity at all, so `lower/machine_synth.rs` builds a synthetic `HirFn`
+//! whose `declaration` is reconstructed from the owner's qualified path with
+//! the same `legacy_reconstruct_from_full_path` call. In every case the key
+//! is anchored on the declaration identity hew-hir currently reconstructs,
+//! not on a resolver-native mint; resolver-native minting for all three
+//! (ordinary functions, machines, and the actor/supervisor synthetics) is the
+//! tracked upstream fix — see `.tmp/TODO.md`.
+//!
+//! `RawMirFunction::name` (and its Checked/Elaborated twins) stays as the
+//! presentation/linkage alias beside the key.
+
+use std::collections::HashMap;
+
+use hew_types::{DefId, ResolvedTy};
+
+use crate::model::{MirDiagnostic, MirDiagnosticKind, RawMirFunction};
+
+/// Canonical identity of one MIR callable.
+///
+/// `declaration` is the resolver-minted identity of the *source declaration*
+/// whose body this callable realizes. For a synthesized child (a closure
+/// invoke shim, a generator body, a task-entry adapter) it is the declaration
+/// of the enclosing user function — the child's own distinguishing identity
+/// lives in `instance`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MirCallableKey {
+    pub declaration: DefId,
+    pub instance: MirCallableInstance,
+}
+
+/// Which realization of [`MirCallableKey::declaration`] this callable is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MirCallableInstance {
+    /// The one body of a declaration that declares no type parameters.
+    Monomorphic,
+    /// One concrete specialization of a generic declaration. `type_args` is in
+    /// declared parameter order and comes from the monomorphisation registry
+    /// (`MonoKey::type_args`) or, on the SIR path, `SirInstanceKey::type_args`.
+    Generic { type_args: Vec<ResolvedTy> },
+    /// The abstract origin of a generic declaration, lowered once against
+    /// `ResolvedTy::TypeParam` operands for the representation substrate. It is
+    /// never emitted; it is deliberately distinct from every `Generic`
+    /// instance of the same declaration.
+    Polymorphic,
+    /// A callable the lowering synthesized to serve `parent` — it has no source
+    /// declaration of its own. `child` names which producer minted it and,
+    /// where a producer can mint more than one per parent, the per-parent
+    /// ordinal allocated in lowering encounter order.
+    Synthesized {
+        parent: Box<MirCallableKey>,
+        child: SynthesizedCallable,
+    },
+}
+
+/// Closed set of synthesized-callable producers: one variant per lowering site
+/// that mints a `RawMirFunction` with no source declaration of its own.
+///
+/// The ordinal carried by a variant is allocated per parent in lowering
+/// encounter order (`Builder::next_synthesized_ordinal`), so it is stable
+/// across runs — the `compile-determinism-verify` gate depends on that.
+/// [`SynthesizedCallable::MachineStep`] carries none: a machine layout mints
+/// exactly one step dispatch per parent key.
+///
+/// The ordinal is drawn from ONE per-parent sequence shared by every variant,
+/// not a per-variant sequence, so ordinals interleave across producers; see the
+/// marker on `Builder::next_synthesized_ordinal` for why and what would replace
+/// it. Only uniqueness and run-to-run stability are promised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SynthesizedCallable {
+    /// `lower/closure_gen.rs::lower_closure_shim` — the invoke shim of a
+    /// closure literal.
+    ClosureInvokeShim(u32),
+    /// `lower/closure_gen.rs::lower_named_fn_invoke_shim` — the invoke shim
+    /// that gives a named function the closure ABI.
+    NamedFnInvokeShim(u32),
+    /// `lower/closure_gen.rs::lower_spawn_lambda_actor` — the body of an
+    /// `actor |..| { .. }` literal.
+    LambdaActorBody(u32),
+    /// `lower/closure_gen.rs::lower_gen_block` — the coroutine body of a
+    /// `gen { .. }` block.
+    GeneratorBody(u32),
+    /// `lower/task.rs::synthesize_task_entry_adapter` — the adapter that gives
+    /// a default-callconv function the task-entry ABI.
+    TaskEntryAdapter(u32),
+    /// `lower/task.rs::synthesize_fork_entry_shim` — the trampoline a
+    /// `fork`-block spawn calls through.
+    ForkEntryShim(u32),
+    /// `lower/machine_synth.rs::synthesize_machine_step_fn` — the `step`
+    /// dispatch of one machine layout.
+    MachineStep,
+}
+
+impl MirCallableKey {
+    /// The single body of a declaration with no type parameters.
+    #[must_use]
+    pub fn declared(declaration: DefId) -> Self {
+        Self {
+            declaration,
+            instance: MirCallableInstance::Monomorphic,
+        }
+    }
+
+    /// One concrete specialization of a generic declaration. `type_args` must
+    /// be in declared parameter order.
+    #[must_use]
+    pub fn instance(declaration: DefId, type_args: Vec<ResolvedTy>) -> Self {
+        Self {
+            declaration,
+            instance: MirCallableInstance::Generic { type_args },
+        }
+    }
+
+    /// The abstract generic origin lowered against `ResolvedTy::TypeParam`
+    /// operands.
+    #[must_use]
+    pub fn polymorphic(declaration: DefId) -> Self {
+        Self {
+            declaration,
+            instance: MirCallableInstance::Polymorphic,
+        }
+    }
+
+    /// The key of a callable this one synthesizes.
+    #[must_use]
+    pub fn child(&self, child: SynthesizedCallable) -> Self {
+        Self {
+            declaration: self.declaration.clone(),
+            instance: MirCallableInstance::Synthesized {
+                parent: Box::new(self.clone()),
+                child,
+            },
+        }
+    }
+
+    /// Fixture identity for hand-built MIR. Test builds only — production code
+    /// has no constructor that mints identity from a name.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_test(declaration_path: &str) -> Self {
+        Self::declared(DefId::for_test(declaration_path))
+    }
+}
+
+/// Reject a module whose raw MIR realizes one callable identity twice.
+///
+/// The key is what every downstream join is being moved onto, so two
+/// functions sharing one key would make that join ambiguous exactly the way
+/// two functions sharing one `name` do today. This is the fail-closed
+/// boundary: a collision is a lowering bug (a producer that minted the same
+/// declaration + instance twice), reported as an error naming both emitted
+/// symbols, never a silent second entry in the vector.
+///
+/// The first occurrence of a key is the anchor; every later one is reported
+/// against it, so N copies of one key give N-1 findings rather than a
+/// quadratic pile.
+#[must_use]
+pub fn validate_unique_callable_keys(functions: &[RawMirFunction]) -> Vec<MirDiagnostic> {
+    let mut seen: HashMap<&MirCallableKey, &str> = HashMap::new();
+    let mut diagnostics = Vec::new();
+    for function in functions {
+        match seen.get(&function.key) {
+            Some(first) => diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CallableKeyCollision {
+                    declaration: function.key.declaration.full_path().to_string(),
+                    first_symbol: (*first).to_string(),
+                    second_symbol: function.name.clone(),
+                },
+                note: "two lowered bodies claim one callable identity; the producer that \
+                       minted the second must give it its own declaration or instance"
+                    .to_string(),
+            }),
+            None => {
+                seen.insert(&function.key, &function.name);
+            }
+        }
+    }
+    diagnostics
+}

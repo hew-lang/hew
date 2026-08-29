@@ -2504,6 +2504,43 @@ fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::Modu
     ids
 }
 
+/// Answer whether the source-order third pass already lowered this module's
+/// free functions, so the module-graph fourth pass must not lower them again.
+///
+/// A file-path import (`import "lib.hew";`) splices the imported module's items
+/// into `program.items`, so the third pass emits one `HirItem::Function` per pub
+/// free fn under its source-declared name. The same module is also in
+/// `mg.topo_order`, so the fourth pass would emit a SECOND body for the same
+/// declaration under the module-qualified spelling (`lib$twice`). Both items
+/// carry the resolver's single `declaration` `DefId`, so the module would then
+/// realize one callable identity twice: `build_direct_call_symbol_index` keeps
+/// the last spelling written (the qualified one) while any consumer that
+/// resolves the surface spelling — the fn-value shim in
+/// `hew-mir/src/lower/expr.rs` — keeps the first, and the two disagree.
+///
+/// The discriminator is the module's IDENTITY, exactly as in the `Item::Impl`
+/// and `Item::Actor` arms: only file-import SPLICED modules are reached by both
+/// passes. Package-import modules are never spliced, so they are lowered here
+/// exactly once and are unaffected.
+///
+/// A GENERIC declaration is exempt. Its origin body is never a realized
+/// callable — MIR routes it to the representation substrate, not to `raw_mir` —
+/// so two origin bodies are not two realizations of one identity. The
+/// monomorphisation registry keys each instance by the origin `ItemId` the call
+/// site resolved, which for a module-qualified call is the qualified
+/// registration; dropping that item would orphan every instance it owns.
+fn free_fn_already_lowered_by_source_order_pass(
+    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
+    mod_id: &hew_parser::module::ModuleId,
+    func: &FnDecl,
+) -> bool {
+    file_import_modules.contains(mod_id)
+        && func
+            .type_params
+            .as_ref()
+            .is_none_or(std::vec::Vec::is_empty)
+}
+
 /// Identify, by PROVENANCE (file-set subsumption), the package-import graph
 /// modules whose `impl` blocks must NOT be re-lowered by the fourth pass
 /// because a *superset* package module already lowers the identical impl
@@ -5096,6 +5133,13 @@ pub fn lower_program_with_mono_cap(
                         .unwrap_or(module_idx);
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
+                            if free_fn_already_lowered_by_source_order_pass(
+                                &file_import_modules,
+                                mod_id,
+                                func,
+                            ) {
+                                continue;
+                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -5122,6 +5166,13 @@ pub fn lower_program_with_mono_cap(
                         Item::Function(func)
                             if imported_private_closure.contains(func.name.as_str()) =>
                         {
+                            if free_fn_already_lowered_by_source_order_pass(
+                                &file_import_modules,
+                                mod_id,
+                                func,
+                            ) {
+                                continue;
+                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -14804,11 +14855,22 @@ impl LowerCtx {
             }
         }
 
+        let defining_module = self.current_module_name.clone();
         Some(HirMachineDecl {
             id: self.ids.item(),
             node: self.ids.node(),
+            // Mint the machine's declaration identity here, the same way
+            // `lower_type_decl` mints a type declaration's: the dotted owner
+            // path when the machine came from a module, the bare spelling for
+            // a root-program machine. Consumers project this field.
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                match &defining_module {
+                    Some(module) => format!("{module}.{}", decl.name),
+                    None => decl.name.clone(),
+                },
+            ),
             name: decl.name.clone(),
-            defining_module: self.current_module_name.clone(),
+            defining_module,
             type_params: decl.type_params.iter().map(|p| p.name.clone()).collect(),
             type_param_bounds,
             states: hir_states,
@@ -34756,11 +34818,30 @@ fn check_call_shape_gates(
     }
 }
 
-/// Build the set of names the MIR `Expr::Call` dispatch chain accepts.
+/// What the call-shape gate admits, in the two authorities MIR itself uses.
 ///
-/// Mirrors MIR's `module_fn_names` (`hew-mir/src/lower.rs:759-783`) plus the
-/// runtime-symbol bridges consulted ahead of it in `runtime_symbol_for_call_expr`
-/// (`hew-mir/src/lower.rs:3574-3588`). Includes:
+/// `declarations` is the primary one: MIR resolves a `CallTarget::User` call
+/// through `direct_call_symbols[declaration]` and never reads the callee's
+/// name, so the gate must ask the same question. A declaration may legitimately
+/// be emitted under a name no call site spells — an imported `pub fn` is called
+/// through its module-qualified spelling but emitted under its source-declared
+/// one — and a name-only gate rejects exactly those.
+///
+/// `names` remains for every callee the checker did not resolve to a user
+/// declaration: runtime bridges, stdlib catalog entries, and the seeded
+/// registry symbols, which have no `DefId`.
+struct CallShapeTargets {
+    names: std::collections::HashSet<String>,
+    declarations: std::collections::HashSet<hew_types::DefId>,
+}
+
+/// Build what the MIR `Expr::Call` dispatch chain accepts.
+///
+/// `declarations` mirrors MIR's `direct_call_symbols` key set: every declaration
+/// that realizes an emitted body (function, extern fn, impl method).
+///
+/// `names` mirrors MIR's `module_fn_names` plus the runtime-symbol bridges
+/// consulted ahead of it in `runtime_symbol_for_call_expr`. Includes:
 ///
 /// 1. Every `stdlib_catalog::entries()` name (intrinsic linkage included —
 ///    intrinsics route through `runtime_symbol_for_call_expr` before the
@@ -34779,7 +34860,23 @@ fn check_call_shape_gates(
 fn build_callable_set(
     items: &[HirItem],
     monomorphisations: &[crate::monomorph::MonomorphizedFn],
-) -> std::collections::HashSet<String> {
+) -> CallShapeTargets {
+    let mut declarations: std::collections::HashSet<hew_types::DefId> =
+        std::collections::HashSet::new();
+    for item in items {
+        match item {
+            HirItem::Function(f) => {
+                declarations.insert(f.declaration.clone());
+            }
+            HirItem::ExternFn(ef) => {
+                declarations.insert(ef.declaration.clone());
+            }
+            HirItem::Impl(block) => {
+                declarations.extend(block.method_ids.iter().flatten().cloned());
+            }
+            _ => {}
+        }
+    }
     let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in stdlib_catalog::entries() {
         // W4.001 Stage C0b: LayoutDescriptorSymbol rows declare runtime
@@ -34856,12 +34953,15 @@ fn build_callable_set(
     ] {
         set.insert(name.to_string());
     }
-    set
+    CallShapeTargets {
+        names: set,
+        declarations,
+    }
 }
 
 fn scan_item_for_call_shape(
     item: &HirItem,
-    callable: &std::collections::HashSet<String>,
+    callable: &CallShapeTargets,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
     match item {
@@ -34918,7 +35018,7 @@ fn scan_item_for_call_shape(
 
 fn scan_block_for_call_shape(
     block: &HirBlock,
-    callable: &std::collections::HashSet<String>,
+    callable: &CallShapeTargets,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
     for stmt in &block.statements {
@@ -35068,7 +35168,7 @@ fn scan_block_for_supervisor_spawn(
 )]
 fn scan_expr_for_call_shape(
     expr: &HirExpr,
-    callable: &std::collections::HashSet<String>,
+    callable: &CallShapeTargets,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
     match &expr.kind {
@@ -35079,7 +35179,11 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(operand, callable, diagnostics);
             }
         }
-        HirExprKind::Call { callee, args, .. } => {
+        HirExprKind::Call {
+            target,
+            callee,
+            args,
+        } => {
             // Site 4194 + 4236 predicates fire on the callee's resolution.
             // Recurse first so any nested invalid call inside `callee` or
             // `args` still surfaces, then apply the gate to this site.
@@ -35090,7 +35194,18 @@ fn scan_expr_for_call_shape(
             if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
                 match resolved {
                     ResolvedRef::Item(_) => {
-                        if !callable.contains(name) {
+                        // Ask the question MIR asks. A checker-resolved user
+                        // call carries the declaration identity MIR projects
+                        // its linker symbol from; the callee's spelling is
+                        // presentation only, and a declaration emitted under a
+                        // different one is still callable.
+                        let admitted = match target {
+                            hew_types::CallTarget::User(declaration) => {
+                                callable.declarations.contains(declaration)
+                            }
+                            _ => callable.names.contains(name),
+                        };
+                        if !admitted {
                             let message = if hew_types::has_builtin_associated_item_identity(
                                 name,
                                 BuiltinType::LambdaActorHandle,

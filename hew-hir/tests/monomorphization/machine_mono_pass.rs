@@ -190,6 +190,7 @@ fn machine_mono_fails_closed_when_unresolved_type_var_survives() {
     let machine = HirItem::Machine(HirMachineDecl {
         id: ItemId(0),
         node: HirNodeId(0),
+        declaration: hew_types::DefId::for_test("Holder"),
         name: "Holder".to_string(),
         defining_module: None,
         type_params: vec!["T".to_string()],
@@ -441,6 +442,7 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
     let machine = HirItem::Machine(HirMachineDecl {
         id: ItemId(0),
         node: HirNodeId(0),
+        declaration: hew_types::DefId::for_test("M"),
         name: "M".to_string(),
         defining_module: None,
         type_params: vec!["T".to_string()],

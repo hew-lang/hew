@@ -33,6 +33,7 @@ use hew_types::ResolvedTy;
 fn trap_fn(kind: TrapKind) -> RawMirFunction {
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(&format!("trap_{kind:?}")),
         name: format!("trap_{kind:?}"),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::Default,

@@ -111,6 +111,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -137,6 +138,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             blocks: raw_blocks.clone(),
@@ -146,6 +148,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
             statements: vec![],

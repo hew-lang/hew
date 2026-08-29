@@ -1345,6 +1345,38 @@ struct Builder {
     pub(crate) pool_accessor_sites: HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
     pub(crate) current_task_scope: Option<Place>,
     pub(crate) current_function_symbol: String,
+    /// Resolver-anchored identity of the function this builder is lowering.
+    ///
+    /// The parent key every synthesized producer (closure invoke shim,
+    /// generator body, lambda-actor body, task-entry adapter, fork shim)
+    /// projects its own key from, so a synthesized callable is identified by
+    /// its parent's declaration rather than by the owner name baked into its
+    /// emitted symbol. `None` only on a hand-built builder that never ran
+    /// through `lower_function`; the synthesized producers fail closed on it
+    /// rather than minting an identity from the symbol.
+    pub(crate) current_callable_key: Option<crate::model::MirCallableKey>,
+    /// Per-parent ordinal for [`crate::model::SynthesizedCallable`] children,
+    /// allocated in lowering encounter order so the emitted keys are stable
+    /// across runs (`compile-determinism-verify`). Deliberately separate from
+    /// `next_closure_id`, which names emitted symbols: bumping that counter
+    /// for a producer that does not name a symbol from it would renumber
+    /// every closure symbol in the module.
+    ///
+    /// APPROXIMATION — one sequence shared by every producer, not one per
+    /// variant. WHY: uniqueness and determinism are the only two properties the
+    /// key needs, and a single encounter-order counter gives both with one
+    /// field; per-variant counters would need seven, and each would have to be
+    /// reset in lockstep at every child-builder boundary. The visible
+    /// consequence is that ordinals interleave across producers — a body with
+    /// two closures and one named-fn value yields `ClosureInvokeShim(0)`,
+    /// `ClosureInvokeShim(1)`, `NamedFnInvokeShim(2)` rather than
+    /// `NamedFnInvokeShim(0)`. WHEN this stops being good enough: when a
+    /// consumer wants to enumerate "the Nth closure of `f`" from the key alone,
+    /// or when a producer starts minting children outside lowering encounter
+    /// order (then the ordinal is no longer stable and the determinism gate
+    /// catches it). WHAT replaces it: a per-variant counter, i.e. a small
+    /// `HashMap<discriminant, u32>` on the builder reset with this field.
+    pub(crate) next_synthesized_ordinal: u32,
     pub(crate) current_function_call_conv: crate::model::FunctionCallConv,
     /// True only on a source generator shell builder. Its fn-typed formal
     /// parameters are admitted into the shell's generator env because every
@@ -3475,6 +3507,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     let lowered = lower_function(
                         func,
                         func.name.clone(),
+                        crate::model::MirCallableKey::polymorphic(func.declaration.clone()),
                         abstract_subst,
                         &module.type_classes,
                         &record_field_orders,
@@ -3527,6 +3560,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                 let mut lowered = lower_function(
                     func,
                     func.name.clone(),
+                    crate::model::MirCallableKey::declared(func.declaration.clone()),
                     HashMap::new(),
                     &module.type_classes,
                     &record_field_orders,
@@ -3772,6 +3806,10 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         let mut lowered = lower_function(
             origin,
             mono.mangled_name.clone(),
+            crate::model::MirCallableKey::instance(
+                origin.declaration.clone(),
+                mono.key.type_args.clone(),
+            ),
             subst,
             &module.type_classes,
             &record_field_orders,
@@ -3934,6 +3972,12 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // flattened `<Self>::<method>` mangling, so MIR and codegen agree without
     // translation glue.
     let capabilities = crate::model::ModuleCapabilities::from_raw_mir(&raw_mir, &extern_decls);
+
+    // Fail-closed identity boundary. Every producer above minted a
+    // `MirCallableKey`; if two bodies claim one, the joins that are being moved
+    // onto the key would be as ambiguous as the name comparisons they replace.
+    // Reject here rather than emitting a module with a duplicated identity.
+    diagnostics.extend(crate::identity::validate_unique_callable_keys(&raw_mir));
 
     IrPipeline {
         raw_mir,
@@ -4123,6 +4167,13 @@ pub(crate) struct LoweredFunction {
 /// exactly once (`exhaustive-coverage`). The `__hew_named_fn_invoke_` dedup is
 /// preserved: a duplicate shim (and the subtree below it, which is the same
 /// already-emitted bodies) is skipped wholesale.
+///
+/// This module-wide dedup is the other half of the `MirCallableKey` parent
+/// approximation marked at the shim's mint site (`lower/expr.rs`, the
+/// `__hew_named_fn_invoke_` shim block): the name comparison below decides
+/// which shim body survives, while the key's parent stays whatever body
+/// minted it first. See that marker (and `.tmp/TODO.md`) for the WHY/WHEN/
+/// WHAT.
 #[allow(
     clippy::too_many_arguments,
     reason = "threads the same module-output sinks the four dispatch sites already hold as locals"
@@ -12040,6 +12091,48 @@ fn ownership_join_states(
 }
 
 #[cfg(test)]
+mod synthesized_identity_tests {
+    use super::*;
+
+    #[test]
+    fn a_builder_carrying_a_callable_identity_mints_ordinal_children_of_it() {
+        let parent = crate::model::MirCallableKey::for_test("app.owner");
+        let mut builder = Builder {
+            current_callable_key: Some(parent.clone()),
+            ..Builder::default()
+        };
+
+        let first =
+            builder.mint_synthesized_child_key(crate::model::SynthesizedCallable::GeneratorBody);
+        let second = builder
+            .mint_synthesized_child_key(crate::model::SynthesizedCallable::ClosureInvokeShim);
+
+        assert_eq!(
+            first,
+            parent.child(crate::model::SynthesizedCallable::GeneratorBody(0))
+        );
+        assert_eq!(
+            second,
+            parent.child(crate::model::SynthesizedCallable::ClosureInvokeShim(1)),
+            "one shared per-parent sequence: the second child is ordinal 1 even though it \
+             is the first of its variant"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "carries no callable identity")]
+    fn a_builder_with_no_callable_identity_refuses_to_mint_a_child_key() {
+        // The negative control for the `current_callable_key: Option<..>`
+        // fail-closed claim. Without it the producer would have to invent an
+        // identity from the emitted symbol — the exact reconstruction this
+        // slice removes — and two synthesized callables could then collide.
+        let mut builder = Builder::default();
+        let _ =
+            builder.mint_synthesized_child_key(crate::model::SynthesizedCallable::GeneratorBody);
+    }
+}
+
+#[cfg(test)]
 mod lexical_scope_join_tests {
     use super::*;
     use crate::model::{OwnerDropRecipe, OwnerId, OwnershipEvent};
@@ -13564,6 +13657,7 @@ pub(in crate::lower) fn finalize_body(
 pub(crate) fn lower_function(
     func: &HirFn,
     emit_name: String,
+    key: crate::model::MirCallableKey,
     subst: HashMap<String, ResolvedTy>,
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
@@ -13636,6 +13730,7 @@ pub(crate) fn lower_function(
         pool_accessor_sites: pool_accessor_sites.clone(),
         pointer_width,
         current_function_symbol: emit_name.clone(),
+        current_callable_key: Some(key.clone()),
         current_function_call_conv: call_conv,
         generator_shell_call_gate: func.is_generator.then_some(GeneratorShellCallGate),
         task_entry_adapter_symbols,
@@ -13762,6 +13857,7 @@ pub(crate) fn lower_function(
     // single-block tests still see `blocks[0]` as the entry block.
     let mut raw = RawMirFunction {
         name: emit_name.clone(),
+        key: key.clone(),
         return_ty: return_ty.clone(),
         call_conv,
         params: func
@@ -13928,6 +14024,7 @@ pub(crate) fn lower_function(
 
     let (checked, elaboration_diagnostics) = seal_checked(
         emit_name,
+        key,
         return_ty.clone(),
         raw.blocks.clone(),
         &raw,
@@ -14341,6 +14438,34 @@ struct CaptureEnvOwnedLoad {
 }
 
 impl Builder {
+    /// Mint the key of a callable this body synthesizes, allocating its
+    /// per-parent ordinal in lowering encounter order.
+    ///
+    /// Encounter order is what makes the ordinals — and therefore the keys —
+    /// identical across runs of the same input, which the
+    /// `compile-determinism-verify` gate depends on.
+    ///
+    /// Fails closed: a builder that never entered through `lower_function`
+    /// carries no declaration identity, and this refuses to invent one from
+    /// the emitted symbol rather than minting a key two callables could share.
+    pub(crate) fn mint_synthesized_child_key(
+        &mut self,
+        child: impl FnOnce(u32) -> crate::model::SynthesizedCallable,
+    ) -> crate::model::MirCallableKey {
+        let ordinal = self.next_synthesized_ordinal;
+        self.next_synthesized_ordinal = ordinal
+            .checked_add(1)
+            .expect("synthesized callable ordinal overflow");
+        self.current_callable_key
+            .as_ref()
+            .expect(
+                "compiler invariant: a synthesized callable was minted by a builder that carries \
+                 no callable identity; every production body enters lowering through \
+                 `lower_function`, which establishes it",
+            )
+            .child(child(ordinal))
+    }
+
     /// Record a binding's declaration ordinal once.
     ///
     /// Parameters call this directly because they do not emit

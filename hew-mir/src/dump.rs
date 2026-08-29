@@ -91,6 +91,46 @@ pub fn dump_mir(pipeline: &IrPipeline, stage: DumpStage) -> String {
 // Per-function renderers
 // ---------------------------------------------------------------------------
 
+/// Render one [`crate::model::MirCallableKey`] as `<declaration> [instance]`,
+/// with a synthesized child rendered as its parent chain followed by the
+/// producer and ordinal that minted it.
+///
+/// The instance tag is bracketed rather than appended with `::` so the
+/// rendering cannot be mistaken for — or parsed back into — a declaration
+/// path: the key is not reconstructible from its rendering, by design.
+fn render_callable_key(key: &crate::model::MirCallableKey) -> String {
+    use crate::model::{MirCallableInstance, SynthesizedCallable};
+    match &key.instance {
+        MirCallableInstance::Monomorphic => {
+            format!("{} [mono]", key.declaration.full_path())
+        }
+        MirCallableInstance::Generic { type_args } => format!(
+            "{} [generic {}]",
+            key.declaration.full_path(),
+            type_args
+                .iter()
+                .map(|ty| ty.user_facing().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        MirCallableInstance::Polymorphic => {
+            format!("{} [poly]", key.declaration.full_path())
+        }
+        MirCallableInstance::Synthesized { parent, child } => {
+            let child = match child {
+                SynthesizedCallable::ClosureInvokeShim(n) => format!("closure_invoke#{n}"),
+                SynthesizedCallable::NamedFnInvokeShim(n) => format!("named_fn_invoke#{n}"),
+                SynthesizedCallable::LambdaActorBody(n) => format!("lambda_actor_body#{n}"),
+                SynthesizedCallable::GeneratorBody(n) => format!("generator_body#{n}"),
+                SynthesizedCallable::TaskEntryAdapter(n) => format!("task_entry_adapter#{n}"),
+                SynthesizedCallable::ForkEntryShim(n) => format!("fork_entry_shim#{n}"),
+                SynthesizedCallable::MachineStep => "machine_step".to_string(),
+            };
+            format!("{} -> {child}", render_callable_key(parent))
+        }
+    }
+}
+
 fn dump_raw_function(out: &mut String, func: &RawMirFunction) {
     // Header line: fn <name>(<param_types>) -> <ret_ty> [conv=<cc>]
     let param_list = func
@@ -108,6 +148,11 @@ fn dump_raw_function(out: &mut String, func: &RawMirFunction) {
         render_call_conv(func.call_conv),
     )
     .expect("write to string");
+
+    // Resolver-anchored callable identity. Rendered on Raw only: it is the
+    // stage where every producer establishes the key, and the Checked/Elab
+    // dumps are consumed by committed baselines that describe drop plans.
+    writeln!(out, "  key: {}", render_callable_key(&func.key)).expect("write to string");
 
     // Locals table
     if !func.locals.is_empty() {
@@ -1939,6 +1984,13 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             existing,
             duplicate,
         } => format!("ActorHandlerSymbolCollision {symbol} existing={existing} dup={duplicate}"),
+        MirDiagnosticKind::CallableKeyCollision {
+            declaration,
+            first_symbol,
+            second_symbol,
+        } => format!(
+            "CallableKeyCollision {declaration} first={first_symbol} second={second_symbol}"
+        ),
         MirDiagnosticKind::ActorStateCloneClassificationFailed {
             actor,
             field_index,
@@ -2245,6 +2297,7 @@ mod tests {
 
     fn minimal_raw_func(name: &str) -> RawMirFunction {
         RawMirFunction {
+            key: crate::model::MirCallableKey::for_test(name),
             name: name.to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: FunctionCallConv::Default,
@@ -2357,6 +2410,7 @@ mod tests {
     fn dump_checked_passing_function_emits_checks_none() {
         let raw = minimal_raw_func("identity");
         let checked = CheckedMirFunction {
+            key: crate::model::MirCallableKey::for_test("identity"),
             name: "identity".to_string(),
             return_ty: ResolvedTy::I64,
             blocks: raw.blocks.clone(),
@@ -2381,6 +2435,7 @@ mod tests {
     fn dump_checked_prints_explicit_rejected_parameter_boundary() {
         let raw = minimal_raw_func("rejected");
         let checked = CheckedMirFunction {
+            key: crate::model::MirCallableKey::for_test("rejected"),
             name: "rejected".to_string(),
             return_ty: ResolvedTy::I64,
             blocks: raw.blocks,
@@ -2420,6 +2475,7 @@ mod tests {
     fn dump_checked_rejects_non_total_parameter_boundaries() {
         let raw = minimal_raw_func("non_total");
         let checked = CheckedMirFunction {
+            key: crate::model::MirCallableKey::for_test("non_total"),
             name: "non_total".to_string(),
             return_ty: ResolvedTy::I64,
             blocks: raw.blocks,
@@ -2452,6 +2508,7 @@ mod tests {
     #[test]
     fn dump_elab_no_drops_emits_drop_plans_none() {
         let elab = ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("no_drops"),
             name: "no_drops".to_string(),
             return_ty: ResolvedTy::I64,
             statements: vec![],
@@ -2499,6 +2556,7 @@ mod tests {
             },
         );
         let func = RawMirFunction {
+            key: crate::model::MirCallableKey::for_test("recv_actor"),
             name: "recv_actor".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: FunctionCallConv::Default,
@@ -2557,6 +2615,7 @@ mod tests {
             },
         );
         let func = RawMirFunction {
+            key: crate::model::MirCallableKey::for_test("stream_actor"),
             name: "stream_actor".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: FunctionCallConv::Default,
@@ -2601,6 +2660,7 @@ mod tests {
     #[test]
     fn trap_terminator_renders_kind_tag() {
         let func = RawMirFunction {
+            key: crate::model::MirCallableKey::for_test("trapper"),
             name: "trapper".to_string(),
             return_ty: ResolvedTy::I64,
             call_conv: FunctionCallConv::Default,

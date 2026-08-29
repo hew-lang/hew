@@ -294,6 +294,7 @@ fn raw_mir_basic_block_round_trips_call_runtime_abi() {
     // a single Instr::CallRuntimeAbi in the instruction stream.
     let func = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("probe"),
         name: "probe".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -349,6 +350,7 @@ fn module_capabilities_collect_typed_metric_and_node_calls() {
 
     let function = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("capabilities"),
         name: "capabilities".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -405,6 +407,7 @@ fn module_capabilities_set_and_clear_blocking_offload_from_tagged_extern_calls()
 
     let function_calling = |callee: &str| RawMirFunction {
         source_origin: SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(&format!("calls_{callee}")),
         name: format!("calls_{callee}"),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,

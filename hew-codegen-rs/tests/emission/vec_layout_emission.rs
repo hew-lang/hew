@@ -43,6 +43,7 @@ fn base_pipeline(
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -63,6 +64,7 @@ fn base_pipeline(
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             blocks: blocks.clone(),
@@ -72,6 +74,7 @@ fn base_pipeline(
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty,
             statements: vec![],
@@ -664,6 +667,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
     let pipeline = IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -684,6 +688,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: return_ty.clone(),
             blocks: blocks.clone(),
@@ -693,6 +698,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty,
             statements: vec![],

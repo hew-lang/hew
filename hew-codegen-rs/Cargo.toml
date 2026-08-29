@@ -55,6 +55,9 @@ cc = "1"
 
 [dev-dependencies]
 hew-testutil = { path = "../hew-testutil" }
+# Fixture callable identities for the hand-built MIR modules the emission,
+# structural, and exec tests author.
+hew-mir = { path = "../hew-mir", features = ["test"] }
 hew-types = { path = "../hew-types", features = ["test"] }
 # The worker-free actor teardown seam is test-only. Keeping its feature on the
 # dev dependency prevents Cargo feature unification from putting the seam in

@@ -28,9 +28,9 @@ The harness asserts exact stdout match and (if present) exit code.
 Files without these annotations: clean = build-0 + run-0 within bounds.
 
 Ratchet (--regressions mode):
-  tests/fuzz-oracle/expected-failures.txt lists filenames (relative to
-  tests/fuzz-oracle/regressions/) that are KNOWN to fail, each annotated with
-  # <root-cause>; issue: #NNNN.
+  tests/fuzz-oracle/expected-failures.txt lists bare filenames from the
+  ratcheted candidate sources (vertical-slice or regressions) that are KNOWN
+  to fail, each annotated with # <root-cause>; issue: #NNNN.
   - A listed file that PASSES   → unexpected-pass → gate failure.
   - An unlisted file that FAILS → unexpected-fail → gate failure.
   In --full mode the ratchet is NOT applied to cargo-fuzz corpus files (they

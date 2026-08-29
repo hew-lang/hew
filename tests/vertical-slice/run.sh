@@ -981,7 +981,6 @@ run_accept_expect_stdout "arena_len_live_count"
 run_accept_expect_stdout "arena_composite_value"
 run_accept_expect_stdout "arena_no_leak_cycle"
 run_accept_expect_stdout "arena_cross_instance_key_rejected"
-run_accept_expect_stdout "arena_nested_vec_reuse"
 run_accept_expect_status "move_owned_record_field_once" 0
 run_accept_expect_stdout "move_owned_record_field_sibling_cleanup"
 expect_check_fail_contains \

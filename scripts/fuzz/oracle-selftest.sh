@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# oracle-selftest.sh — Four independently-failable validation tests for
+# oracle-selftest.sh — Five independently-failable validation tests for
 # scripts/fuzz/run-oracle.py.
 #
 # Test 1 (oracle-flags-a-known-crash):
@@ -21,7 +21,12 @@
 #   over nothing, and a corpus override with no declared minimum must be
 #   refused outright rather than defaulting to a floor of zero.
 #
-# All four must pass for the self-test to succeed.
+# Test 5 (oracle-ratchets-positive-rejections):
+#   An unlisted positive rejection must fail, the exact listed rejection must
+#   pass, and replacing that fixture with a clean program while it remains
+#   listed must fail as an unexpected pass.
+#
+# All five must pass for the self-test to succeed.
 
 set -euo pipefail
 
@@ -66,7 +71,10 @@ run_counterfactual() {
 }
 
 pass() { echo "PASS $1"; }
-fail() { echo "FAIL $1: $2" >&2; exit 1; }
+fail() {
+    echo "FAIL $1: $2" >&2
+    exit 1
+}
 
 # ---------------------------------------------------------------------------
 # Shared crash fixture: a checker-valid program that aborts at runtime.
@@ -90,11 +98,11 @@ CRASH_SOURCE='fn main() {
 # ---------------------------------------------------------------------------
 T1_DIR="${TMPDIR_BASE}/t1_regressions"
 mkdir -p "${T1_DIR}"
-printf '%s' "${CRASH_SOURCE}" > "${T1_DIR}/crash_fixture.hew"
+printf '%s' "${CRASH_SOURCE}" >"${T1_DIR}/crash_fixture.hew"
 
 # Create a matching expected-failures file that does NOT list crash_fixture.hew.
 T1_EF="${TMPDIR_BASE}/t1_expected_failures.txt"
-printf '# empty\n' > "${T1_EF}"
+printf '# empty\n' >"${T1_EF}"
 
 echo "--- Test 1: oracle-flags-a-known-crash ---"
 # Oracle must exit 1 (unexpected failure — crash not listed in expected-failures).
@@ -105,8 +113,8 @@ run_counterfactual "t1-known-crash" python3 "${ORACLE}" \
     --regressions-dir "${T1_DIR}" \
     --expected-failures "${T1_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
-    --min-candidates 1 \
-    || rc=$?
+    --min-candidates 1 ||
+    rc=$?
 if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-flags-a-known-crash" "expected oracle exit 1, got ${rc}"
 fi
@@ -121,8 +129,8 @@ run_counterfactual "t1-report" python3 "${ORACLE}" \
     --expected-failures "${T1_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
     --min-candidates 1 \
-    --report "${T1_REPORT}" \
-    || rc=$?
+    --report "${T1_REPORT}" ||
+    rc=$?
 
 # The JSON report must contain runtime-abort or runtime-crash for the fixture.
 if ! python3 -c "
@@ -147,11 +155,11 @@ echo "--- Test 2: oracle-honours-expected-failure ---"
 
 T2_DIR="${TMPDIR_BASE}/t2_regressions"
 mkdir -p "${T2_DIR}"
-printf '%s' "${CRASH_SOURCE}" > "${T2_DIR}/crash_fixture.hew"
+printf '%s' "${CRASH_SOURCE}" >"${T2_DIR}/crash_fixture.hew"
 
 # 2a: crash_fixture.hew IS listed — oracle must exit 0 (known gap tolerated).
 T2_EF="${TMPDIR_BASE}/t2_expected_failures.txt"
-printf 'crash_fixture.hew  # known crash; issue: #test\n' > "${T2_EF}"
+printf 'crash_fixture.hew  # known crash; issue: #test\n' >"${T2_EF}"
 
 rc=0
 run_counterfactual "t2a-listed-crash" python3 "${ORACLE}" \
@@ -160,11 +168,11 @@ run_counterfactual "t2a-listed-crash" python3 "${ORACLE}" \
     --regressions-dir "${T2_DIR}" \
     --expected-failures "${T2_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
-    --min-candidates 1 \
-    || rc=$?
+    --min-candidates 1 ||
+    rc=$?
 if [[ "${rc}" -ne 0 ]]; then
     fail "oracle-honours-expected-failure (2a: listed crash tolerated)" \
-         "expected oracle exit 0, got ${rc}"
+        "expected oracle exit 0, got ${rc}"
 fi
 
 # 2b: Remove crash_fixture.hew from disk while leaving it in expected-failures.
@@ -183,11 +191,11 @@ output="$(python3 "${ORACLE}" \
     2>&1)" || rc=$?
 if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-honours-expected-failure (2b: missing-but-listed fails gate)" \
-         "expected oracle exit 1, got ${rc}; output: ${output}"
+        "expected oracle exit 1, got ${rc}; output: ${output}"
 fi
 if ! echo "${output}" | grep -q "expected-failing entry not found"; then
     fail "oracle-honours-expected-failure (2b: missing-but-listed fails gate)" \
-         "expected 'expected-failing entry not found' in output; got: ${output}"
+        "expected 'expected-failing entry not found' in output; got: ${output}"
 fi
 
 pass "oracle-honours-expected-failure"
@@ -200,10 +208,10 @@ echo "--- Test 3: oracle-passes-clean-program ---"
 T3_DIR="${TMPDIR_BASE}/t3_regressions"
 mkdir -p "${T3_DIR}"
 T3_EF="${TMPDIR_BASE}/t3_expected_failures.txt"
-printf '# empty\n' > "${T3_EF}"
+printf '# empty\n' >"${T3_EF}"
 
 # 3a: clean program with matching EXPECT — must exit 0, verdict clean.
-printf '// EXPECT: 7\nfn main() { println(7); }\n' > "${T3_DIR}/clean_fixture.hew"
+printf '// EXPECT: 7\nfn main() { println(7); }\n' >"${T3_DIR}/clean_fixture.hew"
 
 rc=0
 run_counterfactual "t3a-clean-program" python3 "${ORACLE}" \
@@ -212,15 +220,15 @@ run_counterfactual "t3a-clean-program" python3 "${ORACLE}" \
     --regressions-dir "${T3_DIR}" \
     --expected-failures "${T3_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
-    --min-candidates 1 \
-    || rc=$?
+    --min-candidates 1 ||
+    rc=$?
 if [[ "${rc}" -ne 0 ]]; then
     fail "oracle-passes-clean-program (3a: clean program passes)" \
-         "expected oracle exit 0, got ${rc}"
+        "expected oracle exit 0, got ${rc}"
 fi
 
 # 3b: mutate EXPECT to wrong value — must exit 1, verdict wrong-output.
-printf '// EXPECT: 8\nfn main() { println(7); }\n' > "${T3_DIR}/clean_fixture.hew"
+printf '// EXPECT: 8\nfn main() { println(7); }\n' >"${T3_DIR}/clean_fixture.hew"
 
 rc=0
 output=""
@@ -234,11 +242,11 @@ output="$(python3 "${ORACLE}" \
     2>&1)" || rc=$?
 if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-passes-clean-program (3b: wrong EXPECT fails gate)" \
-         "expected oracle exit 1, got ${rc}; output: ${output}"
+        "expected oracle exit 1, got ${rc}; output: ${output}"
 fi
 if ! echo "${output}" | grep -q "wrong-output"; then
     fail "oracle-passes-clean-program (3b: wrong EXPECT fails gate)" \
-         "expected 'wrong-output' in output; got: ${output}"
+        "expected 'wrong-output' in output; got: ${output}"
 fi
 
 pass "oracle-passes-clean-program"
@@ -251,7 +259,7 @@ echo "--- Test 4: oracle-refuses-an-empty-candidate-set ---"
 T4_DIR="${TMPDIR_BASE}/t4"
 T4_EF="${TMPDIR_BASE}/t4_expected_failures.txt"
 mkdir -p "${T4_DIR}"
-printf '# empty\n' > "${T4_EF}"
+printf '# empty\n' >"${T4_EF}"
 
 rc=0
 output=""
@@ -265,11 +273,11 @@ output="$(python3 "${ORACLE}" \
     2>&1)" || rc=$?
 if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-refuses-an-empty-candidate-set (4a: empty corpus fails gate)" \
-         "expected oracle exit 1, got ${rc}; output: ${output}"
+        "expected oracle exit 1, got ${rc}; output: ${output}"
 fi
 if ! echo "${output}" | grep -q "CORPUS MINIMUM"; then
     fail "oracle-refuses-an-empty-candidate-set (4a: empty corpus fails gate)" \
-         "expected 'CORPUS MINIMUM' in output; got: ${output}"
+        "expected 'CORPUS MINIMUM' in output; got: ${output}"
 fi
 
 # 4b: a corpus override with no declared minimum must be refused outright,
@@ -284,15 +292,111 @@ output="$(python3 "${ORACLE}" \
     2>&1)" || rc=$?
 if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-refuses-an-empty-candidate-set (4b: undeclared corpus refused)" \
-         "expected oracle exit 1, got ${rc}; output: ${output}"
+        "expected oracle exit 1, got ${rc}; output: ${output}"
 fi
 if ! echo "${output}" | grep -q -- "--min-candidates"; then
     fail "oracle-refuses-an-empty-candidate-set (4b: undeclared corpus refused)" \
-         "expected '--min-candidates' in output; got: ${output}"
+        "expected '--min-candidates' in output; got: ${output}"
 fi
 
 pass "oracle-refuses-an-empty-candidate-set"
 
 # ---------------------------------------------------------------------------
+echo "--- Test 5: oracle-ratchets-positive-rejections ---"
+T5_VERTICAL="${TMPDIR_BASE}/t5_vertical"
+T5_REGRESSIONS="${TMPDIR_BASE}/t5_regressions"
+T5_EF="${TMPDIR_BASE}/t5_expected_failures.txt"
+T5_ER="${TMPDIR_BASE}/t5_expected_rejects.txt"
+T5_REPORT="${TMPDIR_BASE}/t5_report.json"
+mkdir -p "${T5_VERTICAL}" "${T5_REGRESSIONS}"
+printf '# empty\n' >"${T5_EF}"
+printf '# empty\n' >"${T5_ER}"
+printf 'fn main() { let value: i64 = "not-an-integer"; }\n' \
+    >"${T5_VERTICAL}/reject_fixture.hew"
+
+# 5a: A positive fixture rejected by the frontend and absent from the exact
+# rejection ratchet must fail closed.
+rc=0
+output="$(python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T5_REGRESSIONS}" \
+    --expected-failures "${T5_EF}" \
+    --expected-rejects "${T5_ER}" \
+    --vertical-slice-dir "${T5_VERTICAL}" \
+    --min-candidates 1 \
+    --report "${T5_REPORT}" \
+    2>&1)" || rc=$?
+if [[ "${rc}" -ne 1 ]]; then
+    fail "oracle-ratchets-positive-rejections (5a: unexpected reject fails)" \
+        "expected oracle exit 1, got ${rc}; output: ${output}"
+fi
+if [[ "${output}" != *"UNEXPECTED REJECTIONS (not in expected-reject.txt)"* ]]; then
+    fail "oracle-ratchets-positive-rejections (5a: unexpected reject fails)" \
+        "unexpected-rejection list was not printed; output: ${output}"
+fi
+if ! python3 -c "
+import json, sys
+r = json.load(open('${T5_REPORT}'))
+paths = [entry['path'] for entry in r['unexpected_rejects']]
+sys.exit(0 if paths == ['tests/vertical-slice/accept/reject_fixture.hew'] else 1)
+"; then
+    fail "oracle-ratchets-positive-rejections (5a: unexpected reject fails)" \
+        "report did not identify the exact unexpected rejection; output: ${output}"
+fi
+
+# 5b: Listing that exact fixture identity tolerates the known rejection.
+printf 'tests/vertical-slice/accept/reject_fixture.hew\n' >"${T5_ER}"
+rc=0
+run_counterfactual "t5b-listed-reject" python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T5_REGRESSIONS}" \
+    --expected-failures "${T5_EF}" \
+    --expected-rejects "${T5_ER}" \
+    --vertical-slice-dir "${T5_VERTICAL}" \
+    --min-candidates 1 ||
+    rc=$?
+if [[ "${rc}" -ne 0 ]]; then
+    fail "oracle-ratchets-positive-rejections (5b: listed reject passes)" \
+        "expected oracle exit 0, got ${rc}"
+fi
+
+# 5c (negative control): make the listed fixture clean. The stale entry must
+# fail in the opposite direction so the manifest can only shrink.
+printf '// EXPECT: 7\nfn main() { println(7); }\n' \
+    >"${T5_VERTICAL}/reject_fixture.hew"
+rc=0
+output="$(python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T5_REGRESSIONS}" \
+    --expected-failures "${T5_EF}" \
+    --expected-rejects "${T5_ER}" \
+    --vertical-slice-dir "${T5_VERTICAL}" \
+    --min-candidates 1 \
+    --report "${T5_REPORT}" \
+    2>&1)" || rc=$?
+if [[ "${rc}" -ne 1 ]]; then
+    fail "oracle-ratchets-positive-rejections (5c: stale reject fails)" \
+        "expected oracle exit 1, got ${rc}; output: ${output}"
+fi
+if [[ "${output}" != *"UNEXPECTED PASSES (listed in expected-reject.txt but passed)"* ]]; then
+    fail "oracle-ratchets-positive-rejections (5c: stale reject fails)" \
+        "unexpected-pass list was not printed; output: ${output}"
+fi
+if ! python3 -c "
+import json, sys
+r = json.load(open('${T5_REPORT}'))
+paths = [entry['path'] for entry in r['unexpected_reject_passes']]
+sys.exit(0 if paths == ['tests/vertical-slice/accept/reject_fixture.hew'] else 1)
+"; then
+    fail "oracle-ratchets-positive-rejections (5c: stale reject fails)" \
+        "report did not identify the exact unexpected pass; output: ${output}"
+fi
+
+pass "oracle-ratchets-positive-rejections"
+
+# ---------------------------------------------------------------------------
 echo ""
-echo "oracle-selftest: all 4 tests PASS"
+echo "oracle-selftest: all 5 tests PASS"

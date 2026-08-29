@@ -4167,6 +4167,13 @@ pub(crate) struct LoweredFunction {
 /// exactly once (`exhaustive-coverage`). The `__hew_named_fn_invoke_` dedup is
 /// preserved: a duplicate shim (and the subtree below it, which is the same
 /// already-emitted bodies) is skipped wholesale.
+///
+/// This module-wide dedup is the other half of the `MirCallableKey` parent
+/// approximation marked at the shim's mint site (`lower/expr.rs`, the
+/// `__hew_named_fn_invoke_` shim block): the name comparison below decides
+/// which shim body survives, while the key's parent stays whatever body
+/// minted it first. See that marker (and `.tmp/TODO.md`) for the WHY/WHEN/
+/// WHAT.
 #[allow(
     clippy::too_many_arguments,
     reason = "threads the same module-output sinks the four dispatch sites already hold as locals"

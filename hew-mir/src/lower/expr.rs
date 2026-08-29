@@ -3335,6 +3335,29 @@ impl Builder {
                     Self::sanitize_symbol_component(&fn_symbol)
                 );
                 // Emit the shim only once per named fn (dedup by shim_name).
+                //
+                // APPROXIMATION — this shim is deduped MODULE-wide by
+                // `shim_name` (here, and again by `HashSet<String>` in
+                // `flatten_generated_functions`, `lower/mod.rs`), but the
+                // `MirCallableKey` minted below is parented on `self`'s own
+                // key — i.e. the body that happened to reference `fn_symbol`
+                // as a value first — not on the named function it wraps. WHY:
+                // one shim body per named function is what codegen wants (a
+                // second identical shim would be a duplicate LLVM symbol),
+                // and the parent is only ever read as part of a unique
+                // identity, never as "the body that owns this shim".
+                // Encounter order is deterministic for a fixed input, so the
+                // key is stable — `compile-determinism-verify` covers that.
+                // WHEN this stops being good enough: as soon as a consumer
+                // treats the parent as ownership (e.g. attributing the
+                // shim's drops or diagnostics to the parent body), because
+                // two referencing bodies would then disagree about which of
+                // them owns it. WHAT replaces it: parent the shim on the
+                // WRAPPED named function's `MirCallableKey` — it is a
+                // per-callee artifact, not a per-caller one — which needs
+                // that key in hand here rather than only `fn_symbol`. Same
+                // approximation as `ensure_task_entry_adapter`
+                // (`lower/task.rs`); tracked in `.tmp/TODO.md`.
                 if !self
                     .generated_functions
                     .iter()

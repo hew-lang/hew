@@ -11,10 +11,10 @@ use super::{
     propagate_whole_value_alias_roots_excluding_moves, prove_retained_bytes_local_share,
     shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_init_vec_source,
     vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder,
-    BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
-    DischargeSite, Disposition, FieldOffset, HashMap, HashSet, Instr, IntentKind, MirStatement,
-    NestedDefSite, NestedUseSite, Place, RawMirFunction, ResolvedTy, SiteId, StringDropDerivation,
-    StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
+    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, DischargeSite, Disposition,
+    FieldOffset, HashMap, HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite,
+    Place, RawMirFunction, ResolvedTy, SiteId, StringDropDerivation, StringRetainCondition,
+    StringRetainSite, SuspendKind, Terminator,
 };
 use crate::{raw_virtual_operation_class, RawVirtualClass};
 use handoff::instruction_carries_typed_handoff;
@@ -5335,7 +5335,7 @@ pub(super) fn finalize_string_ownership(
     raw: &mut RawMirFunction,
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
-) -> StringDropDerivation {
+) {
     // Retain/mint classification must see only canonical user-facing owners.
     // Synthetic produced-value slots mint their owners once their physical
     // handoff has been made explicit; including them here makes two bindings
@@ -5644,7 +5644,6 @@ pub(super) fn finalize_string_ownership(
         &builder.call_scrutinee_provenance.extern_table,
         &mut raw.instr_spans,
     );
-    derivation
 }
 struct NestedTempDataflow {
     pred_count: HashMap<u32, usize>,
@@ -8504,7 +8503,7 @@ pub(super) fn finalize_bytes_ownership(
     raw: &mut RawMirFunction,
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
-) -> BytesDropDerivation {
+) {
     // See the String pass above: produced-value cleanup candidates belong to
     // drop elaboration, not sole-owner mint classification.
     let owned_locals_snapshot = builder.owned_locals_snapshot();
@@ -8774,7 +8773,6 @@ pub(super) fn finalize_bytes_ownership(
         &derivation.retain_sites,
         &neutralize_after,
     );
-    derivation
 }
 
 fn bytes_retain_site_is_required(

@@ -281,6 +281,14 @@ macro_rules! cabi_guard {
 pub(crate) mod lifetime;
 pub(crate) mod util;
 
+/// Shared stub actors for the wake-edge tests (#3069).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod test_actor;
+
+/// Wake-edge incarnation tests, one readiness family each (#3069).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod wake_incarnation_tests;
+
 /// CBOR wire envelope types — the Rust-native representation of the Hew wire
 /// protocol plus the fail-closed encode/decode helpers used by runtime
 /// transport paths.

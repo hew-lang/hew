@@ -4593,6 +4593,7 @@ pub unsafe extern "C" fn hew_sched_metrics_snapshot(out: *mut HewSchedMetrics) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_actor::{stub_actor, TrackedTestActor};
     use std::ptr;
     use std::sync::atomic::AtomicI32;
     use std::sync::Arc;
@@ -4797,97 +4798,6 @@ mod tests {
         }
     }
 
-    /// Helper: build a minimal `HewActor` with sensible defaults.
-    fn stub_actor() -> HewActor {
-        HewActor {
-            sched_link_next: AtomicPtr::new(ptr::null_mut()),
-            id: 1,
-            state: ptr::null_mut(),
-            state_size: 0,
-            dispatch: None,
-            mailbox: ptr::null_mut(),
-            actor_state: AtomicI32::new(HewActorState::Runnable as i32),
-            budget: AtomicI32::new(HEW_MSG_BUDGET),
-            init_state: ptr::null_mut(),
-            init_state_size: 0,
-            coalesce_key_fn: None,
-            terminate_fn: None,
-            state_drop_fn: None,
-            state_clone_fn: None,
-            terminate_called: AtomicBool::new(false),
-            terminate_finished: AtomicBool::new(false),
-            dispatch_active: AtomicBool::new(false),
-            error_code: AtomicI32::new(0),
-            supervisor: ptr::null_mut(),
-            supervisor_child_index: -1,
-            priority: AtomicI32::new(actor::HEW_PRIORITY_NORMAL),
-            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
-            idle_count: AtomicI32::new(0),
-            hibernation_threshold: AtomicI32::new(0),
-            hibernating: AtomicI32::new(0),
-            prof_messages_processed: AtomicU64::new(0),
-            prof_processing_time_ns: AtomicU64::new(0),
-            arena: std::ptr::null_mut(),
-            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
-            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
-            pending_wake: AtomicBool::new(false),
-            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
-            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
-            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-            runtime: ptr::null(),
-            send_pin_count: std::sync::atomic::AtomicU32::new(0),
-            gen_sink: AtomicPtr::new(std::ptr::null_mut()),
-            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
-            spawn_serial: 1,
-            sys_dispatch: None,
-            state_drop_consumed: AtomicBool::new(false),
-            state_drop_borrowed: AtomicBool::new(false),
-            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
-        }
-    }
-
-    /// RAII guard that registers a stub actor in `LIVE_ACTORS` for the duration
-    /// of a test and untracks it on drop. `enqueue_resume` now confirms liveness
-    /// against `LIVE_ACTORS` before waking (the W6.010 caller-actor UAF guard),
-    /// so a wake-expecting test must present its stub as a LIVE actor. Each guard
-    /// assigns a unique `id` so concurrent tests do not collide in the
-    /// process-wide registry.
-    struct TrackedTestActor {
-        ptr: *mut HewActor,
-    }
-
-    impl TrackedTestActor {
-        fn install(mut actor: HewActor) -> Self {
-            actor.id = next_tracked_test_actor_id();
-            // Own the actor through a single raw pointer from `Box::into_raw`
-            // rather than storing a `Box` alongside a derived raw pointer: under
-            // Stacked Borrows, moving the `Box` (e.g. returning `Self`) retags and
-            // invalidates the pointee, so the saved raw tag would be stale. The
-            // `into_raw` pointer keeps valid provenance across the struct move and
-            // `Drop` reconstitutes the `Box` to free it exactly once.
-            let ptr: *mut HewActor = Box::into_raw(Box::new(actor));
-            // SAFETY: `ptr` is a freshly-boxed, fully-initialised actor.
-            assert!(unsafe { crate::lifetime::live_actors::track_actor(ptr) });
-            Self { ptr }
-        }
-
-        fn ptr(&self) -> *mut HewActor {
-            self.ptr
-        }
-
-        /// Untrack the actor WITHOUT freeing the box, modelling a caller actor
-        /// torn down before a late/orphan-retire reply fires. After this returns
-        /// `enqueue_resume(ptr)` must observe the actor as no longer live.
-        fn untrack(&self) {
-            crate::lifetime::live_actors::untrack_actor(self.ptr);
-        }
-    }
-
-    fn next_tracked_test_actor_id() -> u64 {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        NEXT_ID.fetch_add(1, Ordering::Relaxed)
-    }
-
     static BLOCKED_SENDER_REINCARNATION: AtomicPtr<HewActor> = AtomicPtr::new(ptr::null_mut());
 
     fn reincarnate_blocked_sender_at_same_address() {
@@ -4896,52 +4806,9 @@ mod tests {
             !actor_ptr.is_null(),
             "blocked sender reincarnation target must be installed"
         );
-        assert!(crate::lifetime::live_actors::untrack_actor(actor_ptr));
-
-        let mut replacement = stub_actor();
-        replacement.id = next_tracked_test_actor_id();
-        replacement.spawn_serial = 2;
-        replacement
-            .actor_state
-            .store(HewActorState::Suspended as i32, Ordering::Release);
-        replacement.suspended_cont.store(
-            ptr::null_mut::<u8>().wrapping_add(1).cast(),
-            Ordering::Release,
-        );
-        replacement.cont_tag.store(
-            crate::internal::types::ContTag::Parked as i32,
-            Ordering::Release,
-        );
-
-        // SAFETY: the old incarnation is untracked and exclusively owned by
-        // this test. Destroying it returns this exact allocation to the test's
-        // one-slot pool; placement immediately reuses it for the replacement.
-        unsafe {
-            actor_ptr.drop_in_place();
-            actor_ptr.write(replacement);
-        }
-        // SAFETY: the replacement is fully initialized at `actor_ptr` and has
-        // a fresh identity distinct from the destroyed incarnation.
-        assert!(unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) });
-    }
-
-    impl std::ops::Deref for TrackedTestActor {
-        type Target = HewActor;
-        fn deref(&self) -> &HewActor {
-            // SAFETY: `ptr` owns a live, boxed actor for the guard's lifetime.
-            unsafe { &*self.ptr }
-        }
-    }
-
-    impl Drop for TrackedTestActor {
-        fn drop(&mut self) {
-            // Idempotent: `untrack_actor` only removes a matching entry; a
-            // double-untrack (test already called `untrack`) is a no-op.
-            crate::lifetime::live_actors::untrack_actor(self.ptr);
-            // SAFETY: `ptr` came from `Box::into_raw` in `install`; reclaim the
-            // box so the actor is freed exactly once.
-            unsafe { drop(Box::from_raw(self.ptr)) };
-        }
+        // SAFETY: the hook runs on the test thread, which owns this allocation
+        // exclusively while the mailbox resolves the removed waiter.
+        unsafe { crate::test_actor::reincarnate_parked_in_place(actor_ptr) };
     }
 
     #[test]

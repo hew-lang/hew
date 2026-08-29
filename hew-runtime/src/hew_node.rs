@@ -13083,4 +13083,53 @@ mod tests {
         }
         crate::registry::hew_registry_clear();
     }
+
+    /// Wake-edge incarnation family: the wire reply table (#3069).
+    ///
+    /// A remote ask registers its parked caller by address. If that caller dies
+    /// and the allocator hands its box to the next spawn before the reply
+    /// arrives, the completion resolves an address that now belongs to a
+    /// different incarnation.
+    ///
+    /// `reincarnate` selects the stale case; `false` is the positive control
+    /// that proves this edge does wake the caller that registered.
+    fn run_node_reply_family(reincarnate: bool) {
+        use crate::scheduler::NoWorkerSchedulerForTest;
+        use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
+
+        let sched = NoWorkerSchedulerForTest::install();
+        let victim = TrackedTestActor::install_parked();
+
+        let table = ReplyRoutingTable::new();
+        let key = ConnectionKey {
+            conn_mgr: 3069,
+            conn_id: 1,
+        };
+        let (request_id, _pending) = table.register_parked(key, victim.ptr());
+
+        if reincarnate {
+            victim.reincarnate_parked();
+        }
+
+        assert!(
+            table.complete(request_id, vec![0xEF]),
+            "the reply must resolve the registered request"
+        );
+
+        if reincarnate {
+            assert_not_woken(&sched, &victim, "node");
+        } else {
+            assert_woken(&sched, &victim, "node");
+        }
+    }
+
+    #[test]
+    fn node_reply_wake_does_not_resume_a_reused_address() {
+        run_node_reply_family(true);
+    }
+
+    #[test]
+    fn node_reply_wake_resumes_the_registering_incarnation() {
+        run_node_reply_family(false);
+    }
 }

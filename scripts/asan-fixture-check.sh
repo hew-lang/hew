@@ -163,6 +163,11 @@ else
 fi
 export ASAN_SYMBOLIZER_PATH
 
+# Hew workers install and own heap-backed alternate signal stacks.  If
+# compiler-rt also manages the process alt stack, it tries to unmap Hew's
+# 64 KiB allocation at worker exit and reports EINVAL before LSan's verdict.
+readonly ASAN_RUNTIME_OPTIONS="detect_leaks=1:use_sigaltstack=0"
+
 # ── Directories ───────────────────────────────────────────────────────────
 ASAN_FIXTURE_TARGET_DIR="${ROOT}/target/sanitizer-fixture-asan"
 WORK_DIR="${ROOT}/.tmp/asan-fixture-out"
@@ -291,7 +296,7 @@ run_asan_fixture() {
     local actual_exit=0
     local log_prefix="${bin}.asan"
 
-    ASAN_OPTIONS="detect_leaks=1:log_path=${log_prefix}" \
+    ASAN_OPTIONS="${ASAN_RUNTIME_OPTIONS}:log_path=${log_prefix}" \
         ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
         LSAN_OPTIONS="suppressions=${LSAN_SUPP}" \
         HEW_WORKERS=1 \
@@ -336,7 +341,7 @@ run_asan_fixture_expect_leak() {
     echo "  RUN      ${label} (expect LSan finding)"
 
     local actual_exit=0
-    ASAN_OPTIONS="detect_leaks=1:log_path=${log_prefix}" \
+    ASAN_OPTIONS="${ASAN_RUNTIME_OPTIONS}:log_path=${log_prefix}" \
         ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
         HEW_WORKERS=1 \
         "${bin}" >/dev/null 2>/dev/null || actual_exit=$?
@@ -350,7 +355,7 @@ run_asan_fixture_expect_leak() {
 
     # Also capture stderr directly in case log_path was not respected.
     local asan_stderr=""
-    ASAN_OPTIONS="detect_leaks=1" \
+    ASAN_OPTIONS="${ASAN_RUNTIME_OPTIONS}" \
         ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
         "${bin}" >/dev/null 2>"${log_prefix}.stderr" || true
     asan_stderr="$(cat "${log_prefix}.stderr" 2>/dev/null || true)"

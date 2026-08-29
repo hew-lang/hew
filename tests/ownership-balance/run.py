@@ -179,7 +179,14 @@ def run_runtime_fixture(
         run_environment["MallocPreScribble"] = "1"
         command = ["leaks", "--atExit", "--", str(binary)]
     else:
-        run_environment["ASAN_OPTIONS"] = "detect_leaks=1:halt_on_error=1"
+        # Hew workers install their own heap-backed alternate signal stacks.
+        # Letting compiler-rt manage a second stack makes it try to unmap Hew's
+        # 64 KiB allocation at worker exit and fail with EINVAL before LSan can
+        # report the fixture verdict. Keep the ownership oracle aligned with
+        # the canonical `make asan` runtime configuration.
+        run_environment["ASAN_OPTIONS"] = (
+            "detect_leaks=1:halt_on_error=1:use_sigaltstack=0"
+        )
         run_environment["LSAN_OPTIONS"] = "suppressions=hew-runtime/lsan.supp"
         command = [str(binary)]
     result = subprocess.run(
@@ -280,9 +287,7 @@ def main() -> int:
                 HEW, name, runtime_environment, binary, host
             )
             if failure is None:
-                failure = run_runtime_fixture(
-                    name, binary, runtime_environment, host
-                )
+                failure = run_runtime_fixture(name, binary, runtime_environment, host)
             if failure is not None:
                 failures.append(f"runtime/{host} {failure}")
 

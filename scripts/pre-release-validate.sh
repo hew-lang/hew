@@ -305,7 +305,6 @@ validate_linux() {
         "${release_dir}/hew-lsp" --version
         "${release_dir}/hew-observe" --version
         test -f "${release_lib_dir}/libhew.a"
-        verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew.a"
 
         echo "==> Step 3: Smoke test — run a Hew program"
         local smoke_file_base
@@ -482,9 +481,6 @@ validate_macos() {
             \"\$release_dir/hew\" --version
             \"\$release_dir/hew-lsp\" --version
             \"\$release_dir/hew-observe\" --version
-            scripts/test-release-lib-link.sh \
-                --hew \"\$release_dir/hew\" \
-                --archive \"\$release_lib_dir/libhew.a\"
 
             echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
             scripts/test-release-binary.sh
@@ -567,10 +563,9 @@ validate_linux_aarch64() {
             export CC=clang-22
             export CXX=clang++-22
 
-            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
+            make test-release-lib-link
             rustup target add wasm32-wasip1
-            cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+            make wasm-runtime-release
 
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
@@ -578,9 +573,6 @@ validate_linux_aarch64() {
             \"\$release_dir/hew-lsp\" --version
             \"\$release_dir/hew-observe\" --version
             test -f \"\$release_lib_dir/libhew.a\"
-            scripts/test-release-lib-link.sh \
-                --hew \"\$release_dir/hew\" \
-                --archive \"\$release_lib_dir/libhew.a\"
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
             \"\$release_dir/hew\" build _smoke.hew -o _smoke_bin
@@ -650,17 +642,13 @@ validate_freebsd() {
             export CC=clang
             export CXX=clang++
 
-            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
+            gmake test-release-lib-link
 
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
             \"\$release_dir/hew\" --version
             \"\$release_dir/hew-lsp\" --version
             \"\$release_dir/hew-observe\" --version
-            scripts/test-release-lib-link.sh \
-                --hew \"\$release_dir/hew\" \
-                --archive \"\$release_lib_dir/libhew.a\"
 
             echo \"FreeBSD build succeeded\"
         '"

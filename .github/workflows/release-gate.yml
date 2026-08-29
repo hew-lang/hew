@@ -155,22 +155,17 @@ jobs:
           tools: nextest@0.9.120
           cache-shared-key: build-test-linux
 
-      - name: Build all release crates
-        run: |
-          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-          cargo build -p hew-lib --profile release-lib
-
       - name: Build WASM runtime
         run: |
           rustup target add wasm32-wasip1
-          cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+          make wasm-runtime-release
 
-      - name: Verify release binaries
+      - name: Build and verify release binaries
         run: |
+          make test-release-lib-link
           target/release/hew --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          make test-release-lib-link
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -306,24 +301,17 @@ jobs:
           tools: nextest@0.9.120
           cache-shared-key: build-test-linux
 
-      - name: Build all release crates
-        run: |
-          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-          cargo build -p hew-lib --profile release-lib
-
       - name: Build WASM runtime
         run: |
           rustup target add wasm32-wasip1
-          cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+          make wasm-runtime-release
 
-      - name: Verify release binaries
+      - name: Build and verify release binaries
         run: |
+          make test-release-lib-link
           target/release/hew --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          scripts/test-release-lib-link.sh \
-            --hew target/release/hew \
-            --archive target/release-lib/libhew.a
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -426,19 +414,12 @@ jobs:
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
           echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
 
-      - name: Build all release crates
+      - name: Build and verify release binaries
         run: |
-          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-          cargo build -p hew-lib --profile release-lib
-
-      - name: Verify release binaries
-        run: |
+          make test-release-lib-link
           target/release/hew --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          scripts/test-release-lib-link.sh \
-            --hew target/release/hew \
-            --archive target/release-lib/libhew.a
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -667,15 +648,11 @@ jobs:
             command -v wasmtime && wasmtime --version
             command -v wasm-ld && wasm-ld --version
 
-            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
+            gmake test-release-lib-link
 
             target/release/hew --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
-            bash scripts/test-release-lib-link.sh \
-              --hew target/release/hew \
-              --archive target/release-lib/libhew.a
 
             # Smoke test — compile and run a .hew program
             echo 'fn main() { println("smoke-ok") }' > _smoke.hew

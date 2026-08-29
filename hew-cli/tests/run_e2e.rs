@@ -202,6 +202,48 @@ fn run_program_with_simple_arithmetic_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
 }
 
+/// #3132: `hew run`'s compiled artifact lives under `$TMPDIR/hew-run/<pid>-
+/// <rand>/` and RAII drop removes it on a normal exit. Points the child's
+/// temp root at an isolated directory (via TMPDIR/TMP/TEMP so the check
+/// holds on both the Unix and Windows temp-dir lookup) and asserts nothing
+/// remains under `hew-run/` once the process has exited cleanly.
+#[test]
+fn run_normal_exit_leaves_no_hew_run_artifact_dir_behind() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("trivial_run.hew");
+    std::fs::write(&path, "fn main() {\n    println(1);\n}\n").unwrap();
+
+    let tmp_root = support::tempdir();
+    let mut command = Command::new(hew_binary());
+    command
+        .arg("run")
+        .arg(&path)
+        .current_dir(dir.path())
+        .env("TMPDIR", tmp_root.path())
+        .env("TMP", tmp_root.path())
+        .env("TEMP", tmp_root.path());
+    let output = support::run_bounded_command(command, "hew run trivial (artifact-cleanup proof)");
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let hew_run_dir = tmp_root.path().join("hew-run");
+    let leftover: Vec<_> = std::fs::read_dir(&hew_run_dir)
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    assert!(
+        leftover.is_empty(),
+        "a normal exit must leave no artifact dir behind under {}: {leftover:?}",
+        hew_run_dir.display()
+    );
+}
+
 #[test]
 fn qualified_variant_tuple_payload_binds_nested_values() {
     require_codegen();

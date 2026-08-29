@@ -43,6 +43,7 @@ mod platform;
 mod playground;
 mod process;
 mod router;
+mod run_temp;
 #[cfg(unix)]
 mod signal;
 mod target;
@@ -1717,7 +1718,7 @@ fn compile_temp_wasi_module(
             std::process::exit(1);
         });
 
-    let tmp_dir = tempfile::tempdir().unwrap_or_else(|e| {
+    let tmp_dir = run_temp::create_hew_run_temp_dir().unwrap_or_else(|e| {
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
@@ -1827,7 +1828,7 @@ fn compile_temp_artifact(
 }
 
 fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
-    let tmp_dir = tempfile::tempdir().unwrap_or_else(|e| {
+    let tmp_dir = run_temp::create_hew_run_temp_dir().unwrap_or_else(|e| {
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
@@ -1840,7 +1841,7 @@ fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempE
 }
 
 fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
-    let tmp_dir = tempfile::tempdir().unwrap_or_else(|e| {
+    let tmp_dir = run_temp::create_hew_run_temp_dir().unwrap_or_else(|e| {
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
@@ -1858,6 +1859,12 @@ fn cmd_run(a: &args::RunArgs) {
     // compile the program runs normally and its own stdout is preserved — no
     // empty array is emitted so program output is never corrupted.
     diagnostic_json::set_output_format(a.format.into());
+
+    // Second cleanup authority for #3132: RAII drop is the fast path for a
+    // normal exit, but a killed `hew run` never reaches it. This best-effort
+    // sweep removes stale `hew-run` artifact dirs left by earlier kills
+    // before this run creates its own; it never fails the run itself.
+    run_temp::sweep_on_startup();
 
     // No input, or a directory: the manifest names the entry point. Resolution
     // happens before any path reaches the compiler, so a directory is never
@@ -2157,6 +2164,10 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
 }
 
 fn cmd_debug(a: &args::DebugArgs) {
+    // See the matching comment in `cmd_run`: best-effort second cleanup
+    // authority for #3132, never fails the debug session.
+    run_temp::sweep_on_startup();
+
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
     let target = resolve_debug_target(options.target.as_deref());

@@ -1771,6 +1771,7 @@ dependencies = [
  "clap_complete",
  "dirs",
  "fd-lock",
+ "filetime",
  "finl_unicode",
  "hew-analysis",
  "hew-codegen-rs",
@@ -1794,6 +1795,7 @@ dependencies = [
  "tempfile",
  "toml",
  "wasmparser 0.252.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

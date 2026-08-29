@@ -3748,11 +3748,53 @@ fn unmarked_type_has_no_resource_marker() {
 }
 
 #[test]
+fn resource_marker_rejects_tuple_type_without_affecting_supported_targets() {
+    let unsupported_source = "#[resource]\ntype Pair(i64);";
+    let unsupported = parse(unsupported_source);
+    assert_eq!(
+        unsupported.errors.len(),
+        1,
+        "tuple-form ownership marker must produce one diagnostic: {:?}",
+        unsupported.errors
+    );
+    assert!(
+        unsupported.errors[0]
+            .message
+            .contains("E_RESOURCE_MARKER_TARGET"),
+        "tuple-form ownership marker must use the target diagnostic: {:?}",
+        unsupported.errors
+    );
+    assert_eq!(
+        &unsupported_source[unsupported.errors[0].span.clone()],
+        "#[resource]",
+        "ownership-marker diagnostic must point at its attribute"
+    );
+
+    let supported_source = r"
+#[resource] type Named { x: i64; }
+#[resource] enum E { A; }
+";
+    let supported = parse(supported_source);
+    assert!(
+        supported.errors.is_empty(),
+        "supported ownership-marker targets must remain valid: {:?}",
+        supported.errors
+    );
+    assert_eq!(supported.program.items.len(), 2);
+    for (item, _) in &supported.program.items {
+        let Item::TypeDecl(decl) = item else {
+            panic!("expected ownership-bearing type declaration, got {item:?}");
+        };
+        assert_eq!(decl.resource_marker, ResourceMarker::Resource);
+    }
+}
+
+#[test]
 fn resource_markers_reject_unsupported_top_level_items_in_every_visibility_form() {
     let source = r"
-#[resource] record PrivateRecord { id: i64 }
-#[linear] pub record PublicRecord { id: i64 }
-#[resource] package record PackageRecord { id: i64 }
+#[resource] type PrivateTuple(i64);
+#[linear] pub type PublicTuple(i64);
+#[resource] package type PackageTuple(i64);
 
 #[linear] fn private_fn() {}
 #[resource] pub fn public_fn() {}
@@ -3770,7 +3812,7 @@ fn resource_markers_reject_unsupported_top_level_items_in_every_visibility_form(
 #[linear] pub type PublicAlias = i64;
 #[resource] package type PackageAlias = i64;
 
-#[linear] impl PrivateRecord { fn close(self) {} }
+#[linear] impl PrivateTuple { fn close(self) {} }
 ";
     let result = parse(source);
     let marker_errors: Vec<_> = result

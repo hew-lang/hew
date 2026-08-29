@@ -353,10 +353,10 @@ fn fmt_totality_item_machine() {
     );
 }
 
-/// `Item::Record` — named form.
+/// `Item::Record` — tuple form.
 #[test]
 fn fmt_totality_item_record() {
-    assert_roundtrip("record Point { x: i64, y: i64 }\n");
+    assert_roundtrip("type Point(i64, i64);\n");
 }
 
 // ---------------------------------------------------------------------------

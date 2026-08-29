@@ -20,7 +20,7 @@ let b = perimeter(p);   // borrow again — legal, no clone needed
 println(p.describe());  // value-receiver chain — still legal
 ```
 
-Reaching for a second *independent, divergent* copy is a `clone`: `clone val`
+Reaching for a second _independent, divergent_ copy is a `clone`: `clone val`
 (prefix form, the natural spelling) or `val.clone()` (method form) — see below.
 `clone` is a cost operation, not an ownership keyword: you never need it to keep
 using a value after passing or sending it somewhere. Copy-on-write already keeps
@@ -31,7 +31,7 @@ your binding valid.
 The user-facing promise is simple: **you never free, annotate, or move — the
 compiler balances the books.**
 
-Under the hood, every live heap value carries exactly one *drop obligation*.
+Under the hood, every live heap value carries exactly one _drop obligation_.
 Creating a value — or retaining a share of one — mints an obligation; scope
 exit, consumption, or hand-off discharges it, recursively through everything the
 value owns. Sharing a value (reading a field out of a live composite, reading a
@@ -70,7 +70,7 @@ order:
 ## `clone x` — the eager-copy cost operation
 
 `clone` is not an ownership keyword. It is a stdlib **cost operation** that means
-"make an independent, eager copy of this value *now*" — the opposite of
+"make an independent, eager copy of this value _now_" — the opposite of
 copy-on-write's lazy, on-demand fork. `clone x` (prefix form, the natural and
 primary spelling) and `x.clone()` (method form) are equivalent:
 
@@ -155,7 +155,7 @@ model.
 ship after the first release: a `resource type` — a file, a socket, a unique
 handle — is never clonable, never implicitly shared, has a deterministic
 exactly-once destructor, and moves on send (the sender is invalidated, because a
-unique resource genuinely cannot exist in two places). That is the *one* place a
+unique resource genuinely cannot exist in two places). That is the _one_ place a
 surface move will ever return.
 
 At rc1 the feature is not yet user-visible; only the **seam** is reserved:
@@ -177,11 +177,11 @@ The entire ownership model rejects your program in exactly **three** places. Eac
 wall names the binding, its state, and the span that put it there, and each ships
 a one-line escape:
 
-| Wall | When it fires | Escape |
-|---|---|---|
-| mutation of a `let` | you mutate a value bound with `let` | declare it `var` |
-| clone of a non-cloneable | you `clone` a value with no copy path | restructure now; the `resource` lifecycle later |
-| send of a non-sendable | you send a resource-shaped value | use the owning-actor pattern; lifts when `resource` transfer ships |
+| Wall                     | When it fires                         | Escape                                                             |
+| ------------------------ | ------------------------------------- | ------------------------------------------------------------------ |
+| mutation of a `let`      | you mutate a value bound with `let`   | declare it `var`                                                   |
+| clone of a non-cloneable | you `clone` a value with no copy path | restructure now; the `resource` lifecycle later                    |
+| send of a non-sendable   | you send a resource-shaped value      | use the owning-actor pattern; lifts when `resource` transfer ships |
 
 There is no fourth wall. Use-after-send of a value is **not** an error (send takes
 a snapshot); use-after-call is **not** an error (calls borrow). The model has no
@@ -202,13 +202,11 @@ compare equal. This invariant holds even after COW splits a shared buffer.
 
 ## Reference cycles (Q321)
 
-Hew uses atomic reference counting without a cycle collector. Constructing
-reference cycles through actor state or stored self-referential structures will
-cause the involved values to leak (neither the cycle collector nor weak
-references exist yet).
-
-**Guideline:** design data structures as DAGs (trees, acyclic graphs). Cycles are a
-documented limitation for v0.5; future work will evaluate ORCA-style cycle collection.
+Hew reclaims shared storage by reference counting and has no cycle collector:
+a strong reference cycle through actor state or a stored self-referential
+structure leaks silently. Design data as trees or DAGs; see
+[Avoid reference cycles in actor state](../hew-language-guide.md#avoid-reference-cycles-in-actor-state)
+for the guidance and the cycle-collection status.
 
 ## Remaining work
 

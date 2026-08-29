@@ -977,6 +977,14 @@ is no `Weak.new()`; construction starts with `Option<Weak<T>>.None`, then uses
 `downgrade()` and `set()`. Strong `Rc` cycles leak. `Rc.new_cyclic`, direct
 deref/borrow access to the payload, and cross-actor transfer are not supported.
 
+> **Reference cycles leak silently.** Hew reclaims shared storage with reference
+> counts and has no cycle collector. A stored self-referential structure leaks
+> when a field owns a strong reference back to its own refcounted container:
+> every count in the cycle stays above zero after the outside owners disappear.
+> Hew emits no diagnostic and no runtime warning for this leak. Use `Weak<T>`
+> for local graph back-edges, as above, or redesign the structure as a tree or
+> DAG.
+
 ### Struct value param and returning a struct
 
 ```hew
@@ -1463,6 +1471,22 @@ fn main() {
 ```
 
 Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and `await dep.method(...)` from a handler. Awaiting another actor yields `Result<R, AskError>` like any ask.
+
+### Avoid reference cycles in actor state
+
+Hew has no cycle collector and no weak reference for sendable strong handles.
+If one actor's state owns a strong handle to a second actor and the second
+actor's state owns a strong handle back, dropping every outside handle leaves
+both reference counts above zero. Both actors and every value reachable from
+their state then leak.
+
+The leak is silent: there is no compiler diagnostic and no runtime warning.
+Break the ownership cycle by storing a stable actor id and looking up a strong
+handle only when it is needed. For named local actors, store the non-owning
+`LocalPid<T>` shown above instead of a strong handle. Keep ownership flowing in
+one direction when neither form is available.
+
+Cycle collection is post-0.6.0 work (ORCA-style collection is the candidate).
 
 ### Timers and scheduling — sleep and sleep_until
 

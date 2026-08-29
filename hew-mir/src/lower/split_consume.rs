@@ -2394,7 +2394,13 @@ mod slice3_invariants {
             },
             span: 0..0,
         };
-        let mut builder = Builder::default();
+        let mut builder = Builder {
+            // Production bodies reach this producer through `lower_function`,
+            // which establishes the enclosing callable's identity; the lambda
+            // body is keyed as a child of it.
+            current_callable_key: Some(crate::model::MirCallableKey::for_test("lambda_owner")),
+            ..Builder::default()
+        };
 
         let _ = builder.lower_spawn_lambda_actor(&expr);
 

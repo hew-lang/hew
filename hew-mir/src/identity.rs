@@ -14,8 +14,20 @@
 //! fail-open joins downstream exist at all.
 //!
 //! The key is deliberately NOT constructible from a symbol string: identity is
-//! minted once by the resolver ([`DefId`]) and projected here. There is no
-//! `From<String>` and no constructor that takes an emitted name.
+//! minted once and projected here. There is no `From<String>` and no
+//! constructor that takes an emitted name.
+//!
+//! "Minted once" is exact for every source declaration: a function's
+//! [`DefId`] comes from the resolver (`HirFn::declaration`), a machine's is
+//! minted beside it in hew-hir (`HirMachineDecl::declaration`), and the SIR
+//! bridge projects `SemCallable::declaration`. It is NOT yet exact for the
+//! bodies MIR synthesizes for an actor's receive handlers, init and lifecycle
+//! hooks, or for a supervisor's bootstrap: those HIR nodes publish no
+//! declaration identity, so `lower/machine_synth.rs` builds a synthetic
+//! `HirFn` whose `declaration` is reconstructed from the owner's qualified
+//! path. Those keys are still projected from a `declaration` field — the
+//! reconstruction happens one layer up, and it is unchanged from before this
+//! carrier existed. See `.tmp/TODO.md` for the carrier that retires it.
 //!
 //! `RawMirFunction::name` (and its Checked/Elaborated twins) stays as the
 //! presentation/linkage alias beside the key.

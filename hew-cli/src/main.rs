@@ -3086,15 +3086,20 @@ mod embedded_stdlib_tests {
 mod sir_driver_tests {
     use super::{compile, lower_verified_hir_to_pipeline, target};
     use hew_hir::{lower_program_host_target, ResolutionCtx};
+    use hew_mir::model::{Instr, RawValueOp, Terminator};
     use hew_sir::{SemOpKind, SemTerminator};
     use hew_types::{module_registry::ModuleRegistry, Checker};
 
+    /// The arm values are deliberately neither `0` nor `1`: the condition
+    /// `true` itself lowers to `ConstI64 { value: 1 }` into a `Bool` local, so
+    /// a fixture returning `1` from its unselected arm could not tell a
+    /// surviving dead arm from the live condition constant.
     const DIRECT_CONSTANT_CFG: &str = r"
         fn main() -> i64 {
             if true {
-                0
+                7
             } else {
-                1
+                9
             }
         }
     ";
@@ -3140,7 +3145,7 @@ mod sir_driver_tests {
                 .blocks
                 .iter()
                 .flat_map(|block| &block.ops)
-                .any(|operation| matches!(&operation.kind, SemOpKind::ConstI64(1))),
+                .any(|operation| matches!(&operation.kind, SemOpKind::ConstI64(9))),
             "the fixture must start with the unselected arm present: {raw_main:#?}"
         );
 
@@ -3153,8 +3158,43 @@ mod sir_driver_tests {
         .expect("strict lane must accept the scalar constant CFG");
         let strict_report = strict_report.expect("strict lane must retain its SIR report");
 
-        // The retained module is the canonical CFG the strict component was
-        // built from, not an inspector-only copy.
+        // What the backend actually receives. The report retains whatever
+        // module the component was handed, so asserting on the report alone
+        // cannot tell a realized canonicalization apart from an inspector-only
+        // rewrite; these assertions are on the artifact itself.
+        assert_eq!(strict_pipeline.raw_mir.len(), 1);
+        let realized_main = &strict_pipeline.raw_mir[0];
+        assert_eq!(realized_main.name, "main");
+        assert!(
+            matches!(&realized_main.blocks[0].terminator, Terminator::Goto { .. }),
+            "the canonical single edge must survive into realized raw MIR: {realized_main:#?}"
+        );
+        assert!(
+            realized_main
+                .blocks
+                .iter()
+                .all(|block| !matches!(&block.terminator, Terminator::Branch { .. })),
+            "realized raw MIR must carry no conditional branch: {realized_main:#?}"
+        );
+        assert!(
+            realized_main
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .all(|instruction| !defines_i64_constant(instruction, 9)),
+            "the unselected arm must not be realized in raw MIR: {realized_main:#?}"
+        );
+        assert!(
+            realized_main
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .any(|instruction| defines_i64_constant(instruction, 7)),
+            "the selected arm must still be realized in raw MIR: {realized_main:#?}"
+        );
+
+        // And the retained module is that same canonical CFG, not a separate
+        // inspector copy taken before the pass.
         let main = sir_main(&strict_report.sir.module);
         assert!(
             matches!(&main.blocks[0].terminator, SemTerminator::Goto(_)),
@@ -3170,12 +3210,19 @@ mod sir_driver_tests {
             main.blocks
                 .iter()
                 .flat_map(|block| &block.ops)
-                .all(|operation| { !matches!(&operation.kind, SemOpKind::ConstI64(1)) }),
+                .all(|operation| { !matches!(&operation.kind, SemOpKind::ConstI64(9)) }),
             "the unselected arm must be compacted before strict lowering: {main:#?}"
         );
+    }
 
-        assert_eq!(strict_pipeline.raw_mir.len(), 1);
-        assert_eq!(strict_pipeline.raw_mir[0].name, "main");
+    /// `true` when `instruction` materializes `value` as an `i64`, in either the
+    /// place-based or the virtual-value form.
+    fn defines_i64_constant(instruction: &Instr, value: i64) -> bool {
+        match instruction {
+            Instr::ConstI64 { value: found, .. }
+            | Instr::Value(RawValueOp::ConstI64 { value: found, .. }) => *found == value,
+            _ => false,
+        }
     }
 
     fn sir_main(module: &hew_sir::SemModule) -> &hew_sir::SemFunction {

@@ -94,12 +94,16 @@ fn main() -> i64 {
 /// The first SIR optimization proof: both semantic branch arms are initially
 /// present, but the direct `true` condition lets SIR retain only the selected
 /// CFG edge before any Raw MIR representation is chosen.
+/// The unselected arm is `9`, not `1`: the condition `true` is realized as
+/// `const.i64 1` in raw MIR, so a `1` there could not be told apart from a
+/// surviving dead arm. The selected arm stays `0` so the compiled fixture
+/// still exits successfully.
 const CONSTANT_CFG_CANONICALIZATION: &str = r"
 fn main() -> i64 {
     if true {
         0
     } else {
-        1
+        9
     }
 }
 ";
@@ -852,7 +856,7 @@ fn sir_canonicalizes_direct_constant_cfg_before_strict_lowering() {
         "a direct constant branch must become one semantic edge:\n{main}",
     );
     assert!(
-        !main.contains("const 1"),
+        !main.contains("const 9"),
         "the unreachable source arm must be gone from canonical SIR:\n{main}",
     );
 
@@ -863,6 +867,24 @@ fn sir_canonicalizes_direct_constant_cfg_before_strict_lowering() {
         lowered_stderr.contains("no legacy MIR bodies were lowered"),
         "strict canonicalization must remain on the SIR body path:\n{}",
         describe_output(&lowered),
+    );
+
+    // The canonical CFG must reach the artifact the backend consumes, not stop
+    // at the inspector: a compile that merely succeeds cannot distinguish a
+    // canonicalized raw body from an un-canonicalized one.
+    let lowered_dump = String::from_utf8_lossy(&lowered.stdout);
+    let lowered_main = function_section(&lowered_dump, "main");
+    assert!(
+        lowered_main.contains("goto") && !lowered_main.contains("branch"),
+        "strict raw MIR must carry the canonical single edge:\n{lowered_main}",
+    );
+    assert!(
+        !lowered_main.contains("const.i64 9"),
+        "the unselected arm must not be realized in strict raw MIR:\n{lowered_main}",
+    );
+    assert!(
+        lowered_main.contains("const.i64 0"),
+        "the selected arm must still be realized in strict raw MIR:\n{lowered_main}",
     );
 
     let mut compile = Command::new(hew_binary());

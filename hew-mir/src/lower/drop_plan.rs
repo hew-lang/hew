@@ -1132,7 +1132,23 @@ pub(super) fn materialize_exact_overwrite_releases(
                                 && transferee == destination
                         )
                     });
-                    if let ([old_owner], Some(move_index)) = (old.as_slice(), move_index) {
+                    // An assignment that emitted its own overwrite release
+                    // at lowering time named the Builder cursor's generation,
+                    // which is stale on a sibling branch or inside a loop and
+                    // is re-keyed only after the phis are sealed; the replay
+                    // here still shows the old generation live. Leave that
+                    // slot to the re-keying rather than release it twice.
+                    let lowering_released_here =
+                        block.instructions[..index].iter().any(|instruction| {
+                            matches!(
+                                instruction,
+                                Instr::OwnershipEvent(OwnershipEvent::Release { owner, place })
+                                    if owner.binding == successor.binding && place == destination
+                            )
+                        });
+                    if let ([old_owner], Some(move_index), false) =
+                        (old.as_slice(), move_index, lowering_released_here)
+                    {
                         if !guarded.contains(old_owner) {
                             if let Some(recipe) = recipes.get(old_owner) {
                                 if let Some(drop_fn) = inline_drop_spec_for_recipe(recipe) {

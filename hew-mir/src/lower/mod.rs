@@ -8254,11 +8254,10 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // pass runs again after the ownership phis are sealed, because a loop
     // header names the generation that is actually live at the slot only
     // then, and once more at the end for the late carrier operations.
-    // The lowering-time overwrite release names the generation the Builder
-    // cursor knew, which on a sibling branch is stale; re-key it to the
-    // generation live at the slot first, or the replay sees the old
-    // generation still live and releases it a second time.
-    canonicalize_release_owner_ids(&mut *blocks);
+    // The lowering-time overwrite release (when the assignment emitted one)
+    // names the generation the Builder cursor knew, which on a sibling branch
+    // is stale; it is re-keyed only after the phis are sealed, so the early
+    // runs leave any slot that already carries one alone.
     drop_plan::materialize_successor_guard_authority(&mut *blocks);
     drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     materialize_explicit_neutralize_transfers(&mut *blocks, builder);
@@ -8299,7 +8298,6 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // been re-keyed to it, so the replay is consistent again (a reassigned
     // `while let` scrutinee's iteration snapshot adopts the phi generation
     // only here; releasing before that adoption ends a generation twice).
-    canonicalize_release_owner_ids(&mut *blocks);
     drop_plan::materialize_successor_guard_authority(&mut *blocks);
     drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     materialize_explicit_neutralize_transfers(&mut *blocks, builder);

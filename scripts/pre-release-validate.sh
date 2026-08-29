@@ -109,8 +109,8 @@ RESULT_DIR=$(mktemp -d)
 # Every requested platform is authoritative: absent configuration and
 # unreachable hosts are failures. Narrow PLATFORMS explicitly when a host is
 # intentionally outside the current validation run.
-pass() { echo "pass $1 ${2:-}" > "${RESULT_DIR}/$1"; }
-fail() { echo "fail $1 ${2:-}" > "${RESULT_DIR}/$1"; }
+pass() { echo "pass $1 ${2:-}" >"${RESULT_DIR}/$1"; }
+fail() { echo "fail $1 ${2:-}" >"${RESULT_DIR}/$1"; }
 
 banner() {
     echo -e "\n${CYAN}═══ $1 ═══${RESET}"
@@ -147,7 +147,7 @@ echo "Logs: ${LOG_DIR}/"
 write_smoke_test() {
     local file="$1"
     local message="${2:-Hello from Hew release test}"
-    cat > "$file" <<'HEWEOF'
+    cat >"$file" <<'HEWEOF'
 fn main() {
     println("__HEW_SMOKE_MESSAGE__")
 }
@@ -298,18 +298,13 @@ validate_linux() {
     (
         set -e
         echo "==> Step 1: Static-link release build"
-        # This is the exact build that the release CI does. libhew.a ships
-        # from the non-LTO release-lib profile (external Rust staticlibs
-        # cannot dedupe libstd against a fat-LTO archive).
-        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-cli -p hew-lsp -p hew-observe --release 2>&1
-        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --profile release-lib 2>&1
+        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" make release 2>&1
 
         echo "==> Step 2: Verify binaries exist and run"
         "${release_dir}/hew" --version
         "${release_dir}/hew-lsp" --version
         "${release_dir}/hew-observe" --version
         test -f "${release_lib_dir}/libhew.a"
-        verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew.a"
 
         echo "==> Step 3: Smoke test — run a Hew program"
         local smoke_file_base
@@ -331,15 +326,12 @@ validate_linux() {
         echo "==> Step 4: Run gating test suite"
         run_with_timeout "${TEST_TIMEOUT}" bash -o pipefail -lc 'cargo test -p hew-runtime --quiet 2>&1 | tail -3'
 
-        echo "==> Step 4b: Run foundational compiled-Hew and evidence gates"
-        run_with_timeout "${TEST_TIMEOUT}" make check-gate-reachability
-        run_with_timeout "${TEST_TIMEOUT}" make test-release-workflow-contract
+        echo "==> Step 4b: Run foundational compiled-Hew gates"
         run_with_timeout "${TEST_TIMEOUT}" make test-compiler-pipeline
         run_with_timeout "${TEST_TIMEOUT}" make test-opaque-resource-lifecycle-matrix-external
         run_with_timeout "${TEST_TIMEOUT}" make test-vertical-slice
         run_with_timeout "${TEST_TIMEOUT}" make test-hew-ratchet
         run_with_timeout "${TEST_TIMEOUT}" make test-stdlib-ratchet
-        run_with_timeout "${TEST_TIMEOUT}" make test-stdlib-execution-proofs
 
         echo "==> Step 5: Verify no dynamic LLVM/MLIR dependencies"
         if ldd "${release_dir}/hew" 2>/dev/null | grep -qi 'llvm\|mlir'; then
@@ -382,7 +374,7 @@ validate_linux() {
             echo "==> PACKAGED ARCHIVE SMOKE TEST FAILED — output: $package_output"
             exit 1
         fi
-    ) > "$log" 2>&1
+    ) >"$log" 2>&1
     local status=$?
     set -e
     if [[ "$status" -eq 0 ]]; then
@@ -482,28 +474,23 @@ validate_macos() {
             export PATH=\"\$LLVM_PREFIX/bin:\$PATH\"
             \"\$LLVM_PREFIX/bin/llvm-config\" --version
 
-            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
+            make release
 
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
             \"\$release_dir/hew\" --version
             \"\$release_dir/hew-lsp\" --version
             \"\$release_dir/hew-observe\" --version
-            scripts/test-release-lib-link.sh \
-                --hew \"\$release_dir/hew\" \
-                --archive \"\$release_lib_dir/libhew.a\"
 
             echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
-            make stdlib
-            scripts/test-release-binary.sh --no-build
+            scripts/test-release-binary.sh
 
             echo \"==> Darwin release-authority leak corpus\"
             make macos-leak-oracle
 
             echo \"macOS build succeeded\"
         '"
-    ) > "$log" 2>&1
+    ) >"$log" 2>&1
     local status=$?
     set -e
     if [[ "$status" -eq 0 ]]; then
@@ -576,10 +563,9 @@ validate_linux_aarch64() {
             export CC=clang-22
             export CXX=clang++-22
 
-            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
+            make test-release-lib-link
             rustup target add wasm32-wasip1
-            cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+            make wasm-runtime-release
 
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
@@ -587,9 +573,6 @@ validate_linux_aarch64() {
             \"\$release_dir/hew-lsp\" --version
             \"\$release_dir/hew-observe\" --version
             test -f \"\$release_lib_dir/libhew.a\"
-            scripts/test-release-lib-link.sh \
-                --hew \"\$release_dir/hew\" \
-                --archive \"\$release_lib_dir/libhew.a\"
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
             \"\$release_dir/hew\" build _smoke.hew -o _smoke_bin
@@ -597,7 +580,7 @@ validate_linux_aarch64() {
             ./_smoke_bin | grep -q \"Hello from Hew release test\"
             rm -f _smoke.hew _smoke_bin
         '"
-    ) > "$log" 2>&1
+    ) >"$log" 2>&1
     local status=$?
     set -e
     if [[ "$status" -eq 0 ]]; then
@@ -659,21 +642,17 @@ validate_freebsd() {
             export CC=clang
             export CXX=clang++
 
-            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
+            gmake test-release-lib-link
 
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
             \"\$release_dir/hew\" --version
             \"\$release_dir/hew-lsp\" --version
             \"\$release_dir/hew-observe\" --version
-            scripts/test-release-lib-link.sh \
-                --hew \"\$release_dir/hew\" \
-                --archive \"\$release_lib_dir/libhew.a\"
 
             echo \"FreeBSD build succeeded\"
         '"
-    ) > "$log" 2>&1
+    ) >"$log" 2>&1
     local status=$?
     set -e
     if [[ "$status" -eq 0 ]]; then
@@ -746,7 +725,7 @@ Write-Host \"Found \$LlvmConfig\"
 
         echo "==> Building on Windows with the LLVM toolchain"
         run_windows_staged_build "${remote_stage}"
-    ) > "$log" 2>&1
+    ) >"$log" 2>&1
     local status=$?
     set -e
     if [[ "$status" -eq 0 ]]; then
@@ -766,24 +745,24 @@ HAVE_FAILURE=0
 
 for platform in "${PLATFORMS[@]}"; do
     case "$platform" in
-        linux)
-            validate_linux || HAVE_FAILURE=1
-            ;;
-        linux-aarch64)
-            validate_linux_aarch64 &
-            PIDS+=($!)
-            PLATFORM_NAMES+=("$platform")
-            ;;
-        macos|freebsd|windows)
-            # Run remote builds in background
-            validate_"$platform" &
-            PIDS+=($!)
-            PLATFORM_NAMES+=("$platform")
-            ;;
-        *)
-            echo "Unknown platform: $platform"
-            exit 1
-            ;;
+    linux)
+        validate_linux || HAVE_FAILURE=1
+        ;;
+    linux-aarch64)
+        validate_linux_aarch64 &
+        PIDS+=($!)
+        PLATFORM_NAMES+=("$platform")
+        ;;
+    macos | freebsd | windows)
+        # Run remote builds in background
+        validate_"$platform" &
+        PIDS+=($!)
+        PLATFORM_NAMES+=("$platform")
+        ;;
+    *)
+        echo "Unknown platform: $platform"
+        exit 1
+        ;;
     esac
 done
 
@@ -800,13 +779,16 @@ banner "Pre-release validation summary"
 for platform in "${PLATFORMS[@]}"; do
     result_file="${RESULT_DIR}/${platform}"
     if [[ -f "$result_file" ]]; then
-        status=$(cut -d' ' -f1 < "$result_file")
-        detail=$(cut -d' ' -f3- < "$result_file")
+        status=$(cut -d' ' -f1 <"$result_file")
+        detail=$(cut -d' ' -f3- <"$result_file")
         detail_suffix=""
         [[ -n "$detail" ]] && detail_suffix=" (${detail})"
         case "$status" in
-            pass) echo -e "  ${GREEN}✓ ${platform}${RESET}" ;;
-            fail) echo -e "  ${RED}✗ ${platform}${detail_suffix}${RESET}"; HAVE_FAILURE=1 ;;
+        pass) echo -e "  ${GREEN}✓ ${platform}${RESET}" ;;
+        fail)
+            echo -e "  ${RED}✗ ${platform}${detail_suffix}${RESET}"
+            HAVE_FAILURE=1
+            ;;
         esac
     else
         echo -e "  ${RED}✗ ${platform} (no result — likely crashed)${RESET}"

@@ -92,7 +92,7 @@ The sandbox VM runs admitted Hew programs in a deterministic browser-hosted runt
 
 ### Language Basics
 
-**`println` and `print` are plain function calls, not macros.**  Coming from Rust, you might reach for `println!` — in Hew these are ordinary built-in functions written without a `!` suffix, auto-imported into every file:
+**`println` and `print` are plain function calls, not macros.** Coming from Rust, you might reach for `println!` — in Hew these are ordinary built-in functions written without a `!` suffix, auto-imported into every file:
 
 ```hew
 fn main() {
@@ -303,10 +303,10 @@ Full documentation at **[hew.sh/docs](https://hew.sh/docs)**
 
 ### Prerequisites
 
-| Dependency | Version         | Purpose                                               |
-| ---------- | --------------- | ----------------------------------------------------- |
-| Rust       | stable (latest) | Compiler, runtime, package manager                    |
-| LLVM       | 22.1            | Native/WASM object emission through inkwell/llvm-sys  |
+| Dependency | Version        | Purpose                                              |
+| ---------- | -------------- | ---------------------------------------------------- |
+| Rust       | repository pin | Compiler, runtime, package manager                   |
+| LLVM       | 22.1           | Native/WASM object emission through inkwell/llvm-sys |
 
 **Install on Ubuntu/Debian:**
 
@@ -340,18 +340,25 @@ brew install python@3.12
 ### Build
 
 ```bash
-make          # Build everything (debug)
-make release  # Build everything (optimized)
+make          # Build the usable developer toolchain
+make release  # Build the optimized install/package toolchain
 make preflight     # Unconditional, fail-fast pre-PR gate
 make test     # Run Rust + native codegen tests
-make lint     # cargo clippy
+make lint     # Run the same lint/build-system aggregate as CI
 ```
+
+The default toolchain pairs the `release-lib` compiler with its linkable
+`libhew` archive, builds debug support binaries, and publishes WASI plus any
+native cross-architecture archive supported by the host toolchain. On Linux,
+the opposite architecture is included when its multiarch sysroot is installed;
+on macOS, the opposite Darwin architecture is included. The same non-LTO
+cross archive is reused by tests, assembly, installation, and packaging.
 
 See the [Makefile](Makefile) header for all targets.
 
-The standard pre-PR gate runs the same exhaustive static assignment as Linux CI
-and fails fast after the first failed command. Reserve `make ci-preflight` for
-integration and release moments, when reporting every failure is useful.
+The standard pre-PR gate runs the same Make-owned lint and test groups as Linux CI
+and fails fast after the first failed command. `make ci-preflight` remains as a
+compatibility alias for the same gate.
 
 ### Browser / Playground Validation
 
@@ -360,10 +367,11 @@ The sandbox VM (`hew-sandbox-vm`) runs admitted Hew programs in a deterministic 
 This repo carries the analysis-side browser tooling (`hew-wasm`) plus the sandbox bytecode emission crate (`hew-sandbox-wasm`); the downstream browser app and the `hew-sandbox-vm` TypeScript worker are in `hew-lang/playground`.
 
 ```bash
-make baselines                  # regenerate every derived artefact, manifest.json included
+make baselines                  # regenerate deterministic generated metadata
 make playground-manifest-check  # cheap freshness check for manifest.json only
 make playground-check           # repo-local preflight: manifest freshness + curated analyze smoke + build hew-wasm
 make playground-wasi-check      # focused manifest-driven WASI runtime preflight
+make sandbox-parity             # full Node VM plus Rust native/sandbox parity suite
 ```
 
 Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` for the repo-local browser/tooling slice: curated `hew-wasm` analysis smoke plus the repo-local `hew-wasm` build (`make wasm`) that powers browser-side diagnostics tooling. Use `make playground-wasi-check` in codegen-capable environments when you also want the focused manifest-driven WASI runtime proof. The `hew-wasm` crate in this repo is analysis-only; the sandbox VM execution target and downstream browser app live in `hew-lang/playground`.
@@ -372,13 +380,16 @@ Use `make playground-manifest-check` when you only need to confirm the checked-i
 
 These are only needed for specific workflows:
 
-| Dependency           | Install                                             | Purpose                                        |
-| -------------------- | --------------------------------------------------- | ---------------------------------------------- |
-| wasmtime             | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run the WASI end-to-end tests (`make playground-wasi-check`, and the `wasi_run_e2e` / `eval_wasm_*` cases inside `make test`) |
-| wasm32-wasip1 target | `rustup target add wasm32-wasip1`                   | Build WASM runtime (`make wasm-runtime`)       |
-| wasm-pack            | `cargo install wasm-pack`                           | Build browser analysis bindings (`make wasm`, `make playground-check`) |
-| Python 3.12+         | system package manager                              | Required for Makefile gates and repository scripts (`scripts/`) |
-| cargo-fuzz           | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)            |
+| Dependency                    | Install                                             | Purpose                                                                                                                       |
+| ----------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| wasmtime                      | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run the WASI end-to-end tests (`make playground-wasi-check`, and the `wasi_run_e2e` / `eval_wasm_*` cases inside `make test`) |
+| wasm32-wasip1 target          | `rustup target add wasm32-wasip1`                   | Build the WASI runtime (`make wasm-runtime`, `make sandbox-parity`)                                                           |
+| wasm32-unknown-unknown target | `rustup target add wasm32-unknown-unknown`          | Build the browser/sandbox module (`make wasm`, `make playground-check`, `make sandbox-parity`)                                |
+| wasm-pack                     | `cargo install wasm-pack`                           | Build browser and sandbox bindings (`make wasm`, `make playground-check`, `make sandbox-parity`)                              |
+| Python 3.12+                  | system package manager                              | Required for Makefile gates and repository scripts (`scripts/`)                                                               |
+| actionlint                    | platform package manager                            | Validate GitHub Actions workflows before pushing (`make actionlint`)                                                          |
+| ShellCheck                    | platform package manager                            | Validate shell scripts (`make lint`)                                                                                          |
+| cargo-fuzz                    | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)                                                                                           |
 
 ## License
 

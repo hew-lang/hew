@@ -56,20 +56,30 @@ PER_PROG_TIMEOUT="${PER_PROG_TIMEOUT:-15}"
 WANT_HTML=0
 [ "${1:-}" = "--html" ] && WANT_HTML=1
 
-HEW_BIN="$REPO_ROOT/target/debug/hew"
+native_debug_dir="$(scripts/cargo-output-dir.py --native --profile debug)"
+if [[ "${native_debug_dir}" != /* ]]; then
+    native_debug_dir="${REPO_ROOT}/${native_debug_dir}"
+fi
+HEW_BIN="${native_debug_dir}/hew"
 
 # ── Locate version-matched LLVM tools ──────────────────────────────────
 # Prefer the rustc-bundled llvm-tools (exact version match to the
 # instrument-coverage producer); fall back to versioned/unversioned PATH tools.
 RUST_BIN_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
 pick_tool() {
-  local name="$1"
-  if [ -x "$RUST_BIN_DIR/$name" ]; then echo "$RUST_BIN_DIR/$name"; return; fi
-  for cand in "$name-22" "$name"; do
-    if command -v "$cand" >/dev/null 2>&1; then echo "$cand"; return; fi
-  done
-  echo "error: cannot find $name (rust llvm-tools-preview or PATH)" >&2
-  exit 1
+    local name="$1"
+    if [ -x "$RUST_BIN_DIR/$name" ]; then
+        echo "$RUST_BIN_DIR/$name"
+        return
+    fi
+    for cand in "$name-22" "$name"; do
+        if command -v "$cand" >/dev/null 2>&1; then
+            echo "$cand"
+            return
+        fi
+    done
+    echo "error: cannot find $name (rust llvm-tools-preview or PATH)" >&2
+    exit 1
 }
 LLVM_PROFDATA="$(pick_tool llvm-profdata)"
 LLVM_COV="$(pick_tool llvm-cov)"
@@ -90,14 +100,14 @@ LLVM_COV="$(pick_tool llvm-cov)"
 # than after an instrumented rebuild.
 PROGRAMS=()
 for f in examples/*.hew; do
-  b="$(basename "$f" .hew)"
-  case "$b" in
-    *server*|*service*|*client*|*chat*|*mqtt*|*http*|*quic*|*curl*|*net*|*distributed*|*tcp*|*socket*|*reader*|*broker*) continue ;;
-    *observe*|*showcase*|*live*|*loop*|*bench*|*playground*|*orch*|*daemon*) continue ;;
-  esac
-  if grep -q 'fn main' "$f" 2>/dev/null; then
-    PROGRAMS+=("$f")
-  fi
+    b="$(basename "$f" .hew)"
+    case "$b" in
+    *server* | *service* | *client* | *chat* | *mqtt* | *http* | *quic* | *curl* | *net* | *distributed* | *tcp* | *socket* | *reader* | *broker*) continue ;;
+    *observe* | *showcase* | *live* | *loop* | *bench* | *playground* | *orch* | *daemon*) continue ;;
+    esac
+    if grep -q 'fn main' "$f" 2>/dev/null; then
+        PROGRAMS+=("$f")
+    fi
 done
 # shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
@@ -118,33 +128,34 @@ mkdir -p "$BIN_DIR" "$PROFRAW_DIR"
 # Keep these deterministic and local: coverage must not depend on the caller's
 # argv, stdin, network, or filesystem state.
 GREP_INPUT="$RT_DIR/hew-grep-input.txt"
-printf 'alpha\nneedle one\nomega\nneedle two\n' > "$GREP_INPUT"
+printf 'alpha\nneedle one\nomega\nneedle two\n' >"$GREP_INPUT"
 
-built=0; ran=0
+built=0
+ran=0
 BUILD_FAILURES=()
 RUN_FAILURES=()
 for f in "${PROGRAMS[@]}"; do
-  stem="$(basename "$f" .hew)"
-  bin="$BIN_DIR/$stem.bin"
-  if HEW_COVERAGE=1 "$HEW_BIN" build "$f" -o "$bin" >/dev/null 2>&1; then
-    built=$((built + 1))
-  else
-    BUILD_FAILURES+=("$f")
-    continue
-  fi
-  # %m = binary signature (distinct per program), %p = pid → no collisions.
-  if coverage_runtime_run_program \
-      "$stem" \
-      "$PROFRAW_DIR/${stem}-%m-%p.profraw" \
-      "$(command -v timeout)" \
-      "$PER_PROG_TIMEOUT" \
-      "$bin" \
-      "$GREP_INPUT" \
-      >/dev/null 2>&1; then
-    ran=$((ran + 1))
-  else
-    RUN_FAILURES+=("$f")
-  fi
+    stem="$(basename "$f" .hew)"
+    bin="$BIN_DIR/$stem.bin"
+    if HEW_COVERAGE=1 "$HEW_BIN" build "$f" -o "$bin" >/dev/null 2>&1; then
+        built=$((built + 1))
+    else
+        BUILD_FAILURES+=("$f")
+        continue
+    fi
+    # %m = binary signature (distinct per program), %p = pid → no collisions.
+    if coverage_runtime_run_program \
+        "$stem" \
+        "$PROFRAW_DIR/${stem}-%m-%p.profraw" \
+        "$(command -v timeout)" \
+        "$PER_PROG_TIMEOUT" \
+        "$bin" \
+        "$GREP_INPUT" \
+        >/dev/null 2>&1; then
+        ran=$((ran + 1))
+    else
+        RUN_FAILURES+=("$f")
+    fi
 done
 echo "    programs: enumerated=${#PROGRAMS[@]} built=$built ran=$ran"
 
@@ -152,30 +163,30 @@ echo "    programs: enumerated=${#PROGRAMS[@]} built=$built ran=$ran"
 # file from one successful binary must never mask build failures, crashes, or
 # timeouts elsewhere in the corpus.
 if [ "${#BUILD_FAILURES[@]}" -ne 0 ] || [ "${#RUN_FAILURES[@]}" -ne 0 ]; then
-  if [ "${#BUILD_FAILURES[@]}" -ne 0 ]; then
-    echo "error: ${#BUILD_FAILURES[@]} runtime-coverage program(s) failed to build:" >&2
-    printf '  build: %s\n' "${BUILD_FAILURES[@]}" >&2
-  fi
-  if [ "${#RUN_FAILURES[@]}" -ne 0 ]; then
-    echo "error: ${#RUN_FAILURES[@]} runtime-coverage program(s) failed or timed out:" >&2
-    printf '  run:   %s\n' "${RUN_FAILURES[@]}" >&2
-  fi
-  exit 1
+    if [ "${#BUILD_FAILURES[@]}" -ne 0 ]; then
+        echo "error: ${#BUILD_FAILURES[@]} runtime-coverage program(s) failed to build:" >&2
+        printf '  build: %s\n' "${BUILD_FAILURES[@]}" >&2
+    fi
+    if [ "${#RUN_FAILURES[@]}" -ne 0 ]; then
+        echo "error: ${#RUN_FAILURES[@]} runtime-coverage program(s) failed or timed out:" >&2
+        printf '  run:   %s\n' "${RUN_FAILURES[@]}" >&2
+    fi
+    exit 1
 fi
 if [ "$built" -ne "${#PROGRAMS[@]}" ] || [ "$ran" -ne "$built" ]; then
-  echo "error: runtime-coverage execution accounting drifted" >&2
-  exit 1
+    echo "error: runtime-coverage execution accounting drifted" >&2
+    exit 1
 fi
 
 shopt -s nullglob
 PROFRAWS=("$PROFRAW_DIR"/*.profraw)
 if [ "${#PROFRAWS[@]}" -eq 0 ]; then
-  echo "error: no profraw produced — coverage capture failed" >&2
-  exit 1
+    echo "error: no profraw produced — coverage capture failed" >&2
+    exit 1
 fi
 if [ "${#PROFRAWS[@]}" -lt "$ran" ]; then
-  echo "error: only ${#PROFRAWS[@]} profraw file(s) for $ran successful program(s)" >&2
-  exit 1
+    echo "error: only ${#PROFRAWS[@]} profraw file(s) for $ran successful program(s)" >&2
+    exit 1
 fi
 
 echo "==> Phase 4: merge profraw + report runtime coverage"
@@ -189,8 +200,8 @@ for b in "${BINS[@]:1}"; do OBJ_ARGS+=(-object "$b"); done
 IGNORE='(/\.cargo/|/rustc/|/usr/|registry|/tests/|hew-cli/|hew-types/|hew-hir/|hew-mir/|hew-codegen-rs/|hew-parser/|hew-lexer/|hew-compile/|hew-analysis/|hew-lsp/|hew-observe/|hew-wasm|hew-sandbox|hew-pkg/|xtask/|hew-testutil/|hew-runtime-testkit/|hew-capability-gen/)'
 
 "$LLVM_COV" report "${BINS[0]}" "${OBJ_ARGS[@]}" \
-  -instr-profile="$PROFDATA" \
-  --ignore-filename-regex="$IGNORE" | tee "$RT_DIR/runtime-summary.txt"
+    -instr-profile="$PROFDATA" \
+    --ignore-filename-regex="$IGNORE" | tee "$RT_DIR/runtime-summary.txt"
 
 # Pin meaningful runtime reach, not just profiler-file existence. llvm-cov's
 # TOTAL row is: regions, functions, lines, branches; each group reports total,
@@ -198,18 +209,18 @@ IGNORE='(/\.cargo/|/rustc/|/usr/|registry|/tests/|hew-cli/|hew-types/|hew-hir/|h
 # runtime subsystem therefore turns this gate red even when all binaries exit.
 COVERED_FUNCTIONS="$(awk '$1 == "TOTAL" { print $5 - $6 }' "$RT_DIR/runtime-summary.txt")"
 if [ -z "$COVERED_FUNCTIONS" ]; then
-  echo "error: llvm-cov report did not contain a TOTAL row" >&2
-  exit 1
+    echo "error: llvm-cov report did not contain a TOTAL row" >&2
+    exit 1
 fi
 corpus_nonempty_assert "runtime-e2e-covered-functions" "$COVERED_FUNCTIONS" || exit 1
 
 if [ "$WANT_HTML" -eq 1 ]; then
-  echo "==> Generating HTML runtime report"
-  "$LLVM_COV" show "${BINS[0]}" "${OBJ_ARGS[@]}" \
-    -instr-profile="$PROFDATA" \
-    --ignore-filename-regex="$IGNORE" \
-    -format=html -output-dir="$RT_DIR/html"
-  echo "==> Open $RT_DIR/html/index.html"
+    echo "==> Generating HTML runtime report"
+    "$LLVM_COV" show "${BINS[0]}" "${OBJ_ARGS[@]}" \
+        -instr-profile="$PROFDATA" \
+        --ignore-filename-regex="$IGNORE" \
+        -format=html -output-dir="$RT_DIR/html"
+    echo "==> Open $RT_DIR/html/index.html"
 fi
 
 echo "==> Runtime e2e coverage summary: $RT_DIR/runtime-summary.txt"

@@ -1,8 +1,0 @@
-[[waiver]]
-axis = "tsan"
-release = "0.6.0-rc1"
-behavior = "the executed probe reproduces a toolchain false positive"
-reason = "upstream build-std and TSan linking are incompatible"
-tracking = "issue-0000"
-owner = "runtime maintainers"
-expires = "2999-12-31"

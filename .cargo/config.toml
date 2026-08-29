@@ -34,19 +34,21 @@ linker = "lld-link"
 
 # ── Shared compilation cache (opt-in) ─────────────────────────────────────────
 # sccache provides a content-addressed object cache that is safe to share across
-# concurrent worktrees.  Each worktree keeps its own CARGO_TARGET_DIR (separate
-# Cargo locks, no contention on linking or index files) while sccache deduplicates
-# compilation units across worktrees.
+# concurrent worktrees. Each worktree keeps its own CARGO_TARGET_DIR (separate
+# Cargo locks, no contention on linking or index files), while sccache can reuse
+# cacheable compilation units whose compiler inputs and normalized paths match.
 #
-# To opt in, install sccache and start the server:
+# To opt in, install sccache and set RUSTC_WRAPPER in your shell or per-session
+# environment. The first wrapped compiler invocation starts the local server
+# automatically; SCCACHE_IDLE_TIMEOUT=0 keeps that server alive for later builds.
+# On sccache 0.17+, client-side mode avoids routing compilation through the daemon:
 #   cargo install sccache          # or: brew install sccache
-#   sccache --start-server
-#
-# Then set RUSTC_WRAPPER=sccache in your shell or per-session env:
 #   export RUSTC_WRAPPER=sccache
+#   export SCCACHE_IDLE_TIMEOUT=0
+#   export SCCACHE_CLIENT_SIDE=1
 #
-# WHY opt-in not forced: sccache requires a running server; forcing it via this
-# file would cause every CI agent and cold checkout to fail if the server is absent.
+# WHY opt-in not forced: every developer and CI image would need the sccache
+# binary installed; without it, a forced wrapper makes rustc invocations fail.
 # WHEN obsolete: if this project adopts a managed remote build cache (e.g. GitHub
 # Actions cache with sccache-action) or Cargo's own shared-cache protocol lands, the
 # per-developer opt-in can be promoted to a project-wide default.

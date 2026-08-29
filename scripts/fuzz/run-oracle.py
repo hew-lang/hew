@@ -28,9 +28,9 @@ The harness asserts exact stdout match and (if present) exit code.
 Files without these annotations: clean = build-0 + run-0 within bounds.
 
 Ratchet (--regressions mode):
-  tests/fuzz-oracle/expected-failures.txt lists filenames (relative to
-  tests/fuzz-oracle/regressions/) that are KNOWN to fail, each annotated with
-  # <root-cause>; issue: #NNNN.
+  tests/fuzz-oracle/expected-failures.txt lists bare filenames from the
+  ratcheted candidate sources (vertical-slice or regressions) that are KNOWN
+  to fail, each annotated with # <root-cause>; issue: #NNNN.
   - A listed file that PASSES   → unexpected-pass → gate failure.
   - An unlisted file that FAILS → unexpected-fail → gate failure.
   In --full mode the ratchet is NOT applied to cargo-fuzz corpus files (they
@@ -813,9 +813,8 @@ def main() -> int:
         print("\nUNEXPECTED FAILURES (not in expected-failures.txt):")
         for v in unexpected_fails:
             # `UNEXPECTED:` / `NOW-PASSES:` is the ratchet verdict vocabulary
-            # shared with every other expected-failure gate in the tree; it is
-            # what scripts/baselines.py reads to prune a list, so the prefix is
-            # load-bearing, not decoration.
+            # shared with the other expected-failure gates in the tree, so the
+            # prefix is part of the human- and machine-readable verdict.
             print(f"  UNEXPECTED: {v.path.name}  {v.classification}  {v.detail}")
         gate_ok = False
 

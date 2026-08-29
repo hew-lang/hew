@@ -15,7 +15,9 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -192,6 +194,45 @@ def query_command(
     return command
 
 
+def stream_query_rows(
+    command: list[str], root: Path, *, failure: str
+) -> Iterator[dict[str, object]]:
+    """Yield ast-grep JSON rows without retaining its full output buffer."""
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
+        process = subprocess.Popen(
+            command,
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                if not line.strip():
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise SystemExit(
+                        f"pinned ast-grep returned invalid JSON: {error}"
+                    ) from error
+            returncode = process.wait()
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+
+        stderr_file.seek(0)
+        stderr = stderr_file.read()
+        # ast-grep uses status 1 for a valid query with no matches. The
+        # mandatory sentinel proves that status 1 is not a dead parser.
+        if returncode not in (0, 1) or (returncode == 1 and stderr):
+            if stderr:
+                print(stderr, file=sys.stderr, end="")
+            raise SystemExit(failure)
+
+
 def parser_sentinel(ast_grep: Path) -> None:
     """Prove the executable parses Rust and returns structured query output."""
     command = query_command(ast_grep, pattern="$F($$$ARGS)", kind=None)
@@ -265,22 +306,15 @@ def run_query(
     *,
     pattern: str | None = None,
     kind: str | None = None,
-) -> list[dict[str, object]]:
+) -> Iterator[dict[str, object]]:
     paths = [path for path in COMPILER_ROOTS if (root / path).exists()]
     if not paths:
-        return []
+        return
     command = query_command(ast_grep, pattern=pattern, kind=kind)
     command.extend(paths)
-    result = subprocess.run(command, cwd=root, text=True, capture_output=True)
-    # ast-grep uses status 1 for a valid query with no matches. The mandatory
-    # sentinel above proves that status 1 is not a dead/non-parser executable.
-    if result.returncode not in (0, 1) or (result.returncode == 1 and result.stderr):
-        print(result.stderr, file=sys.stderr, end="")
-        raise SystemExit("pinned ast-grep Rust query failed")
-    try:
-        return [json.loads(line) for line in result.stdout.splitlines() if line]
-    except json.JSONDecodeError as error:
-        raise SystemExit(f"pinned ast-grep returned invalid JSON: {error}") from error
+    yield from stream_query_rows(
+        command, root, failure="pinned ast-grep Rust query failed"
+    )
 
 
 def run_hew_query(
@@ -397,10 +431,16 @@ def semantic_owner_shortening_findings(
     `key`, then `registry.insert(key, ...)`) without treating formatting,
     diagnostics, or ordinary collection `.last()` calls as identity authority.
     """
-    identifiers = run_query(ast_grep, root, kind="identifier")
-    literals = []
+    identifier_items: list[tuple[str, str, SyntaxRange]] = []
+    for identifier in run_query(ast_grep, root, kind="identifier"):
+        identifier_range = node_range(identifier)
+        identifier_items.append(
+            (identifier_range.path, str(identifier["text"]), identifier_range)
+        )
+    literal_items: list[tuple[str, SyntaxRange]] = []
     for literal_kind in ("string_literal", "raw_string_literal"):
-        literals.extend(run_query(ast_grep, root, kind=literal_kind))
+        for literal in run_query(ast_grep, root, kind=literal_kind):
+            literal_items.append((str(literal["text"]), node_range(literal)))
 
     source_ranges: list[SyntaxRange] = []
     for match in run_query(ast_grep, root, pattern="short_name($X)"):
@@ -444,10 +484,9 @@ def semantic_owner_shortening_findings(
     identifier_index: defaultdict[str, list[tuple[int, str, SyntaxRange]]] = (
         defaultdict(list)
     )
-    for identifier in identifiers:
-        identifier_range = node_range(identifier)
-        identifier_index[identifier_range.path].append(
-            (identifier_range.byte_start, str(identifier["text"]), identifier_range)
+    for path, name, identifier_range in identifier_items:
+        identifier_index[path].append(
+            (identifier_range.byte_start, name, identifier_range)
         )
     for items in identifier_index.values():
         items.sort(key=lambda item: item[0])
@@ -520,7 +559,7 @@ def semantic_owner_shortening_findings(
     ]
     # Include a file-wide fallback for const/static initializers and future
     # generated authorities outside functions.
-    paths = {str(match["file"]) for match in identifiers}
+    paths = set(identifier_index)
     file_scopes = {path: SyntaxRange(path, 0, 1 << 62) for path in paths}
     functions_by_path: defaultdict[str, list[SyntaxRange]] = defaultdict(list)
     for item in function_ranges:
@@ -553,17 +592,15 @@ def semantic_owner_shortening_findings(
     identifiers_by_scope: defaultdict[SyntaxRange, list[tuple[str, SyntaxRange]]] = (
         defaultdict(list)
     )
-    for match in identifiers:
-        item_range = node_range(match)
+    for _, name, item_range in identifier_items:
         if scope := enclosing_scope(item_range):
-            identifiers_by_scope[scope].append((str(match["text"]), item_range))
+            identifiers_by_scope[scope].append((name, item_range))
     literals_by_scope: defaultdict[SyntaxRange, list[tuple[str, SyntaxRange]]] = (
         defaultdict(list)
     )
-    for match in literals:
-        item_range = node_range(match)
+    for text, item_range in literal_items:
         if scope := enclosing_scope(item_range):
-            literals_by_scope[scope].append((str(match["text"]), item_range))
+            literals_by_scope[scope].append((text, item_range))
     bindings_by_scope: defaultdict[SyntaxRange, list[tuple[str, SyntaxRange]]] = (
         defaultdict(list)
     )
@@ -1831,7 +1868,18 @@ POISONED_SENTINELS = ("run_under_malloc_scribble", "require_macos_poisoned_alloc
 POISONED_MACOS_CFG = re.compile(r'#\[\s*cfg\s*\(\s*target_os\s*=\s*"macos"\s*\)\s*\]')
 POISONED_IDENT_CALL = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 POISONED_FN_DECL = re.compile(r"\bfn\s+(\$?[A-Za-z_][A-Za-z0-9_]*)")
-POISONED_SKIP_DIRS = {"target", ".git", ".tmp", "node_modules", ".ast-grep"}
+# Generated release trees and nested agent worktrees are copies of this
+# repository, not additional source authorities. Scanning them makes local
+# results depend on ignored developer state and multiplies the parser workload.
+AUDIT_SKIP_DIRS = {
+    "target",
+    "dist",
+    ".git",
+    ".tmp",
+    ".ast-grep",
+    ".claude",
+    "node_modules",
+}
 
 
 def poisoned_mask(src: str) -> str:
@@ -2049,7 +2097,7 @@ def poisoned_allocator_gate_findings(root: Path) -> tuple[list[str], int]:
     findings: list[str] = []
     reached = 0
     for path in sorted(root.rglob("*.rs")):
-        if any(part in POISONED_SKIP_DIRS for part in path.parts):
+        if any(part in AUDIT_SKIP_DIRS for part in path.relative_to(root).parts):
             continue
         try:
             src = path.read_text(encoding="utf-8", errors="replace")
@@ -2091,21 +2139,16 @@ def run_query_at(
     *,
     pattern: str | None = None,
     kind: str | None = None,
-) -> list[dict[str, object]]:
+) -> Iterator[dict[str, object]]:
     """Run a Rust query over explicit paths rather than the compiler roots."""
     live = [path for path in paths if (root / path).exists()]
     if not live:
-        return []
+        return
     command = query_command(ast_grep, pattern=pattern, kind=kind)
     command.extend(live)
-    result = subprocess.run(command, cwd=root, text=True, capture_output=True)
-    if result.returncode not in (0, 1) or (result.returncode == 1 and result.stderr):
-        print(result.stderr, file=sys.stderr, end="")
-        raise SystemExit("pinned ast-grep Rust query failed")
-    try:
-        return [json.loads(line) for line in result.stdout.splitlines() if line]
-    except json.JSONDecodeError as error:
-        raise SystemExit(f"pinned ast-grep returned invalid JSON: {error}") from error
+    yield from stream_query_rows(
+        command, root, failure="pinned ast-grep Rust query failed"
+    )
 
 
 def build_tool_spelling(arg: str) -> str | None:
@@ -2142,7 +2185,7 @@ def test_build_scan_roots(root: Path) -> list[str]:
     """Every crate `src`/`tests`/`benches` tree, including authority tests."""
     scanned: list[str] = []
     for manifest in sorted(root.rglob("Cargo.toml")):
-        if any(part in POISONED_SKIP_DIRS for part in manifest.parts):
+        if any(part in AUDIT_SKIP_DIRS for part in manifest.relative_to(root).parts):
             continue
         crate = manifest.parent
         for tree in ("src", "tests", "benches"):

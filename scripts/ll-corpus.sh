@@ -35,23 +35,23 @@ MODE="${1:-verify}"
 TARGETS=("native" "wasm32")
 
 if [[ ! -x "$HEW_BIN" ]]; then
-  echo "ll-corpus: compiler binary not found at $HEW_BIN" >&2
-  echo "build it first (make hew) or set HEW_BIN=<path>" >&2
-  exit 2
+    echo "ll-corpus: compiler binary not found at $HEW_BIN" >&2
+    echo "build it first (make hew) or set HEW_BIN=<path>" >&2
+    exit 2
 fi
 if [[ "$HEW_BIN" != /* ]]; then
-  HEW_BIN="$(cd "$(dirname "$HEW_BIN")" && pwd)/$(basename "$HEW_BIN")"
+    HEW_BIN="$(cd "$(dirname "$HEW_BIN")" && pwd)/$(basename "$HEW_BIN")"
 fi
 
 # Collect corpus fixtures
 fixtures=()
 while IFS= read -r f; do
-  fixtures+=("$f")
+    fixtures+=("$f")
 done < <(find "$CORPUS" -maxdepth 1 -name '*.hew' | sort)
 
 if [[ ${#fixtures[@]} -eq 0 ]]; then
-  echo "ll-corpus: no .hew fixtures under $CORPUS" >&2
-  exit 2
+    echo "ll-corpus: no .hew fixtures under $CORPUS" >&2
+    exit 2
 fi
 
 # The byte-identity oracle compares whatever it is handed. Reject an empty
@@ -61,111 +61,111 @@ corpus_nonempty_assert "ll-oracle-fixtures" "${#fixtures[@]}" || exit 1
 # Emit one fixture's object and LLVM IR to a target-specific directory.
 # compile_fixture <fixture-path> <out-dir> [wasm32]
 compile_fixture() {
-  local fixture="$1"
-  local out="$2"
-  local target="${3:-}"
-  mkdir -p "$out"
-  if [[ "$target" == "wasm32" ]]; then
-    (
-      cd "$out"
-      "$HEW_BIN" build --emit-obj --emit-llvm "$fixture" --target wasm32-unknown-unknown
-    )
-  else
-    (
-      cd "$out"
-      "$HEW_BIN" build --emit-obj --emit-llvm "$fixture"
-    )
-  fi
+    local fixture="$1"
+    local out="$2"
+    local target="${3:-}"
+    mkdir -p "$out"
+    if [[ "$target" == "wasm32" ]]; then
+        (
+            cd "$out"
+            "$HEW_BIN" build --emit-obj --emit-llvm "$fixture" --target wasm32-unknown-unknown
+        )
+    else
+        (
+            cd "$out"
+            "$HEW_BIN" build --emit-obj --emit-llvm "$fixture"
+        )
+    fi
 }
 
 case "$MODE" in
 
 # --------------------------------------------------------------------------
 golden)
-  mkdir -p "$GOLDEN/native" "$GOLDEN/wasm32"
-  tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+    mkdir -p "$GOLDEN/native" "$GOLDEN/wasm32"
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
 
-  for f in "${fixtures[@]}"; do
-    name="$(basename "$f" .hew)"
-    for tgt in "${TARGETS[@]}"; do
-      outdir="$tmpdir/${name}_${tgt}"
-      compile_fixture "$f" "$outdir" "$tgt"
-      ll="$outdir/$name.ll"
-      if [[ ! -f "$ll" ]]; then
-        echo "ll-corpus golden: $name ($tgt) produced no .ll — check compile output above" >&2
-        exit 1
-      fi
-      dest="$GOLDEN/$tgt/$name.ll"
-      cp "$ll" "$dest"
-      echo "captured $tgt/$name.ll  ($(grep -c "^define " "$dest") fn bodies)"
+    for f in "${fixtures[@]}"; do
+        name="$(basename "$f" .hew)"
+        for tgt in "${TARGETS[@]}"; do
+            outdir="$tmpdir/${name}_${tgt}"
+            compile_fixture "$f" "$outdir" "$tgt"
+            ll="$outdir/$name.ll"
+            if [[ ! -f "$ll" ]]; then
+                echo "ll-corpus golden: $name ($tgt) produced no .ll — check compile output above" >&2
+                exit 1
+            fi
+            dest="$GOLDEN/$tgt/$name.ll"
+            cp "$ll" "$dest"
+            echo "captured $tgt/$name.ll  ($(grep -c "^define " "$dest") fn bodies)"
+        done
     done
-  done
-  echo "ll-corpus golden: captured ${#fixtures[@]} fixtures × ${#TARGETS[@]} targets"
-  ;;
+    echo "ll-corpus golden: captured ${#fixtures[@]} fixtures × ${#TARGETS[@]} targets"
+    ;;
 
 # --------------------------------------------------------------------------
 verify)
-  tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
-  fail=0
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    fail=0
 
-  for tgt in "${TARGETS[@]}"; do
-    golden_tgt="$GOLDEN/$tgt"
-    if [[ ! -d "$golden_tgt" ]]; then
-      echo "ll-corpus verify: no golden for target $tgt (run: make baselines)" >&2
-      fail=1
-      continue
-    fi
+    for tgt in "${TARGETS[@]}"; do
+        golden_tgt="$GOLDEN/$tgt"
+        if [[ ! -d "$golden_tgt" ]]; then
+            echo "ll-corpus verify: no golden for target $tgt (run: make ll-golden)" >&2
+            fail=1
+            continue
+        fi
 
-    head_tgt="$tmpdir/head_$tgt"
-    mkdir -p "$head_tgt"
+        head_tgt="$tmpdir/head_$tgt"
+        mkdir -p "$head_tgt"
 
-    for f in "${fixtures[@]}"; do
-      name="$(basename "$f" .hew)"
-      outdir="$tmpdir/${name}_${tgt}"
-      compile_fixture "$f" "$outdir" "$tgt"
-      ll="$outdir/$name.ll"
-      if [[ ! -f "$ll" ]]; then
-        echo "ll-corpus verify: $name ($tgt) produced no .ll — check compile output above" >&2
-        fail=1
-        continue
-      fi
-      cp "$ll" "$head_tgt/$name.ll"
+        for f in "${fixtures[@]}"; do
+            name="$(basename "$f" .hew)"
+            outdir="$tmpdir/${name}_${tgt}"
+            compile_fixture "$f" "$outdir" "$tgt"
+            ll="$outdir/$name.ll"
+            if [[ ! -f "$ll" ]]; then
+                echo "ll-corpus verify: $name ($tgt) produced no .ll — check compile output above" >&2
+                fail=1
+                continue
+            fi
+            cp "$ll" "$head_tgt/$name.ll"
+        done
+
+        echo "--- $tgt ---"
+        if ! LL_IDENTITY_VERBOSE=1 bash "$ORACLE" "$golden_tgt" "$head_tgt" "${#fixtures[@]}"; then
+            fail=1
+        fi
     done
 
-    echo "--- $tgt ---"
-    if ! LL_IDENTITY_VERBOSE=1 bash "$ORACLE" "$golden_tgt" "$head_tgt" "${#fixtures[@]}"; then
-      fail=1
-    fi
-  done
-
-  # Stale goldens (fixture removed but golden still committed) shrink coverage silently.
-  for tgt in "${TARGETS[@]}"; do
-    for g in "$GOLDEN/$tgt"/*.ll; do
-      [[ -e "$g" ]] || continue
-      gname="$(basename "$g" .ll)"
-      found=0
-      for f in "${fixtures[@]}"; do
-        [[ "$(basename "$f" .hew)" == "$gname" ]] && found=1 && break
-      done
-      if [[ $found -eq 0 ]]; then
-        echo "STALE GOLDEN: $tgt/$gname.ll has no fixture $gname.hew (remove or regenerate)" >&2
-        fail=1
-      fi
+    # Stale goldens (fixture removed but golden still committed) shrink coverage silently.
+    for tgt in "${TARGETS[@]}"; do
+        for g in "$GOLDEN/$tgt"/*.ll; do
+            [[ -e "$g" ]] || continue
+            gname="$(basename "$g" .ll)"
+            found=0
+            for f in "${fixtures[@]}"; do
+                [[ "$(basename "$f" .hew)" == "$gname" ]] && found=1 && break
+            done
+            if [[ $found -eq 0 ]]; then
+                echo "STALE GOLDEN: $tgt/$gname.ll has no fixture $gname.hew (remove or regenerate)" >&2
+                fail=1
+            fi
+        done
     done
-  done
 
-  if [[ $fail -ne 0 ]]; then
-    echo "ll-corpus verify: FAILED" >&2
-    exit 1
-  fi
-  echo "ll-corpus verify: OK (${#fixtures[@]} fixtures × ${#TARGETS[@]} targets byte-identical)"
-  ;;
+    if [[ $fail -ne 0 ]]; then
+        echo "ll-corpus verify: FAILED" >&2
+        exit 1
+    fi
+    echo "ll-corpus verify: OK (${#fixtures[@]} fixtures × ${#TARGETS[@]} targets byte-identical)"
+    ;;
 
 # --------------------------------------------------------------------------
 *)
-  echo "usage: $0 {golden|verify}" >&2
-  exit 2
-  ;;
+    echo "usage: $0 {golden|verify}" >&2
+    exit 2
+    ;;
 esac

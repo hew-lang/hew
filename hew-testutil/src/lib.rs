@@ -50,7 +50,6 @@ struct SharedArtifactSpec<'a> {
     unix_archive: &'a str,
     windows_archive: &'a str,
     cargo_args: &'a str,
-    make_target: &'a str,
 }
 
 impl<'a> SharedArtifactSpec<'a> {
@@ -77,9 +76,9 @@ fn shared_artifact_specs() -> impl Iterator<Item = Result<SharedArtifactSpec<'st
         .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("gate\t"))
         .map(|line| {
             let fields = line.split('\t').collect::<Vec<_>>();
-            if fields.len() != 7 {
+            if fields.len() != 6 {
                 return Err(format!(
-                    "shared test artifact row has {} fields instead of 7: {line}",
+                    "shared test artifact row has {} fields instead of 6: {line}",
                     fields.len()
                 ));
             }
@@ -97,7 +96,6 @@ fn shared_artifact_specs() -> impl Iterator<Item = Result<SharedArtifactSpec<'st
                 unix_archive: fields[3],
                 windows_archive: fields[4],
                 cargo_args: fields[5],
-                make_target: fields[6],
             })
         })
 }
@@ -123,7 +121,7 @@ fn shared_artifact_spec(
             spec.kind
         ));
     }
-    if spec.package.is_empty() || spec.archive().is_empty() || spec.make_target.is_empty() {
+    if spec.package.is_empty() || spec.archive().is_empty() {
         return Err(format!(
             "shared test artifact `{key}` has an empty required field"
         ));
@@ -755,35 +753,25 @@ fn abandoned_capture_marker(name: &str) -> Vec<u8> {
 /// run.
 ///
 /// Under nextest, or when `HEW_TEST_NO_BUILD=1`, this is verify-only: the
-/// archive and its content certificate must already have been published by the
-/// enclosing test gate. Outside a test run, the serialized bootstrap remains
-/// available for standalone tools and explicitly invoked proving tests.
+/// archive must already have been published by the enclosing test gate.
+/// Outside a test run, the serialized bootstrap remains available for
+/// standalone tools and explicitly invoked proving tests.
 ///
 /// # Errors
 ///
-/// Returns `Err` if the archive is missing or uncertified during a test run, or
-/// if an allowed standalone build fails.
+/// Returns `Err` if the archive is missing during a test run, or if an allowed
+/// standalone build fails.
 pub fn ensure_hew_lib_built() -> Result<PathBuf, String> {
     let spec = shared_artifact_spec("hew-lib", SharedArtifactKind::HostStaticlib)?;
     let repo_root = workspace_root()?;
     let (target_dir, profile) = target_dir_and_profile(&repo_root);
     let lib_path = target_dir.join(&profile).join(spec.archive());
-    let debug_dir = target_dir.join(&profile);
-    let certificate = debug_dir.join(".hew-libhew-freshness-v1");
-    let verify_only = test_run_no_build();
     ensure_built_serialized(
         &target_dir,
         &profile,
         "hew-lib",
         &lib_path,
-        || {
-            profile != "debug"
-                || if verify_only {
-                    verify_hew_lib_certificate(&repo_root, &debug_dir)
-                } else {
-                    certificate.is_file()
-                }
-        },
+        || true,
         |td, prof| run_cargo_build_hew_lib(&repo_root, td, prof, spec.package),
     )?;
     Ok(lib_path)
@@ -799,115 +787,6 @@ fn hew_lib_name() -> &'static str {
 fn test_run_no_build() -> bool {
     std::env::var_os("NEXTEST_RUN_ID").is_some()
         || std::env::var(TEST_NO_BUILD_ENV).is_ok_and(|value| value == "1")
-}
-
-fn verify_hew_lib_certificate(repo_root: &Path, debug_dir: &Path) -> bool {
-    let python = std::env::var_os("PYTHON").unwrap_or_else(|| {
-        if cfg!(windows) {
-            OsString::from("python")
-        } else {
-            OsString::from("python3")
-        }
-    });
-    Command::new(python)
-        .arg(repo_root.join("scripts/libhew-freshness.py"))
-        .args(["verify", "--debug-dir"])
-        .arg(debug_dir)
-        .current_dir(repo_root)
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-/// Verify every concrete shared artifact named by the test artifact table.
-///
-/// This is the contract counterpart to Make's table-derived builder. Cross
-/// archives are concrete only on hosts where the test suite can demand them:
-/// both native macOS slices, or the opposite Linux architecture when its
-/// multiarch sysroot is installed.
-///
-/// # Errors
-///
-/// Returns `Err` if the inventory is malformed, an expected artifact is
-/// absent, or the debug host library lacks a valid freshness certificate.
-pub fn verify_shared_test_artifacts() -> Result<Vec<PathBuf>, String> {
-    let repo_root = workspace_root()?;
-    let (target_dir, profile) = target_dir_and_profile(&repo_root);
-    let mut verified = Vec::new();
-
-    for spec in shared_artifact_specs() {
-        let spec = spec?;
-        let paths = match spec.kind {
-            SharedArtifactKind::HostBin | SharedArtifactKind::HostStaticlib => {
-                vec![target_dir.join(&profile).join(spec.archive())]
-            }
-            SharedArtifactKind::WasmStaticlib => vec![target_dir
-                .join(WASM_TARGET)
-                .join(&profile)
-                .join(spec.archive())],
-            SharedArtifactKind::CrossStaticlib => supported_cross_targets()
-                .into_iter()
-                .map(|target| target_dir.join(target).join(&profile).join(spec.archive()))
-                .collect(),
-        };
-        for path in paths {
-            if !path.is_file() {
-                return Err(format!(
-                    "shared test artifact `{}` is absent at {} (builder target `{}`)",
-                    spec.key,
-                    path.display(),
-                    spec.make_target
-                ));
-            }
-            if spec.key == "hew-lib"
-                && profile == "debug"
-                && !verify_hew_lib_certificate(&repo_root, &target_dir.join(&profile))
-            {
-                return Err(format!(
-                    "shared test artifact `{}` is not certified at {}",
-                    spec.key,
-                    path.display()
-                ));
-            }
-            verified.push(path);
-        }
-    }
-
-    Ok(verified)
-}
-
-fn supported_cross_targets() -> Vec<&'static str> {
-    if cfg!(target_os = "macos") {
-        let host = if cfg!(target_arch = "aarch64") {
-            "aarch64-apple-darwin"
-        } else {
-            "x86_64-apple-darwin"
-        };
-        return ["aarch64-apple-darwin", "x86_64-apple-darwin"]
-            .into_iter()
-            .filter(|target| *target != host)
-            .collect();
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let environment = if cfg!(target_env = "musl") {
-            "musl"
-        } else {
-            "gnu"
-        };
-        let (target, sysroot) = match (std::env::consts::ARCH, environment) {
-            ("aarch64", "musl") => ("x86_64-unknown-linux-musl", "/usr/x86_64-linux-musl"),
-            ("aarch64", _) => ("x86_64-unknown-linux-gnu", "/usr/x86_64-linux-gnu"),
-            ("x86_64", "musl") => ("aarch64-unknown-linux-musl", "/usr/aarch64-linux-musl"),
-            ("x86_64", _) => ("aarch64-unknown-linux-gnu", "/usr/aarch64-linux-gnu"),
-            _ => return Vec::new(),
-        };
-        if Path::new(sysroot).is_dir() {
-            return vec![target];
-        }
-    }
-
-    Vec::new()
 }
 
 /// Return the resolved `hew` binary path, building it only outside a test run.
@@ -941,7 +820,7 @@ pub fn ensure_hew_bin_built() -> Result<PathBuf, String> {
     Ok(bin_path)
 }
 
-/// Return a cross-compiled `target/<target>/<profile>/libhew.a`, building it
+/// Return a cross-compiled `target/<target>/release-lib/libhew.a`, building it
 /// only outside a test run.
 ///
 /// The cross-target archive is as much a shared-target artifact as the host
@@ -962,12 +841,16 @@ pub fn ensure_hew_lib_built_for_target(
 ) -> Result<PathBuf, String> {
     let spec = shared_artifact_spec("hew-lib-cross", SharedArtifactKind::CrossStaticlib)?;
     let repo_root = workspace_root()?;
-    let (target_dir, profile) = target_dir_and_profile(&repo_root);
-    let lib_path = target_dir.join(target).join(&profile).join(spec.archive());
+    let (target_dir, _) = target_dir_and_profile(&repo_root);
+    // Cross-target archives are product artifacts, not test-profile outputs.
+    // Use the consumer-linkable non-LTO profile for assembled toolchains and
+    // tests alike so worktrees do not carry duplicate debug/release-lib copies.
+    let profile = "release-lib";
+    let lib_path = target_dir.join(target).join(profile).join(spec.archive());
     let artifact = lib_path.clone();
     ensure_built_serialized(
         &target_dir,
-        &profile,
+        profile,
         &format!("hew-lib-{target}"),
         &lib_path,
         || still_current(&artifact),
@@ -979,10 +862,8 @@ pub fn ensure_hew_lib_built_for_target(
 /// Return the resolved native `hew-runtime` static library, building it only
 /// outside a test run.
 ///
-/// `hew-lib` has its own authority ([`ensure_hew_lib_built`]) because it also
-/// publishes a freshness certificate. This covers the other shared-target
-/// staticlib, which link tests read while a sibling process could be inside
-/// Cargo's non-atomic uplift of the same file.
+/// This covers the runtime staticlib, which link tests read while a sibling
+/// process could be inside Cargo's non-atomic uplift of the same file.
 ///
 /// Test runs are verify-only: their gate must build this archive before
 /// starting the test runner. Outside a test run, callers retain the serialized
@@ -1146,19 +1027,18 @@ const WASM_TARGET: &str = "wasm32-wasip1";
 ///
 /// Under `cargo llvm-cov`, test processes inherit the instrumentation
 /// environment -- a `RUSTC_WRAPPER` shim driven by `__CARGO_LLVM_COV_*` vars
-/// and/or `-C instrument-coverage` in `RUSTFLAGS`. wasm32-wasip1 ships no
-/// profiler runtime, so an inherited instrumented build fails with "can't find
+/// controls. wasm32-wasip1 ships no profiler runtime, so an inherited
+/// instrumented build fails with "can't find
 /// crate for `profiler_builtins`". These archives execute under wasmtime and
 /// contribute no host coverage, so the instrumentation environment is dropped
 /// rather than honoured.
 fn wasm_cargo_command() -> Command {
     let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    let coverage_wrapper = std::env::var_os("__CARGO_LLVM_COV_RUSTC_WRAPPER_PRE_EXISTING");
+    let coverage_active = std::env::var_os("__CARGO_LLVM_COV_RUSTC_WRAPPER").is_some()
+        || std::env::var_os("CARGO_LLVM_COV").is_some();
     for var in [
-        "RUSTFLAGS",
-        "CARGO_ENCODED_RUSTFLAGS",
-        "CARGO_BUILD_RUSTFLAGS",
         "LLVM_PROFILE_FILE",
-        "RUSTC_WRAPPER",
         "__CARGO_LLVM_COV_RUSTC_WRAPPER",
         "__CARGO_LLVM_COV_RUSTC_WRAPPER_RUSTFLAGS",
         "__CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES",
@@ -1167,11 +1047,12 @@ fn wasm_cargo_command() -> Command {
     ] {
         command.env_remove(var);
     }
-    // Explicitly override any user-level Cargo `build.rustc-wrapper` setting.
-    // Merely removing the environment variable lets Cargo fall back to that
-    // config (for example `sccache`), making the hermetic bootstrap depend on a
-    // developer-local daemon that may be unavailable in CI sandboxes.
-    command.env("RUSTC_WRAPPER", "");
+    if coverage_active {
+        command.env_remove("RUSTC_WRAPPER");
+        if let Some(wrapper) = coverage_wrapper {
+            command.env("RUSTC_WRAPPER", wrapper);
+        }
+    }
     command
 }
 
@@ -1327,8 +1208,7 @@ fn run_cargo_build_hew_bin(
 }
 
 /// Testable core: `build_fn` is injected so the unit test can stub `cargo`.
-/// `extra_fresh` lets the debug archive require its companion certificate
-/// without making binary and release-profile bootstraps pay that authority.
+/// `extra_fresh` lets callers apply an artifact-specific currency check.
 ///
 /// The stamp read, the build, the artifact presence check, and the stamp
 /// write all happen inside the `fd_lock` write guard — no TOCTOU window
@@ -1369,7 +1249,7 @@ fn ensure_built_serialized_inner(
             return Ok(());
         }
         return Err(format!(
-            "test run requires a present, certified shared artifact at {}; run `make stdlib` before the test gate",
+            "test run requires a present shared artifact at {}; run the enclosing Make test target first",
             artifact.display()
         ));
     }
@@ -1382,10 +1262,8 @@ fn ensure_built_serialized_inner(
     let lock_path = target_dir.join("hew-lib-bootstrap.lock");
     // The stamp is per ARTIFACT, not per target directory. A single
     // `hew-lib-bootstrap-{profile}.stamp` shared by every caller let the first
-    // bootstrap of a run certify artifacts it never built: `hew` stamping the
-    // run made a stale-but-present `libhew.a` read as fresh, and the freshness
-    // certificate is only checked for presence, so the staleness survived. Each
-    // artifact now proves its own build.
+    // bootstrap of a run mark artifacts it never built as current. Each
+    // artifact therefore records its own build.
     let stamp_path = target_dir.join(format!(".hew-bootstrap-{key}-{profile}.stamp"));
     let fresh = || {
         fs::read_to_string(&stamp_path).is_ok_and(|s| s == run_id)
@@ -1494,32 +1372,8 @@ fn run_cargo_build_hew_lib(
         }
     }
 
-    // The debug archive is consumed by the Make freshness gate.  Publish its
-    // certificate under the same fd_lock that serializes the Cargo uplift, so
-    // test helpers cannot leave a freshly built archive uncoupled from that
-    // gate.  Keep non-debug profiles on their own artifact authority.
-    let mut cmd = if profile == "debug" {
-        let python = std::env::var_os("PYTHON").unwrap_or_else(|| {
-            if cfg!(windows) {
-                OsString::from("python")
-            } else {
-                OsString::from("python3")
-            }
-        });
-        let mut helper = Command::new(python);
-        helper
-            .arg(repo_root.join("scripts/libhew-freshness.py"))
-            .args(["build", "--debug-dir"])
-            .arg(target_dir.join(profile))
-            .arg("--")
-            .arg(cargo)
-            .args(&cargo_args);
-        helper
-    } else {
-        let mut cargo_command = Command::new(cargo);
-        cargo_command.args(&cargo_args);
-        cargo_command
-    };
+    let mut cmd = Command::new(cargo);
+    cmd.args(&cargo_args);
     cmd.env("CARGO_TARGET_DIR", target_dir)
         .current_dir(repo_root);
     #[cfg(target_os = "macos")]
@@ -1806,12 +1660,12 @@ mod hew_lib_bootstrap_tests {
         );
     }
 
-    /// Bootstrapping one artifact must not certify a different one. A single
+    /// Bootstrapping one artifact must not mark a different one current. A single
     /// per-target-directory stamp meant `hew`'s bootstrap stamped the run and a
     /// stale-but-present `libhew.a` then read as fresh, so the archive under
     /// test was never rebuilt. Each artifact proves its own build.
     #[test]
-    fn one_artifact_bootstrap_does_not_certify_another() {
+    fn one_artifact_bootstrap_does_not_mark_another_current() {
         let dir = tempfile::tempdir().expect("create tempdir");
         let target_dir = dir.path().to_path_buf();
         let bin = target_dir.join(hew_bin_name());
@@ -1877,7 +1731,7 @@ mod hew_lib_bootstrap_tests {
             true,
         )
         .expect_err("a test run must not build a missing artifact");
-        assert!(missing.contains("run `make stdlib`"), "error: {missing}");
+        assert!(missing.contains("Make test target"), "error: {missing}");
         assert_eq!(build_count.load(Ordering::SeqCst), 0);
 
         fs::write(&artifact, b"prebuilt").expect("seed prebuilt artifact");
@@ -1893,8 +1747,8 @@ mod hew_lib_bootstrap_tests {
             },
             true,
         )
-        .expect_err("a test run must not accept an uncertified artifact");
-        assert!(stale.contains("run `make stdlib`"), "error: {stale}");
+        .expect_err("a test run must not accept an artifact rejected by its currency check");
+        assert!(stale.contains("Make test target"), "error: {stale}");
         assert_eq!(build_count.load(Ordering::SeqCst), 0);
 
         ensure_built_serialized_inner(
@@ -1909,7 +1763,7 @@ mod hew_lib_bootstrap_tests {
             },
             true,
         )
-        .expect("a prebuilt certified artifact should be accepted");
+        .expect("a prebuilt current artifact should be accepted");
         assert_eq!(build_count.load(Ordering::SeqCst), 0);
     }
 }

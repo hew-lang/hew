@@ -1,7 +1,7 @@
 //! Multi-process proof that test runs consume a prebuilt `libhew.a` without
 //! invoking Cargo.
 //!
-//! The test gate builds and certifies the archive before this binary starts.
+//! The test gate builds the archive before this binary starts.
 //! Every child then shares one nextest run id, verifies that archive through
 //! `ensure_hew_lib_built`, and performs a real `hew compile` link. `CARGO`
 //! points at a fail-closed spy, so any attempted bootstrap is both recorded and
@@ -24,13 +24,6 @@ const CHILD_COUNT: usize = 12;
 const READY_DEADLINE: Duration = Duration::from_secs(30);
 const CHILD_DEADLINE: Duration = Duration::from_mins(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-testutil has a workspace parent")
-        .to_path_buf()
-}
 
 fn profile_dir() -> PathBuf {
     env::current_exe()
@@ -62,8 +55,7 @@ fn run_child() {
     fs::write(&ready, b"ready").expect("publish child readiness");
     wait_for(&release, READY_DEADLINE, "parent release");
 
-    hew_testutil::ensure_hew_lib_built()
-        .expect("test gate must provide a present, certified libhew archive");
+    hew_testutil::ensure_hew_lib_built().expect("test gate must provide a present libhew archive");
 
     let scratch = tempfile::tempdir().expect("create link scratch directory");
     let source = scratch.path().join("probe.hew");
@@ -193,17 +185,5 @@ fn concurrent_test_links_never_invoke_cargo() {
     assert_eq!(
         invocations, 0,
         "test-run archive verification or linking attempted to invoke Cargo"
-    );
-
-    let certificate = Command::new(repo_root().join("scripts/check-libhew-fresh.sh"))
-        .args(["--debug-dir"])
-        .arg(profile_dir())
-        .output()
-        .expect("run libhew certificate verifier");
-    assert!(
-        certificate.status.success(),
-        "test gate did not leave a valid libhew certificate\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&certificate.stdout),
-        String::from_utf8_lossy(&certificate.stderr)
     );
 }

@@ -1,6 +1,6 @@
 # tests/fuzz-oracle/expected-failures.txt
 #
-# Regression corpus entries that are KNOWN to fail.
+# Ratcheted vertical-slice and regression-corpus entries that are KNOWN to fail.
 # The oracle enforces (in regressions mode):
 #   - Every filename listed here MUST fail (unexpected pass = gate failure →
 #     forces updating this file to promote the gap to a positive guard).
@@ -8,21 +8,18 @@
 #     gate failure).
 #
 # Format: <filename>  # <root-cause>; issue: #NNNN
-# Filenames are bare (no path prefix); they match files in regressions/.
+# Filenames are bare (no path prefix); they match the oracle's candidate set.
 #
-# When a fix lands for an entry here, REMOVE the entry and add a positive
-# vertical-slice fixture (or update an existing one) so the behaviour is
-# continuously guarded.  Do NOT remove entries to make the gate green if the
-# regression still fails — fix the underlying compiler instead.
+# When a fix lands for an entry here, REMOVE the entry and add, update, or
+# restore its positive vertical-slice guard. Do NOT remove entries to make the
+# gate green if the regression still fails — fix the underlying compiler
+# instead.
 # Payload-enum and record equality fixtures now live in vertical-slice/accept; no
 # fuzz-oracle regression entries remain for that surface.
 #
 # Positive collection-literal fixtures such as map_literal_string_keys.hew,
 # map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
 # array_repeat_runtime_count.hew are intentionally absent: they must pass.
-#
-# Total: 39 known-failing entries (28 intentional-trap/abort fixtures plus 11
-# actor-isolated crash fixtures that report a non-zero exit status).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -59,6 +56,11 @@ wire_cbor_enum_arity_mismatch_traps.hew  # intentional trap: decoding an enum pa
 int_negate_runtime_min_traps.hew  # intentional trap: negating a runtime i32::MIN value (-n for non-literal n; literal -<digits> folds at compile time) → IntegerOverflow signal (SIGILL x86_64 / SIGTRAP aarch64)
 receive_gen_fn_fault_trap.hew  # intentional abort: a receive-gen producer that traps mid-stream (div-by-zero after its first yield) fault-closes the stream so the consumer observes the fault → SIGABRT (signal 6)
 receive_gen_fn_teardown_fault.hew  # intentional abort: a receive-gen producer torn down (actor stopped) while its stream is live and parked fault-closes the stream so the consumer observes the fault → SIGABRT (signal 6)
+
+# Runtime regressions retain their positive fixture and desired `.expected`
+# output. A clean execution is a NOW-PASSES ratchet violation that requires
+# removing the entry and restoring its direct vertical-slice invocation.
+arena_nested_vec_reuse.hew  # Arena<Vec<T>>::remove invalid-frees its payload and slot reuse segfaults; issue: #3090
 
 # Actor-isolated crash fixtures (`*_actor_isolated.hew`). Each crashes ONE
 # unsupervised actor and then proves an independent probe actor still answers:

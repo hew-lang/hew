@@ -3,12 +3,12 @@
 ## What this proves
 
 Every checker-valid Hew program (one that passes `hew check`) must also
-compile and run cleanly.  This oracle verifies that invariant continuously:
+compile and run cleanly. This oracle verifies that invariant continuously:
 
 - For each `.hew` file in the candidate set, run `hew check`.
 - If checker-valid, compile to a native binary (`hew build -o`) and execute it
   **directly** (not `hew run`, which masks signals — see below).
-- Classify the outcome fail-closed.  Anything not provably clean is a failure
+- Classify the outcome fail-closed. Anything not provably clean is a failure
   unless explicitly registered in `expected-failures.txt`.
 
 The oracle is the machine that makes "admit only what you lower" continuously
@@ -17,28 +17,30 @@ verifiable rather than a point-in-time audit.
 ## Why the binary is executed directly (not `hew run`)
 
 `hew run` on Unix maps a child signal (SIGSEGV/SIGABRT) to exit code 1 via
-`ExitStatus::code().unwrap_or(1)`.  A crash and a clean non-zero exit are
-indistinguishable.  The oracle compiles the binary separately then runs it
+`ExitStatus::code().unwrap_or(1)`. A crash and a clean non-zero exit are
+indistinguishable. The oracle compiles the binary separately then runs it
 directly so the real signal (negative returncode, e.g. -11 = SIGSEGV) is
 visible for fail-closed classification.
 
 ## Candidate sources
 
-| Source | Mode | Notes |
-|---|---|---|
-| `tests/vertical-slice/accept/*.hew` | CI (regressions) | Known-good well-typed programs — must all pass. |
-| `tests/fuzz-oracle/regressions/*.hew` | CI (regressions) | Minimized failures promoted from fuzz campaigns. |
-| `hew-parser/fuzz/corpus/**` | Manual (`FUZZ_ORACLE_FULL=1`) | Raw cargo-fuzz bytes; many fail the frontend gate (expected). Not in CI due to nondeterminism. |
+| Source                                | Mode                          | Notes                                                                                          |
+| ------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| `tests/vertical-slice/accept/*.hew`   | CI (regressions)              | Desired-behaviour programs; known runtime gaps may be ratcheted.                               |
+| `tests/fuzz-oracle/regressions/*.hew` | CI (regressions)              | Minimized failures promoted from fuzz campaigns.                                               |
+| `hew-parser/fuzz/corpus/**`           | Manual (`FUZZ_ORACLE_FULL=1`) | Raw cargo-fuzz bytes; many fail the frontend gate (expected). Not in CI due to nondeterminism. |
 
 ## Ratchet: expected-failures.txt
 
-`expected-failures.txt` lists regression filenames that are **known to fail**,
-each annotated with a tracking issue.
+`expected-failures.txt` lists candidate filenames that are **known to fail**,
+each annotated with a tracking issue. Candidates may come from the
+vertical-slice or regression corpus.
 
 **Gate behaviour:**
-- A listed regression that **passes** → `unexpected-pass` → gate failure.
+
+- A listed candidate that **passes** → `unexpected-pass` → gate failure.
   This forces the entry to be removed and a positive guard to be added.
-- An unlisted regression that **fails** → `unexpected-fail` → gate failure.
+- An unlisted candidate that **fails** → `unexpected-fail` → gate failure.
   This forces the failure to be registered (or fixed).
 
 The ratchet fires in both directions so a confirmed gap that silently reverts
@@ -54,11 +56,13 @@ is caught the day it re-emerges.
 5. Commit both files together.
 
 When the underlying fix lands:
-1. Remove the entry from `expected-failures.txt`.
-2. Add (or update) a vertical-slice fixture that guards the fixed behaviour.
-3. Run `make fuzz-oracle` to confirm the oracle now shows unexpected-pass
-   (which requires the entry to be gone), then run it again after clearing
-   expected-failures to confirm clean passage.
+
+1. Leave the entry in place and run `make fuzz-oracle`; it must report the
+   clean execution as an unexpected pass.
+2. Remove the entry from `expected-failures.txt`.
+3. Add, update, or restore the vertical-slice invocation that guards the fixed
+   behaviour.
+4. Run `make fuzz-oracle` again to confirm clean passage.
 
 ## Running the oracle
 
@@ -78,7 +82,7 @@ python3 scripts/fuzz/run-oracle.py --hew /path/to/hew --timeout 30
 ## Connecting fuzz campaigns to this oracle
 
 The cargo-fuzz targets (`make fuzz-smoke`) find failures; this oracle
-permanently records and re-verifies them.  The seam is **hand-promotion**:
+permanently records and re-verifies them. The seam is **hand-promotion**:
 take a minimized failure from a fuzz run, add it to `regressions/`, register
-it in `expected-failures.txt`.  Fuzzing stays exploratory; CI stays
+it in `expected-failures.txt`. Fuzzing stays exploratory; CI stays
 corpus-deterministic.

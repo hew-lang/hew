@@ -21,7 +21,7 @@ crate-type = ["staticlib", "lib"]
 [dependencies]
 # Shared ABI + runtime (path deps).
 hew-cabi = { path = "../hew-cabi" }
-hew-runtime = { path = "../hew-runtime" }
+hew-runtime = { path = "../hew-runtime", default-features = false }
 
 # Wire-codec + pure-module deps (wasm-safe).
 base64.workspace = true

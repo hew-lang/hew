@@ -19,6 +19,7 @@ std.encoding.markdown	markdown.to_html("");
 std.encoding.msgpack	msgpack.from_json("null");
 std.encoding.protobuf	protobuf.new();
 std.encoding.toml	toml.parse("");
+std.encoding.wire	wire.to_json(1);
 std.encoding.xml	xml.parse("<root />");
 std.encoding.yaml	yaml.parse("null");
 std.fmt	fmt.to_hex(0);

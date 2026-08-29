@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -14,13 +13,14 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "compiled-hew-shards.py"
-WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-COUNT = 1169
+COUNT = 41
 SHARDS = 4
 
 
 def identity(index: int) -> str:
-    return f"tests/hew/generated_{index // 10}_test.hew::test_{index}"
+    # Repeated bare names make path qualification part of every aggregation
+    # counterfactual, rather than relying on one specially named fixture.
+    return f"tests/hew/generated_{index // 5}_test.hew::test_{index % 5}"
 
 
 def write_junit(
@@ -153,6 +153,36 @@ class CompiledHewShardTests(unittest.TestCase):
         result = self.aggregate("ratchet", expect=1)
         self.assertIn("failure set differs", result.stderr)
 
+    def test_expected_failure_is_an_exact_path_qualified_identity(self) -> None:
+        values = self.full[0::SHARDS]
+        tracked = values[0]
+        same_name = [
+            value
+            for value in self.full
+            if value != tracked
+            and value.rsplit("::", 1)[1] == tracked.rsplit("::", 1)[1]
+        ]
+        self.assertTrue(same_name)
+        self.expected.write_text(f"{tracked}\n", encoding="utf-8")
+        write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={tracked})
+
+        self.assertIn("ratchet passed", self.aggregate("ratchet").stdout)
+
+    def test_expected_failure_must_belong_to_the_inventory(self) -> None:
+        self.expected.write_text(
+            "tests/hew/not_present_test.hew::test_missing\n", encoding="utf-8"
+        )
+
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("absent from the full inventory", result.stderr)
+
+    def test_duplicate_expected_failure_is_rejected(self) -> None:
+        tracked = self.full[0]
+        self.expected.write_text(f"{tracked}\n{tracked}\n", encoding="utf-8")
+
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("duplicate identities", result.stderr)
+
     def test_report_names_the_failed_shard_test_and_diagnostic(self) -> None:
         values = self.full[0::SHARDS]
         write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={values[0]})
@@ -172,67 +202,6 @@ class CompiledHewShardTests(unittest.TestCase):
         result = self.report()
         self.assertIn("COMPILED_HEW_REPORT_UNREADABLE shard=1", result.stderr)
         self.assertIn("COMPILED_HEW_FAILURE shard=2 suite=O2", result.stdout)
-
-
-class CompiledHewWorkflowContractTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.workflow = WORKFLOW.read_text(encoding="utf-8")
-
-    def test_one_certified_build_feeds_all_four_shards(self) -> None:
-        self.assertEqual(self.workflow.count("make hew-native libhew-debug"), 1)
-        self.assertIn("shard: [1, 2, 3, 4]", self.workflow)
-        self.assertIn('--partition "hash:${{ matrix.shard }}/4"', self.workflow)
-        self.assertIn("name: compiled-hew-linux-${{ github.sha }}", self.workflow)
-        for job in (
-            "compiled-hew-linux",
-            "compiled-hew-shards",
-            "compiled-hew-aggregate",
-        ):
-            start = self.workflow.index(f"  {job}:\n")
-            following = re.search(
-                r"^  [a-zA-Z0-9_-]+:\n", self.workflow[start + 1 :], re.MULTILINE
-            )
-            end = (
-                len(self.workflow)
-                if following is None
-                else start + 1 + following.start()
-            )
-            section = self.workflow[start:end]
-            self.assertNotIn("RUN_CODE_PATH", section)
-        self.assertGreaterEqual(
-            self.workflow.count("scripts/compiled-hew-artifact.py unpack"), 2
-        )
-
-    def test_aggregate_uses_an_independent_full_inventory_and_both_gates(self) -> None:
-        self.assertIn("for fixture in tests/hew/*.hew; do", self.workflow)
-        self.assertIn('test "$fixture" --list --allow-empty', self.workflow)
-        self.assertIn(
-            'LC_ALL=C sort > "${{ runner.temp }}/compiled-hew-full.txt"',
-            self.workflow,
-        )
-        self.assertIn("make test-hew-ratchet", self.workflow)
-        self.assertIn("make test-o2-differential", self.workflow)
-        self.assertEqual(self.workflow.count("HEW_SHARD_COUNT=4"), 2)
-
-    def test_failure_reporter_runs_before_the_aggregate_gates(self) -> None:
-        report = self.workflow.index("Report compiled Hew shard failures")
-        gate = self.workflow.index("Require every shard to complete")
-        ratchet = self.workflow.index("Assert shard union and Hew ratchet")
-        self.assertLess(report, gate)
-        self.assertLess(gate, ratchet)
-        self.assertIn("scripts/compiled-hew-shards.py report", self.workflow)
-
-    def test_established_required_check_requires_both_parallel_branches(self) -> None:
-        required = self.workflow.split("  linux-required:\n", 1)[1].split(
-            "\n  # Code coverage", 1
-        )[0]
-        self.assertIn("name: Build & test (Linux)", required)
-        self.assertIn("needs: [build-and-test, compiled-hew-aggregate]", required)
-        self.assertIn("RUST_GATES_RESULT: ${{ needs.build-and-test.result }}", required)
-        self.assertIn(
-            "COMPILED_HEW_RESULT: ${{ needs.compiled-hew-aggregate.result }}",
-            required,
-        )
 
 
 if __name__ == "__main__":

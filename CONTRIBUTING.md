@@ -32,7 +32,7 @@ Key boundary checks most contributors encounter:
 
 - **`serializer-fail-closed` (P0):** Any Rust-to-C++ or wire boundary must hard-error on unsupported shapes — never silently omit.
 - **`checker-output-boundary` (P0):** Reject unresolved `Ty::Var` and missing checker metadata at `check_program` output. Serialize/codegen should consume checker-authoritative types instead of reconstructing them from AST fallbacks.
-- **`native-wasm-parity` (P1):** New runtime behaviour (channels, timers, actors) needs both a native and a WASM implementation, or an exact `// WASM-TODO(<stable-backlog-id>):` marker plus a PR note. Define the narrow semantic id in the `[[backlog]]` authority in `wasm-capability-manifest.toml`; do not use GitHub issue numbers or a general umbrella id. See [`docs/wasm-capability-matrix.md`](docs/wasm-capability-matrix.md) for the rendered Tier 1 / Tier 2 feature table and unsupported-feature backlog.
+- **`native-wasm-parity` (P1):** New runtime behaviour (channels, timers, actors) needs native and WASM execution coverage wherever the target supports it. An intentional target limitation belongs in the typed feature disposition in `wasm-capability-manifest.toml` and needs a focused negative compile/runtime test; source comments are not a substitute for behavior. See [`docs/wasm-capability-matrix.md`](docs/wasm-capability-matrix.md) for the generated Tier 1 / Tier 2 feature table.
 - **`test-runner-trust` (P1):** Changes to discovery, reporting, or timeout in `hew test` must keep the runner fail-closed on parse errors and preserve stable ordering.
 
 ## What to Work On
@@ -56,33 +56,44 @@ The installer is worktree-safe and targets the shared git common dir, so linked 
 
 #### Pre-push gate
 
-The pre-push hook runs `cargo fmt --all -- --check` — it is intentionally fast. Its job is to catch unformatted code before it reaches review; it is not a substitute for CI.
+The pre-push hook runs `cargo fmt --all -- --check`, the tracked shell-script
+lint, and `actionlint`. It is intentionally fast: its job is to catch local
+format/script errors and malformed workflows before they reach review, not to
+duplicate the full CI suite.
 
-For substantive changes, run `make preflight` yourself before opening a PR. It is the standard unconditional, fail-fast gate for local iteration; reserve `make ci-preflight` for integration and release moments. CI runs the same exhaustive shard assignment on every PR, so formatting errors, clippy violations, and test failures will be caught there. The pre-push hook just keeps the signal fast and local.
+For substantive changes, run `make preflight` yourself before opening a PR. It is the standard unconditional, fail-fast gate and CI runs the same exhaustive shard assignment on every PR, so formatting errors, clippy violations, and test failures will be caught there. The pre-push hook just keeps the signal fast and local.
 
-If `cargo fmt --check` fails: run `cargo fmt --all` and re-push. There is no environment-based exemption and no `--no-verify` bypass.
+If formatting fails, run `cargo fmt --all`; if a script or workflow check
+fails, run `make shell-script-lint` or `make actionlint` for the focused
+diagnostic. There is no environment-based exemption and no `--no-verify`
+bypass.
 
 ## Build System
 
-Always use `make` targets instead of running `cargo` directly. See the [Makefile](Makefile) header for all available targets.
+Cargo is authoritative for compiling individual Rust crates. The Makefile is
+authoritative for complete Hew artifacts and verification gates; use its
+targets instead of reconstructing package/profile combinations by hand.
+`xtask` is intentionally limited to automation that consumes Hew's Rust APIs
+directly and does not define a competing build graph. See the
+[Makefile](Makefile) header for available targets.
 
 ## Testing
 
 ### Test suite overview
 
-| Suite | Command | Scope | Speed |
-|---|---|---|---|
-| Full (default) | `make test` | Rust workspace (via nextest) | medium |
-| Stdlib type-check | `make test-stdlib-ratchet` | `std/` type-check sweep, ratcheted against `scripts/stdlib-expected-failures.txt` | medium |
-| Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers | medium |
-| Runtime (no-net) | `make test-runtime-unit` | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast |
-| Hew test files | `make test-hew-ratchet` | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt` | medium |
+| Suite             | Command                       | Scope                                                                                        | Speed  |
+| ----------------- | ----------------------------- | -------------------------------------------------------------------------------------------- | ------ |
+| Full (default)    | `make test`                   | Rust workspace (via nextest)                                                                 | medium |
+| Stdlib type-check | `make test-stdlib-ratchet`    | `std/` type-check sweep, ratcheted against `scripts/stdlib-expected-failures.txt`            | medium |
+| Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers                                                      | medium |
+| Runtime (no-net)  | `make test-runtime-unit`      | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast   |
+| Hew test files    | `make test-hew-ratchet`       | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt`     | medium |
 
 Use `test-runtime-unit` for no-network runtime iteration and `test-compiler-pipeline` for compiler iteration. Run `make test` before opening a PR.
 
 `make test-runtime-unit` is the recommended target when iterating on `hew-runtime` logic that does not touch QUIC, TLS, or the profiler. It runs the full `hew-runtime` test suite (lib unit tests + all integration tests) with `--no-default-features`, cutting compile time roughly 3× (measured: ~32 s vs ~85 s per integration test binary on a warm build cache). The two profiler allocator tests in `transport.rs` are excluded under this target because they require active allocation counters to be meaningful; they still run under `cargo test -p hew-runtime` (default features).
 
-`make preflight` runs the exhaustive static Linux gate assignment and fails fast; it is the standard manual gate before opening a PR. Reserve `make ci-preflight` for integration and release moments. CI runs the same assignment on every PR.
+`make preflight` runs the lint graph and the same Make-owned test groups as Linux CI; it is the standard manual gate before opening a PR. `make ci-preflight` remains a compatibility alias.
 
 ### E2E test workflow
 
@@ -90,18 +101,18 @@ When adding new language features, add an end-to-end test:
 
 1. Create a `.hew` source file under `tests/hew/`.
 2. Run it via `make test-hew-ratchet` (`hew test tests/hew/`, compared against the tracked expected-failure set).
-3. **WASM parity** (see `native-wasm-parity` in LESSONS.md): if the feature is supported on WASM, exercise it via the `wasi_run_e2e` integration tests under `hew-cli/tests/`. If WASM support is deferred, add `// WASM-TODO(<stable-backlog-id>): <reason>` at the registration site. The id must name the narrow gap in the `[[backlog]]` table in `wasm-capability-manifest.toml`; `make lint-wasm-todo` validates both the authority and every actionable marker without network access.
+3. **WASM parity** (see `native-wasm-parity` in LESSONS.md): run the same `.hew` behavior through native and `wasi_run_e2e` coverage wherever the target supports it. If a capability is intentionally unavailable on WASM, classify it in `wasm-capability-manifest.toml` and add a focused test proving the compiler rejects or diagnoses it before link/runtime failure.
 4. Add type-checker tests in `hew-types/src/check/tests.rs` for any new type rules.
 
 ### WASM / native parity
 
-New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execution — must ship with a WASM implementation or an explicit tracked gap. Per LESSONS.md `native-wasm-parity` (P1):
+New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execution — must ship with native and WASM behavior coverage wherever the target supports it. Per LESSONS.md `native-wasm-parity` (P1):
 
-- Implement both native and WASM paths, or add `// WASM-TODO(<stable-backlog-id>): <reason>` where the WASM path is deferred. Add or reuse the narrow semantic id in `wasm-capability-manifest.toml`; never substitute an issue number or umbrella. `make lint-wasm-todo` parses the manifest, rejects malformed/duplicate/unknown ids and legacy issue markers, and fails closed if its actionable marker corpus disappears.
+- Exercise supported behavior through shared source corpora and WASI E2E tests. For an intentional platform limitation, add or update the typed feature disposition in `wasm-capability-manifest.toml` and prove its diagnostic with a focused negative test.
 - New `hew_*` runtime exports must be classified `jit: stable` or `jit: internal` in `scripts/jit-symbol-classification.toml` alongside their WASM disposition declaration; `scripts/verify-ffi-symbols.py --classify stable --validate` rejects unclassified exports.
 - Add contract tests for timeout, cancel, and budget edges.
 - Document intentional divergence where parity cannot land yet.
-- Consult [`docs/wasm-capability-matrix.md`](docs/wasm-capability-matrix.md) for the canonical Tier 1 / Tier 2 split and the current disposition (pass / warn / reject) for each feature.  The checker enforces these dispositions automatically when `--target=wasm32-wasi` is used.
+- Consult [`docs/wasm-capability-matrix.md`](docs/wasm-capability-matrix.md) for the canonical Tier 1 / Tier 2 split and the current disposition (pass / warn / reject) for each feature. The checker enforces these dispositions automatically when `--target=wasm32-wasi` is used.
 
 ## License
 

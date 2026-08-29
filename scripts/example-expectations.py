@@ -43,8 +43,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "re-record each .expected from the example's own output. This is the "
-            "regen half of the gate, driven by `make baselines` for this member "
-            "only when it is named explicitly -- an example's output is its "
+            "regen half of the gate, exposed by the focused `*-examples-expect` "
+            "Make targets -- an example's output is its "
             "user-facing contract, so a blanket regen must never rewrite it."
         ),
     )

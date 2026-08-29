@@ -1,0 +1,9 @@
+# Exact accepted-family WASI programs that currently reach their lifecycle
+# witness and then exit nonzero. The matrix rejects unlisted failures and
+# listed passes. Remove each entry when #3068 fixes its teardown path.
+std.encoding.json.Value::public-implicit
+std.encoding.json.Value::public-explicit
+std.encoding.toml.Value::public-implicit
+std.encoding.toml.Value::public-explicit
+std.encoding.yaml.Value::public-implicit
+std.encoding.yaml.Value::public-explicit

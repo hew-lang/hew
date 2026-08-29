@@ -5,7 +5,7 @@
 # `.hew` program must behave IDENTICALLY at -O0 and -O2. The optimizer may
 # reshape IR arbitrarily; it must never change what a program DOES.
 #
-# WHAT it proves: RUNTIME identity (test pass/fail set + per-test outcome),
+# WHAT it proves: RUNTIME identity (path-qualified identity + per-test outcome),
 # NOT IR/ll identity — `default<O2>` reshapes IR by design, so byte identity is
 # meaningless here. A divergence between the O0 and O2 run IS a miscompile and a
 # FULL STOP: root-cause it to the upstream UB (a missed lifetime marker, a wrong
@@ -14,7 +14,7 @@
 # HOW: runs `hew test tests/hew/` twice over the same binary — once at the O0
 # default, once with `HEW_OPT_LEVEL=2` forcing the whole corpus through the O2
 # pipeline (the env FLOOR that raises O0->O2 without a per-subcommand flag). The
-# two failing-test sets must be identical.
+# two complete per-test outcome sets must be identical.
 #
 # This gate is re-run by every future optimization lane (PGO, LTO, target-cpu)
 # as the permanent guard that the optimization did not change behaviour.
@@ -27,8 +27,8 @@
 #
 # --o0-outcomes <path> skips this gate's own O0 pass and reuses a pre-captured
 # outcome file instead (produced by scripts/corpus-ratchet.sh hew-suite's
-# --emit-o0-outcomes, which runs the byte-identical `hew test $TESTS_DIR`
-# invocation at O0 one step earlier in the same CI job). This is the CI-only
+# --emit-o0-outcomes, which runs the same corpus and compiler at O0 one step
+# earlier in the same CI job). This is the CI-only
 # fast path; a
 # standalone invocation (no flag) always runs its own O0 pass so the gate
 # behaves identically when run outside the ratchet→differential handoff. The
@@ -55,20 +55,43 @@ source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
 HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
+HEW_JUNIT_PY="$REPO_ROOT/scripts/lib/hew_junit.py"
 DEFAULT_TESTS_DIR="$REPO_ROOT/tests/hew"
 TESTS_DIR="$DEFAULT_TESTS_DIR"
 O0_OUTCOMES_FILE=""
 MIN_OUTCOMES=""
+OUTCOME_TMP=""
+if ! OUTCOME_TMP="$(mktemp -d /tmp/hew-o2-differential.XXXXXX)"; then
+    echo "error: cannot create differential-report directory" >&2
+    exit 1
+fi
+trap 'rm -rf "$OUTCOME_TMP"' EXIT
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --tests-dir) shift; TESTS_DIR="$1"; shift ;;
-        --o0-outcomes) shift; O0_OUTCOMES_FILE="$1"; shift ;;
-        --min-outcomes) shift; MIN_OUTCOMES="$1"; shift ;;
-        --help|-h)
-            grep '^#' "$0" | sed 's/^# \{0,1\}//'
-            exit 0 ;;
-        *) echo "error: unknown argument: $1" >&2; exit 1 ;;
+    --tests-dir)
+        shift
+        TESTS_DIR="$1"
+        shift
+        ;;
+    --o0-outcomes)
+        shift
+        O0_OUTCOMES_FILE="$1"
+        shift
+        ;;
+    --min-outcomes)
+        shift
+        MIN_OUTCOMES="$1"
+        shift
+        ;;
+    --help | -h)
+        grep '^#' "$0" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+    *)
+        echo "error: unknown argument: $1" >&2
+        exit 1
+        ;;
     esac
 done
 
@@ -93,25 +116,28 @@ if [[ ! -d "$TESTS_DIR" ]]; then
     exit 1
 fi
 
-# Extract the sorted "test <name> ... PASSED|FAILED" outcome lines from a
-# `hew test` run, stripping ANSI. The full per-test outcome set (not just the
-# count) is the comparison key — a miscompile that flips one test from PASS to
-# FAIL (or vice versa, or changes which tests fail) is caught.
+# Extract sorted path-qualified outcomes from the same JUnit schema CI reads.
+# The full per-test outcome set (not just the count) is the comparison key — a
+# miscompile that flips one test from PASS to FAIL (or vice versa, or changes
+# which tests fail) is caught, including swaps between same-named tests in
+# different source files.
 run_outcomes() {
     local opt_env="$1"
-    local raw
-    raw="$(env HEW_OPT_LEVEL="$opt_env" "$HEW_BIN" test "$TESTS_DIR" 2>&1)" || true
-    # Fail closed if there is no summary — a runner crash must not read as match.
-    local clean
-    clean="$(printf '%s\n' "$raw" | sed $'s/\x1b\\[[0-9;]*m//g')"
-    if ! printf '%s\n' "$clean" | grep -q "^test result:"; then
-        echo "__NO_SUMMARY__"
-        printf '%s\n' "$raw" >&2
+    local label="$2"
+    local report="$OUTCOME_TMP/$label.xml"
+    local stderr="$OUTCOME_TMP/$label.stderr"
+    local parsed=""
+    local rc=0
+    env HEW_OPT_LEVEL="$opt_env" "$HEW_BIN" test "$TESTS_DIR" --format junit \
+        >"$report" 2>"$stderr" || rc=$?
+    if ! parsed="$(python3 "$HEW_JUNIT_PY" --runner-exit "$rc" "$report")"; then
+        echo "__INVALID_REPORT__"
+        cat "$stderr" >&2
         return
     fi
-    printf '%s\n' "$clean" \
-        | grep -E "^test .* \.\.\. (ok|PASSED|FAILED|ignored)" \
-        | sort
+    printf '%s\n' "$parsed" |
+        awk -F'\t' '$1 != "__SUMMARY__" { print "test " $2 " ... " $1 }' |
+        sort
 }
 
 echo "==> O2 differential-exec parity gate"
@@ -131,14 +157,14 @@ if [[ -n "$O0_OUTCOMES_FILE" ]]; then
     O0_OUTCOMES="$(sort "$O0_OUTCOMES_FILE")"
 else
     echo "--> baseline run (O0, default)"
-    O0_OUTCOMES="$(run_outcomes 0)"
+    O0_OUTCOMES="$(run_outcomes 0 o0)"
 fi
 echo "--> optimized run (O2, HEW_OPT_LEVEL=2)"
-O2_OUTCOMES="$(run_outcomes 2)"
+O2_OUTCOMES="$(run_outcomes 2 o2)"
 
-if [[ "$O0_OUTCOMES" == "__NO_SUMMARY__" || "$O2_OUTCOMES" == "__NO_SUMMARY__" ]]; then
+if [[ "$O0_OUTCOMES" == "__INVALID_REPORT__" || "$O2_OUTCOMES" == "__INVALID_REPORT__" ]]; then
     echo ""
-    echo "==> Differential gate: FAILED (no test-result summary; runner crash)"
+    echo "==> Differential gate: FAILED (invalid or incomplete JUnit result)"
     exit 1
 fi
 

@@ -56,6 +56,8 @@ def run_bounded(
         list(command),
         cwd=cwd,
         text=text,
+        encoding="utf-8" if text else None,
+        errors="replace" if text else None,
         stdout=subprocess.PIPE if capture_output else None,
         stderr=subprocess.PIPE if capture_output else None,
         stdin=subprocess.PIPE if input is not None else None,
@@ -151,7 +153,19 @@ def run_bounded(
 
 
 def assert_bounding_contract(root: Path) -> None:
-    """Counterfactuals prove both the deadline and memory ceiling fail red."""
+    """Prove diagnostic decoding plus the deadline and memory bounds."""
+
+    invalid_utf8 = run_bounded(
+        ["python3", "-c", "import os; os.write(2, b'\\xff')"],
+        cwd=root,
+        timeout_seconds=10,
+        memory_mb=128,
+    )
+    if (
+        invalid_utf8.returncode != 0
+        or "\N{REPLACEMENT CHARACTER}" not in invalid_utf8.stderr
+    ):
+        raise AssertionError("subprocess diagnostics did not preserve invalid UTF-8")
 
     try:
         run_bounded(

@@ -11,8 +11,8 @@
 //     bootstrap emits per config-init child (the #2229 corpus-pin discipline:
 //     pin every new RuntimeCall family in the golden corpus).
 type AppConfig {
-    size: i64,
-    label: string
+    size: i64;
+    label: string;
 }
 
 actor Cache {

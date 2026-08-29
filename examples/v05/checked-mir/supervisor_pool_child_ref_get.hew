@@ -8,8 +8,9 @@ actor Worker {
 }
 
 supervisor Pool {
-    strategy: simple_one_for_one,
-    pool workers: Worker(count: 2)
+    strategy: simple_one_for_one;
+
+    pool workers: Worker(count: 2);
 }
 
 fn inspect(sup: LocalPid<Pool>) -> i64 {

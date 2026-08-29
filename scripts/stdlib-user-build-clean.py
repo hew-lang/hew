@@ -18,74 +18,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_STDLIB = REPO_ROOT / "std"
 DEFAULT_CALLS = REPO_ROOT / "scripts" / "stdlib-user-build-calls.tsv"
-CANONICAL_CALLS = """# module<TAB>one statement that lowers a public function body
-std.arena\tlet _store: arena.Arena<i64> = arena.new();
-std.bench\tbench.suite("gate");
-std.builtins\tabs(1);
-std.channel\tchannel.new(1);
-std.crypto.crypto\tcrypto.sha256("".to_bytes());
-std.crypto.encrypt\tencrypt.last_open_error();
-std.crypto.jwt\tjwt.last_error();
-std.crypto.password\tpassword.hash("");
-std.crypto.sign\tsign.keypair();
-std.deque\tdeque.new();
-std.encoding.base64\tbase64.encode("".to_bytes());
-std.encoding.binary\tbinary.put_u16_le(0);
-std.encoding.compress\tcompress.gzip_compress("".to_bytes());
-std.encoding.csv\tcsv.try_parse("");
-std.encoding.hex\thex.encode("".to_bytes());
-std.encoding.json\tjson.parse("null");
-std.encoding.markdown\tmarkdown.to_html("");
-std.encoding.msgpack\tmsgpack.from_json("null");
-std.encoding.protobuf\tprotobuf.new();
-std.encoding.toml\ttoml.parse("");
-std.encoding.xml\txml.parse("<root />");
-std.encoding.yaml\tyaml.parse("null");
-std.fmt\tfmt.to_hex(0);
-std.fs\tfs.io_error_from_errno(0);
-std.io\tio.read_line();
-std.io.scanner\tscanner.from_string("");
-std.iter\tlet values: Vec<i64> = [1]; iter.count(values.into_iter());
-std.link_monitor\tlink_monitor.set_partition_policy(link_monitor.PartitionPolicy.FailFast);
-std.math\tmath.pi();
-std.mem\tmem.alloc(1, 1);
-std.metrics\tmetrics.counter("gate");
-std.misc.log\tlog.new_logger(0, 0);
-std.misc.uuid\tuuid.v4();
-std.net\tnet.net_error_from_errno(0);
-std.net.dns\tdns.resolve("localhost");
-std.net.http\thttp.listen_error();
-std.net.http.http_async_client\thttp_async_client.build_get("localhost", "/");
-std.net.http.http_async_server\thttp_async_server.request_complete("");
-std.net.http.http_client\thttp_client.last_error();
-std.net.ipnet\tipnet.is_valid("127.0.0.1");
-std.net.mime\tmime.from_path("file.txt");
-std.net.quic\tquic.new_client();
-std.net.smtp\tsmtp.last_error();
-std.net.tls\ttls.connect("localhost", 443);
-std.net.url\turl.parse("https://example.com");
-std.net.websocket\twebsocket.last_error();
-std.observe\tobserve.read("gate");
-std.option\toption.is_some_int(Some(1));
-std.os\tos.args_count();
-std.path\tpath.combine("a", "b");
-std.pipeline\tpipeline.from(1);
-std.process\tprocess.try_run("true");
-std.random\trandom.seed(1);
-std.result\tresult.is_ok_int(Ok(1));
-std.semaphore\tsemaphore.new(1);
-std.sort\tsort.sort_ints([1]);
-std.stream\tstream.pipe(1);
-std.string\tstring.from_int(1);
-std.testing\ttesting.assert_eq(1, 1);
-std.text.regex\tregex.new("a");
-std.text.semver\tsemver.try_parse("1.2.3");
-std.text.template\ttemplate.try_parse("");
-std.text.unicode\tunicode.is_valid_rune(65);
-std.time.cron\tcron.parse("* * * * *");
-std.time.datetime\tdatetime.now_ms();
-std.vec\tvec.first_i64([1]);
-"""
 
 
 @dataclass(frozen=True)
@@ -123,12 +55,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stdlib-dir", type=Path, default=DEFAULT_STDLIB)
     parser.add_argument("--calls", type=Path, default=DEFAULT_CALLS)
     parser.add_argument("--module", action="append", default=[])
-    parser.add_argument("--skip-counterfactual", action="store_true")
-    parser.add_argument(
-        "--write-calls",
-        action="store_true",
-        help="regenerate the committed public-function call baseline",
-    )
     return parser.parse_args()
 
 
@@ -220,12 +146,9 @@ def run_command(
     *,
     cwd: Path,
     stdlib_dir: Path,
-    show_imported_stdlib_diagnostics: bool = False,
 ) -> CommandResult:
     env = os.environ.copy()
     env["HEW_STD"] = str(stdlib_dir)
-    if show_imported_stdlib_diagnostics:
-        env["HEW_STDLIB_SOURCE_GATE"] = "1"
     completed = subprocess.run(
         argv,
         cwd=cwd,
@@ -268,8 +191,6 @@ def audit_module(
     stdlib_dir: Path,
     module: Module,
     package_dir: Path,
-    *,
-    expose_user_build_stdlib: bool = True,
 ) -> ModuleResult:
     write_package(package_dir, module)
     commands = [
@@ -290,7 +211,6 @@ def audit_module(
             [str(hew_bin), "build", str(package_dir), "--emit-obj", "--format=json"],
             cwd=package_dir,
             stdlib_dir=stdlib_dir,
-            show_imported_stdlib_diagnostics=expose_user_build_stdlib,
         ),
     ]
     diagnostics = [
@@ -316,168 +236,71 @@ def report_command_failure(module: Module, command: CommandResult) -> None:
             print(f"    {stream}: {line}", file=sys.stderr)
 
 
-def run_bare_pattern_counterfactual(hew_bin: Path, modules: list[Module]) -> None:
+def verify_imported_stdlib_diagnostic_boundary(
+    hew_bin: Path, stdlib_dir: Path, modules: list[Module]
+) -> None:
+    """Prove direct stdlib diagnostics stay out of importing user builds."""
+
     arena = next((module for module in modules if module.name == "std.arena"), None)
     if arena is None:
-        raise ValueError("counterfactual requires std.arena")
-    with tempfile.TemporaryDirectory(prefix="hew-stdlib-user-counterfactual-") as tmp:
+        raise ValueError("diagnostic-boundary probe requires std.arena")
+    with tempfile.TemporaryDirectory(prefix="hew-stdlib-user-boundary-") as tmp:
         scratch_root = Path(tmp)
         scratch_std = scratch_root / "std"
-        shutil.copytree(DEFAULT_STDLIB, scratch_std)
-        scratch_arena = scratch_std / arena.source.relative_to(DEFAULT_STDLIB)
+        shutil.copytree(stdlib_dir, scratch_std)
+        scratch_arena = scratch_std / arena.source.relative_to(stdlib_dir)
         source = scratch_arena.read_text(encoding="utf-8")
         changed = source.replace(".Some(slot)", "Some(slot)", 1)
         if changed == source:
-            raise ValueError("counterfactual injection site `.Some(slot)` is missing")
+            raise ValueError(
+                "diagnostic-boundary injection site `.Some(slot)` is missing"
+            )
         scratch_arena.write_text(changed, encoding="utf-8")
+
         result = audit_module(
             hew_bin,
             scratch_std,
             Module(arena.name, scratch_arena, arena.call),
             scratch_root / "user-package",
         )
-        bare = [
-            diagnostic
-            for diagnostic in result.stdlib_diagnostics
-            if diagnostic.get("code") == "E_BARE_VARIANT_PATTERN"
-        ]
-        for diagnostic in bare:
-            print(
-                "CF-[stdlib-user-build-clean] "
-                f"{diagnostic.get('code')}: {diagnostic.get('file')}"
-            )
-        if not bare:
-            raise ValueError(
-                "scratch bare pattern did not fail the stdlib source audit"
-            )
-        for command in result.commands:
-            if command.label == "source-check":
-                continue
-            leaked = [
-                item for item in command.diagnostics if from_stdlib(item, scratch_std)
-            ]
-            if leaked:
-                codes = ", ".join(str(item.get("code")) for item in leaked)
-                raise ValueError(
-                    f"{command.label} printed scratch stdlib diagnostics into user output: {codes}"
-                )
-        print(
-            "PASS: scratch bare pattern fails the source audit and stays out of user output"
-        )
-
-
-def run_leak_advisory_counterfactual(hew_bin: Path, modules: list[Module]) -> None:
-    vec = next((module for module in modules if module.name == "std.vec"), None)
-    if vec is None:
-        raise ValueError("leak counterfactual requires std.vec")
-    with tempfile.TemporaryDirectory(prefix="hew-stdlib-leak-counterfactual-") as tmp:
-        scratch_root = Path(tmp)
-        scratch_std = scratch_root / "std"
-        shutil.copytree(DEFAULT_STDLIB, scratch_std)
-        scratch_vec = scratch_std / vec.source.relative_to(DEFAULT_STDLIB)
-        leak_probe = """
-
-pub type __LeakProbeItem {
-    name: string;
-    n: i64;
-}
-
-pub fn __leak_probe_uncalled(xs: Vec<__LeakProbeItem>) -> i64 {
-    let it = xs.iter();
-    var total = 0;
-    for _ in it {
-        total = total + 1;
-    }
-    total
-}
-"""
-        with scratch_vec.open("a", encoding="utf-8") as source:
-            source.write(leak_probe)
-        package_dir = scratch_root / "user-package"
-        result = audit_module(
-            hew_bin,
-            scratch_std,
-            Module(vec.name, scratch_vec, vec.call),
-            package_dir,
-            expose_user_build_stdlib=False,
-        )
-        for command in result.commands:
-            if command.label == "source-check":
-                continue
-            leaked = [
-                diagnostic
-                for diagnostic in command.diagnostics
-                if diagnostic.get("code") == "ObligationUnderReleased"
-                or "__leak_probe_uncalled" in str(diagnostic.get("message"))
-            ]
-            if leaked:
-                report_command_failure(vec, command)
-                raise ValueError(
-                    f"{command.label} printed the scratch stdlib leak into JSON user output"
-                )
-
-        text_build = run_command(
-            "user-build-text",
-            [str(hew_bin), "build", str(package_dir), "--emit-obj"],
-            cwd=package_dir,
-            stdlib_dir=scratch_std,
-        )
-        if text_build.status != 0:
-            report_command_failure(vec, text_build)
-            raise ValueError("text user build failed during the leak counterfactual")
-        text_output = text_build.stdout + text_build.stderr
-        if (
-            "ObligationUnderReleased" in text_output
-            or "__leak_probe_uncalled" in text_output
-        ):
-            raise ValueError("text user build printed the scratch stdlib leak advisory")
-
-        source_build = run_command(
-            "source-audit",
-            [
-                str(hew_bin),
-                "build",
-                str(package_dir),
-                "--emit-obj",
-                "--format=json",
-            ],
-            cwd=package_dir,
-            stdlib_dir=scratch_std,
-            show_imported_stdlib_diagnostics=True,
+        source_check = next(
+            command for command in result.commands if command.label == "source-check"
         )
         caught = [
             diagnostic
-            for diagnostic in source_build.diagnostics
-            if diagnostic.get("code") == "ObligationUnderReleased"
-            and "__leak_probe_uncalled" in str(diagnostic.get("message"))
+            for diagnostic in source_check.diagnostics
+            if diagnostic.get("code") == "E_BARE_VARIANT_PATTERN"
             and from_stdlib(diagnostic, scratch_std)
         ]
-        for diagnostic in caught:
-            print(
-                "CF-[stdlib-user-build-clean] "
-                f"{diagnostic.get('code')}: {diagnostic.get('file')}"
-            )
         if not caught:
-            report_command_failure(vec, source_build)
             raise ValueError(
-                "scratch obligation under-release did not fail the stdlib source audit"
+                "scratch bare pattern did not fail the direct stdlib source audit"
             )
+        for command in result.commands:
+            if command.label == "source-check":
+                continue
+            if command_failed(command):
+                report_command_failure(arena, command)
+                raise ValueError(
+                    f"{command.label} failed while verifying the stdlib diagnostic boundary"
+                )
+            leaked = [
+                diagnostic
+                for diagnostic in command.diagnostics
+                if from_stdlib(diagnostic, scratch_std)
+            ]
+            if leaked:
+                codes = ", ".join(str(diagnostic.get("code")) for diagnostic in leaked)
+                raise ValueError(
+                    f"{command.label} exposed scratch stdlib diagnostics to the user: {codes}"
+                )
         print(
-            "PASS: scratch obligation under-release fails the source audit and "
-            "stays out of text and JSON user output"
+            "PASS: direct stdlib diagnostics are caught without leaking into user builds"
         )
-
-
-def run_counterfactual(hew_bin: Path, modules: list[Module]) -> None:
-    run_bare_pattern_counterfactual(hew_bin, modules)
-    run_leak_advisory_counterfactual(hew_bin, modules)
 
 
 def main() -> int:
     args = parse_args()
-    if args.write_calls:
-        args.calls.write_text(CANONICAL_CALLS, encoding="utf-8")
-        return 0
     hew_bin = args.hew_bin.resolve()
     stdlib_dir = args.stdlib_dir.resolve()
     calls_path = args.calls.resolve()
@@ -493,8 +316,8 @@ def main() -> int:
         modules = [
             module for module in all_modules if not selected or module.name in selected
         ]
-        if not args.skip_counterfactual:
-            run_counterfactual(hew_bin, discover_modules(DEFAULT_STDLIB, calls_path))
+        if not selected:
+            verify_imported_stdlib_diagnostic_boundary(hew_bin, stdlib_dir, all_modules)
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

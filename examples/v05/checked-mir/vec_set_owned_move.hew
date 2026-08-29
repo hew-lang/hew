@@ -6,7 +6,7 @@
 // record carrying a nested `Vec<string>`) is required — a refcount-shared
 // string/Option field would not route to the move sibling.
 type Holder {
-    items: Vec<string>
+    items: Vec<string>;
 }
 
 fn mkItems() -> Vec<string> {

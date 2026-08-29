@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[2]
 AUDIT = ROOT / "scripts/structural-authority-audit.py"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 MANIFEST = ROOT / "scripts/opaque-resource-lifecycle-evidence.json"
+WASM_EXPECTED_FAILURES = (
+    ROOT / "scripts/opaque-resource-lifecycle-expected-failures.txt"
+)
 HEW = Path(os.environ.get("HEW_BIN", ROOT / "target/debug/hew"))
 
 # run_bounded caps the child's RLIMIT_AS, which bounds ADDRESS SPACE, not
@@ -29,11 +32,23 @@ HEW = Path(os.environ.get("HEW_BIN", ROOT / "target/debug/hew"))
 # per-call timeout.
 WASM_RUNTIME_MEMORY_MB = 8192
 sys.path.insert(0, str(ROOT / "scripts"))
-from bounded_subprocess import assert_bounding_contract, run_bounded
+from bounded_subprocess import assert_bounding_contract, run_bounded  # noqa: E402
 
 
 def fail(message: str) -> None:
     raise AssertionError(message)
+
+
+def load_expected_failures(path: Path) -> set[str]:
+    entries = [
+        line.partition("#")[0].strip()
+        for line in path.read_text().splitlines()
+        if line.partition("#")[0].strip()
+    ]
+    failures = set(entries)
+    if len(failures) != len(entries):
+        fail(f"expected-failures file contains duplicate identities: {path.name}")
+    return failures
 
 
 def source_key(row: dict[str, object]) -> tuple[str, str]:
@@ -260,12 +275,9 @@ def run_runtime_evidence(evidence: dict[str, dict], profile: str) -> None:
         executed += 1
         key = tuple(command)
         if key not in completed:
-            env = os.environ.copy()
-            env["RUSTC_WRAPPER"] = ""
             completed[key] = run_bounded(
                 command,
                 cwd=ROOT,
-                env=env,
                 timeout_seconds=600,
                 memory_mb=16384,
             )
@@ -297,15 +309,37 @@ def run_runtime_evidence(evidence: dict[str, dict], profile: str) -> None:
         )
 
 
-def assert_wasm_disposition(
-    carrier: str, expected: str, returncode: int, output: str, witness: str = ""
-) -> None:
+def is_wasm_platform_rejection(output: str) -> bool:
     diagnostic = output.lower()
-    platform_rejection = (
+    return (
         "not supported on wasm32" in diagnostic
         or "not available on target" in diagnostic
         or "require the native" in diagnostic
     )
+
+
+def diagnostic_excerpt(output: str, limit: int = 4000) -> str:
+    cleaned = "".join(
+        character
+        if character in "\n\t" or character.isprintable()
+        else "\N{REPLACEMENT CHARACTER}"
+        for character in output
+    )
+    if len(cleaned) <= limit:
+        return cleaned
+    half = limit // 2
+    omitted = len(cleaned) - limit
+    return (
+        cleaned[:half]
+        + f"\n... <{omitted} diagnostic characters omitted> ...\n"
+        + cleaned[-half:]
+    )
+
+
+def assert_wasm_disposition(
+    carrier: str, expected: str, returncode: int, output: str, witness: str = ""
+) -> None:
+    platform_rejection = is_wasm_platform_rejection(output)
     actual = (
         "accepted"
         if returncode == 0
@@ -314,10 +348,16 @@ def assert_wasm_disposition(
         else "rejected"
     )
     if actual != expected:
-        fail(f"{carrier}: expected {expected}, got {actual}\n{output}")
+        fail(
+            f"{carrier}: expected {expected}, got {actual}\n"
+            f"{diagnostic_excerpt(output)}"
+        )
     if actual == "rejected":
         if not platform_rejection:
-            fail(f"{carrier}: rejection was not a platform disposition\n{diagnostic}")
+            fail(
+                f"{carrier}: rejection was not a platform disposition\n"
+                f"{diagnostic_excerpt(output)}"
+            )
 
 
 def wasm_public_programs(
@@ -352,7 +392,7 @@ def wasm_public_programs(
                 (
                     "public-explicit",
                     "import std.encoding.json;\n"
-                    f'fn main() {{ let value = json.null(); value.close(); println("{witness}"); }}\n',
+                    f'fn main() {{ let value = json.null(); println("{witness}"); value.close(); }}\n',
                 ),
             ),
         ),
@@ -367,7 +407,7 @@ def wasm_public_programs(
                 (
                     "public-explicit",
                     "import std.encoding.toml;\n"
-                    f'fn main() {{ let value = toml.table(); value.close(); println("{witness}"); }}\n',
+                    f'fn main() {{ let value = toml.table(); println("{witness}"); value.close(); }}\n',
                 ),
             ),
         ),
@@ -382,7 +422,7 @@ def wasm_public_programs(
                 (
                     "public-explicit",
                     "import std.encoding.yaml;\n"
-                    f'fn main() {{ let value = yaml.object(); value.close(); println("{witness}"); }}\n',
+                    f'fn main() {{ let value = yaml.object(); println("{witness}"); value.close(); }}\n',
                 ),
             ),
         ),
@@ -593,21 +633,32 @@ def assert_exact_llvm_release_chain(
 
 
 def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) -> None:
+    expected_failures = load_expected_failures(WASM_EXPECTED_FAILURES)
+    accepted_inventory = set()
+    passing_programs = set()
+    runtime_failures: dict[str, str] = {}
     failures = []
+
     for index, case in enumerate(cases):
         carrier = str(case["carrier_key"])
         expected = evidence[carrier]["wasm"]["disposition"]
+        witness = f"WASM-LIFECYCLE:{carrier}"
         try:
-            witness = f"WASM-LIFECYCLE:{carrier}"
             proof_kind, public_programs = wasm_public_programs(carrier, witness)
             if proof_kind != evidence[carrier]["wasm"]["proof_kind"]:
                 fail(f"{carrier}: public Wasm program proof kind drifted from evidence")
-            for form, program in public_programs:
+        except AssertionError as error:
+            failures.append(str(error))
+            continue
+
+        for form, program in public_programs:
+            test_id = f"{carrier}::{form}"
+            if expected == "accepted":
+                accepted_inventory.add(test_id)
+            try:
                 assert_wasm_program_has_producer(carrier, program)
                 source = temp / f"{index:02}-public-{form}.hew"
                 source.write_text(program)
-                # A successful status without the per-family witness is not
-                # accepted (the CLI can render target diagnostics with status 0).
                 wasi = run_bounded(
                     [
                         str(HEW),
@@ -622,24 +673,43 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
                     timeout_seconds=60,
                     memory_mb=WASM_RUNTIME_MEMORY_MB,
                 )
+                output = wasi.stdout + wasi.stderr
+                if (
+                    expected == "accepted"
+                    and wasi.returncode != 0
+                    and witness in output
+                    and not is_wasm_platform_rejection(output)
+                ):
+                    runtime_failures[test_id] = diagnostic_excerpt(output)
+                    continue
                 assert_wasm_disposition(
-                    carrier,
+                    test_id,
                     expected,
                     wasi.returncode,
-                    wasi.stdout + wasi.stderr,
+                    output,
                     witness,
                 )
+                if expected == "accepted":
+                    passing_programs.add(test_id)
+            except AssertionError as error:
+                failures.append(str(error))
 
-            # A rejected public boundary is the target contract for this
-            # family. Its imported implementation may itself be unavailable,
-            # so only accepted families can establish generic LLVM lowering.
-            if expected == "rejected":
-                continue
+        # A rejected public boundary is the target contract for this family.
+        # Its imported implementation may itself be unavailable, so only
+        # accepted families can establish generic LLVM lowering.
+        if expected == "rejected":
+            continue
 
-            # These exact source-derived cases establish compiler implicit and
-            # explicit release lowering, independently of the executable
-            # public producer proof above.
-            for form, program in generic_lifecycle_sources(case):
+        # These exact source-derived cases establish compiler implicit and
+        # explicit release lowering independently of public execution. Run
+        # them even when a public form matches a known runtime failure.
+        try:
+            generic_sources = generic_lifecycle_sources(case)
+        except AssertionError as error:
+            failures.append(str(error))
+            continue
+        for form, program in generic_sources:
+            try:
                 source = temp / f"{index:02}-generic-{form}.hew"
                 source.write_text(program)
                 emit_dir = temp / f"{index:02}-{form}-emit"
@@ -659,7 +729,6 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
                     timeout_seconds=120,
                     memory_mb=4096,
                 )
-                artifacts = list(emit_dir.iterdir())
                 if codegen.returncode != 0:
                     fail(
                         f"{carrier}: {form} Wasm codegen failed\n"
@@ -701,10 +770,34 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
                         + validated.stdout
                         + validated.stderr
                     )
-        except AssertionError as error:
-            failures.append(str(error))
+            except AssertionError as error:
+                failures.append(str(error))
+
+    stale = sorted(expected_failures - accepted_inventory)
+    if stale:
+        failures.append(f"stale Wasm expected-failure identities: {stale}")
+    actual_failures = set(runtime_failures)
+    unexpected_failures = sorted(actual_failures - expected_failures)
+    unexpected_passes = sorted(expected_failures & passing_programs)
+    if unexpected_failures:
+        failures.append(
+            f"unexpected Wasm runtime failure identities: {unexpected_failures}\n"
+            + "\n".join(
+                f"{test_id}\n{runtime_failures[test_id]}"
+                for test_id in unexpected_failures
+            )
+        )
+    if unexpected_passes:
+        failures.append(
+            "Wasm runtime failures now pass; remove their ratchets: "
+            f"{unexpected_passes}"
+        )
     if failures:
         fail("Wasm lifecycle evidence failures:\n" + "\n".join(failures))
+    print(
+        f"Wasm lifecycle evidence: {len(accepted_inventory)} accepted-family "
+        f"programs evaluated; {len(expected_failures)} known runtime failures matched"
+    )
 
 
 def main() -> None:

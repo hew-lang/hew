@@ -17,8 +17,8 @@ import std.channel.channel;
 /// One observed transition. Field names carry the `_state` suffix
 /// because `from` is a hard keyword (the select arm binder).
 type Transition {
-    from_state: string,
-    to_state: string
+    from_state: string;
+    to_state: string;
 }
 
 actor Owner {

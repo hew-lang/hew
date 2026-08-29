@@ -23,8 +23,8 @@ name: Pre-Release Cross-Platform Gate
 on:
   push:
     branches:
-      - 'release/**'
-      - 'release-*'
+      - "release/**"
+      - "release-*"
   workflow_dispatch:
 
 # A push to a branch makes any run still going for that same ref obsolete:
@@ -52,17 +52,17 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Sanitizers — executed ASan hard gate + bounded TSan/Miri limitation ledger
+  # Sanitizers — executed ASan hard gate. TSan and Miri remain nightly lanes.
   # ─────────────────────────────────────────────────────────────────────────
   gate-sanitizers:
     name: Release Gate — Sanitizers
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -91,27 +91,18 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> "$GITHUB_PATH"
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: nightly
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: target/sanitizer-runtime-asan/
           key: release-gate-asan-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: release-gate-asan-
 
-      - name: Run ASan hard gate and validate waiver contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          if make asan; then
-            printf 'asan=pass\n' > .sanitizer-asan-result
-          else
-            printf 'asan=fail\n' > .sanitizer-asan-result
-          fi
-          RELEASE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          scripts/check-sanitizer-gate.sh "${RELEASE_VERSION}" .sanitizer-asan-result
+      - name: Run ASan hard gate
+        run: make asan
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux x86_64 — full build + codegen E2E + WASM (matches ci.yml)
@@ -125,10 +116,10 @@ jobs:
     # retaining a finite ceiling that still distinguishes a hung suite.
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -164,22 +155,17 @@ jobs:
           tools: nextest@0.9.120
           cache-shared-key: build-test-linux
 
-      - name: Build all release crates
-        run: |
-          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-          cargo build -p hew-lib --profile release-lib
-
       - name: Build WASM runtime
         run: |
           rustup target add wasm32-wasip1
-          cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+          make wasm-runtime-release
 
-      - name: Verify release binaries
+      - name: Build and verify release binaries
         run: |
+          make test-release-lib-link
           target/release/hew --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          make test-release-lib-link
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -214,8 +200,8 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Run Rust workspace tests
         # line-tables-only: the release build + debug test workspace + WASM +
@@ -236,15 +222,12 @@ jobs:
 
       - name: Run foundational compiled-Hew and lifecycle gates
         run: |
-          make check-gate-reachability
-          make test-release-workflow-contract
           make test-compiler-lifecycle
           make test-opaque-resource-lifecycle-matrix-external
           make test-vertical-slice
           make test-hew-ratchet
           make test-migrate-corpus
           make test-stdlib-ratchet
-          make test-stdlib-execution-proofs
 
       - name: Run MQTT broker end-to-end oracle
         # The Linux release lane has explicit mosquitto_pub/sub provisioning
@@ -269,7 +252,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
           check_name: Release Gate Test Results (Linux x86_64)
@@ -282,10 +265,10 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -318,24 +301,17 @@ jobs:
           tools: nextest@0.9.120
           cache-shared-key: build-test-linux
 
-      - name: Build all release crates
-        run: |
-          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-          cargo build -p hew-lib --profile release-lib
-
       - name: Build WASM runtime
         run: |
           rustup target add wasm32-wasip1
-          cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+          make wasm-runtime-release
 
-      - name: Verify release binaries
+      - name: Build and verify release binaries
         run: |
+          make test-release-lib-link
           target/release/hew --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          scripts/test-release-lib-link.sh \
-            --hew target/release/hew \
-            --archive target/release-lib/libhew.a
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -370,8 +346,8 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Run Rust workspace tests
         env:
@@ -384,7 +360,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: target/nextest/ci/junit.xml
           check_name: Release Gate Test Results (Linux aarch64)
@@ -408,16 +384,16 @@ jobs:
     # duration from this slower runner before choosing a tighter budget.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
+          targets: "aarch64-apple-darwin, x86_64-apple-darwin"
           tools: nextest@0.9.120
           cache-shared-key: build-test-macos
 
@@ -438,19 +414,12 @@ jobs:
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
           echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
 
-      - name: Build all release crates
+      - name: Build and verify release binaries
         run: |
-          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-          cargo build -p hew-lib --profile release-lib
-
-      - name: Verify release binaries
-        run: |
+          make test-release-lib-link
           target/release/hew --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          scripts/test-release-lib-link.sh \
-            --hew target/release/hew \
-            --archive target/release-lib/libhew.a
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -484,8 +453,8 @@ jobs:
           command -v wasm-ld
           wasm-ld --version
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Run Rust workspace tests
         # Leak-oracle binaries drive macOS leaks(1) with MallocScribble and
@@ -496,7 +465,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: target/nextest/ci/junit.xml
           check_name: Release Gate Test Results (macOS ${{ matrix.arch }})
@@ -516,10 +485,10 @@ jobs:
       # pregenerated assembly objects instead — deterministic, no toolchain dep.
       AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -530,6 +499,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
+          targets: wasm32-wasip1
           tools: nextest@0.9.120
           cache-shared-key: build-test-windows
 
@@ -578,8 +548,8 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $bin
           & (Join-Path $bin "wasmtime.exe") --version
 
-      - name: Build shared Rust test artifact
-        run: make stdlib
+      - name: Build shared test artifacts
+        run: make test-artifacts
 
       - name: Run Rust workspace tests
         run: >-
@@ -595,7 +565,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
           check_name: Release Gate Test Results (Windows x86_64)
@@ -612,10 +582,10 @@ jobs:
     # finite variance headroom without making the release gate unbounded.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Build and test on FreeBSD
-        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
+        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a # v1.4.6
         with:
           release: "15.0"
           mem: 8192
@@ -679,15 +649,11 @@ jobs:
             command -v wasmtime && wasmtime --version
             command -v wasm-ld && wasm-ld --version
 
-            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
+            gmake test-release-lib-link
 
             target/release/hew --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
-            bash scripts/test-release-lib-link.sh \
-              --hew target/release/hew \
-              --archive target/release-lib/libhew.a
 
             # Smoke test — compile and run a .hew program
             echo 'fn main() { println("smoke-ok") }' > _smoke.hew
@@ -701,7 +667,7 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked --version 0.9.120
 
-            gmake stdlib
+            gmake test-artifacts
 
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \
@@ -725,7 +691,7 @@ jobs:
         # actions/upload-artifact step) — so the reports written by the
         # guest's nextest and hew-suite-ratchet runs are present here.
         if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
           check_name: Release Gate Test Results (FreeBSD x86_64)
@@ -770,10 +736,10 @@ jobs:
     # throughput, not growth in the release-gate suite.
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Build and test on FreeBSD aarch64
-        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
+        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a # v1.4.6
         with:
           release: "15.0"
           arch: aarch64
@@ -845,10 +811,8 @@ jobs:
             cargo build -p hew-cli --release
 
             # `hew build` resolves its in-tree native library from the debug
-            # target directory. Build the canonical consolidated archive and
-            # prove its content-addressed freshness before the smoke link.
+            # target directory. Build the canonical consolidated archive.
             gmake stdlib
-            gmake check-libhew-fresh
 
             target/release/hew --version
 

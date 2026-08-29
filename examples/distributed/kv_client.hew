@@ -10,8 +10,8 @@ import std.os;
 
 // Mirror the server's serializable types.  Both nodes must agree on these.
 type KvPut {
-    key: string,
-    val: string
+    key: string;
+    val: string;
 }
 
 enum KvReq {

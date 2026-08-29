@@ -195,7 +195,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         return;
     }
 
-    let cwd = root;
+    let cwd = root.clone();
     let project_dir = find_project_dir(&cwd).unwrap_or_else(|| cwd.clone());
     let ffi_lib = resolve_ffi_lib(&project_dir);
 
@@ -213,7 +213,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             sir_mode: args.sir.mode(),
         },
     );
-    output::output_results(&summary, use_color, format);
+    output::output_results(&summary, use_color, format, &root);
 
     if summary.failed > 0 {
         std::process::exit(1);

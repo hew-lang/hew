@@ -24,14 +24,6 @@ fn main() {
         .parent()
         .expect("hew-types should be in repo root");
 
-    // Emit rerun-if-changed for .hew source directories so Cargo rebuilds
-    // when stdlib files change (the ModuleRegistry loads them at compile time).
-    println!("cargo:rerun-if-changed={}", repo_root.join("std").display());
-    println!(
-        "cargo:rerun-if-changed={}",
-        repo_root.join("ecosystem").display()
-    );
-
     let builtins_path = repo_root.join("std/builtins.hew");
     let failure_path = repo_root.join("std/failure.hew");
     let link_monitor_path = repo_root.join("std/link_monitor.hew");

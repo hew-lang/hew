@@ -2,6 +2,7 @@
 # This prevents CRLF issues when comparing test output on Windows
 *.expected text eol=lf
 *.hew text eol=lf
+*.sh text eol=lf
 /hew-cli/tests/fixtures/test_ffi_package/Cargo.toml text eol=lf
 /hew-cli/tests/fixtures/test_ffi_package/hew.toml text eol=lf
 /hew-cli/tests/fixtures/test_ffi_package/src/*.rs text eol=lf

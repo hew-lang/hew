@@ -558,7 +558,7 @@ ci-shard-1: observe-functional-test test-cabi test-compiler-lifecycle \
 
 ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-leak-oracle-selftest test-opaque-resource-lifecycle-matrix-external \
-	test-ownership-balance-corpus \
+	test-ownership-balance-corpus compile-determinism-verify compile-determinism-selftest \
 	test-ownership-balance-runner-selftest stdlib-user-build-clean \
 	test-asan-fixture-selftest hew-fmt-property stdlib-lint
 

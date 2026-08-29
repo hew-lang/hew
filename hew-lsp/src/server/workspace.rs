@@ -8,10 +8,10 @@ use hew_analysis::{util::compute_line_offsets, SymbolInfo};
 use hew_parser::ast::{Attribute, Item};
 use hew_parser::ParseResult;
 use tower_lsp_server::lsp_types::{CodeLens, Command, Location, SymbolInformation, Uri as Url};
-use tower_lsp_server::UriExt;
 
 use super::analysis::source_for_path;
 use super::convert::analysis_symbol_kind_to_lsp;
+use super::uri::FileUriExt;
 use super::{offset_range_to_lsp, span_to_range, DocumentState};
 
 // ── Code lens helpers ───────────────────────────────────────────────

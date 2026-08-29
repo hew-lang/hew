@@ -14,8 +14,8 @@ use tower_lsp_server::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location,
     NumberOrString, Uri as Url,
 };
-use tower_lsp_server::UriExt;
 
+use super::uri::FileUriExt;
 #[cfg(test)]
 use super::UriParse;
 use super::{DiagnosticMap, DiagnosticSource, DocumentState};

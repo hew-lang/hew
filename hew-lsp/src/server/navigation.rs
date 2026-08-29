@@ -7,11 +7,9 @@ use hew_parser::ParseResult;
 use tower_lsp_server::lsp_types::{
     DocumentLink, Location, PrepareRenameResponse, Range, TextEdit, Uri as Url, WorkspaceEdit,
 };
-use tower_lsp_server::UriExt;
 
+use super::uri::FileUriExt;
 use super::workspace::find_workspace_root_for_uri;
-#[cfg(test)]
-use super::UriParse;
 use super::{offset_range_to_lsp, span_to_range, DocumentState};
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -1682,9 +1680,10 @@ mod tests {
 
     fn make_test_uri(posix_path: &str) -> Url {
         #[cfg(windows)]
-        return Url::parse(&format!("file:///C:{posix_path}")).unwrap();
+        let path = std::path::PathBuf::from(format!("C:{posix_path}"));
         #[cfg(not(windows))]
-        return Url::parse(&format!("file://{posix_path}")).unwrap();
+        let path = std::path::PathBuf::from(posix_path);
+        Url::from_file_path(path).expect("test path should be an absolute file path")
     }
 
     fn first_named_import_match(

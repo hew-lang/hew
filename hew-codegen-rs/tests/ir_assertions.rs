@@ -4,6 +4,15 @@
 )]
 
 use hew_codegen_rs::{cleanup_capabilities_for_target, CleanupUnwindStrategy};
+use std::path::Path;
+
+pub(crate) fn read_llvm_ir(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("read emitted LLVM IR at {}: {error}", path.display()))
+        // LLVMPrintModuleToFile writes CRLF on Windows. Normalize at this read
+        // boundary so participating block/function extractors use one LF grammar.
+        .replace("\r\n", "\n")
+}
 
 pub(crate) fn cleanup_strategy(ir: &str) -> CleanupUnwindStrategy {
     let triple = ir

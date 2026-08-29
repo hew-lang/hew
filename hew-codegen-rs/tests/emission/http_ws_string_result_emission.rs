@@ -13,7 +13,7 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 use crate::ir_assertions::{
-    assert_consumed_string_result_cleanup, assert_target_call, cleanup_strategy,
+    assert_consumed_string_result_cleanup, assert_target_call, cleanup_strategy, read_llvm_ir,
 };
 
 const MEASURED: &[(&str, usize)] = &[
@@ -113,7 +113,7 @@ fn emit_ll(source: &str, target_triple: Option<&str>, slug: &str) -> String {
         .ll_path
         .as_deref()
         .expect("emit_module must populate ll_path");
-    std::fs::read_to_string(ll_path).expect("read emitted LLVM IR")
+    read_llvm_ir(ll_path)
 }
 
 fn function_ir<'a>(ll: &'a str, name: &str) -> &'a str {

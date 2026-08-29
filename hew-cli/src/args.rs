@@ -1015,6 +1015,45 @@ mod tests {
         assert!(Cli::try_parse_from(["hew", "watch", "sample.hew", "--sir-lower"]).is_err());
     }
 
+    /// The shadow lane is retired. A compatibility alias or a hidden flag would
+    /// silently resurrect a second compile path, so every command that accepts
+    /// an SIR mode must reject `--sir-shadow` outright.
+    ///
+    /// The paired `--sir-lower` acceptance on the same argv shape is the
+    /// positive control: it proves the rejection is the flag's own, not a
+    /// malformed command line that clap would refuse either way.
+    #[test]
+    fn retired_sir_shadow_flag_is_rejected_by_every_compile_capable_command() {
+        let shapes: [&[&str]; 7] = [
+            &["hew", "compile", "sample.hew"],
+            &["hew", "run", "sample.hew"],
+            &["hew", "build", "sample.hew"],
+            &["hew", "debug", "sample.hew"],
+            &["hew", "watch", "sample.hew", "--run"],
+            &["hew", "test"],
+            &["hew", "eval", "let x = 1;"],
+        ];
+
+        for shape in shapes {
+            let mut accepted = shape.to_vec();
+            accepted.insert(2, "--sir-lower");
+            let parsed = Cli::try_parse_from(&accepted)
+                .unwrap_or_else(|e| panic!("{shape:?} should still accept --sir-lower: {e}"));
+            assert_eq!(
+                command_sir_mode(parsed.command.expect("command should be present")),
+                SirMode::Lower,
+                "{shape:?} should still select the strict lane"
+            );
+
+            let mut rejected = shape.to_vec();
+            rejected.insert(2, "--sir-shadow");
+            assert!(
+                Cli::try_parse_from(&rejected).is_err(),
+                "{shape:?} must reject the retired --sir-shadow flag"
+            );
+        }
+    }
+
     fn command_sir_mode(command: Command) -> SirMode {
         match command {
             Command::Compile(args) => args.sir.mode(),

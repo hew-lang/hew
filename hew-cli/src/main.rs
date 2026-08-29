@@ -553,7 +553,7 @@ fn lower_file_to_mir_for_target(
         options.sir_mode,
     )?;
     if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report, options.sir_mode);
+        report_sir_lane(report);
     }
     if render_pipeline_mir_diagnostics(
         &verified.state.program,
@@ -876,7 +876,7 @@ pub(crate) fn compile_native_binary(
 ) -> Result<(), ()> {
     let (pipeline, sir_report) = lower_file_to_mir_with_options(input, None, options)?;
     if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report, options.sir_mode);
+        report_sir_lane(report);
     }
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = bin_path
@@ -992,7 +992,7 @@ pub(crate) fn compile_native_from_program_with_paths(
     let (pipeline, sir_report) =
         lower_verified_hir_to_pipeline(&lower_output.module, &tco, &target, options.sir_mode)?;
     if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report, options.sir_mode);
+        report_sir_lane(report);
     }
     if render_pipeline_mir_diagnostics(
         &state.program,
@@ -1484,7 +1484,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     };
 
     if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report, sir_mode);
+        report_sir_lane(report);
     }
 
     // Dump path: print the requested MIR stage and exit. Useful for
@@ -1586,7 +1586,12 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     0
 }
 
-fn report_sir_lane(report: &SirLaneReport, mode: compile::SirMode) {
+/// Render the strict SIR lane's per-callable outcome.
+///
+/// `SirLaneReport` is constructed only inside the `SirMode::Lower` arm of
+/// `lower_verified_hir_to_pipeline`, so reaching this function already proves
+/// the strict lane ran; there is no mode to re-test.
+fn report_sir_lane(report: &SirLaneReport) {
     let sir_lowered = report
         .sir
         .statuses
@@ -1599,9 +1604,6 @@ fn report_sir_lane(report: &SirLaneReport, mode: compile::SirMode) {
         .iter()
         .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::GenericTemplate { .. }))
         .count();
-    if mode == compile::SirMode::Disabled {
-        return;
-    }
     let hir_fallbacks: Vec<_> = report
         .sir
         .statuses

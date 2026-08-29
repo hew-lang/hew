@@ -71,13 +71,7 @@ enum EntryOutcome {
 // ---------------------------------------------------------------------------
 
 /// Run the `hew playground verify` subcommand.
-pub fn cmd_playground(args: &crate::args::PlaygroundCommand) {
-    match &args.command {
-        crate::args::PlaygroundSubcommand::Verify(verify_args) => cmd_verify(verify_args),
-    }
-}
-
-fn cmd_verify(args: &crate::args::PlaygroundVerifyArgs) {
+pub fn cmd_playground_verify(args: &crate::args::PlaygroundVerifyArgs) {
     let timeout = crate::util::parse_timeout(&args.timeout).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);

@@ -33,8 +33,8 @@ flowchart TD
 
 **Current v0.5 inspection commands:**
 
-- `hew compile --dump-mir raw|checked|elab <file.hew>` — inspect the MIR ladder without LLVM emission
-- `hew compile --emit-dir <dir> <file.hew>` — write LLVM/object/WASM artefacts for the Rust codegen path
+- `hew tool compile --dump-mir raw|checked|elab <file.hew>` — inspect the MIR ladder without LLVM emission
+- `hew tool compile --emit-dir <dir> <file.hew>` — write LLVM/object/WASM artefacts for the Rust codegen path
 - `hew machine diagram [--format mermaid|graphviz|json] <file.hew>` — render machine declarations
 - `hew machine list <file.hew>` — list machines, states, and events
 

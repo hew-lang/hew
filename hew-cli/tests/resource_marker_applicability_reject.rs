@@ -1,9 +1,8 @@
 //! Ownership-marker applicability must fail in the parser before checking.
 //!
-//! A `record` has no `ResourceMarker` field. Before this regression, placing
-//! `#[resource]` on one silently discarded the marker, so the clone below
-//! reached HIR as an ordinary copyable record. The CLI must now stop at the
-//! attribute and retain the source span in its rendered diagnostic.
+//! A type alias has no `ResourceMarker` field. The CLI must stop at an
+//! ownership marker applied to one and retain the source span in its rendered
+//! diagnostic.
 
 mod support;
 
@@ -12,25 +11,18 @@ use std::process::Command;
 use support::{hew_binary, strip_ansi};
 
 #[test]
-fn ownership_marker_on_record_fails_closed_before_hir() {
+fn ownership_marker_on_type_alias_fails_closed_before_hir() {
     let fixture = support::tempdir();
-    let source = fixture.path().join("resource_record_marker.hew");
+    let source = fixture.path().join("resource_alias_marker.hew");
     std::fs::write(
         &source,
         r"#[resource]
-type Token { id: i64 }
+type Metres = i64;
 
-impl Token {
-    fn close(self) {}
-}
-
-fn main() {
-    let t = Token { id: 1 };
-    let _copy = t.clone();
-}
+fn main() {}
 ",
     )
-    .expect("write resource-record fixture");
+    .expect("write resource-alias fixture");
 
     let output = Command::new(hew_binary())
         .args(["check", source.to_str().expect("fixture path is UTF-8")])
@@ -40,7 +32,7 @@ fn main() {
 
     assert!(
         !output.status.success(),
-        "ownership marker on record must stop before HIR; stdout: {}\nstderr: {}",
+        "ownership marker on type alias must stop before HIR; stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -48,7 +40,7 @@ fn main() {
     assert!(
         stderr.contains("E_RESOURCE_MARKER_TARGET")
             && stderr.contains("#[resource]")
-            && stderr.contains("resource_record_marker.hew:1:1")
+            && stderr.contains("resource_alias_marker.hew:1:1")
             && stderr.contains("^^^^^^^^^^^"),
         "CLI must render the ownership-marker error at its source attribute:\n{stderr}"
     );

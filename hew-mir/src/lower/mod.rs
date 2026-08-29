@@ -1361,6 +1361,21 @@ struct Builder {
     /// `next_closure_id`, which names emitted symbols: bumping that counter
     /// for a producer that does not name a symbol from it would renumber
     /// every closure symbol in the module.
+    ///
+    /// APPROXIMATION — one sequence shared by every producer, not one per
+    /// variant. WHY: uniqueness and determinism are the only two properties the
+    /// key needs, and a single encounter-order counter gives both with one
+    /// field; per-variant counters would need seven, and each would have to be
+    /// reset in lockstep at every child-builder boundary. The visible
+    /// consequence is that ordinals interleave across producers — a body with
+    /// two closures and one named-fn value yields `ClosureInvokeShim(0)`,
+    /// `ClosureInvokeShim(1)`, `NamedFnInvokeShim(2)` rather than
+    /// `NamedFnInvokeShim(0)`. WHEN this stops being good enough: when a
+    /// consumer wants to enumerate "the Nth closure of `f`" from the key alone,
+    /// or when a producer starts minting children outside lowering encounter
+    /// order (then the ordinal is no longer stable and the determinism gate
+    /// catches it). WHAT replaces it: a per-variant counter, i.e. a small
+    /// `HashMap<discriminant, u32>` on the builder reset with this field.
     pub(crate) next_synthesized_ordinal: u32,
     pub(crate) current_function_call_conv: crate::model::FunctionCallConv,
     /// True only on a source generator shell builder. Its fn-typed formal
@@ -3464,52 +3479,8 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         .machine_decl_layout_names
         .clone_from(&machine_decl_layout_names);
     let param_ownership: Rc<ParamOwnershipFacts> = Rc::new(param_ownership);
-    // One lowered body per declaration.
-    //
-    // HIR emits an imported function TWICE: once under its bare spelling, so
-    // an unqualified call in the importing file resolves, and once under the
-    // module-qualified spelling. Both items carry the resolver's single
-    // declaration identity, so lowering both realizes one callable identity
-    // twice — two copies of one body that only the emitted name tells apart.
-    // The checker already published which spelling is that declaration's
-    // direct-call endpoint (`direct_call_symbols`, keyed by `DefId`), so
-    // that map — not the name shape — selects the body to keep.
-    //
-    // A declaration with no published endpoint (never directly called) keeps
-    // its first item; if that still leaves two bodies under one key, the
-    // fail-closed uniqueness gate at the end of this function reports it
-    // rather than emitting an ambiguous module.
-    let canonical_fn_items: HashSet<hew_hir::ItemId> = {
-        let mut by_declaration: HashMap<&hew_types::DefId, Vec<&HirFn>> = HashMap::new();
-        for item in &module.items {
-            if let HirItem::Function(func) = item {
-                by_declaration
-                    .entry(&func.declaration)
-                    .or_default()
-                    .push(func);
-            }
-        }
-        by_declaration
-            .into_iter()
-            .filter_map(|(declaration, items)| {
-                if items.len() < 2 {
-                    return items.first().map(|func| func.id);
-                }
-                let endpoint = direct_call_symbols.get(declaration);
-                let chosen = items
-                    .iter()
-                    .find(|func| endpoint.is_some_and(|symbol| &func.name == symbol))
-                    .or_else(|| items.first())?;
-                Some(chosen.id)
-            })
-            .collect()
-    };
     for item in &module.items {
         match item {
-            HirItem::Function(func) if !canonical_fn_items.contains(&func.id) => {
-                // A redundant re-emission of a declaration already lowered
-                // above; see `canonical_fn_items`.
-            }
             HirItem::Function(func) => {
                 // Generic origins are not monomorphic and never reach
                 // codegen directly — their concrete instances are emitted
@@ -12110,6 +12081,48 @@ fn ownership_join_states(
         }
     }
     (exact_entries, exact_exits, maybe_exits, must_entries)
+}
+
+#[cfg(test)]
+mod synthesized_identity_tests {
+    use super::*;
+
+    #[test]
+    fn a_builder_carrying_a_callable_identity_mints_ordinal_children_of_it() {
+        let parent = crate::model::MirCallableKey::for_test("app.owner");
+        let mut builder = Builder {
+            current_callable_key: Some(parent.clone()),
+            ..Builder::default()
+        };
+
+        let first =
+            builder.mint_synthesized_child_key(crate::model::SynthesizedCallable::GeneratorBody);
+        let second = builder
+            .mint_synthesized_child_key(crate::model::SynthesizedCallable::ClosureInvokeShim);
+
+        assert_eq!(
+            first,
+            parent.child(crate::model::SynthesizedCallable::GeneratorBody(0))
+        );
+        assert_eq!(
+            second,
+            parent.child(crate::model::SynthesizedCallable::ClosureInvokeShim(1)),
+            "one shared per-parent sequence: the second child is ordinal 1 even though it \
+             is the first of its variant"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "carries no callable identity")]
+    fn a_builder_with_no_callable_identity_refuses_to_mint_a_child_key() {
+        // The negative control for the `current_callable_key: Option<..>`
+        // fail-closed claim. Without it the producer would have to invent an
+        // identity from the emitted symbol — the exact reconstruction this
+        // slice removes — and two synthesized callables could then collide.
+        let mut builder = Builder::default();
+        let _ =
+            builder.mint_synthesized_child_key(crate::model::SynthesizedCallable::GeneratorBody);
+    }
 }
 
 #[cfg(test)]

@@ -2504,6 +2504,31 @@ fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::Modu
     ids
 }
 
+/// Answer whether the source-order third pass already lowered this module's
+/// free functions, so the module-graph fourth pass must not lower them again.
+///
+/// A file-path import (`import "lib.hew";`) splices the imported module's items
+/// into `program.items`, so the third pass emits one `HirItem::Function` per pub
+/// free fn under its source-declared name. The same module is also in
+/// `mg.topo_order`, so the fourth pass would emit a SECOND body for the same
+/// declaration under the module-qualified spelling (`lib$twice`). Both items
+/// carry the resolver's single `declaration` `DefId`, so the module would then
+/// realize one callable identity twice: `build_direct_call_symbol_index` keeps
+/// the last spelling written (the qualified one) while any consumer that
+/// resolves the surface spelling — the fn-value shim in
+/// `hew-mir/src/lower/expr.rs` — keeps the first, and the two disagree.
+///
+/// The discriminator is the module's IDENTITY, exactly as in the `Item::Impl`
+/// and `Item::Actor` arms: only file-import SPLICED modules are reached by both
+/// passes. Package-import modules are never spliced, so they are lowered here
+/// exactly once and are unaffected.
+fn free_fn_already_lowered_by_source_order_pass(
+    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
+    mod_id: &hew_parser::module::ModuleId,
+) -> bool {
+    file_import_modules.contains(mod_id)
+}
+
 /// Identify, by PROVENANCE (file-set subsumption), the package-import graph
 /// modules whose `impl` blocks must NOT be re-lowered by the fourth pass
 /// because a *superset* package module already lowers the identical impl
@@ -5096,6 +5121,12 @@ pub fn lower_program_with_mono_cap(
                         .unwrap_or(module_idx);
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
+                            if free_fn_already_lowered_by_source_order_pass(
+                                &file_import_modules,
+                                mod_id,
+                            ) {
+                                continue;
+                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -5122,6 +5153,12 @@ pub fn lower_program_with_mono_cap(
                         Item::Function(func)
                             if imported_private_closure.contains(func.name.as_str()) =>
                         {
+                            if free_fn_already_lowered_by_source_order_pass(
+                                &file_import_modules,
+                                mod_id,
+                            ) {
+                                continue;
+                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -14804,11 +14841,22 @@ impl LowerCtx {
             }
         }
 
+        let defining_module = self.current_module_name.clone();
         Some(HirMachineDecl {
             id: self.ids.item(),
             node: self.ids.node(),
+            // Mint the machine's declaration identity here, the same way
+            // `lower_type_decl` mints a type declaration's: the dotted owner
+            // path when the machine came from a module, the bare spelling for
+            // a root-program machine. Consumers project this field.
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                match &defining_module {
+                    Some(module) => format!("{module}.{}", decl.name),
+                    None => decl.name.clone(),
+                },
+            ),
             name: decl.name.clone(),
-            defining_module: self.current_module_name.clone(),
+            defining_module,
             type_params: decl.type_params.iter().map(|p| p.name.clone()).collect(),
             type_param_bounds,
             states: hir_states,

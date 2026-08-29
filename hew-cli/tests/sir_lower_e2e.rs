@@ -564,11 +564,11 @@ fn sir_lower_generic_direct_call_graph_compiles_and_runs() {
     );
 }
 
-/// Shadow intentionally cannot realize direct calls through its legacy raw-MIR
-/// template, so strict direct-call behavior is compared directly with the
-/// established compiler rather than inferred from a shadow success. This is
-/// temporary migration evidence: once SIR becomes the normal path, the legacy
-/// half of this comparison is deleted with its body lowerer.
+/// Strict direct-call behaviour is compared against the established compiler
+/// on the same source, because nothing inside the strict lane can attest to
+/// its own correctness here. This is temporary migration evidence: once SIR
+/// becomes the normal path, the established half of the comparison is deleted
+/// with its body lowerer.
 #[test]
 fn sir_lower_matches_established_execution_for_closed_direct_call_graph() {
     require_codegen();

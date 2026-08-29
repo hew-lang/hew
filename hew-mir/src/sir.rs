@@ -48,9 +48,9 @@ struct SirMirLowered {
 
 /// A closed, self-contained scalar SIR call-graph realization.
 ///
-/// Unlike the temporary shadow bridge, this component has no raw-MIR
-/// template input. SIR owns each callable's symbol, signature, and parameter
-/// ABI facts; this lowering independently creates both raw and checked MIR.
+/// This component takes no raw-MIR template input. SIR owns each callable's
+/// symbol, signature, and parameter ABI facts; this lowering independently
+/// creates both raw and checked MIR.
 /// A driver either installs the entire selected call graph or reports its
 /// unsupported boundary — it never silently mixes a SIR caller with a legacy
 /// body inside the selected closure.

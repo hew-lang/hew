@@ -3,8 +3,8 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     base_local, check_duplex_split_state, close_obligated_borrow_alias_violations,
-    collection_borrow_getter_alias_locals, dataflow, interior_alias_receiver_violations,
-    place_refs_local, retained_string_terminator_drop_safe, short_name, string_call_borrows,
+    collection_borrow_getter_alias_locals, interior_alias_receiver_violations, place_refs_local,
+    retained_string_terminator_drop_safe, short_name, string_call_borrows,
     terminator_source_places, user_record_layout_key, BTreeMap, BasicBlock, BindingId, BlockKind,
     Builder, BuiltinType, CheckedMirFunction, ClosurePairRhs, DropKind, DropPlan, ElabBlock,
     ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr,
@@ -16,11 +16,11 @@ use crate::model::CooperateSite;
 #[cfg(test)]
 use hew_hir::ResourceMarker;
 
+mod conditional_consume_release;
 mod diagnostic_projection;
-mod vec_iter_yield_abandonment;
 
+pub(super) use conditional_consume_release::materialize_conditional_consume_releases;
 pub(super) use diagnostic_projection::check_to_diagnostic;
-pub(super) use vec_iter_yield_abandonment::vec_iter_yield_abandonment_diagnostics;
 
 /// Drop-elaboration pass over a `CheckedMirFunction`.
 ///
@@ -283,13 +283,12 @@ pub(super) fn owner_definition_drop_recipe(
                 crate::ownership::CowHeapRelease::VecClosurePairs
             }
             crate::ownership::VecElementRelease::Unsupported(
-                crate::ownership::FailClosedReason::UnenumeratedShape,
-            ) => crate::ownership::CowHeapRelease::VecPlain,
-            crate::ownership::VecElementRelease::Unsupported(
                 crate::ownership::FailClosedReason::NoReleaseProtocol,
             ) if builder.elem_is_owned_abi_releasable(element) => {
                 crate::ownership::CowHeapRelease::VecOwnedElement
             }
+            // No wired per-element release: publish no recipe rather than a
+            // buffer-only free that would leak every element node.
             crate::ownership::VecElementRelease::Unsupported(_) => return None,
         };
         (DropKind::CowHeap { release }, None)
@@ -1429,6 +1428,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
 
     let (entries, exits) = exact_owner_states(&checked.blocks);
     let (maybe_entries, maybe_exits) = maybe_owner_states(&checked.blocks);
+    let (maybe_ended_entries, maybe_ended_exits) = maybe_ended_owner_states(&checked.blocks);
     let (must_binding_entries, _) = must_binding_owner_states(&checked.blocks);
     let entry_parameter_owners = entry_cancel_parameter_owners(&checked.blocks, &checked.decisions);
 
@@ -2030,6 +2030,55 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         "conditionally live guarded owner has ambiguous generations/places {candidates:?} on {exit:?}; no frozen cleanup can be admitted"
                     ),
                 });
+            }
+            // An unguarded generation consumed on one path and still owned on
+            // another into an abandonment exit has no admissible cleanup: an
+            // unconditional drop double-frees the path that transferred it and
+            // omitting the drop leaks the path that still owns it. Replay is
+            // the sole authority for this shape; the producer must either
+            // guard the owner or end its generation on every path before the
+            // exit. A generation that is merely absent on some paths (never
+            // minted there) owes nothing on those paths and is not reported.
+            if abandonment_exit(exit)
+                && !matches!(exit, ExitPath::Cancel { block } if *block == ENTRY_BLOCK_ID)
+            {
+                let ended = maybe_ended_owners_for_exit(
+                    exit,
+                    &checked.blocks,
+                    &maybe_ended_entries,
+                    &maybe_ended_exits,
+                );
+                let mut conditional =
+                    maybe_owner_state_for_exit(exit, &checked.blocks, &maybe_entries, &maybe_exits)
+                        .into_iter()
+                        .filter(|(owner, place)| {
+                            !matches!(place, Place::ReturnSlot)
+                                && !guarded_owners.contains(owner)
+                                && !live.contains_key(owner)
+                                && ended.contains(owner)
+                        })
+                        .collect::<Vec<_>>();
+                conditional.sort_by_key(|(owner, _)| *owner);
+                for (owner, place) in conditional {
+                    let (name, site) = binding_metadata
+                        .get(&owner.binding)
+                        .cloned()
+                        .unwrap_or_else(|| (format!("{:?}", owner.binding), SiteId(0)));
+                    let local_ty = definition_types
+                        .get(&owner)
+                        .map_or_else(|| "<unknown>".to_owned(), ToString::to_string);
+                    findings.push(MirCheck::ObligationUnderReleased {
+                        function: checked.name.clone(),
+                        blocks: vec![block_id],
+                        site,
+                        name,
+                        local_ty,
+                        mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
+                        reason: format!(
+                            "owner {owner:?} at {place:?} is consumed on some paths and still owned on others into {exit:?} and carries no runtime guard; no cleanup can be admitted without double-freeing the consumed path or leaking the owning one"
+                        ),
+                    });
+                }
             }
             let mut matched = HashSet::new();
             for drop in &plan.drops {
@@ -8071,6 +8120,112 @@ pub(super) fn maybe_owner_states(
     (entries, exits)
 }
 
+/// Generations whose ownership was consumed (transferred, released, or
+/// demoted) on at least one path. Paired with [`maybe_owner_states`] this
+/// separates an owner that is *conditionally consumed* — live on one incoming
+/// path and ended on another, so no static cleanup is admissible — from one
+/// that is merely conditionally minted, whose absent generation owes nothing
+/// on the paths that never created it. A `Reset`/`Rearm` predecessor or a
+/// `Join` input is renamed into its successor generation, not consumed: the
+/// generation-lineage rules own those, so they are not recorded here.
+pub(super) type MaybeEndedOwnerState = HashSet<crate::model::OwnerId>;
+
+pub(super) fn apply_maybe_ended_owner_ops(
+    instructions: &[Instr],
+    ended: &mut MaybeEndedOwnerState,
+) {
+    for instruction in instructions {
+        match owner_state_operation(instruction) {
+            OwnerStateOperation::Transfer { owner, .. } | OwnerStateOperation::End { owner } => {
+                ended.insert(owner);
+            }
+            OwnerStateOperation::Reset { .. }
+            | OwnerStateOperation::Rearm { .. }
+            | OwnerStateOperation::Join { .. }
+            | OwnerStateOperation::Mint { .. }
+            | OwnerStateOperation::RelocateOwner { .. }
+            | OwnerStateOperation::None => {}
+        }
+    }
+}
+
+pub(super) fn maybe_ended_owner_states(
+    blocks: &[BasicBlock],
+) -> (
+    HashMap<u32, MaybeEndedOwnerState>,
+    HashMap<u32, MaybeEndedOwnerState>,
+) {
+    let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MaybeEndedOwnerState::new())]);
+    let mut exits = HashMap::new();
+    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
+    while let Some(block_id) = queue.pop_front() {
+        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();
+        apply_maybe_ended_owner_ops(&block.instructions, &mut outgoing);
+        exits.insert(block_id, outgoing.clone());
+        for successor in block.successors() {
+            let changed = if let Some(existing) = entries.get_mut(&successor) {
+                let before = existing.len();
+                existing.extend(outgoing.iter().copied());
+                existing.len() != before
+            } else {
+                entries.insert(successor, outgoing.clone());
+                true
+            };
+            if changed {
+                queue.push_back(successor);
+            }
+        }
+    }
+    (entries, exits)
+}
+
+/// The generations consumed on at least one path into `exit`, at the same
+/// program point [`maybe_owner_state_for_exit`] reproduces.
+fn maybe_ended_owners_for_exit(
+    exit: &ExitPath,
+    blocks: &[BasicBlock],
+    entries: &HashMap<u32, MaybeEndedOwnerState>,
+    exits: &HashMap<u32, MaybeEndedOwnerState>,
+) -> MaybeEndedOwnerState {
+    let block_id = exit_block_id(exit);
+    if let ExitPath::Unwind { callee, .. } = exit {
+        if let Some((block, position)) = closure_call_prefix(blocks, block_id, callee) {
+            let mut state = entries.get(&block_id).cloned().unwrap_or_default();
+            apply_maybe_ended_owner_ops(&block.instructions[..position], &mut state);
+            return state;
+        }
+    }
+    exits.get(&block_id).cloned().unwrap_or_default()
+}
+
+/// The block and instruction index of the indirect closure call whose unwind
+/// edge `callee` names, when the block calls one inline.
+fn closure_call_prefix<'a>(
+    blocks: &'a [BasicBlock],
+    block_id: u32,
+    callee: &str,
+) -> Option<(&'a BasicBlock, usize)> {
+    blocks
+        .iter()
+        .find(|block| block.id == block_id)
+        .and_then(|block| {
+            block
+                .instructions
+                .iter()
+                .position(|instruction| {
+                    matches!(
+                        instruction,
+                        Instr::CallClosure { call_site, .. }
+                            if crate::model::indirect_closure_callee(*call_site) == callee
+                    )
+                })
+                .map(|position| (block, position))
+        })
+}
+
 fn apply_must_binding_owner_ops(instructions: &[Instr], live: &mut MustBindingOwnerState) {
     for instruction in instructions {
         match owner_state_operation(instruction) {
@@ -8220,24 +8375,7 @@ fn maybe_owner_state_for_exit(
         return entries.get(&block_id).cloned().unwrap_or_default();
     }
     if let ExitPath::Unwind { callee, .. } = exit {
-        if let Some((block, position)) =
-            blocks
-                .iter()
-                .find(|block| block.id == block_id)
-                .and_then(|block| {
-                    block
-                        .instructions
-                        .iter()
-                        .position(|instruction| {
-                            matches!(
-                                instruction,
-                                Instr::CallClosure { call_site, .. }
-                                    if crate::model::indirect_closure_callee(*call_site) == *callee
-                            )
-                        })
-                        .map(|position| (block, position))
-                })
-        {
+        if let Some((block, position)) = closure_call_prefix(blocks, block_id, callee) {
             let mut state = entries.get(&block_id).cloned().unwrap_or_default();
             apply_maybe_owner_ops(&block.instructions[..position], &mut state);
             return state;
@@ -8292,14 +8430,10 @@ fn exact_required_owners_for_exit(
 
 type GuardedOwnerGroups = HashMap<BindingId, HashMap<Place, HashSet<crate::model::OwnerId>>>;
 
-fn guarded_owner_groups_for_exit(
-    exit: &ExitPath,
-    blocks: &[BasicBlock],
-    maybe_entries: &HashMap<u32, MaybeOwnerState>,
-    maybe_exits: &HashMap<u32, MaybeOwnerState>,
-    guarded_owners: &HashSet<crate::model::OwnerId>,
-) -> GuardedOwnerGroups {
-    if !matches!(
+/// An exit that leaves the function body without a normal continuation:
+/// every generation still live there must be discharged by the exit plan.
+fn abandonment_exit(exit: &ExitPath) -> bool {
+    matches!(
         exit,
         ExitPath::Return { .. }
             | ExitPath::Panic { .. }
@@ -8307,7 +8441,17 @@ fn guarded_owner_groups_for_exit(
             | ExitPath::Cancel { .. }
             | ExitPath::Yield { .. }
             | ExitPath::Suspend { .. }
-    ) {
+    )
+}
+
+fn guarded_owner_groups_for_exit(
+    exit: &ExitPath,
+    blocks: &[BasicBlock],
+    maybe_entries: &HashMap<u32, MaybeOwnerState>,
+    maybe_exits: &HashMap<u32, MaybeOwnerState>,
+    guarded_owners: &HashSet<crate::model::OwnerId>,
+) -> GuardedOwnerGroups {
+    if !abandonment_exit(exit) {
         return HashMap::new();
     }
 
@@ -9441,6 +9585,129 @@ mod replay_plan_tests {
         assert_eq!(
             omissions, 1,
             "a live recipe-bearing owner with no plan entry must be rejected once: {findings:?}"
+        );
+    }
+
+    fn consume(owner: OwnerId, place: Place) -> Instr {
+        Instr::OwnershipEvent(OwnershipEvent::Transfer {
+            owner,
+            from: place,
+            to: Some(Place::ReturnSlot),
+            to_owner: None,
+            to_ty: None,
+        })
+    }
+
+    fn branch_to(then_target: u32, else_target: u32) -> Terminator {
+        Terminator::Branch {
+            cond: Place::Local(9),
+            then_target,
+            else_target,
+        }
+    }
+
+    /// `a` is minted in block 0, consumed on the block-1 path, still owned on
+    /// the block-2 path, and both paths join at the returning block 3.
+    fn conditionally_consumed_owner_blocks(a: OwnerId, place: Place) -> Vec<BasicBlock> {
+        vec![
+            block(0, vec![mint(a, place), recipe(a, 0)], branch_to(1, 2)),
+            block(1, vec![consume(a, place)], Terminator::Goto { target: 3 }),
+            block(
+                2,
+                vec![Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                    owner: a,
+                    place,
+                    target: 3,
+                })],
+                Terminator::Goto { target: 3 },
+            ),
+            block(3, vec![], Terminator::Return),
+        ]
+    }
+
+    #[test]
+    fn unguarded_owner_consumed_on_one_path_into_return_is_rejected() {
+        let a = owner(1);
+        let blocks = conditionally_consumed_owner_blocks(a, Place::Local(4));
+        let derived = plans_for(&blocks);
+        assert!(
+            plan(&derived, &ExitPath::Return { block: 3 })
+                .drops
+                .is_empty(),
+            "no static cleanup may fire for an owner that is dead on one incoming path"
+        );
+        let findings = validate_ownership_events(&checked(blocks, derived));
+        let conditional = findings
+            .iter()
+            .filter(|finding| {
+                matches!(
+                    finding,
+                    MirCheck::ObligationUnderReleased { reason, .. }
+                        if reason.contains("consumed on some paths and still owned on others")
+                            && reason.contains("Return { block: 3 }")
+                )
+            })
+            .count();
+        assert_eq!(
+            conditional, 1,
+            "the owning path leaks and must be reported exactly once: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn owner_released_on_its_owning_edge_before_the_join_is_accepted() {
+        let a = owner(1);
+        let place = Place::Local(4);
+        let mut blocks = conditionally_consumed_owner_blocks(a, place);
+        // The producer-side repair: release on the still-owning edge, so the
+        // generation has ended on every path into the join.
+        blocks[2].instructions = vec![
+            Instr::Drop {
+                place,
+                ty: ResolvedTy::String,
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+            },
+            release(a, place),
+        ];
+        let derived = plans_for(&blocks);
+        let findings = validate_ownership_events(&checked(blocks, derived));
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn owner_absent_on_one_path_but_never_consumed_is_not_reported_as_conditional() {
+        // Minted on the block-1 path only and never ended anywhere: the
+        // block-2 path owes nothing, so this is a lineage question, not a
+        // conditional consume.
+        let a = owner(1);
+        let place = Place::Local(4);
+        let blocks = vec![
+            block(0, vec![], branch_to(1, 2)),
+            block(
+                1,
+                vec![
+                    mint(a, place),
+                    recipe(a, 0),
+                    Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                        owner: a,
+                        place,
+                        target: 3,
+                    }),
+                ],
+                Terminator::Goto { target: 3 },
+            ),
+            block(2, vec![], Terminator::Goto { target: 3 }),
+            block(3, vec![], Terminator::Return),
+        ];
+        let derived = plans_for(&blocks);
+        let findings = validate_ownership_events(&checked(blocks, derived));
+        assert!(
+            !findings.iter().any(|finding| matches!(
+                finding,
+                MirCheck::ObligationUnderReleased { reason, .. }
+                    if reason.contains("consumed on some paths")
+            )),
+            "{findings:?}"
         );
     }
 }

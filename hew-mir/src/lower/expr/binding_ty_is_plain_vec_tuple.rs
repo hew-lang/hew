@@ -695,8 +695,7 @@ fn unwired_vec_element_rejected_transitively() {
 /// element, a nested collection (`Vec<Vec<i64>>`), a heap-owning tuple, an
 /// owned record whose element release IS wired (harvested into
 /// `vec_owned_element_keys`), and an un-monomorphised generic `Vec<T>`
-/// skeleton (a free `TypeParam` owns no heap → `UnenumeratedShape`, never
-/// rejected). A bare indirect-enum local (NOT a `Vec` element) is also
+/// skeleton (a free `TypeParam` owns no heap → `Plain`, never rejected). A bare indirect-enum local (NOT a `Vec` element) is also
 /// untouched — its scope-exit node free is wired separately
 /// (`DropKind::IndirectEnum`).
 #[test]

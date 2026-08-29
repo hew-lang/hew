@@ -608,49 +608,6 @@ impl Builder {
         }
     }
 
-    /// Convert the inline yielded-value release verdict into the equivalent
-    /// exit-plan drop kind. Plan drops carry heap/composite rituals in
-    /// `DropKind` with no `drop_fn`; keeping the inline `Release`/`InPlace`
-    /// carrier would route them through the unrelated resource-close
-    /// dispatcher at codegen.
-    fn generator_yield_plan_drop_kind(&self, ty: &ResolvedTy) -> Option<crate::model::DropKind> {
-        match self.generator_yield_drop_symbol(ty) {
-            ReleaseSymbolVerdict::Wired("hew_rc_drop") => Some(crate::model::DropKind::RcRelease),
-            ReleaseSymbolVerdict::Wired("hew_weak_drop_rc") => {
-                Some(crate::model::DropKind::WeakRelease)
-            }
-            ReleaseSymbolVerdict::Wired(symbol) => {
-                let mut release = crate::ownership::CowHeapRelease::from_symbol(symbol)?;
-                if matches!(release, crate::ownership::CowHeapRelease::VecOwnedElement)
-                    && matches!(
-                        ty,
-                        ResolvedTy::Named {
-                            builtin: Some(hew_types::BuiltinType::Vec),
-                            args,
-                            ..
-                        } if args.first().is_some_and(|elem| matches!(
-                            self.classify_vec_element_release(elem),
-                            VecElementRelease::ClosurePair
-                        ))
-                    )
-                {
-                    release = crate::ownership::CowHeapRelease::VecClosurePairs;
-                }
-                Some(crate::model::DropKind::CowHeap { release })
-            }
-            ReleaseSymbolVerdict::WiredInPlace(kind) => Some(match kind {
-                crate::ownership::InPlaceReleaseKind::Record => {
-                    crate::model::DropKind::RecordInPlace
-                }
-                crate::ownership::InPlaceReleaseKind::Enum => crate::model::DropKind::EnumInPlace,
-                crate::ownership::InPlaceReleaseKind::AggregateRecursive => {
-                    crate::model::DropKind::AggregateRecursive
-                }
-            }),
-            ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => None,
-        }
-    }
-
     /// The in-place thunk family (record vs enum) releasing an owned composite
     /// yield/recv payload, or `None` when the type is not an owned-ABI
     /// releasable composite. Admission is exactly
@@ -688,7 +645,7 @@ impl Builder {
     /// pickers cannot drift on the fail-closed boundary
     /// (`dedup-semantic-boundary`).
     ///
-    /// The `Unsupported` domain splits three ways, drawing the SAME boundary
+    /// The `Unsupported` domain splits two ways, drawing the SAME boundary
     /// as the compile reject `unsupported_vec_element_walk`:
     ///   - `NoReleaseProtocol` with no owned-ABI release
     ///     (`!elem_is_owned_abi_releasable`) — a `bytes` fat triple or an
@@ -703,11 +660,11 @@ impl Builder {
     ///     harvest-independent `elem_is_owned_abi_releasable` authority and
     ///     emit `hew_vec_free_owned`; a buffer-only free would leak every
     ///     element payload.
-    ///   - `UnenumeratedShape` — the element owns NO heap as a flat element
-    ///     (a free `TypeParam` in a generic skeleton, `Unit`, a bare runtime
-    ///     view) — the buffer-only free IS the complete release; refusing
-    ///     would reject un-monomorphised generic `Vec<T>` bodies that
-    ///     instantiate to plain elements.
+    ///
+    /// An element that owns NO heap as a flat element (a free `TypeParam` in
+    /// a generic skeleton, `Unit`, a bare runtime view) is classified `Plain`
+    /// by the heap-ownership authority, so un-monomorphised generic `Vec<T>`
+    /// bodies keep the buffer-only free.
     fn vec_release_symbol_verdict(&self, elem: &ResolvedTy) -> ReleaseSymbolVerdict {
         #[allow(
             clippy::match_same_arms,
@@ -724,10 +681,7 @@ impl Builder {
             {
                 ReleaseSymbolVerdict::Wired("hew_vec_free_owned")
             }
-            VecElementRelease::Unsupported(reason @ FailClosedReason::NoReleaseProtocol) => {
-                ReleaseSymbolVerdict::Unwired(reason)
-            }
-            VecElementRelease::Unsupported(_) => ReleaseSymbolVerdict::Wired("hew_vec_free"),
+            VecElementRelease::Unsupported(reason) => ReleaseSymbolVerdict::Unwired(reason),
         }
     }
 
@@ -5839,7 +5793,6 @@ impl Builder {
                 }
             }
             let mut value = self.lower_composite_result_value(&arm.body);
-            let body_end_block_id = self.current_block_id;
             // A direct whole-record match result (`Some(g) => g`) transfers the
             // selected field out of a proved-fresh call carrier. The carrier's
             // active payload drop is suppressed on that arm, so the resulting
@@ -5935,17 +5888,6 @@ impl Builder {
                 self.push_composite_result_move(result_place, src, result_ty);
             }
             for (binding, place, ty, site) in generator_yield_drop_bindings {
-                if arm_is_fresh_owned_vec_iter_some
-                    && self.generator_yield_plan_drop_kind(&ty).is_some()
-                {
-                    self.vec_iter_yield_exit_drops
-                        .push(super::VecIterYieldExitDrop {
-                            binding,
-                            body_start_block: body_start_block_id,
-                            body_end_block: body_end_block_id,
-                            site,
-                        });
-                }
                 let is_minted_call_carrier = base_local(place)
                     .is_some_and(|local| self.call_scrutinee_carrier_mint_locals.contains(&local));
                 if is_minted_call_carrier {

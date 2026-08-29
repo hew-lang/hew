@@ -1004,32 +1004,22 @@ impl Builder {
         if self.is_plain_vec_element(elem) {
             return VecElementRelease::Plain;
         }
-        // Unclaimed by every bucket. `ty_owns_heap(Vec<E>)` is `true`
-        // unconditionally (the outer Vec owns its buffer), so this element has no
-        // wired release protocol — fail closed with a typed, tracked reason
-        // rather than silently classifying it non-owning (the leak surface).
-        VecElementRelease::Unsupported(self.vec_element_unsupported_reason(elem))
-    }
-
-    /// The fail-closed reason for a `Vec<E>` element no release bucket claims.
-    /// `bytes` (a fat `{ ptr, len, cap }` triple), bare runtime handles, and
-    /// indirect-enum nodes own heap with no wired Vec-element release
-    /// (`NoReleaseProtocol`) — a real release protocol exists to be wired (a
-    /// fat-triple drop, a handle close, or a pointer-element node free). Any
-    /// other shape reaching here owns no heap as a flat element; it is named with
-    /// the anti-drift sentinel (`UnenumeratedShape`). The indirect-enum probe is
-    /// explicit because the heap-ownership authority is blind to indirection — a
-    /// scalar-payload `indirect enum` owns a heap node the authority reports as
-    /// non-owning, so without this probe its `Vec` would mis-label as the
-    /// sentinel instead of the actionable "release protocol unwired".
-    fn vec_element_unsupported_reason(&self, elem: &ResolvedTy) -> FailClosedReason {
+        // Unclaimed by the enumerated buckets. `bytes` (a fat `{ ptr, len,
+        // cap }` triple), bare runtime handles, and indirect-enum nodes own
+        // heap with no wired Vec-element release: fail closed with the typed
+        // reason rather than a buffer-only free over leaking element nodes.
+        // The indirect-enum probe is explicit because the heap-ownership
+        // authority is blind to indirection — a scalar-payload `indirect enum`
+        // owns a heap node the authority reports as non-owning.
         if self.named_elem_carries_drop_obligation(elem)
             || ty_is_indirect_enum(elem, &self.enum_layouts)
         {
-            FailClosedReason::NoReleaseProtocol
-        } else {
-            FailClosedReason::UnenumeratedShape
+            return VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol);
         }
+        // The heap-ownership authority reports the element carries no drop
+        // obligation (a free `TypeParam` in a generic skeleton, `Unit`, a bare
+        // runtime view): the buffer-only free IS the complete release.
+        VecElementRelease::Plain
     }
 
     /// Walk an owned local's type for a `Vec<E>` whose element has no wired
@@ -1048,10 +1038,8 @@ impl Builder {
     /// the fail-closed direction (reject at compile, where the author can act,
     /// over a silent runtime leak).
     ///
-    /// Only `NoReleaseProtocol` is rejected, never `UnenumeratedShape`: the
-    /// latter names an element owning NO heap as a flat element (a free
-    /// `TypeParam` in a generic skeleton, `Unit`, a bare runtime view), so
-    /// skipping its release leaks nothing — today's behaviour is preserved and an
+    /// An element owning NO heap as a flat element (a free `TypeParam` in a
+    /// generic skeleton, `Unit`, a bare runtime view) classifies `Plain`, so an
     /// un-monomorphised generic `Vec<T>` is never rejected.
     ///
     /// And only an element unwired in EVERY context is rejected: a heap-owning
@@ -1338,9 +1326,8 @@ impl Builder {
     /// recurses structurally. Using `!is_owned_vec_element` as the complement is
     /// unsound here because its backing `ty_contains_heap_owning` omits
     /// `record_field_resolved_tys` and can mis-classify a named record inside a
-    /// tuple as non-heap-owning. An unresolved type parameter has no known value
-    /// class and stays on the leak-as-before posture rather than risking a
-    /// wrong-ABI free (`boundary-fail-closed`).
+    /// tuple as non-heap-owning. An unresolved type parameter carries no drop
+    /// obligation by the heap-ownership authority and is plain.
     pub(crate) fn binding_ty_is_plain_vec(&self, ty: &ResolvedTy) -> bool {
         let ResolvedTy::Named {
             args,
@@ -1350,13 +1337,13 @@ impl Builder {
         else {
             return false;
         };
-        // Element-level plain check factored into `is_plain_vec_element` so the
-        // typed `classify_vec_element_release` partition shares the exact same
-        // authority (no second copy to drift). The doc above this function
-        // records why the `Named` arm reads the `named_elem_carries_drop_obligation` authority
-        // (not `ValueClass` alone) and the `Tuple` arm uses `tuple_is_all_bitcopy`.
+        // A projection of the typed `classify_vec_element_release` decision
+        // (no second copy to drift). The doc above this function records why
+        // the `Named` arm reads the `named_elem_carries_drop_obligation`
+        // authority (not `ValueClass` alone) and the `Tuple` arm uses
+        // `tuple_is_all_bitcopy`.
         args.first()
-            .is_some_and(|elem| self.is_plain_vec_element(elem))
+            .is_some_and(|elem| self.classify_vec_element_release(elem).is_plain())
     }
 
     /// True when `ty` is a `Tuple` whose every element is plain-releasable by

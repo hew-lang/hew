@@ -582,9 +582,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          rustup target add wasm32-wasip1
-          if ($LASTEXITCODE -ne 0) { throw "rustup target add wasm32-wasip1 failed" }
-
           $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
           $archive = Join-Path $env:RUNNER_TEMP "$dir.zip"
           $root = Join-Path $env:RUNNER_TEMP "wasmtime"
@@ -683,7 +680,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          rustup target add wasm32-wasip1
           WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-aarch64-macos"
           WASMTIME_ROOT="${RUNNER_TEMP}/wasmtime"
           mkdir -p "${WASMTIME_ROOT}"

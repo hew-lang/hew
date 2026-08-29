@@ -457,6 +457,7 @@ jobs:
           cache-dependency-path: hew-sandbox-vm/package-lock.json
 
       - name: Provision pinned ast-grep toolchain
+        if: matrix.shard != 3
         uses: ./.github/actions/setup-ast-grep
 
       - name: Run unconditional gate shard

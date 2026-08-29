@@ -927,11 +927,12 @@ test-compiler-lifecycle: test-opaque-resource-lifecycle-matrix
 
 # Both lifecycle targets read the pinned ast-grep at
 # .ast-grep/tool/bin/ast-grep and abort when it is absent. The toolchain is
-# provisioned at the job level (.github/actions/setup-ast-grep, the same
-# cache-then-verify shape as setup-llvm and the wasmtime install), not as a
-# make prerequisite: `structural-lint-bootstrap-install` cargo-installs
+# provisioned only in the CI jobs and shards that run these targets
+# (.github/actions/setup-ast-grep, the same cache-then-verify shape as
+# setup-llvm and the wasmtime install), not as a make prerequisite:
+# `structural-lint-bootstrap-install` cargo-installs
 # tree-sitter-cli and ast-grep and then runs a full authority scan, which is
-# minutes of work that has no place inside a test target invoked from three
+# minutes of work that has no place inside a test target invoked from several
 # other targets. Locally, any `make lint` provisions the same tree.
 test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_facts.py

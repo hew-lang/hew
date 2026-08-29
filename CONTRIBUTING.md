@@ -56,11 +56,17 @@ The installer is worktree-safe and targets the shared git common dir, so linked 
 
 #### Pre-push gate
 
-The pre-push hook runs `cargo fmt --all -- --check` — it is intentionally fast. Its job is to catch unformatted code before it reaches review; it is not a substitute for CI.
+The pre-push hook runs `cargo fmt --all -- --check`, the tracked shell-script
+lint, and `actionlint`. It is intentionally fast: its job is to catch local
+format/script errors and malformed workflows before they reach review, not to
+duplicate the full CI suite.
 
 For substantive changes, run `make preflight` yourself before opening a PR. It is the standard unconditional, fail-fast gate and CI runs the same exhaustive shard assignment on every PR, so formatting errors, clippy violations, and test failures will be caught there. The pre-push hook just keeps the signal fast and local.
 
-If `cargo fmt --check` fails: run `cargo fmt --all` and re-push. There is no environment-based exemption and no `--no-verify` bypass.
+If formatting fails, run `cargo fmt --all`; if a script or workflow check
+fails, run `make shell-script-lint` or `make actionlint` for the focused
+diagnostic. There is no environment-based exemption and no `--no-verify`
+bypass.
 
 ## Build System
 

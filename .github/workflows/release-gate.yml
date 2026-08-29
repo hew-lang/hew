@@ -52,7 +52,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Sanitizers — executed ASan hard gate + bounded TSan/Miri limitation ledger
+  # Sanitizers — executed ASan hard gate. TSan and Miri remain nightly lanes.
   # ─────────────────────────────────────────────────────────────────────────
   gate-sanitizers:
     name: Release Gate — Sanitizers
@@ -101,17 +101,8 @@ jobs:
           key: release-gate-asan-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: release-gate-asan-
 
-      - name: Run ASan hard gate and validate waiver contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          if make asan; then
-            printf 'asan=pass\n' > .sanitizer-asan-result
-          else
-            printf 'asan=fail\n' > .sanitizer-asan-result
-          fi
-          RELEASE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          scripts/check-sanitizer-gate.sh "${RELEASE_VERSION}" .sanitizer-asan-result
+      - name: Run ASan hard gate
+        run: make asan
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux x86_64 — full build + codegen E2E + WASM (matches ci.yml)

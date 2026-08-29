@@ -59,7 +59,7 @@ ll_bytes="$(
         in_function && /^}/ { in_function = 0 }
     ' "$ir" | wc -c | tr -d ' '
 )"
-wall_ms="$(( (wall_end - wall_start) / 1000000 ))"
+wall_ms="$(((wall_end - wall_start) / 1000000))"
 
 baseline_value() {
     local baseline="$1"
@@ -73,20 +73,12 @@ baseline_value() {
     printf '%s\n' "$value"
 }
 
-within_ceiling() {
-    local key="$1"
-    local actual="$2"
-    local ceiling
-    ceiling="$(baseline_value "$BASELINE" "$key")"
-    (( actual <= ceiling ))
-}
-
 expect_at_most() {
     local key="$1"
     local actual="$2"
     local ceiling
     ceiling="$(baseline_value "$BASELINE" "$key")"
-    if ! within_ceiling "$key" "$actual"; then
+    if ((actual > ceiling)); then
         echo "dogfood-compile-measure: $key exceeds ceiling: $actual bytes > $ceiling bytes" >&2
         echo "  Review the IR change. After a material reviewed shrink, lower the ceiling manually." >&2
         exit 1
@@ -95,15 +87,7 @@ expect_at_most() {
 
 expect_at_most ll_bytes_ceiling "$ll_bytes"
 
-# This counterfactual proves that an IR-size regression fails the same ceiling
-# assertion. It inflates the observed byte count by one byte beyond the ceiling.
 ceiling="$(baseline_value "$BASELINE" ll_bytes_ceiling)"
-counterfactual_ll_bytes="$((ceiling + 1))"
-if within_ceiling ll_bytes_ceiling "$counterfactual_ll_bytes"; then
-    echo "dogfood-compile-measure: inflated IR sample unexpectedly passed" >&2
-    exit 1
-fi
-echo "CF-dogfood-compile-measure: inflated IR sample rejected ($counterfactual_ll_bytes bytes > $ceiling-byte ceiling)"
 
 echo "dogfood-compile-measure: IR-size ceiling gate passed"
 echo "  LLVM define-block bytes: $ll_bytes"

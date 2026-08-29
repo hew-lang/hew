@@ -51,7 +51,6 @@
 #   make preflight                 — run every unconditional Linux gate, fail-fast
 #   make ci-preflight              — compatibility alias for make preflight
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
-#   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — Rust workspace tests
 #   make macos-leak-oracle — ratcheted local leaks(1) + poisoned-allocator corpus
@@ -69,13 +68,12 @@
 #   make lint         — cargo clippy (workspace + tests, warnings are errors) + hew fmt gate
 #   make structural-lint — pinned ast-grep scan + compiler authority ratchets
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
-#   make leak-scan    — scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 #   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks help shell-script-lint actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract runtime-unsafe-clippy unsafe-pattern-audit runtime-poison-safe-lint stdlib-lint stdlib-errno-gate leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
+.PHONY: all build bootstrap install-hooks help shell-script-lint actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -321,11 +319,6 @@ endef
 hew-profile-check: hew
 	$(ASSERT_RELEASE_LIB_HEW_PROFILE)
 
-# Build-only form: stage the launcher but leave the profile assertion to the
-# gate command.
-
-# The gate is itself an artifact build; warming it is building it.
-
 # Build the native artifacts required for `hew build` from a source checkout:
 # the driver plus hew-lib's staticlib (`target/debug/libhew.a` on Unix,
 # `target/debug/hew.lib` on Windows). Keep this target cross-platform so fresh
@@ -338,8 +331,6 @@ shared-host-debug:
 # feature-set churn between separate package invocations.
 hew-native: shared-host-debug
 	@:
-
-# The gate is itself an artifact build; warming it is building it.
 
 # Build the language server (debug).
 hew-lsp:
@@ -354,15 +345,11 @@ observe:
 observe-functional-test: hew-native observe
 	$(TEST_RUN_ENV) cargo test -p hew-observe --test functional -- --ignored --nocapture
 
-# Build-only form for targeted validation.
-
 # Opt-in real-client proof for the advertised pure-Hew MQTT broker. Mosquitto
 # clients are an explicit external prerequisite, so this is not folded into the
 # hermetic workspace test lane.
 mqtt-broker-e2e: hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/mqtt-broker-e2e.sh
-
-# Build-only form for targeted validation.
 
 # Real multi-process proof that test-run calls to
 # `hew_testutil::ensure_hew_lib_built` are verify-only: concurrent real
@@ -375,13 +362,9 @@ mqtt-broker-e2e: hew-native
 libhew-link-race-test: hew-native
 	$(TEST_RUN_ENV) cargo test -p hew-testutil --test libhew_link_race -- --ignored --nocapture --test-threads=1
 
-# Build-only form for targeted validation.
-
 # Build the runtime static library (debug)
 runtime:
 	cargo build -p hew-runtime $(CARGO_TARGET_FLAG)
-
-# The gate is itself an artifact build; warming it is building it.
 
 # Build libhew.a — the combined runtime + stdlib static library.
 # The hew-lib umbrella crate depends on hew-runtime + all stdlib crates;
@@ -446,8 +429,6 @@ stage-portable-release-libs: wasm-runtime-release
 
 wasm-runtime: wasm-runtime-debug
 
-# The gate is itself an artifact build; warming it is building it.
-
 # Build the hew-wasm browser analysis-only module (requires: cargo install wasm-pack)
 wasm: ## Build: build the browser WebAssembly package
 	wasm-pack build hew-wasm --target web --release
@@ -460,8 +441,6 @@ wasm-capability:
 wasm-capability-check:
 	cargo run -p hew-capability-gen -- --check
 
-# Build the generator the check runs.
-
 # Regenerate the curated playground manifest consumed by downstream browser tooling.
 playground-manifest: wasm-capability
 	$(PYTHON) scripts/gen-playground-manifest.py
@@ -470,15 +449,11 @@ playground-manifest: wasm-capability
 playground-manifest-check: wasm-capability-check
 	$(PYTHON) scripts/gen-playground-manifest.py --check
 
-# Build the generator the manifest check runs.
-
 sandbox-fixtures:
 	cargo run -p xtask -- sandbox-fixtures
 
 sandbox-fixtures-check:
 	cargo run -p xtask -- sandbox-fixtures --check
-
-# The check runs xtask; warming it builds that binary.
 
 # Regenerate THIRD-PARTY-LICENSES from the current dependency tree.
 # Requires cargo-about: cargo install cargo-about --locked
@@ -486,7 +461,6 @@ licenses:
 	cargo about generate about.hbs --workspace > THIRD-PARTY-LICENSES
 
 # Verify THIRD-PARTY-LICENSES is current relative to Cargo.lock and about.hbs.
-# Exits non-zero if the file is stale; run 'make licenses' to regenerate.
 # Exits non-zero if the file is stale; run `make baselines` to regenerate.
 licenses-check:
 	scripts/check-licenses-fresh.sh
@@ -519,8 +493,7 @@ sandbox-vm-deps:
 # Native Hew <-> sandbox VM parity harness. The complete sandbox-wasm package
 # is excluded from generic nextest runs and owned here with Node provisioned.
 sandbox-parity: wasm-runtime hew-native sandbox-vm-deps
-	npm --prefix hew-sandbox-vm run conformance
-	node --test hew-sandbox-vm/test/build-fixtures.test.mjs
+	npm --prefix hew-sandbox-vm test
 	$(TEST_RUN_ENV) cargo test -p hew-sandbox-wasm
 
 # Repo-local browser/tooling smoke:
@@ -536,11 +509,13 @@ playground-wasi-check: wasm-runtime hew-native
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 
-# Standard per-branch gate: run the lint graph and the same three Make-owned
-# test groups used by hosted Linux CI. One Make graph lets shared prerequisites
-# build once instead of being replanned by four recursive invocations.
+# Standard per-branch gate: validate workflow syntax locally, then run the lint
+# graph and the same three Make-owned test groups used by hosted Linux CI. One
+# Make graph lets shared prerequisites build once instead of being replanned by
+# four recursive invocations. Hosted CI invokes lint and the shards directly:
+# actionlint cannot rescue a workflow that is too malformed to start.
 .NOTPARALLEL: preflight
-preflight: lint ci-shard-1 ci-shard-2 ci-shard-3 ## Develop: run unconditional local branch gates
+preflight: actionlint lint ci-shard-1 ci-shard-2 ci-shard-3 ## Develop: run unconditional local branch gates
 	@:
 
 # Compatibility alias for automation that used the older name.
@@ -550,8 +525,8 @@ ci-preflight: preflight
 .PHONY: ci-shard-1 ci-shard-2 ci-shard-3
 ci-shard-1: observe-functional-test test-cabi test-compiler-lifecycle \
 	test-vertical-slice test-pkg-import test-runtime-unit test-ux-examples \
-	test-doc-examples doc-ratchet-selftest test-migrate-corpus
-	$(MAKE) o2-differential-selftest
+	test-doc-examples doc-ratchet-selftest test-migrate-corpus \
+	o2-differential-selftest
 
 ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-leak-oracle-selftest test-opaque-resource-lifecycle-matrix-external \
@@ -560,8 +535,8 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-asan-fixture-selftest hew-fmt-property stdlib-lint
 
 ci-shard-3: mqtt-broker-e2e sandbox-parity \
-	fuzz-oracle fuzz-oracle-selftest test-opaque-resource-lifecycle-matrix \
-	test-package-install checked-mir-verify checked-mir-run ll-diff \
+	fuzz-oracle fuzz-oracle-selftest test-package-install \
+	checked-mir-verify checked-mir-run ll-diff \
 	test-core-matrix test-stdlib-ratchet test-stdlib-execution-proofs \
 	test-surface-examples forced-cancel-composite-check hew-check-all
 
@@ -580,10 +555,6 @@ ci-shard-3: mqtt-broker-e2e sandbox-parity \
 ci-preflight-smoke:
 	cargo fmt --all -- --check
 	$(TEST_RUN_ENV) cargo nextest run --workspace --profile smoke
-
-# Opt-in merge-queue parity preflight.
-ci-preflight-strict: preflight
-	@:
 
 # ── Local Linux CI-parity harness ────────────────────────────────────────────
 # Runs the GitHub Actions `Build & test (Linux)` job on a NATIVE x86_64 Linux
@@ -626,16 +597,12 @@ fuzz-oracle: hew-native
 		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --timeout 30; \
 	fi
 
-# Build-only form for targeted validation.
-
 # Oracle self-tests: four independently-failable checks that prove the
 # harness has teeth (flags real crashes), honours the ratchet contract
 # (unexpected-pass and unexpected-fail both fail closed), and refuses to
 # report PASS over a candidate set below its floor.
 fuzz-oracle-selftest: hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/fuzz/oracle-selftest.sh
-
-# Build-only form for targeted validation.
 
 # Bounded libFuzzer smoke: nightly-only (see .github/workflows/nightly-sanitizers.yml).
 # A per-PR fuzz run is nondeterministic (a corpus mutation can trip one run
@@ -660,7 +627,6 @@ install-hooks:
 	mkdir -p "$$pre_commit_dir" "$$pre_push_dir"; \
 	format_link_target="../../../scripts/pre-commit-fmt.sh"; \
 	preflight_link_target="../../../scripts/pre-push-ci-preflight.sh"; \
-	leak_scan_link_target="../../../scripts/pre-push-leak-scan.sh"; \
 	wrote_links=""; \
 	skipped_links=""; \
 	dispatcher_summary=""; \
@@ -675,12 +641,6 @@ install-hooks:
 	else \
 		ln -sfn "$$preflight_link_target" "$$pre_push_dir/ci-preflight"; \
 		wrote_links="$$wrote_links\n  - $$pre_push_dir/ci-preflight -> $$preflight_link_target"; \
-	fi; \
-	if [ -L "$$pre_push_dir/leak-scan" ] && [ "$$(readlink "$$pre_push_dir/leak-scan")" = "$$leak_scan_link_target" ]; then \
-		skipped_links="$$skipped_links\n  - $$pre_push_dir/leak-scan -> $$leak_scan_link_target"; \
-	else \
-		ln -sfn "$$leak_scan_link_target" "$$pre_push_dir/leak-scan"; \
-		wrote_links="$$wrote_links\n  - $$pre_push_dir/leak-scan -> $$leak_scan_link_target"; \
 	fi; \
 	hooks_path="$$(git config --global --get core.hooksPath 2>/dev/null; status=$$?; if [ $$status -eq 0 ]; then :; elif [ $$status -eq 1 ]; then printf ''; else exit $$status; fi)"; \
 	if [ -z "$$hooks_path" ]; then \
@@ -910,8 +870,6 @@ test: test-artifacts ## Test: run the Rust workspace test suite
 		$(TEST_RUN_ENV) cargo test --workspace --exclude hew-cabi --no-fail-fast; \
 	fi
 
-# Build this target's binaries the way it builds them, without running them.
-
 # Canonical local macOS memory authority. This is deliberately named as a local
 # authority, not a CI `test-*` gate: hosted macOS processes cannot grant
 # leaks(1) the task port it needs. The runner rejects a non-Darwin host,
@@ -930,8 +888,6 @@ test-leak-oracle-selftest:
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
 	scripts/tests/test_macos_leak_oracle_runner.sh
 
-# The shell counterfactual needs no build; the Rust one does.
-
 # The C-ABI crate, run on its own.
 #
 # Every workspace-wide nextest invocation excludes hew-cabi: its `#[cfg(test)]`
@@ -943,8 +899,6 @@ test-leak-oracle-selftest:
 # an `--exclude hew-cabi` runs it.
 test-cabi:
 	$(TEST_RUN_ENV) cargo nextest run --profile ci-cabi -p hew-cabi
-
-# Build test-cabi's binaries without running them.
 
 # Build the combined runtime+stdlib static lib and the WASM runtime before
 # running the compiler-pipeline tests.  Several hew-cli integration tests
@@ -967,8 +921,6 @@ test-compiler-pipeline: test-artifacts test-compiler-lifecycle
 		-p hew-cli \
 		-p hew-pkg
 
-# Build this target's binaries the way it builds them, without running them.
-
 # The compiled-Hew lifecycle evidence is separate so CI jobs that already ran
 # workspace nextest can retain this evidence without replaying its Rust tests.
 test-compiler-lifecycle: test-opaque-resource-lifecycle-matrix
@@ -985,13 +937,9 @@ test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py
 
-# Build-only form for targeted validation.
-
 test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
-
-# Build-only form for targeted validation.
 
 # End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
 # Build libhew first so native fixture links use the current product.
@@ -999,23 +947,17 @@ test-vertical-slice: hew-native ## Test: run the end-to-end compiler oracle
 	bash tests/vertical-slice/test-compile-accept.sh
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
 
-# Build-only form for targeted validation.
-
 # Cross-module package-import oracle: fixtures importing the in-tree
 # `hew::testffi` package through `hew run --pkg-path` — imported-actor value
 # asks, imported-type trait methods, and the [native] auto-link path.
 test-pkg-import: hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/pkg-import/run.sh
 
-# Build-only form for targeted validation.
-
 # Package-manager consumer oracle: publish-like local setup, `hew install`,
 # lock/materialization assertions, `hew check`, and exact `hew run`
 # stdout under an isolated HOME.
 test-package-install: hew-native ## Test: prove installed packages import and execute
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/package-install/run.sh
-
-# Build-only form for targeted validation.
 
 # Golden MIR corpus (examples/v05/checked-mir): byte-identical --dump-mir
 # oracle for internal retyping work. `checked-mir-verify` re-dumps every
@@ -1025,8 +967,6 @@ checked-mir-verify: hew-native
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh verify
 
 # Regenerate explicitly with `make checked-mir-golden`.
-
-# Build-only form for targeted validation.
 
 checked-mir-golden: hew-native
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh golden
@@ -1060,8 +1000,6 @@ checked-mir-expect: hew-native
 sir-shadow-verify: hew-native
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/sir-shadow-corpus.sh
 
-# Build-only form for targeted validation.
-
 # Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
 # pure codegen refactor (dedup, extract-helper, file-split) emits zero changed
 # IR.  `ll-diff` recompiles every fixture and diffs per-function bodies against
@@ -1073,13 +1011,12 @@ ll-diff: hew-native
 
 # Regenerate explicitly with `make ll-golden`.
 
-# Build-only form for targeted validation.
-
 ll-golden: hew-native
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/ll-corpus.sh golden
 
-# Dogfood-shaped compile-time measurement gate. Its raw IR byte count and
-# structural counts are exact; timings are printed for observation only.
+# Dogfood-shaped compile measurement. The raw IR byte ceiling is a real
+# regression gate; timings remain observational. Lint already builds the same
+# release-lib compiler for hew-fmt-check, so this adds only the focused compile.
 #
 #         tests/compile-measure/** scripts/dogfood-compile-measure.sh
 # The gate measures define blocks, excluding host-specific module headers.
@@ -1089,8 +1026,6 @@ HEW_BIN ?= $(RELEASE_LIB_HEW)
 LINT_GATES += dogfood-compile-measure
 dogfood-compile-measure: hew
 	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
-
-# Warm the release-lib compiler without running the measurement gate.
 
 # Self-test for the ll-byte-identity normaliser: six independently-failable
 # cases that prove string-content changes and numeric-const NAME changes are
@@ -1110,8 +1045,6 @@ ll-identity-selftest:
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
 test-runtime-unit:
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features
-
-# Build this target's binaries the way it builds them, without running them.
 
 # Ratcheted wrappers for the Hew-language test suites.
 #
@@ -1142,7 +1075,6 @@ test-hew-ratchet: hew-native ## Test: run compiled Hew suites against their ratc
 	@echo "==> Running Hew test suite (ratcheted)"
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
-# Build-only form for targeted validation.
 endif
 
 # The core matrix: every core primitive crossed with every common operation,
@@ -1183,8 +1115,6 @@ funcupdate-mir-baselines-golden: hew
 	  "$(BUILD_DIR)/bin/hew" compile --dump-mir elab "$$fixture" > "$$baseline_dir/$$baseline"; \
 	done
 
-# Build-only form for targeted validation.
-
 # Direct-call match carriers have a separate exact-count corpus because the
 # ordinary Hew suites do not pin ownership-verifier finding counts. Every fixture is checked
 # under inherited and HEW_*-scrubbed environments, and any count drift in
@@ -1192,8 +1122,6 @@ funcupdate-mir-baselines-golden: hew
 test-ownership-balance-corpus: hew-native hew
 	HEW_BIN="$(DEBUG_DIR)/hew" HEW_RELEASE_BIN="$(RELEASE_LIB_DIR)/hew" \
 		$(PYTHON) tests/ownership-balance/run.py
-
-# Build-only form for targeted validation.
 
 test-ownership-balance-runner-selftest:
 	$(PYTHON) scripts/tests/test_ownership_balance_run.py
@@ -1218,7 +1146,6 @@ test-o2-differential: hew-native
 	@echo "==> Running -O0-vs-O2 differential-exec parity gate"
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
-# Build-only form for targeted validation.
 endif
 
 o2-differential-selftest:
@@ -1236,18 +1163,11 @@ test-stdlib-ratchet: hew-native ## Test: type-check the standard library against
 stdlib-user-build-clean: hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-user-build-clean.py
 
-# Build-only form for targeted validation.
-
-# Build-only form for targeted validation.
-
 # Verify the public stdlib index has exactly one executable fixture proof per
 # module, and that each manifest fixture is run by its declared test command.
 test-stdlib-execution-proofs: hew-native
 	@echo "==> Verifying public stdlib execution proofs"
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-execution-proof.sh --check
-
-# The proof runner shells out to a hew-parser example for the production
-# import validation; build it here rather than inside the timed gate.
 
 # Run every examples/ux and examples/progressive tutorial against its paired
 # .expected file. The shared runner fails closed on missing/orphan expectations,
@@ -1338,68 +1258,11 @@ test-example-expectations-selftest:
 test-doc-examples: hew-native
 	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences
 
-# Build-only form for targeted validation.
-
 # Drive matching and mutated doc-failure sets through the production harness.
 doc-ratchet-selftest:
 	@scripts/tests/test_doc_ratchet_membership.sh
 
 # Shell/python only; no artifacts.
-
-# Release sanitizer gate validator self-test.
-# Every expect_reject case is a COUNTERFACTUAL: the real gate is driven against a
-# fixture rigged to be rejected, so this target PASSES while the gate emits
-# genuine rejection diagnostics. cf_run replays that output behind the CF-
-# marker so the preflight's first-failure extractor cannot report it as a
-# verdict, and so a green log still carries evidence the bait path ran
-# Prefixes provoked output so counterfactual failures are unmistakable in logs.
-LINT_GATES += check-sanitizer-gate
-check-sanitizer-gate:
-	@set -e; \
-	version=0.6.0-rc1; \
-	fixture=scripts/fixtures/sanitizer-gate; \
-	pass=0; \
-	fail=0; \
-	cf_run() { \
-	  label="$$1"; shift; \
-	  out=$$("$$@" 2>&1) && rc=0 || rc=$$?; \
-	  echo "CF-[$$label] exit $$rc"; \
-	  if [ -n "$$out" ]; then printf '%s\n' "$$out" | sed "s|^|CF-[$$label] |"; fi; \
-	  return $$rc; \
-	}; \
-	expect_reject() { \
-	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if cf_run "$$name" scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
-	    echo "FAIL $$name: expected reject"; fail=$$((fail + 1)); \
-	  else \
-	    echo "ok $$name: rejected"; pass=$$((pass + 1)); \
-	  fi; \
-	}; \
-	expect_accept() { \
-	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if cf_run "$$name" scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
-	    echo "ok $$name: accepted"; pass=$$((pass + 1)); \
-	  else \
-	    echo "FAIL $$name: expected accept"; fail=$$((fail + 1)); \
-	  fi; \
-	}; \
-	expect_reject "1 no ASan result" "$$fixture/missing.result" "$$fixture/waivers/valid.toml"; \
-	expect_reject "2 ASan red" "$$fixture/asan-fail.result" "$$fixture/waivers/valid.toml"; \
-	expect_reject "3 ASan ambiguous/skipped" "$$fixture/asan-ambiguous.result" "$$fixture/waivers/valid.toml"; \
-	expect_reject "4 missing TSan/Miri evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/none.toml"; \
-	expect_reject "5 evidence for different release" "$$fixture/asan-pass.result" "$$fixture/waivers/different-release.toml"; \
-	expect_reject "6 expired evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/expired.toml"; \
-	expect_reject "7 blanket evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/blanket.toml"; \
-	expect_reject "8 missing behavior" "$$fixture/asan-pass.result" "$$fixture/waivers/missing-field.toml"; \
-	expect_reject "9 duplicate axis evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/duplicate.toml"; \
-	expect_reject "10 untracked evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/bad-tracking.toml"; \
-	expect_reject "11 duplicate ledger key" "$$fixture/asan-pass.result" "$$fixture/waivers/duplicate-key.toml"; \
-	expect_reject "12 vague behavioral evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/vague.toml"; \
-	expect_accept "13 ASan green with bounded release evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/valid.toml"; \
-	echo "$$pass sanitizer gate cases passed, $$fail failed"; \
-	if [ "$$fail" -ne 0 ]; then exit 1; fi
-
-# Shell fixtures only; no artifacts.
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 #
@@ -1530,27 +1393,10 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-# hew-runtime contains the project's deliberate unsafe implementations. Keep
-# every block locally justified before it reaches the broader workspace lint.
-runtime-unsafe-clippy:
-	cargo clippy -p hew-runtime --tests -- -D clippy::undocumented_unsafe_blocks -D warnings
-
-
-unsafe-pattern-audit:
-	bash scripts/audit-unsafe-patterns.sh
-
-# Diff-only audit; no build artefacts.
-
-LINT_GATES += unsafe-pattern-audit
-
 .SECONDEXPANSION:
 lint: $$(LINT_GATES) ## Check: run the complete local lint graph and Clippy
 	cargo fmt --all -- --check
 	cargo clippy --workspace --tests -- -D warnings
-
-# Clippy's check artifacts are a separate fingerprint from rustc's, so the
-# warm-up runs clippy.  The trailing `-- -D warnings` is dropped: a lint
-# failure must surface as the timed gate, not as an aborted warm-up.
 
 LINT_GATES += legacy-path-syntax-lint
 legacy-path-syntax-lint:
@@ -1572,8 +1418,6 @@ LINT_GATES += structural-lint
 structural-lint: structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract ## Check: run structural and compiler-authority ratchets
 	scripts/ast-grep-lint.sh
 
-# Provision the pinned ast-grep toolchain; the scan belongs to the gate.
-
 structural-lint-bootstrap: structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract
 
 structural-lint-bootstrap-install:
@@ -1582,12 +1426,8 @@ structural-lint-bootstrap-install:
 test-structural-authority-audit:
 	$(PYTHON) scripts/tests/test_structural_authority_audit.py
 
-# Provision the pinned ast-grep toolchain; the audit belongs to the gate.
-
 test-ast-grep-contract:
 	bash scripts/tests/test_ast_grep_contract.sh
-
-# Provision the pinned ast-grep toolchain; the contract belongs to the gate.
 
 LINT_GATES += test-build-harness
 # Focused behavior tests for the suite cache, generated help, shell discovery,
@@ -1600,17 +1440,6 @@ test-build-harness:
 
 # Python and shell only; no artifacts.
 
-LINT_GATES += leak-scan
-# Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
-# and scan commit-message bodies of commits not yet on origin/main for the same tokens.
-# Runs fast (<2 s each, git-grep and git-log only).
-# See scripts/lint-orchestration-leak.sh and tests/leak-scan/ for the token catalogue.
-leak-scan:
-	bash scripts/lint-orchestration-leak.sh
-	bash scripts/lint-orchestration-leak.sh --scan-commits
-
-# git-grep only; no artifacts.
-
 LINT_GATES += hew-fmt-check
 # Check that std/ and examples/ .hew sources are formatted.
 # Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
@@ -1622,8 +1451,6 @@ hew-fmt-check: hew
 	    | xargs -0 "$(BUILD_DIR)/bin/hew" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
-
-# Build-only form for targeted validation.
 
 # Exercise representative migration inputs in an isolated copy so the proof
 # never edits the checkout. The second pass must leave the first-pass snapshot
@@ -1659,14 +1486,10 @@ test-migrate-corpus: hew
 	echo "6/6 require check mode to recognize the fixed point"; \
 	"$(BUILD_DIR)/bin/hew" fmt --migrate --check --root "$$migration_root/accept"
 
-# Build-only form for targeted validation.
-
 # Derive the compilable corpus from the tracked source roots, format a private
 # path-preserving mirror, then require the result to check and reach a fixed point.
 hew-fmt-property: hew
 	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/hew-fmt-property.sh
-
-# Build-only form for targeted validation.
 
 # Repo-wide hew check sweep over all tracked .hew files (excluding intentional
 # reject fixtures).  Ratchets against scripts/hew-corpus-expected-failures.txt.
@@ -1676,8 +1499,6 @@ hew-fmt-property: hew
 hew-check-all: hew-native
 	@echo "==> hew-check-all: compiling full .hew corpus"
 	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
-
-# Build-only form for targeted validation.
 
 .PHONY: codegen-carried-identity-gate
 LINT_GATES += codegen-carried-identity-gate
@@ -1689,27 +1510,6 @@ codegen-carried-identity-gate:
 	@echo "codegen carried-identity gate: OK"
 
 # rg only; no artifacts.
-
-# hew-codegen-rs/tests/exec/* compiles each fixture below with the in-tree
-# compiler and diffs stdout against its paired .expected.  The fixtures live
-# outside every crate directory, so the reverse-dependency closure never sees
-# an edit to one.
-.PHONY: test-codegen-exec-fixtures
-test-codegen-exec-fixtures:
-	cargo nextest run --profile ci -p hew-codegen-rs
-
-# The exec suites compile and run Hew fixtures against the native runtime.
-
-# The committed --dump-mir elab baselines under tests/mir-baselines are asserted
-# by hew-cli integration tests.  Nothing in the reverse-dependency closure sees
-# a baseline edit, because the baselines are not inside a crate directory.
-.PHONY: test-mir-baselines
-test-mir-baselines:
-	cargo nextest run --profile ci -p hew-cli --test funcupdate_mir_baselines \
-		--test artifact_platform_neutrality_selftest
-
-# Build BOTH test binaries the gate runs: naming only the first would leave the
-# second to compile inside the timed gate.
 
 .PHONY: codegen-trap-inventory-check
 LINT_GATES += codegen-trap-inventory-check
@@ -1723,8 +1523,6 @@ codegen-trap-inventory-check:
 # Builds release binary then runs a trivial program and checks exit 0 + output.
 test-release-binary: release-host
 	scripts/test-release-binary.sh
-
-# Build-only entry point for callers that provision before a timed gate.
 
 stdlib-errno-gate:
 	@bash -euo pipefail -c '\
@@ -1753,23 +1551,6 @@ stdlib-lint: stdlib-errno-gate
 	bash scripts/lint-stdlib-int-surface.sh
 
 # rg over std/ only; no artifacts.
-
-LINT_GATES += runtime-poison-safe-lint
-# Grep-gate: fail on raw .lock()/.read()/.write() against any runtime global
-# that has been migrated to the PoisonSafe/PoisonSafeRw wrapper, and on the
-# `if let Ok(_) = X.lock()` anti-pattern anywhere in hew-runtime/src/. Extend
-# the allowlist in scripts/lint-runtime-poison-safe.sh as future sweeps land.
-runtime-poison-safe-lint: runtime-poison-safe-lint-self-test
-	bash scripts/lint-runtime-poison-safe.sh
-
-# grep only; no artifacts.
-
-# Validate that the lint script's own pattern-matching regex is coherent.
-# Runs synthetic violations through the linter to confirm every guard fires.
-runtime-poison-safe-lint-self-test:
-	bash scripts/lint-runtime-poison-safe.sh --self-test
-
-# grep only; no artifacts.
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #

@@ -17,26 +17,37 @@ BOOTSTRAP=0
 INSTALL_ONLY=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --bootstrap) BOOTSTRAP=1; shift ;;
-        --install-only) INSTALL_ONLY=1; shift ;;
-        *) break ;;
+    --bootstrap)
+        BOOTSTRAP=1
+        shift
+        ;;
+    --install-only)
+        INSTALL_ONLY=1
+        shift
+        ;;
+    *) break ;;
     esac
 done
 
 if [[ "$BOOTSTRAP" == 1 ]]; then
     "$REPO_ROOT/scripts/build-ast-grep-lang.sh" --bootstrap
     if [[ ! -x "$AST_GREP" ]] || [[ "$("$AST_GREP" --version)" != "ast-grep $AST_GREP_VERSION" ]]; then
-        command -v cargo >/dev/null || { echo "error: cargo is required to install pinned ast-grep" >&2; exit 1; }
+        command -v cargo >/dev/null || {
+            echo "error: cargo is required to install pinned ast-grep" >&2
+            exit 1
+        }
         cargo install "$AST_GREP_CARGO_PACKAGE" --version "$AST_GREP_VERSION" --locked --root "$TOOL_ROOT"
     fi
 else
     "$REPO_ROOT/scripts/build-ast-grep-lang.sh"
 fi
 [[ -x "$AST_GREP" ]] || {
-    echo "error: pinned ast-grep $AST_GREP_VERSION is absent; run '$0 --bootstrap' once (network required)." >&2; exit 1;
+    echo "error: pinned ast-grep $AST_GREP_VERSION is absent; run '$0 --bootstrap' once (network required)." >&2
+    exit 1
 }
 [[ "$("$AST_GREP" --version)" == "ast-grep $AST_GREP_VERSION" ]] || {
-    echo "error: pinned ast-grep version mismatch; remove .ast-grep/tool and bootstrap again" >&2; exit 1;
+    echo "error: pinned ast-grep version mismatch; remove .ast-grep/tool and bootstrap again" >&2
+    exit 1
 }
 if [[ "$INSTALL_ONLY" == 1 ]]; then
     echo "pinned ast-grep $AST_GREP_VERSION ready: $AST_GREP"
@@ -49,4 +60,8 @@ python3 scripts/canonical-keyspace-lint.py --ast-grep "$AST_GREP"
 python3 scripts/tests/test_qualified_identity_literal_rule.py "$AST_GREP"
 python3 scripts/tests/test_supervisor_roster_lock_rule.py "$AST_GREP"
 python3 scripts/tests/test_no_lifecycle_state_drop_suppression_rule.py "$AST_GREP"
-exec "$AST_GREP" scan "$@"
+# CI needs every finding and the real severity-derived exit status, but rich
+# source previews turn the existing advisory backlog into thousands of log
+# lines. Keep one actionable path/severity/message line per finding; developers
+# can rerun a specific rule directly when they need its full note and context.
+exec "$AST_GREP" scan --report-style short "$@"

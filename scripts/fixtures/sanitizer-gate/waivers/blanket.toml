@@ -1,8 +1,0 @@
-[[waiver]]
-axis = "*"
-release = "0.6.0-rc1"
-behavior = "blanket behavior"
-reason = "blanket entries must be rejected"
-tracking = "https://github.com/hew-lang/hew/issues/0000"
-owner = "runtime maintainers"
-expires = "2999-12-31"

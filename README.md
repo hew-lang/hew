@@ -371,6 +371,7 @@ make baselines                  # regenerate deterministic generated metadata
 make playground-manifest-check  # cheap freshness check for manifest.json only
 make playground-check           # repo-local preflight: manifest freshness + curated analyze smoke + build hew-wasm
 make playground-wasi-check      # focused manifest-driven WASI runtime preflight
+make sandbox-parity             # full Node VM plus Rust native/sandbox parity suite
 ```
 
 Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` for the repo-local browser/tooling slice: curated `hew-wasm` analysis smoke plus the repo-local `hew-wasm` build (`make wasm`) that powers browser-side diagnostics tooling. Use `make playground-wasi-check` in codegen-capable environments when you also want the focused manifest-driven WASI runtime proof. The `hew-wasm` crate in this repo is analysis-only; the sandbox VM execution target and downstream browser app live in `hew-lang/playground`.
@@ -379,15 +380,16 @@ Use `make playground-manifest-check` when you only need to confirm the checked-i
 
 These are only needed for specific workflows:
 
-| Dependency           | Install                                             | Purpose                                                                                                                       |
-| -------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| wasmtime             | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run the WASI end-to-end tests (`make playground-wasi-check`, and the `wasi_run_e2e` / `eval_wasm_*` cases inside `make test`) |
-| wasm32-wasip1 target | `rustup target add wasm32-wasip1`                   | Build WASM runtime (`make wasm-runtime`)                                                                                      |
-| wasm-pack            | `cargo install wasm-pack`                           | Build browser analysis bindings (`make wasm`, `make playground-check`)                                                        |
-| Python 3.12+         | system package manager                              | Required for Makefile gates and repository scripts (`scripts/`)                                                               |
-| actionlint           | platform package manager                            | Validate GitHub Actions workflows before pushing (`make actionlint`)                                                          |
-| ShellCheck           | platform package manager                            | Validate shell scripts (`make lint`)                                                                                          |
-| cargo-fuzz           | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)                                                                                           |
+| Dependency                    | Install                                             | Purpose                                                                                                                       |
+| ----------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| wasmtime                      | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run the WASI end-to-end tests (`make playground-wasi-check`, and the `wasi_run_e2e` / `eval_wasm_*` cases inside `make test`) |
+| wasm32-wasip1 target          | `rustup target add wasm32-wasip1`                   | Build the WASI runtime (`make wasm-runtime`, `make sandbox-parity`)                                                           |
+| wasm32-unknown-unknown target | `rustup target add wasm32-unknown-unknown`          | Build the browser/sandbox module (`make wasm`, `make playground-check`, `make sandbox-parity`)                                |
+| wasm-pack                     | `cargo install wasm-pack`                           | Build browser and sandbox bindings (`make wasm`, `make playground-check`, `make sandbox-parity`)                              |
+| Python 3.12+                  | system package manager                              | Required for Makefile gates and repository scripts (`scripts/`)                                                               |
+| actionlint                    | platform package manager                            | Validate GitHub Actions workflows before pushing (`make actionlint`)                                                          |
+| ShellCheck                    | platform package manager                            | Validate shell scripts (`make lint`)                                                                                          |
+| cargo-fuzz                    | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)                                                                                           |
 
 ## License
 

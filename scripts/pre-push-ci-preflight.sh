@@ -18,3 +18,6 @@ fi
 
 echo "pre-push: shell script syntax and style" >&2
 make shell-script-lint
+
+echo "pre-push: GitHub Actions syntax and expressions" >&2
+make actionlint

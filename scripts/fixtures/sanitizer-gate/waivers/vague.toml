@@ -1,8 +1,0 @@
-[[waiver]]
-axis = "tsan"
-release = "0.6.0-rc1"
-behavior = "waived"
-reason = "not applicable"
-tracking = "https://github.com/hew-lang/hew/issues/0000"
-owner = "TBD"
-expires = "2999-12-31"

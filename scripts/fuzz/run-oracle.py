@@ -10,7 +10,7 @@ Exit 0: no unexpected failures.
 Exit 1: at least one unexpected failure (or a ratchet violation).
 
 Classification taxonomy (fail-closed):
-  frontend-reject  parse error OR check non-zero              → not a failure
+  frontend-reject  check non-zero OR non-runnable build       → FAIL
   clean            build exit 0 AND binary exit 0 (or EXIT:)  → pass
   nyi-codegen      build non-zero with NYI/MIR/CODEGEN marker → FAIL
   build-ice        build output contains Rust panic marker     → FAIL
@@ -33,6 +33,13 @@ Ratchet (--regressions mode):
   to fail, each annotated with # <root-cause>; issue: #NNNN.
   - A listed file that PASSES   → unexpected-pass → gate failure.
   - An unlisted file that FAILS → unexpected-fail → gate failure.
+
+Positive-corpus rejection ratchet:
+  scripts/fuzz/expected-reject.txt lists exact repo-relative paths from
+  tests/vertical-slice/accept that are currently rejected by the frontend or
+  cannot build as standalone programs.
+  - A listed file that stops being rejected → unexpected-pass → gate failure.
+  - An unlisted file that is rejected       → unexpected-reject → gate failure.
   In --full mode the ratchet is NOT applied to cargo-fuzz corpus files (they
   are raw bytes; classification is advisory only).
 """
@@ -101,7 +108,7 @@ class Verdict:
 
     @property
     def is_fail(self) -> bool:
-        return self.classification not in ("frontend-reject", "clean")
+        return self.classification != "clean"
 
 
 @dataclass
@@ -122,7 +129,7 @@ class OracleStats:
 
     @property
     def total_fail(self) -> int:
-        return sum(self.fails.values())
+        return self.frontend_reject + sum(self.fails.values())
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +533,11 @@ def _load_expected_failures(expected_failures_path: Path) -> set[str]:
     return expected
 
 
+def _fixture_identity(src: Path, corpus_root: Path, prefix: Path) -> str:
+    """Return the stable manifest identity for a corpus fixture."""
+    return (prefix / src.relative_to(corpus_root)).as_posix()
+
+
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
@@ -570,6 +582,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Expected-failures list. Default: <regressions-dir>/../expected-failures.txt.",
+    )
+    p.add_argument(
+        "--expected-rejects",
+        type=Path,
+        default=None,
+        help=(
+            "Expected positive-corpus rejections. Default: "
+            "<repo-root>/scripts/fuzz/expected-reject.txt."
+        ),
     )
     p.add_argument(
         "--vertical-slice-dir",
@@ -678,6 +699,12 @@ def main() -> int:
     expected_failures_path: Path = args.expected_failures or (
         regressions_dir.parent / "expected-failures.txt"
     )
+    if args.expected_rejects is not None:
+        expected_rejects_path = args.expected_rejects
+    elif args.vertical_slice_dir is not None:
+        expected_rejects_path = args.vertical_slice_dir.parent / "expected-reject.txt"
+    else:
+        expected_rejects_path = script_dir / "expected-reject.txt"
 
     # Detect HEW_STD: honour env if set, else use repo std/.
     hew_std: Optional[str] = os.environ.get("HEW_STD") or str(repo_root / "std")
@@ -690,6 +717,7 @@ def main() -> int:
     )
 
     expected_failure_names = _load_expected_failures(expected_failures_path)
+    expected_reject_paths = _load_expected_failures(expected_rejects_path)
 
     # Floor the ratcheted candidate set. Both gate conditions below are searches
     # over the collected candidates: an empty collection yields no unexpected
@@ -724,6 +752,9 @@ def main() -> int:
     all_verdicts: list[Verdict] = []
     unexpected_fails: list[Verdict] = []
     unexpected_passes: list[Verdict] = []
+    unexpected_rejects: list[tuple[str, Verdict]] = []
+    unexpected_reject_passes: list[tuple[str, Verdict]] = []
+    seen_reject_paths: set[str] = set()
 
     with tempfile.TemporaryDirectory(prefix="hew-oracle-") as tmpdir:
         workdir = Path(tmpdir)
@@ -733,6 +764,7 @@ def main() -> int:
             label: str,
             apply_ratchet: bool,
             strict_exit: bool = True,
+            reject_ratchet_root: Optional[Path] = None,
         ) -> None:
             if not files or floor_error is not None:
                 return
@@ -754,10 +786,34 @@ def main() -> int:
                 if apply_ratchet:
                     name = src.name
                     is_expected_fail = name in expected_failure_names
-                    if verdict.is_fail and not is_expected_fail:
+                    if (
+                        reject_ratchet_root is not None
+                        and verdict.classification == "frontend-reject"
+                    ):
+                        identity = _fixture_identity(
+                            src,
+                            reject_ratchet_root,
+                            Path("tests/vertical-slice/accept"),
+                        )
+                        seen_reject_paths.add(identity)
+                        if identity not in expected_reject_paths:
+                            unexpected_rejects.append((identity, verdict))
+                    elif verdict.is_fail and not is_expected_fail:
                         unexpected_fails.append(verdict)
                     elif not verdict.is_fail and is_expected_fail:
                         unexpected_passes.append(verdict)
+
+                    if reject_ratchet_root is not None:
+                        identity = _fixture_identity(
+                            src,
+                            reject_ratchet_root,
+                            Path("tests/vertical-slice/accept"),
+                        )
+                        if (
+                            identity in expected_reject_paths
+                            and verdict.classification != "frontend-reject"
+                        ):
+                            unexpected_reject_passes.append((identity, verdict))
 
         # Source 1: cargo-fuzz corpus (full mode only, no ratchet).
         _process_group(fuzz_corpus, "cargo-fuzz corpus", apply_ratchet=False)
@@ -773,6 +829,10 @@ def main() -> int:
             "vertical-slice/accept",
             apply_ratchet=True,
             strict_exit=False,
+            reject_ratchet_root=(
+                args.vertical_slice_dir
+                or repo_root / "tests" / "vertical-slice" / "accept"
+            ),
         )
 
         # Source 3: regression corpus (ratchet enforced, strict exit required).
@@ -792,6 +852,15 @@ def main() -> int:
                 "expected-failing entry not found in regressions corpus",
             )
             unexpected_passes.append(ghost)
+
+    for identity in sorted(expected_reject_paths - seen_reject_paths):
+        if not any(path == identity for path, _ in unexpected_reject_passes):
+            ghost = Verdict(
+                repo_root / identity,
+                "clean",
+                "expected-reject entry not found in positive corpus",
+            )
+            unexpected_reject_passes.append((identity, ghost))
 
     # Summary.
     print()
@@ -822,6 +891,20 @@ def main() -> int:
         print("\nUNEXPECTED PASSES (listed in expected-failures.txt but passed):")
         for v in unexpected_passes:
             print(f"  NOW-PASSES: {v.path.name}  {v.detail}")
+        gate_ok = False
+
+    if unexpected_rejects:
+        print("\nUNEXPECTED REJECTIONS (not in expected-reject.txt):")
+        for identity, verdict in unexpected_rejects:
+            detail = f"  {verdict.detail}" if verdict.detail else ""
+            print(f"  UNEXPECTED-REJECT: {identity}{detail}")
+        gate_ok = False
+
+    if unexpected_reject_passes:
+        print("\nUNEXPECTED PASSES (listed in expected-reject.txt but passed):")
+        for identity, verdict in unexpected_reject_passes:
+            detail = f"  {verdict.detail}" if verdict.detail else ""
+            print(f"  NOW-PASSES: {identity}{detail}")
         gate_ok = False
 
     if gate_ok:
@@ -857,6 +940,18 @@ def main() -> int:
             ],
             "unexpected_passes": [
                 {"path": str(v.path), "detail": v.detail} for v in unexpected_passes
+            ],
+            "unexpected_rejects": [
+                {
+                    "path": identity,
+                    "classification": verdict.classification,
+                    "detail": verdict.detail,
+                }
+                for identity, verdict in unexpected_rejects
+            ],
+            "unexpected_reject_passes": [
+                {"path": identity, "detail": verdict.detail}
+                for identity, verdict in unexpected_reject_passes
             ],
         }
         args.report.write_text(json.dumps(report, indent=2))

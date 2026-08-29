@@ -6,6 +6,8 @@ Every checker-valid Hew program (one that passes `hew check`) must also
 compile and run cleanly. This oracle verifies that invariant continuously:
 
 - For each `.hew` file in the candidate set, run `hew check`.
+- Reject any positive-corpus fixture that does not pass `hew check` unless its
+  exact path is temporarily ratcheted in `scripts/fuzz/expected-reject.txt`.
 - If checker-valid, compile to a native binary (`hew build -o`) and execute it
   **directly** (not `hew run`, which masks signals — see below).
 - Classify the outcome fail-closed. Anything not provably clean is a failure
@@ -45,6 +47,21 @@ vertical-slice or regression corpus.
 
 The ratchet fires in both directions so a confirmed gap that silently reverts
 is caught the day it re-emerges.
+
+## Ratchet: expected-reject.txt
+
+`scripts/fuzz/expected-reject.txt` is a separate, shrink-only ratchet for
+positive accept fixtures that the frontend rejects or that cannot currently
+build as standalone programs. Entries are exact repository-relative paths, so
+nested helper fixtures and same-named files cannot collide.
+
+- An unlisted positive fixture that is rejected is an `unexpected-reject` and
+  fails the gate.
+- A listed fixture that stops being rejected is an `unexpected-pass` and fails
+  the gate until its entry is removed.
+
+Remove an entry as soon as its fixture passes. Nothing replaces it: intentional
+negative and known-bug inputs belong in the reject and repro corpora instead.
 
 ## How to add a regression
 

@@ -1,0 +1,49 @@
+# Positive-corpus expected-rejection ratchet
+#
+# WHY: these exact positive fixtures are currently rejected by `hew check` or
+# cannot build as standalone programs. The genuine compiler defects are being
+# burned down by the ownership lanes; helper/library fixtures remain here only
+# while the oracle cannot prove them clean without a standalone entry point.
+# WHEN: remove an entry as soon as that fixture passes the full oracle pipeline.
+# WHAT replaces it: nothing. This shrink-only list reaches zero.
+#
+# Paths are exact and relative to the repository root. Do not add reject-corpus
+# or known-bug repro inputs here; those belong in their dedicated corpora.
+
+tests/vertical-slice/accept/arith.hew
+tests/vertical-slice/accept/consume_param_transfer_builder.hew
+tests/vertical-slice/accept/cross_module_fn_value/helpers.hew
+tests/vertical-slice/accept/cross_module_fn_value_shadow/helpers.hew
+tests/vertical-slice/accept/cross_module_generic_fn_value/helpers.hew
+tests/vertical-slice/accept/cross_module_generic_fn_value/main.hew
+tests/vertical-slice/accept/cross_module_private_enum/errors.hew
+tests/vertical-slice/accept/dir_module_peer_span_identity/zoo/cat.hew
+tests/vertical-slice/accept/dir_module_peer_span_identity/zoo/cnt.hew
+tests/vertical-slice/accept/dir_module_peer_span_identity/zoo/dog.hew
+tests/vertical-slice/accept/dir_module_peer_span_identity/zoo/num.hew
+tests/vertical-slice/accept/dir_module_peer_span_identity/zoo/zoo.hew
+tests/vertical-slice/accept/dir_module_trait_default/greeting/dog.hew
+tests/vertical-slice/accept/dir_module_trait_default/greeting/greeting.hew
+tests/vertical-slice/accept/file_import_trait_default_local_type_lib.hew
+tests/vertical-slice/accept/file_import_trait_default_method_lib.hew
+tests/vertical-slice/accept/file_import_trait_impl_lib.hew
+tests/vertical-slice/accept/flat_file_import_bare_fn_call_lib.hew
+tests/vertical-slice/accept/generic_display_xmod_lib.hew
+tests/vertical-slice/accept/generic_record_box.hew
+tests/vertical-slice/accept/greeting.hew
+tests/vertical-slice/accept/imported_actor_msg_discriminants_lib.hew
+tests/vertical-slice/accept/imported_fn_local_shadow/m.hew
+tests/vertical-slice/accept/imported_generics_resolve/lib.hew
+tests/vertical-slice/accept/imported_shadow_errmod.hew
+tests/vertical-slice/accept/let_record_destructure_selective_import_module.hew
+tests/vertical-slice/accept/lib/math.hew
+tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew
+tests/vertical-slice/accept/module_method_shadow/util.hew
+tests/vertical-slice/accept/positive_record_remote_send.hew
+tests/vertical-slice/accept/qualified_call_reachability/src/runner/math.hew
+tests/vertical-slice/accept/qualified_call_reachability/src/runner/native_loop.hew
+tests/vertical-slice/accept/receive_gen_fn_owned_enum_yield.hew
+tests/vertical-slice/accept/receive_gen_fn_owned_record_yield.hew
+tests/vertical-slice/accept/receive_gen_fn_record_stream_break.hew
+tests/vertical-slice/accept/sink_i64_typed.hew
+tests/vertical-slice/accept/vec_into_iter_typeck.hew

@@ -5,7 +5,7 @@
 //! * Allowed: machines, actors/actor refs, `Vec`/`HashMap`/`HashSet`, `bytes`,
 //!   user `type Foo { ... }` declarations.
 //! * Rejected with `E_IS_VALUE_TYPE`: scalars (`i64`, `bool`, `char`, floats),
-//!   `string`, `record` instances, tuples.
+//!   `string`, and tuples.
 //! * Cross-type mismatches collapse into `TypeErrorKind::Mismatch`.
 //! * Move/consumed-self follows the existing use-after-move rule (plan §D-D4).
 //!
@@ -168,7 +168,7 @@ fn is_result_typed_as_bool() {
 }
 
 // ---------------------------------------------------------------------------
-// REJECTED: scalars, string, record, tuples (E_IS_VALUE_TYPE)
+// REJECTED: scalars, string, tuples (E_IS_VALUE_TYPE)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -207,21 +207,6 @@ fn string_is_string_rejected() {
                 let _eq: bool = a is b;
             }
         "#,
-    );
-}
-
-#[test]
-fn record_is_record_rejected() {
-    assert_has_e_is_value_type(
-        r"
-            type Point { x: i64, y: i64 }
-
-            fn main() {
-                let p = Point { x: 1, y: 2 };
-                let q = Point { x: 1, y: 2 };
-                let _eq: bool = p is q;
-            }
-        ",
     );
 }
 

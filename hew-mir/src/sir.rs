@@ -233,6 +233,15 @@ pub fn lower_closed_scalar_component(
         checked_mir.push(lowered.checked);
         elaborated_mir.push(lowered.elaborated);
     }
+    // Same fail-closed identity boundary the legacy module assembly applies.
+    // A strict component has no diagnostic channel, so a collision is a
+    // lowering refusal.
+    if let Some(collision) = crate::identity::validate_unique_callable_keys(&raw_mir).first() {
+        return Err(SirMirLoweringError::unsupported(format!(
+            "strict SIR component realized one callable identity twice: {:?}",
+            collision.kind
+        )));
+    }
 
     Ok(SirMirComponent {
         callables: selected.into_iter().collect(),
@@ -291,6 +300,7 @@ fn lower_verified_sir_function(
     let parameter_decisions = sir_parameter_decisions(callable)?;
     let raw = RawMirFunction {
         name: callable.symbol.clone(),
+        key: mir_callable_key(callable),
         return_ty: callable.signature.return_ty.clone(),
         call_conv: FunctionCallConv::Default,
         params: callable
@@ -322,6 +332,7 @@ fn lower_verified_sir_function(
     };
     let mut checked = CheckedMirFunction {
         name: raw.name.clone(),
+        key: raw.key.clone(),
         return_ty: raw.return_ty.clone(),
         blocks: raw.blocks.clone(),
         decisions: parameter_decisions,
@@ -1178,6 +1189,7 @@ fn zero_drop_elaboration(
     }
     Ok(ElaboratedMirFunction {
         name: raw.name.clone(),
+        key: raw.key.clone(),
         return_ty: raw.return_ty.clone(),
         statements: Vec::new(),
         decisions: checked.decisions.clone(),
@@ -1186,6 +1198,25 @@ fn zero_drop_elaboration(
         coroutine: None,
         lambda_captures: Vec::new(),
     })
+}
+
+/// Project a resolved SIR callable's semantic identity onto the MIR key.
+///
+/// This is the one place the SIR bridge establishes callable identity, and it
+/// projects the SAME resolver-minted `DefId` the legacy HIR lowerer reads off
+/// `HirFn::declaration`: a monomorphic function lowered either way carries an
+/// equal `MirCallableKey`. `SemCallable::symbol` is deliberately not consulted
+/// — it is the derived emitted name, not the identity.
+fn mir_callable_key(callable: &hew_sir::SemCallable) -> crate::model::MirCallableKey {
+    match &callable.instance {
+        hew_sir::CallableInstance::Monomorphic => {
+            crate::model::MirCallableKey::declared(callable.declaration.clone())
+        }
+        hew_sir::CallableInstance::Generic(instance) => crate::model::MirCallableKey::instance(
+            callable.declaration.clone(),
+            instance.type_args.clone(),
+        ),
+    }
 }
 
 /// Verify the explicit Elaborated-MIR artifact for a virtual-value Raw body.

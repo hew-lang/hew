@@ -463,11 +463,14 @@ jobs:
         run: make ci-shard-${{ matrix.shard }}
 
       - name: Upload test reports
-        if: always()
+        if: ${{ always() && matrix.shard != 3 }}
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          report_paths: "{target/nextest/ci/ratchet.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Test Results (Linux shard ${{ matrix.shard }})
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
 
   # Code coverage moved off the per-PR path: it was the flakiest required check
   # (cargo-llvm-cov instrumentation + the duplicated target/llvm-cov-target/
@@ -523,6 +526,10 @@ jobs:
           tools: nextest@0.9.120
           cache-shared-key: build-test-windows
 
+      - name: Install GNU Make
+        shell: pwsh
+        run: choco install make --yes --no-progress
+
       - name: Build Rust crates
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
@@ -530,9 +537,6 @@ jobs:
 
       - name: Build Hew runtime library for PDB e2e
         run: cargo build -p hew-lib --release
-
-      - name: Build shared test artifacts
-        run: make test-artifacts
 
       - name: Verify Windows CodeView PDB emission
         shell: pwsh
@@ -615,27 +619,25 @@ jobs:
         # C-ABI step below is its coverage.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
-        env:
-          HEW_TEST_NO_BUILD: "1"
-        run: >-
-          cargo nextest run --workspace
-          --exclude hew-wasm
-          --exclude hew-cabi
-          --profile ci
-          --no-fail-fast
+        shell: bash
+        run: make SHELL=bash test
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
         # The crate is 82 fast tests and is the only place the C-ABI ownership
         # contract is exercised on Windows.
-        run: make test-cabi
+        shell: bash
+        run: make SHELL=bash test-cabi
 
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          report_paths: "{target/nextest/ci/ratchet.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Test Results (Windows)
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
 
   # ─────────────────────────────────────────────────────────────────────────
   # Build & test — macOS (Apple Silicon)
@@ -690,9 +692,6 @@ jobs:
           command -v wasm-ld
           wasm-ld --version
 
-      - name: Build shared test artifacts
-        run: make test-artifacts
-
       - name: Run full Rust workspace tests
         # Run the full workspace nextest on every event so a native-linking or
         # cross-platform regression is always caught before merge.
@@ -704,14 +703,8 @@ jobs:
         # The macOS leak-oracle authority is explicit local macOS validation
         # before release; Linux supplies structural/ASan coverage where applicable.
         env:
-          HEW_TEST_NO_BUILD: "1"
-        run: >-
-          cargo nextest run --workspace
-          --exclude hew-wasm
-          --exclude hew-cabi
-          --profile ci
-          --no-fail-fast
-          -E 'not binary(~oracle)'
+          NEXTEST_WORKSPACE_FILTER: "not binary(~oracle)"
+        run: make test
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
@@ -726,5 +719,8 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          report_paths: "{target/nextest/ci/ratchet.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Test Results (macOS)
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true

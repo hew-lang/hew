@@ -200,9 +200,6 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
-      - name: Build shared test artifacts
-        run: make test-artifacts
-
       - name: Run Rust workspace tests
         # line-tables-only: the release build + debug test workspace + WASM +
         # browser-analysis builds together leave the runner disk-marginal —
@@ -211,7 +208,10 @@ jobs:
         # and nothing in CI reads it.
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
+        run: make test-strict
+
+      - name: Run C-ABI crate tests
+        run: make test-cabi
 
       # The lifecycle matrices below shell out to the pinned ast-grep to derive
       # their fact set. Provision it here alongside
@@ -254,8 +254,11 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
+          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml}"
           check_name: Release Gate Test Results (Linux x86_64)
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux aarch64 — full Rust build + workspace tests + WASM
@@ -346,24 +349,28 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
-      - name: Build shared test artifacts
-        run: make test-artifacts
-
       - name: Run Rust workspace tests
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+          NEXTEST_WORKSPACE_FILTER: "not test(two_process_remote_ask) and not test(remote_ask_two_process) and not test(stream_poll_double_register_aborts)"
         # The two-process remote-ask tests fail only on hosted arm64 runners
         # (child helper exits 101); they pass natively on arm64 Linux
         # (container repro) and on every other platform. Runner-environment
         # classification — excluded here, tracked for investigation.
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not test(two_process_remote_ask) and not test(remote_ask_two_process) and not test(stream_poll_double_register_aborts)'
+        run: make test-strict
+
+      - name: Run C-ABI crate tests
+        run: make test-cabi
 
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: target/nextest/ci/junit.xml
+          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Release Gate Test Results (Linux aarch64)
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
 
   # ─────────────────────────────────────────────────────────────────────────
   # macOS arm64 — full Rust build + workspace tests
@@ -453,22 +460,27 @@ jobs:
           command -v wasm-ld
           wasm-ld --version
 
-      - name: Build shared test artifacts
-        run: make test-artifacts
-
       - name: Run Rust workspace tests
         # Leak-oracle binaries drive macOS leaks(1) with MallocScribble and
         # need entitlements/wall-time hosted runners cannot give (300s
         # timeouts, no failure signal). They are local release evidence and
         # their memory coverage is the Linux ASan job; exclude them here.
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not binary(~oracle)'
+        env:
+          NEXTEST_WORKSPACE_FILTER: "not binary(~oracle)"
+        run: make test-strict
+
+      - name: Run C-ABI crate tests
+        run: make test-cabi
 
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: target/nextest/ci/junit.xml
+          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Release Gate Test Results (macOS ${{ matrix.arch }})
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
 
   # ─────────────────────────────────────────────────────────────────────────
   # Windows x86_64 — Rust workspace tests
@@ -502,6 +514,10 @@ jobs:
           targets: wasm32-wasip1
           tools: nextest@0.9.120
           cache-shared-key: build-test-windows
+
+      - name: Install GNU Make
+        shell: pwsh
+        run: choco install make --yes --no-progress
 
       - name: Install LLVM 22
         uses: ./.github/actions/setup-llvm
@@ -548,27 +564,24 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $bin
           & (Join-Path $bin "wasmtime.exe") --version
 
-      - name: Build shared test artifacts
-        run: make test-artifacts
-
       - name: Run Rust workspace tests
-        run: >-
-          cargo nextest run --workspace
-          --exclude hew-wasm
-          --exclude hew-cabi
-          --profile ci
-          --no-fail-fast
+        shell: bash
+        run: make SHELL=bash test-strict
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
-        run: make test-cabi
+        shell: bash
+        run: make SHELL=bash test-cabi
 
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Release Gate Test Results (Windows x86_64)
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD x86_64 — full build + workspace tests
@@ -667,17 +680,13 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked --version 0.9.120
 
-            gmake test-artifacts
-
-            cargo nextest run --workspace \
-              --exclude hew-wasm --exclude hew-cabi \
-              --profile ci --no-fail-fast
+            gmake test-strict
 
             # hew-cabi is excluded from the workspace run above because its
             # cfg(test) runtime stubs collide with hew-runtime's real symbols
             # at link time. Run it on its own so the C-ABI ownership contract
             # is actually proven on this platform rather than merely skipped.
-            cargo nextest run --profile ci-cabi -p hew-cabi
+            gmake test-cabi
 
             gmake test-vertical-slice
             gmake test-hew-ratchet
@@ -693,8 +702,12 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
+          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml}"
           check_name: Release Gate Test Results (FreeBSD x86_64)
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
+
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD aarch64 — release binary build + smoke test only.

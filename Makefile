@@ -53,7 +53,8 @@
 #   make ci-preflight              — compatibility alias for make preflight
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
-#   make test         — Rust workspace tests
+#   make test         — Rust workspace tests with the exact known-failure ratchet
+#   make test-strict  — Rust workspace tests; require every test to pass
 #   make macos-leak-oracle — ratcheted local leaks(1) + poisoned-allocator corpus
 #   make test-leak-oracle-selftest — fail-closed leak runner/harness counterfactuals
 #   make test-cabi         — C-ABI crate tests (narrow; excluded from the workspace run)
@@ -73,7 +74,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
+.PHONY: test test-strict macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -206,6 +207,33 @@ endif
 LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
 
 TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
+
+# Ordinary development and pull-request runs keep executing known failing tests
+# while rejecting every unrecorded failure, changed outcome, missing test,
+# process signal, setup error, or malformed report. Release gates use the same
+# nextest invocation through `test-strict`, but require an all-pass exit.
+NEXTEST_WORKSPACE_FILTER ?=
+NEXTEST_WORKSPACE_ARGS := --workspace --exclude hew-cabi --profile ci --no-fail-fast
+ifneq ($(strip $(NEXTEST_WORKSPACE_FILTER)),)
+NEXTEST_WORKSPACE_ARGS += --filterset '$(NEXTEST_WORKSPACE_FILTER)'
+endif
+NEXTEST_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/junit.xml
+NEXTEST_RATCHET_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/ratchet.xml
+NEXTEST_FAILURE_LEDGER := scripts/nextest-expected-failures.tsv
+
+ifndef NEXTEST_PLATFORM
+ifeq ($(OS),Windows_NT)
+NEXTEST_PLATFORM := windows
+else ifeq ($(shell uname -s),Darwin)
+NEXTEST_PLATFORM := macos
+else ifeq ($(shell uname -s),Linux)
+NEXTEST_PLATFORM := linux
+else ifeq ($(shell uname -s),FreeBSD)
+NEXTEST_PLATFORM := freebsd
+else
+NEXTEST_PLATFORM := unsupported
+endif
+endif
 
 # wasm32-wasip1 has no profiler runtime. A Make-owned artifact build can run
 # under cargo-llvm-cov's exported environment, so scrub only its
@@ -889,14 +917,20 @@ assemble-release: require-host-cargo-target release-host libhew-cross-release-li
 # cached archive (e.g. one predating the hew_cont_* continuation substrate)
 # would be linked against freshly-emitted coro objects and fail with
 # undefined-symbol errors on a target dir carried across commits.
-test: test-artifacts ## Test: run the Rust workspace test suite
-	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
-		$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast; \
-	else \
-		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
-		echo "         Install with: cargo install cargo-nextest" >&2; \
-		$(TEST_RUN_ENV) cargo test --workspace --exclude hew-cabi --no-fail-fast; \
-	fi
+test: test-artifacts ## Test: run the ratcheted Rust workspace test suite
+	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)"
+	@status=0; \
+		$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS) || status=$$?; \
+		cargo xtask nextest-ratchet \
+			--junit "$(NEXTEST_JUNIT)" \
+			--ledger "$(NEXTEST_FAILURE_LEDGER)" \
+			--output "$(NEXTEST_RATCHET_JUNIT)" \
+			--platform "$(NEXTEST_PLATFORM)" \
+			--runner-exit "$$status"
+
+test-strict: test-artifacts ## Test: run the Rust workspace test suite with no known failures
+	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)"
+	$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS)
 
 # Canonical local macOS memory authority. This is deliberately named as a local
 # authority, not a CI `test-*` gate: hosted macOS processes cannot grant

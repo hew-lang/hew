@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
+mod nextest_ratchet;
+
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const DEFERRED_BLOCK_START: &str = "```json sandbox-fixtures-deferred";
 const DEFERRED_BLOCK_END: &str = "```";
@@ -56,7 +58,37 @@ fn main() {
 
 fn run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let options = parse_options(&args)?;
+    match args.first().map(String::as_str) {
+        Some("sandbox-fixtures") => {
+            let options = parse_options(&args)?;
+            run_sandbox_fixtures(&options)
+        }
+        Some("nextest-ratchet") => nextest_ratchet::run(&args[1..]),
+        Some("--help" | "-h") => {
+            print_usage();
+            Ok(())
+        }
+        Some(command) => Err(format!("unknown xtask command: {command}\n\n{}", usage())),
+        None => Err(usage()),
+    }
+}
+
+fn usage() -> String {
+    [
+        "usage: cargo run -p xtask -- <command> [options]",
+        "",
+        "commands:",
+        "  sandbox-fixtures  update or validate sandbox bytecode fixtures",
+        "  nextest-ratchet   validate nextest JUnit against an exact failure ledger",
+    ]
+    .join("\n")
+}
+
+fn print_usage() {
+    println!("{}", usage());
+}
+
+fn run_sandbox_fixtures(options: &Options) -> Result<()> {
     let repo_root = workspace_root()?;
     std::env::set_var("HEWPATH", &repo_root);
 

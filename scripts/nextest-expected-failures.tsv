@@ -1,0 +1,59 @@
+# platform<TAB>outcome<TAB>suite<TAB>test<TAB>reason
+#
+# Ordinary CI may carry a narrowly identified compiler defect while its fix is
+# developed. Entries compare in both directions: a pass, disappearance, changed
+# outcome, or unlisted failure makes the ratchet fail. Signals and setup errors
+# cannot be accepted. Release gates do not read this file.
+linux,macos,freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
+linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	carrier_helper_locals_do_not_displace_trailing_abi_parameters	#3110 preserves conditional Vec insertion authority
+linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	raw_mir_carries_guards_and_preserves_the_parameter_prefix	#3110 preserves conditional Vec insertion authority
+*	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
+*	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
+*	failure	hew-cli::branch_divergent_return_drop_ir	normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice	#3118 releases branch-local siblings on normal edges
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_bound_from_local_tuple_then_for_in_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_destructured_from_tuple_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_extracted_from_tuple_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_extracted_then_consumed_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_extracted_then_restored_into_local_aggregate_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_in_local_tuple_consumed_by_for_in_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_in_local_tuple_not_extracted_keeps_source_drop	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	w3053_nested_aggregate_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	w3053_reaggregated_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
+linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	w3053_reaggregated_record_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
+linux,macos,freebsd	failure	hew-codegen-rs::for_in_vec_string_exec	for_in_continue_skips_empty_runs_correct	#3120 makes owned Vec iteration joins path-sensitive
+linux,macos,freebsd	failure	hew-codegen-rs::for_in_vec_string_exec	vec_iter_cursor_transfers_are_path_sensitive_and_overwrite_safe	#3120 gives each Vec iterator generation one cleanup guard
+linux,macos,freebsd	failure	hew-codegen-rs::vec_owned_element_routing_exec	vec_array_literal_owned_tuple_runs	#3120 ends consumed loop bindings before cleanup
+*	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3113 closes every returned owned-handle field exactly once
+*	failure	hew-cli::wasi_run_e2e	toml_encoding_round_trips_under_wasi	#3068 fixes WASI TOML Value teardown
+windows	failure	hew-codegen-rs	llvm::tests::borrowed_dyn_coercion_temp_drops_in_caller_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations
+windows	failure	hew-codegen-rs	llvm::tests::helper_owner_move_uses_path_sensitive_native_cleanup	#3117 uses one target-capability authority for unwind expectations
+windows	failure	hew-codegen-rs	llvm::tests::helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations
+windows	failure	hew-codegen-rs	llvm::tests::join_owned_replies_stage_until_atomic_result_publication	#3117 uses one target-capability authority for unwind expectations
+windows	failure	hew-codegen-rs	llvm::tests::helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations
+windows	failure	hew-codegen-rs	llvm::tests::native_direct_call_uses_llvm_cleanup_unwind_edge	#3117 uses one target-capability authority for unwind expectations
+windows	failure	hew-codegen-rs	llvm::tests::owned_state_source_transfer_rejection_is_process_fatal_before_live_store	#3117 uses one target-capability authority for unwind expectations
+windows	failure	hew-codegen-rs	llvm::tests::ordinary_helper_uses_native_unwind_plans_and_wasm_fallback_registry	#3117 uses one target-capability authority for unwind expectations
+windows	failure	hew-codegen-rs	llvm::tests::returned_bytes_keeps_crash_owner_until_return_transfer_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations
+windows	failure	hew-codegen-rs::emission	http_ws_string_result_emission::measured_http_ws_results_emit_exactly_one_release_through_forwarders	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	quic_string_result_emission::measured_quic_results_emit_exactly_one_release_through_forwarders	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	stdlib_builtins_emission::builtins_assert_family_declares_runtime_symbols	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	stdlib_builtins_emission::builtins_sleep_declares_duration_runtime_symbol	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	stdlib_builtins_emission::builtins_sleep_until_declares_instant_runtime_symbol	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	task_abi_emission::task_abi_emission_task_scope_spawn_paired_with_task_new	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	user_fn_emission::call_i64_user_fn_emits_call_instruction	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	user_fn_emission::unsafe_audited_extern_string_temp_emits_one_release	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	vec_index_emission::continuation_path_calls_hew_vec_get_i64	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	vec_index_emission::entry_block_calls_hew_vec_len	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	vec_slice_emission::continuation_calls_slice_range_i64	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::emission	vec_slice_emission::entry_calls_hew_vec_len_for_end_check	#3117 aligns host emission tests with Windows fallback unwind
+windows	failure	hew-codegen-rs::structural	emit_duplex_pair::duplex_exemplar_emits_one_call_per_site	#3117 aligns host structural tests with Windows fallback unwind
+windows	failure	hew-cli::await_e2e	async_http_roundtrip_serves_and_fetches_under_both_pools	#3115 finishes Windows teardown without stack overflow
+windows	failure	hew-cli::await_e2e	closure_no_await_stays_on_the_direct_call_path_under_both_pools	#3115 finishes Windows teardown without stack overflow
+windows	failure	hew-cli::run_e2e	run_generic_vec_into_iter_static_dispatch_outputs_first_value	#3115 tracks the Windows nonzero-exit teardown seam
+windows	failure	hew-cli::run_e2e	run_imports_json_fluent_builders_round_trip	#3115 tracks the Windows nonzero-exit teardown seam
+windows	failure	hew-cli::run_e2e	suspended_actor_fresh_state_handoff_closes_each_child_once	#3115 tracks the Windows nonzero-exit teardown seam
+windows	failure	hew-cli::run_e2e	var_self_cowvalue_receiver_survives_storeback_without_double_drop	#3115 tracks the Windows nonzero-exit teardown seam
+windows	failure	hew-cli::run_e2e	var_self_generic_static_dispatch_second_next_observes_mutated_receiver	#3115 tracks the Windows nonzero-exit teardown seam
+windows	failure	hew-cli::run_e2e	tcp_loopback_read_string_roundtrip_returns_written_bytes	#3115 tracks the Windows nonzero-exit teardown seam
+windows	failure	hew-cli::quic_service_smoke_e2e	quic_service_example_round_trip_succeeds	#3115 tracks the Windows nonzero-exit teardown seam
+windows	failure	hew-cli::run_e2e	run_imports_json_opaque_handle_round_trips	#3121 diagnoses the Windows JSON opaque-handle child failure

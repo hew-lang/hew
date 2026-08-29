@@ -592,10 +592,14 @@ resolves this before sealing, from the same replay
 predecessor edge where the generation is still exactly live, provided the
 owning storage is physically dead on entry to the join (no read reaches it
 before a whole-local redefinition). Guarded generations keep their runtime
-flag and lineage `Join` inputs keep the join rules. What the pass cannot
-place — a producer that hands the value onward at the join without
-publishing its `Transfer` — remains an unreported leak on the owning path;
-closing that requires the producer fix, not a plan entry.
+flag and lineage `Join` inputs keep the join rules. A release replay proves
+necessary but the pass cannot express — the owner's destructor has no inline
+release ritual, or the owner sits in a projected place — refuses the function
+(`DropPlanUndetermined`) rather than leaving the owning path to leak. The one
+shape that is neither placed nor refused is a value still read after the join:
+a producer that hands it onward there without publishing its `Transfer`.
+Releasing that would be a use-after-free, so the leak stays with the producer
+until the mint-site fix lands.
 
 The `DecisionMap` is a deterministic table of
 `DecisionFact { site_id, kind, chosen_strategy, why, cost_class }` keyed by

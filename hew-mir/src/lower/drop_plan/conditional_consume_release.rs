@@ -27,8 +27,10 @@ use super::{
 };
 use crate::lower::cfg_util::shift_instr_spans_on_insert;
 use crate::lower::redirect_terminator_successor;
+use crate::lower::split_consume::base_local;
 use crate::lower::suspend_places::instr_source_places;
 use crate::model::{OwnerDropRecipe, OwnerId, OwnershipEvent};
+use crate::{MirDiagnostic, MirDiagnosticKind};
 
 /// Whether `local` may still be read on some path from the entry of `block`
 /// before an instruction fully redefines it. Backward liveness over the CFG;
@@ -119,11 +121,41 @@ pub(in crate::lower) struct EdgeRelease {
     pub recipe: OwnerDropRecipe,
 }
 
+/// Why a replay-proven edge release could not be authored. The owning path
+/// is dead at the join and no later plan may drop it, so the function is
+/// refused rather than left with a silent leak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::lower) enum UnplaceableReason {
+    /// The owner's recipe has no inline release ritual (a trait object, a
+    /// cursor, a closure pair, an indirect enum, an Rc/Weak, a resource).
+    NoInlineRelease,
+    /// The owner sits in a projected place; edge releases act on whole locals.
+    ProjectedPlace,
+}
+
+/// One replay-proven release the pass cannot author.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::lower) struct UnplaceableRelease {
+    pub predecessor: u32,
+    pub target: u32,
+    pub owner: OwnerId,
+    pub place: Place,
+    pub reason: UnplaceableReason,
+}
+
+/// The derivation's two outputs: the releases to materialize and the ones
+/// replay proves necessary but the pass cannot express.
+#[derive(Debug, Default)]
+pub(in crate::lower) struct EdgeReleases {
+    pub placed: Vec<EdgeRelease>,
+    pub unplaceable: Vec<UnplaceableRelease>,
+}
+
 /// Derive the edge releases from replay without mutating the CFG.
 pub(in crate::lower) fn conditional_consume_edge_releases(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
-) -> Vec<EdgeRelease> {
+) -> EdgeReleases {
     let (exact_entries, exact_exits) = exact_owner_states(blocks);
     let (maybe_entries, _) = maybe_owner_states(blocks);
     let (ended_entries, _) = maybe_ended_owner_states(blocks);
@@ -165,7 +197,7 @@ pub(in crate::lower) fn conditional_consume_edge_releases(
         }
     }
 
-    let mut releases = Vec::new();
+    let mut releases = EdgeReleases::default();
     let mut targets = predecessors.keys().copied().collect::<Vec<_>>();
     targets.sort_unstable();
     for target in targets {
@@ -191,12 +223,11 @@ pub(in crate::lower) fn conditional_consume_edge_releases(
         candidates.sort_unstable();
         candidates.dedup();
         for owner in candidates {
+            // An owner without exactly one recipe is already a definition-site
+            // finding of the Checked-MIR verifier.
             let Some([recipe]) = recipes.get(&owner).map(Vec::as_slice) else {
                 continue;
             };
-            if inline_drop_spec_for_recipe(recipe).is_none() {
-                continue;
-            }
             for predecessor in incoming {
                 let Some(place) = exact_exits
                     .get(predecessor)
@@ -205,23 +236,85 @@ pub(in crate::lower) fn conditional_consume_edge_releases(
                 else {
                     continue;
                 };
-                let Place::Local(local) = place else {
-                    continue;
-                };
-                if local_live_at_block_entry(blocks, suspend_kinds, target, local) {
-                    continue;
-                }
-                releases.push(EdgeRelease {
-                    predecessor: *predecessor,
-                    target,
-                    owner,
-                    place,
-                    recipe: recipe.clone(),
-                });
+                classify_edge_release(
+                    blocks,
+                    suspend_kinds,
+                    EdgeRelease {
+                        predecessor: *predecessor,
+                        target,
+                        owner,
+                        place,
+                        recipe: recipe.clone(),
+                    },
+                    &mut releases,
+                );
             }
         }
     }
     releases
+}
+
+/// File one replay-proven edge release as placed or unplaceable. A place still
+/// read after the join is neither: the value is handed onward there by a
+/// producer that did not publish the move, releasing it would be a
+/// use-after-free, and the leak stays with the producer.
+fn classify_edge_release(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    release: EdgeRelease,
+    releases: &mut EdgeReleases,
+) {
+    let Some(local) = base_local(release.place) else {
+        return;
+    };
+    if local_live_at_block_entry(blocks, suspend_kinds, release.target, local) {
+        return;
+    }
+    let reason = if inline_drop_spec_for_recipe(&release.recipe).is_none() {
+        Some(UnplaceableReason::NoInlineRelease)
+    } else if release.place != Place::Local(local) {
+        Some(UnplaceableReason::ProjectedPlace)
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => releases.unplaceable.push(UnplaceableRelease {
+            predecessor: release.predecessor,
+            target: release.target,
+            owner: release.owner,
+            place: release.place,
+            reason,
+        }),
+        None => releases.placed.push(release),
+    }
+}
+
+/// Refuse the function for every release replay proves necessary but the
+/// pass cannot author.
+fn report_unplaceable_releases(builder: &mut Builder, unplaceable: Vec<UnplaceableRelease>) {
+    for release in unplaceable {
+        let name = base_local(release.place)
+            .and_then(|local| builder.local_names.get(local as usize).cloned().flatten())
+            .unwrap_or_else(|| format!("{:?}", release.place));
+        let what = match release.reason {
+            UnplaceableReason::NoInlineRelease => "its destructor has no inline release ritual",
+            UnplaceableReason::ProjectedPlace => "it is owned through a projected place",
+        };
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::DropPlanUndetermined {
+                block: release.predecessor,
+                reason: format!(
+                    "`{name}` ({owner:?} at {place:?}) is moved on one path into block {target} and still owned on the path from block {predecessor}; the owning path needs a release on that edge but {what}",
+                    owner = release.owner,
+                    place = release.place,
+                    target = release.target,
+                    predecessor = release.predecessor,
+                ),
+            },
+            note: "a value moved on some paths and kept on others is dead at the join; restructure so every path moves it or every path keeps it"
+                .to_string(),
+        });
+    }
 }
 
 /// Materialize every replay-derived edge release into the Raw-MIR CFG.
@@ -235,7 +328,11 @@ pub(in crate::lower) fn materialize_conditional_consume_releases(
     blocks: &mut Vec<BasicBlock>,
     builder: &mut Builder,
 ) {
-    let releases = conditional_consume_edge_releases(blocks, &builder.suspend_kinds);
+    let EdgeReleases {
+        placed: releases,
+        unplaceable,
+    } = conditional_consume_edge_releases(blocks, &builder.suspend_kinds);
+    report_unplaceable_releases(builder, unplaceable);
     if releases.is_empty() {
         return;
     }
@@ -637,5 +734,99 @@ mod tests {
             blocks.iter().all(|block| drops_of(block).is_empty()),
             "{blocks:?}"
         );
+    }
+
+    fn trait_object_recipe(declaration_order: u32) -> OwnerDropRecipe {
+        OwnerDropRecipe {
+            ty: ResolvedTy::String,
+            drop_fn: None,
+            kind: DropKind::TraitObject {
+                storage: crate::model::TraitObjectStorage::HeapBoxed,
+            },
+            declaration_order,
+        }
+    }
+
+    fn unplaceable_diagnostics(builder: &Builder) -> Vec<String> {
+        builder
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                MirDiagnosticKind::DropPlanUndetermined { reason, .. }
+                    if reason.contains("moved on one path") =>
+                {
+                    Some(reason.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A conditionally consumed owner whose destructor has no inline release
+    /// ritual cannot be released on its owning edge, and no later plan may
+    /// drop it either: the function is refused instead of leaking silently.
+    #[test]
+    fn owner_without_inline_release_is_refused_not_leaked() {
+        let a = owner(1);
+        let place = Place::Local(4);
+        let mut blocks = conditionally_consumed(a, place);
+        blocks[0].instructions[1] = Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: a,
+            recipe: trait_object_recipe(0),
+        });
+        let mut builder = builder();
+        materialize_conditional_consume_releases(&mut blocks, &mut builder);
+        assert_eq!(
+            blocks.len(),
+            4,
+            "nothing is authored for an unplaceable release"
+        );
+        assert!(drops_of(&blocks[2]).is_empty());
+        let reasons = unplaceable_diagnostics(&builder);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(
+            reasons[0].contains("from block 2") && reasons[0].contains("no inline release"),
+            "{reasons:?}"
+        );
+    }
+
+    /// The same owner sitting in a projected place is refused for the same
+    /// reason: edge releases act on whole locals only.
+    #[test]
+    fn owner_in_projected_place_is_refused_not_leaked() {
+        let a = owner(1);
+        let place = Place::EnumVariant {
+            local: 4,
+            variant_idx: 0,
+            field_idx: 0,
+        };
+        let mut blocks = conditionally_consumed(a, place);
+        let mut builder = builder();
+        materialize_conditional_consume_releases(&mut blocks, &mut builder);
+        assert!(drops_of(&blocks[2]).is_empty());
+        let reasons = unplaceable_diagnostics(&builder);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(reasons[0].contains("projected place"), "{reasons:?}");
+    }
+
+    /// Control: an unplaceable owner whose storage is still read after the
+    /// join is the producer's unpublished move, not a refusal — the diagnostic
+    /// must not fire where a release would be a use-after-free.
+    #[test]
+    fn owner_without_inline_release_still_read_after_join_is_not_refused() {
+        let a = owner(1);
+        let place = Place::Local(4);
+        let mut blocks = conditionally_consumed(a, place);
+        blocks[0].instructions[1] = Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: a,
+            recipe: trait_object_recipe(0),
+        });
+        blocks[3].instructions.push(Instr::Move {
+            dest: Place::ReturnSlot,
+            src: place,
+        });
+        let mut builder = builder();
+        materialize_conditional_consume_releases(&mut blocks, &mut builder);
+        assert!(unplaceable_diagnostics(&builder).is_empty());
     }
 }

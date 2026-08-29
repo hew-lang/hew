@@ -1285,7 +1285,7 @@ fn all_plan_inplace_drop_kinds(
 #[test]
 fn generator_pump_releases_record_yield_value_in_place() {
     let record_pipeline = source_pipeline(
-        "record Item {\n\
+        "type Item {\n\
          \x20   name: string,\n\
          \x20   value: i64,\n\
          }\n\
@@ -1388,7 +1388,7 @@ fn generator_pump_releases_enum_yield_value_in_place() {
 #[test]
 fn generator_pump_skips_bitcopy_record_yield_release() {
     let bitcopy_pipeline = source_pipeline(
-        "record Point {\n\
+        "type Point {\n\
          \x20   x: i64,\n\
          \x20   y: i64,\n\
          }\n\

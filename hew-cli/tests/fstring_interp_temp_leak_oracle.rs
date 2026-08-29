@@ -290,7 +290,7 @@ fn fstring_forwarded_return_bound_loop_source(frames: usize) -> String {
 fn fstring_mixed_projection_forward_return_loop_source(frames: usize) -> String {
     let expected_total: usize = (0..frames).sum();
     format!(
-        "record Holder {{ value: string }}\n\
+        "type Holder {{ value: string }}\n\
          fn choose(holder: Holder, fallback: string, project: bool) -> string {{\n\
          \x20   if project {{ holder.value }} else {{ fallback }}\n\
          }}\n\
@@ -457,7 +457,7 @@ fn fstring_enum_payload_escapes_loop_source(frames: usize) -> String {
 fn fstring_user_call_result_escapes_loop_source(frames: usize) -> String {
     let expected_len: usize = (0..frames).map(|i| format!("tok{i}").len()).sum();
     format!(
-        "record Box {{ s: string }}\n\
+        "type Box {{ s: string }}\n\
          fn mk(i: i64) -> string {{ f\"tok{{i}}\" }}\n\
          fn keep(s: string) -> Box {{ Box {{ s: s }} }}\n\
          fn main() -> i64 {{\n\

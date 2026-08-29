@@ -1646,7 +1646,7 @@ impl Worker {
     #[test]
     fn goto_def_resolves_record_type_name_to_declaration_span() {
         let source =
-            "record Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
+            "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
         let doc = make_typed_doc(source);
         let offset = source.find("-> Point").unwrap() + "-> ".len();
 

@@ -92,7 +92,7 @@ fn check_fails_on_mir_gate_before_ok() {
     // not built), so it is a stable trigger for "hew check fails at the MIR
     // gate with a clean, source-attributed diagnostic".
     let (_dir, path) = write_fixture(
-        "record VHolder { items: Vec<i64>, tag: string }\n\
+        "type VHolder { items: Vec<i64>, tag: string }\n\
          fn main() {\n\
          \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
          \x20\x20\x20\x20init.push(7);\n\
@@ -258,7 +258,7 @@ fn check_no_typecheck_skips_hir_mir_gates() {
     // check (see `check_fails_on_mir_gate_before_ok`); under `--no-typecheck`
     // the gate is skipped, so the same fixture passes.
     let (_dir, path) = write_fixture(
-        "record VHolder { items: Vec<i64>, tag: string }\n\
+        "type VHolder { items: Vec<i64>, tag: string }\n\
          fn main() {\n\
          \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
          \x20\x20\x20\x20init.push(7);\n\

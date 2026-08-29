@@ -70,7 +70,7 @@ const SLOPE_TOLERANCE: usize = 5;
 /// (11 = `"payload-xyz"`).
 fn record_var_overwrite_source(frames: usize) -> String {
     format!(
-        "record Rec {{\n\
+        "type Rec {{\n\
          \x20   name: string,\n\
          }}\n\
          \n\
@@ -119,7 +119,7 @@ fn string_var_overwrite_source(frames: usize) -> String {
 /// exit — the pre-existing `CowValue` fail-closed posture, not a per-frame leak).
 fn branch_asym_consume_overwrite_source(frames: usize) -> String {
     format!(
-        "record Rec {{\n\
+        "type Rec {{\n\
          \x20   name: string,\n\
          }}\n\
          \n\

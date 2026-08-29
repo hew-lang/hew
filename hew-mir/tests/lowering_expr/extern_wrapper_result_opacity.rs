@@ -457,7 +457,7 @@ fn direct_extern_result_pushed_into_a_vec_stays_copy_in() {
 #[test]
 fn record_literal_embedding_a_direct_extern_mints_no_owner_and_no_drop() {
     let p = main_with(
-        "record Outer { inner: Holder }\n\
+        "type Outer { inner: Holder }\n\
          fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() }",
         "unsafe { borrowOuter(Outer { inner: host_record() }); }",
     );
@@ -474,7 +474,7 @@ fn record_literal_embedding_a_direct_extern_mints_no_owner_and_no_drop() {
 #[test]
 fn record_literal_embedding_a_wrapper_mints_no_owner_and_no_drop() {
     let p = main_with(
-        "record Outer { inner: Holder }\n\
+        "type Outer { inner: Holder }\n\
          fn wrapRecord() -> Holder { unsafe { host_record() } }\n\
          fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() }",
         "borrowOuter(Outer { inner: wrapRecord() });",
@@ -489,7 +489,7 @@ fn record_literal_embedding_a_wrapper_mints_no_owner_and_no_drop() {
 #[test]
 fn record_literal_of_a_domestic_field_keeps_its_mint_and_drops_once() {
     let p = main_with(
-        "record Outer { inner: Holder }\n\
+        "type Outer { inner: Holder }\n\
          fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }\n\
          fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() }",
         "borrowOuter(Outer { inner: mkRecord(1) });",
@@ -538,7 +538,7 @@ fn tuple_of_a_domestic_value_pushed_into_a_vec_still_moves() {
 #[test]
 fn nested_container_embedding_a_direct_extern_mints_no_owner() {
     let p = main_with(
-        "record Outer { inner: Holder }\n\
+        "type Outer { inner: Holder }\n\
          type Mid { o: Outer }\n\
          fn borrowMid(m: Mid) -> i64 { m.o.inner.label.len() }",
         "unsafe { borrowMid(Mid { o: Outer { inner: host_record() } }); }",
@@ -661,7 +661,7 @@ fn a_let_bound_domestic_record_still_gets_its_scope_exit_drop() {
 #[test]
 fn a_let_bound_record_embedding_a_direct_extern_gets_no_scope_exit_drop() {
     let p = main_with(
-        "record Outer { inner: Holder }",
+        "type Outer { inner: Holder }",
         "var i: i64 = 0;\n    while i < 2 {\n        let o = Outer { inner: unsafe { host_record() } };\n        let n = o.inner.label.len();\n        println(f\"x={n}\");\n        i = i + 1;\n    }",
     );
     assert_eq!(

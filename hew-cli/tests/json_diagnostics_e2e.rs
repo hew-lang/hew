@@ -27,7 +27,7 @@ fn write_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 /// the new record would alias freed memory — an intentional, durable MIR gate
 /// (the COW value model that would keep the base live is not built). The error
 /// is source-attributed at line 6 (the construction expression).
-const MIR_NYI_FIXTURE: &str = "record VHolder { items: Vec<i64>, tag: string }\n\
+const MIR_NYI_FIXTURE: &str = "type VHolder { items: Vec<i64>, tag: string }\n\
      fn main() {\n\
      \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
      \x20\x20\x20\x20init.push(7);\n\

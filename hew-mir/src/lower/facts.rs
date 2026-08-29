@@ -5346,7 +5346,7 @@ mod analyzed_freshness_strictness {
             .value_carries_proven_foreign_provenance(tail)
     }
 
-    const RECORD_DECL: &str = "record Outer { inner: string }\n\
+    const RECORD_DECL: &str = "type Outer { inner: string }\n\
          extern \"C\" {\n    fn host_string() -> string;\n}\n";
 
     #[test]
@@ -5469,7 +5469,7 @@ mod analyzed_freshness_strictness {
     #[test]
     fn a_nested_record_embedding_a_direct_extern_is_not_free() {
         let src = format!(
-            "record Mid {{ o: Outer }}\n{RECORD_DECL}\
+            "type Mid {{ o: Outer }}\n{RECORD_DECL}\
              fn mk() -> Mid {{ Mid {{ o: Outer {{ inner: unsafe {{ host_string() }} }} }} }}"
         );
         assert!(

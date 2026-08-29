@@ -106,7 +106,7 @@ fn instr_symbols(
 
 fn override_source(field_ty: &str, initial: &str, replacement: &str) -> String {
     format!(
-        "record Holder {{\n\
+        "type Holder {{\n\
          \x20   buf: {field_ty},\n\
          \x20   count: i64,\n\
          }}\n\
@@ -169,7 +169,7 @@ fn string_field_override_still_releases_in_place() {
 #[test]
 fn scalar_field_override_emits_no_release() {
     let pl = pipeline(
-        "record Holder {\n\
+        "type Holder {\n\
          \x20   buf: i64,\n\
          \x20   count: i64,\n\
          }\n\

@@ -2223,7 +2223,7 @@ mod tests {
 
     #[test]
     fn coverage_remote_ask_surface() {
-        let source = "record Job {\n\
+        let source = "type Job {\n\
                       \x20   n: i32,\n\
                       }\n\
                       actor Worker {\n\

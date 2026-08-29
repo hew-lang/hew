@@ -181,7 +181,7 @@ fn hashmap_keys_len_is_map_size() {
 fn hashmap_values_get_layout_path_copy_record_returns_correct_fields() {
     let output = run_hew_source(
         "hashmap_values_get_layout",
-        r#"record Point { x: i64, y: i64 }
+        r#"type Point { x: i64, y: i64 }
 
 fn main() -> i64 {
     var m: HashMap<i64, Point> = HashMap.new();
@@ -210,7 +210,7 @@ fn main() -> i64 {
 fn hashmap_keys_get_layout_path_copy_record_returns_correct_fields() {
     let output = run_hew_source(
         "hashmap_keys_get_layout",
-        r#"record Point { x: i64, y: i64 }
+        r#"type Point { x: i64, y: i64 }
 
 fn main() -> i64 {
     var m: HashMap<Point, i64> = HashMap.new();

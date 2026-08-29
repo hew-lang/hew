@@ -12,7 +12,7 @@ use support::{describe_output, require_codegen};
 
 fn direct_projection_source(frames: usize) -> String {
     format!(
-        "record Holder {{\n\
+        "type Holder {{\n\
          \x20   items: [string],\n\
          }}\n\
          \n\
@@ -37,7 +37,7 @@ fn direct_projection_source(frames: usize) -> String {
 
 fn bound_projection_source(frames: usize) -> String {
     format!(
-        "record Holder {{\n\
+        "type Holder {{\n\
          \x20   items: [string],\n\
          }}\n\
          \n\
@@ -63,7 +63,7 @@ fn bound_projection_source(frames: usize) -> String {
 
 fn early_return_projection_source(frames: usize) -> String {
     format!(
-        "record Holder {{\n\
+        "type Holder {{\n\
          \x20   items: [string],\n\
          }}\n\
          \n\
@@ -91,7 +91,7 @@ fn early_return_projection_source(frames: usize) -> String {
 
 fn break_projection_source(frames: usize) -> String {
     format!(
-        "record Holder {{\n\
+        "type Holder {{\n\
          \x20   items: [string],\n\
          }}\n\
          \n\
@@ -125,7 +125,7 @@ fn break_projection_source(frames: usize) -> String {
 /// new synthetic root owner from turning that known leak into a double-free or
 /// use-after-free without falsely claiming leak closure.
 fn escaped_projection_source() -> String {
-    "record Holder {\n\
+    "type Holder {\n\
      \x20   items: [string],\n\
      }\n\
      \n\

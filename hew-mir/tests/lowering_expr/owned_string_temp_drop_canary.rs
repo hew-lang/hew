@@ -412,7 +412,7 @@ fn canary4b_string_call_temp_arg_releases_once() {
 )]
 fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
     let pl = pipeline_with_tc(
-        "record Holder { value: string }\n\
+        "type Holder { value: string }\n\
          fn passthru(value: string) -> string { value }\n\
          fn choose(holder: Holder, fallback: string, project: bool) -> string {\n\
          \x20   if project { holder.value } else { fallback }\n\

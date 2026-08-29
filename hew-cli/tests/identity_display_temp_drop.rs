@@ -92,6 +92,16 @@ fn function_section<'a>(dump: &'a str, marker: &str) -> &'a str {
         .map_or(tail, |next| &tail[..next])
 }
 
+fn llvm_call_count(section: &str, symbol: &str) -> usize {
+    section
+        .lines()
+        .take_while(|line| !line.starts_with("invoke.cleanup"))
+        .filter(|line| {
+            (line.contains("call ") || line.contains("invoke ")) && line.contains(symbol)
+        })
+        .count()
+}
+
 fn unique_scope_drop_locals(section: &str) -> Vec<&str> {
     let mut locals = section
         .lines()
@@ -170,18 +180,18 @@ fn direct_named_and_mixed_displays_have_one_mir_and_llvm_drop_per_result() {
         let marker = format!("@{name}(");
         let section = function_section(&llvm, &marker);
         assert_eq!(
-            section.match_indices("@hew_node_id_format(").count(),
+            llvm_call_count(section, "@hew_node_id_format("),
             1,
             "{name} must lower NodeId display to one real formatter call:\n{section}"
         );
         assert_eq!(
-            section.match_indices("@hew_location_format(").count(),
+            llvm_call_count(section, "@hew_location_format("),
             2,
             "{name} must lower Location and RemotePid display to the shared real formatter:\n\
              {section}"
         );
         assert_eq!(
-            section.match_indices("@hew_string_drop(").count(),
+            llvm_call_count(section, "@hew_string_drop("),
             3,
             "{name} must emit exactly one LLVM release per formatted result:\n{section}"
         );

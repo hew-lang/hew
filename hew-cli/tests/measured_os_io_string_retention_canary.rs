@@ -92,14 +92,7 @@ const SYMBOLS: &[&str] = &[
 ///
 /// The `fs.try_read` result binds through the owned-carrier release funnel,
 /// which moves the selected `Ok(text)` / `Err(...)` payload into a fresh local
-/// and neutralizes the carrier slot before releasing it on every exit. That
-/// fresh transfer local advanced every subsequent owner's slot number by one
-/// (the release AUTHORITY moved from `local_33` to `local_34`, `local_36` to
-/// `local_37`, ...); the pre-carrier `local_33`-family numbers are now the
-/// moved-out transfer temps, never released (and never leaked — the value is
-/// owned by the `+1` slot). Executable behavior is unchanged: the oracle proves
-/// each `+1` owner is released exactly once on every normal and crash-cleanup
-/// exit, and the witness runs clean under `leaks(1)`.
+/// and neutralizes the carrier slot before releasing it on every exit.
 const STRING_OWNER_SLOTS: &[&str] = &[
     // os.args, os.env, cwd, home_dir, hostname, temp_dir, stdin line/all,
     // fs.read, fs.try_read, path.absolute, path_error_message, dns direct /
@@ -109,7 +102,7 @@ const STRING_OWNER_SLOTS: &[&str] = &[
     // composite's recursive `EnumInPlace`/record drop (asserted below), not a
     // caller `hew_string_drop`, so no separate compress-error owner slot exists.
     "local_2", "local_5", "local_7", "local_9", "local_11", "local_13", "local_15", "local_17",
-    "local_20", "local_34", "local_37", "local_62", "local_67", "local_71", "local_96", "local_98",
+    "local_20", "local_33", "local_36", "local_61", "local_66", "local_70", "local_95", "local_97",
 ];
 
 #[derive(Debug)]
@@ -121,10 +114,14 @@ struct BasicBlock {
 }
 
 fn function_body<'a>(ir: &'a str, name: &str) -> &'a str {
+    let signature = format!("define internal i64 @{name}()");
     let start = ir
-        .find(&format!("define internal i64 @{name}() {{"))
+        .find(&signature)
         .unwrap_or_else(|| panic!("generated IR must contain {name}"));
-    let body_start = start + format!("define internal i64 @{name}() {{").len();
+    let body_start = ir[start..]
+        .find('{')
+        .map(|offset| start + offset + 1)
+        .expect("generated function header must open");
     let body_end = ir[body_start..]
         .find("\n}\n")
         .map(|offset| body_start + offset)
@@ -138,7 +135,9 @@ fn successor_labels(line: &str) -> Vec<String> {
     while let Some((_, after_label)) = rest.split_once("label %") {
         let name: String = after_label
             .chars()
-            .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+            .take_while(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '_' | '.')
+            })
             .collect();
         if !name.is_empty() {
             labels.push(name);
@@ -176,9 +175,9 @@ fn basic_blocks(body: &str) -> Vec<BasicBlock> {
             .flatten()
             .filter(|label| {
                 !label.is_empty()
-                    && label
-                        .chars()
-                        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+                    && label.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '_' | '.')
+                    })
             });
         if let Some(label) = label {
             push_block(name.take(), &mut lines);
@@ -198,6 +197,10 @@ fn slot_is_assigned(block: &BasicBlock, slot: &str) -> bool {
         .any(|line| line.contains("store ") && line.contains(&format!("ptr %{slot},")))
 }
 
+fn is_call_instruction(line: &str) -> bool {
+    line.contains("call ") || line.contains("invoke ")
+}
+
 fn slot_release_count(block: &BasicBlock, slot: &str, drop_symbol: &str) -> usize {
     if drop_symbol == "hew_string_drop" {
         let marker = format!("load ptr, ptr %{slot},");
@@ -209,7 +212,7 @@ fn slot_release_count(block: &BasicBlock, slot: &str, drop_symbol: &str) -> usiz
                 after_load
                     .lines()
                     .take(2)
-                    .any(|line| line.contains("call void @hew_string_drop"))
+                    .any(|line| is_call_instruction(line) && line.contains("@hew_string_drop("))
             })
             .count();
     }
@@ -273,13 +276,13 @@ fn remove_return_path_string_release(body: &str, blocks: &[BasicBlock], slot: &s
         |offset| block_start + offset,
     );
     let call_start = body[start..]
-        .find("call void @hew_string_drop")
+        .find("@hew_string_drop")
         .map(|offset| start + offset)
         .expect("slot load must feed hew_string_drop");
     let mut altered = body.to_owned();
     altered.replace_range(
-        call_start..call_start + "call void @hew_string_drop".len(),
-        "call void @hew_string_clone",
+        call_start..call_start + "@hew_string_drop".len(),
+        "@hew_string_clone",
     );
     altered
 }

@@ -37,13 +37,29 @@ fn function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
     &body[..end]
 }
 
+fn call_positions(body: &str, symbol: &str) -> Vec<usize> {
+    body.lines()
+        .scan(0, |offset, line| {
+            let line_start = *offset;
+            *offset += line.len() + 1;
+            Some((line_start, line))
+        })
+        .filter_map(|(offset, line)| {
+            ((line.contains("call ") || line.contains("invoke ")) && line.contains(symbol))
+                .then_some(offset)
+        })
+        .collect()
+}
+
 fn assert_one_failure_cleanup(ir: &str, symbol: &str) {
     let body = function_body(ir, symbol);
     let error = body
         .find("@hew_glob_error")
         .unwrap_or_else(|| panic!("{symbol} must read the failure detail:\n{body}"));
-    let free = body
-        .find("call void @hew_glob_free")
+    let frees = call_positions(body, "@hew_glob_free(");
+    let free = frees
+        .first()
+        .copied()
         .unwrap_or_else(|| panic!("{symbol} must free an invalid glob handle:\n{body}"));
 
     assert!(
@@ -51,7 +67,7 @@ fn assert_one_failure_cleanup(ir: &str, symbol: &str) {
         "{symbol} must copy the failure detail before freeing its borrowed handle:\n{body}"
     );
     assert_eq!(
-        body.matches("call void @hew_glob_free").count(),
+        frees.len(),
         1,
         "{symbol} must consume the invalid handle exactly once:\n{body}"
     );

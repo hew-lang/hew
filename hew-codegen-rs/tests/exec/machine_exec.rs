@@ -310,6 +310,11 @@ fn main_function_body(ir: &str) -> &str {
     &tail[..end]
 }
 
+fn contains_call_to(body: &str, callee: &str) -> bool {
+    body.lines()
+        .any(|line| (line.contains("call ") || line.contains("invoke ")) && line.contains(callee))
+}
+
 /// True when `body` contains a "bare" `unreachable` terminator — one NOT
 /// immediately preceded by `call void @llvm.trap()`. Every real trap
 /// (`emit_trap_with_code`) lowers to `hew_trap_with_code` + `llvm.trap()` +
@@ -407,8 +412,9 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
             step_body
         );
         let mangled = mangled_machine(fixture.machine);
+        let step = format!("@\"{mangled}__step\"(");
         assert!(
-            main_body.contains(&format!("call %\"{mangled}\" @\"{mangled}__step\"(",)),
+            contains_call_to(main_body, &step),
             "{} call site must call the internal step helper and not expose its result:\n{}",
             fixture.stem,
             main_body

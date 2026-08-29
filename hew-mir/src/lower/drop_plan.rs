@@ -37,20 +37,18 @@ pub(super) use vec_iter_yield_abandonment::vec_iter_yield_abandonment_diagnostic
 ///      `OwnerId`, its physical `Place`, generation, transfers, and guard.
 ///      Builder ownership ledgers are lowering cursors only and are not
 ///      cleanup-admission authority after the MIR stream is sealed.
-///   2. For every `Terminator::Return` exit, emit a `DropPlan` whose
-///      `drops` are the live owned-local list in reverse declaration
-///      order (LIFO). `If`-lowering (Slice 2) constructs
-///      `Terminator::Branch` and `Terminator::Goto` in addition to
-///      `Terminator::Return`; `enumerate_exits` handles all three.
-///   3. For declared-but-not-constructed terminators (`Panic`, `Yield`,
-///      `Send`, `Call`), the pass enumerates them with an empty drop
-///      plan when reached — later cluster additions add the construction
-///      surfaces that turn these into populated plans.
-///   4. A `BlockKind::Cleanup` block is emitted ONLY when a
-///      `Terminator::Panic` is constructed in the function's CFG
-///      (currently no spine surface — declared scaffold). Same for
-///      `ExitPath::Cancel` (scope-structural cancellation, also
-///      declared scaffold in v0.5).
+///   2. `enumerate_exits` names every exit edge of the CFG (`Return`,
+///      `Trap`/`Panic`, `Cancel`, `Suspend`, call unwind edges, ...) and
+///      the `BlockKind::Cleanup` projection for each `Trap`.
+///   3. `derive_drop_plans_from_replay` fills each exit's `DropPlan` with
+///      one `ElabDrop` per owner generation live at that exit whose inline
+///      release does not dominate it, built from the owner's definition-site
+///      `DropRecipe` and `Guard`, in reverse declaration order
+///      (`OwnerDropRecipe::declaration_order`).
+///   4. `validate_ownership_events` replays the same stream and rejects a
+///      plan that drops a place with no live owner, omits a live owner's
+///      cleanup, or disagrees with the recipe/guard/one-owner-per-place
+///      invariants.
 ///
 /// Drop classification:
 ///   - `ValueClass::AffineResource` -> `ElabDrop { drop_fn: Some("<TypeName>::close") }`
@@ -5468,10 +5466,10 @@ pub(super) fn exit_kind_label(exit: &ExitPath) -> &'static str {
 /// protocol).
 ///
 /// The walk covers EVERY exit-path discriminator, not just `Return`:
-///   - `Return` is the canonical Hew exit; carries the function-wide
-///     LIFO drops narrowed by per-block live-set.
+///   - `Return` is the canonical Hew exit; carries the replay-derived
+///     drops of the owners live at that block's exit.
 ///   - `Panic` and `Cancel` exits transfer to a cleanup block whose
-///     `ElabBlock.drops` carry the same LIFO drops; both the
+///     `ElabBlock.drops` carry the same replay-derived drops; both the
 ///     `DropPlan` and the destination cleanup block's `drops` are
 ///     validated.
 ///   - `Yield`, `Send`, `Select` exits carry empty `DropPlan`s today
@@ -6543,8 +6541,8 @@ pub(super) fn render_owned_handle_ty(ty: &ResolvedTy) -> String {
 /// shared structural authority also walks `Option` / user-enum payloads, so a
 /// tuple such as `(Option<string>, i64)` or `(Wrap, i64)` is intentionally
 /// admitted here; when that tuple is carried as a record field, the soundness
-/// hinge is the owned-record escape rule in `derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay),
-/// not a tuple-specific shape whitelist.
+/// hinge is the record owner's replay (the field escape ends or neutralizes
+/// its claim), not a tuple-specific shape whitelist.
 pub(super) fn ty_is_heap_owning_tuple(
     ty: &ResolvedTy,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
@@ -6690,8 +6688,8 @@ pub(super) fn drop_kind_for(
         // Storage is sourced from the MIR builder's `dyn_trait_storage`
         // side table (populated at the binding's introducing `let`
         // statement, W3.031 Stage 1). Reaching this arm with no storage
-        // hint is a structural fail-closed event — `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay)
-        // refuses to emit a drop without a storage discriminator, and
+        // hint is a structural fail-closed event — the owner's recipe is
+        // never minted without a storage discriminator, and
         // `validate_drop_plan` extracts the storage from the elaborated
         // drop kind before re-running this dispatcher.
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::TraitObject { .. }) => {
@@ -6709,8 +6707,8 @@ pub(super) fn drop_kind_for(
         // `ResolvedTy::String` rather than a Place variant. Its function-scope
         // release is the C-ABI `hew_string_drop` (refcount decrement, free at
         // zero). This arm is the single source of truth the drop-plan
-        // validator re-derives against, so `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) must emit the
-        // identical kind (see `cow_value_leaf_drop_symbol`).
+        // validator re-derives against, so the owner's `DropRecipe` must carry
+        // the identical kind (see `cow_value_leaf_drop_symbol`).
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::String) => {
             DropKind::CowHeap {
                 release: crate::ownership::CowHeapRelease::String,
@@ -6727,8 +6725,7 @@ pub(super) fn drop_kind_for(
         // `Instr::Drop` bytes path uses, so the two cannot drift on which
         // field of the triple owns the heap allocation. This arm is the single
         // source of truth the drop-plan validator re-derives against, so
-        // `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) must emit the identical kind (admission authority:
-        // `derive_local_bytes_drop_allowed`).
+        // the owner's `DropRecipe` must carry the identical kind.
         Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::Bytes) => {
             DropKind::CowHeap {
                 release: crate::ownership::CowHeapRelease::Bytes,
@@ -6770,15 +6767,15 @@ pub(super) fn drop_kind_for(
         // symbol` / `is_known_cow_heap_drop_symbol` / `emit_cow_heap_drop`);
         // null-after-free guards a double free (raii-null-after-move). This arm
         // is the single source of truth the drop-plan validator re-derives
-        // against, so `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) must emit the identical kind. Dispatch
+        // against, so the owner's `DropRecipe` must carry the identical kind. Dispatch
         // on the `builtin` discriminant (NOT the name string) so a user
         // `type HashMap { ... }` is never mistaken for the runtime handle.
         //
         // The release is an UNCONDITIONAL dealloc (the handle carries no
         // refcount); it is sound because the current M-COW spine is move-only —
         // exactly one live binding owns each handle, enforced by the move-checker
-        // consuming the source on every share (see the SUBSTRATE INVARIANT /
-        // REVISIT TRIGGER on `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)). When
+        // consuming the source on every share (see the M-COW spine invariant
+        // on `frame_owned_heap_locals` in `lower/mod.rs`). When
         // retain-on-share lands this free must become refcount-aware in lockstep.
         Place::Local(_) | Place::ReturnSlot
             if matches!(
@@ -6811,10 +6808,10 @@ pub(super) fn drop_kind_for(
         // class overall; tag-dominant transition-out drops are a later machine
         // drop-elaboration slice and are not emitted by the Slice 4a step shell.
         //
-        // THIS function is only called from the **end-of-function LIFO
-        // elaboration path** (`build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay)), which operates on
-        // `owned_locals` at binding granularity. A machine binding in
-        // `owned_locals` should never be found here: machine `self` is a
+        // THIS function is only reached through an owner's `DropRecipe`,
+        // which is minted from `owned_locals` at binding granularity. A
+        // machine binding in `owned_locals` should never be found here:
+        // machine `self` is a
         // synthetic parameter, not a user-declared `let` binding, and is
         // therefore never inserted into `owned_locals`. Reaching this arm
         // means a future surface has incorrectly added a machine sub-place to
@@ -7025,7 +7022,7 @@ fn place_aware_drop_fn(
 ///
 /// This is the single predicate keyed by all three flag sites (allocation
 /// at the binding's introduction, the `Consume` set + `mark_binding_moved`
-/// skip, and the `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) guard attachment), so they cannot
+/// skip, and the recipe's `Guard` event attachment), so they cannot
 /// drift on which bindings are flag-gated.
 pub(super) fn affine_release_needs_drop_flag(
     place: Place,
@@ -7219,8 +7216,8 @@ pub(super) fn classify_closure_pair_rhs(
 }
 /// True when `ty` is the two-pointer closure-pair value (`fn(...) -> T`
 /// surface type). The ABI-shape confirmation for `DropKind::ClosurePair`;
-/// the ownership decision is the separate fail-closed
-/// `derive_closure_pair_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) authority.
+/// the ownership decision is the `closure_pair_owned` admission at the
+/// binding's `let` (`classify_closure_pair_rhs`).
 pub(super) fn ty_is_closure_pair(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
 }
@@ -7271,10 +7268,10 @@ pub(super) fn describe_vec_element(
 /// assertion that those values receive no release.
 ///
 /// `Bytes` is deliberately absent TOO, but for a different reason: its
-/// scope-exit drop is live, with its own dedicated admission authority
-/// (`derive_local_bytes_drop_allowed`) and its own `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay)
-/// interception arm — keeping it out of this table keeps exactly ONE prover
-/// in charge of bytes admission. Adding a `Bytes` arm here would make bytes
+/// retain/co-owner derivation is its own authority
+/// (`derive_local_bytes_drop_allowed`) with its own `drop_kind_for` arm —
+/// keeping it out of this table keeps exactly ONE prover in charge of bytes
+/// co-owner minting. Adding a `Bytes` arm here would make bytes
 /// bindings candidates of `derive_cow_sole_owner` as well, creating a second,
 /// union-admitting authority for the same drop (LESSONS:
 /// boundary-fail-closed — one admission authority per drop class).
@@ -7287,14 +7284,14 @@ pub(super) fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str
         // it owns no heap, or its scope-exit drop is a DIFFERENT authority's job,
         // never an unenumerated guess:
         //   - `Bytes`: a fat `{ ptr, len, cap }` triple with its own dedicated
-        //     admission authority (`derive_local_bytes_drop_allowed`) and
-        //     `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) arm — kept out so exactly ONE prover owns bytes
-        //     admission (a second union-admitting authority would risk a
-        //     double-free; LESSONS: boundary-fail-closed).
+        //     retain authority (`derive_local_bytes_drop_allowed`) and
+        //     `drop_kind_for` arm — kept out so exactly ONE prover owns bytes
+        //     co-owner minting (a second union-admitting authority would risk
+        //     a double-free; LESSONS: boundary-fail-closed).
         //   - `Named` containers/handles (`Vec`/`HashMap`/`HashSet`/`Generator`/
         //     records/enums): NOT scalar leaves — their drop is the
-        //     `binding_ty_is_*_vec` / `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)
-        //     release buckets, NOT this per-leaf symbol picker.
+        //     `binding_ty_is_*_vec` / collection-handle release buckets of
+        //     `drop_kind_for`, NOT this per-leaf symbol picker.
         //   - scalars / `Unit` / `Never` / views (`Pointer`/`Borrow`/`Slice`/
         //     `Array`) / `Function` / `Closure` / `TraitObject` / `Task` /
         //     `CancellationToken` / `TypeParam`: own no scalar heap leaf to drop
@@ -7471,8 +7468,8 @@ pub(super) fn vec_iter_init_vec_source_expr(value: &HirExpr) -> Option<&HirExpr>
 ///   - **place source** (`for x in v`): the `vec` field is a bare `BindingRef`
 ///     to a still-live source binding shared via `CowShare` (`IntentKind::Capture`
 ///     — the only site that emits it). The source binding keeps its own
-///     scope-exit drop (`derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) exempts the
-///     cursor ingress), so the cursor BORROWS and must NOT drop. Returns false.
+///     owner (the cursor ingress is a borrow, not an escape), so the cursor
+///     BORROWS and must NOT drop. Returns false.
 ///
 /// A non-`StructInit` value (e.g. `for x in it`, where the cursor is a
 /// whole-value MOVE of an already-bound `VecIter` — that bound cursor owns and
@@ -7524,7 +7521,7 @@ pub(super) fn ty_is_vec(ty: &ResolvedTy) -> bool {
 ///
 /// THE projection of the [`VecElementRelease::ClosurePair`] bucket for
 /// contexts without `Builder` state (the drop-plan validator and
-/// `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) are free fns): `ty_is_closure_pair_vec(Vec<E>)` ≡
+/// `drop_kind_for` are free fns): `ty_is_closure_pair_vec(Vec<E>)` ≡
 /// `classify_vec_element_release(E).is_closure_pair()`, pinned over the
 /// element domain by `release_bucket_partition_is_total_over_vec_elements`.
 /// `Builder`-side consumers (the release-symbol pickers) read the
@@ -7551,9 +7548,9 @@ pub(super) fn builtin_method_arg_is_move_ingress(family: hew_types::MethodTarget
 /// `type HashMap { ... }` is never mistaken for the runtime collection handle.
 /// THE single ABI-shape authority for the collection-handle release bucket:
 /// the confirmation that `hew_hashmap_free_layout` / `hew_hashset_free_layout`
-/// is the correct release for the binding's single owned handle. The
-/// sole-owner / no-escape decision is the separate fail-closed authority
-/// `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay).
+/// is the correct release for the binding's single owned handle. Whether the
+/// owner is still live at a given exit is the ownership replay's decision,
+/// not this predicate's.
 ///
 /// A projection of the typed ownership classification:
 /// `ty_is_local_collection_handle(ty)` ≡ "the decision's drop class is the
@@ -7576,9 +7573,9 @@ pub(super) fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
 /// True when `callee` is a `HashMap` / `HashSet` runtime operation that BORROWS
 /// its receiver (arg[0]) — i.e. reads / mutates the handle in place without
 /// freeing it. The receiver of such a call is a transient interior read, NOT an
-/// ownership escape, so `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) skips arg[0] when
-/// scanning these calls (it still scans arg[1..], which carry by-value keys /
-/// elements that genuinely flow elsewhere).
+/// ownership escape, so the escape scans that consult this list skip arg[0]
+/// (they still scan arg[1..], which carry by-value keys / elements that
+/// genuinely flow elsewhere).
 ///
 /// This is an EXPLICIT allow-list, deliberately NOT a `hew_hashmap_` /
 /// `hew_hashset_` prefix test (LESSONS: `boundary-fail-closed`). The consuming
@@ -7587,7 +7584,7 @@ pub(super) fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
 /// existing one as arg[0]) are intentionally absent: a future runtime op that
 /// consumes its receiver must be classified here deliberately. An op left out of
 /// this list is treated as a receiver ESCAPE, which over-excludes the binding
-/// from its scope-exit drop — a leak, never a double-free. Every entry below is
+/// from the borrow exemption — a leak, never a double-free. Every entry below is
 /// confirmed against the runtime signature to take the handle by shared/mutable
 /// borrow (`*const` / `*mut`, never freed): `hew-runtime/src/hashmap.rs`,
 /// `hew-runtime/src/hashset.rs`.
@@ -7742,21 +7739,8 @@ pub(super) fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bo
     }
     false
 }
-/// Build the elaborated block list + per-`ExitPath` drop plans for a
-/// function's CFG. Every basic block becomes one `ElabBlock` of
-/// `BlockKind::Normal`; `Terminator::Panic` synthesises a sibling
-/// `BlockKind::Cleanup` block. Every runtime-reachable terminator maps to one
-/// `(ExitPath, DropPlan)` entry. `Terminator::Unreachable` is instead a
-/// compiler-proven semantic endpoint: it deliberately has no `ExitPath`,
-/// cleanup block, or drop plan. `Return`-terminated blocks narrow
-/// the function-wide LIFO `lifo` sequence to bindings whose state at
-/// that block's exit is `Live` — bindings already `Consumed` on
-/// every reaching path do not need their drop fired again
-/// (LESSONS `raii-null-after-move`). `MaybeConsumed` at a Return
-/// exit is rejected upstream by the move-checker; the elaborator
-/// treats it as if `Live` for drop-plan purposes, but the program
-/// would have already been rejected before reaching codegen so the
-/// drop list is informational.
+/// Exact owner generations live at a program point, keyed to the place each
+/// one currently owns.
 pub(super) type ExactOwnerState = HashMap<crate::model::OwnerId, Place>;
 pub(super) type MaybeOwnerState = HashSet<(crate::model::OwnerId, Place)>;
 pub(super) type MustBindingOwnerState = HashMap<BindingId, Place>;

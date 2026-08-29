@@ -3108,7 +3108,7 @@ impl Builder {
     /// projection (`println(make_record().field)`) therefore needs both the
     /// leaf's inline release and the parent's recursive scope-exit drop. Merely
     /// observing the provisional parent owner is insufficient: unresolved
-    /// synthetic publications are intentionally withheld from the exit LIFO.
+    /// synthetic publications intentionally mint no owner.
     /// Finalizing that exact publication makes the original aggregate owner
     /// eligible without minting a second owner.
     pub(crate) fn finalize_typed_projection_parent_owner(&mut self, expr: &HirExpr) -> bool {
@@ -3585,11 +3585,9 @@ impl Builder {
     /// to its ultimate owner, this preserves the intermediate structure so the
     /// escaped-record sibling-discharge emitter can walk the chain and compensate
     /// the non-escaped siblings at EVERY level (the outer `c` through the root,
-    /// the intermediate `mid.x` through the `mid` alias) — matching the multi-hop
-    /// reach `close_alias_binders_forward` gave the composite-drop prover's
-    /// exclusion. Without it the widened exclusion removes the owner's composite
-    /// drop while the one-hop sibling emitter (blind past a one-hop alias) leaves
-    /// every deeper sibling to leak unconditionally.
+    /// the intermediate `mid.x` through the `mid` alias). Without it the one-hop
+    /// sibling emitter (blind past a one-hop alias) leaves every deeper sibling
+    /// to leak unconditionally.
     ///
     /// An entry whose parent is not a named local, or whose provenance path is
     /// not a single field step, is dropped — the emitter keeps its fail-closed
@@ -3621,7 +3619,7 @@ impl Builder {
     /// compat shape the ownership finalizers and the double-free gate consume
     /// (exit plans themselves derive from event replay, not from this list).
     /// The `Disposition::ScopeExit` filter narrows the
-    /// ledger to exactly the bindings the function-exit LIFO pass still owns:
+    /// ledger to exactly the bindings still owned at scope exit:
     /// entries retracted by a [`Builder::set_owned_local_disposition`] write
     /// (consumed, body-end-released, inner-scope-released) are excluded, which is
     /// the same set the former `owned_locals.retain(...)` physical removals left
@@ -3635,22 +3633,16 @@ impl Builder {
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
     }
-    /// The owned locals that may still own a value on a path to an exit —
-    /// either scope-exit-live (`ScopeExit`) or retracted only by a consume that
-    /// transfers the value out (`ConsumedAt`). A binding in this view is a
-    /// candidate for path-sensitive cleanup, including compiler-generated
-    /// produced-value bindings that are the source of a recorded typed handoff.
-    /// Such a synthetic result is a real owner from successful publication until
-    /// its later move into a source binding or aggregate; excluding it leaves the
-    /// producer-to-handoff interval uncovered on an unwind edge. A typed result
-    /// that is already the terminal/canonical owner is not added a second time.
-    /// CFG liveness suppresses the source drop after the handoff.
-    /// A normal-path `BodyEndReleased` / `ScopeReleased` disposition does not
-    /// erase the owner's earlier lifetime: a call before that release can still
-    /// unwind while the generation is live. Keep those entries in the template
-    /// and let the per-program-point MIR dataflow suppress them after their
-    /// explicit consume/release event. Only `AliasOf` is never an owner.
-    pub(crate) fn owned_locals_exit_candidates(&self) -> Vec<(BindingId, String, ResolvedTy)> {
+    /// Every ledger entry that is or was an owner generation — all dispositions
+    /// except `AliasOf`, deduplicated by binding in registration order. The
+    /// pre-seal neutralize/release passes read this view to find the slots a
+    /// physical transfer may null or a proven last read may release. It is not
+    /// a plan source: exit plans derive from the minted owners' event replay,
+    /// which is why a `BodyEndReleased` / `ScopeReleased` / `ConsumedAt`
+    /// disposition keeps its entry here (the generation was live before that
+    /// release, and a call before it can still unwind). Only `AliasOf` is
+    /// never an owner.
+    pub(crate) fn owned_locals_owner_generations(&self) -> Vec<(BindingId, String, ResolvedTy)> {
         let mut seen = HashSet::new();
         self.owned_locals
             .iter()
@@ -3685,8 +3677,8 @@ impl Builder {
     /// The entry stays in the ledger (an end-of-pass whole-ledger scan can still
     /// observe it via [`Builder::owned_locals_ledger`]) but leaves the
     /// scope-exit view [`Builder::owned_locals_snapshot`] projects, so the
-    /// function-exit LIFO drop pass no longer fires on it — byte-identical to the
-    /// physical removal it replaces. Sets every entry matching `binding`,
+    /// ownership finalizers no longer treat it as a scope-exit owner. Sets
+    /// every entry matching `binding`,
     /// mirroring `retain`'s remove-all semantics (at most one exists in
     /// practice).
     pub(crate) fn set_owned_local_disposition(
@@ -6515,7 +6507,7 @@ impl Builder {
     /// from both an owned local and a borrowed parameter: the VALUE is
     /// frame-owned (a fresh per-iteration count from the clone-out / recv),
     /// but its release authority is the per-iteration BODY-END drop, not the
-    /// function-scope LIFO. A static `Consume` here suppresses no local
+    /// function-scope owner. A static `Consume` here suppresses no local
     /// scope-exit drop; what it does instead is poison the dataflow —
     /// `MaybeConsumed` at any abandonment exit inside the body region walls
     /// the program off behind the `vec_iter_yield_abandonment` NYI, and the
@@ -7091,7 +7083,7 @@ mod typed_produced_owner_tests {
             "the ledger must preserve both value generations for later provenance scans"
         );
         assert_eq!(
-            builder.owned_locals_exit_candidates(),
+            builder.owned_locals_owner_generations(),
             vec![(binding, "inner".to_string(), ResolvedTy::String)],
             "one mutable slot generation must have one scope-exit release authority"
         );
@@ -7858,7 +7850,7 @@ mod typed_produced_owner_tests {
             .synthetic_owner_publication_sites
             .contains_key(&provisional));
         assert_eq!(
-            builder.owned_locals_exit_candidates(),
+            builder.owned_locals_owner_generations(),
             vec![
                 (
                     provisional,

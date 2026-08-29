@@ -6050,7 +6050,7 @@ pub enum Instr {
     ///   helpers free the composite's leaves and store nothing.  Idempotence
     ///   rests on exactly-once execution (straight-line pre-body emission,
     ///   never inside a `DropPlan`) plus exactly-once parent suppression: the
-    ///   composite-drop provers exclude the base root directly (see below)
+    ///   base root's owner must be discharged before any exit (see below)
     ///   and the drop-plan verifier rejects an inline-composite `ty` whose
     ///   base still receives a composite in-place drop.
     ///
@@ -6058,13 +6058,10 @@ pub enum Instr {
     ///
     /// An interior field operation: it USES `base`, creates NO dest, and
     /// creates NO alias.  It is by construction BOTH the field extraction and
-    /// that field's release, so the record/tuple composite provers
-    /// (`derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) /
-    /// `derive_tuple_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) in `lower.rs`) exclude a
-    /// candidate root this op addresses — the combined role the safety-drop
-    /// temps' `field_binders ∩ release_owner_bases` intersection plays for
-    /// the load+drop leaf path — and the enum composite prover exempts it
-    /// from the owning-sink scan exactly like the interior `RecordFieldDrop`.
+    /// that field's release: the sibling-discharge scan in
+    /// `lower/composite_own.rs` treats it as an interior release of a root
+    /// that still owns its remaining fields, never as an owning-sink escape,
+    /// exactly like the interior `RecordFieldDrop`.
     ///
     /// ## Admission
     ///
@@ -7531,12 +7528,12 @@ pub enum DropKind {
     /// reverse declaration order and frees no wrapper (the tuple is embedded).
     ///
     /// `ElabDrop::drop_fn` must be `None`; the helper symbol is derived from
-    /// `ElabDrop::ty`. The MIR elaborator emits this kind ONLY for a tuple the
-    /// fail-closed sole-owner derivation (`derive_tuple_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay))
-    /// proves still owns its members at scope exit: a tuple whose elements were
-    /// moved out (the `__tuple_N` destructure temp) or whose whole value escaped
-    /// (returned) is excluded so exactly one owner drops each member. A binding
-    /// the prover does not positively clear leaks; it never double-frees.
+    /// `ElabDrop::ty`. The MIR elaborator emits this kind for a tuple owner
+    /// whose `DropRecipe` names it and whose generation the ownership replay
+    /// finds live at the exit: a tuple whose elements were moved out (the
+    /// `__tuple_N` destructure temp) or whose whole value escaped (returned)
+    /// has its generation ended at that transfer, so exactly one owner drops
+    /// each member.
     TupleInPlace,
     /// Escaping-closure pair drop (the closure env heap-lifetime contract).
     /// The dropped value is the two-pointer closure pair `{ fn_ptr, env_ptr }`
@@ -7581,16 +7578,12 @@ pub enum DropKind {
     /// derived from the paired [`ElabDrop::ty`]'s registered enum layout),
     /// so the runtime-vs-user `resolve_drop_fn` dispatch is never consulted.
     ///
-    /// The MIR elaborator emits this kind ONLY for an indirect-enum local
-    /// the fail-closed sole-owner derivation
-    /// (`derive_indirect_enum_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)) proves still solely owns its
-    /// heap node at scope exit: a binding that is a destructure/projection
-    /// alias of a still-live parent node, that escapes (returned, moved into
-    /// an aggregate, passed by value to a callee — a borrow that does NOT
-    /// transfer ownership), or that is consumed/maybe-consumed on a path is
-    /// excluded so the node is freed by exactly one owner. A binding the
-    /// prover does not positively clear leaks (as before this kind); it
-    /// never double-frees.
+    /// The MIR elaborator emits this kind for an indirect-enum owner whose
+    /// generation the ownership replay finds live at the exit: a binding that
+    /// is a destructure/projection alias of a still-live parent node never
+    /// mints an owner, and one that escapes (returned, moved into an
+    /// aggregate) or is consumed on a path has its generation ended or
+    /// guarded at that hand-off, so the node is freed by exactly one owner.
     IndirectEnum,
 }
 

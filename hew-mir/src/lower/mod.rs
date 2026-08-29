@@ -487,9 +487,9 @@ struct Builder {
     /// Total append-only declaration order for every binding introduced in
     /// this function, including parameters and bindings that deliberately do
     /// not enter `owned_locals` (for example tuple-derived channel handles and
-    /// their synthetic `for await` cursors). Drop-plan merges use this as the
-    /// LIFO rank authority; the ownership ledger is only an admission ledger
-    /// and therefore cannot supply a total lexical order.
+    /// their synthetic `for await` cursors). Owner publication uses this as
+    /// the declaration-rank authority; the ownership ledger is only an
+    /// admission ledger and therefore cannot supply a total lexical order.
     pub(crate) binding_declaration_order: Vec<BindingId>,
     /// Deduplication sidecar for `binding_declaration_order`. A binding may be
     /// observed through a specialised lowering path more than once, but its
@@ -820,8 +820,8 @@ struct Builder {
     /// carrier/Terminator field) so the carriers collapse onto one
     /// `Terminator::Suspend` while the emitted IR stays byte-identical.
     pub(crate) suspend_kinds: HashMap<u32, SuspendKind>,
-    /// Abandon-edge drops for a suspend's escape-poisoned values that the
-    /// generic `drops_for_exit` `BindingState` filter cannot see. These include
+    /// Abandon-edge drops for a suspend's escape-poisoned values that mint no
+    /// owner the replay could plan for. These include
     /// a `SuspendKind::StreamSend` in-flight yield and fresh string arguments to
     /// a suspending `SuspendKind::CallClosure`: neither has a competing
     /// scope-exit drop, and each has an inline normal-completion drop. Keyed by
@@ -835,7 +835,7 @@ struct Builder {
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
     /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`
     /// fires when that scope closes — INCLUDING when the scope is re-executed
-    /// by an enclosing loop. The function-exit LIFO drop only releases the
+    /// by an enclosing loop. The function-exit owner drop only releases the
     /// final content of each binding's slot, so a generator declared inside a
     /// loop body (e.g. the `__hew_for_iter_*` binding of a `for x in gen()`
     /// nested in a `while`) leaks one coro frame + heap companion per outer
@@ -965,13 +965,13 @@ struct Builder {
     /// closes. The `Generator`/`VecIter` analogue of #1949 for the general
     /// `for await` consumption path: a `for await v in <stream>` desugars to a
     /// `__hew_for_iter_*` cursor whose close was otherwise deferred to the
-    /// ENCLOSING FUNCTION's exit-LIFO plan, so `break`/early `return`/exhaustion
+    /// ENCLOSING FUNCTION's exit plan, so `break`/early `return`/exhaustion
     /// left the stream open — deadlocking any function that abandons a live
     /// stream then does more work before returning (the producer stays parked
     /// on backpressure, its peer never observed as closed). Closing at each
     /// exit edge wakes the parked producer promptly. Mirrors
     /// `scope_generator_bindings`: entries are dispositioned `ScopeReleased`
-    /// once the inline close is emitted so the function-exit LIFO cannot fire a
+    /// once the inline close is emitted so the function-exit plan cannot fire a
     /// second close, and the inline `Instr::Drop` null-stores the slot
     /// (`raii-null-after-move`; the runtime close symbols also null-guard).
     pub(crate) scope_stream_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
@@ -1033,7 +1033,7 @@ struct Builder {
     /// that schedule a body-end release and retract the binding to
     /// `Disposition::BodyEndReleased`). This is the binder class whose value
     /// IS frame-owned but whose release authority is the per-iteration
-    /// body-end drop, not the function-scope LIFO. The projection-alias taint
+    /// body-end drop, not the function-scope owner. The projection-alias taint
     /// seed exempts these dests: their `Move` out of the synthetic `Option`'s
     /// variant slot takes a fresh clone/frame the shell no longer releases,
     /// so a downstream retained share is a genuine co-owner, not an interior
@@ -1070,9 +1070,9 @@ struct Builder {
     /// overwrites the slot with the next iteration's value.
     ///
     /// This is the missing piece that distinguishes per-iteration drops from
-    /// function-exit drops. Without scope tracking, the elaborator's existing
-    /// `drops_for_exit` (currently called only on `Return`/`Cancel`/`Panic`)
-    /// would either fire ALL live bindings on a back-edge (double-freeing
+    /// function-exit drops. Without scope tracking, the replay-derived exit
+    /// plans (which cover `Return`/`Cancel`/`Panic`/unwind edges, never
+    /// back-edges) would either fire ALL live bindings on a back-edge (double-freeing
     /// outer-scope values like the receiver itself) or fire NONE (the current
     /// behaviour, which leaks the per-iteration heap-owning let-bindings).
     /// Before sealing, these lexical facts resolve `ScopeExit` into immutable
@@ -1107,13 +1107,13 @@ struct Builder {
     /// Goto-edge blocks that must release header-defined iteration owners.
     /// Each binding is also marked consumed in the source block's statement
     /// stream, so the target's later function exit cannot release it again.
-    /// Header snapshot owners whose drop template is valid only on a recorded
-    /// loop back-edge. Ordinary exit plans exclude these bindings because the
+    /// Header snapshot owners whose drop is valid only on a recorded loop
+    /// back-edge. Ordinary exit plans exclude these bindings because the
     /// source binding still owns the same value on tag-false and pre-reassign
     /// break/return edges.
     pub(crate) back_edge_only_iteration_owners: HashSet<BindingId>,
     /// Fresh string publications that remain live across a borrowing operation
-    /// spanning multiple blocks. They need the ordinary exit-plan template,
+    /// spanning multiple blocks. They mint an ordinary scope-exit owner,
     /// unlike synthetic publications already discharged inline or transferred
     /// into another owner.
     pub(crate) synthetic_borrowed_temp_drop_bindings: HashSet<BindingId>,
@@ -1396,8 +1396,8 @@ struct Builder {
     /// `TupleFieldLoad`, both of which `projection_alias_dest` seeds as
     /// tainted (interior alias of the parent aggregate). Tainted
     /// leaf-`string`/`Vec`/`bytes` locals are excluded from
-    /// `cow_drop_allowed`, so `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) silently skips their drop
-    /// (the leaf-CoW arm tolerates a missing place rather than panicking).
+    /// `cow_drop_allowed`, so they never mint a scope-exit owner and no exit
+    /// plan releases them.
     /// The taint is correct when the parent aggregate's composite drop still
     /// fires (otherwise the same buffer frees twice), but a consume-marked
     /// scrutinee emits a follow-up `Use { intent: Consume }` for the
@@ -1551,7 +1551,7 @@ struct Builder {
     /// `classify_closure_pair_ingress` (`Borrowed` → `OwnedBinding`). It is
     /// deliberately DISJOINT from `closure_pair_owned`: it is NOT a drop
     /// ledger. Merging it into `closure_pair_owned` would feed
-    /// `derive_closure_pair_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) a param that is read only by
+    /// the `Let`-binding closure-pair owner publication a param that is read only by
     /// `CallClosure` (the benign callee read), which the aliasing scan does not
     /// mark, so an UNSTORED-but-invoked param would gain an erroneous scope-exit
     /// drop — a double-free of an env the param never owned. Two sets, two
@@ -1622,8 +1622,8 @@ struct Builder {
     /// call-result RHS (`HirExprKind::Call`, `CallTraitMethodStatic`,
     /// `CallDynMethod`) returning `dyn Trait`. Binding rebinds inherit the
     /// source binding's recorded storage. The ledger is consumed by
-    /// `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) to construct the
-    /// `DropKind::TraitObject { storage }` discriminator.
+    /// `drop_kind_for` when the owner's `DropRecipe` is minted, to construct
+    /// the `DropKind::TraitObject { storage }` discriminator.
     ///
     /// Keys are the `BindingId` of the owning `let`-binding (the same
     /// key used by `binding_locals` / `owned_locals`). A binding that
@@ -1643,8 +1643,8 @@ struct Builder {
     /// `affine_release_needs_drop_flag`: Rc/Weak owners and user resources
     /// whose ritual is a `DropFnSpec::UserClose`.
     /// A binding present here is KEPT in `owned_locals` across its consume
-    /// (we do NOT call `mark_binding_moved` for it), so the per-exit
-    /// `drops_for_exit` dataflow filter narrows the drop per control-flow
+    /// (we do NOT call `mark_binding_moved` for it), so its owner's `Guard`
+    /// narrows the drop per control-flow
     /// path and codegen gates the surviving close on `flag == 0` — exactly
     /// once on a `MaybeConsumed` join. A user resource absent here (no flag
     /// allocated) falls back to the path-insensitive
@@ -1712,11 +1712,11 @@ struct Builder {
     /// (mirroring the affine release-flag discipline): the flag is an
     /// `i64` local zero-initialised at the binding's `let` (dominating every
     /// consume, including loop back-edges) and set to 1 at each consume-use.
-    /// `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) attaches it as the [`ElabDrop::guard`], so codegen
+    /// the owner's `Guard` event attaches it as the [`ElabDrop::guard`], so codegen
     /// gates the release on `flag == 0` — exactly once on a `MaybeConsumed`
     /// join: skipped where the value moved to a new owner, fired where it is
-    /// still owned. The per-exit `drops_for_exit` dataflow filter still
-    /// excludes exits where the binding is `Consumed` on every reaching path.
+    /// still owned. The ownership replay still omits exits where the owner's
+    /// generation ended on every reaching path.
     ///
     /// Mutually exclusive with `overwrite_guard_flags` (a mutable binding both
     /// consumed and reassigned keeps the #2301 overwrite path and today's
@@ -1733,7 +1733,7 @@ struct Builder {
     /// Admission is structural: leaf `string` values use
     /// `cow_value_leaf_drop_symbol`, while `bytes` uses its dedicated
     /// `BytesTriple` admission/drop authority. The consume hook and
-    /// `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) consult this same map, so allocation, move marking,
+    /// the owner's `Guard` event consult this same map, so allocation, move marking,
     /// and guarded release cannot drift.
     pub(crate) actor_message_cow_drop_flags: HashMap<BindingId, Place>,
     /// Mailbox-owned `string` parameters remain lexical owners even when the
@@ -5581,8 +5581,11 @@ fn terminator_mint_writes_local(terminator: &Terminator, local: u32) -> bool {
 /// a selection transfer may null.
 ///
 /// The classes admitted here are the ones whose every share lowers as a bare
-/// pointer bitcopy with NO retain (the M-COW spine invariant documented on
-/// `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)): plain and owned-element `Vec`,
+/// pointer bitcopy with NO retain — the M-COW spine invariant: exactly one
+/// live binding owns each handle because the move-checker consumes the
+/// source on every share; when retain-on-share lands, every consumer of this
+/// invariant must become refcount-aware in lockstep. Admitted: plain and
+/// owned-element `Vec`,
 /// `HashMap` / `HashSet` handles, and owned aggregate records. For those,
 /// exactly one live slot owns a given allocation, so nulling the source at a
 /// transfer leaves exactly one owner and the source's release becomes a
@@ -5600,7 +5603,7 @@ fn terminator_mint_writes_local(terminator: &Terminator, local: u32) -> bool {
 /// borrows and the caller owns their release (A278).
 fn frame_owned_heap_locals(builder: &Builder) -> HashSet<u32> {
     let mut candidate_locals: HashSet<u32> = HashSet::new();
-    for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
+    for (binding, _name, ty) in builder.owned_locals_owner_generations() {
         let move_semantics = builder.binding_ty_is_owned_element_vec(&ty)
             || builder.binding_ty_is_plain_vec(&ty)
             || drop_plan::ty_is_local_collection_handle(&ty)
@@ -6444,7 +6447,7 @@ fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut B
         })
         .collect();
     let unretained_source_locals: HashSet<u32> = builder
-        .owned_locals_exit_candidates()
+        .owned_locals_owner_generations()
         .into_iter()
         .filter(|(binding, _, ty)| {
             aggregate_alias_bindings.contains(binding) && drop_plan::ty_is_owned_handle_leaf(ty)
@@ -6498,7 +6501,7 @@ fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut B
         propagate_whole_value_alias_roots(blocks, borrowed_aggregate_roots.iter().copied());
     let mut candidates = Vec::new();
     let mut candidate_locals = HashSet::new();
-    for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
+    for (binding, _name, ty) in builder.owned_locals_owner_generations() {
         if !builder
             .typed_produced_value_owner_bindings
             .contains(&binding)
@@ -7049,7 +7052,7 @@ fn returned_aggregate_value_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
 }
 
 fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let candidates = builder.owned_locals_exit_candidates();
+    let candidates = builder.owned_locals_owner_generations();
     let returned_members =
         derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
     if returned_members.is_empty() {
@@ -8014,7 +8017,7 @@ fn splice_retained_field_aggregate_commits(blocks: &mut [BasicBlock], builder: &
 )]
 fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let candidates: HashMap<u32, (BindingId, ResolvedTy)> = builder
-        .owned_locals_exit_candidates()
+        .owned_locals_owner_generations()
         .into_iter()
         .filter(|(_binding, _name, ty)| {
             builder.is_owned_aggregate_record_ty(ty) && builder.field_drop_in_place_admissible(ty)
@@ -8138,8 +8141,7 @@ fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, build
         // The immediate-parent chain of every recorded byte-copy alias, so the
         // sibling-discharge emitter can walk a MULTI-HOP escape (`let mid = o.mid;
         // let leaf = mid.leaf; return leaf`) and compensate the non-escaped
-        // siblings at every level — the reach `close_alias_binders_forward` gave
-        // the composite-drop prover's exclusion.
+        // siblings at every level.
         let alias_chain = builder.alias_projection_chain();
         let aggregate_clone_sites = aggregate_borrowed_ingress_clone_sites(&*blocks, builder);
         let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
@@ -14042,7 +14044,7 @@ pub(crate) fn lower_function(
     // Each owner definition in Checked MIR carries its immutable destructor
     // recipe beside the Mint/Reset/Transfer/Join that creates the generation.
     // The elaborator replays those events, their guards, and exact CFG state;
-    // Builder ownership ledgers and legacy LIFO templates cannot admit or
+    // Builder ownership ledgers cannot admit or
     // select a cleanup after sealing. This runs for every function body and is
     // exercised both by direct replay/falsifier tests and compiled leak/poison
     // oracles.
@@ -14174,15 +14176,16 @@ enum DischargeSite {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Disposition {
-    /// Released by the function-exit LIFO drop pass, narrowed per exit edge —
-    /// the default for every entry the registration authority mints.
+    /// Released by the scope-exit owner the entry mints, on every exit edge
+    /// where its generation is still live — the default for every entry the
+    /// registration authority mints.
     ScopeExit,
     /// Released at the end of the consuming body on every exit edge rather than
     /// at function scope exit: a generator-yielded / channel-received `Some(x)`
     /// payload, or a `for x in vec` string cursor, whose per-iteration heap
     /// reference the body owns and releases each frame. Dispositioned off the
-    /// scope-exit set so the function-exit LIFO pass cannot fire a second
-    /// release on the same slot (double-free guard).
+    /// scope-exit set so no scope-exit owner fires a second release on the
+    /// same slot (double-free guard).
     BodyEndReleased,
     /// Consumed (moved out) before scope exit — the value's new owner drops it,
     /// so the scope-exit release is suppressed. A later overwrite on a different
@@ -14211,11 +14214,10 @@ enum Disposition {
     /// is an inline aggregate (record / tuple / inline-enum). Codegen byte-copies
     /// such a field with no retain, so the binder does not own the copied heap —
     /// the projected root's composite drop frees every original exactly once.
-    /// Dispositioned off the scope-exit-live set so (a) the function-exit LIFO
-    /// pass emits no composite drop for the alias (a re-walk of heap the root
-    /// still owns would double-free), and (b) the alias's base local is excluded
-    /// from the record/tuple provers' `release_owner_bases` derivation, so an
-    /// alias binder no longer trips their Defect-1 blanket every-root exclusion.
+    /// Dispositioned off the scope-exit-live set so (a) the alias mints no
+    /// owner and no exit plan carries a composite drop for it (a re-walk of
+    /// heap the root still owns would double-free), and (b) the alias's base
+    /// local never seeds a sibling-discharge root.
     /// The owner it aliases is named on the entry's `provenance`
     /// ([`OwnershipDecision::InteriorAlias`]-shaped). This is the recorded twin
     /// of the whole-local alias classifier
@@ -14252,8 +14254,8 @@ enum FieldLoadClass {
 /// authority) instead of pushed ad hoc at each lowering seam.
 ///
 /// The tracked unit is the whole binding. The `(binding, name, ty)` triple is
-/// the shape every downstream allow-set prover, `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay), and the
-/// unwired-`Vec`-element diagnostic already consume (via
+/// the shape the ownership finalizers, the pre-seal neutralize passes, and the
+/// unwired-`Vec`-element diagnostic consume (via
 /// [`Builder::owned_locals_snapshot`]); the richer facts (`ownership`,
 /// `provenance`, `disposition`) are carried on the value so later drop stages
 /// read a written-down fact rather than re-deriving ownership from the
@@ -14294,7 +14296,7 @@ struct OwnedLocalEntry {
     )]
     provenance: Option<ValueProvenance>,
     /// How this entry's release obligation is dispositioned. Minted `ScopeExit`
-    /// (the function-exit LIFO pass owns it) and retracted off that set by a
+    /// (a scope-exit owner releases it) and retracted off that set by a
     /// [`Builder::set_owned_local_disposition`] write when its release is handled
     /// mid-lowering (consumed, body-end-released, inner-scope-released).
     disposition: Disposition,
@@ -14555,8 +14557,8 @@ impl Builder {
             // parameter is OWNED by the callee (the caller moved it in and does
             // not drop it), so register it for the scope-exit drop — closing the
             // f9 leak where a by-value resource param the body did not forward
-            // was never freed. The per-exit `drops_for_exit` dataflow narrowing
-            // removes it on paths where the body already moved it out (returned,
+            // was never freed. The ownership replay omits it on paths where the
+            // body already moved it out (returned,
             // forwarded to another consume, or a `self`-consuming method), so it
             // is dropped exactly once and never double-freed. Keyed by the
             // ORIGIN `(ItemId, index)`; a BORROW param is absent and never
@@ -14733,13 +14735,12 @@ impl Builder {
             // record match-drain callee-drop.
             //
             // Register it into `owned_locals` + the body scope, exactly like a
-            // `let`-bound local enum, so `derive_enum_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)
-            // picks it up and emits the tag-aware `DropKind::EnumInPlace` shell
-            // drop on every consuming path. That prover's escape scan already
-            // excludes the composite when a match arm MOVES its payload out into
-            // an owning sink (return / store / send / owning call), so a move-out
-            // arm never double-frees the payload the binder now owns — it
-            // fail-closed leaks the sibling remainder instead. Gated on
+            // `let`-bound local enum, so its owner mints the tag-aware
+            // `DropKind::EnumInPlace` shell drop on every consuming path. A
+            // match arm that MOVES its payload out into an owning sink
+            // (return / store / send) neutralizes the moved payload slot, so a
+            // move-out arm never double-frees the payload the binder now owns.
+            // Gated on
             // `call_param_consume` = CONSUME: a BORROW enum param is absent and
             // stays the caller's drop (#2735 named / #2743 temporary), mutually
             // exclusive with this callee drop.

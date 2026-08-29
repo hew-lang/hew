@@ -47,14 +47,12 @@ pub(super) use shell_drop_safety::{
 
 type FieldDropInsertions = Vec<(u32, usize, Vec<Instr>)>;
 
-/// #2212 — discharge the non-escaped owned sibling fields of a record whose
-/// composite drop the sole-owner prover excludes because ONE of its fields
-/// escaped through a field binder.
+/// #2212 — discharge the non-escaped owned sibling fields of a record ONE of
+/// whose fields escaped through a field binder.
 ///
-/// `derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) excludes a record root from its
-/// scope-exit `RecordInPlace` drop when an owned-field binder loaded from it
-/// escapes (the escapee owns that field now). The exclusion is
-/// function-scoped, so every OTHER owned field of the record — still solely
+/// When an owned-field binder loaded from a record root escapes (the escapee
+/// owns that field now), the root's whole-record release must not walk the
+/// escaped field, and every OTHER owned field of the record — still solely
 /// owned by the record slot — leaked (#2212: one 64 B `tag` buffer per
 /// frame at slope 1). This pass emits one `Instr::FieldDropInPlace` per
 /// non-escaped owned sibling right after the escape instruction, or at the
@@ -99,9 +97,9 @@ type FieldDropInsertions = Vec<(u32, usize, Vec<Instr>)>;
 /// escaped field, narrowed to the shapes the field-drop contract covers
 /// (`string`, or a classifier-admitted aggregate —
 /// `field_drop_in_place_admissible`); an owned sibling outside that set
-/// keeps its leak. The emitted op's base is the root local, so the
-/// composite-drop prover's direct `FieldDropInPlace` exclusion rule keeps
-/// the root excluded when it re-derives over these blocks — admission and
+/// keeps its leak. The emitted op's base is the root local, so the drop-plan
+/// verifier's inline-composite pairing rule (`validate_field_drop_in_place`)
+/// rejects any exit plan that still walks the root — admission and
 /// discharge cannot disagree.
 ///
 /// Binder-local reuse through a terminator dest (a call result written into
@@ -200,9 +198,9 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     // Tuple candidate roots (#2383): base locals of owned heap-owning TUPLE
     // bindings — the tuple composite prover's candidate set. The one-hop scan
     // below is record-only; the multi-hop chain compensator walks BOTH root
-    // kinds, because `derive_tuple_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) folds the recorded
-    // deep aliases into its exclusion exactly as the record prover does, and
-    // a widened exclusion without compensation leaks every chain sibling.
+    // kinds, because a deep alias escaping from a tuple root leaves the
+    // chain siblings unreleased exactly as it does from a record root, and
+    // an escape without compensation leaks every chain sibling.
     let mut root_tuple_ty: HashMap<u32, ResolvedTy> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_tuple(ty, record_field_orders, enum_layouts, lifecycle_registry) {
@@ -346,9 +344,9 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                     // A live-root field-projection cursor init BORROWS its
                     // `vec`-field binder (`vec_iter_projection_borrow_inits`):
                     // the root keeps sole ownership, so the read is a use
-                    // site, never an escape event — mirroring the exemption in
-                    // `derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) so admission and
-                    // discharge cannot disagree.
+                    // site, never an escape event — the same borrow the
+                    // cursor's ingress classification records, so admission
+                    // and discharge cannot disagree.
                     let borrowed_cursor_vec_src = if projection_borrow_cursor_inits.contains(dest) {
                         vec_iter_record_init_vec_source(instr)
                     } else {
@@ -704,11 +702,11 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     }
     // The one-hop scan above sees only a binder loaded DIRECTLY off a whole-value
     // alias member, so a ≥2-hop escape (`let mid = o.mid; let leaf = mid.leaf;
-    // return leaf`) is invisible to it — yet the composite-drop provers DO
-    // exclude the owner for it (via `close_alias_binders_forward`). Walk the
-    // recorded alias chain — record AND tuple roots (#2383) — plus the #2387
-    // match-bound byte-copy hop chain, and discharge the non-escaped siblings at
-    // every level so the widened exclusion never outruns its compensation.
+    // return leaf`) is invisible to it — yet the escapee owns the subtree just
+    // the same. Walk the recorded alias chain — record AND tuple roots
+    // (#2383) — plus the #2387 match-bound byte-copy hop chain, and discharge
+    // the non-escaped siblings at every level so the escape never outruns its
+    // compensation.
     let candidate_roots: HashSet<u32> = root_record_ty
         .keys()
         .chain(root_tuple_ty.keys())
@@ -883,11 +881,9 @@ fn explicit_projection_transfer_sibling_drops(
 /// `let mid = o.0; let leaf = mid.0; leaf`), the ≥2-hop companion to the
 /// one-hop scan in [`apply_escaped_record_sibling_field_drops`].
 ///
-/// `derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) and `derive_tuple_composite_drop_allowed`
-/// fold the recorded deep aliases into their exclusion via
-/// `close_alias_binders_forward`, so when a ≥2-hop alias escapes into an owning
-/// sink they suppress the OWNER root's whole composite drop — otherwise the
-/// owner would free a subtree the escapee already handed to the caller (the
+/// When a ≥2-hop alias escapes into an owning sink the OWNER root's whole
+/// composite drop must not walk the escaped subtree — otherwise the owner
+/// would free a subtree the escapee already handed to the caller (the
 /// #2375 double-free). The one-hop scan cannot see a ≥2-hop alias (its
 /// field-binder scan reaches only a binder loaded DIRECTLY off a whole-value
 /// alias member), so the widened exclusion removed the composite drop but
@@ -1252,18 +1248,20 @@ fn compute_escaped_chain_sibling_drops(
     }
     vec![(esc_block, esc_idx + 1, siblings)]
 }
-/// Fail-closed retain/drop derivation for **local `bytes`** bindings. Returns
-/// both the scope-exit drop allow-set and the explicit MIR retain markers that
-/// mint additional owners. Codegen consumes only those markers; it never
-/// independently infers bytes retains from a type-shaped LLVM value.
+/// Fail-closed retain derivation for **local `bytes`** bindings. Returns the
+/// set of bindings proven to be sole owners (`allowed`) and the explicit MIR
+/// retain markers that mint additional owners. `allowed` gates only which
+/// retain markers are materialized and which hand-offs mark their source
+/// consumed — mint-site decisions; exit plans derive from the owner replay.
+/// Codegen consumes only the markers; it never independently infers bytes
+/// retains from a type-shaped LLVM value.
 ///
-/// Structure mirrors `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) (the default-deny
-/// escape-scan precedent): candidate collection, whole-value alias propagation
-/// through `Move`, then an escape scan where any read of an alias member that
-/// is not positively classified as a borrow EXCLUDES the whole alias group.
-/// A binding the prover does not positively clear LEAKS (as before this fix);
-/// it never double-frees. Two bytes-specific differences from the collection
-/// scanner:
+/// Structure is the default-deny escape scan: candidate collection,
+/// whole-value alias propagation through `Move`, then an escape scan where
+/// any read of an alias member that is not positively classified as a borrow
+/// EXCLUDES the whole alias group. A binding the scan does not positively
+/// clear is never treated as a co-owner mint site; it never double-frees.
+/// Two bytes-specific points:
 ///
 /// 1. **Projection-alias taint exclusion.** A `bytes` value is a by-value
 ///    `BytesTriple` struct; loading it out of a still-live aggregate
@@ -1298,7 +1296,7 @@ fn compute_escaped_chain_sibling_drops(
     clippy::too_many_lines,
     reason = "three sequential single-purpose passes (candidate collection, \
               whole-value alias propagation, escape scan) sharing fixpoint \
-              state, mirroring derive_local_collection_drop_allowed; splitting \
+              state; splitting \
               scatters the fail-closed ordering the escape scan depends on"
 )]
 pub(super) fn derive_local_bytes_drop_allowed(
@@ -1575,8 +1573,7 @@ pub(super) fn derive_local_bytes_drop_allowed(
         }
         // Resolve to the whole-value alias ROOT before testing exclusion, so a
         // candidate that is itself an alias member is excluded when any group
-        // member escaped (same fail-closed root resolution as the collection
-        // prover; see the rationale on `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)).
+        // member escaped (fail-closed root resolution).
         let root = alias_of.get(&local).copied().unwrap_or(local);
         if !excluded_roots.contains(&root) {
             allowed.insert(binding);
@@ -1913,9 +1910,9 @@ use returned_member_flow::compute_returned_flow_locals;
 /// structurally fail-OPEN: every return grammar the enumeration does not list
 /// re-opens the hole.
 ///
-/// This derivation inverts to value-flow, the same alias/construct basis
-/// [`derive_tuple_composite_drop_allowed`] and [`derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)]
-/// already use, so a syntactic shape cannot fall behind the grammar:
+/// This derivation inverts to value-flow, the same alias/construct basis the
+/// sibling-discharge scan uses, so a syntactic shape cannot fall behind the
+/// grammar:
 ///   1. Seed the `flows_to_return` set with every owned hand-off slot moved
 ///      whole-value into the `ReturnSlot` (`Move { dest: ReturnSlot, src }`,
 ///      where `src` is a `Local` or one of the owned handle places — see
@@ -1953,10 +1950,10 @@ use returned_member_flow::compute_returned_flow_locals;
 /// member that did not actually escape — that LEAKS, it never double-frees. The
 /// intermediate temps the fixpoint also collects (a construct dest, a rebind
 /// alias) are not `owned_locals` bindings, so excluding them is a no-op. The
-/// aggregate binding ITSELF (the `pair` local) is governed by the per-aggregate
-/// `derive_*_drop_allowed` escape scans, which already exclude a returned
-/// aggregate; this pass is the complementary half that reaches the scalar member
-/// handles those scans do not own.
+/// aggregate binding ITSELF (the `pair` local) is governed by its own owner's
+/// replay, which ends the generation when the aggregate is returned; this pass
+/// is the complementary half that reaches the scalar member handles that
+/// replay does not own.
 ///
 /// KNOWN over-exclusion (branch-divergent member sets): the value-flow set is
 /// flow-INSENSITIVE, so when distinct control-flow tails construct the returned
@@ -2013,9 +2010,9 @@ mod returned_member_retain_scope;
 /// one runtime context: the source binding's own slot and the aggregate field.
 /// That is only safe if EXACTLY ONE of them frees the context. The precise
 /// value-flow analyses prove the safe cases and remove one side's drop:
-///   - the aggregate's in-place member drop is removed by
-///     [`derive_tuple_composite_drop_allowed`] / [`derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)]
-///     when the field is extracted into a release-consumer;
+///   - the aggregate's in-place member drop is suppressed at the extraction
+///     (`AggregateProjectionNeutralize` nulls the moved-out member) when the
+///     field is extracted into a release-consumer;
 ///   - the SOURCE binding's standalone drop is removed by
 ///     [`derive_consumed_local_aggregate_member_bindings`] (extracted into a
 ///     downstream consumer) or [`derive_returned_aggregate_member_bindings`]
@@ -2112,7 +2109,7 @@ pub(super) fn detect_unproven_aggregate_handle_double_free(
     // no-op) and is a copyable reference, so it can never double-free and is
     // never an origin. Plain CoW VALUE leaves (`String`/`Bytes`/`Vec`/`HashMap`/
     // `HashSet`) are deliberately EXCLUDED — their exactly-once is already proven
-    // by `derive_cow_sole_owner` / `owned_vec_drop_allowed` (refcount / sole-
+    // by `derive_cow_sole_owner` and the owner replay (refcount / sole-
     // owner), and a string aliased into a tuple (`let _t = (s, i)`) is a correct,
     // common pattern those analyses admit. An aggregate binding (`(Gen, i64)` /
     // `Holder { gen, .. }`) is never an origin: its handle members are the
@@ -2557,33 +2554,7 @@ pub(super) fn detect_unproven_aggregate_handle_double_free(
     findings
 }
 #[cfg(test)]
-mod owned_record_drop_derivation {
-    //! Direct structural tests for `derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) — the
-    //! value-class-capstone fail-closed sole-owner gate for owned-aggregate
-    //! records passed/returned by value. These poke the derivation with
-    //! synthetic MIR blocks: a returned record (escape) must be EXCLUDED so its
-    //! `RecordInPlace` drop never double-frees the escapee's fields, while a
-    //! field-read-only record must be ADMITTED so its heap fields are freed.
-    //! The paired runtime oracle in the exec suite is Guard-Malloc with
-    //! `MallocScribble`; glibc-only `MALLOC_CHECK_` / `MALLOC_PERTURB_` are
-    //! platform helpers, not the canonical proof on macOS.
-    //!
-    //! The headline `one_arm_consume_*` pair pins the audit-#5 reconciliation:
-    //! a record consumed (returned) on one branch but live on another is gated
-    //! by this per-exit escape analysis, NOT by a path-insensitive global
-    //! `owned_locals` removal.
-}
-#[cfg(test)]
 mod escaped_sibling_field_discharge;
-#[cfg(test)]
-mod tuple_composite_field_drop_exclusion {
-    //! Direct structural pins for `derive_tuple_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)'s
-    //! `FieldDropInPlace` exclusion rule — the tuple twin of the record
-    //! prover's. The op mints no load dest and no `Drop` place, so with
-    //! bitcopy-only sibling binders it is invisible to the
-    //! `elem_binders ∩ release_owner_bases` intersection; the direct rule is
-    //! what keeps the `TupleInPlace` drop from re-walking the freed element.
-}
 // Split into a sibling file (not inlined here) to stay under the
 // `src/lower/` line-count ratchet (`hew-mir/tests/lower_module_size.rs`).
 #[cfg(test)]
@@ -3392,20 +3363,5 @@ mod generic_record_owned_aggregate_admission {
         );
     }
 }
-#[cfg(test)]
-mod plain_vec_drop_interior_alias_and_escape {
-    //! Revision regression net for the plain-`Vec` scope-exit release
-    //! (`fix/v050-plain-vec-local-drop`). The shipped
-    //! `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) escape scan caught a handle
-    //! aliased OUT of its slot (read as an owning sink) but had NO interior-alias
-    //! INGRESS exclusion: a candidate whose slot is itself a BORROW of a
-    //! still-live parent — `let r = data.get(row)` lowering to
-    //! `hew_vec_get_ptr(data, row)` → `Move` → `r` — was admitted for
-    //! `hew_vec_free`, double-freeing the element the parent vector still owns
-    //! (the csv `Table::get` UAF). These fixtures pin the prover's allow-set —
-    //! the authority that drives the `hew_vec_free` drop plan — for the
-    //! aggregate-escape and interior-alias shapes, NOT behaviourally.
-}
-
 #[cfg(test)]
 mod shell_drop_safety_payload_cap;

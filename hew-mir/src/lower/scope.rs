@@ -130,7 +130,7 @@ impl Builder {
     /// released every iteration instead of accumulating until function exit.
     ///
     /// Each released binding is removed from `owned_locals` and
-    /// `scope_generator_bindings` so the function-exit LIFO drop never fires a
+    /// `scope_generator_bindings` so no scope-exit owner ever fires a
     /// second `hew_gen_coro_destroy` on the same slot — and the inline
     /// `Instr::Drop` null-stores the slot afterwards, so even a
     /// structurally-reachable second drop observes null
@@ -367,9 +367,9 @@ impl Builder {
     ///
     /// This is the LEXICAL (fall-through) release only. An early
     /// `break @outer` / `continue @outer` / `return` jumps past this point, and
-    /// the `ScopeReleased` disposition set here also removes the cursor from the
-    /// function-exit LIFO the terminator drop plans are built from — so those
-    /// edges carry their own inline release via
+    /// the `ScopeReleased` disposition set here also keeps the cursor from
+    /// minting a scope-exit owner the terminator drop plans would replay — so
+    /// those edges carry their own inline release via
     /// [`Self::emit_vec_iter_drops_for_exit_edge`], whose scope window makes the
     /// two mutually exclusive.
     pub(crate) fn emit_scope_vec_iter_drops(&mut self, scope_id: ScopeId) {
@@ -399,8 +399,8 @@ impl Builder {
     /// #58 (B2 leak-3, round 3) — [`Self::emit_scope_vec_iter_drops`] is a
     /// LEXICAL release: it only runs on the fall-through path out of the
     /// cursor's declaring block. An early exit that jumps past that block has
-    /// no lexical release, and `VecIter` deliberately has no function-exit LIFO
-    /// entry, so
+    /// no lexical release, and `VecIter` deliberately mints no scope-exit
+    /// owner, so
     /// `for w in make_vec() { …; return; }` leaked the whole snapshot tree once
     /// per call.
     ///
@@ -810,8 +810,8 @@ impl Builder {
     /// producer promptly.
     ///
     /// Mirrors [`Self::emit_scope_generator_drops`]: removes the binding from
-    /// `scope_stream_bindings`, dispositions it `ScopeReleased` so the
-    /// function-exit LIFO cannot fire a second close, and the inline
+    /// `scope_stream_bindings`, dispositions it `ScopeReleased` so no
+    /// scope-exit owner fires a second close, and the inline
     /// `Instr::Drop` (`RuntimeSymbol` close path) null-stores the slot after the
     /// close (`raii-null-after-move`; `hew_stream_close` /
     /// `hew_channel_receiver_close` also null-guard, so a moved-out or

@@ -944,8 +944,9 @@ impl Builder {
 
     /// The owned-locals seed authority: does a binding of type `ty` oblige
     /// scope-exit drop elaboration? `true` admits the binding into the
-    /// `owned_locals` candidate ledger every downstream allow-set derivation,
-    /// `unsupported_vec_element_diagnostics`, and `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) scan.
+    /// `owned_locals` ledger that the ownership finalizers, owner `Mint`
+    /// publication, and `unsupported_vec_element_diagnostics` read; the exit
+    /// plans themselves derive from the minted owners' event replay.
     /// The verdict is the value-class seed: every class except `BitCopy`
     /// seeds (a `BitCopy` value owns no heap and its copy is free; a `View`
     /// seeds into the no-retain no-op drop arm; a `Linear` seeds so the
@@ -960,8 +961,8 @@ impl Builder {
     /// `owned_locals`, AND the consume-side handling of a `Use { Consume }`
     /// on a `BindingRef` (drop-flag-set vs `mark_binding_moved`). One
     /// authority on both sides is load-bearing: a consume side looser than
-    /// the seed side leaves a moved-out binding in `owned_locals`, and the
-    /// function-exit LIFO drop pass then releases a moved-out value (an
+    /// the seed side leaves a moved-out binding in `owned_locals`, and its
+    /// scope-exit owner then releases a moved-out value (an
     /// over-drop / double-free); a tighter consume side leaks.
     ///
     /// Known limitation, preserved: the gate is record-blind via
@@ -2178,8 +2179,9 @@ impl Builder {
                 if dyn_owned {
                     // dyn-trait owned local: classify storage from the RHS
                     // expression shape and push into `owned_locals` with the
-                    // actual `TraitObject` type so `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) reaches
-                    // the dyn-trait arm. Fail-closed if classification
+                    // actual `TraitObject` type so the owner's `DropRecipe`
+                    // reaches the dyn-trait arm of `drop_kind_for`.
+                    // Fail-closed if classification
                     // returns `Err`.
                     match classify_dyn_trait_storage(value, &self.dyn_trait_storage) {
                         Ok(storage) => {
@@ -2268,7 +2270,7 @@ impl Builder {
                     // (either pre-emptively via the lambda-actor
                     // `pending` path above, or via the `Some(src)` arm
                     // below). Keeping the two ledgers in sync is the
-                    // structural invariant that `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay)
+                    // structural invariant that owner publication
                     // depends on: an `owned_locals` entry without a
                     // matching `binding_locals` Place panics drop
                     // elaboration. When `lower_value` returns `None`
@@ -2956,9 +2958,9 @@ impl Builder {
                     {
                         // #1933 / #1941 — a non-idempotent user `#[resource]`
                         // with an allocated path-sensitive drop-flag is KEPT in
-                        // `owned_locals` so the per-exit `drops_for_exit`
-                        // dataflow filter narrows its close per control-flow
-                        // path. Mark the flag consumed (set 1) so codegen's
+                        // `owned_locals` so its owner's `Guard` narrows its
+                        // close per control-flow path. Mark the flag
+                        // consumed (set 1) so codegen's
                         // `flag == 0` gate skips the now-callee-owned close on
                         // this path; the dataflow's own `Use{Consume}` transition
                         // (independent of `owned_locals`) still drives the
@@ -4518,13 +4520,12 @@ impl Builder {
                 // suspend-point interleaving exists between the old-value release
                 // and the new-record construction.
                 //
-                // Double-drop avoidance: each emitted RecordFieldLoad+Drop temp
-                // appears in `derive_owned_record_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)'s `field_binders`
-                // set AND its `release_owner_bases` set (the Defect-1 guard),
-                // which then excludes the base binding from composite drop —
-                // complementing the existing exclusion from non-overridden field
-                // binders escaping via RecordInit.  No owned field of `base` is
-                // ever dropped twice.
+                // Double-drop avoidance: the base is consume-marked above, so
+                // its owner is discharged at this site and no exit plan
+                // carries a composite drop for it; the overridden fields are
+                // released here and the non-overridden fields move into the
+                // new record via RecordInit. No owned field of `base` is ever
+                // dropped twice.
                 //
                 // Fail-closed WHOLE-RECORD pre-flight: both the override-drop and
                 // the shallow carry below are sound ONLY when the base record is

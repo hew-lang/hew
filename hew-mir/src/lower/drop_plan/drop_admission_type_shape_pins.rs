@@ -421,7 +421,7 @@ fn collection_handle_predicate_projects_from_heap_leaf() {
 
     // Symbol-agreement tripwire: the leaves' canonical release symbols are
     // exactly the two symbols the collection-handle bucket emits in
-    // `build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) (via `drop_kind_for`).
+    // `drop_kind_for`.
     assert_eq!(
         HeapLeaf::HashMap.release_symbol(),
         "hew_hashmap_free_layout",

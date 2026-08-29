@@ -10,10 +10,10 @@
 //! [`ResolvedTy`] at each consumer. The live implementation now carries the
 //! shared decision through the consolidated seed, ABI, codegen, and `Vec`
 //! release buckets. Deliberately narrow authorities remain where their domain
-//! is different: the structural `derive_*_drop_allowed` provers establish
-//! path-sensitive sole ownership, while `cow_value_leaf_drop_symbol` is an
-//! exhaustive scalar-leaf picker that delegates containers and `Bytes` to
-//! their own admission authorities.
+//! is different: the Checked-MIR ownership replay establishes which owner
+//! generations are live at each exit, while `cow_value_leaf_drop_symbol` is
+//! an exhaustive scalar-leaf picker that delegates containers and `Bytes` to
+//! their own recipe arms.
 //!
 //! [`OwnershipDecision`] is the single typed fact routed consumers read from
 //! the value instead of re-deriving. The complete classification of a value

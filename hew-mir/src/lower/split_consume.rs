@@ -671,7 +671,7 @@ pub(super) fn base_local(place: Place) -> Option<u32> {
         Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. } => Some(local),
     }
 }
-/// Whole-value alias grouping for the `derive_*_drop_allowed` escape scans.
+/// Whole-value alias grouping for the ownership escape scans.
 ///
 /// Seeds each candidate as its own root (`alias_of[c] = c`) and then runs a
 /// fixpoint that forward-propagates a candidate's root through every
@@ -895,9 +895,9 @@ pub(super) fn local_is_byte_copy_aggregate(
     }
 }
 /// #2384 — forward closure of the interior-alias binders through MATCH-BOUND
-/// hops. [`close_alias_binders_forward`] follows only whole-value `Move`s, so
+/// hops. Whole-value alias grouping follows only whole-value `Move`s, so
 /// a chain hop bound via `match` (`let leaf = match mid { Mid { leaf, x: _ }
-/// => leaf }`) is invisible to the composite-drop provers: the destructure
+/// => leaf }`) is invisible to it: the destructure
 /// lowers to a `RecordFieldLoad` / `TupleFieldLoad` off the scrutinee COPY
 /// (itself a `Move` of the alias), and the loaded inline aggregate byte-copies
 /// the member with no retain — the binder is still an alias of the OWNER

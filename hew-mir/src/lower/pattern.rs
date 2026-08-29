@@ -6035,8 +6035,8 @@ impl Builder {
     /// The parent composite (ultimately the match scrutinee) remains the
     /// registered owner and frees the loaded heap content through its
     /// recursive tag-aware `DropKind::EnumInPlace` scope-exit drop, which
-    /// descends through this nesting depth. For that to hold, the
-    /// `derive_enum_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) escape scan must NOT misread the
+    /// descends through this nesting depth. For that to hold, no ownership
+    /// scan may misread the
     /// reads this method emits as payload escapes: the inner tag is read with
     /// `Place::EnumTag` (a bitcopy discriminant, exempted as a tag read), and
     /// the i64 tag destination is never tainted as a payload binder (the

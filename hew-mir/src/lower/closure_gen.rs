@@ -2755,8 +2755,8 @@ impl Builder {
     }
 
     /// #2395 decision 2 — record the abandon-edge drop for a `StreamSend`
-    /// in-flight yield value. The value is escape-poisoned (so the generic
-    /// `drops_for_exit` filter misses it) and its resume-edge release (the
+    /// in-flight yield value. The value is escape-poisoned (so it mints no
+    /// owner the replay could plan for) and its resume-edge release (the
     /// pump's `after_send` inline `Instr::Drop`) never fires on
     /// destroy-while-parked. Stash a congruent `CowHeap` drop keyed by
     /// `suspend_block` (the block carrying the `Terminator::Suspend`); the

@@ -800,10 +800,9 @@ fn force_consume_method_nonreceiver_resource_params(
 ///     receivers, not method non-receiver args.
 ///
 /// Heap-ownership is intentionally NOT gated here: the recording only marks the
-/// receiver's `SiteId`, and the downstream per-type sole-owner prover
-/// (`derive_{record,tuple,enum}_composite_drop_allowed`) decides the actual drop
-/// exactly as for a free-fn positional borrow arg — a non-heap-owning receiver
-/// yields no drop.
+/// receiver's `SiteId`, and owner publication decides the actual drop exactly
+/// as for a free-fn positional borrow arg — a non-heap-owning receiver mints
+/// no owner and yields no drop.
 /// Consuming the layout-blind checker verdict here and deferring the structural
 /// question to the one heap-ownership authority avoids re-deriving it
 /// (`checker-authority`).
@@ -3733,10 +3732,10 @@ pub(super) fn vec_iter_record_layout_key(ty: &ResolvedTy) -> Option<String> {
 /// transfer. Either way the `record_init`'s `vec`-field read is NOT an
 /// ownership escape of the source handle the way a user `record_init` field
 /// store is — the cursor never frees what it borrows. Surfacing this field lets
-/// `derive_local_collection_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) exempt it from the escape scan so a
-/// captured place source keeps its own scope-exit drop, and lets
-/// `derive_vec_iter_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) decide whether the cursor (rvalue source) or
-/// the source binding (place source) is the sole owner that frees the handle.
+/// the sibling-discharge escape scan (`composite_own`) and the borrowed-cursor
+/// ingress classification (`temp_drop`) treat the read as a borrow, so a
+/// captured place source keeps its own owner and the cursor mints one only
+/// when it is the sole owner of an rvalue source's handle.
 pub(super) fn vec_iter_record_init_vec_source(instr: &Instr) -> Option<Place> {
     let Instr::RecordInit { ty, fields, .. } = instr else {
         return None;

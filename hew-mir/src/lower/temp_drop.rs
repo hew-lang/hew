@@ -925,8 +925,7 @@ fn corroborated_retained_string_move_dest(
 /// `string.retain v; ret = move v` hands the CALLER an independent `+1` on the
 /// buffer while `v`'s producing reference stays owned inside the callee. This is
 /// the `ReturnSlot` twin of `corroborated_retained_string_move_sites`' local
-/// share shape; `derive_enum_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) already recognises it for
-/// the enum shell drop (`is_retained_return_move`).
+/// share shape.
 fn string_move_is_retained_return(block: &BasicBlock, instr_index: usize, src: Place) -> bool {
     instr_index
         .checked_sub(1)
@@ -4040,8 +4039,8 @@ mod aggregate_projection_transfer_dest_tests {
 /// / `hew_vec_get_ptr`), propagated through whole-value `Move`s to a fixpoint.
 ///
 /// Deliberately NARROWER than [`compute_collection_interior_alias_taint`]: no
-/// field-load / projection seeds, ONLY getter dests — so it can gate the LIFO
-/// drop of an `xs[i]` binding (`let e = v[0]` over a close-obligated element is
+/// field-load / projection seeds, ONLY getter dests — so it can gate the owner
+/// mint of an `xs[i]` binding (`let e = v[0]` over a close-obligated element is
 /// a borrow; the collection remains the sole close authority and this binding
 /// must not fire a second one) without touching match-binder drop semantics.
 #[must_use]
@@ -4079,7 +4078,7 @@ pub(super) fn collection_borrow_getter_alias_locals(blocks: &[BasicBlock]) -> Ha
 }
 
 /// Fail-closed use validation for close-obligated collection borrows: the
-/// LIFO-drop suppression of a borrowed `xs[i]` element binding is sound ONLY
+/// owner-mint suppression of a borrowed `xs[i]` element binding is sound ONLY
 /// when every use of the alias is a proven-safe read. This validator is the
 /// proof: any use that could carry the alias out of the frame, mint a second
 /// close authority, or redefine the binding returns a violation, and the
@@ -5230,9 +5229,9 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
 /// caller its OWN reference, so the co-owner's mint is never transferred out and
 /// leaks one node per call unless released inside the callee
 /// (`enum_callee_consume_drop_leak_oracle` `move_out_via_let_share`). This is the
-/// local-share twin of the enum-shell fix G2 landed in
-/// `derive_enum_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay): G2 keeps the shell drop that frees the
-/// still-owned original; this adds the share drop that frees the co-owner's
+/// local-share twin of the enum-shell fix G2: the shell drop is kept so it
+/// frees the still-owned original; this adds the share drop that frees the
+/// co-owner's
 /// mint. The two are mutually exclusive references, so together the buffer is
 /// released exactly once per outstanding reference.
 ///
@@ -5338,10 +5337,10 @@ pub(super) fn finalize_string_ownership(
     dataflow_result: &dataflow::DataflowResult,
 ) -> StringDropDerivation {
     // Retain/mint classification must see only canonical user-facing owners.
-    // Synthetic produced-value slots are added to the later exceptional-drop
-    // template after their physical handoff has been made explicit; including
-    // them here makes two bindings compete for one local and destroys precise
-    // actor-state ingress provenance.
+    // Synthetic produced-value slots mint their owners once their physical
+    // handoff has been made explicit; including them here makes two bindings
+    // compete for one local and destroys precise actor-state ingress
+    // provenance.
     let mut owned_locals_snapshot = builder.owned_locals_snapshot();
     // Aggregate construction now publishes an exact hard-cutover Transfer and
     // marks its source `ConsumedAt` before this retain derivation runs. A
@@ -5350,13 +5349,13 @@ pub(super) fn finalize_string_ownership(
     // aggregate ingress needs a co-owner, and the actor-message flag is the
     // path-exact authority when a conditional handoff needs one. Restore only
     // those already-registered actor-message owners from
-    // the exit ledger. Ordinary consumed owners stay absent, and aliases are
-    // excluded by `owned_locals_exit_candidates` itself.
+    // the owner ledger. Ordinary consumed owners stay absent, and aliases are
+    // excluded by `owned_locals_owner_generations` itself.
     let mut candidate_bindings: HashSet<BindingId> = owned_locals_snapshot
         .iter()
         .map(|(binding, _, _)| *binding)
         .collect();
-    owned_locals_snapshot.extend(builder.owned_locals_exit_candidates().into_iter().filter(
+    owned_locals_snapshot.extend(builder.owned_locals_owner_generations().into_iter().filter(
         |(binding, _, ty)| {
             matches!(ty, ResolvedTy::String)
                 && builder

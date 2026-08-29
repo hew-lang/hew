@@ -163,7 +163,11 @@ fn llvm_function_body<'a>(ir: &'a str, function: &str) -> &'a str {
     &body[..end]
 }
 
-/// Count direct `call ... @<symbol>(` sites in the one LLVM function that owns
+fn is_call_instruction(line: &str) -> bool {
+    line.contains("call ") || line.contains("invoke ")
+}
+
+/// Count direct `call` or `invoke` sites for `@<symbol>(` in the one LLVM function that owns
 /// the relevant handle. A presence oracle (`contains`) is blind to a
 /// double-free masked by the runtime's null-guard — this exact local count is
 /// not.
@@ -171,7 +175,7 @@ fn count_calls_in_function(ir: &str, function: &str, symbol: &str) -> usize {
     let body = llvm_function_body(ir, function);
     let needle = format!("@{symbol}(");
     body.lines()
-        .filter(|line| line.contains(&needle) && line.contains("call "))
+        .filter(|line| line.contains(&needle) && is_call_instruction(line))
         .count()
 }
 
@@ -185,15 +189,15 @@ fn count_source_calls_in_function(ir: &str, function: &str, symbol: &str) -> usi
     let drop_label = format!("\"{symbol} drop");
     body.lines()
         .filter(|line| {
-            line.contains(&needle) && line.contains("call ") && !line.contains(&drop_label)
+            line.contains(&needle) && is_call_instruction(line) && !line.contains(&drop_label)
         })
         .count()
 }
 
 #[test]
 fn close_count_is_scoped_to_its_owner_function() {
-    let ir = "define void @owner() {\n  call void @hew_sink_close(ptr null)\n}\n\
-              \ndefine void @unrelated() {\n  call void @hew_sink_close(ptr null)\n  call void @hew_sink_close(ptr null)\n}\n";
+    let ir = "define void @owner() personality ptr @rust_eh_personality {\n  invoke void @hew_sink_close(ptr null) to label %done unwind label %cleanup\n}\n\
+              \ndefine void @unrelated() {\n  call void @hew_sink_close(ptr null)\n  invoke void @hew_sink_close(ptr null) to label %done unwind label %cleanup\n}\n";
     assert_eq!(count_calls_in_function(ir, "owner", "hew_sink_close"), 1);
     assert_eq!(
         count_calls_in_function(ir, "unrelated", "hew_sink_close"),

@@ -201,6 +201,19 @@ fn llvm_function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
     &body[..end]
 }
 
+fn call_position(body: &str, symbol: &str) -> Option<usize> {
+    body.lines()
+        .scan(0, |offset, line| {
+            let line_start = *offset;
+            *offset += line.len() + 1;
+            Some((line_start, line))
+        })
+        .find_map(|(offset, line)| {
+            ((line.contains("call ") || line.contains("invoke ")) && line.contains(symbol))
+                .then_some(offset)
+        })
+}
+
 fn check_source(source: &str, name: &str) -> std::process::Output {
     let dir = tempfile::Builder::new()
         .prefix("projected-tuple-owner-check-")
@@ -369,12 +382,11 @@ fn llvm_clears_the_tuple_slot_before_either_release() {
     let neutralize = build
         .find("store ptr null, ptr %carrier_path_d0_f0_ptr")
         .expect("root field null store");
-    let vec_drop = build
-        .find("call void @hew_vec_free(")
-        .expect("projected Vec release");
-    let tuple_drop = build
-        .find("call void @\"__hew_tuple_drop_inplace_")
-        .expect("tuple structural release");
+    let vec_drop = neutralize
+        + call_position(&build[neutralize..], "@hew_vec_free(").expect("projected Vec release");
+    let tuple_drop = neutralize
+        + call_position(&build[neutralize..], "@\"__hew_tuple_drop_inplace_")
+            .expect("tuple structural release");
     assert!(
         neutralize < vec_drop && vec_drop < tuple_drop,
         "the source slot must be null before the projected owner and tuple \

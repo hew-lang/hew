@@ -17,17 +17,26 @@
 //! minted once and projected here. There is no `From<String>` and no
 //! constructor that takes an emitted name.
 //!
-//! "Minted once" is exact for every source declaration: a function's
-//! [`DefId`] comes from the resolver (`HirFn::declaration`), a machine's is
-//! minted beside it in hew-hir (`HirMachineDecl::declaration`), and the SIR
-//! bridge projects `SemCallable::declaration`. It is NOT yet exact for the
-//! bodies MIR synthesizes for an actor's receive handlers, init and lifecycle
-//! hooks, or for a supervisor's bootstrap: those HIR nodes publish no
-//! declaration identity, so `lower/machine_synth.rs` builds a synthetic
-//! `HirFn` whose `declaration` is reconstructed from the owner's qualified
-//! path. Those keys are still projected from a `declaration` field — the
-//! reconstruction happens one layer up, and it is unchanged from before this
-//! carrier existed. See `.tmp/TODO.md` for the carrier that retires it.
+//! "Minted once" describes the PROJECTION, not yet the source of the value
+//! projected: every key is built from exactly one `declaration` field, read
+//! once, with no name-based reconstruction at this layer. That field's
+//! identity is not uniformly resolver-native today. `HirFn::declaration` and
+//! `HirMachineDecl::declaration` are both built by hew-hir with
+//! `DefId::legacy_reconstruct_from_full_path` over the owner's qualified path
+//! (`hew-hir/src/lower.rs`, `lower_fn_with_name_and_impl_params` and
+//! `lower_machine`) — a real,
+//! resolver-adjacent identity keyed on the dotted source path, but not yet a
+//! resolver-minted id — and the SIR bridge projects `SemCallable::declaration`
+//! on top of that same value. It is furthest from exact for the bodies MIR
+//! synthesizes for an actor's receive handlers, init and lifecycle hooks, or
+//! for a supervisor's bootstrap: those HIR nodes publish no declaration
+//! identity at all, so `lower/machine_synth.rs` builds a synthetic `HirFn`
+//! whose `declaration` is reconstructed from the owner's qualified path with
+//! the same `legacy_reconstruct_from_full_path` call. In every case the key
+//! is anchored on the declaration identity hew-hir currently reconstructs,
+//! not on a resolver-native mint; resolver-native minting for all three
+//! (ordinary functions, machines, and the actor/supervisor synthetics) is the
+//! tracked upstream fix — see `.tmp/TODO.md`.
 //!
 //! `RawMirFunction::name` (and its Checked/Elaborated twins) stays as the
 //! presentation/linkage alias beside the key.

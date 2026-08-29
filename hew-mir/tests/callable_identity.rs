@@ -107,6 +107,20 @@ fn method_key_is_the_declaration_path_not_the_emitted_symbol() {
         }
         ",
     );
+    let published = hir
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Impl(block) => block
+                .method_symbols
+                .iter()
+                .zip(&block.method_ids)
+                .find(|(symbol, _)| symbol.ends_with("bump"))
+                .and_then(|(_, id)| id.clone()),
+            _ => None,
+        })
+        .expect("the checker must publish the impl method's declaration identity");
     let pipeline = lower_hir_module(&hir.module);
     let method = pipeline
         .raw_mir
@@ -114,15 +128,15 @@ fn method_key_is_the_declaration_path_not_the_emitted_symbol() {
         .find(|function| function.name.ends_with("bump"))
         .expect("the inherent method must be lowered");
 
+    assert_eq!(
+        method.key,
+        MirCallableKey::declared(published),
+        "the key must be the checker-published declaration, projected verbatim"
+    );
     assert_ne!(
         method.key.declaration.full_path(),
         method.name,
-        "declaration identity must not be recoverable from the emitted symbol"
-    );
-    assert!(
-        method.key.declaration.full_path().contains("Counter"),
-        "the declaration path must name the owning type: {}",
-        method.key.declaration.full_path()
+        "and it must not be recoverable from the emitted symbol"
     );
 }
 
@@ -299,6 +313,242 @@ fn closures_in_different_functions_do_not_share_a_synthesized_key() {
     );
 }
 
+/// Every synthesized child in the pipeline, as `(emitted name, parent key,
+/// producer variant)`. Producer coverage is asserted through this rather than
+/// through emitted-name shapes, so a rename of a compiler-internal symbol does
+/// not silently drop a variant's coverage.
+fn synthesized_children(
+    pipeline: &IrPipeline,
+) -> Vec<(&str, &MirCallableKey, SynthesizedCallable)> {
+    pipeline
+        .raw_mir
+        .iter()
+        .filter_map(|function| match &function.key.instance {
+            MirCallableInstance::Synthesized { parent, child } => {
+                Some((function.name.as_str(), parent.as_ref(), *child))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_named_function_used_as_a_value_is_keyed_under_the_body_that_references_it() {
+    let hir = hir_of(
+        r"
+        fn twice(x: i64) -> i64 { x * 2 }
+        fn apply(f: fn(i64) -> i64, x: i64) -> i64 { f(x) }
+
+        fn main() -> i64 { apply(twice, 4) }
+        ",
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    let main_key = raw(&pipeline, "main").key.clone();
+    let twice_key = raw(&pipeline, "twice").key.clone();
+
+    let shims: Vec<_> = synthesized_children(&pipeline)
+        .into_iter()
+        .filter(|(_, _, child)| matches!(child, SynthesizedCallable::NamedFnInvokeShim(_)))
+        .collect();
+    assert_eq!(shims.len(), 1, "one fn-value reference, one shim");
+    assert_eq!(
+        *shims[0].1, main_key,
+        "the shim belongs to the body that referenced the function, not to the target"
+    );
+    assert_ne!(
+        *shims[0].1, twice_key,
+        "keying the shim under its TARGET would make two references from different \
+         bodies collide"
+    );
+}
+
+#[test]
+fn a_generator_body_is_keyed_as_a_child_of_its_shell() {
+    let hir = hir_of(
+        r"
+        gen fn counter(n: i64) -> i64 {
+            var i = 0;
+            while i < n {
+                yield i;
+                i = i + 1;
+            }
+        }
+
+        fn main() {
+            for x in counter(3) {
+                println(x);
+            }
+        }
+        ",
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    let shell_key = raw(&pipeline, "counter").key.clone();
+
+    let bodies: Vec<_> = synthesized_children(&pipeline)
+        .into_iter()
+        .filter(|(_, _, child)| matches!(child, SynthesizedCallable::GeneratorBody(_)))
+        .collect();
+    assert_eq!(bodies.len(), 1, "one `gen fn`, one coroutine body");
+    assert_eq!(
+        *bodies[0].1, shell_key,
+        "the coroutine body is a child of the generator shell's declaration"
+    );
+}
+
+#[test]
+fn fork_entry_and_task_entry_shims_are_children_of_the_forking_body() {
+    let hir = hir_of(
+        r"
+        fn add_print(a: i64, b: i64) {
+            println(a + b);
+        }
+
+        fn tick() {
+            println(1);
+        }
+
+        actor Driver {
+            receive fn go() -> i64 {
+                scope {
+                    fork t = add_print(20, 22);
+                    await t;
+                };
+                scope {
+                    fork u = tick();
+                    await u;
+                };
+                7
+            }
+        }
+
+        fn main() -> i64 {
+            let d = spawn Driver;
+            match await d.go() {
+                Ok(v) => v - 7,
+                Err(_e) => 1,
+            }
+        }
+        ",
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    let children = synthesized_children(&pipeline);
+
+    let fork_shims: Vec<_> = children
+        .iter()
+        .filter(|(_, _, child)| matches!(child, SynthesizedCallable::ForkEntryShim(_)))
+        .collect();
+    assert_eq!(
+        fork_shims.len(),
+        1,
+        "one arg-bearing `fork`, one entry shim"
+    );
+    let adapters: Vec<_> = children
+        .iter()
+        .filter(|(_, _, child)| matches!(child, SynthesizedCallable::TaskEntryAdapter(_)))
+        .collect();
+    assert_eq!(
+        adapters.len(),
+        1,
+        "one no-arg unit `fork` callee, one task-entry adapter"
+    );
+
+    let handler_key = &raw(&pipeline, "Driver__recv__go").key;
+    assert_eq!(
+        fork_shims[0].1, handler_key,
+        "the fork shim belongs to the handler that forked"
+    );
+    assert_eq!(
+        adapters[0].1, handler_key,
+        "the adapter is minted while lowering the same handler"
+    );
+    assert_ne!(
+        fork_shims[0].0, adapters[0].0,
+        "the two producers must not collapse onto one emitted body"
+    );
+    assert_ne!(
+        fork_shims[0].2, adapters[0].2,
+        "one parent, two producers — the variant is what keeps the keys apart"
+    );
+}
+
+#[test]
+fn a_lambda_actor_body_is_keyed_as_a_child_of_the_spawning_body() {
+    let hir = hir_of(
+        r"
+        fn main() {
+            let dbl = actor |n: i64| -> i64 {
+                n * 2
+            };
+            match dbl(5) {
+                Ok(v) => println(v),
+                Err(_) => println(0),
+            }
+        }
+        ",
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    let main_key = raw(&pipeline, "main").key.clone();
+
+    let bodies: Vec<_> = synthesized_children(&pipeline)
+        .into_iter()
+        .filter(|(_, _, child)| matches!(child, SynthesizedCallable::LambdaActorBody(_)))
+        .collect();
+    assert_eq!(bodies.len(), 1, "one actor literal, one body");
+    assert_eq!(
+        *bodies[0].1, main_key,
+        "the lambda-actor body is a child of the body that spawned it"
+    );
+}
+
+#[test]
+fn a_machine_step_is_keyed_by_the_machine_declaration_and_its_type_arguments() {
+    // The machine step is the one synthesized producer whose parent is NOT a
+    // function: it projects `HirMachineDecl::declaration`. Reconstructing that
+    // owner from the machine's qualified name would make the presentation
+    // spelling a second identity authority.
+    let hir = hir_of(
+        r"
+        machine Lifecycle<T> {
+            events { ev; }
+            state Start;
+            state Mid;
+            on ev: Start => Mid { Mid }
+            on ev: _ => _ { state }
+        }
+
+        type Box { m: Lifecycle<i64>, x: i64 }
+
+        fn main() {
+            let b = Box { m: Lifecycle.Start, x: 0 };
+            println(b.x);
+        }
+        ",
+    );
+    let declaration = hir
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Machine(machine) if machine.name == "Lifecycle" => {
+                Some(machine.declaration.clone())
+            }
+            _ => None,
+        })
+        .expect("the machine declaration must be lowered");
+    let pipeline = lower_hir_module(&hir.module);
+
+    let steps: Vec<_> = synthesized_children(&pipeline)
+        .into_iter()
+        .filter(|(_, _, child)| matches!(child, SynthesizedCallable::MachineStep))
+        .collect();
+    assert_eq!(steps.len(), 1, "one realized machine layout, one step");
+    assert_eq!(
+        *steps[0].1,
+        MirCallableKey::instance(declaration, vec![ResolvedTy::I64]),
+        "the step's parent is the machine declaration at the realized type arguments"
+    );
+}
+
 // ── cross-producer agreement ────────────────────────────────────────────────
 
 #[test]
@@ -354,6 +604,63 @@ fn sir_bridge_and_legacy_lowering_agree_on_a_monomorphic_key() {
         raw(&strict, "main").key,
         raw(&strict, "helper").key,
         "distinct declarations must keep distinct keys on the strict path too"
+    );
+}
+
+#[test]
+fn sir_bridge_keys_a_generic_instance_by_its_declared_type_arguments() {
+    // The `CallableInstance::Generic` arm of the bridge's key projection. Its
+    // counterfactual is the arm above: a Monomorphic callable must not acquire
+    // an (empty) type-argument list, or the two arms would be interchangeable.
+    let source = r"
+        fn id<T>(x: T) -> T { x }
+
+        fn main() -> i64 { id(41) }
+        ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+    let type_check = checker.check_program(&parsed.program);
+    assert!(
+        type_check.errors.is_empty(),
+        "type errors: {:#?}",
+        type_check.errors
+    );
+    let hir = lower_program_host_target(&parsed.program, &type_check, &ResolutionCtx);
+    let origin = declaration_of(&hir, "id");
+
+    let sir = hew_sir::lower_module(&hir.module);
+    let entry = sir
+        .module
+        .entry_callable
+        .expect("scalar root main must be a strict SIR entry");
+    let strict = lower_closed_scalar_component(&sir.module, &[entry])
+        .expect("closed scalar component must lower")
+        .into_pipeline();
+
+    let instance = strict
+        .raw_mir
+        .iter()
+        .find(|function| function.key.declaration == origin)
+        .expect("the strict component must realize the requested instance of `id`");
+    assert_eq!(
+        instance.key,
+        MirCallableKey::instance(origin, vec![ResolvedTy::I64]),
+        "the bridge must project SirInstanceKey::type_args, not the mangled symbol `{}`",
+        instance.name
+    );
+    assert_eq!(
+        strict
+            .raw_mir
+            .iter()
+            .find(|f| f.name == "main")
+            .map(|f| &f.key.instance),
+        Some(&MirCallableInstance::Monomorphic),
+        "a callable with no semantic instance key stays Monomorphic"
     );
 }
 
@@ -445,5 +752,96 @@ fn one_declaration_lowered_at_two_instances_is_not_a_collision() {
     assert!(
         validate_unique_callable_keys(&module).is_empty(),
         "distinct type arguments are distinct identities"
+    );
+}
+
+// ── the gate is reachable from the production lowering entry point ───────────
+
+/// Duplicate one HIR function item under a second emitted name, keeping the
+/// resolver's declaration identity. This is exactly the shape HIR used to emit
+/// for a file-imported `pub fn` (bare spelling plus module-qualified spelling),
+/// and the shape a future producer bug would reintroduce.
+fn duplicate_function_item_under_a_second_name(
+    module: &mut hew_hir::HirModule,
+    name: &str,
+    second_name: &str,
+) {
+    let mut clone = module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == name => Some(function.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("HIR function `{name}` not found"));
+    clone.id = hew_hir::ItemId(u32::MAX);
+    clone.name = second_name.to_string();
+    module.items.push(HirItem::Function(clone));
+}
+
+#[test]
+fn lower_hir_module_reports_a_module_that_realizes_one_declaration_twice() {
+    // In-situ reachability: the gate must fire through `lower_hir_module`, not
+    // only when `validate_unique_callable_keys` is called directly. Deleting the
+    // call site — or reintroducing a dedup that drops one of the two bodies
+    // before the gate runs — fails this test.
+    let mut hir = hir_of(
+        r"
+        fn measure(x: i64) -> i64 { x + 1 }
+
+        fn main() -> i64 { measure(1) }
+        ",
+    );
+    duplicate_function_item_under_a_second_name(&mut hir.module, "measure", "lib$measure");
+
+    let pipeline = lower_hir_module(&hir.module);
+    let collisions: Vec<&MirDiagnosticKind> = pipeline
+        .diagnostics
+        .iter()
+        .map(|diagnostic| &diagnostic.kind)
+        .filter(|kind| matches!(kind, MirDiagnosticKind::CallableKeyCollision { .. }))
+        .collect();
+    assert_eq!(
+        collisions.len(),
+        1,
+        "one duplicated declaration, one finding: {:#?}",
+        pipeline.diagnostics
+    );
+    let MirDiagnosticKind::CallableKeyCollision {
+        first_symbol,
+        second_symbol,
+        ..
+    } = collisions[0]
+    else {
+        unreachable!("filtered above");
+    };
+    assert_eq!(
+        (first_symbol.as_str(), second_symbol.as_str()),
+        ("measure", "lib$measure"),
+        "the diagnostic must name both emitted symbols"
+    );
+}
+
+#[test]
+fn lower_hir_module_accepts_the_same_module_without_the_duplicate() {
+    // Negative control for the pin above: the gate must not fire on the module
+    // as the producer actually emits it, or the test above would pass for a
+    // reason unrelated to the duplication.
+    let hir = hir_of(
+        r"
+        fn measure(x: i64) -> i64 { x + 1 }
+
+        fn main() -> i64 { measure(1) }
+        ",
+    );
+
+    let pipeline = lower_hir_module(&hir.module);
+    assert!(
+        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            MirDiagnosticKind::CallableKeyCollision { .. }
+        )),
+        "a module with one body per declaration must not collide: {:#?}",
+        pipeline.diagnostics
     );
 }

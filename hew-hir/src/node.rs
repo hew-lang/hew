@@ -700,6 +700,15 @@ pub struct HirMachineBound {
 pub struct HirMachineDecl {
     pub id: ItemId,
     pub node: HirNodeId,
+    /// Canonical declaration identity of this machine, minted here beside the
+    /// [`HirFn::declaration`] and [`HirTypeDecl::declaration`] mints.
+    ///
+    /// The synthesized machine-step callable is a child of THIS declaration, so
+    /// its MIR callable key must project this field. Reconstructing an owner
+    /// from [`Self::qualified_name`] at the consumer would make the presentation
+    /// spelling a second identity authority — exactly the seam this carrier
+    /// closes.
+    pub declaration: DefId,
     pub name: String,
     /// Defining-module identity of this machine declaration.
     ///

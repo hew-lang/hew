@@ -501,6 +501,7 @@ fn call_shape_in_machine_transition_guard_rejected() {
     let machine = HirItem::Machine(HirMachineDecl {
         id: ItemId(0),
         node: HirNodeId(0),
+        declaration: hew_types::DefId::for_test("Gate"),
         name: "Gate".to_string(),
         defining_module: None,
         type_params: Vec::new(),

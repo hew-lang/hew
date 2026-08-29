@@ -328,6 +328,7 @@ fn traffic_light_machine() -> HirMachineDecl {
     HirMachineDecl {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
+        declaration: hew_types::DefId::for_test("TrafficLight"),
         name: "TrafficLight".to_string(),
         defining_module: None,
         type_params: Vec::new(),
@@ -347,6 +348,7 @@ fn traffic_light_with_wildcard_machine() -> HirMachineDecl {
     HirMachineDecl {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
+        declaration: hew_types::DefId::for_test("TrafficLight"),
         name: "TrafficLight".to_string(),
         defining_module: None,
         type_params: Vec::new(),
@@ -366,6 +368,7 @@ fn generic_lifecycle_machine() -> HirMachineDecl {
     HirMachineDecl {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
+        declaration: hew_types::DefId::for_test("Lifecycle"),
         name: "Lifecycle".to_string(),
         defining_module: None,
         type_params: vec!["T".to_string()],
@@ -447,6 +450,7 @@ fn transition_bodies_entry_exit_reenter() {
     let machine = HirMachineDecl {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
+        declaration: hew_types::DefId::for_test("Lifecycle"),
         name: "Lifecycle".to_string(),
         defining_module: None,
         type_params: Vec::new(),
@@ -653,6 +657,7 @@ fn resource_field_transition_out_drops() {
     let machine = HirMachineDecl {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
+        declaration: hew_types::DefId::for_test("ResourceMachine"),
         name: "ResourceMachine".to_string(),
         defining_module: None,
         type_params: Vec::new(),

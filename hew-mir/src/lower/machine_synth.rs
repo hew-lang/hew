@@ -1380,11 +1380,8 @@ pub(super) fn synthesize_machine_step_fn(
     // synthesized child of THIS machine declaration realized at THESE type
     // arguments, so two instantiations of one generic machine keep distinct
     // identities without consulting the mangled layout name.
-    let key = crate::model::MirCallableKey::instance(
-        hew_types::DefId::legacy_reconstruct_from_full_path(md.qualified_name()),
-        type_args.to_vec(),
-    )
-    .child(crate::model::SynthesizedCallable::MachineStep);
+    let key = crate::model::MirCallableKey::instance(md.declaration.clone(), type_args.to_vec())
+        .child(crate::model::SynthesizedCallable::MachineStep);
 
     let self_ty = ResolvedTy::Named {
         name: md.qualified_name(),

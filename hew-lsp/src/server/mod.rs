@@ -5,6 +5,7 @@ mod convert;
 mod handlers;
 mod hierarchy;
 mod navigation;
+mod uri;
 mod workspace;
 
 #[cfg(test)]
@@ -32,6 +33,7 @@ use self::navigation::{
     collect_import_items, find_cross_file_definition, find_definition_in_ast,
     find_stdlib_definition, plan_workspace_rename,
 };
+use self::uri::FileUriExt;
 #[cfg(test)]
 use self::workspace::collect_workspace_symbols;
 use self::workspace::{build_code_lenses, collect_project_workspace_symbols};
@@ -105,7 +107,6 @@ use tower_lsp_server::lsp_types::{
     TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
     TypeHierarchySupertypesParams,
 };
-use tower_lsp_server::UriExt;
 use tower_lsp_server::{Client, LanguageServer};
 
 // ── Semantic token types ─────────────────────────────────────────────
@@ -3442,15 +3443,27 @@ machine Traffic {
         }
     }
 
-    /// Returns a `file://` URI for `posix_path` that is valid on the current
-    /// platform.  On Windows, `file:///project/foo` lacks a drive letter and
-    /// `Url::to_file_path()` returns `Err`; prefixing with `C:` makes it a
-    /// well-formed Windows file URI while leaving Unix paths unchanged.
+    /// Returns a file URI for `posix_path` that is valid on the current
+    /// platform. On Windows, the POSIX-shaped fixture path is placed on `C:`
+    /// before the platform-aware path conversion.
     fn make_test_uri(posix_path: &str) -> Url {
         #[cfg(windows)]
-        return Url::parse(&format!("file:///C:{posix_path}")).unwrap();
+        let path = PathBuf::from(format!("C:{posix_path}"));
         #[cfg(not(windows))]
-        return Url::parse(&format!("file://{posix_path}")).unwrap();
+        let path = PathBuf::from(posix_path);
+        Url::from_file_path(path).expect("test path should be an absolute file path")
+    }
+
+    #[test]
+    fn absolute_paths_round_trip_through_file_uris() {
+        for path in ["/project/plain.hew", "/project/naïve source.hew"] {
+            let uri = make_test_uri(path);
+            #[cfg(windows)]
+            let expected = PathBuf::from(format!("C:{path}"));
+            #[cfg(not(windows))]
+            let expected = PathBuf::from(path);
+            assert_eq!(uri.to_file_path().as_deref(), Some(expected.as_path()));
+        }
     }
 
     fn has_unresolved_import(documents: &DashMap<Url, DocumentState>, uri: &Url) -> bool {

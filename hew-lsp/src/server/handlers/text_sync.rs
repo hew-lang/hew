@@ -6,8 +6,8 @@ use tower_lsp_server::lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     InitializeParams, InitializeResult, MessageType, ServerCapabilities,
 };
-use tower_lsp_server::UriExt;
 
+use super::super::uri::FileUriExt;
 use super::super::{
     build_server_capabilities, close_document_and_dependents, normalize_workspace_root,
     HewLanguageServer,

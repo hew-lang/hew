@@ -106,14 +106,8 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked --version 0.19.6
 
-      - name: Check license policy
-        run: cargo deny check licenses
-
-      - name: Check bans and sources
-        run: cargo deny check bans sources
-
-      - name: Check security advisories
-        run: cargo deny check advisories
+      - name: Check dependency policy
+        run: cargo deny check
 
       - name: Install cargo-about
         run: cargo install cargo-about --locked --version 0.9.0 --features cli

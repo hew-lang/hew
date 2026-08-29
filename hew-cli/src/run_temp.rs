@@ -14,9 +14,9 @@
 //! opportunistically sweeps that home (bounded work, no daemon): an entry
 //! whose pid no longer exists is removed unconditionally, and any entry
 //! older than [`STALE_AGE`] is removed regardless of pid state, so pid reuse
-//! or a platform without a liveness check still bounds disk growth. A live
-//! pid is always skipped. RAII drop stays the fast path for a normal exit;
-//! the sweep is the second cleanup authority that survives a kill.
+//! still bounds disk growth. A live pid is always skipped. RAII drop stays
+//! the fast path for a normal exit; the sweep is the second cleanup
+//! authority that survives a kill.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -26,9 +26,8 @@ use std::time::{Duration, SystemTime};
 const HEW_RUN_DIR_NAME: &str = "hew-run";
 
 /// An entry older than this is swept on startup even if its pid still looks
-/// alive — it defends against pid reuse, and on a platform where liveness
-/// can't be checked (see `pid_is_alive` below) it is the *only* signal that
-/// ever removes anything.
+/// alive — it defends against pid reuse and against any state
+/// `pid_is_alive` below can't resolve to a confident dead.
 const STALE_AGE: Duration = Duration::from_hours(6);
 
 /// Root directory owning every `hew run` / `hew debug` artifact:

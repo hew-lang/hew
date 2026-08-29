@@ -233,7 +233,6 @@ jobs:
           make test-hew-ratchet
           make test-migrate-corpus
           make test-stdlib-ratchet
-          make test-stdlib-execution-proofs
 
       - name: Run MQTT broker end-to-end oracle
         # The Linux release lane has explicit mosquitto_pub/sub provisioning

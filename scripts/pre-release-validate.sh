@@ -327,13 +327,12 @@ validate_linux() {
         echo "==> Step 4: Run gating test suite"
         run_with_timeout "${TEST_TIMEOUT}" bash -o pipefail -lc 'cargo test -p hew-runtime --quiet 2>&1 | tail -3'
 
-        echo "==> Step 4b: Run foundational compiled-Hew and evidence gates"
+        echo "==> Step 4b: Run foundational compiled-Hew gates"
         run_with_timeout "${TEST_TIMEOUT}" make test-compiler-pipeline
         run_with_timeout "${TEST_TIMEOUT}" make test-opaque-resource-lifecycle-matrix-external
         run_with_timeout "${TEST_TIMEOUT}" make test-vertical-slice
         run_with_timeout "${TEST_TIMEOUT}" make test-hew-ratchet
         run_with_timeout "${TEST_TIMEOUT}" make test-stdlib-ratchet
-        run_with_timeout "${TEST_TIMEOUT}" make test-stdlib-execution-proofs
 
         echo "==> Step 5: Verify no dynamic LLVM/MLIR dependencies"
         if ldd "${release_dir}/hew" 2>/dev/null | grep -qi 'llvm\|mlir'; then

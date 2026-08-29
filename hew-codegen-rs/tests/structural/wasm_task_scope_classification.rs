@@ -61,6 +61,7 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -81,6 +82,7 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             blocks: raw_blocks,
@@ -90,6 +92,7 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -160,6 +163,7 @@ fn pipeline_with_task_new_call() -> IrPipeline {
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -180,6 +184,7 @@ fn pipeline_with_task_new_call() -> IrPipeline {
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             blocks: raw_blocks,
@@ -189,6 +194,7 @@ fn pipeline_with_task_new_call() -> IrPipeline {
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],

@@ -54,6 +54,7 @@ fn pipeline_with_entry_terminator(
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -74,6 +75,7 @@ fn pipeline_with_entry_terminator(
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             blocks: blocks.clone(),
@@ -83,6 +85,7 @@ fn pipeline_with_entry_terminator(
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],

@@ -14,6 +14,7 @@ fn ret_ty() -> ResolvedTy {
 
 fn elab_with_plans(plans: Vec<(ExitPath, DropPlan)>) -> ElaboratedMirFunction {
     ElaboratedMirFunction {
+        key: crate::model::MirCallableKey::for_test("obligation_fixture"),
         name: "obligation_fixture".to_string(),
         return_ty: ret_ty(),
         statements: Vec::new(),

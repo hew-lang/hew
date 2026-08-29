@@ -82,6 +82,7 @@ fn impl_method_stub(name: &str, ret: ResolvedTy) -> RawMirFunction {
     }
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(name),
         name: name.to_string(),
         return_ty: ret,
         call_conv: FunctionCallConv::Default,
@@ -467,6 +468,7 @@ fn two_registry_entries_emit_distinct_vtables() {
 fn coercion_site_and_vtable_definition_share_same_symbol() {
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,

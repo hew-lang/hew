@@ -47,6 +47,7 @@ fn mut_u8_ptr() -> ResolvedTy {
 fn floor_fn(name: &str, id: &str, params: Vec<ResolvedTy>, ret: ResolvedTy) -> RawMirFunction {
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(name),
         name: name.to_string(),
         return_ty: ret,
         call_conv: FunctionCallConv::Default,
@@ -212,6 +213,7 @@ fn driver_main() -> RawMirFunction {
     ];
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,

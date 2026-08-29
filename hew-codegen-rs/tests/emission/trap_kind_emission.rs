@@ -84,6 +84,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
     let pipeline = IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("trap_probe"),
             name: "trap_probe".to_string(),
             return_ty: hew_types::ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -104,6 +105,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("trap_probe"),
             name: "trap_probe".to_string(),
             return_ty: hew_types::ResolvedTy::Unit,
             blocks: raw_blocks,
@@ -113,6 +115,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("trap_probe"),
             name: "trap_probe".to_string(),
             return_ty: hew_types::ResolvedTy::Unit,
             statements: vec![],

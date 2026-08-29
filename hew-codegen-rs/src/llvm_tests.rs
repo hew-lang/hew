@@ -395,6 +395,7 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
     let return_ty = ResolvedTy::I64;
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: return_ty.clone(),
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -462,6 +463,7 @@ fn pipeline_with_virtual_tuple_parameter_projection() -> IrPipeline {
     let pair_ty = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]);
     let raw = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("pair_second"),
         name: "pair_second".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -525,6 +527,7 @@ fn pipeline_with_virtual_tuple_parameter_projection() -> IrPipeline {
     };
     let mut pipeline = empty_pipeline_with_const_42();
     let mut checked = CheckedMirFunction {
+        key: hew_mir::MirCallableKey::for_test(&raw.name),
         name: raw.name.clone(),
         return_ty: raw.return_ty.clone(),
         blocks: raw.blocks.clone(),
@@ -534,6 +537,7 @@ fn pipeline_with_virtual_tuple_parameter_projection() -> IrPipeline {
         ownership_elaboration: None,
     };
     let elaborated = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test(&raw.name),
         name: raw.name.clone(),
         return_ty: raw.return_ty.clone(),
         statements: Vec::new(),
@@ -814,16 +818,22 @@ fn virtual_raw_coroutine_and_synthesized_provenance_fail_before_codegen() {
 #[test]
 fn semantic_unreachable_emits_bare_llvm_unreachable_without_trap_or_drop_plan() {
     let mut pipeline = empty_pipeline_with_const_42();
-    let (name, return_ty, blocks) = {
+    let (name, key, return_ty, blocks) = {
         let raw = pipeline
             .raw_mir
             .first_mut()
             .expect("fixture must contain its raw-MIR main body");
         raw.blocks[0].instructions.clear();
         raw.blocks[0].terminator = Terminator::Unreachable;
-        (raw.name.clone(), raw.return_ty.clone(), raw.blocks.clone())
+        (
+            raw.name.clone(),
+            raw.key.clone(),
+            raw.return_ty.clone(),
+            raw.blocks.clone(),
+        )
     };
     let elaborated = ElaboratedMirFunction {
+        key: key.clone(),
         name: name.clone(),
         return_ty: return_ty.clone(),
         statements: Vec::new(),
@@ -840,6 +850,7 @@ fn semantic_unreachable_emits_bare_llvm_unreachable_without_trap_or_drop_plan() 
     };
     pipeline.checked_mir = vec![CheckedMirFunction {
         name,
+        key,
         return_ty,
         blocks,
         decisions: Vec::new(),
@@ -1365,6 +1376,7 @@ fn named_record_ty(name: &str) -> ResolvedTy {
 fn platform_int_identity_fn(name: &str, ty: ResolvedTy) -> RawMirFunction {
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(name),
         name: name.to_string(),
         return_ty: ty.clone(),
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -1398,6 +1410,7 @@ fn platform_int_width_probe_pipeline() -> IrPipeline {
     pipeline.raw_mir = vec![
         RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -1679,6 +1692,7 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
     };
     let invoke = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("__hew_closure_invoke_main_0"),
         name: "__hew_closure_invoke_main_0".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::ClosureInvoke,
@@ -1714,6 +1728,7 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
     };
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -1767,6 +1782,7 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
         checked_mir: Vec::new(),
         elaborated_mir: vec![
             hew_mir::ElaboratedMirFunction {
+                key: hew_mir::MirCallableKey::for_test("__hew_closure_invoke_main_0"),
                 name: "__hew_closure_invoke_main_0".to_string(),
                 return_ty: ResolvedTy::I64,
                 statements: Vec::new(),
@@ -1780,6 +1796,7 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
                 lambda_captures: Vec::new(),
             },
             hew_mir::ElaboratedMirFunction {
+                key: hew_mir::MirCallableKey::for_test("main"),
                 name: "main".to_string(),
                 return_ty: ResolvedTy::I64,
                 statements: Vec::new(),
@@ -1868,6 +1885,7 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -2007,6 +2025,7 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("main"),
             name: "main".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -2102,6 +2121,7 @@ fn pipeline_with_user_const_load(
 ) -> IrPipeline {
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: const_ty.clone(),
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -2247,6 +2267,7 @@ fn pipeline_with_float_return() -> IrPipeline {
     let return_ty = ResolvedTy::F64;
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: return_ty.clone(),
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -2375,6 +2396,7 @@ fn codegen_front_verifier_float_return_success_creates_no_artifacts() {
 fn actor_handler_signature_leads_with_execution_context_pointer() {
     let handler = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("handler"),
         name: "handler".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::ActorHandler,
@@ -2448,6 +2470,7 @@ fn actor_handler_signature_leads_with_execution_context_pointer() {
 fn context_field_actor_offset_emits_gep_and_load() {
     let handler = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("handler_ctx_field"),
         name: "handler_ctx_field".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::ActorHandler,
@@ -2541,6 +2564,7 @@ fn string_literal_return_builds_and_verifies() {
     let return_ty = ResolvedTy::String;
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: return_ty.clone(),
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -2826,6 +2850,7 @@ fn float_return_builds_and_verifies() {
 fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeline {
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -3054,6 +3079,7 @@ fn pipeline_with_select_arms(
 
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -3301,6 +3327,7 @@ fn join_owned_replies_stage_until_atomic_result_publication() {
     ];
     let mut pipeline = pipeline_with_join_branches(branches, locals, Place::Local(4), 99);
     pipeline.elaborated_mir = vec![hew_mir::ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         statements: vec![],
@@ -4119,6 +4146,7 @@ fn generic_enum_local_resolves_by_mangled_key() {
     // local_0 is what exercises `resolve_ty` with a non-empty args vec.
     let func = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::Default,
@@ -4211,6 +4239,7 @@ fn yield_terminator_lowers_to_coro_suspend_and_publishes_out_pointer() {
     };
     let gen_body = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("__hew_gen_body_test_0"),
         name: "__hew_gen_body_test_0".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -4335,6 +4364,7 @@ fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
     // return type to the `coro.begin` handle (`ptr`).
     let gen_body = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("__hew_gen_body_make_test_0"),
         name: "__hew_gen_body_make_test_0".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -4377,6 +4407,7 @@ fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
     // via MakeGenerator, then return.
     let enclosing = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("build_gen"),
         name: "build_gen".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -4864,6 +4895,7 @@ fn generator_out_drop_thunk_tracks_closure_env_box_ownership() {
 fn cancellation_token_is_cancelled_emits_runtime_observation_call() {
     let func = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("observe"),
         name: "observe".to_string(),
         return_ty: ResolvedTy::Bool,
         call_conv: FunctionCallConv::Default,
@@ -5151,6 +5183,7 @@ fn drop_fn_user_resource_close_non_unit_fails_closed() {
 fn verify_drop_dispatch_resolves_rejects_unresolved_drop_fn() {
     use hew_mir::{DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath};
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test("user_fn"),
         name: "user_fn".to_string(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -5222,6 +5255,7 @@ fn verify_drop_dispatch_resolves_rejects_unresolved_drop_fn() {
 fn verify_drop_dispatch_resolves_accepts_runtime_symbol_drop() {
     use hew_mir::{DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath};
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test("uses_duplex"),
         name: "uses_duplex".to_string(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -5279,6 +5313,7 @@ fn verify_drop_dispatch_resolves_accepts_runtime_symbol_drop() {
 fn wasm_exclusion_scan_flags_runtime_duplex_close_in_elab_drop() {
     use hew_mir::{DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath};
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test("uses_duplex"),
         name: "uses_duplex".to_string(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -5375,6 +5410,7 @@ fn native_direct_call_uses_llvm_cleanup_unwind_edge() {
 
     let callee = RawMirFunction {
         source_origin: SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("may_unwind"),
         name: "may_unwind".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -5400,6 +5436,7 @@ fn native_direct_call_uses_llvm_cleanup_unwind_edge() {
     };
     let caller = RawMirFunction {
         source_origin: SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("invoke_owner"),
         name: "invoke_owner".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -5450,6 +5487,7 @@ fn native_direct_call_uses_llvm_cleanup_unwind_edge() {
         guard: None,
     };
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test(&caller.name),
         name: caller.name.clone(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -5593,6 +5631,7 @@ fn wasm_exclusion_scan_flags_select_channel_recv_arm_as_channel_poll() {
     };
     let body = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("select_channel_recv_wasm_excl_test"),
         name: "select_channel_recv_wasm_excl_test".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -5664,6 +5703,7 @@ fn wasm_exclusion_scan_flags_suspending_channel_recv_as_await_recv() {
     };
     let body = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("suspending_channel_recv_wasm_excl_test"),
         name: "suspending_channel_recv_wasm_excl_test".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -5738,6 +5778,7 @@ fn wasm_exclusion_scan_flags_suspending_stream_next_as_await_next() {
     };
     let body = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("suspending_stream_next_wasm_excl_test"),
         name: "suspending_stream_next_wasm_excl_test".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -5817,6 +5858,7 @@ fn wasm_exclusion_scan_flags_suspending_task_await() {
     };
     let body = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("suspending_task_await_wasm_excl_test"),
         name: "suspending_task_await_wasm_excl_test".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -5890,6 +5932,7 @@ fn wasm_exclusion_scan_flags_suspending_sleep() {
     let i64_ty = ResolvedTy::I64;
     let body = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("suspending_sleep_wasm_excl_test"),
         name: "suspending_sleep_wasm_excl_test".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -5971,6 +6014,7 @@ fn wasm_exclusion_scan_flags_suspending_select() {
     // any SuspendingSelect must be refused on wasm32.
     let body = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("suspending_select_wasm_excl_test"),
         name: "suspending_select_wasm_excl_test".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -6072,6 +6116,7 @@ fn wasm_exclusion_scan_survives_record_element_recv_carriers() {
             .unwrap_or_default();
         RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test(name),
             name: name.to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -6175,6 +6220,7 @@ fn wasm_exclusion_scan_survives_record_element_recv_carriers() {
 fn wasm_exclusion_scan_ignores_user_fn_close_in_elab_drop() {
     use hew_mir::{DropKind, DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath};
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test("uses_user_resource"),
         name: "uses_user_resource".to_string(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -9963,6 +10009,7 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
     // droppable i64 concrete.
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -10332,6 +10379,7 @@ fn coerce_to_dyn_trait_fails_closed_when_source_slot_disagrees_with_concrete_typ
     };
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -10442,6 +10490,7 @@ fn coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry() {
     };
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -10644,6 +10693,7 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
     // producer-specific whitelist entry.
     let raw = RawMirFunction {
         source_origin: SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("unsupported_string_literal_owner"),
         name: "unsupported_string_literal_owner".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -10671,6 +10721,7 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
         instr_spans: std::collections::BTreeMap::new(),
     };
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test(&raw.name),
         name: raw.name.clone(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -10763,6 +10814,7 @@ fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
 
     let raw = RawMirFunction {
         source_origin: SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("guarded_receive_parameter"),
         name: "guarded_receive_parameter".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -10845,6 +10897,7 @@ fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
             ]
         };
         let elab = ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test(&raw.name),
             name: raw.name.clone(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -11305,6 +11358,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
     for (label, terminator, suspend_kind, admitted) in cases {
         let raw = RawMirFunction {
             source_origin: SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test(&format!("terminator_{label}")),
             name: format!("terminator_{label}"),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -11332,6 +11386,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
         };
         let descriptor = frame_cleanup_string_descriptor(Place::Local(0));
         let elab = ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test(&raw.name),
             name: raw.name.clone(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -11662,6 +11717,7 @@ fn frame_owned_trait_object_drop_with_drop_fn_fails_closed() {
     };
     let raw = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("frame_owned_drop_with_drop_fn"),
         name: "frame_owned_drop_with_drop_fn".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -11700,6 +11756,7 @@ fn frame_owned_trait_object_drop_with_drop_fn_fails_closed() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test("frame_owned_drop_with_drop_fn"),
         name: "frame_owned_drop_with_drop_fn".to_string(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -11824,6 +11881,7 @@ fn single_resource_drop_pipeline(name: &str, resource_ty: ResolvedTy) -> IrPipel
     };
     let raw = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(name),
         name: name.to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -11848,6 +11906,7 @@ fn single_resource_drop_pipeline(name: &str, resource_ty: ResolvedTy) -> IrPipel
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test(name),
         name: name.to_string(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -12196,6 +12255,7 @@ fn call_runtime_void_discards_result() {
 fn minimal_pipeline_with_unit_main(with_actor: bool) -> IrPipeline {
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -12397,6 +12457,7 @@ fn non_actor_main_omits_drain_epilogue() {
 fn crash_state_probe_fn(source_origin: SourceOrigin) -> RawMirFunction {
     RawMirFunction {
         source_origin,
+        key: hew_mir::MirCallableKey::for_test("CrashStateActor__on_crash"),
         name: "CrashStateActor__on_crash".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: FunctionCallConv::ActorHandler,
@@ -12574,6 +12635,7 @@ fn pipeline_with_coro_probe() -> IrPipeline {
     };
     let probe = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("__hew_coro_probe"),
         name: "__hew_coro_probe".to_string(),
         return_ty: ptr_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -12718,6 +12780,7 @@ fn pipeline_with_string_stream_send_pump() -> IrPipeline {
     };
     let probe = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("__hew_stream_send_string_pump"),
         name: "__hew_stream_send_string_pump".to_string(),
         return_ty: ptr_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -13473,6 +13536,7 @@ fn wasm_string_concat_rearms_cleanup_at_runtime_abi_producer_boundary() {
     // that shape cannot prove lifecycle handling at this exact producer seam.
     let raw = RawMirFunction {
         source_origin: SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("concat_then_trap"),
         name: "concat_then_trap".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -13515,6 +13579,7 @@ fn wasm_string_concat_rearms_cleanup_at_runtime_abi_producer_boundary() {
         instr_spans: std::collections::BTreeMap::new(),
     };
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test(&raw.name),
         name: raw.name.clone(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -13583,6 +13648,7 @@ fn wasm_vec_new_rearms_cleanup_after_complete_handle_publication() {
         ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::String]);
     let raw = RawMirFunction {
         source_origin: SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("vec_new_then_trap"),
         name: "vec_new_then_trap".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -13625,6 +13691,7 @@ fn wasm_vec_new_rearms_cleanup_after_complete_handle_publication() {
         instr_spans: std::collections::BTreeMap::new(),
     };
     let elab = ElaboratedMirFunction {
+        key: hew_mir::MirCallableKey::for_test(&raw.name),
         name: raw.name.clone(),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
@@ -14332,6 +14399,7 @@ fn pipeline_with_two_suspends() -> IrPipeline {
     };
     let probe = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("__hew_coro_multi"),
         name: "__hew_coro_multi".to_string(),
         return_ty: ptr_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -14546,6 +14614,7 @@ fn non_ptr_logical_return_coro_fn_compiles_as_ptr_ramp() {
     // This is the exact shape the fail-closed guard was designed to catch.
     let fn_with_non_ptr_return_and_suspend = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("bad_coro"),
         name: "bad_coro".to_string(),
         return_ty: ResolvedTy::I64, // NOT a ptr — the guard's bite condition
         call_conv: hew_mir::FunctionCallConv::Default,
@@ -14660,6 +14729,7 @@ fn suspendable_handler_fn(symbol: &str) -> RawMirFunction {
     };
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(symbol),
         name: symbol.to_string(),
         return_ty: ptr_ty.clone(),
         call_conv: FunctionCallConv::ActorHandler,
@@ -14715,6 +14785,7 @@ fn suspendable_state_store_handler_fn(symbol: &str) -> RawMirFunction {
     };
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(symbol),
         name: symbol.to_string(),
         return_ty: ptr_ty,
         call_conv: FunctionCallConv::ActorHandler,
@@ -14772,6 +14843,7 @@ fn suspendable_state_store_handler_fn(symbol: &str) -> RawMirFunction {
 fn owned_string_state_store_handler_fn(symbol: &str) -> RawMirFunction {
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(symbol),
         name: symbol.to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,
@@ -14825,6 +14897,7 @@ fn owned_string_state_store_handler_fn(symbol: &str) -> RawMirFunction {
 fn run_to_completion_handler_fn(symbol: &str) -> RawMirFunction {
     RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(symbol),
         name: symbol.to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,
@@ -14860,6 +14933,7 @@ fn pipeline_with_actor_handlers(
 ) -> IrPipeline {
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,
@@ -15117,6 +15191,7 @@ fn owned_state_source_transfer_rejection_is_process_fatal_before_live_store() {
     pipeline
         .elaborated_mir
         .push(hew_mir::ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test(symbol),
             name: symbol.to_string(),
             return_ty: ResolvedTy::Unit,
             statements: Vec::new(),
@@ -16243,6 +16318,7 @@ fn deserialize_thunk_malloc_uses_target_size_t_width() {
     // so `params` and `locals` must both carry the i64 message type.
     let handler_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test(symbol),
         name: symbol.to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,
@@ -18498,6 +18574,7 @@ fn closure_env_free_thunk_ir(ownership: hew_mir::ClosureEnvFieldOwnership, modul
     };
     let invoke = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("__hew_closure_invoke_main_0"),
         name: "__hew_closure_invoke_main_0".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::ClosureInvoke,
@@ -18532,6 +18609,7 @@ fn closure_env_free_thunk_ir(ownership: hew_mir::ClosureEnvFieldOwnership, modul
     };
     let main = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("main"),
         name: "main".to_string(),
         return_ty: ResolvedTy::I64,
         call_conv: hew_mir::FunctionCallConv::Default,

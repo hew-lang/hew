@@ -307,6 +307,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
     let pipeline = IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("bad_fn"),
             name: "bad_fn".into(),
             return_ty: ResolvedTy::I64,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -327,6 +328,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("bad_fn"),
             name: "bad_fn".into(),
             return_ty: ResolvedTy::I64,
             blocks: raw_blocks.clone(),
@@ -336,6 +338,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("bad_fn"),
             name: "bad_fn".into(),
             return_ty: ResolvedTy::I64,
             statements: vec![],

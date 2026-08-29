@@ -1611,6 +1611,7 @@ mod param_boundary_effect_tests {
         terminator: Terminator,
     ) -> RawMirFunction {
         RawMirFunction {
+            key: crate::model::MirCallableKey::for_test(name),
             name: name.to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv,
@@ -1660,6 +1661,7 @@ mod param_boundary_effect_tests {
 
     fn checked(raw: &RawMirFunction) -> CheckedMirFunction {
         CheckedMirFunction {
+            key: crate::model::MirCallableKey::for_test(&raw.name),
             name: raw.name.clone(),
             return_ty: raw.return_ty.clone(),
             blocks: raw.blocks.clone(),
@@ -1672,6 +1674,7 @@ mod param_boundary_effect_tests {
 
     fn elaborated(raw: &RawMirFunction) -> ElaboratedMirFunction {
         ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test(&raw.name),
             name: raw.name.clone(),
             return_ty: raw.return_ty.clone(),
             statements: vec![],

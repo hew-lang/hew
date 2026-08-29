@@ -1367,6 +1367,7 @@ mod record_field_store_overwrite_tests {
 
     fn store_function(name: &str, parent_ty: ResolvedTy, src_ty: ResolvedTy) -> RawMirFunction {
         RawMirFunction {
+            key: crate::model::MirCallableKey::for_test(name),
             name: name.to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,

@@ -62,6 +62,7 @@ fn pipeline_with_task_abi_call(
     IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: hew_mir::FunctionCallConv::Default,
@@ -82,6 +83,7 @@ fn pipeline_with_task_abi_call(
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             blocks: raw_blocks.clone(),
@@ -91,6 +93,7 @@ fn pipeline_with_task_abi_call(
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -170,6 +173,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
+                key: hew_mir::MirCallableKey::for_test("main"),
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::ActorHandler,
@@ -191,6 +195,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
             },
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
+                key: hew_mir::MirCallableKey::for_test("long_op"),
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::TaskEntry,
@@ -213,6 +218,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         ],
         checked_mir: vec![
             CheckedMirFunction {
+                key: hew_mir::MirCallableKey::for_test("main"),
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 blocks: vec![main_block],
@@ -222,6 +228,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 ownership_elaboration: None,
             },
             CheckedMirFunction {
+                key: hew_mir::MirCallableKey::for_test("long_op"),
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
                 blocks: vec![long_op_block],
@@ -280,6 +287,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
+                key: hew_mir::MirCallableKey::for_test("main"),
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::ActorHandler,
@@ -301,6 +309,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
             },
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
+                key: hew_mir::MirCallableKey::for_test("long_op"),
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::Default,
@@ -323,6 +332,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         ],
         checked_mir: vec![
             CheckedMirFunction {
+                key: hew_mir::MirCallableKey::for_test("main"),
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 blocks: vec![main_block],
@@ -332,6 +342,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 ownership_elaboration: None,
             },
             CheckedMirFunction {
+                key: hew_mir::MirCallableKey::for_test("long_op"),
                 name: "long_op".to_string(),
                 return_ty: ResolvedTy::Unit,
                 blocks: vec![long_op_block],
@@ -411,6 +422,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
+                key: hew_mir::MirCallableKey::for_test("main"),
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::ActorHandler,
@@ -436,6 +448,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
             },
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
+                key: hew_mir::MirCallableKey::for_test("__hew_closure_invoke_main_0"),
                 name: "__hew_closure_invoke_main_0".to_string(),
                 return_ty: ResolvedTy::Unit,
                 call_conv: FunctionCallConv::ClosureInvoke,
@@ -458,6 +471,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         ],
         checked_mir: vec![
             CheckedMirFunction {
+                key: hew_mir::MirCallableKey::for_test("main"),
                 name: "main".to_string(),
                 return_ty: ResolvedTy::Unit,
                 blocks: vec![main_block],
@@ -467,6 +481,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 ownership_elaboration: None,
             },
             CheckedMirFunction {
+                key: hew_mir::MirCallableKey::for_test("__hew_closure_invoke_main_0"),
                 name: "__hew_closure_invoke_main_0".to_string(),
                 return_ty: ResolvedTy::Unit,
                 blocks: vec![closure_block],
@@ -667,6 +682,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
     let pipeline = IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
@@ -687,6 +703,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
             instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             blocks: raw_blocks,
@@ -696,6 +713,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
             ownership_elaboration: None,
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
+            key: hew_mir::MirCallableKey::for_test("probe"),
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],

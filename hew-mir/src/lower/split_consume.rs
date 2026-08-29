@@ -1479,6 +1479,7 @@ mod slice3_invariants {
             let lowered = lower_function(
                 &func,
                 "handler".to_string(),
+                crate::model::MirCallableKey::declared(func.declaration.clone()),
                 HashMap::new(),
                 &hew_hir::TypeClassTable::default(),
                 &HashMap::new(),
@@ -1564,6 +1565,7 @@ mod slice3_invariants {
         lambda_captures: Vec<LambdaCapture>,
     ) -> ElaboratedMirFunction {
         ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("synthetic"),
             name: "synthetic".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -2114,6 +2116,7 @@ mod slice3_invariants {
             guard: None,
         };
         let elab = ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("synthetic"),
             name: "synthetic".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -2146,6 +2149,7 @@ mod slice3_invariants {
         // cleanup block whose drops list has DuplexHandle + RecvHalf
         // for the same parent must be rejected.
         let elab = ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("synthetic"),
             name: "synthetic".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -2958,6 +2962,7 @@ mod slice35_cross_block_proptests {
 
     fn elab_with_return_drop(parent: u32) -> ElaboratedMirFunction {
         ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("f"),
             name: "f".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -3390,6 +3395,7 @@ mod select_arm_split_consume_tests {
             },
         ];
         let elab = ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("f"),
             name: "f".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -3506,6 +3512,7 @@ mod select_arm_split_consume_tests {
             },
         ];
         let elab = ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("f"),
             name: "f".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
@@ -3582,6 +3589,7 @@ mod select_arm_split_consume_tests {
             },
         ];
         let elab = ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("f"),
             name: "f".to_string(),
             return_ty: ResolvedTy::Unit,
             statements: vec![],

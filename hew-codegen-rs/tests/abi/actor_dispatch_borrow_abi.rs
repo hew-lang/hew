@@ -1050,6 +1050,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
             kind: hew_mir::ActorHandlerKind::Receive,
             actor_layout_key: "Keeper".to_string(),
         },
+        key: hew_mir::MirCallableKey::for_test("Keeper__recv__stash"),
         name: "Keeper__recv__stash".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,

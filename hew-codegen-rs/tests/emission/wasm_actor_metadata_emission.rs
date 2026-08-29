@@ -34,6 +34,7 @@ fn spawn_pipeline() -> IrPipeline {
 
     let spawn_fn = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("spawn_trace_actor"),
         name: "spawn_trace_actor".to_string(),
         return_ty: actor_pid_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -79,6 +80,7 @@ fn spawn_pipeline() -> IrPipeline {
             kind: hew_mir::ActorHandlerKind::Receive,
             actor_layout_key: actor_name.to_string(),
         },
+        key: hew_mir::MirCallableKey::for_test(&handler_symbol),
         name: handler_symbol.clone(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,

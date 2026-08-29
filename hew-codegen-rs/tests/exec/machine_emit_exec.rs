@@ -109,6 +109,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         source_origin: hew_mir::SourceOrigin::SynthesizedMachineStep {
             machine_name: machine_name.to_string(),
         },
+        key: hew_mir::MirCallableKey::for_test(&format!("{machine_name}__step")),
         name: format!("{machine_name}__step"),
         return_ty: machine_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -157,6 +158,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
     // Block 0 → Call → Block 1 → Return.
     let caller = RawMirFunction {
         source_origin: hew_mir::SourceOrigin::Unknown,
+        key: hew_mir::MirCallableKey::for_test("caller"),
         name: "caller".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::Default,

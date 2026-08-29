@@ -1449,6 +1449,53 @@ pub fn machine_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLayout> 
     machine_layouts.iter().map(machine_enum_view).collect()
 }
 
+/// Project a machine layout's EVENT COMPANION into the enum-layout view.
+///
+/// Mirrors [`machine_enum_view`], but keyed by `event_name`/`events` rather
+/// than `name`/`variants`: the `<Machine>Event` companion is itself a plain
+/// tagged union (same substrate, same clone/drop thunk family) and every
+/// consumer that needs to classify a `<Machine>Event`-typed value (a
+/// `receive fn` parameter, a channel element, a record/tuple field) must
+/// find it in the same enum-layout view a hand-written enum would be found
+/// in.
+///
+/// WHY this was missing (#3122): only the machine's own state enum had a
+/// view function. A `<Machine>Event` value reaching `classify_named`
+/// (`hew-mir/src/state_clone.rs`) found neither a `RecordLayout` nor an
+/// `EnumLayout` for it and failed closed as `MissingRecordLayout` — visible
+/// only once the type-checker actually allowed the value to reach a
+/// classification site (the checker-level `Send` gate rejected it first,
+/// which is #3122's other half).
+///
+/// Machines (and their event companions) are never `indirect`, so `is_indirect`
+/// is always `false`, matching [`machine_enum_view`].
+#[must_use]
+pub fn machine_event_enum_view(layout: &MachineLayout) -> EnumLayout {
+    // Mirrors `build_machine_layout`'s state tag-width formula
+    // (`hew-mir/src/lower/machine_synth.rs`) rather than the float
+    // `log2().ceil()` this struct's doc comment describes — integer
+    // `next_power_of_two().trailing_zeros()` avoids float-rounding
+    // edge cases at power-of-two counts and is the authority the state
+    // half of this same layout already uses.
+    let event_count = u32::try_from(layout.events.len().max(1)).unwrap_or(u32::MAX);
+    let tag_width = u32::max(1, event_count.next_power_of_two().trailing_zeros());
+    EnumLayout {
+        name: layout.event_name.clone(),
+        tag_width,
+        variants: layout.events.clone(),
+        is_indirect: false,
+    }
+}
+
+/// [`machine_event_enum_view`] over a whole machine-layout list.
+#[must_use]
+pub fn machine_event_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLayout> {
+    machine_layouts
+        .iter()
+        .map(machine_event_enum_view)
+        .collect()
+}
+
 /// Returns `true` when the named enum registered in `enum_layouts` has
 /// `is_indirect = true`, meaning every variable of the type holds a
 /// heap pointer rather than an inline tagged-union struct.

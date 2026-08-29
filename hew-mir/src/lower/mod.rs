@@ -2525,7 +2525,10 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         ));
     }
     let machine_enum_views: Vec<crate::model::EnumLayout> =
-        crate::model::machine_enum_views(&machine_layouts);
+        crate::model::machine_enum_views(&machine_layouts)
+            .into_iter()
+            .chain(crate::model::machine_event_enum_views(&machine_layouts))
+            .collect();
 
     // Second pass — per-actor state-field clone/drop classification.
     // Deferred from the item loop so the classifier sees the fully-merged

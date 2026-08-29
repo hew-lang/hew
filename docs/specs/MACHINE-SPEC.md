@@ -408,7 +408,7 @@ enum TcpStateEvent {
 }
 ```
 
-The event enum name is `{MachineName}Event`. Event variants follow the same naming and field conventions as enum variants.
+The event enum name is `{MachineName}Event`. Event variants follow the same naming and field conventions as enum variants, and the same marker-trait rule as §6.1: the event enum is `Send` exactly when every variant's payload fields are `Send` — no special-casing for the machine path. This makes `receive fn handle(event: {MachineName}Event)` legal wherever every event payload is sendable (§3.11.7).
 
 ### §6.3 Generics
 

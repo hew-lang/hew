@@ -37340,6 +37340,25 @@ fn build_module_for_target<'ctx>(
     // path — drop_fn that resolves to neither — fails closed here rather
     // than as a dangling reference at link time.
     verify_drop_dispatch_resolves(pipeline, &fn_symbols)?;
+    // Machine-augmented enum-layout view for handler-payload classification:
+    // `pipeline.enum_layouts` alone has no entry for a machine's own state
+    // enum or its `<Machine>Event` companion (both are tagged unions
+    // projected from `pipeline.machine_layouts`, not user `enum`
+    // declarations). Without this, an actor handler whose parameter is
+    // machine- or event-typed fails closed as `MissingRecordLayout` in
+    // `emit_actor_message_drop_fn`'s payload classification, and — since
+    // `wire::emit_ser_named_cbor` / `emit_de_named_cbor` require BOTH a
+    // `machine_layouts` entry AND a matching `EnumLayout` before treating a
+    // name as a registered enum — as `wire CBOR serialize: named type ...
+    // is not a registered record layout` from `emit_actor_codec_module_init`
+    // / `emit_wire_codec_call_thunks` (#3122).
+    let handler_payload_enum_layouts: Vec<hew_mir::EnumLayout> = pipeline
+        .enum_layouts
+        .iter()
+        .cloned()
+        .chain(hew_mir::machine_enum_views(&pipeline.machine_layouts))
+        .chain(hew_mir::machine_event_enum_views(&pipeline.machine_layouts))
+        .collect();
     for actor in &pipeline.actor_layouts {
         // NEW-3a (R326/R327): per-handler suspendable predicate, read from the
         // SAME `coroutine_facts` authority the per-function coroutine emission
@@ -37398,7 +37417,7 @@ fn build_module_for_target<'ctx>(
             )?;
         }
         let msg_drop_witnesses = DropSynthWitnesses {
-            enum_layouts: &pipeline.enum_layouts,
+            enum_layouts: &handler_payload_enum_layouts,
             machine_layouts: &machine_layouts,
             target_data: &target_data,
             record_layouts: &pipeline.record_layouts,
@@ -37412,7 +37431,7 @@ fn build_module_for_target<'ctx>(
             actor,
             &record_layouts,
             &pipeline.record_layouts,
-            &pipeline.enum_layouts,
+            &handler_payload_enum_layouts,
             &msg_drop_witnesses,
         )?;
         if !actor.on_stop_symbols.is_empty() {
@@ -37444,12 +37463,17 @@ fn build_module_for_target<'ctx>(
     // `__hew_enum_{clone,drop}_inplace_<Machine>` bodies walk the real
     // machine layout. The pipeline's own `enum_layouts` (registration, xnode
     // codecs) stays untouched.
-    let synthesis_enum_layouts: Vec<hew_mir::EnumLayout> = pipeline
-        .enum_layouts
-        .iter()
-        .cloned()
-        .chain(hew_mir::machine_enum_views(&pipeline.machine_layouts))
-        .collect();
+    //
+    // Reuses `handler_payload_enum_layouts` (computed above) rather than
+    // rebuilding the same chain: it already covers BOTH a machine's own
+    // state enum and its `<Machine>Event` companion. Rebuilding this list
+    // without the event-companion view was #3122's second bug — the MIR-side
+    // seed collector (`IrPipeline::thunk_synthesis_requirements`) resolves an
+    // event enum's drop-inplace key correctly (it chains the same event
+    // view), but body synthesis here could not find the matching
+    // `EnumLayout` to synthesize FROM, so the seeded symbol stayed
+    // declared-but-bodyless and any function dropping an event-enum local
+    // (e.g. a `select` arm binding) failed closed at codegen.
     let thunk_requirements = pipeline.thunk_synthesis_requirements();
     emit_state_clone_drop_synthesis(
         ctx,
@@ -37457,7 +37481,7 @@ fn build_module_for_target<'ctx>(
         &pipeline.actor_layouts,
         &pipeline.record_layouts,
         &record_layouts,
-        &synthesis_enum_layouts,
+        &handler_payload_enum_layouts,
         &pipeline.opaque_handle_names,
         &machine_layouts,
         Some(&target_data),
@@ -37599,7 +37623,7 @@ fn build_module_for_target<'ctx>(
         &record_layouts,
         &machine_layouts,
         &pipeline.record_layouts,
-        &pipeline.enum_layouts,
+        &handler_payload_enum_layouts,
         &pipeline.lifecycle_registry,
         &target_data,
     )? {
@@ -37615,7 +37639,7 @@ fn build_module_for_target<'ctx>(
         &record_layouts,
         &machine_layouts,
         &pipeline.record_layouts,
-        &pipeline.enum_layouts,
+        &handler_payload_enum_layouts,
         &target_data,
     )?;
     // Materialise the program-start constructor registration from all collected
@@ -37680,7 +37704,7 @@ fn build_module_for_target<'ctx>(
         &llvm_mod,
         &pipeline.dyn_vtable_registry,
         &pipeline.record_layouts,
-        &synthesis_enum_layouts,
+        &handler_payload_enum_layouts,
         &pipeline.lifecycle_registry,
     )?;
     // Finalise the `%hew.dyn.vtable.N` opaque struct and the

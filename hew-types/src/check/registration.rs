@@ -3190,6 +3190,19 @@ impl Checker {
                     doc_comment: stored.doc_comment.clone(),
                     is_indirect: stored.is_indirect,
                 };
+                // Mirror `register_machine_decl`'s marker registration: the
+                // re-resolved companion enum's field types must be
+                // re-registered too, or a re-resolution that changes a
+                // payload's Send-ability (e.g. an import alias resolving to
+                // a resource type) is invisible to `TraitRegistry`.
+                let event_field_types = Self::structural_member_types_for_type(&event_type_def);
+                let event_field_types = self.expand_for_marker_registration(&event_field_types);
+                self.registry
+                    .register_type(event_type_name.clone(), event_field_types);
+                self.registry.register_type_params(
+                    event_type_name.clone(),
+                    event_type_def.type_params.clone(),
+                );
                 self.commit_reresolved_type_def(&event_type_name, event_type_def);
             }
         }
@@ -4419,6 +4432,20 @@ impl Checker {
             doc_comment: None,
             is_indirect: false,
         };
+        // Register the event companion's variant-payload member types for
+        // Send/Frozen/… derivation — the same call an ordinary `enum`
+        // declaration gets in `register_type_decl`. Without this the
+        // companion enum has no `type_fields` entry, so `TraitRegistry`
+        // treats it as an unknown type and conservatively derives every
+        // marker false — including `Send` — even when every event payload
+        // is itself Send (#3122: the spec's actor example, which sends the
+        // companion enum to a `receive fn`, could not compile).
+        let event_field_types = Self::structural_member_types_for_type(&event_type_def);
+        let event_field_types = self.expand_for_marker_registration(&event_field_types);
+        self.registry
+            .register_type(event_type_name.clone(), event_field_types);
+        self.registry
+            .register_type_params(event_type_name.clone(), type_param_names.clone());
         self.commit_reresolved_type_def(&event_type_name, event_type_def);
         self.record_type_def_inference_holes(&event_identity, event_hole_vars);
         self.known_types.insert(event_type_name.clone());

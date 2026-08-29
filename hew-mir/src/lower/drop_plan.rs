@@ -1014,10 +1014,13 @@ pub(super) fn inline_drop_spec_for_recipe(
     clippy::too_many_lines,
     reason = "overwrite retirement replays one exact owner-state transition and its physical cleanup atomically"
 )]
-pub(super) fn materialize_exact_overwrite_releases(blocks: &mut [BasicBlock]) {
+pub(super) fn materialize_exact_overwrite_releases(
+    blocks: &mut [BasicBlock],
+    builder: Option<&Builder>,
+) {
     use crate::model::OwnershipEvent;
 
-    let recipes = blocks
+    let mut recipes = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instruction| match instruction {
@@ -1027,6 +1030,56 @@ pub(super) fn materialize_exact_overwrite_releases(blocks: &mut [BasicBlock]) {
             _ => None,
         })
         .collect::<HashMap<_, _>>();
+    // The pass also runs before definition-site recipes are published, so the
+    // replaced generation is ended in the event stream as soon as the
+    // ownership phis are sealed and no later pass replays two live generations
+    // of one binding at the assignment slot. Derive the physical cleanup from
+    // the old owner's definition exactly as `materialize_definition_site_drop_recipes`
+    // will; the `declaration_order` is irrelevant to an inline release.
+    if let Some(builder) = builder {
+        for instruction in blocks.iter().flat_map(|block| &block.instructions) {
+            let definition = match instruction {
+                Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, ty }) => {
+                    Some((*owner, *place, ty))
+                }
+                Instr::OwnershipEvent(
+                    OwnershipEvent::Reset {
+                        replacement,
+                        place,
+                        ty,
+                        ..
+                    }
+                    | OwnershipEvent::Rearm {
+                        replacement,
+                        place,
+                        ty,
+                        ..
+                    }
+                    | OwnershipEvent::Join {
+                        replacement,
+                        place,
+                        ty,
+                        ..
+                    },
+                ) => Some((*replacement, *place, ty)),
+                Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                    to: Some(place),
+                    to_owner: Some(owner),
+                    to_ty: Some(ty),
+                    ..
+                }) => Some((*owner, *place, ty)),
+                _ => None,
+            };
+            if let Some((owner, place, ty)) = definition {
+                if let std::collections::hash_map::Entry::Vacant(entry) = recipes.entry(owner) {
+                    if let Some(recipe) = owner_definition_drop_recipe(builder, owner, place, ty, 0)
+                    {
+                        entry.insert(recipe);
+                    }
+                }
+            }
+        }
+    }
     let guarded = blocks
         .iter()
         .flat_map(|block| &block.instructions)
@@ -5174,7 +5227,7 @@ fn exact_overwrite_releases_old_generation_before_store() {
         terminator: Terminator::Return,
     }];
 
-    materialize_exact_overwrite_releases(&mut blocks);
+    materialize_exact_overwrite_releases(&mut blocks, None);
 
     assert!(matches!(
         blocks[0].instructions.get(2),

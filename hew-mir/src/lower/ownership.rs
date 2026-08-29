@@ -1591,7 +1591,7 @@ impl Builder {
             }
             HirProducedValueRelation::Join(_) => {
                 if let HirProducedValueRelation::Join(sources) = &fact.relation {
-                    self.transfer_join_owners(expr.site, sources, place);
+                    self.transfer_join_owners(expr.site, sources, place, &expected_ty);
                 }
                 return;
             }
@@ -1918,23 +1918,14 @@ impl Builder {
         // own Move: the fresh join generation minted below is then the sole
         // owner of the slot. Without this handoff the arm owner relocates into
         // `place` and two live generations share one Place.
-        if self.instructions.is_empty() {
-            for source in self.composite_join_predecessor_move_sources(place) {
-                let mut owners = self.owned_locals.iter().filter(|entry| {
-                    entry.ty == ty
-                        && entry.disposition == Disposition::ScopeExit
-                        && self.binding_locals.get(&entry.binding) == Some(&source)
-                });
-                let Some(owner) = owners.next().cloned().filter(|_| owners.next().is_none()) else {
-                    continue;
-                };
-                self.set_owned_local_consumed_post_lowering(
-                    owner.binding,
-                    Some(place),
-                    DischargeSite::BindingMoved,
-                );
-                self.typed_produced_value_handoffs.insert((source, place));
-            }
+        for owner in self.composite_join_relocated_owners(place, &ty) {
+            self.set_owned_local_consumed_post_lowering(
+                owner,
+                Some(place),
+                DischargeSite::BindingMoved,
+            );
+            let source = self.binding_locals[&owner];
+            self.typed_produced_value_handoffs.insert((source, place));
         }
         let binding = self.adopt_synthetic_owned_local(
             "__hew_produced_value",
@@ -2199,6 +2190,33 @@ impl Builder {
     /// variant must be added to the match below in the same change.
     /// WHAT: the real solution is a per-arm "value relocated into the join
     /// slot" event produced by the arm lowering itself.
+    /// The unique scope-exit owners (of type `ty`) that a predecessor arm
+    /// physically moved into the join slot `place`, when the join owner is
+    /// about to be minted at the head of the join block. Each of these owners
+    /// must end its generation at its arm's Move (recorded as a typed handoff)
+    /// so the join owner is the sole generation at `place`; a named payload
+    /// binder used as a bare arm value (`.Ok(value) => value`) carries a
+    /// Borrowed produced-value fact and is otherwise invisible to the join.
+    fn composite_join_relocated_owners(&self, place: Place, ty: &ResolvedTy) -> Vec<BindingId> {
+        if !self.instructions.is_empty() {
+            return Vec::new();
+        }
+        self.composite_join_predecessor_move_sources(place)
+            .into_iter()
+            .filter_map(|source| {
+                let mut owners = self.owned_locals.iter().filter(|entry| {
+                    entry.ty == *ty
+                        && entry.disposition == Disposition::ScopeExit
+                        && self.binding_locals.get(&entry.binding) == Some(&source)
+                });
+                owners
+                    .next()
+                    .map(|entry| entry.binding)
+                    .filter(|_| owners.next().is_none())
+            })
+            .collect()
+    }
+
     fn composite_join_predecessor_move_sources(&self, place: Place) -> Vec<Place> {
         self.pending_blocks
             .iter()
@@ -2429,8 +2447,16 @@ impl Builder {
         result_site: SiteId,
         source_sites: &[SiteId],
         result_place: Place,
+        result_ty: &ResolvedTy,
     ) {
-        let mut transferred = HashSet::new();
+        // An arm whose value is a named owner moved into the join slot (a
+        // payload binder returned bare) has no Owned produced-value fact of
+        // its own; recover it from the predecessor's Move so its generation
+        // ends at the arm and the join owner is the sole generation here.
+        let mut transferred: HashSet<BindingId> = self
+            .composite_join_relocated_owners(result_place, result_ty)
+            .into_iter()
+            .collect();
         for source_site in source_sites {
             if !self
                 .param_ownership
@@ -7258,7 +7284,12 @@ mod typed_produced_owner_tests {
             super::DischargeSite::BindingMoved,
         );
 
-        builder.transfer_join_owners(result_site, &[source_site], Place::Local(14));
+        builder.transfer_join_owners(
+            result_site,
+            &[source_site],
+            Place::Local(14),
+            &ResolvedTy::String,
+        );
 
         assert_eq!(builder.owned_locals_ledger().len(), 1);
         assert!(matches!(

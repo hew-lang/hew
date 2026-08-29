@@ -2154,7 +2154,8 @@ fn check_generator_iter_map_owned_handle_aggregate_fails_closed() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("extracting an owned handle") && combined.contains("not yet supported"),
+        combined.contains("MIR kind: OwnedHandleAggregateExtractionUnsupported")
+            && combined.contains("not yet supported"),
         "expected the owned-handle aggregate-extraction fail-closed diagnostic; got: {combined}"
     );
 }
@@ -5074,7 +5075,8 @@ fn run_record_of_handles_return_drops_each_field_once() {
     let output = run_bounded_hew_run(&hew_src, repo_root());
     assert!(
         output.status.success(),
-        "record of handles return + explicit close must run cleanly; stdout: {}\nstderr: {}",
+        "record of handles return + explicit close must run cleanly; status: {:?}\nstdout: {}\nstderr: {}",
+        output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );

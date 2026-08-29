@@ -1644,7 +1644,7 @@ impl Worker {
     }
 
     #[test]
-    fn goto_def_resolves_record_type_name_to_declaration_span() {
+    fn goto_def_resolves_nominal_type_name_to_declaration_span() {
         let source =
             "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
         let doc = make_typed_doc(source);
@@ -1657,7 +1657,7 @@ impl Worker {
             "file:///test.hew",
             offset,
         )
-        .expect("resolver should classify record type use");
+        .expect("resolver should classify nominal type use");
         match resolution {
             hew_analysis::resolver::Resolution::TypeDef { name, def_span, .. } => {
                 assert_eq!(name, "Point");
@@ -1673,7 +1673,7 @@ impl Worker {
                 );
                 assert_eq!(range, expected);
             }
-            other => panic!("expected record TypeDef, got {other:?}"),
+            other => panic!("expected nominal TypeDef, got {other:?}"),
         }
     }
 
@@ -7453,11 +7453,11 @@ machine Traffic {
 
     // ── Group B: Records / wires — field-declaration hover ───────────────────
 
-    /// Hovering on the field name tokens inside a `record` type declaration
+    /// Hovering on the field name tokens inside a nominal `type` declaration
     /// must surface the declared field type via `hover_field_declaration_at_offset`.
     ///
-    /// `record AutoRecord { … }` is parsed as `Item::Record` (a separate AST
-    /// node from `Item::TypeDecl`).  The hover walk now handles both forms.
+    /// `type AutoRecord { … }` is parsed as `Item::TypeDecl` and the hover
+    /// walk resolves its field declarations.
     #[test]
     fn v05_record_decl_field_declaration_hover_pins_types() {
         let source = include_str!("../../tests/fixtures/v05_record_decl.hew");

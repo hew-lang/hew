@@ -264,7 +264,7 @@ fn assert_init_lib_path_dependency_first_run(package: &str, root_source: &str) {
             ),
             format!(
                 "Offline mode: using cached packages from {}; the registry will not be contacted.\n",
-                home.join(".hew/packages").display()
+                home.join(".hew").join("packages").display()
             )
         )
     );

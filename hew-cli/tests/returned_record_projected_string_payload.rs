@@ -1,10 +1,10 @@
 //! Exact ownership oracle for a nested enum payload stored in a returned record.
 //!
-//! A nested-pattern binder is an alias of storage still owned by the matched
-//! call-result carrier. Returning that alias inside a record must mint one
-//! independent string owner before the carrier is dropped. The control puts an
-//! explicit `clone()` at that one boundary and therefore needs no implicit
-//! retain.
+//! A nested-pattern binder moved out of a consumed call-result carrier already
+//! owns its payload. Returning that binder inside a record should transfer the
+//! existing owner without a retain; only additional aliases or record fields
+//! need new references. The explicit-`clone()` control likewise needs no
+//! implicit retain beyond the clone call itself.
 
 #![cfg(unix)]
 
@@ -353,7 +353,7 @@ fn compile_and_run(source: &str, name: &str) {
 }
 
 #[test]
-fn nested_payload_return_mints_only_the_missing_owner() {
+fn nested_payload_return_retains_only_additional_owners() {
     require_codegen();
 
     let implicit = source("message");
@@ -363,8 +363,8 @@ fn nested_payload_return_mints_only_the_missing_owner() {
     let implicit_retire = function_section(&implicit_raw, "retire");
     assert_eq!(
         implicit_retire.match_indices("string.retain").count(),
-        1,
-        "the borrowed nested payload needs exactly one owner for the returned record:\n\
+        0,
+        "the moved nested payload must transfer its existing owner into the returned record:\n\
          {implicit_retire}"
     );
 
@@ -380,8 +380,8 @@ fn nested_payload_return_mints_only_the_missing_owner() {
     let repeated_build = function_section(&repeated_raw, "build");
     assert_eq!(
         repeated_build.match_indices("string.retain").count(),
-        2,
-        "two returned fields sharing one borrowed nested payload need exactly two owners:\n\
+        1,
+        "two returned fields sharing one moved nested payload need one additional owner:\n\
          {repeated_build}"
     );
 
@@ -390,7 +390,7 @@ fn nested_payload_return_mints_only_the_missing_owner() {
     assert_eq!(
         aliased_build.match_indices("string.retain").count(),
         2,
-        "distinct locals in one projected-owner family still need exactly two returned owners:\n\
+        "the alias and returned aggregate boundary each need one retained owner:\n\
          {aliased_build}"
     );
 
@@ -407,8 +407,8 @@ fn nested_payload_return_mints_only_the_missing_owner() {
     let looped_build = function_section(&looped_raw, "build");
     assert_eq!(
         looped_build.match_indices("string.retain").count(),
-        2,
-        "a read-only loop preserves the forked generation and needs no extra owner:\n\
+        1,
+        "a read-only loop preserves the existing owners and needs no extra retain:\n\
          {looped_build}"
     );
 
@@ -419,8 +419,9 @@ fn nested_payload_return_mints_only_the_missing_owner() {
     let before_fork_build = function_section(&before_fork_raw, "build");
     assert_eq!(
         before_fork_build.match_indices("string.retain").count(),
-        2,
-        "the fresh replacement base owner and its retained fork are sufficient:\n\
+        3,
+        "a mutable replacement stays live through the returned aggregate, so its fork and \
+         record field each need their own retained owner:\n\
          {before_fork_build}"
     );
 
@@ -431,8 +432,8 @@ fn nested_payload_return_mints_only_the_missing_owner() {
     let reused_main = function_section(&reused_raw, "main");
     assert_eq!(
         reused_main.match_indices("string.retain").count(),
-        3,
-        "a non-returned Pair needs two aggregate retains in addition to the fork owner:\n\
+        1,
+        "the temporary Pair borrows the two already-owned aliases; only the fork needs a retain:\n\
          {reused_main}"
     );
 }

@@ -44,7 +44,7 @@ use hew_mir::{
     BasicBlock, FunctionCallConv, Instr, IrPipeline, MachineLayout, MachineVariantLayout, Place,
     RawMirFunction, Terminator,
 };
-use hew_runtime::machine_emit::{thread_emit_clear, thread_emit_pending};
+use hew_runtime::machine_emit::{thread_emit_clear, thread_emit_drain, thread_emit_pending};
 use hew_types::ResolvedTy;
 
 // ── Pipeline builder ──────────────────────────────────────────────────────────
@@ -330,34 +330,35 @@ fn machine_emit_placeholder_lowers_to_push_call() {
 
 // ── JIT execution test ────────────────────────────────────────────────────────
 
-/// JIT-compile and execute the caller; assert that the `__step` call is wrapped
-/// and the outermost exit drains the thread-local emit queue.
+/// JIT-compile and execute the caller; assert that the `__step` call is wrapped,
+/// the outermost keep-exit preserves its events, and they remain in FIFO order.
 ///
 /// ## Method
 ///
 /// 1. Emit the pipeline to `.ll`.
 /// 2. Parse the `.ll` back into an inkwell `Module`.
-/// 3. Create an MCJIT `ExecutionEngine` and wire machine emit runtime symbols
-///    through `add_global_mapping` against the linked dev-dep symbol. The
+/// 3. Create an MCJIT `ExecutionEngine` and wire the machine emit runtime
+///    symbols plus Rust's unwind personality through `add_global_mapping`. The
 ///    macOS test-binary dynamic-symbol table does not expose `#[no_mangle]`
-///    runtime exports for JIT-host lookup, so the mapping is mandatory; see
-///    the inline comment at the mapping site for the platform rationale.
+///    runtime exports for JIT-host lookup, so explicit mappings are mandatory;
+///    see the inline comment at the mapping site for the platform rationale.
 /// 4. Clear any stale events from prior tests on this thread.
 /// 5. Invoke the `caller` function (which calls the step stub).
 /// 6. The step stub emits event 0 then event 1, stores `self` into the
 ///    return slot, and returns cleanly (no trap). `caller` receives the
 ///    return value and discards it.
-/// 7. Assert the outermost step exit drained the thread-local queue.
+/// 7. Assert the outermost keep-exit preserved both events, then drain and
+///    verify their machine identity and FIFO tag order.
 ///
 /// This test is NOT `#[ignore]`d, unlike the MCJIT execution tests that were
 /// removed alongside it. Those also called `add_global_mapping` — the
 /// difference is completeness, not technique: each mapped only a subset, or
 /// mapped conditionally, and fell back to the engine's dynamic-symbol
 /// generator for the rest. That generator cannot see a Rust test binary's
-/// `#[no_mangle]` exports, so the first unmapped runtime call SIGSEGVs. This
-/// one binds every symbol it needs by address up front (step 3) and `.expect()`s
-/// each, so no symbol reaches the generator. Removing any one of those mappings
-/// reproduces the siblings' crash exactly.
+/// `#[no_mangle]` exports, so an unresolved reference can materialize as a null
+/// address and SIGSEGV. This one binds every symbol it needs by address up front
+/// (step 3) and `.expect()`s each, so no symbol reaches the generator. Removing
+/// any one of those mappings reproduces the siblings' crash exactly.
 #[test]
 #[cfg(unix)]
 fn machine_emit_push_populates_thread_queue_in_fifo_order() {
@@ -396,7 +397,7 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         .create_module_from_ir(buf)
         .expect("parse .ll into inkwell Module");
 
-    // Look up machine emit declarations before JIT takes ownership of the module.
+    // Look up all declarations before JIT takes ownership of the module.
     let emit_push_decl = module
         .get_function("hew_machine_emit_push")
         .expect("emitted module must declare hew_machine_emit_push");
@@ -406,21 +407,24 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
     let step_exit_decl = module
         .get_function("hew_machine_emit_step_exit_keep")
         .expect("emitted module must declare hew_machine_emit_step_exit_keep");
+    let personality_decl = module
+        .get_function("rust_eh_personality")
+        .expect("unwind-capable caller must declare rust_eh_personality");
 
     let ee = module
         .create_jit_execution_engine(OptimizationLevel::None)
         .expect("create_jit_execution_engine must succeed");
 
-    // Wire the JIT symbol resolver to the actual machine emit functions
-    // from the `hew-runtime` dev-dep.
+    // Wire the JIT symbol resolver to the actual machine emit functions from
+    // the `hew-runtime` dev-dep and Rust's linked unwind personality.
     //
     // WHY add_global_mapping is required here: Rust test binaries on macOS
     // (and Linux with default linker flags) do not export all `#[no_mangle]`
     // symbols to the dynamic symbol table; the MCJIT engine's default symbol
     // resolver cannot find them by name. `add_global_mapping` bypasses the
-    // resolver and directly wires the JIT reference to the in-process function
-    // pointer, which is always reachable by address.
-    extern "C" {
+    // resolver and directly wires each JIT reference to its in-process
+    // function pointer, which is always reachable by address.
+    unsafe extern "C" {
         fn hew_machine_emit_push(
             queue: *mut std::ffi::c_void,
             machine_id: u64,
@@ -429,6 +433,7 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         ) -> i32;
         fn hew_machine_emit_step_enter(queue: *mut std::ffi::c_void) -> i32;
         fn hew_machine_emit_step_exit_keep(queue: *mut std::ffi::c_void) -> i32;
+        fn rust_eh_personality();
     }
     ee.add_global_mapping(&emit_push_decl, hew_machine_emit_push as *const () as usize);
     ee.add_global_mapping(
@@ -439,6 +444,7 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         &step_exit_decl,
         hew_machine_emit_step_exit_keep as *const () as usize,
     );
+    ee.add_global_mapping(&personality_decl, rust_eh_personality as *const () as usize);
 
     // Clear any stale events from a prior test on this thread.
     thread_emit_clear();
@@ -470,5 +476,26 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         2,
         "the deliver-design step-exit must KEEP queued MachineEmitPlaceholder events, \
          not drain them"
+    );
+
+    let mut emitted = Vec::new();
+    thread_emit_drain(|event, _append| {
+        emitted.push((event.machine_id, event.tag, event.payload));
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .expect("draining the JIT-populated thread queue must succeed");
+    assert_eq!(
+        emitted,
+        vec![
+            (0xAAAA_BBBB_CCCC_DDDD, 0, std::ptr::null()),
+            (0xAAAA_BBBB_CCCC_DDDD, 1, std::ptr::null()),
+        ],
+        "MachineEmitPlaceholder events must preserve machine identity, null unit payloads, \
+         and source FIFO order"
+    );
+    assert_eq!(
+        thread_emit_pending(),
+        0,
+        "the FIFO assertion must leave the thread-local queue clean"
     );
 }

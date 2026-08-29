@@ -551,6 +551,7 @@ fn std$string$from_bool -> string
     return[bb3] ->
       (none)
 
+
 fn std$string$from_char -> string
   statements:
     use BindingId(23) code site=SiteId(249) ty=i64 intent=Read
@@ -808,12 +809,10 @@ fn std$string$try_to_int -> Result<i64, string>
     call[bb29 hew_string_drop -> bb30] ->
       (none)
     unwind[bb29 hew_string_drop] ->
-      drop _51 ty=string kind=cow_heap(hew_string_drop)
       drop _16 ty=string kind=cow_heap(hew_string_drop)
     branch[bb30: bb31/bb32] ->
       (none)
     return[bb31] ->
-      drop _51 ty=string kind=cow_heap(hew_string_drop)
       drop _16 ty=string kind=cow_heap(hew_string_drop)
     goto[bb32->bb33] ->
       (none)
@@ -832,10 +831,8 @@ fn std$string$try_to_int -> Result<i64, string>
     goto[bb38->bb36] ->
       (none)
     cancel[bb38] ->
-      drop _51 ty=string kind=cow_heap(hew_string_drop)
       drop _16 ty=string kind=cow_heap(hew_string_drop)
     return[bb39] ->
-      drop _51 ty=string kind=cow_heap(hew_string_drop)
       drop _16 ty=string kind=cow_heap(hew_string_drop)
     goto[bb40->bb41] ->
       (none)
@@ -846,12 +843,10 @@ fn std$string$try_to_int -> Result<i64, string>
     cancel[bb42] ->
       (none)
     panic[bb43] ->
-      drop _51 ty=string kind=cow_heap(hew_string_drop)
       drop _16 ty=string kind=cow_heap(hew_string_drop)
     branch[bb44: bb45/bb46] ->
       (none)
     panic[bb45] ->
-      drop _51 ty=string kind=cow_heap(hew_string_drop)
       drop _16 ty=string kind=cow_heap(hew_string_drop)
     goto[bb46->bb22] ->
       (none)
@@ -1101,7 +1096,7 @@ fn std$string$float_parse_start -> i64
     call[bb3 hew_string_drop -> bb4] ->
       (none)
     unwind[bb3 hew_string_drop] ->
-      drop _7 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb4: bb5/bb6] ->
       (none)
     goto[bb5->bb7] ->
@@ -1111,11 +1106,11 @@ fn std$string$float_parse_start -> i64
     branch[bb7: bb8/bb9] ->
       (none)
     return[bb8] ->
-      drop _7 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb9->bb10] ->
       (none)
     return[bb10] ->
-      drop _7 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb11->bb10] ->
       (none)
     cancel[bb11] ->
@@ -1182,11 +1177,11 @@ fn std$string$parse_valid_float_literal -> f64
     call[bb3 hew_string_drop -> bb4] ->
       (none)
     unwind[bb3 hew_string_drop] ->
-      drop _8 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb4 std$string$find_exponent_index -> bb5] ->
       (none)
     unwind[bb4 std$string$find_exponent_index] ->
-      drop _8 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb5: bb6/bb7] ->
       (none)
     goto[bb6->bb8] ->
@@ -1196,7 +1191,7 @@ fn std$string$parse_valid_float_literal -> f64
     call[bb8 std$string$parse_float_significand -> bb9] ->
       (none)
     unwind[bb8 std$string$parse_float_significand] ->
-      drop _8 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb9: bb10/bb11] ->
       (none)
     branch[bb10: bb13/bb14] ->
@@ -1206,25 +1201,25 @@ fn std$string$parse_valid_float_literal -> f64
     branch[bb12: bb17/bb18] ->
       (none)
     panic[bb13] ->
-      drop _8 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb14 std$string$parse_float_exponent -> bb15] ->
       (none)
     unwind[bb14 std$string$parse_float_exponent] ->
-      drop _8 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb15 std$string$apply_float_exponent -> bb16] ->
       (none)
     unwind[bb15 std$string$apply_float_exponent] ->
-      drop _8 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb16->bb12] ->
       (none)
     cancel[bb16] ->
-      drop _8 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb17->bb19] ->
       (none)
     goto[bb18->bb19] ->
       (none)
     return[bb19] ->
-      drop _8 ty=string kind=cow_heap(hew_string_drop)
+      (none)
 
 fn std$string$digit_value -> i64
   statements:
@@ -1365,7 +1360,7 @@ fn std$string$find_exponent_index -> i64
     call[bb11 hew_string_drop -> bb12] ->
       (none)
     unwind[bb11 hew_string_drop] ->
-      drop _15 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb12: bb13/bb14] ->
       (none)
     branch[bb13: bb16/bb17] ->
@@ -1377,13 +1372,13 @@ fn std$string$find_exponent_index -> i64
     cancel[bb15] ->
       (none)
     return[bb16] ->
-      drop _15 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb17->bb18] ->
       (none)
     goto[bb18->bb15] ->
       (none)
     cancel[bb18] ->
-      drop _15 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb19->bb18] ->
       (none)
     cancel[bb19] ->
@@ -1472,7 +1467,7 @@ fn std$string$is_valid_float_significand -> bool
     call[bb14 hew_string_drop -> bb17] ->
       (none)
     unwind[bb14 hew_string_drop] ->
-      drop _20 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb15 std$string$digit_value -> bb22] ->
       (none)
     unwind[bb15 std$string$digit_value] ->
@@ -1484,13 +1479,13 @@ fn std$string$is_valid_float_significand -> bool
     branch[bb17: bb18/bb19] ->
       (none)
     return[bb18] ->
-      drop _20 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb19->bb20] ->
       (none)
     goto[bb20->bb16] ->
       (none)
     cancel[bb20] ->
-      drop _20 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb21->bb20] ->
       (none)
     cancel[bb21] ->
@@ -1498,17 +1493,17 @@ fn std$string$is_valid_float_significand -> bool
     call[bb22 hew_string_drop -> bb23] ->
       (none)
     unwind[bb22 hew_string_drop] ->
-      drop _20 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb23: bb24/bb25] ->
       (none)
     return[bb24] ->
-      drop _20 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb25->bb26] ->
       (none)
     goto[bb26->bb16] ->
       (none)
     cancel[bb26] ->
-      drop _20 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb27->bb26] ->
       (none)
     cancel[bb27] ->
@@ -1593,7 +1588,7 @@ fn std$string$is_valid_float_exponent -> bool
     call[bb9 hew_string_drop -> bb10] ->
       (none)
     unwind[bb9 hew_string_drop] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb10: bb11/bb12] ->
       (none)
     branch[bb11: bb14/bb15] ->
@@ -1603,13 +1598,13 @@ fn std$string$is_valid_float_exponent -> bool
     branch[bb13: bb16/bb17] ->
       (none)
     panic[bb14] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb15->bb13] ->
       (none)
     cancel[bb15] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     return[bb16] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb17->bb18] ->
       (none)
     branch[bb18: bb24/bb25] ->
@@ -1625,46 +1620,43 @@ fn std$string$is_valid_float_exponent -> bool
     branch[bb22: bb35/bb20] ->
       (none)
     return[bb23] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     panic[bb24] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb25->bb20] ->
       (none)
     cancel[bb25] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     panic[bb26] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb27 hew_string_slice -> bb28] ->
       (none)
     unwind[bb27 hew_string_slice] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb28 std$string$digit_value -> bb29] ->
       (none)
     unwind[bb28 std$string$digit_value] ->
       drop _35 ty=string kind=cow_heap(hew_string_drop)
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
     call[bb29 hew_string_drop -> bb30] ->
       (none)
     unwind[bb29 hew_string_drop] ->
-      drop _35 ty=string kind=cow_heap(hew_string_drop)
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb30: bb31/bb32] ->
       (none)
     return[bb31] ->
-      drop _35 ty=string kind=cow_heap(hew_string_drop)
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb32->bb33] ->
       (none)
     goto[bb33->bb22] ->
       (none)
     cancel[bb33] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb34->bb33] ->
       (none)
     cancel[bb34] ->
       (none)
     panic[bb35] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      (none)
 
 fn std$string$parse_float_significand -> f64
   statements:
@@ -1745,7 +1737,7 @@ fn std$string$parse_float_significand -> f64
     call[bb10 hew_string_drop -> bb13] ->
       (none)
     unwind[bb10 hew_string_drop] ->
-      drop _21 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb11->bb12] ->
       (none)
     call[bb12 std$string$digit_value -> bb15] ->
@@ -1763,11 +1755,11 @@ fn std$string$parse_float_significand -> f64
     call[bb15 hew_string_drop -> bb16] ->
       (none)
     unwind[bb15 hew_string_drop] ->
-      drop _21 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb16 std$string$digit_to_float -> bb17] ->
       (none)
     unwind[bb16 std$string$digit_to_float] ->
-      drop _21 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb17: bb18/bb19] ->
       (none)
     goto[bb18->bb20] ->
@@ -1850,7 +1842,7 @@ fn std$string$parse_float_exponent -> i64
     call[bb3 hew_string_drop -> bb4] ->
       (none)
     unwind[bb3 hew_string_drop] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb4: bb5/bb6] ->
       (none)
     branch[bb5: bb8/bb9] ->
@@ -1860,11 +1852,11 @@ fn std$string$parse_float_exponent -> i64
     branch[bb7: bb19/bb20] ->
       (none)
     panic[bb8] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb9->bb7] ->
       (none)
     cancel[bb9] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb10: bb13/bb14] ->
       (none)
     goto[bb11->bb12] ->
@@ -1872,13 +1864,13 @@ fn std$string$parse_float_exponent -> i64
     goto[bb12->bb7] ->
       (none)
     cancel[bb12] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     panic[bb13] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb14->bb12] ->
       (none)
     cancel[bb14] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb15: bb16/bb18] ->
       (none)
     branch[bb16: bb21/bb22] ->
@@ -1888,55 +1880,51 @@ fn std$string$parse_float_exponent -> i64
     branch[bb18: bb31/bb32] ->
       (none)
     panic[bb19] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb20->bb15] ->
       (none)
     cancel[bb20] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     panic[bb21] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb22 hew_string_slice -> bb23] ->
       (none)
     unwind[bb22 hew_string_slice] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb23 std$string$digit_value -> bb24] ->
       (none)
     unwind[bb23 std$string$digit_value] ->
       drop _38 ty=string kind=cow_heap(hew_string_drop)
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
     call[bb24 hew_string_drop -> bb25] ->
       (none)
     unwind[bb24 hew_string_drop] ->
-      drop _38 ty=string kind=cow_heap(hew_string_drop)
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb25: bb26/bb27] ->
       (none)
     panic[bb26] ->
-      drop _38 ty=string kind=cow_heap(hew_string_drop)
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb27: bb28/bb29] ->
       (none)
     panic[bb28] ->
-      drop _38 ty=string kind=cow_heap(hew_string_drop)
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb29->bb17] ->
       (none)
     cancel[bb29] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     panic[bb30] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     branch[bb31: bb34/bb35] ->
       (none)
     goto[bb32->bb33] ->
       (none)
     return[bb33] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     panic[bb34] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb35->bb33] ->
       (none)
     cancel[bb35] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
+      (none)
 
 fn std$string$apply_float_exponent -> f64
   statements:
@@ -3891,4 +3879,3 @@ fn duration::fmt -> string
       drop _2 ty=string kind=cow_heap(hew_string_drop)
     return[bb3] ->
       (none)
-

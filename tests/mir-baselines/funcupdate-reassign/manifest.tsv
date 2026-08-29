@@ -1,6 +1,6 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
-# generating-revision: faaa17012
+# generating-revision: 133a534331
 # generating-context: v0.6.0-rc1 integration branch (semantic state; compilation was
 #   unblocked by the follow-up exhaustive Sender classification only)
 #   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
@@ -90,6 +90,14 @@
 #   normalization between the stage-E base and tip, so no part of this refresh
 #   comes from the identity work — it is pre-existing RC drift the stale
 #   baselines were hiding.
+#   Refreshed after the unwind-safe RAII hard cutover. The string-parsing
+#   helper chunks now discharge each short-lived slice at their explicit
+#   `hew_string_drop`, so that call's own unwind edge and downstream terminal
+#   edges no longer try to release the same owner again. In
+#   `VecAcc__recv__checksum`, the guarded VecIter release before the final
+#   arithmetic similarly leaves no cursor owner for the later panic, unwind,
+#   or return edges. Only stale drop-plan entries were removed; the CFG,
+#   statements, and values are unchanged.
 #
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
 # normalization: three run-variance normalizations — (1) the dump's function

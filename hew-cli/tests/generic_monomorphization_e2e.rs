@@ -243,7 +243,7 @@ fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
     let raw = String::from_utf8_lossy(&raw.stdout);
     assert!(
         raw.contains(
-            "_8 = _7.field[1]\n    snapshot_drop _7 ty=EnumHolder<string> plan=UserRecord { name: \"EnumHolder$$string\" } boundary=LocalCall\n    ret = move _8"
+            "_8 = _7.field[1]\n    snapshot_drop _7 ty=EnumHolder<string> plan=UserRecord { name: \"EnumHolder$$string\" } boundary=LocalCall\n    ownership Release { owner: OwnerId { binding: BindingId(3), generation: 0 }, place: Local(7) }\n    ret = move _8"
         ),
         "untouched generic enum-record must release after its final borrow and before return:\n{raw}"
     );

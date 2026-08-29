@@ -1207,26 +1207,28 @@ fn main() {
     );
 }
 
-/// W3.053 fail-closed gate (no-extraction double-free): a generator moved into a
-/// LOCAL tuple created in the same scope whose generator field is never extracted
-/// (`let g = count(); let r = (g, 99); println(r.1)`) is freed BOTH by the
-/// tuple's member drop AND the source binding's drop — a pre-existing double-free
-/// (verified exit 139 on tip c1f5ffd4). The gate must REFUSE it. (Distinct from
-/// the SAFE `generator_in_local_tuple_not_extracted_keeps_source_drop` exec test,
-/// where the generator is extracted from a RETURNED tuple first, so the member
-/// drop is suppressed and the IR frees exactly once.)
+/// A generator moved directly into a local tuple is owned by that tuple when
+/// the field is never extracted. RAII neutralizes the source binding at the
+/// move, so the tuple's member drop is the sole release. This is distinct from
+/// `generator_in_local_tuple_not_extracted_keeps_source_drop`, which first
+/// extracts a generator from a returned tuple and then re-aggregates it.
 #[test]
-fn w3053_local_tuple_no_extraction_double_free_is_refused() {
+fn local_tuple_no_extraction_is_freed_exactly_once() {
     let repo = repo_root();
-    compile_expect_w3053_refusal(
-        &repo,
-        "w3053_no_extract_doublefree",
-        r"gen fn count() -> i64 { yield 1; yield 2; yield 3 }
+    let source = r"gen fn count() -> i64 { yield 1; yield 2; yield 3 }
 fn main() {
     let g = count();
     let repacked = (g, 99);
     println(repacked.1);
 }
-",
+";
+    let ir = emit_llvm_ir(&repo, "local_tuple_no_extraction_ir", source);
+    assert_eq!(
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
+        1,
+        "the tuple member drop must be the sole generator release after the source move; \
+         IR:\n{ir}"
     );
+    let stdout = run_hew_source(&repo, "local_tuple_no_extraction_run", source);
+    assert_eq!(stdout, "99");
 }

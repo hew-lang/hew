@@ -80,6 +80,21 @@ jobs:
             exit 1
           fi
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: release-license
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli --version 0.9.0
+
+      - name: Verify THIRD-PARTY-LICENSES is current
+        run: make licenses-check
+
   # WASI libraries are platform-independent. Build them once and place the
   # same proved artifacts in every published toolchain archive.
   build-portable-release-libs:
@@ -502,14 +517,6 @@ jobs:
           ./target/${{ matrix.rust_target }}/release/hew-lsp.exe --version
           ./target/${{ matrix.rust_target }}/release/hew-observe.exe --version
 
-      # ── Third-party license attribution ─────────────────────────────────
-
-      - name: Install cargo-about
-        run: cargo install cargo-about --locked --features cli --version 0.9.0 --force
-
-      - name: Generate THIRD-PARTY-LICENSES
-        run: cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
-
       # ── Package archive ─────────────────────────────────────────────────
 
       - name: Package archive (Unix)
@@ -931,12 +938,6 @@ jobs:
             --hew "target/${{ matrix.rust_target }}/release/hew" \
             --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
-      - name: Install cargo-about
-        run: cargo install cargo-about --locked --features cli --version 0.9.0 --force
-
-      - name: Generate THIRD-PARTY-LICENSES
-        run: cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
-
       - name: Verify Linux binaries
         run: |
           ldd --version 2>&1 | sed -n "1p"
@@ -1108,10 +1109,6 @@ jobs:
               --hew target/release/hew \
               --archive cross-release-libs/x86_64-unknown-freebsd/libhew.a
 
-            # ── Third-party license attribution ────────────────────────────
-            cargo install cargo-about --locked --features cli --version 0.9.0 --force
-            cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
-
             # ── Package archive ────────────────────────────────────────────
             ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
 
@@ -1262,10 +1259,6 @@ jobs:
               --hew target/release/hew \
               --archive cross-release-libs/aarch64-unknown-freebsd/libhew.a \
               --consumer-archive cross-release-libs/aarch64-unknown-freebsd/libhew_release_link_probe.a
-
-            # ── Third-party license attribution ────────────────────────────
-            cargo install cargo-about --locked --features cli --version 0.9.0 --force
-            cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
 
             # ── Package archive ────────────────────────────────────────────
             ARCHIVE_NAME="${{ steps.archive.outputs.name }}"

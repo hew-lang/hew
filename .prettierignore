@@ -1,0 +1,37 @@
+# Markdown that was never prettier-formatted. The pre-commit hook
+# (scripts/pre-commit-fmt.sh) runs `prettier --write` on every staged
+# Markdown file, so a one-line edit to any of these reflowed the whole
+# document and broke multi-line code spans inside block quotes.
+#
+# WHY: these documents are hand-wrapped and contain constructs prettier
+# mangles; formatting them as a side effect of an unrelated edit hides
+# the real change in review.
+# WHEN: remove a path from this list once that file has been formatted
+# deliberately in its own docs-only commit and its block quotes checked.
+docs/design/lint-pass.md
+docs/dev/lsp-editor-setup.md
+docs/dev/rc1-integration-test-failure-classification.md
+docs/diagrams.md
+docs/hew-language-guide.md
+docs/internal/jit-host-abi.md
+docs/internal/v05-ir-ladder.md
+docs/internal/v05-type-descriptor-contract.md
+docs/internal/versioning.md
+docs/internal/waivers/runtime-unsafe-count-43907.md
+docs/migrations/v0.4.0.md
+docs/observe.md
+docs/releases/v0.4.0.md
+docs/releases/v0.5.0.md
+docs/releases/v0.5.1.md
+docs/releases/v0.5.2.md
+docs/releases/v0.5.3.md
+docs/releases/v0.6.0-rc2.md
+docs/sandbox-vm-divergences.md
+docs/specs/failure-philosophy.md
+docs/specs/handle-safety-and-resource-lifetime.md
+docs/specs/HEW-DIST-SPEC.md
+docs/specs/HEW-FUTURE.md
+docs/specs/HEW-SPEC-2026.md
+docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md
+docs/specs/MACHINE-SPEC.md
+docs/wasm-capability-matrix.md

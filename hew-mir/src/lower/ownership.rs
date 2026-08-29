@@ -433,10 +433,15 @@ impl Builder {
         ) && self.locals.get(source_root as usize)
             == Some(owner_ty)
             && self.binding_locals.get(owner) == Some(&Place::Local(source_root))
+            // The ledger disposition is path-insensitive: a sibling arm lowered
+            // earlier already released the carrier at its body end, but on the
+            // path that reaches THIS destructure the carrier is still the live
+            // owner. The minted call-carrier fact is the path-independent proof.
+            && self.call_scrutinee_carrier_mint_locals.contains(&source_root)
             && self.owned_locals.iter().any(|entry| {
                 entry.binding == *owner
                     && entry.ty == *owner_ty
-                    && entry.disposition == Disposition::ScopeExit
+                    && entry.disposition != Disposition::AliasOf
             });
         let dest_is_proven_owner = self.binding_locals.get(&binding) == Some(&dest)
             && self.owned_locals.iter().any(|entry| {

@@ -8,7 +8,7 @@ pub(super) use super::*;
 fn typecheck_match_statement_exhaustive_enum_ok() {
     let (errors, _) = parse_and_check(concat!(
         "enum Light { Red; Green; }\n",
-        "fn main() { let v: Light = Red; match v { Red => 1, Green => 2, } let _done = 0; }\n",
+        "fn main() { let v: Light = .Red; match v { Red => 1, Green => 2, } let _done = 0; }\n",
     ));
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
 }
@@ -17,7 +17,7 @@ fn typecheck_match_statement_exhaustive_enum_ok() {
 fn typecheck_match_statement_missing_variant_errors() {
     let (errors, warnings) = parse_and_check(concat!(
         "enum Light { Red; Green; }\n",
-        "fn main() { let v: Light = Red; match v { Red => 1, } let _done = 0; }\n",
+        "fn main() { let v: Light = .Red; match v { Red => 1, } let _done = 0; }\n",
     ));
     assert!(
         warnings
@@ -704,7 +704,7 @@ fn borrowed_param_escape_lowercase_variant_constructor_flagged() {
     // heuristic dropped this, letting a returned reference outlive its owner.
     let (errors, _) = parse_and_check(concat!(
         "enum Holder { wrap(Rc<i64>); empty }\n",
-        "fn f(r: Rc<i64>) -> Holder { wrap(r) }\n",
+        "fn f(r: Rc<i64>) -> Holder { Holder.wrap(r) }\n",
     ));
     assert!(
         errors
@@ -721,7 +721,7 @@ fn borrowed_param_escape_uppercase_variant_constructor_flagged() {
     // proves the fix does not regress the originally-handled direction.
     let (errors, _) = parse_and_check(concat!(
         "enum Holder { Wrap(Rc<i64>); Empty }\n",
-        "fn f(r: Rc<i64>) -> Holder { Wrap(r) }\n",
+        "fn f(r: Rc<i64>) -> Holder { Holder.Wrap(r) }\n",
     ));
     assert!(
         errors
@@ -1225,7 +1225,7 @@ fn typecheck_generic_enum_constructor_infers_type_args() {
         "enum Option<T> { Some(T); None; }\n",
         "fn take_int(x: Option<i64>) -> Option<i64> { x }\n",
         "fn take_string(x: Option<string>) -> Option<string> { x }\n",
-        "fn main() { take_int(Some(42)); take_string(Some(\"hello\")); }\n",
+        "fn main() { take_int(Option.Some(42)); take_string(Option.Some(\"hello\")); }\n",
     ));
     assert!(
         output.errors.is_empty(),
@@ -1239,7 +1239,7 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
     let source = concat!(
         "enum Option<T> { Some(T); None; }\n",
         "fn take_int(x: Option<i64>) -> Option<i64> { x }\n",
-        "fn main() { take_int(Some(42)); }\n",
+        "fn main() { take_int(Option.Some(42)); }\n",
     );
     let result = hew_parser::parse(source);
     assert!(
@@ -1248,32 +1248,18 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
         result.errors
     );
 
-    let main_fn = result
-        .program
-        .items
-        .iter()
-        .find_map(|(item, _)| match item {
-            Item::Function(function) if function.name == "main" => Some(function),
-            _ => None,
-        })
-        .expect("main function should exist");
-    let Stmt::Expression((outer_call, _)) = &main_fn.body.stmts[0].0 else {
-        panic!("expected outer call statement");
-    };
-    let Expr::Call {
-        args: outer_args, ..
-    } = outer_call
-    else {
-        panic!("expected outer call expression");
-    };
-    let (inner_call, inner_call_span) = outer_args[0].expr();
-    let Expr::Call {
-        args: inner_args, ..
-    } = inner_call
-    else {
-        panic!("expected inner constructor call");
-    };
-    let (_, literal_span) = inner_args[0].expr();
+    // The constructor and its payload are located by source offset rather than
+    // by AST shape: `Type.Variant(..)` is not the same node kind as the retired
+    // bare `Variant(..)`, and the coercion under test is about the recorded
+    // expression types, not about which node the parser builds.
+    let constructor = "Option.Some(42)";
+    let inner_start = source.find(constructor).expect("constructor in source");
+    let inner_call_span = &(inner_start..inner_start + constructor.len());
+    let literal_start = source[inner_start..]
+        .find("42")
+        .expect("payload literal in constructor")
+        + inner_start;
+    let literal_span = &(literal_start..literal_start + 2);
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.checking_embedded_builtins = true;

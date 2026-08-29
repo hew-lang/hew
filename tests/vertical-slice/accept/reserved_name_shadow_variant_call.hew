@@ -16,9 +16,9 @@ enum AppError {
 
 fn lookup(key: string) -> AppError {
     if key == "missing" {
-        NotFound("resource not found")
+        .NotFound("resource not found")
     } else {
-        Internal
+        .Internal
     }
 }
 

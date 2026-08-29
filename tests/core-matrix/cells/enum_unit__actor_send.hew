@@ -14,7 +14,7 @@ actor Sink {
 }
 
 fn main() {
-    let x: Colour = Red;
+    let x: Colour = .Red;
     let s = spawn Sink(hits: 0);
     match await s.take(x) {
         Result.Ok(n) => println(f"hits {n}"),

@@ -7,5 +7,5 @@
 pub enum AppErr { NotFound(string) }
 
 pub fn make_error(msg: string) -> AppErr {
-    NotFound(msg)
+    .NotFound(msg)
 }

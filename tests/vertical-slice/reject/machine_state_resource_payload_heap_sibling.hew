@@ -49,7 +49,7 @@ machine Plain {
         Live { h: Handle { fd: fd } }
     }
     on Shut: Live => Idle {
-        Idle
+        .Idle
     }
 
     default { state }

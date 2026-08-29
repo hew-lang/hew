@@ -4,7 +4,7 @@ enum Colour {
 }
 
 fn main() {
-    let x: Colour = Red;
+    let x: Colour = .Red;
     let v: Vec<Colour> = Vec.new();
     v.push(x);
     match v.get(0) {

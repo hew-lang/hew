@@ -29,7 +29,7 @@ machine ConnSession {
         Active { h: Handle { fd: fd } }
     }
     on Disconnect: Active => Idle {
-        Idle
+        .Idle
     }
 
     default { state }

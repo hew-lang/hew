@@ -707,8 +707,8 @@ fn machine_step_dispatch() {
 
             state Off;
             state On;
-            on Toggle: Off => On;
-            on Toggle: On => Off;
+            on Toggle: Off => .On;
+            on Toggle: On => .Off;
         }
 
         fn main() {
@@ -773,8 +773,8 @@ fn machine_step_suppresses_unused_mut_warning() {
 
             state Off;
             state On;
-            on Toggle: Off => On;
-            on Toggle: On => Off;
+            on Toggle: Off => .On;
+            on Toggle: On => .Off;
         }
 
         fn main() {
@@ -810,8 +810,8 @@ fn machine_step_on_let_receiver_is_rejected() {
 
             state Off;
             state On;
-            on Toggle: Off => On;
-            on Toggle: On => Off;
+            on Toggle: Off => .On;
+            on Toggle: On => .Off;
         }
 
         fn main() {
@@ -843,10 +843,10 @@ fn machine_state_pattern_match_uses_variant_infrastructure() {
 
             state Closed;
             state Established { seq: i64; }
-            on Connect: Closed => Established { seq: 1 }
-            on Connect: Established => Established { seq: state.seq }
-            on Disconnect: Closed => Closed;
-            on Disconnect: Established => Closed;
+            on Connect: Closed => .Established { seq: 1 }
+            on Connect: Established => .Established { seq: state.seq }
+            on Disconnect: Closed => .Closed;
+            on Disconnect: Established => .Closed;
         }
 
         fn seq_or_zero(state: TcpState) -> i64 {
@@ -889,10 +889,10 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
 
             state Empty;
             state Loaded { value: T; }
-            on Load: Empty => Loaded { value: event.value }
-            on Load: Loaded => Loaded { value: event.value }
-            on Reset: Empty => Empty;
-            on Reset: Loaded => Empty;
+            on Load: Empty => .Loaded { value: event.value }
+            on Load: Loaded => .Loaded { value: event.value }
+            on Reset: Empty => .Empty;
+            on Reset: Loaded => .Empty;
         }
 
         fn main() {
@@ -997,8 +997,8 @@ fn machine_event_match_outside_transition_rejected() {
 
             state Off;
             state On;
-            on Toggle: Off => On;
-            on Toggle: On => Off;
+            on Toggle: Off => .On;
+            on Toggle: On => .Off;
         }
 
         fn main() {
@@ -1417,8 +1417,8 @@ machine Lifecycle<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1461,8 +1461,8 @@ machine Lifecycle<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1502,8 +1502,8 @@ machine Lifecycle<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1548,8 +1548,8 @@ machine Lifecycle<T: NonExistentTrait> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1591,10 +1591,10 @@ fn machine_state_entry_exit_well_typed_no_errors() {
             state Open;
 
 
-            on Push: Closed => Open;
-            on Push: Open   => Open;
-            on Pull: Open   => Closed;
-            on Pull: Closed => Closed;
+            on Push: Closed => .Open;
+            on Push: Open   => .Open;
+            on Pull: Open   => .Closed;
+            on Pull: Closed => .Closed;
         }
         ",
     );
@@ -1625,10 +1625,10 @@ fn machine_state_entry_type_error_reported() {
             state Open;
 
 
-            on Push: Closed => Open;
-            on Push: Open   => Open;
-            on Pull: Open   => Closed;
-            on Pull: Closed => Closed;
+            on Push: Closed => .Open;
+            on Push: Open   => .Open;
+            on Pull: Open   => .Closed;
+            on Pull: Closed => .Closed;
         }
         ",
     );
@@ -1658,10 +1658,10 @@ fn machine_state_exit_type_error_reported() {
             state Closed;
 
 
-            on Push: Closed => Open;
-            on Push: Open   => Open;
-            on Pull: Open   => Closed;
-            on Pull: Closed => Closed;
+            on Push: Closed => .Open;
+            on Push: Open   => .Open;
+            on Pull: Open   => .Closed;
+            on Pull: Closed => .Closed;
         }
         ",
     );
@@ -1692,10 +1692,10 @@ fn machine_state_entry_event_binding_not_in_scope() {
             state Open;
 
 
-            on Push: Closed => Open;
-            on Push: Open   => Open;
-            on Pull: Open   => Closed;
-            on Pull: Closed => Closed;
+            on Push: Closed => .Open;
+            on Push: Open   => .Open;
+            on Pull: Open   => .Closed;
+            on Pull: Closed => .Closed;
         }
         ",
     );
@@ -1729,10 +1729,10 @@ fn machine_state_exit_event_binding_not_in_scope() {
             state Closed;
 
 
-            on Push: Closed => Open;
-            on Push: Open   => Open;
-            on Pull: Open   => Closed;
-            on Pull: Closed => Closed;
+            on Push: Closed => .Open;
+            on Push: Open   => .Open;
+            on Pull: Open   => .Closed;
+            on Pull: Closed => .Closed;
         }
         ",
     );
@@ -1766,10 +1766,10 @@ fn machine_state_entry_state_binding_in_scope() {
             state Open;
 
 
-            on Push: Closed => Open;
-            on Push: Open   => Open;
-            on Pull: Open   => Closed;
-            on Pull: Closed => Closed;
+            on Push: Closed => .Open;
+            on Push: Open   => .Open;
+            on Pull: Open   => .Closed;
+            on Pull: Closed => .Closed;
         }
         ",
     );
@@ -1802,10 +1802,10 @@ fn machine_state_entry_payload_field_resolves() {
             }
 
 
-            on Connect:    Closed      => Established { seq: 0 }
-            on Connect:    Established => Established { seq: state.seq }
-            on Disconnect: Closed      => Closed;
-            on Disconnect: Established => Closed;
+            on Connect:    Closed      => .Established { seq: 0 }
+            on Connect:    Established => .Established { seq: state.seq }
+            on Disconnect: Closed      => .Closed;
+            on Disconnect: Established => .Closed;
         }
         ",
     );
@@ -1838,10 +1838,10 @@ fn machine_state_exit_payload_field_resolves() {
             }
 
 
-            on Connect:    Closed      => Established { seq: 0 }
-            on Connect:    Established => Established { seq: state.seq }
-            on Disconnect: Closed      => Closed;
-            on Disconnect: Established => Closed;
+            on Connect:    Closed      => .Established { seq: 0 }
+            on Connect:    Established => .Established { seq: state.seq }
+            on Disconnect: Closed      => .Closed;
+            on Disconnect: Established => .Closed;
         }
         ",
     );
@@ -1872,10 +1872,10 @@ fn machine_state_entry_nonexistent_payload_field_errors() {
             }
 
 
-            on Connect:    Closed      => Established { seq: 0 }
-            on Connect:    Established => Established { seq: state.seq }
-            on Disconnect: Closed      => Closed;
-            on Disconnect: Established => Closed;
+            on Connect:    Closed      => .Established { seq: 0 }
+            on Connect:    Established => .Established { seq: state.seq }
+            on Disconnect: Closed      => .Closed;
+            on Disconnect: Established => .Closed;
         }
         ",
     );
@@ -1906,10 +1906,10 @@ fn machine_transition_guard_type_error_reported() {
 
 
             // guard expects bool, but 42 is i64 — type error
-            on Push: Closed => Open when 42;
-            on Push: Open   => Open;
-            on Pull: Open   => Closed;
-            on Pull: Closed => Closed;
+            on Push: Closed => .Open when 42;
+            on Push: Open   => .Open;
+            on Pull: Open   => .Closed;
+            on Pull: Closed => .Closed;
         }
         ",
     );
@@ -1937,7 +1937,7 @@ fn machine_entry_exit_errors_and_exhaustiveness_both_reported() {
             state Open;
 
 
-            on Push: Closed => Open;
+            on Push: Closed => .Open;
             // Missing: Open -> Push and both Pull transitions
         }
         ",
@@ -1992,8 +1992,8 @@ machine Holder<T> where T: Resource {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2034,8 +2034,8 @@ machine Holder<T> where T: Resource {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2080,8 +2080,8 @@ machine Bogus<T> where U: Resource {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2127,8 +2127,8 @@ machine Twin<T: Resource> where T: Resource {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2184,8 +2184,8 @@ machine Holder<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2225,8 +2225,8 @@ machine Holder<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2277,8 +2277,8 @@ machine Holder<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2356,8 +2356,8 @@ machine Holder<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2418,8 +2418,8 @@ machine Holder<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2463,8 +2463,8 @@ machine Holder<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2507,8 +2507,8 @@ machine Holder<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2555,8 +2555,8 @@ machine Holder<T: Resource> {
     state Active { handle: T; }
 
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => .Active { Active { handle: event.handle } }
+    on Stop: Active => .Idle { .Idle }
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2589,8 +2589,8 @@ fn machine_const_param_decl_passes_typecheck() {
 
     state Empty;
     state Full;
-    on Write: Empty => Full { Full }
-    on Drain: Full => Empty { Empty }
+    on Write: Empty => .Full { .Full }
+    on Drain: Full => .Empty { .Empty }
     default { self }
 }
 ";
@@ -2622,8 +2622,8 @@ fn machine_mixed_type_and_const_params_pass_typecheck() {
 
     state Empty;
     state Full { val: T; }
-    on Put: Empty => Full { Full { val: event.payload } }
-    on Take: Full => Empty { Empty }
+    on Put: Empty => .Full { Full { val: event.payload } }
+    on Take: Full => .Empty { .Empty }
     default { self }
 }
 ";

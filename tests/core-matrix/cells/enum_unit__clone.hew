@@ -4,7 +4,7 @@ enum Colour {
 }
 
 fn main() {
-    let x: Colour = Red;
+    let x: Colour = .Red;
     let y = clone x;
     match y { Red => println("Red"), Green => println("Green"), }
     match x { Red => println("Red"), Green => println("Green"), }

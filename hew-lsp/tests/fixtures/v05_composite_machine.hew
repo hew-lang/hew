@@ -10,11 +10,11 @@ machine ConnectionLifecycle {
     state Connected {
         initial state Authenticating;
         state Active;
-        on Disconnect: _ => Disconnected;
+        on Disconnect: _ => .Disconnected;
     }
 
-    on Connect: Disconnected => Authenticating;
-    on AuthOk: Authenticating => Active;
+    on Connect: Disconnected => .Authenticating;
+    on AuthOk: Authenticating => .Active;
     on Connect: _ => _ {
         state
     }

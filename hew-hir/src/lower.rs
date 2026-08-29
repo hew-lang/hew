@@ -40133,7 +40133,7 @@ impl Widget {
             pub enum AppErr { NotFound(string) }
 
             pub fn make_error(msg: string) -> AppErr {
-                NotFound(msg)
+                .NotFound(msg)
             }
             ",
         );
@@ -40386,8 +40386,7 @@ impl Widget {
                 events { AlphaTick; }
                 state Empty;
                 state Shared;
-                on AlphaTick: Empty => Empty;
-                on AlphaTick: Shared => Empty;
+                on AlphaTick: _ => _ { state }
             }
         ";
         let beta_source = r"
@@ -40396,8 +40395,7 @@ impl Widget {
                 events { BetaTick; }
                 state Shared;
                 state Full;
-                on BetaTick: Shared => Full;
-                on BetaTick: Full => Full reenter;
+                on BetaTick: _ => _ { state }
             }
         ";
         let root_with_alpha_first = r"
@@ -40580,7 +40578,7 @@ impl Widget {
             enum AppErr { NotFound(string) }
 
             pub fn make_error(msg: string) -> AppErr {
-                NotFound(msg)
+                .NotFound(msg)
             }
             ",
         );

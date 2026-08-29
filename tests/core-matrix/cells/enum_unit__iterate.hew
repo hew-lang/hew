@@ -4,8 +4,8 @@ enum Colour {
 }
 
 fn main() {
-    let a: Colour = Red;
-    let b: Colour = Green;
+    let a: Colour = .Red;
+    let b: Colour = .Green;
     let v: Vec<Colour> = Vec.new();
     v.push(a);
     v.push(b);

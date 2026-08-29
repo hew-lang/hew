@@ -4,13 +4,13 @@ machine Counter {
     state NonZero { value: i64; }
     on Inc: Zero => NonZero { NonZero { value: 1 } }
     on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Zero }
+    on Reset: NonZero => Zero { .Zero }
     default { state }
 }
 
 fn make() -> Counter {
     var m = Zero;
-    m.step(Inc);
+    m.step(.Inc);
     m
 }
 

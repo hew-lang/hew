@@ -5,7 +5,7 @@ enum Shape {
 }
 
 fn main() {
-    let x: Shape = Circle(3);
+    let x: Shape = .Circle(3);
     match x {
         Empty => println("empty"),
         Circle(x_r) => println(f"circle {x_r}"),

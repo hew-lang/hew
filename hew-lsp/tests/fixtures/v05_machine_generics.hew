@@ -5,7 +5,7 @@ machine Boxed<T> {
 
     state Idle;
 
-    on Store: Idle => Idle;
+    on Store: Idle => .Idle;
 }
 
 fn machine_generics_probe() -> i32 {

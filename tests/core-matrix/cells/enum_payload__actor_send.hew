@@ -19,7 +19,7 @@ actor Sink {
 }
 
 fn main() {
-    let x: Shape = Circle(3);
+    let x: Shape = .Circle(3);
     let s = spawn Sink(hits: 0);
     match await s.take(x) {
         Result.Ok(n) => println(f"hits {n}"),

@@ -827,7 +827,7 @@ fn actor_receive_gen_indirect_enum_param_relinquishes_shell_drop() {
         }
         fn main() {
             let streamer = spawn Streamer();
-            let tree = Node(Leaf("left"), Leaf("right"));
+            let tree = Tree.Node(Tree.Leaf("left"), Tree.Leaf("right"));
             let _stream = streamer.emit(tree);
         }
         "#,
@@ -904,14 +904,14 @@ fn cloned_indirect_enum_generator_capture_fails_closed() {
             }
         }
         fn main() {
-            let tree = Node(Leaf(1), Leaf(2));
+            let tree = Tree.Node(Tree.Leaf(1), Tree.Leaf(2));
             let _stream = walk(tree);
         }
         ",
         r"
         indirect enum Tree { Leaf(i64); Node(Tree, Tree); }
         fn main() {
-            let tree = Node(Leaf(1), Leaf(2));
+            let tree = Tree.Node(Tree.Leaf(1), Tree.Leaf(2));
             let _stream = gen {
                 yield 1;
                 match tree {

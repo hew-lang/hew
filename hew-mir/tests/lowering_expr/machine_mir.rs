@@ -1081,7 +1081,7 @@ machine Lifecycle<T> {
     events { Tick; }
     state Start;
     state End;
-    on Tick: Start => End { End }
+    on Tick: Start => .End { .End }
     on Tick: _ => _ { state }
 }
 

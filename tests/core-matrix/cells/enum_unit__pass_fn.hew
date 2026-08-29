@@ -8,6 +8,6 @@ fn use_it(v: Colour) {
 }
 
 fn main() {
-    let x: Colour = Red;
+    let x: Colour = .Red;
     use_it(x);
 }

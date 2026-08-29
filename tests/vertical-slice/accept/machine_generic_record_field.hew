@@ -16,7 +16,7 @@ machine Lifecycle<T> {
     events { ev; }
     state Start;
     state Mid;
-    on ev: Start => Mid { Mid }
+    on ev: Start => Mid { .Mid }
     on ev: _ => _ { state }
 }
 

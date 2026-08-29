@@ -13,6 +13,6 @@ fn use_it(v: Shape) {
 }
 
 fn main() {
-    let x: Shape = Circle(3);
+    let x: Shape = .Circle(3);
     use_it(x);
 }

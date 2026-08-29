@@ -71,6 +71,11 @@ pub enum MirCallableInstance {
 /// across runs — the `compile-determinism-verify` gate depends on that.
 /// [`SynthesizedCallable::MachineStep`] carries none: a machine layout mints
 /// exactly one step dispatch per parent key.
+///
+/// The ordinal is drawn from ONE per-parent sequence shared by every variant,
+/// not a per-variant sequence, so ordinals interleave across producers; see the
+/// marker on `Builder::next_synthesized_ordinal` for why and what would replace
+/// it. Only uniqueness and run-to-run stability are promised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SynthesizedCallable {
     /// `lower/closure_gen.rs::lower_closure_shim` — the invoke shim of a

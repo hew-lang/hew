@@ -291,6 +291,21 @@ impl Builder {
     /// is already owned by a *different* original callee symbol, appends a
     /// numeric disambiguation suffix so every distinct callee still gets its
     /// own, uniquely named adapter.
+    ///
+    /// APPROXIMATION — the adapter is deduped MODULE-wide by callee symbol, but
+    /// its `MirCallableKey` parent is the body that happened to fork the callee
+    /// first. WHY: one adapter body per callee is what codegen wants (a second
+    /// identical adapter would be a duplicate LLVM symbol), and the parent is
+    /// only ever read as part of a unique identity, never as "the body that
+    /// owns this adapter". Encounter order is deterministic for a fixed input,
+    /// so the key is stable — `compile-determinism-verify` covers that. WHEN
+    /// this stops being good enough: as soon as a consumer treats the parent as
+    /// ownership (e.g. attributing the adapter's drops or diagnostics to the
+    /// parent body), because two forking bodies would then disagree about which
+    /// of them owns it. WHAT replaces it: parent the adapter on the CALLEE's
+    /// key — it is a per-callee artifact, not a per-caller one — which needs
+    /// the callee's `MirCallableKey` in hand at the fork site rather than only
+    /// its emitted symbol.
     fn ensure_task_entry_adapter(&mut self, callee_symbol: &str, result_ty: &ResolvedTy) -> String {
         if let Some(existing) = self.task_entry_adapter_symbols.borrow().get(callee_symbol) {
             return existing.clone();

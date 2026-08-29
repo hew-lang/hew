@@ -29,6 +29,17 @@ hew-types = { path = "../hew-types" }
 [dev-dependencies]
 # Self dev-dependency so `hew-mir/tests/*` link a lib built with the
 # fixture-identity feature; production `cargo build` never enables it.
+#
+# APPROXIMATION — WHY: an integration test in `tests/` links the crate's own
+# rlib, so a `#[cfg(test)]` gate is invisible to it; a cargo feature is the only
+# switch that reaches both. WHEN this stops being good enough: cargo unifies
+# features per workspace build, so during `cargo test --workspace` EVERY crate
+# that depends on hew-mir also sees `MirCallableKey::for_test`. Release builds
+# and `cargo build` never enable it, so no shipped artifact carries the
+# constructor — but a test-build-only misuse in another crate would compile.
+# WHAT replaces it: move the fixture builders into a separate
+# `hew-mir-testkit` dev-only crate that owns the constructor, so no feature on
+# hew-mir itself is needed.
 hew-mir = { path = ".", features = ["test"] }
 hew-types = { path = "../hew-types", features = ["test"] }
 

@@ -3721,6 +3721,14 @@ impl Builder {
     /// disposition keeps its entry here (the generation was live before that
     /// release, and a call before it can still unwind). Only `AliasOf` is
     /// never an owner.
+    ///
+    /// SHORTCUT — WHY: the pre-seal passes run while lowering is still
+    /// emitting events, so they cannot replay the finished stream and read
+    /// this Builder ledger view instead. WHEN obsolete: once reassignment and
+    /// transfer publish their generation-end events at lowering time (the
+    /// same condition as the `prepare_body_transfers` replay marker). WHAT:
+    /// derive the slot view from Checked-MIR event replay and delete this
+    /// ledger reader.
     pub(crate) fn owned_locals_owner_generations(&self) -> Vec<(BindingId, String, ResolvedTy)> {
         let mut seen = HashSet::new();
         self.owned_locals

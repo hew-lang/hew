@@ -3464,8 +3464,52 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         .machine_decl_layout_names
         .clone_from(&machine_decl_layout_names);
     let param_ownership: Rc<ParamOwnershipFacts> = Rc::new(param_ownership);
+    // One lowered body per declaration.
+    //
+    // HIR emits an imported function TWICE: once under its bare spelling, so
+    // an unqualified call in the importing file resolves, and once under the
+    // module-qualified spelling. Both items carry the resolver's single
+    // declaration identity, so lowering both realizes one callable identity
+    // twice — two copies of one body that only the emitted name tells apart.
+    // The checker already published which spelling is that declaration's
+    // direct-call endpoint (`direct_call_symbols`, keyed by `DefId`), so
+    // that map — not the name shape — selects the body to keep.
+    //
+    // A declaration with no published endpoint (never directly called) keeps
+    // its first item; if that still leaves two bodies under one key, the
+    // fail-closed uniqueness gate at the end of this function reports it
+    // rather than emitting an ambiguous module.
+    let canonical_fn_items: HashSet<hew_hir::ItemId> = {
+        let mut by_declaration: HashMap<&hew_types::DefId, Vec<&HirFn>> = HashMap::new();
+        for item in &module.items {
+            if let HirItem::Function(func) = item {
+                by_declaration
+                    .entry(&func.declaration)
+                    .or_default()
+                    .push(func);
+            }
+        }
+        by_declaration
+            .into_iter()
+            .filter_map(|(declaration, items)| {
+                if items.len() < 2 {
+                    return items.first().map(|func| func.id);
+                }
+                let endpoint = direct_call_symbols.get(declaration);
+                let chosen = items
+                    .iter()
+                    .find(|func| endpoint.is_some_and(|symbol| &func.name == symbol))
+                    .or_else(|| items.first())?;
+                Some(chosen.id)
+            })
+            .collect()
+    };
     for item in &module.items {
         match item {
+            HirItem::Function(func) if !canonical_fn_items.contains(&func.id) => {
+                // A redundant re-emission of a declaration already lowered
+                // above; see `canonical_fn_items`.
+            }
             HirItem::Function(func) => {
                 // Generic origins are not monomorphic and never reach
                 // codegen directly — their concrete instances are emitted

@@ -241,7 +241,8 @@ fn lower_actor_receive_handlers(
             node: actor.node,
             declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                 "{}::{}",
-                actor.name, handler.name
+                actor.qualified_name(),
+                handler.name
             )),
             name: format!("{}::{}", actor.name, handler.name),
             type_params: Vec::new(),
@@ -435,7 +436,7 @@ fn lower_actor_init_handler(
         node: actor.node,
         declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
             "{}::init",
-            actor.name
+            actor.qualified_name()
         )),
         name: format!("{}::init", actor.name),
         type_params: Vec::new(),
@@ -534,7 +535,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
@@ -594,7 +596,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
@@ -876,7 +879,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
@@ -995,7 +999,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
@@ -1119,7 +1124,8 @@ fn lower_actor_lifecycle_handlers(
                     node: actor.node,
                     declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                         "{}::{}",
-                        actor.name, hook.name
+                        actor.qualified_name(),
+                        hook.name
                     )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),

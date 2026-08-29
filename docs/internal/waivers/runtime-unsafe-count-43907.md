@@ -102,15 +102,15 @@ Remediation that must land with the merge: update
 .github/hew-runtime-unsafe-count.txt to total=43907. (Not done in this review â
 the reviewed worktree is read-only.)
 
-NOT waived, tracked as a follow-up lane, not a blocker: 11 enqueue_resume call
-sites still resolve pointer-only through with_live_actor â
-supervisor.rs:1838,2454; reactor.rs:1053,1147,1288,1315; await_cancel.rs:226;
-channel_core.rs:248; task_scope.rs:933,1118; reply_channel.rs:419;
-hew_node.rs:824. Residual defect is a wrong-incarnation wake (a replacement CAS'd
-SuspendedâRunnable with no readiness behind it â the fabricated-timeout path at
-scheduler.rs:1310-1315), NOT a use-after-free: with_live_actor never derefs an
-untracked pointer. Three of these carry SAFETY comments still asserting
-"enqueue_resume re-validates waiter.actor", which is now the weaker claim; update
-them when the sites are converted. Also: mailbox_detach_await_send
+The follow-up lane landed (#3069). Every readiness source now records an
+ActorIncarnation (actor id + never-reissued spawn_serial) at park time and wakes
+through scheduler::enqueue_resume_by_incarnation, which resolves the live
+incarnation, refuses a serial mismatch before touching the actor, and holds the
+pin across the enqueue. The pointer-only entry survives as the pub(crate)
+enqueue_resume_pinned, reachable in production only from that resolver, so the
+GROUP B reasoning above (id-keyed registry + pin across the wake) is now the
+whole-crate rule rather than one site's. The three SAFETY comments that asserted
+"enqueue_resume re-validates waiter.actor" are rewritten to the incarnation
+claim. Also: mailbox_detach_await_send
 (mailbox.rs:2926) still matches its waiter by slot ADDRESS, safe only because the
 detaching caller holds the creator ref â convention, not construction.

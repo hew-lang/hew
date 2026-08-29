@@ -22,6 +22,7 @@ use crate::internal::types::{
     HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn, HewSysDispatchFn,
 };
 use crate::io_time::hew_now_ms;
+use crate::lifetime::live_actors::ActorIncarnation;
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;
 use crate::pool::{HewActorPool, PoolStrategy};
@@ -1166,15 +1167,17 @@ fn finish_supervisor_reclamation(access: &ClosedSupervisorAccess) {
 /// slot. `notify_restart` fires every waiter exactly once per restart cycle,
 /// depositing readiness into `slot` and re-enqueuing `actor` on the scheduler.
 struct RestartAwaitWaiter {
-    /// The parked-continuation actor, woken via `enqueue_resume`. Raw and
-    /// possibly-stale: `enqueue_resume` re-validates liveness, never this code.
-    actor: *mut HewActor,
+    /// The parked-continuation actor's incarnation, woken via
+    /// `enqueue_resume_by_incarnation`. Captured at park time, when the actor is
+    /// live; a restart that recycles the awaiter's allocation cannot inherit
+    /// this wake.
+    actor: ActorIncarnation,
     /// The readiness slot; the observer holds one retained ref while registered.
     slot: *mut crate::read_slot::HewReadSlot,
 }
 
-// SAFETY: `actor` is re-validated under the registry lock by `enqueue_resume`;
-// `slot` is reference-counted. The waiter is only moved between the supervisor's
+// SAFETY: `actor` is a pair of scalars carrying no allocation; `slot` is
+// reference-counted. The waiter is only moved between the supervisor's
 // `restart_await_waiters` mutex and the firing path, both single-consumer.
 unsafe impl Send for RestartAwaitWaiter {}
 
@@ -1833,9 +1836,7 @@ fn wake_restart_await_waiters(sup: *mut HewSupervisor) {
             )
         };
         if do_wake {
-            // SAFETY: `enqueue_resume` re-validates `waiter.actor` under the
-            // registry lock; a freed actor drops the wake with no deref.
-            unsafe { crate::scheduler::enqueue_resume(waiter.actor, ptr::null_mut()) };
+            crate::scheduler::enqueue_resume_by_incarnation(waiter.actor);
         }
         // Release the observer's retained in-flight ref (the single authority).
         // SAFETY: the observer owned this ref; nothing else releases it.
@@ -2449,9 +2450,7 @@ unsafe fn stop_supervisor_owned(
             )
         };
         if do_wake {
-            // SAFETY: `enqueue_resume` re-validates the actor under the registry
-            // lock; a freed actor drops the wake with no deref.
-            unsafe { crate::scheduler::enqueue_resume(waiter.actor, ptr::null_mut()) };
+            crate::scheduler::enqueue_resume_by_incarnation(waiter.actor);
         }
         // SAFETY: the observer owned this ref; nothing else releases it.
         unsafe { crate::read_slot::hew_read_slot_free(waiter.slot) };
@@ -10116,6 +10115,8 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
     // out from under the abandon edge.
     // SAFETY: caller holds the creator ref, so the slot is live to retain.
     unsafe { crate::read_slot::read_slot_retain(slot) };
+    // SAFETY: `actor` is the awaiting actor, live for this registration.
+    let actor = unsafe { ActorIncarnation::of(actor) };
     waiters.push(RestartAwaitWaiter { actor, slot });
     drop(waiters);
     RESTART_AWAIT_SUSPEND

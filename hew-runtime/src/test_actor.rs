@@ -1,4 +1,4 @@
-//! Shared stub actors for the wake-edge tests.
+//! Shared stub actors for the wake-edge incarnation tests (#3069).
 //!
 //! Every readiness source records its wake target while the target actor is
 //! alive and fires it later, when the target may already be gone. The hazard
@@ -10,7 +10,7 @@
 //! allocator hook. It destroys the installed incarnation in place and
 //! placement-constructs a fresh one, with a fresh identity, at the exact same
 //! address, then re-tracks it. A wake recorded before the call and fired after
-//! it names an address that is live again and belongs to somebody else - the
+//! it names an address that is live again and belongs to somebody else — the
 //! precise state a supervisor restart or a spawn-after-free produces in
 //! production, minus the allocator's timing.
 
@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, 
 
 use crate::actor::{HewActor, HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET, HEW_PRIORITY_NORMAL};
 use crate::internal::types::{ContTag, HewActorState};
-use crate::lifetime::live_actors;
+use crate::lifetime::live_actors::{self, ActorIncarnation};
 use crate::scheduler::NoWorkerSchedulerForTest;
 
 /// Build a minimal `HewActor` with sensible defaults.
@@ -136,6 +136,12 @@ impl TrackedTestActor {
         self.ptr
     }
 
+    /// This actor's current incarnation identity.
+    pub(crate) fn incarnation(&self) -> ActorIncarnation {
+        // SAFETY: the guard owns a live, tracked actor.
+        unsafe { ActorIncarnation::of(self.ptr) }
+    }
+
     /// Untrack the actor WITHOUT freeing the box, modelling a caller torn down
     /// before a late reply fires. After this returns, a wake for the actor must
     /// observe it as no longer live.
@@ -144,25 +150,27 @@ impl TrackedTestActor {
     }
 
     /// Destroy this incarnation and construct a fresh, parked one at the SAME
-    /// address, tracked under a new identity.
+    /// address, tracked under a new identity. Returns the replacement's
+    /// incarnation.
     ///
     /// This is the deterministic form of the production race: a supervisor
     /// restart (or any spawn following a free) receiving the dead child's
     /// allocation back from the allocator.
-    pub(crate) fn reincarnate_parked(&self) {
+    pub(crate) fn reincarnate_parked(&self) -> ActorIncarnation {
         // SAFETY: the guard owns this allocation exclusively for its lifetime.
-        unsafe { reincarnate_parked_in_place(self.ptr) };
+        unsafe { reincarnate_parked_in_place(self.ptr) }
     }
 }
 
 /// Destroy the tracked incarnation at `actor` and construct a fresh, parked one
-/// at the SAME address, tracked under a new identity.
+/// at the SAME address, tracked under a new identity. Returns the replacement's
+/// incarnation.
 ///
 /// # Safety
 ///
 /// `actor` must be a tracked, fully initialised actor allocation the caller
 /// owns exclusively (no other thread may be inside a pin on it).
-pub(crate) unsafe fn reincarnate_parked_in_place(actor: *mut HewActor) {
+pub(crate) unsafe fn reincarnate_parked_in_place(actor: *mut HewActor) -> ActorIncarnation {
     assert!(
         live_actors::untrack_actor(actor),
         "the incarnation being replaced must still be tracked"
@@ -192,6 +200,8 @@ pub(crate) unsafe fn reincarnate_parked_in_place(actor: *mut HewActor) {
     // SAFETY: the replacement is fully initialised at `actor` and has a fresh
     // identity distinct from the destroyed incarnation.
     assert!(unsafe { live_actors::track_actor(actor) });
+    // SAFETY: as above — the replacement is live and tracked.
+    unsafe { ActorIncarnation::of(actor) }
 }
 
 impl std::ops::Deref for TrackedTestActor {

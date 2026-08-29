@@ -19,6 +19,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::internal::types::{HewTaskError, HewTaskState};
+use crate::lifetime::live_actors::ActorIncarnation;
 use crate::rc::hew_rc_drop;
 use crate::util::{CondvarExt, MutexExt};
 
@@ -894,9 +895,11 @@ fn task_await_waiter_final_free_count_for_test() -> usize {
 /// task's completion observer owns one retained in-flight ref on `slot` and
 /// fires `wake` exactly once on `Done`.
 struct TaskAwaitWaiter {
-    /// The parked-continuation actor, woken via `enqueue_resume`. Raw and
-    /// possibly-stale: `enqueue_resume` re-validates liveness, never this code.
-    actor: *mut crate::actor::HewActor,
+    /// The parked-continuation actor's incarnation, woken via
+    /// `enqueue_resume_by_incarnation`. Recorded at park time, when the actor
+    /// is live; if it dies before completion the identity stops resolving and
+    /// the wake is dropped.
+    actor: ActorIncarnation,
     /// The readiness slot; the observer holds one retained ref while registered.
     slot: *mut crate::read_slot::HewReadSlot,
 }
@@ -928,9 +931,7 @@ unsafe extern "C" fn task_await_wake(ctx: *mut c_void) {
         crate::read_slot::read_slot_deposit_status(waiter.slot, crate::read_slot::ReadStatus::Data)
     };
     if do_wake {
-        // SAFETY: `enqueue_resume` re-validates `waiter.actor` under the registry
-        // lock; a freed actor drops the wake with no deref.
-        unsafe { crate::scheduler::enqueue_resume(waiter.actor, ptr::null_mut()) };
+        crate::scheduler::enqueue_resume_by_incarnation(waiter.actor);
     }
     // Release the observer's in-flight ref (the single authority for it).
     // SAFETY: the observer owned this ref; nothing else releases it.
@@ -974,6 +975,8 @@ pub unsafe extern "C" fn hew_task_await_suspend(
     // out from under the abandon edge.
     // SAFETY: caller holds the creator ref, so the slot is live to retain.
     unsafe { crate::read_slot::read_slot_retain(slot) };
+    // SAFETY: `actor` is the awaiting actor, live for this registration.
+    let actor = unsafe { ActorIncarnation::of(actor) };
     let waiter = Box::into_raw(Box::new(TaskAwaitWaiter { actor, slot }));
     let signal = t
         .done_signal
@@ -1050,9 +1053,9 @@ struct ScopeJoinWaiter {
     /// The shared first-ready arbiter (retained once for this waiter). The
     /// winning child observer calls `hew_await_cancel_complete` on it.
     reg: *mut crate::await_cancel::HewAwaitCancel,
-    /// The parked-continuation actor, woken via `enqueue_resume` when the join
-    /// wins. Raw and possibly-stale: `enqueue_resume` re-validates liveness.
-    actor: *mut crate::actor::HewActor,
+    /// The parked-continuation actor's incarnation, woken via
+    /// `enqueue_resume_by_incarnation` when the join wins.
+    actor: ActorIncarnation,
     /// Outstanding child observers not yet fired. The observer that decrements
     /// this to zero is the join winner.
     pending: AtomicUsize,
@@ -1111,12 +1114,7 @@ unsafe extern "C" fn scope_join_child_done(ctx: *mut c_void) {
         // box.
         let won = unsafe { crate::await_cancel::hew_await_cancel_complete(w.reg) != 0 };
         if won {
-            let actor = w.actor;
-            if !actor.is_null() {
-                // SAFETY: `enqueue_resume` re-validates `actor` liveness under the
-                // registry lock; a freed actor drops the wake with no deref.
-                unsafe { crate::scheduler::enqueue_resume(actor, ptr::null_mut()) };
-            }
+            crate::scheduler::enqueue_resume_by_incarnation(w.actor);
         }
     }
     // Release this observer's box ref (the last release reclaims the box).
@@ -1194,6 +1192,8 @@ pub unsafe extern "C" fn hew_task_scope_completion_observe(
     //     arbiter ref) before every observer is installed.
     // SAFETY: `reg` is live; retain the single box-owned arbiter ref.
     unsafe { crate::await_cancel::hew_await_cancel_retain(reg) };
+    // SAFETY: `actor` is the joining actor, live for this registration.
+    let actor = unsafe { ActorIncarnation::of(actor) };
     let waiter = Box::into_raw(Box::new(ScopeJoinWaiter {
         reg,
         actor,
@@ -5291,9 +5291,10 @@ mod tests {
                 "fresh slot must carry exactly the creator ref"
             );
 
-            // Park the awaiter with a null actor: `enqueue_resume` re-validates
-            // liveness and a cancelled slot suppresses the wake anyway, so no
-            // actor is needed to exercise the abandon teardown.
+            // Park the awaiter with a null actor: it records
+            // `ActorIncarnation::NONE`, which never resolves, and a cancelled
+            // slot suppresses the wake anyway, so no actor is needed to
+            // exercise the abandon teardown.
             let ret = hew_task_await_suspend(scope, task, ptr::null_mut(), slot);
             assert_eq!(
                 ret, TASK_AWAIT_SUSPEND,

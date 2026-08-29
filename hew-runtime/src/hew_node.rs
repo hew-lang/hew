@@ -7,15 +7,14 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::{PoisonSafe, PoisonSafeRw};
 use crate::util::{CondvarExt, MutexExt};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{
-    AtomicBool, AtomicPtr, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering,
-};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::set_last_error;
@@ -677,12 +676,13 @@ struct PendingReply {
     kind: PendingReplyKind,
     outcome: Mutex<Option<ReplyOutcome>>,
     cond: Condvar,
-    /// When non-null, the remote ask was issued by a SUSPENDABLE caller (NEW-5):
+    /// When set, the remote ask was issued by a SUSPENDABLE caller (NEW-5):
     /// the caller's coroutine has parked (or is about to park) on this reply and
-    /// the readiness source must RESUME it through the scheduler rather than
-    /// signal `cond`. Null for a blocking (condvar) caller. Set once at
-    /// registration; read on completion to pick the wake path.
-    parked_caller: AtomicPtr<crate::actor::HewActor>,
+    /// the readiness source must RESUME that exact incarnation through the
+    /// scheduler rather than signal `cond`. `ActorIncarnation::NONE` for a
+    /// blocking (condvar) caller. Set once at registration; read on completion
+    /// to pick the wake path.
+    parked_caller: ActorIncarnation,
 }
 
 /// Per-runtime reply routing table for correlating remote ask/reply pairs.
@@ -720,7 +720,9 @@ impl ReplyRoutingTable {
             kind,
             outcome: Mutex::new(None),
             cond: Condvar::new(),
-            parked_caller: AtomicPtr::new(parked_caller),
+            // SAFETY: `parked_caller`, when non-null, is the actor parking on
+            // this request and is live for this registration.
+            parked_caller: unsafe { ActorIncarnation::of(parked_caller) },
         });
         let mut map = self
             .pending
@@ -810,18 +812,10 @@ impl ReplyRoutingTable {
         *guard = Some(outcome);
         drop(guard);
 
-        let caller = pending.parked_caller.load(Ordering::Acquire);
-        if caller.is_null() {
+        if pending.parked_caller.is_none() {
             pending.cond.notify_one();
         } else {
-            // SAFETY: `caller` is the actor whose coroutine parked on this
-            // request. `enqueue_resume` re-confirms liveness against the live
-            // registry under lock and drops the wake for an actor already torn
-            // down, so a stale pointer from an abandoned ask is never
-            // dereferenced. `cont` is null: the parked continuation handle the
-            // suspend edge published is resumed in place (every readiness source
-            // passes null here).
-            unsafe { crate::scheduler::enqueue_resume(caller, ptr::null_mut()) };
+            crate::scheduler::enqueue_resume_by_incarnation(pending.parked_caller);
         }
     }
 
@@ -9488,13 +9482,13 @@ mod tests {
             conn_mgr: 101,
             conn_id: 21,
         };
-        // A dangling (untracked) actor pointer exercises the suspend wake path
-        // without a live actor: `enqueue_resume` re-confirms liveness against the
-        // live registry and drops the wake for an untracked pointer, so the
-        // completion still deposits the outcome the finish path drains.
-        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        // A tracked stub actor exercises the suspend wake path: the
+        // registration records its incarnation, and the completion resumes that
+        // incarnation instead of signalling the condvar.
+        let parked = crate::test_actor::TrackedTestActor::install_parked();
+        let parked_actor = parked.ptr();
         let (id, pending) = reply_table().register_parked(key, parked_actor);
-        assert_eq!(pending.parked_caller.load(Ordering::Acquire), parked_actor);
+        assert_eq!(pending.parked_caller, parked.incarnation());
         let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
 
         assert!(reply_table().complete(id, Vec::new()));
@@ -9591,7 +9585,10 @@ mod tests {
             conn_mgr: 102,
             conn_id: 22,
         };
-        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        // A tracked stub actor: registration records the caller's incarnation,
+        // so the parked caller must be a real live actor, not a placeholder.
+        let parked = crate::test_actor::TrackedTestActor::install_parked();
+        let parked_actor = parked.ptr();
         let (id, pending) = reply_table().register_parked(key, parked_actor);
         let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
 
@@ -9610,7 +9607,10 @@ mod tests {
             conn_mgr: 103,
             conn_id: 23,
         };
-        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        // A tracked stub actor: registration records the caller's incarnation,
+        // so the parked caller must be a real live actor, not a placeholder.
+        let parked = crate::test_actor::TrackedTestActor::install_parked();
+        let parked_actor = parked.ptr();
         let (_id, pending) = reply_table().register_parked(key, parked_actor);
         let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
 
@@ -9632,7 +9632,10 @@ mod tests {
             conn_mgr: 104,
             conn_id: 24,
         };
-        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        // A tracked stub actor: registration records the caller's incarnation,
+        // so the parked caller must be a real live actor, not a placeholder.
+        let parked = crate::test_actor::TrackedTestActor::install_parked();
+        let parked_actor = parked.ptr();
         let (id, pending) = reply_table().register_parked(key, parked_actor);
         let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
 

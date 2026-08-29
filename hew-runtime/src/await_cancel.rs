@@ -14,6 +14,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::actor::HewActor;
+use crate::lifetime::live_actors::ActorIncarnation;
 use crate::task_scope::{hew_cancel_token_release, hew_cancel_token_retain, HewCancellationToken};
 use crate::timer_wheel::{hew_timer_wheel_cancel, hew_timer_wheel_schedule_handle};
 use crate::timer_wheel::{HewTimerEntry, HewTimerWheel};
@@ -97,7 +98,10 @@ pub struct HewAwaitCancel {
     timer_entry: AtomicPtr<HewTimerEntry>,
     timer_generation: AtomicU64,
     timer_ref_held: AtomicBool,
-    actor: AtomicPtr<HewActor>,
+    /// The waiting actor's incarnation, set once at registration and never
+    /// rewritten. `ActorIncarnation::NONE` means the wait has no resumable
+    /// continuation (a sleep, or a foreign-thread waiter).
+    actor: ActorIncarnation,
     cleanup: HewAwaitCleanup,
     source: *mut c_void,
     /// Test-only per-instance final-free probe. When a test binds one via
@@ -220,11 +224,7 @@ unsafe fn await_cancel_finish(
             unsafe { cleanup(r.source, status as i32) };
         }
         if wake_actor {
-            let actor = r.actor.load(Ordering::Acquire);
-            if !actor.is_null() {
-                // SAFETY: enqueue_resume revalidates liveness before deref.
-                unsafe { crate::scheduler::enqueue_resume(actor, ptr::null_mut()) };
-            }
+            crate::scheduler::enqueue_resume_by_incarnation(r.actor);
         }
     }
 
@@ -269,7 +269,9 @@ pub unsafe extern "C" fn hew_await_cancel_new(
         timer_entry: AtomicPtr::new(ptr::null_mut()),
         timer_generation: AtomicU64::new(0),
         timer_ref_held: AtomicBool::new(false),
-        actor: AtomicPtr::new(actor),
+        // SAFETY: `actor`, when non-null, is the registering actor and is
+        // live for this call.
+        actor: unsafe { ActorIncarnation::of(actor) },
         cleanup,
         source,
         #[cfg(test)]

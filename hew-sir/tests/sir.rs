@@ -3,10 +3,10 @@ use hew_parser::ast::BinaryOp;
 use hew_sir::{
     build_def_use, dump_sir, replace_all_uses, replace_use, verify_function_in_module,
     verify_module, BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, EffectSummary,
-    FunctionSourceOrigin, OpId, Operand, OperandSlot, Provenance, RewriteError, SemAbiParam,
-    SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind, UseMode, UseSite, ValueDef,
-    ValueId,
+    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, RewriteError,
+    SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
+    SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
+    SirInstanceKey, UseMode, UseSite, ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
 
@@ -1608,4 +1608,46 @@ fn verifier_rejects_nonread_operands_at_every_scalar_cfg_boundary() {
             "missing exact non-Read diagnostic for {site:?}: {diagnostics:#?}"
         );
     }
+}
+
+/// The entry is the program's one monomorphic root body.
+///
+/// A generic instance can satisfy every other entry shape rule — root-unit
+/// provenance, listed as a root, parameterless, unit return — and must still
+/// be refused: a specialization is one of many bodies derived from a template,
+/// so there is no single source body for the native and WASI entry adapters to
+/// name. Production lowering cannot build this shape today (generic callables
+/// never reach the branch that assigns `entry_callable`), which is exactly why
+/// the rule needs a hand-built module to be provable at all.
+#[test]
+fn verifier_refuses_a_generic_instance_as_the_module_entry() {
+    let monomorphic = entry_module(unit_function(
+        0,
+        "main",
+        "main",
+        FunctionSourceOrigin::RootUnit,
+        Vec::new(),
+    ));
+    assert!(
+        verify_module(&monomorphic).is_empty(),
+        "control: the same module with a monomorphic entry must verify clean: {:#?}",
+        verify_module(&monomorphic)
+    );
+
+    let mut generic = monomorphic;
+    generic.callables[0].instance = CallableInstance::Generic(SirInstanceKey {
+        template: GenericTemplateId {
+            declaration: DefId::for_test("main"),
+        },
+        type_args: vec![ResolvedTy::I64],
+    });
+    assert!(
+        verify_module(&generic).iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidEntryCallable { callable: CallableId(0), reason }
+                if reason.contains("monomorphic source body")
+        )),
+        "changing only the entry callable's instance kind must fail the entry rule closed: {:#?}",
+        verify_module(&generic)
+    );
 }

@@ -37,6 +37,7 @@
 #   make runtime      — just libhew_runtime.a
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime + wire JSON/YAML/TOML archives
+#   make stage-release-package — assemble a validated distributable tree
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
 #   make baselines                 — regenerate deterministic generated metadata
 #   make baselines-check           — verify deterministic generated metadata
@@ -76,7 +77,7 @@
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
-.PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
+.PHONY: assemble assemble-release stage-release-package pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure sir-shadow-verify
@@ -121,6 +122,9 @@ DESTDIR    ?=
 # Output directory — all usable artifacts land here as symlinks
 BUILD_DIR  := build
 COMMON_GIT_DIR := $(shell git rev-parse --git-common-dir 2>/dev/null)
+# Resolve helper scripts relative to the selected Makefile while package inputs
+# remain relative to the caller's source checkout.
+MAKEFILE_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 
 # Cargo profile directory names.
 #
@@ -424,6 +428,31 @@ stage-portable-release-libs: wasm-runtime-release
 	@mkdir -p "$(PORTABLE_RELEASE_LIB_DIR)/wasm32-wasip1"
 	@cp "$(WASM_RELEASE_DIR)/libhew_runtime.a" "$(PORTABLE_RELEASE_LIB_DIR)/wasm32-wasip1/"
 	@cp "$(WASM_RELEASE_DIR)/libhew_std.a" "$(PORTABLE_RELEASE_LIB_DIR)/wasm32-wasip1/"
+
+# Assemble the platform-neutral release tree before platform-specific
+# stripping, signing, archiving, and post-extraction smoke tests. The inputs are
+# intentionally caller-selectable: release CI can package target-native and
+# cross-built libraries without maintaining another copy of product membership.
+RELEASE_PACKAGE_SOURCE_DIR ?= $(CURDIR)
+RELEASE_PACKAGE_BIN_DIR ?= $(RELEASE_DIR)
+RELEASE_PACKAGE_BIN_SUFFIX ?= $(if $(filter Windows_NT,$(OS)),.exe,)
+RELEASE_PACKAGE_NATIVE_LIB ?= $(RELEASE_LIBHEW)
+RELEASE_PACKAGE_NATIVE_TRIPLE ?= $(HOST_TRIPLE)
+RELEASE_PACKAGE_NATIVE_LIB_NAME ?= $(LIBHEW_NAME)
+RELEASE_PACKAGE_WASI_LIB_DIR ?= $(WASM_RELEASE_DIR)
+RELEASE_PACKAGE_DEST ?= $(BUILD_DIR)/release-package
+RELEASE_PACKAGE_COMPLETIONS ?= $(if $(filter Windows_NT,$(OS)),bash zsh fish powershell,bash zsh fish)
+stage-release-package: ## Release: stage a validated distributable toolchain tree
+	@sh "$(MAKEFILE_ROOT)/scripts/stage-release-package.sh" \
+		--source-dir "$(RELEASE_PACKAGE_SOURCE_DIR)" \
+		--bin-dir "$(RELEASE_PACKAGE_BIN_DIR)" \
+		--bin-suffix "$(RELEASE_PACKAGE_BIN_SUFFIX)" \
+		--native-lib "$(RELEASE_PACKAGE_NATIVE_LIB)" \
+		--native-triple "$(RELEASE_PACKAGE_NATIVE_TRIPLE)" \
+		--native-lib-name "$(RELEASE_PACKAGE_NATIVE_LIB_NAME)" \
+		--wasi-lib-dir "$(RELEASE_PACKAGE_WASI_LIB_DIR)" \
+		--destination "$(RELEASE_PACKAGE_DEST)" \
+		--completion-shells "$(RELEASE_PACKAGE_COMPLETIONS)"
 
 wasm-runtime: wasm-runtime-debug
 

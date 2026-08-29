@@ -9,7 +9,7 @@
 #   bin/hew-observe   — actor observer TUI
 #   lib/libhew.a      — combined runtime + stdlib static library
 #   std/              — standard library sources
-#   completions/      — shell completions (bash, zsh, fish), generated at build time
+#   completions/      — shell completions (plus PowerShell on Windows)
 #
 # Required secrets for macOS code signing/notarization on tag releases
 # (workflow_dispatch can still be used for unsigned dry runs):
@@ -519,43 +519,21 @@ jobs:
 
       # ── Package archive ─────────────────────────────────────────────────
 
-      - name: Package archive (Unix)
+      - name: Stage release package (Unix)
         if: "!startsWith(matrix.target, 'windows')"
         run: |
           VERSION="${RELEASE_TAG#v}"
           ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
-          RELEASE_LIB_DIR="target/${{ matrix.rust_target }}/release-lib"
 
-          mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
-                   "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
-
-          # Binaries
-          cp "target/${{ matrix.rust_target }}/release/hew"           "${ARCHIVE_NAME}/bin/"
-          cp "target/${{ matrix.rust_target }}/release/hew-lsp"          "${ARCHIVE_NAME}/bin/"
-          cp "target/${{ matrix.rust_target }}/release/hew-observe"      "${ARCHIVE_NAME}/bin/"
-          chmod +x "${ARCHIVE_NAME}/bin/"*
-
-          # The executable consumer proof above is the authority for the
-          # release library contract. Copying remains fail-closed if the
-          # validated artifact is absent.
-          cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
-
-          # Target-specific lib subtree so find_hew_lib() prefers lib/<triple>/
-          # on installed native targets before falling back to the flat path.
-          mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
-          cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
-          cp -r portable-release-libs/wasm32-wasip1 "${ARCHIVE_NAME}/lib/"
-
-          # Standard library sources (all .hew files, including subdirectories)
-          cp -r std/. "${ARCHIVE_NAME}/std/"
-
-          # Generate shell completions from built binaries
-          for shell in bash zsh fish; do
-            "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-          done
-
-          # Licenses and docs
-          cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
+          sh release-machinery/scripts/stage-release-package.sh \
+            --source-dir "$PWD" \
+            --bin-dir "target/${{ matrix.rust_target }}/release" \
+            --native-lib "target/${{ matrix.rust_target }}/release-lib/libhew.a" \
+            --native-triple "${{ matrix.rust_target }}" \
+            --native-lib-name "libhew.a" \
+            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" \
+            --destination "${ARCHIVE_NAME}" \
+            --completion-shells "bash zsh fish"
 
           # macOS release binaries embed static LLVM support and rely on
           # Mach-O weak/coalesced definitions that `strip` can break. Keep the
@@ -588,68 +566,27 @@ jobs:
           echo "${output}"
           echo "${output}" | grep -q "pkg-presign-smoke-ok"
 
-      - name: Package archive (Windows)
+      - name: Stage release package (Windows)
         if: startsWith(matrix.target, 'windows')
+        shell: bash
         run: |
-          # Fail closed: without Stop, Copy-Item against a missing source is a
-          # non-terminating error and the step can go green while shipping a
-          # broken archive.
-          $ErrorActionPreference = 'Stop'
+          VERSION="${RELEASE_TAG#v}"
+          ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
 
-          $Version = $env:RELEASE_TAG.TrimStart("v")
-          $ArchiveName = "hew-v${Version}-${{ matrix.target }}"
-          $ReleaseLibDir = "cross-release-libs/${{ matrix.rust_target }}"
+          # GitHub's Windows Bash is Git Bash, so this uses the same POSIX
+          # staging implementation as Unix while executing native .exe tools.
+          sh release-machinery/scripts/stage-release-package.sh \
+            --source-dir "$PWD" \
+            --bin-dir "target/${{ matrix.rust_target }}/release" \
+            --bin-suffix ".exe" \
+            --native-lib "cross-release-libs/${{ matrix.rust_target }}/hew.lib" \
+            --native-triple "${{ matrix.rust_target }}" \
+            --native-lib-name "hew.lib" \
+            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" \
+            --destination "${ARCHIVE_NAME}" \
+            --completion-shells "bash zsh fish powershell"
 
-          New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std", "${ArchiveName}/completions" -Force | Out-Null
-
-          Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
-          Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
-          Copy-Item "target/${{ matrix.rust_target }}/release/hew-observe.exe"        "${ArchiveName}/bin/"
-
-          # The executable consumer proof above is the authority for the
-          # release library contract. Copy-Item fails closed if it is absent.
-          Copy-Item "${ReleaseLibDir}/hew.lib"                                   "${ArchiveName}/lib/"
-
-          # Keep the full Rust triple in the installed layout so target-aware
-          # lookup chooses the proved archive before the native fallback.
-          New-Item -ItemType Directory -Path "${ArchiveName}/lib/${{ matrix.rust_target }}" -Force | Out-Null
-          Copy-Item "${ReleaseLibDir}/hew.lib" "${ArchiveName}/lib/${{ matrix.rust_target }}/"
-          Copy-Item "portable-release-libs/wasm32-wasip1" "${ArchiveName}/lib/" -Recurse
-
-          # Standard library sources (all .hew files, including subdirectories)
-          Copy-Item "std" "${ArchiveName}/std" -Recurse
-
-          # Generate shell completions from built binaries. Native-command
-          # failures are not terminating errors in every PowerShell version,
-          # so capture the output and check both status and content explicitly.
-          function Write-Completion {
-            param(
-              [string]$Executable,
-              [string]$Shell,
-              [string]$Destination
-            )
-            $Completion = & $Executable completions $Shell
-            if ($LASTEXITCODE -ne 0) {
-              throw "$Executable completions $Shell exited $LASTEXITCODE"
-            }
-            if ([string]::IsNullOrWhiteSpace(($Completion -join "`n"))) {
-              throw "$Executable completions $Shell produced empty output"
-            }
-            $Completion | Out-File -Encoding utf8NoBOM $Destination
-          }
-          foreach ($shell in @("bash", "zsh", "fish", "powershell")) {
-            Write-Completion "${ArchiveName}/bin/hew.exe" $shell "${ArchiveName}/completions/hew.${shell}"
-          }
-
-          # Licenses and docs
-          Copy-Item "LICENSE-MIT" "${ArchiveName}/"
-          Copy-Item "LICENSE-APACHE" "${ArchiveName}/"
-          Copy-Item "NOTICE" "${ArchiveName}/"
-          Copy-Item "THIRD-PARTY-LICENSES" "${ArchiveName}/"
-          Copy-Item "README.md" "${ArchiveName}/"
-
-          echo "ARCHIVE_NAME=${ArchiveName}" >> $env:GITHUB_ENV
-        shell: pwsh
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
       # ── macOS code signing & notarization ───────────────────────────────
 
@@ -951,35 +888,20 @@ jobs:
             exit 1
           fi
 
-      - name: Package archive
+      - name: Stage release package
         run: |
           VERSION="${RELEASE_TAG#v}"
           ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
-          RELEASE_DIR="target/${{ matrix.rust_target }}/release"
-          RELEASE_LIB_DIR="target/${{ matrix.rust_target }}/release-lib"
 
-          mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
-                   "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
-
-          cp "${RELEASE_DIR}/hew" "${ARCHIVE_NAME}/bin/"
-          cp "${RELEASE_DIR}/hew-lsp" "${ARCHIVE_NAME}/bin/"
-          cp "${RELEASE_DIR}/hew-observe" "${ARCHIVE_NAME}/bin/"
-          chmod +x "${ARCHIVE_NAME}/bin/"*
-
-          # The executable consumer proof above is the authority; copying
-          # remains fail-closed if the validated archive is absent.
-          cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
-          mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
-          cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
-          cp -r portable-release-libs/wasm32-wasip1 "${ARCHIVE_NAME}/lib/"
-
-          cp -r std/. "${ARCHIVE_NAME}/std/"
-
-          for shell in bash zsh fish; do
-            "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-          done
-
-          cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
+          sh release-machinery/scripts/stage-release-package.sh \
+            --source-dir "$PWD" \
+            --bin-dir "target/${{ matrix.rust_target }}/release" \
+            --native-lib "target/${{ matrix.rust_target }}/release-lib/libhew.a" \
+            --native-triple "${{ matrix.rust_target }}" \
+            --native-lib-name "libhew.a" \
+            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" \
+            --destination "${ARCHIVE_NAME}" \
+            --completion-shells "bash zsh fish"
 
           for b in hew hew-lsp hew-observe; do
             strip "${ARCHIVE_NAME}/bin/${b}"
@@ -1112,42 +1034,19 @@ jobs:
             # ── Package archive ────────────────────────────────────────────
             ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
 
-            mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
-                     "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
+            sh release-machinery/scripts/stage-release-package.sh \
+              --source-dir "$PWD" \
+              --bin-dir "target/release" \
+              --native-lib "cross-release-libs/x86_64-unknown-freebsd/libhew.a" \
+              --native-triple "x86_64-unknown-freebsd" \
+              --native-lib-name "libhew.a" \
+              --wasi-lib-dir "portable-release-libs/wasm32-wasip1" \
+              --destination "${ARCHIVE_NAME}" \
+              --completion-shells "bash zsh fish"
 
-            # Binaries
-            cp target/release/hew           "${ARCHIVE_NAME}/bin/"
-            cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
-            cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
-            chmod +x "${ARCHIVE_NAME}/bin/"*
-
-            # The executable consumer proof above is the authority; cp fails
-            # closed if the validated archive is absent.
-            cp cross-release-libs/x86_64-unknown-freebsd/libhew.a "${ARCHIVE_NAME}/lib/"
-            mkdir -p "${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd"
-            cp cross-release-libs/x86_64-unknown-freebsd/libhew.a \
-              "${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd/"
-            cp -r portable-release-libs/wasm32-wasip1 "${ARCHIVE_NAME}/lib/"
-
-            # Standard library sources (all .hew files, including subdirectories)
-            cp -r std/. "${ARCHIVE_NAME}/std/"
-
-            # Generate shell completions from built binaries
-            for shell in bash zsh fish; do
-              "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-            done
-
-            # Licenses and docs
-            cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
-
-            # Strip packaged binaries when present; missing artifacts are expected
-            # for targets that do not build every binary, but strip failures on
-            # existing files must still fail the job.
+            # Staging proves every binary exists; strip failures remain fatal.
             for b in hew hew-lsp hew-observe; do
-              bin="${ARCHIVE_NAME}/bin/${b}"
-              if [ -f "${bin}" ]; then
-                strip "${bin}"
-              fi
+              strip "${ARCHIVE_NAME}/bin/${b}"
             done
 
             tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
@@ -1263,42 +1162,19 @@ jobs:
             # ── Package archive ────────────────────────────────────────────
             ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
 
-            mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
-                     "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
+            sh release-machinery/scripts/stage-release-package.sh \
+              --source-dir "$PWD" \
+              --bin-dir "target/release" \
+              --native-lib "cross-release-libs/aarch64-unknown-freebsd/libhew.a" \
+              --native-triple "aarch64-unknown-freebsd" \
+              --native-lib-name "libhew.a" \
+              --wasi-lib-dir "portable-release-libs/wasm32-wasip1" \
+              --destination "${ARCHIVE_NAME}" \
+              --completion-shells "bash zsh fish"
 
-            # Binaries
-            cp target/release/hew           "${ARCHIVE_NAME}/bin/"
-            cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
-            cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
-            chmod +x "${ARCHIVE_NAME}/bin/"*
-
-            # The executable consumer proof above is the authority; cp fails
-            # closed if the validated archive is absent.
-            cp cross-release-libs/aarch64-unknown-freebsd/libhew.a "${ARCHIVE_NAME}/lib/"
-            mkdir -p "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd"
-            cp cross-release-libs/aarch64-unknown-freebsd/libhew.a \
-              "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd/"
-            cp -r portable-release-libs/wasm32-wasip1 "${ARCHIVE_NAME}/lib/"
-
-            # Standard library sources (all .hew files, including subdirectories)
-            cp -r std/. "${ARCHIVE_NAME}/std/"
-
-            # Generate shell completions from built binaries
-            for shell in bash zsh fish; do
-              "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-            done
-
-            # Licenses and docs
-            cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
-
-            # Strip packaged binaries when present; missing artifacts are expected
-            # for targets that do not build every binary, but strip failures on
-            # existing files must still fail the job.
+            # Staging proves every binary exists; strip failures remain fatal.
             for b in hew hew-lsp hew-observe; do
-              bin="${ARCHIVE_NAME}/bin/${b}"
-              if [ -f "${bin}" ]; then
-                strip "${bin}"
-              fi
+              strip "${ARCHIVE_NAME}/bin/${b}"
             done
 
             tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"

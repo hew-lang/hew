@@ -1037,20 +1037,15 @@ def rc1_structural_authority_findings(
                 finding("suspend-authority", "suspending-terminator-writer", match)
             )
 
-    # Owner retirement has three independent exit authorities.  These precise
-    # executable markers avoid comment-driven matches while retaining Join,
-    # abandon, and crash cleanup as separately reviewable classes.
+    # Owner retirement has two independent exit authorities.  These precise
+    # executable markers avoid comment-driven matches while retaining Join and
+    # crash cleanup as separately reviewable classes; suspend abandonment is
+    # derived from ownership replay and has no side table to inventory.
     for match in run_query(ast_grep, root, pattern="Terminator::Join { $$$FIELDS }"):
         results.add(finding("owner-retirement-path", "join-owner-path", match))
     for match in run_query(ast_grep, root, kind="match_pattern"):
         if str(match["text"]).lstrip().startswith("Terminator::Join"):
             results.add(finding("owner-retirement-path", "join-owner-consumer", match))
-    for kind in ("identifier", "field_identifier"):
-        for match in run_query(ast_grep, root, kind=kind):
-            if str(match["text"]) == "suspend_abandon_extra_drops":
-                results.add(
-                    finding("owner-retirement-path", "abandonment-owner-path", match)
-                )
     for match in run_query(ast_grep, root, pattern="ActorHandlerKind::Crash"):
         results.add(finding("owner-retirement-path", "crash-cleanup-owner-path", match))
 

@@ -5792,10 +5792,10 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         // close, not the `Box` deallocation, so a second close of the same
         // pointer is a double `Box::from_raw` = heap corruption / use-after-free,
         // not a survivable leak. Exactly-once therefore rests ENTIRELY on the
-        // move-checker + the MIR drop-allow derivations
-        // (`derive_tuple_composite_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay),
-        // `derive_returned_aggregate_member_bindings`): there is NO runtime
-        // backstop. Relaxing those provers re-opens the double-free. (Adding a
+        // move-checker + the MIR ownership replay (the tuple owner's generation
+        // ends at the extraction; `derive_returned_aggregate_member_bindings`
+        // neutralizes returned members): there is NO runtime
+        // backstop. Relaxing those rules re-opens the double-free. (Adding a
         // real idempotency guard in the runtime is a possible defence-in-depth
         // follow-on; until it exists, do not assume one.)
         StateFieldCloneKind::IoHandle {
@@ -25649,7 +25649,7 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
         // actor-pid leaf (`LocalPid` / `RemotePid`). Such a handle carries the
         // `Resource` affine marker (for move-tracking) but owns NO runtime
         // context — there is no `hew_pid_*` release ABI, so the MIR producer's
-        // `resource_drop_fn` correctly yields `None` (`build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay)
+        // `resource_drop_fn` correctly yields `None` (the owner's `DropRecipe`
         // `AffineResource` arm). Its drop frees nothing; the no-op IS the
         // intended cleanup, made explicit here via `ty_is_nonowning_pid_leaf`.
         //
@@ -25770,8 +25770,8 @@ const AGGREGATE_DROP_DEPTH_BOUND: u32 = 64;
 /// `CowValue` leaf, or `None` when the type carries no heap-owning drop
 /// (BitCopy leaves, unsupported leaves). Codegen-side authority for the
 /// `AggregateRecursive` per-leaf walk; the standalone `CowHeap` arm uses
-/// the symbol chosen by the MIR elaborator (`build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay)) and carried
-/// in the kind, so the two never silently diverge — both agree on the same
+/// the symbol chosen by the MIR owner's `DropRecipe` (`cow_value_leaf_drop_symbol`)
+/// and carried in the kind, so the two never silently diverge — both agree on the same
 /// `(type, symbol)` table.
 ///
 /// `Bytes` is deliberately absent: a native `Bytes` local is a by-value
@@ -29305,8 +29305,8 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
 //     unresolved `Ty::Var` is rejected by that function before reaching
 //     here.
 //   - **#1 Drop Safety**: composites written by these helpers participate
-//     in the same LIFO drop machinery as ordinary records/enums
-//     (`build_lifo_drops` (deleted with the LIFO template; exit plans now derive from ownership replay) walks `owned_locals`); no new drop scheduling is
+//     in the same replay-derived exit plans as ordinary records/enums
+//     (their owners mint a `DropRecipe`); no new drop scheduling is
 //     needed at the helper layer. Tag-aware payload-drop for heap-owning
 //     Result variants (`Result<string, string>`) is inherited scope of
 //     W2.005 per plan §9.2.
@@ -36029,10 +36029,10 @@ fn lower_function<'ctx>(
     // thunk + `hew_dealloc`) runs every iteration and frees that one node; the
     // next iteration's tag store then writes through the freed pointer — a
     // use-after-free that corrupts the allocator. A per-construction allocation
-    // gives each iteration its own node, reclaimed exactly once by the sole-owner
-    // drop `derive_indirect_enum_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay) admits. A binding the prover
-    // cannot positively clear is simply not freed (fail-closed, never a
-    // double-free).
+    // gives each iteration its own node, reclaimed exactly once by the
+    // `DropKind::IndirectEnum` drop of the owner the ownership replay finds
+    // live at scope exit (a binding whose generation ended at a hand-off is
+    // not freed again — never a double-free).
     //
     // This prologue NULL-INITIALISES every non-parameter indirect-enum slot as a
     // fail-closed safety net. Two consumers depend on a null start state:
@@ -36449,9 +36449,9 @@ fn lower_function<'ctx>(
 
     // #46 var-overwrite owner set. Collect the locals the MIR elaborator admitted
     // for a scope-exit `DropKind::IndirectEnum` recursive free — i.e. the proven
-    // sole owners of an indirect-enum node. `derive_indirect_enum_drop_allowed` (deleted with the LIFO template; exit plans now derive from ownership replay)
-    // already excluded destructure binders and aliased fan-out members, and the
-    // dataflow pass removed any binding ever Consumed/MaybeConsumed, so this set is
+    // sole owners of an indirect-enum node. Destructure binders and aliased
+    // fan-out members mint no owner, and the ownership replay omits any owner
+    // whose generation ended on every reaching path, so this set is
     // exactly the bindings that are freed exactly once at scope exit and never
     // moved out. `Instr::Move { dest: Local(owner), .. }` consults it to release
     // the PRIOR node on reassignment (`var t = ...; loop { t = ... }`); gating on

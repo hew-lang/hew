@@ -147,6 +147,14 @@ fn cow_drop_places(drops: &[ElabDrop]) -> std::collections::HashSet<hew_mir::Pla
 ///
 /// Checked MIR carries the ownership-event statements produced by lowering;
 /// the assertions below read intent/binding facts out of that stream.
+///
+/// SEAM: this re-flattens the blocks rather than reading lowering's own
+/// snapshot (`FinalizedBody::body_statements`, crate-private and unreachable
+/// from an integration test). The two coincide only because every pass between
+/// that snapshot and checked MIR rewrites `instructions`, never `statements`.
+/// See the SEAM note on `body_statements` in `hew-mir/src/lower/mod.rs`: a pass
+/// that starts editing statements after finalization changes what these
+/// assertions mean.
 fn checked_statements<'a>(
     pipeline: &'a IrPipeline,
     name: &str,

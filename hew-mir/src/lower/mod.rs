@@ -13459,6 +13459,18 @@ pub(in crate::lower) struct FinalizedBody {
     /// the ownership splices that add checker-visible reads, before the carrier
     /// and outbound preparation that rewrites operands. Callers use THIS rather
     /// than re-flattening `blocks`, or the snapshot drifts between body kinds.
+    ///
+    /// SEAM (unguarded): downstream *tests* read the same facts by flattening
+    /// `checked_mir[..].blocks[..].statements` instead, because this field is
+    /// crate-private and finalization is not reachable from an integration
+    /// test. That is the same stream only because every pass between this
+    /// snapshot and `seal_checked`'s `raw.blocks.clone()` rewrites
+    /// `block.instructions` and never `block.statements`. Nothing enforces it.
+    /// A future pass that edits statements after finalization silently changes
+    /// what those assertions mean (`hew-mir/tests/lowering_expr/match_project.rs`
+    /// `checked_statements`, `hew-mir/tests/lowering_calls/vec_iter_clone_out.rs`),
+    /// so such a pass must either re-anchor them or publish this snapshot on
+    /// the finished function instead of leaving the two readings to coincide.
     pub body_statements: Vec<MirStatement>,
 }
 

@@ -325,10 +325,8 @@ jobs:
 
       - name: List the independent full suite inventory
         run: |
-          for fixture in tests/hew/*.hew; do
-            "${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew" \
-              test "$fixture" --list --allow-empty
-          done | LC_ALL=C sort > "${{ runner.temp }}/compiled-hew-full.txt"
+          "${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew" \
+            test tests/hew --list > "${{ runner.temp }}/compiled-hew-full.txt"
 
       - name: Assert shard union and Hew ratchet
         run: >-

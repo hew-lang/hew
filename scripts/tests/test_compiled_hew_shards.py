@@ -13,12 +13,14 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "compiled-hew-shards.py"
-COUNT = 1169
+COUNT = 41
 SHARDS = 4
 
 
 def identity(index: int) -> str:
-    return f"tests/hew/generated_{index // 10}_test.hew::test_{index}"
+    # Repeated bare names make path qualification part of every aggregation
+    # counterfactual, rather than relying on one specially named fixture.
+    return f"tests/hew/generated_{index // 5}_test.hew::test_{index % 5}"
 
 
 def write_junit(
@@ -150,6 +152,36 @@ class CompiledHewShardTests(unittest.TestCase):
         write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={values[0]})
         result = self.aggregate("ratchet", expect=1)
         self.assertIn("failure set differs", result.stderr)
+
+    def test_expected_failure_is_an_exact_path_qualified_identity(self) -> None:
+        values = self.full[0::SHARDS]
+        tracked = values[0]
+        same_name = [
+            value
+            for value in self.full
+            if value != tracked
+            and value.rsplit("::", 1)[1] == tracked.rsplit("::", 1)[1]
+        ]
+        self.assertTrue(same_name)
+        self.expected.write_text(f"{tracked}\n", encoding="utf-8")
+        write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={tracked})
+
+        self.assertIn("ratchet passed", self.aggregate("ratchet").stdout)
+
+    def test_expected_failure_must_belong_to_the_inventory(self) -> None:
+        self.expected.write_text(
+            "tests/hew/not_present_test.hew::test_missing\n", encoding="utf-8"
+        )
+
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("absent from the full inventory", result.stderr)
+
+    def test_duplicate_expected_failure_is_rejected(self) -> None:
+        tracked = self.full[0]
+        self.expected.write_text(f"{tracked}\n{tracked}\n", encoding="utf-8")
+
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("duplicate identities", result.stderr)
 
     def test_report_names_the_failed_shard_test_and_diagnostic(self) -> None:
         values = self.full[0::SHARDS]

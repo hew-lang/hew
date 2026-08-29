@@ -1454,10 +1454,10 @@ test-ast-grep-contract:
 	bash scripts/tests/test_ast_grep_contract.sh
 
 LINT_GATES += test-build-harness
-# Focused behavior tests for the suite cache, generated help, shell discovery,
+# Focused behavior tests for the Hew JUnit transaction, generated help, shell discovery,
 # and compiled-Hew report aggregation. None needs a built compiler.
 test-build-harness:
-	$(PYTHON) scripts/tests/test_hew_suite_cache.py
+	$(PYTHON) scripts/tests/test_hew_suite_runner.py
 	$(PYTHON) scripts/tests/test_makefile_interfaces.py
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py

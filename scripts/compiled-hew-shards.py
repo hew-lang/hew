@@ -4,19 +4,18 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 from typing import NoReturn
-import xml.etree.ElementTree as ET
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "lib"))
 from corpus_nonempty import assert_nonempty  # noqa: E402
+from hew_junit import JUnitError, parse as parse_hew_junit  # noqa: E402
 
 
 PARTITION_RE = re.compile(r"^hash:([1-9][0-9]*)/([1-9][0-9]*)$")
@@ -63,49 +62,17 @@ def normalized_identity(classname: str, name: str) -> str:
 
 def parse_junit(path: Path) -> dict[str, str]:
     try:
-        root = ET.fromstring(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        die(f"JUnit report is missing: {path}")
-    except ET.ParseError as error:
-        die(f"malformed JUnit report {path}: {error}")
-    if root.tag != "testsuites":
-        die(f"JUnit report {path} has <{root.tag}> root, expected <testsuites>")
+        report = parse_hew_junit(path)
+    except JUnitError as error:
+        die(str(error))
     outcomes: dict[str, str] = {}
-    failures = 0
-    skipped = 0
-    for testcase in root.iter("testcase"):
-        identity = normalized_identity(
-            testcase.get("classname", ""), testcase.get("name", "")
-        )
+    for testcase in report.testcases:
+        identity = normalized_identity(testcase.classname, testcase.name)
         if identity in outcomes:
             die(
                 f"JUnit report contains duplicate testcase identity: {path}: {identity}"
             )
-        if testcase.find("failure") is not None:
-            outcome = "FAILED"
-            failures += 1
-        elif testcase.find("skipped") is not None:
-            outcome = "ignored"
-            skipped += 1
-        else:
-            outcome = "ok"
-        outcomes[identity] = outcome
-    try:
-        declared = int(root.get("tests", ""))
-        declared_failures = int(root.get("failures", ""))
-        declared_skipped = int(root.get("skipped", ""))
-    except ValueError:
-        die(f"JUnit report has non-integer summary attributes: {path}")
-    if (declared, declared_failures, declared_skipped) != (
-        len(outcomes),
-        failures,
-        skipped,
-    ):
-        die(
-            f"JUnit summary disagrees with testcase elements: {path}: "
-            f"declared={(declared, declared_failures, declared_skipped)} "
-            f"counted={(len(outcomes), failures, skipped)}"
-        )
+        outcomes[identity] = testcase.outcome
     return outcomes
 
 
@@ -126,8 +93,8 @@ def report_failures(reports_dir: Path, shard_count: int) -> None:
                 continue
 
             try:
-                root = ET.fromstring(path.read_text(encoding="utf-8"))
-            except ET.ParseError as error:
+                report = parse_hew_junit(path)
+            except JUnitError as error:
                 # This is the diagnostic pass that runs before the aggregate
                 # gate fails the job. Dying here would hide every other
                 # shard's assertions behind one truncated report, so name the
@@ -139,19 +106,16 @@ def report_failures(reports_dir: Path, shard_count: int) -> None:
                     file=sys.stderr,
                 )
                 continue
-            for testcase in root.iter("testcase"):
-                failure = testcase.find("failure")
-                if failure is None:
+            for testcase in report.testcases:
+                if testcase.outcome != "FAILED":
                     continue
-                identity = normalized_identity(
-                    testcase.get("classname", ""), testcase.get("name", "")
-                )
+                identity = normalized_identity(testcase.classname, testcase.name)
                 diagnostic_parts = [
                     part.strip()
-                    for part in (failure.get("message"), failure.text)
+                    for part in (testcase.failure_message, testcase.failure_text)
                     if part and part.strip()
                 ]
-                system_out = testcase.findtext("system-out", default="").strip()
+                system_out = testcase.system_out.strip()
                 if system_out:
                     diagnostic_parts.append(f"output:\n{system_out}")
                 diagnostic = (
@@ -199,7 +163,6 @@ def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
     inventory.write_text(list_result.stdout, encoding="utf-8")
     expected = set(read_inventory(inventory))
 
-    metadata: dict[str, object] = {"partition": partition, "tests": len(expected)}
     for optimization, label in (("0", "o0"), ("2", "o2")):
         report = output_dir / f"hew-{label}-shard-{shard}.xml"
         stderr = output_dir / f"hew-{label}-shard-{shard}.stderr.log"
@@ -230,34 +193,23 @@ def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
                 f"{label.upper()} runner exited {returncode}, expected {expected_returncode} "
                 "from its JUnit outcomes"
             )
-        metadata[f"{label}_returncode"] = returncode
-
-    (output_dir / f"hew-shard-{shard}.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
 
 
 def expected_failures(path: Path, full: set[str]) -> set[str]:
-    names: list[str] = []
+    identities: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         value = line.split("#", 1)[0].strip()
         if value:
-            names.append(value.split()[0])
-    if len(names) != len(set(names)):
-        die(f"expected-failures file contains duplicate names: {path}")
-    by_name: dict[str, list[str]] = {}
-    for identity in full:
-        by_name.setdefault(identity.rsplit("::", 1)[-1], []).append(identity)
-    identities: set[str] = set()
-    for name in names:
-        matches = by_name.get(name, [])
-        if len(matches) != 1:
-            die(
-                f"expected failure {name!r} maps to {len(matches)} full-suite identities; "
-                "expected exactly one"
-            )
-        identities.add(matches[0])
-    return identities
+            identities.append(value.split()[0])
+    expected = set(identities)
+    if len(identities) != len(expected):
+        die(f"expected-failures file contains duplicate identities: {path}")
+    unknown = expected - full
+    if unknown:
+        die(
+            f"expected failures are absent from the full inventory: {sorted(unknown)[:5]}"
+        )
+    return expected
 
 
 def load_shards(

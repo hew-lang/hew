@@ -41,7 +41,8 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
         .expect("root main must have a resolved SIR callable");
     let main = lowered
         .module
-        .function_for_callable(entry)
+        .function_index()
+        .function(entry)
         .expect("the tuple main must lower into SIR");
 
     assert!(
@@ -128,7 +129,8 @@ fn generic_scalar_instances_substitute_tuple_values_before_raw_mir() {
         .expect("main's generic call must request one concrete SIR instance");
     let function = lowered
         .module
-        .function_for_callable(instance.id)
+        .function_index()
+        .function(instance.id)
         .expect("the concrete generic instance must lower a SIR body");
     let tuple_make = function
         .blocks
@@ -166,7 +168,8 @@ fn nested_bitcopy_tuples_remain_abstract_through_projection() {
         .expect("nested tuple main must be the entry callable");
     let main = lowered
         .module
-        .function_for_callable(entry)
+        .function_index()
+        .function(entry)
         .expect("nested tuple main must lower to SIR");
     let tuple_makes = main
         .blocks

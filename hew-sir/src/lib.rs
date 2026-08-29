@@ -22,9 +22,9 @@ pub use lower::{lower_module, LoweredModule, SirLoweringStatus};
 pub use model::{
     BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, EffectSummary,
     FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, SemAbiParam,
-    SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemGenericTemplate,
-    SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirInstanceKey,
-    SuccessorSlot, UseMode, UseSite, ValueDef, ValueId,
+    SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemFunctionIndex,
+    SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
+    SirInstanceKey, SuccessorSlot, UseMode, UseSite, ValueDef, ValueId,
 };
 pub use optimize::{
     canonicalize_constant_cfg, canonicalize_module_constant_cfg, CfgCanonicalizationReport,

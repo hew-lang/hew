@@ -78,7 +78,7 @@ fn an_entry_fact_naming_a_non_main_declaration_selects_and_lowers_that_callable(
         "entry selection must follow the HIR fact, not the `main` spelling"
     );
     assert!(
-        lowered.module.function_for_callable(entry).is_some(),
+        lowered.module.function_index().function(entry).is_some(),
         "the selected entry must reach a lowered SIR body"
     );
     assert!(

@@ -178,6 +178,9 @@ pub fn lower_closed_scalar_component(
         ));
     }
 
+    // One association for the whole closure: the walk below asks for a body
+    // once per callable it reaches, and the realization loop asks again.
+    let bodies = module.function_index();
     let mut selected = BTreeSet::new();
     let mut pending = roots
         .iter()
@@ -197,7 +200,7 @@ pub fn lower_closed_scalar_component(
             ))
         })?;
         validate_direct_callable(callable)?;
-        let function = unique_function_for_callable(module, callable_id).ok_or_else(|| {
+        let function = bodies.function(callable_id).ok_or_else(|| {
             SirMirLoweringError::missing_body(
                 callable_id,
                 format!(
@@ -218,7 +221,7 @@ pub fn lower_closed_scalar_component(
     let mut checked_mir = Vec::with_capacity(selected.len());
     let mut elaborated_mir = Vec::with_capacity(selected.len());
     for callable_id in &selected {
-        let function = unique_function_for_callable(module, *callable_id).ok_or_else(|| {
+        let function = bodies.function(*callable_id).ok_or_else(|| {
             SirMirLoweringError::unsupported(format!(
                 "selected SIR callable {} lost its body during component realization",
                 callable_id.0
@@ -1034,15 +1037,6 @@ fn sir_parameter_decisions(
             })
         })
         .collect()
-}
-
-fn unique_function_for_callable(module: &SemModule, callable: CallableId) -> Option<&SemFunction> {
-    let mut matches = module
-        .functions
-        .iter()
-        .filter(|function| function.callable == callable);
-    let function = matches.next()?;
-    matches.next().is_none().then_some(function)
 }
 
 fn direct_callees(function: &SemFunction) -> impl Iterator<Item = CallableId> + '_ {

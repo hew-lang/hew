@@ -287,6 +287,79 @@ fn block_arguments_are_ssa_join_values() {
     assert!(dump.contains("goto bb3(%6)"));
 }
 
+/// The callable-to-body association is the one place the "exactly one body"
+/// rule lives. A callable claimed by two bodies must be refused rather than
+/// resolved to whichever body happens to come first.
+#[test]
+fn the_function_index_refuses_a_callable_claimed_by_two_bodies() {
+    let function = unit_function(
+        0,
+        "claimed",
+        "claimed",
+        FunctionSourceOrigin::Unknown,
+        Vec::new(),
+    );
+    let mut duplicate = function.clone();
+    duplicate.id = ItemId(1);
+
+    // Negative control: one body for the callable resolves.
+    let single = module(vec![function.clone()]);
+    assert_eq!(
+        single
+            .function_index()
+            .function(CallableId(0))
+            .map(|body| body.id),
+        Some(ItemId(0)),
+    );
+
+    let ambiguous = module(vec![function, duplicate]);
+    assert!(
+        ambiguous.function_index().function(CallableId(0)).is_none(),
+        "two bodies for one callable must not resolve to an arbitrary winner"
+    );
+    assert!(
+        !verify_module(&ambiguous).is_empty(),
+        "and the module itself must be rejected"
+    );
+}
+
+/// A callable that legitimately has no body — the entry closure never demanded
+/// one — is an absence, not a malformed table.
+#[test]
+fn the_function_index_reports_a_bodyless_callable_as_absent() {
+    let mut module = module(vec![unit_function(
+        0,
+        "present",
+        "present",
+        FunctionSourceOrigin::Unknown,
+        Vec::new(),
+    )]);
+    module.callables.push(SemCallable {
+        id: CallableId(1),
+        function: ItemId(1),
+        declaration: DefId::for_test("headerless"),
+        instance: CallableInstance::Monomorphic,
+        symbol: "headerless".to_string(),
+        source_origin: FunctionSourceOrigin::Unknown,
+        signature: SemSignature {
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+        },
+        call_conv: SemCallConv::Default,
+        kind: SemCallableKind::HewDirect,
+        effect_summary: EffectSummary::Unknown,
+    });
+
+    let index = module.function_index();
+    assert!(index.function(CallableId(0)).is_some());
+    assert!(index.function(CallableId(1)).is_none());
+    assert!(
+        verify_module(&module).is_empty(),
+        "a bodyless callable header is legal: {:#?}",
+        verify_module(&module)
+    );
+}
+
 #[test]
 fn verifier_rejects_entry_block_arguments() {
     let module = module(vec![SemFunction {

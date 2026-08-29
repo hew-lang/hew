@@ -563,6 +563,16 @@ lowering cannot safely drop must not `Mint` an owner (it is neutralized or
 aliased explicitly at the mint site), and a value that mints is dropped on
 every exit where it is still owned.
 
+Two edge kinds are fixed by that rule rather than by a plan. A `Goto` never
+discharges: replay carries the source block's whole exit state into the
+target, and the Checked-MIR verifier requires a source-side `EdgeCarry` for
+every generation live on that edge (and rejects a carry naming a generation
+that is not live), so a body-local generation cannot cross a join without an
+explicit `Release` in the event stream. Function-entry cancellation is the one
+exit that runs before MIR's leading parameter `Mint`s execute; its cleanup is
+the set of those parameter owners whose `ParamBoundary` decision fact (part of
+Checked MIR, not a lowering ledger) says the ABI argument arrives owned.
+
 The `DecisionMap` is a deterministic table of
 `DecisionFact { site_id, kind, chosen_strategy, why, cost_class }` keyed by
 stable `SiteId`. It is attached as top-level function metadata on each

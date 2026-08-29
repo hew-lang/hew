@@ -5,14 +5,14 @@
 
 use super::{
     base_local, check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow,
-    elaborate, finalize_bytes_ownership, finalize_string_ownership, seal_checked,
-    terminator_is_suspend_carrier, ActorStateLoadMode, BindingId, Builder, BuiltinType,
-    CaptureEnvSource, ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership,
-    Disposition, FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr, IntentKind,
-    LambdaCapture, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SiteId, SourceOrigin,
-    StreamProducerPumpCtx, SuspendKind, Terminator, ValueClass,
-    SENTINEL_STREAM_SEND_VALUE_BINDING,
+    elaborate, finalize_bytes_ownership, finalize_string_ownership,
+    materialize_explicit_goto_edge_carries, seal_checked, terminator_is_suspend_carrier,
+    ActorStateLoadMode, BindingId, Builder, BuiltinType, CaptureEnvSource, ClosureEnvAllocation,
+    ClosureEnvFieldInit, ClosureEnvFieldOwnership, Disposition, FieldOffset, HashSet, HirBlock,
+    HirExpr, HirExprKind, HirFn, Instr, IntentKind, LambdaCapture, LoweredFunction, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, ReleaseSymbolVerdict, ResolvedRef,
+    ResolvedTy, SiteId, SourceOrigin, StreamProducerPumpCtx, SuspendKind, Terminator,
+    ValueClass, SENTINEL_STREAM_SEND_VALUE_BINDING,
 };
 use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
@@ -1021,6 +1021,8 @@ impl Builder {
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
         finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
         finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut builder);
+        raw.instr_spans.clone_from(&builder.instr_spans);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
@@ -1204,6 +1206,8 @@ impl Builder {
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
         finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
         finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut builder);
+        raw.instr_spans.clone_from(&builder.instr_spans);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
@@ -1750,6 +1754,8 @@ impl Builder {
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
         finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
         finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut body_builder);
+        raw.instr_spans.clone_from(&body_builder.instr_spans);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
@@ -2590,6 +2596,8 @@ impl Builder {
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
         finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
         finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut body_builder);
+        raw.instr_spans.clone_from(&body_builder.instr_spans);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(

@@ -1354,6 +1354,71 @@ fn relocated_binding_use_checks(
 /// predecessor still owns that exact generation. This rejects stale/reused
 /// generations and branch-dependent phantom ownership before codegen.
 #[must_use]
+/// Every exact generation live on a `Goto` edge must be named by a source-side
+/// `EdgeCarry`, and every `EdgeCarry` to that target must name a generation
+/// that is live there. Replay carries the whole exit state into the target,
+/// and a `Goto` plan never discharges, so a missing carry is the one place a
+/// silently unreleased generation could cross a join: it is rejected here
+/// rather than converted into an executable drop the target would repeat.
+fn goto_edge_carry_checks(
+    checked: &CheckedMirFunction,
+    block: &BasicBlock,
+    exit_state: &ExactOwnerState,
+) -> Vec<MirCheck> {
+    use crate::model::OwnershipEvent;
+
+    let Terminator::Goto { target } = block.terminator else {
+        return Vec::new();
+    };
+    let carried = block
+        .instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+                owner,
+                place,
+                target: carried_target,
+            }) if *carried_target == target => Some((*owner, *place)),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let mut findings = Vec::new();
+    let mut live = exit_state
+        .iter()
+        .filter(|(_, place)| !matches!(place, Place::ReturnSlot))
+        .map(|(owner, place)| (*owner, *place))
+        .collect::<Vec<_>>();
+    live.sort_by_key(|(owner, _)| *owner);
+    for (owner, place) in live {
+        if !carried.contains(&(owner, place)) {
+            findings.push(MirCheck::DischargeAuthorityDrift {
+                function: checked.name.clone(),
+                block: block.id,
+                name: "edge-carry".to_owned(),
+                reason: format!(
+                    "owner {owner:?} at {place:?} is live on the Goto edge to block {target} but no EdgeCarry preserves it"
+                ),
+            });
+        }
+    }
+    let mut stale = carried
+        .into_iter()
+        .filter(|(owner, place)| exit_state.get(owner) != Some(place))
+        .collect::<Vec<_>>();
+    stale.sort_by_key(|(owner, _)| *owner);
+    for (owner, place) in stale {
+        findings.push(MirCheck::DischargeAuthorityDrift {
+            function: checked.name.clone(),
+            block: block.id,
+            name: "edge-carry".to_owned(),
+            reason: format!(
+                "EdgeCarry names {owner:?} at {place:?} on the Goto edge to block {target}, but that generation is not live there"
+            ),
+        });
+    }
+    findings
+}
+
 #[allow(
     clippy::match_same_arms,
     clippy::too_many_lines,
@@ -1883,6 +1948,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 | OwnershipEvent::ScopeExit { .. } => {}
             }
         }
+        findings.extend(goto_edge_carry_checks(checked, block, &live));
     }
     // Revalidate every unconditional cleanup against the same Checked-MIR
     // program. This is deliberately downstream of sealing and accepts no
@@ -3475,8 +3541,47 @@ fn checked_ownership_plan_rejects_stale_generation_guard() {
     }));
 }
 
+#[cfg(test)]
+fn goto_edge_fixture(source_instructions: Vec<Instr>) -> CheckedMirFunction {
+    CheckedMirFunction {
+        name: "goto_edge".to_owned(),
+        return_ty: ResolvedTy::Unit,
+        blocks: vec![
+            BasicBlock {
+                id: ENTRY_BLOCK_ID,
+                statements: vec![],
+                instructions: source_instructions,
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: vec![],
+        checks: vec![],
+        cooperate_sites: vec![],
+        ownership_elaboration: None,
+    }
+}
+
+#[cfg(test)]
+fn edge_carry_findings(checked: &CheckedMirFunction) -> Vec<String> {
+    validate_ownership_events(checked)
+        .into_iter()
+        .filter_map(|finding| match finding {
+            MirCheck::DischargeAuthorityDrift { name, reason, .. } if name == "edge-carry" => {
+                Some(reason)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn exact_goto_plan_requires_only_owners_not_named_by_edge_carry() {
+fn goto_plan_never_discharges_a_carried_owner() {
     use crate::model::{OwnerId, OwnershipEvent};
 
     let owner = OwnerId {
@@ -3484,50 +3589,47 @@ fn exact_goto_plan_requires_only_owners_not_named_by_edge_carry() {
         generation: 0,
     };
     let place = Place::Local(7);
-    let blocks = vec![
-        BasicBlock {
-            id: ENTRY_BLOCK_ID,
-            statements: vec![],
-            instructions: vec![
-                Instr::OwnershipEvent(OwnershipEvent::Mint {
-                    owner,
-                    place,
-                    ty: ResolvedTy::String,
-                }),
-                Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
-                    owner,
-                    place,
-                    target: 1,
-                }),
-            ],
-            terminator: Terminator::Goto { target: 1 },
-        },
-        BasicBlock {
-            id: 1,
-            statements: vec![],
-            instructions: vec![],
-            terminator: Terminator::Return,
-        },
-    ];
-    let (entries, exits) = exact_owner_states(&blocks);
+    let checked = goto_edge_fixture(vec![
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner,
+            place,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner,
+            recipe: checked_test_string_recipe(),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+            owner,
+            place,
+            target: 1,
+        }),
+    ]);
+    let (entries, exits) = exact_owner_states(&checked.blocks);
     let required = exact_required_owners_for_exit(
         &ExitPath::Goto {
             block: ENTRY_BLOCK_ID,
             target: 1,
         },
-        &blocks,
+        &checked.blocks,
         &entries,
         &exits,
     );
 
     assert!(
         required.is_empty(),
-        "the exact source-side EdgeCarry is the sole authority that preserves this generation"
+        "replay carries the generation into the target"
     );
+    assert_eq!(
+        entries.get(&1).and_then(|state| state.get(&owner)),
+        Some(&place),
+        "the target's exact entry state sees the carried generation"
+    );
+    assert_eq!(edge_carry_findings(&checked), Vec::<String>::new());
 }
 
 #[test]
-fn exact_goto_plan_requires_live_owner_when_edge_carry_is_missing() {
+fn goto_with_live_owner_and_no_edge_carry_is_rejected_not_dropped() {
     use crate::model::{OwnerId, OwnershipEvent};
 
     let owner = OwnerId {
@@ -3535,40 +3637,42 @@ fn exact_goto_plan_requires_live_owner_when_edge_carry_is_missing() {
         generation: 0,
     };
     let place = Place::Local(2);
-    let blocks = vec![
-        BasicBlock {
-            id: ENTRY_BLOCK_ID,
-            statements: vec![],
-            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
-                owner,
-                place,
-                ty: ResolvedTy::String,
-            })],
-            terminator: Terminator::Goto { target: 1 },
-        },
-        BasicBlock {
-            id: 1,
-            statements: vec![],
-            instructions: vec![],
-            terminator: Terminator::Return,
-        },
-    ];
-    let (entries, exits) = exact_owner_states(&blocks);
+    let checked = goto_edge_fixture(vec![
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner,
+            place,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner,
+            recipe: checked_test_string_recipe(),
+        }),
+    ]);
+    let (entries, exits) = exact_owner_states(&checked.blocks);
     let required = exact_required_owners_for_exit(
         &ExitPath::Goto {
             block: ENTRY_BLOCK_ID,
             target: 1,
         },
-        &blocks,
+        &checked.blocks,
         &entries,
         &exits,
     );
 
-    assert_eq!(required, HashMap::from([(owner, place)]));
+    assert!(
+        required.is_empty(),
+        "a Goto plan must not execute a drop for a generation the target still sees as live: {required:?}"
+    );
+    let findings = edge_carry_findings(&checked);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(
+        findings[0].contains("no EdgeCarry preserves it"),
+        "{findings:?}"
+    );
 }
 
 #[test]
-fn exact_goto_plan_rejects_stale_generation_edge_carry() {
+fn goto_edge_carry_naming_a_stale_generation_is_rejected() {
     use crate::model::{OwnerId, OwnershipEvent};
 
     let binding = BindingId(46);
@@ -3581,52 +3685,46 @@ fn exact_goto_plan_rejects_stale_generation_edge_carry() {
         generation: 1,
     };
     let place = Place::Local(3);
-    let blocks = vec![
-        BasicBlock {
-            id: ENTRY_BLOCK_ID,
-            statements: vec![],
-            instructions: vec![
-                Instr::OwnershipEvent(OwnershipEvent::Mint {
-                    owner: old,
-                    place,
-                    ty: ResolvedTy::String,
-                }),
-                Instr::OwnershipEvent(OwnershipEvent::Reset {
-                    previous: old,
-                    replacement,
-                    place,
-                    ty: ResolvedTy::String,
-                }),
-                Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
-                    owner: old,
-                    place,
-                    target: 1,
-                }),
-            ],
-            terminator: Terminator::Goto { target: 1 },
-        },
-        BasicBlock {
-            id: 1,
-            statements: vec![],
-            instructions: vec![],
-            terminator: Terminator::Return,
-        },
-    ];
-    let (entries, exits) = exact_owner_states(&blocks);
-    let required = exact_required_owners_for_exit(
-        &ExitPath::Goto {
-            block: ENTRY_BLOCK_ID,
+    let checked = goto_edge_fixture(vec![
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: old,
+            place,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: old,
+            recipe: checked_test_string_recipe(),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::Reset {
+            previous: old,
+            replacement,
+            place,
+            ty: ResolvedTy::String,
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+            owner: replacement,
+            recipe: checked_test_string_recipe(),
+        }),
+        Instr::OwnershipEvent(OwnershipEvent::EdgeCarry {
+            owner: old,
+            place,
             target: 1,
-        },
-        &blocks,
-        &entries,
-        &exits,
-    );
+        }),
+    ]);
 
-    assert_eq!(
-        required,
-        HashMap::from([(replacement, place)]),
-        "a stale EdgeCarry must never preserve the replacement generation"
+    let findings = edge_carry_findings(&checked);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(
+        findings
+            .iter()
+            .any(|reason| reason.contains("generation: 1") && reason.contains("no EdgeCarry")),
+        "the live replacement generation has no carry: {findings:?}"
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|reason| reason.contains("generation: 0") && reason.contains("not live there")),
+        "the stale carry names a retired generation: {findings:?}"
     );
 }
 
@@ -8151,16 +8249,20 @@ fn maybe_owner_state_for_exit(
 /// Exact generations that must be destroyed when one exit is taken.
 ///
 /// This is the single continuation rule shared by elaboration and final
-/// validation. It consumes only Checked-MIR ownership operations: Goto uses
-/// source-side `EdgeCarry`, ordinary normal successors use their exact entry
-/// state, and terminal/unwind/abandon exits retain every live non-return owner.
+/// validation. It consumes only Checked-MIR ownership operations: ordinary
+/// normal successors use their exact entry state, and terminal/unwind/abandon
+/// exits retain every live non-return owner. A `Goto` never discharges: every
+/// generation live at the source is carried into the target by replay, and
+/// `validate_ownership_events` requires the source-side `EdgeCarry` witness
+/// for each one, so a lexical `break` cannot launder a body-local generation
+/// across a join without its explicit release. Planning a drop for a
+/// generation the target still sees as live would execute it twice.
 fn exact_required_owners_for_exit(
     exit: &ExitPath,
     blocks: &[BasicBlock],
     entries: &HashMap<u32, ExactOwnerState>,
     exits: &HashMap<u32, ExactOwnerState>,
 ) -> ExactOwnerState {
-    let block_id = exit_block_id(exit);
     let live = exact_owner_state_for_exit(exit, blocks, entries, exits);
     live.into_iter()
         .filter(|(owner, place)| {
@@ -8168,23 +8270,6 @@ fn exact_required_owners_for_exit(
                 return false;
             }
             let continues = match exit {
-                ExitPath::Goto { target, .. } => blocks
-                    .iter()
-                    .find(|block| block.id == block_id)
-                    .is_some_and(|block| {
-                        block.instructions.iter().any(|instruction| {
-                            matches!(
-                                instruction,
-                                Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
-                                    owner: carried,
-                                    place: carried_place,
-                                    target: carried_target,
-                                }) if carried == owner
-                                    && carried_place == place
-                                    && carried_target == target
-                            )
-                        })
-                    }),
                 ExitPath::Call { next, .. }
                 | ExitPath::Send { next, .. }
                 | ExitPath::Ask { next, .. }
@@ -8192,7 +8277,7 @@ fn exact_required_owners_for_exit(
                 | ExitPath::Join { next, .. } => entries
                     .get(next)
                     .is_some_and(|state| state.get(owner) == Some(place)),
-                ExitPath::Branch { .. } => true,
+                ExitPath::Goto { .. } | ExitPath::Branch { .. } => true,
                 ExitPath::Return { .. }
                 | ExitPath::Unwind { .. }
                 | ExitPath::Panic { .. }

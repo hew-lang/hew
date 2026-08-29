@@ -8293,6 +8293,9 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     materialize_conditional_scope_exit_releases(blocks, builder);
     materialize_explicit_scope_exits(&mut *blocks, builder);
     prune_unowned_scope_exit_cleanup(&mut *blocks, builder);
+    // First witness publication: `materialize_edge_local_retained_join_releases`
+    // uses the carry as its insertion point. The same pass runs once more as
+    // the final pre-seal mutation to prune and re-derive the witnesses.
     materialize_explicit_goto_edge_carries(&mut *blocks, builder);
     materialize_explicit_alias_ends(&mut *blocks, builder);
     // Scope/edge sealing can expose the final aggregate wrapper only after
@@ -9193,10 +9196,20 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
 mod stale_owner_canonicalization_tests;
 
 /// Publish the exact ownership state transported by every `Goto` on the
-/// source edge. Cleanup derivation must not inspect the target block for a
-/// later move or use target-entry intersection as retrospective evidence: a
-/// may-unwind instruction can precede that later operation, and a lexical
-/// `break` can otherwise launder a body-local generation across the join.
+/// source edge, and retire every carry that no longer agrees with it.
+///
+/// `EdgeCarry` is a witness, not a transport: replay carries the source
+/// block's whole exit state into the target, a `Goto` plan never discharges,
+/// and `validate_ownership_events` (`edge-carry`) rejects a live generation
+/// without a carry and a carry without a live generation. The witnesses must
+/// therefore be computed from the FINAL event stream: this runs once, as the
+/// last mutation before `seal_checked`, after every pass that can change exit
+/// state (call-carrier preparation, string/bytes ownership finalization, and
+/// the retained-join releases). A carry left over from an earlier CFG or
+/// generation naming is removed here rather than diagnosed. It also runs once
+/// earlier, inside `prepare_body_transfers`, because the retained-join release
+/// pass positions its releases at the carry; that earlier publication is
+/// re-derived by the final run.
 fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let (_, exits) = drop_plan::exact_owner_states(blocks);
     for block in blocks {
@@ -9206,6 +9219,27 @@ fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &m
         let Some(exit) = exits.get(&block.id) else {
             continue;
         };
+        let stale = block
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| match instruction {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
+                    owner,
+                    place,
+                    target: carried_target,
+                }) if *carried_target != target || exit.get(owner) != Some(place) => Some(index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for index in stale.into_iter().rev() {
+            block.instructions.remove(index);
+            shift_instr_spans_on_remove(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+        }
         let existing = block
             .instructions
             .iter()
@@ -9213,8 +9247,8 @@ fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &m
                 Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
                     owner,
                     place,
-                    target: carried_target,
-                }) if *carried_target == target => Some((*owner, *place)),
+                    ..
+                }) => Some((*owner, *place)),
                 _ => None,
             })
             .collect::<HashSet<_>>();
@@ -13952,6 +13986,10 @@ pub(crate) fn lower_function(
     raw.instr_spans.clone_from(&builder.instr_spans);
     finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
     canonicalize_retained_copy_owner_transfers(&mut raw.blocks, &actor_message_string_sources);
+    // The event stream is final: publish the Goto edge witnesses replay and
+    // the `edge-carry` verifier rule will be checked against.
+    materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut builder);
+    raw.instr_spans.clone_from(&builder.instr_spans);
     let deferred_drop_binding_locals = std::mem::take(&mut builder.deferred_drop_binding_locals);
     builder.binding_locals.extend(deferred_drop_binding_locals);
 

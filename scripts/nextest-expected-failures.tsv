@@ -5,26 +5,43 @@
 # outcome, or unlisted failure makes the ratchet fail. Signals and setup errors
 # cannot be accepted. Release gates do not read this file.
 linux,macos,freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
-linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	carrier_helper_locals_do_not_displace_trailing_abi_parameters	#3110 preserves conditional Vec insertion authority
-linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	raw_mir_carries_guards_and_preserves_the_parameter_prefix	#3110 preserves conditional Vec insertion authority
 *	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
 *	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
 *	failure	hew-cli::branch_divergent_return_drop_ir	normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice	#3118 releases branch-local siblings on normal edges
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_bound_from_local_tuple_then_for_in_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_destructured_from_tuple_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_extracted_from_tuple_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_extracted_then_consumed_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_extracted_then_restored_into_local_aggregate_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_in_local_tuple_consumed_by_for_in_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	generator_in_local_tuple_not_extracted_keeps_source_drop	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	w3053_nested_aggregate_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	w3053_reaggregated_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
-linux,macos,freebsd	failure	hew-codegen-rs::generator_exec	w3053_reaggregated_record_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
-linux,macos,freebsd	failure	hew-codegen-rs::for_in_vec_string_exec	for_in_continue_skips_empty_runs_correct	#3120 makes owned Vec iteration joins path-sensitive
-linux,macos,freebsd	failure	hew-codegen-rs::for_in_vec_string_exec	vec_iter_cursor_transfers_are_path_sensitive_and_overwrite_safe	#3120 gives each Vec iterator generation one cleanup guard
-linux,macos,freebsd	failure	hew-codegen-rs::vec_owned_element_routing_exec	vec_array_literal_owned_tuple_runs	#3120 ends consumed loop bindings before cleanup
+linux,macos,freebsd	failure	hew-cli::divergent_return_resource_leak_oracle	raw_and_elaborated_mir_attribute_only_unselected_resource_members	#3079 derives return-arm resource drops from exact owner states
+linux,macos,freebsd	failure	hew-cli::divergent_selection_arm_ownership_oracle	source_read_after_selection_does_not_over_release	#3079 makes selected-arm ownership path-sensitive
+linux,macos,freebsd	failure	hew-cli::funcupdate_consume_semantics	accept_carry_nested_and_collection_bearing_tuples	#3124 transfers nested owned projections out of parent cleanup
+linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
+linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
+linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	captured_binding_borrow_only_is_valid	#2523 preserves captured borrow-only payload authority
+linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	field_place_borrow_only_keeps_scrutinee_live	#2523 preserves field-place borrow-only payload authority
+linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	nested_enum_borrow_only_is_valid	#2523 preserves nested borrow-only payload authority
+linux,macos,freebsd	failure	hew-cli::nested_enum_whole_forward_handoff_leak_oracle	raw_and_elaborated_mir_pin_forwarding_shapes_and_single_drop_authority	#3079 removes competing nested-enum drop authorities
+linux,macos,freebsd	failure	hew-cli::nested_lexical_enum_payload_overwrite_leak_oracle	raw_mir_pins_release_authority_and_fail_closed_controls	#3079 keeps one parent-or-payload overwrite authority
+linux,macos,freebsd	failure	hew-cli::nested_projection_chain_leak_oracle	escaped_return_record_excludes_the_owner_composite	#3124 excludes escaped leaves from parent cleanup
+linux,macos,freebsd	failure	hew-cli::nested_projection_chain_leak_oracle	match_intermediate_return_leaf_emits_only_sibling_field_drops	#3124 retains only sibling cleanup after a leaf escape
+linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_reassign_does_not_over_release	#3079 transfers one live Rc aggregate generation
+linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_weak_reassign_does_not_over_release	#3079 transfers one live Weak aggregate generation
+linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_after_ingress_does_not_over_release	#3079 ends the prior aggregate generation before reassignment
+linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_over_release	#3079 makes aggregate ingress generations loop-sensitive
+linux,macos,freebsd	failure	hew-cli::tuple_record_enum_container_drop_leak_oracle	empty_enum_carrier_projection_forwarding_keeps_tuple_and_enum_drop_authorities	#3079 selects one live tuple-enum carrier generation
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_bound_from_local_tuple_then_for_in_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_destructured_from_tuple_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_extracted_from_tuple_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_extracted_then_consumed_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_extracted_then_restored_into_local_aggregate_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_in_local_tuple_consumed_by_for_in_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_in_local_tuple_not_extracted_keeps_source_drop	#3119 transfers generator ownership through aggregates
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_nested_aggregate_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_reaggregated_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
+linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_reaggregated_record_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
+linux,macos,freebsd	failure	hew-codegen-rs::exec	for_in_vec_string_exec::for_in_continue_skips_empty_runs_correct	#3120 makes owned Vec iteration joins path-sensitive
+linux,macos,freebsd	failure	hew-codegen-rs::exec	for_in_vec_string_exec::vec_iter_cursor_transfers_are_path_sensitive_and_overwrite_safe	#3120 gives each Vec iterator generation one cleanup guard
+linux,macos,freebsd	failure	hew-codegen-rs::exec	vec_owned_element_routing_exec::vec_array_literal_owned_tuple_runs	#3120 ends consumed loop bindings before cleanup
+linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::contextual_file_sink_binders_close_once_per_exit	#3114 closes each contextual Sink binder on its selected exits
+linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::guard_shapes_over_a_contextual_sink_write_and_close_on_every_path	#3114 keeps the Sink carrier live through failed guards
+linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::guarded_match_arm_hands_the_live_sink_to_the_selected_arm	#3114 hands the live Sink to exactly the selected guarded arm
 *	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3113 closes every returned owned-handle field exactly once
-*	failure	hew-cli::wasi_run_e2e	toml_encoding_round_trips_under_wasi	#3068 fixes WASI TOML Value teardown
 windows	failure	hew-codegen-rs	llvm::tests::borrowed_dyn_coercion_temp_drops_in_caller_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations
 windows	failure	hew-codegen-rs	llvm::tests::helper_owner_move_uses_path_sensitive_native_cleanup	#3117 uses one target-capability authority for unwind expectations
 windows	failure	hew-codegen-rs	llvm::tests::helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32	#3117 uses one target-capability authority for unwind expectations

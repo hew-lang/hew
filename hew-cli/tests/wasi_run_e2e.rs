@@ -798,6 +798,18 @@ fn main() {
 // The native probe must synchronize with the first delivery instead of using a
 // wall-clock sleep: under scheduler pressure, main can wake and begin shutdown
 // before the periodic ticker thread runs, cancelling the still-pending first tick.
+//
+// The handshake fires on the first tick only. An unguarded `send` made the probe
+// race the host scheduler rather than test quiescence: the channel holds one
+// value, so once main's `recv` consumed the handshake, tick 2 refilled the slot
+// and tick 3 blocked forever on a full channel with no remaining receiver. A
+// blocked handler never returns to its loop top, so the shutdown drain cannot
+// converge and reports "drain timed out" (`hew-runtime/src/shutdown.rs`). Whether
+// tick 3 ran at all depended on how much wall-clock passed between main's `recv`
+// and the timer cancellation - under 40ms on an idle host, longer on a loaded CI
+// runner. Guarding the send keeps first delivery a precondition for main
+// returning while leaving quiescence dependent only on shutdown cancelling the
+// periodic timer, which is the property under test.
 const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel.channel;
 
 actor Pulse {
@@ -808,7 +820,9 @@ actor Pulse {
     receive fn tick() {
         count += 1;
         println(f"tick {count}");
-        ready.send(count);
+        if count == 1 {
+            ready.send(count);
+        }
     }
 }
 

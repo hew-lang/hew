@@ -1,0 +1,9 @@
+// Ownership markers belong only to nominal `type` / `enum` declarations.
+// A function has no ResourceMarker slot; this must fail during parsing
+// rather than silently attaching an affine close contract to a callable.
+#[resource]
+fn close_it() {}
+
+fn main() {
+    close_it();
+}

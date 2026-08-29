@@ -893,9 +893,14 @@ expect_check_fail_contains \
 run_accept_expect_status "hashmap_iter_user_shadow" 43
 
 # Ownership markers (#[resource], #[linear]) remain valid on nominal `type`
-# declarations and preserve their affine/linear behaviour, while aliases fail
-# at the source attribute before HIR.
+# declarations and preserve their affine/linear behaviour. Positive control on
+# `type`, plus both reject boundaries: an alias, which carries no resource
+# semantics, and a callable, which has no ResourceMarker slot at all.
 run_accept_expect_status "resource_marker_nominal_type" 0
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/resource_marker_on_fn_reject.hew" \
+    "#[resource] is only valid on \`type\` or \`enum\` declarations" \
+    "resource_marker_on_fn_reject"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/resource_marker_on_record_reject.hew" \
     "#[resource] is only valid on \`type\` or \`enum\` declarations" \

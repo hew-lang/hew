@@ -12,9 +12,9 @@ use super::{
     shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_init_vec_source,
     vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder,
     BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
-    DischargeSite, Disposition, DropKind, ElabDrop, FieldOffset, HashMap, HashSet, Instr,
-    IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction, ResolvedTy,
-    SiteId, StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
+    DischargeSite, Disposition, FieldOffset, HashMap, HashSet, Instr, IntentKind, MirStatement,
+    NestedDefSite, NestedUseSite, Place, RawMirFunction, ResolvedTy, SiteId, StringDropDerivation,
+    StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
 };
 use crate::{raw_virtual_operation_class, RawVirtualClass};
 use handoff::instruction_carries_typed_handoff;
@@ -5951,46 +5951,6 @@ fn collect_nested_fresh_string_temp_drops(
         .collect()
 }
 
-/// The suspend block whose destroy-while-parked edge bypasses the normal
-/// continuation drop for `place`.
-///
-/// A suspending closure call borrows its string argument. Normal completion
-/// reaches the shared `resume == cleanup` MIR continuation, but LLVM coroutine
-/// case-1 abandonment runs the suspend block's [`crate::model::ExitPath::Suspend`]
-/// plan and branches directly to the coroutine cleanup outline. Find that
-/// suspend so [`apply_nested_fresh_string_temp_drops`] can register an
-/// abandon-only twin of the normal inline drop. Require one unambiguous match;
-/// anything else remains fail-closed.
-fn suspending_closure_argument_abandon_block(
-    blocks: &[BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
-    continuation: u32,
-    place: Place,
-) -> Option<u32> {
-    let local = base_local(place)?;
-    let mut matches = blocks.iter().filter_map(|block| {
-        let Terminator::Suspend {
-            resume,
-            cleanup,
-            is_final: false,
-        } = block.terminator
-        else {
-            return None;
-        };
-        if resume != continuation || cleanup != continuation {
-            return None;
-        }
-        matches!(
-            suspend_kinds.get(&block.id),
-            Some(SuspendKind::CallClosure { args, .. })
-                if args.iter().any(|arg| place_refs_local(*arg, local))
-        )
-        .then_some(block.id)
-    });
-    let suspend_block = matches.next()?;
-    matches.next().is_none().then_some(suspend_block)
-}
-
 /// Per-candidate admission for [`collect_nested_fresh_string_temp_drops`].
 /// Returns the inline-drop insertion `(block_id, insert_index, place, ty)` if
 /// the fresh-`string` temp `t` (defined at `def`) satisfies every fail-closed
@@ -6161,6 +6121,17 @@ fn nested_fresh_string_def_dominates(
 /// each drop as a read of its temp (no use-after-free flag) and so codegen emits
 /// the release. Per-block insertions are applied in descending index order so an
 /// earlier splice does not shift a later (lower-index) one.
+///
+/// SHORTCUT (ownerless nested temp). WHY: these temps publish no Checked-MIR
+/// owner, so a `Suspend` between the producer and this inline drop (a fresh
+/// string argument to a suspending `CallClosure`) has no replay owner to plan
+/// a destroy-while-parked release for — that edge leaks the temp. Today the
+/// shape is unreachable: closures with suspension frames are rejected before
+/// codegen (`suspending_closure_runtime_fixtures_are_rejected_before_codegen`).
+/// WHEN: the moment suspending closures are admitted. WHAT: mint the nested
+/// temp as an owner at its producer (the way `__hew_produced_value` temps and
+/// the stream-send yield copy are) and delete this splice; the inline release
+/// then becomes that owner's `Release` and every exit derives from replay.
 #[allow(
     clippy::too_many_arguments,
     reason = "the pre-seal splice mutates CFG/suspend/drop/span authorities atomically"
@@ -6174,7 +6145,6 @@ pub(super) fn apply_nested_fresh_string_temp_drops(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     extern_contracts: &crate::return_provenance::ExternContractTable,
-    suspend_abandon_extra_drops: &mut HashMap<u32, Vec<ElabDrop>>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
     let insertions = collect_nested_fresh_string_temp_drops(
@@ -6192,28 +6162,6 @@ pub(super) fn apply_nested_fresh_string_temp_drops(
     }
     let mut by_block: HashMap<u32, Vec<(usize, Place, ResolvedTy)>> = HashMap::new();
     for (bid, idx, place, ty) in insertions {
-        if let Some(suspend_block) =
-            suspending_closure_argument_abandon_block(blocks, suspend_kinds, bid, place)
-        {
-            // Coroutine abandonment never reaches `bid`: `emit_suspend_point`
-            // runs this suspend exit plan after the CallClosure driver's child
-            // and reply-channel teardown, then branches directly to
-            // `coro.cleanup`. Register the anonymous argument's congruent drop
-            // there. Normal completion instead reaches the inline drop below,
-            // so the two releases are mutually exclusive.
-            suspend_abandon_extra_drops
-                .entry(suspend_block)
-                .or_default()
-                .push(ElabDrop {
-                    place,
-                    ty: ty.clone(),
-                    drop_fn: None,
-                    kind: DropKind::CowHeap {
-                        release: crate::ownership::CowHeapRelease::String,
-                    },
-                    guard: None,
-                });
-        }
         by_block.entry(bid).or_default().push((idx, place, ty));
     }
     for block in blocks.iter_mut() {
@@ -6511,77 +6459,6 @@ mod nested_fresh_string_temp_drop_admission {
             "the shared resume/cleanup continuation balances the fresh argument \
              share after a suspending ClosureInvoke completes"
         );
-    }
-
-    #[test]
-    fn suspending_closure_fresh_argument_gets_resume_and_abandon_xor_drops() {
-        let mut blocks = vec![
-            block(
-                0,
-                vec![],
-                fresh_string_call("hew_string_to_uppercase", 2, 1),
-            ),
-            block(
-                1,
-                vec![],
-                Terminator::Suspend {
-                    resume: 2,
-                    cleanup: 2,
-                    is_final: false,
-                },
-            ),
-            ret_block(2),
-        ];
-        let mut suspend_kinds = HashMap::from([(
-            1,
-            SuspendKind::CallClosure {
-                callee: Place::Local(0),
-                args: vec![Place::Local(2)],
-                ret_ty: ResolvedTy::Unit,
-                result_dest: None,
-            },
-        )]);
-        let mut abandon_drops = HashMap::new();
-
-        apply_nested_fresh_string_temp_drops(
-            &mut blocks,
-            &mut suspend_kinds,
-            &locals_with(&[]),
-            &HashMap::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            &crate::return_provenance::ExternContractTable::default(),
-            &mut abandon_drops,
-            &mut BTreeMap::new(),
-        );
-
-        assert!(matches!(
-            blocks[2].instructions.as_slice(),
-            [Instr::Drop {
-                place: Place::Local(2),
-                ty: ResolvedTy::String,
-                ..
-            }]
-        ));
-        assert_eq!(
-            abandon_drops.get(&1),
-            Some(&vec![ElabDrop {
-                place: Place::Local(2),
-                ty: ResolvedTy::String,
-                drop_fn: None,
-                kind: DropKind::CowHeap {
-                    release: crate::ownership::CowHeapRelease::String,
-                },
-                guard: None,
-            }]),
-            "normal resume and destroy-while-parked are mutually exclusive, \
-             so each edge must carry one congruent release for the fresh arg"
-        );
-        assert!(matches!(
-            suspend_kinds.get(&1),
-            Some(SuspendKind::CallClosure { .. })
-        ));
     }
 
     #[test]

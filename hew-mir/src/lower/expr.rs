@@ -7087,7 +7087,7 @@ impl Builder {
                     // provenance question is about.
                     let warrant = self.owner_warrant_for_admitted_temp(expr);
                     self.register_owned_local(companion, companion_name, companion_ty, warrant);
-                    self.build_stream_producer_pump(gen_place, &pump);
+                    self.build_stream_producer_pump(gen_place, &pump, expr.site);
                     None
                 } else {
                     Some(gen_place)

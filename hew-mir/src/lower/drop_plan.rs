@@ -143,7 +143,7 @@ pub(super) fn derive_elaboration(
         .map(|site| site.bb_id)
         .collect::<HashSet<_>>();
     let (elab_blocks, exits) = enumerate_exits(blocks, &cancellation_blocks);
-    let drop_plans = derive_drop_plans_from_replay(blocks, decisions, builder, exits);
+    let drop_plans = derive_drop_plans_from_replay(blocks, decisions, exits);
 
     (
         ElaboratedMirFunction {
@@ -728,46 +728,6 @@ pub(super) fn materialize_definition_site_drop_recipes(
     }
 }
 
-/// Return the closed set of ownerless aggregate drops authorised for one
-/// generator suspend. A stream send borrows its payload, so the pump remains
-/// responsible for the in-flight value: normal resumption runs the inline
-/// in-place drop, while abandonment runs this mutually-exclusive plan twin.
-///
-/// This is physical-cleanup authority, not a lexical ownership ledger. Require
-/// the exact typed producer tuple recorded by lowering — Suspend block,
-/// `StreamSend` payload place, composite kind, and aggregate classification —
-/// so an unknown place/kind or a `BitCopy` record remains fail-closed.
-fn stream_send_composite_abandon_drops(builder: &Builder, exit: &ExitPath) -> Vec<ElabDrop> {
-    let ExitPath::Suspend { block, .. } = exit else {
-        return Vec::new();
-    };
-    let Some(SuspendKind::StreamSend { value, .. }) = builder.suspend_kinds.get(block) else {
-        return Vec::new();
-    };
-    builder
-        .suspend_abandon_extra_drops
-        .get(block)
-        .into_iter()
-        .flatten()
-        .filter(|drop| {
-            drop.place == *value
-                && drop.guard.is_none()
-                && drop.drop_fn.is_none()
-                && match drop.kind {
-                    DropKind::RecordInPlace => builder.is_owned_aggregate_record_ty(&drop.ty),
-                    DropKind::EnumInPlace => ty_is_heap_owning_enum_composite(
-                        &drop.ty,
-                        &builder.record_field_orders,
-                        &builder.enum_layouts,
-                        builder.type_classes.lifecycle_registry(),
-                    ),
-                    _ => false,
-                }
-        })
-        .cloned()
-        .collect()
-}
-
 /// Derive every exit's cleanup plan from Checked-MIR ownership replay.
 ///
 /// `required(exit)` is the exact set of owner generations live at that exit
@@ -784,7 +744,6 @@ fn stream_send_composite_abandon_drops(builder: &Builder, exit: &ExitPath) -> Ve
 pub(super) fn derive_drop_plans_from_replay(
     blocks: &[BasicBlock],
     decisions: &[super::DecisionFact],
-    builder: &Builder,
     exits: Vec<ExitPath>,
 ) -> Vec<(ExitPath, DropPlan)> {
     use crate::model::OwnershipEvent;
@@ -870,15 +829,10 @@ pub(super) fn derive_drop_plans_from_replay(
                 .collect::<Vec<_>>();
             synthesized
                 .sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
-            let mut drops = synthesized
+            let drops = synthesized
                 .into_iter()
                 .map(|(_, _, drop)| drop)
                 .collect::<Vec<_>>();
-            for drop in stream_send_composite_abandon_drops(builder, &exit) {
-                if !drops.contains(&drop) {
-                    drops.push(drop);
-                }
-            }
             (exit, DropPlan { drops })
         })
         .collect()
@@ -9113,7 +9067,7 @@ mod replay_plan_tests {
 
     fn plans_for(blocks: &[BasicBlock]) -> Vec<(ExitPath, DropPlan)> {
         let (_, exits) = enumerate_exits(blocks, &HashSet::new());
-        derive_drop_plans_from_replay(blocks, &[], &Builder::default(), exits)
+        derive_drop_plans_from_replay(blocks, &[], exits)
     }
 
     fn plan<'a>(plans: &'a [(ExitPath, DropPlan)], exit: &ExitPath) -> &'a DropPlan {
@@ -9460,7 +9414,7 @@ mod replay_plan_proptests {
                 terminator: Terminator::Return,
             }];
             let (_, exits) = enumerate_exits(&blocks, &HashSet::new());
-            let plans = derive_drop_plans_from_replay(&blocks, &[], &Builder::default(), exits);
+            let plans = derive_drop_plans_from_replay(&blocks, &[], exits);
             prop_assert_eq!(plans.len(), 1);
             let dropped: Vec<Place> = plans[0].1.drops.iter().map(|drop| drop.place).collect();
             let expected: Vec<Place> = (0..n)

@@ -287,6 +287,17 @@ const SENTINEL_DOWN_LOCATION_BINDING: BindingId = BindingId(u32::MAX - 8);
 const SENTINEL_DOWN_LOCAL_SLOT_BINDING: BindingId = BindingId(u32::MAX - 9);
 const SENTINEL_DOWN_CRASH_KIND_BINDING: BindingId = BindingId(u32::MAX - 10);
 
+/// Sentinel HIR binding ID for the `receive gen fn` stream-producer pump's
+/// per-yield value copy (`build_stream_producer_pump`). The pump moves each
+/// `Some(value)` out of the generator's result into a frame-local slot that has
+/// NO real HIR binding, sends it (the send borrows), and releases its copy on
+/// the resume edge. Minting that copy under this sentinel is what lets the
+/// send's destroy-while-parked `Suspend` plan derive from ownership replay
+/// instead of a side table. Lives in the pump function's `binding_locals`
+/// beside the sink param (`u32::MAX`) and the generator companion
+/// (`u32::MAX - 4`).
+const SENTINEL_STREAM_SEND_VALUE_BINDING: BindingId = BindingId(u32::MAX - 11);
+
 /// Base of the per-function synthetic binding-id range for anonymous
 /// caller-owned temps. From-call match/while-let scrutinees and discarded
 /// caller-owned `Option<T>` results all materialise into MIR locals without a
@@ -820,17 +831,6 @@ struct Builder {
     /// carrier/Terminator field) so the carriers collapse onto one
     /// `Terminator::Suspend` while the emitted IR stays byte-identical.
     pub(crate) suspend_kinds: HashMap<u32, SuspendKind>,
-    /// Abandon-edge drops for a suspend's escape-poisoned values that mint no
-    /// owner the replay could plan for. These include
-    /// a `SuspendKind::StreamSend` in-flight yield and fresh string arguments to
-    /// a suspending `SuspendKind::CallClosure`: neither has a competing
-    /// scope-exit drop, and each has an inline normal-completion drop. Keyed by
-    /// the id of the block carrying the `Terminator::Suspend` (the SAME key
-    /// `suspend_kinds` uses). Appended to the matching `ExitPath::Suspend` plan
-    /// AFTER `enumerate_exits`, so each value is freed exactly once on the
-    /// destroy-while-parked edge — mutually exclusive with its resume-edge drop
-    /// (abandon XOR resume).
-    pub(crate) suspend_abandon_extra_drops: HashMap<u32, Vec<ElabDrop>>,
     pub(crate) owned_locals: Vec<OwnedLocalEntry>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
     /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`
@@ -7265,7 +7265,6 @@ fn splice_body_ownership_releases(
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
-            &mut builder.suspend_abandon_extra_drops,
             &mut builder.instr_spans,
         );
         // #2542 — release nested fresh-owned `bytes` user-call-result temporaries
@@ -15196,68 +15195,10 @@ impl Builder {
     /// `finish_current_block(Terminator::Suspending*)`, mirroring the
     /// `await_deadline_ns.insert(self.current_block_id, ns)` precedent.
     ///
-    /// Active consuming-body values have a normal body-end release, but frame
-    /// destruction while parked bypasses that edge. Mirror each safe active
-    /// release into the abandon-only plan, deduplicated by storage place so a
-    /// carrier and its repeated registration retain one release authority.
+    /// The carrier's destroy-while-parked cleanup is not recorded here: every
+    /// value live across the suspend is an exact Checked-MIR owner, and the
+    /// `ExitPath::Suspend` plan derives from ownership replay.
     fn record_suspend_kind(&mut self, kind: SuspendKind) {
-        let mut recorded_places = self
-            .suspend_abandon_extra_drops
-            .get(&self.current_block_id)
-            .into_iter()
-            .flat_map(|drops| drops.iter().map(|drop| drop.place))
-            .collect::<HashSet<_>>();
-        let active_drops: Vec<ElabDrop> = self
-            .active_generator_yield_values
-            .iter()
-            .filter_map(|(_, place, ty, drop_fn, start_block_id, start_instr_len)| {
-                if recorded_places.contains(place) {
-                    return None;
-                }
-                let local = base_local(*place)?;
-                if !self.generator_yield_binding_drop_safe(*start_block_id, *start_instr_len, local)
-                {
-                    return None;
-                }
-                recorded_places.insert(*place);
-                let kind = match drop_fn {
-                    crate::model::DropFnSpec::Release("hew_rc_drop") => DropKind::RcRelease,
-                    crate::model::DropFnSpec::Release("hew_weak_drop_rc") => DropKind::WeakRelease,
-                    crate::model::DropFnSpec::Release(symbol) => DropKind::CowHeap {
-                        release: crate::ownership::CowHeapRelease::from_symbol(symbol)?,
-                    },
-                    crate::model::DropFnSpec::InPlace(
-                        crate::ownership::InPlaceReleaseKind::Record,
-                    ) => DropKind::RecordInPlace,
-                    crate::model::DropFnSpec::InPlace(
-                        crate::ownership::InPlaceReleaseKind::Enum,
-                    ) => DropKind::EnumInPlace,
-                    crate::model::DropFnSpec::InPlace(
-                        crate::ownership::InPlaceReleaseKind::AggregateRecursive,
-                    ) => DropKind::AggregateRecursive,
-                    crate::model::DropFnSpec::Runtime(_)
-                    | crate::model::DropFnSpec::UserClose(_) => DropKind::Resource,
-                };
-                Some(ElabDrop {
-                    place: *place,
-                    ty: ty.clone(),
-                    drop_fn: matches!(
-                        drop_fn,
-                        crate::model::DropFnSpec::Runtime(_)
-                            | crate::model::DropFnSpec::UserClose(_)
-                    )
-                    .then(|| drop_fn.clone()),
-                    kind,
-                    guard: None,
-                })
-            })
-            .collect();
-        if !active_drops.is_empty() {
-            self.suspend_abandon_extra_drops
-                .entry(self.current_block_id)
-                .or_default()
-                .extend(active_drops);
-        }
         self.suspend_kinds.insert(self.current_block_id, kind);
     }
 

@@ -401,6 +401,9 @@ struct PendingOwnedCallArg {
     ty: ResolvedTy,
     site: SiteId,
     source_is_prepared_owner: bool,
+    /// See `Builder::call_arg_source_may_transfer`: false for an alias of
+    /// storage another owner still releases, which must be cloned.
+    source_may_transfer: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4575,6 +4578,7 @@ fn prepare_owned_call_carriers(
                 continue;
             }
             let transferable = matches!(arg.source, Place::Local(_))
+                && arg.source_may_transfer
                 && local.is_some_and(|local| {
                     !live_out
                         .get(&block.id)
@@ -8210,6 +8214,16 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     materialize_explicit_move_relocations(&mut *blocks, builder);
     canonicalize_preminted_move_adoptions(&mut *blocks);
     materialize_explicit_projection_adoptions(&mut *blocks, builder);
+    // A reassignment publishes its replacement generation at lowering time
+    // but the replaced generation's end is derived from replay. End it before
+    // any pass replays exact state at a later hand-off: with both generations
+    // of one binding live at one slot, the neutralize-transfer pass ends the
+    // stale one (`var last = ..; last = match .. ; return Ok(last)`). The
+    // pass runs again after the ownership phis are sealed, because a loop
+    // header names the generation that is actually live at the slot only
+    // then, and once more at the end for the late carrier operations.
+    drop_plan::materialize_successor_guard_authority(&mut *blocks);
+    drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     materialize_explicit_neutralize_transfers(&mut *blocks, builder);
     // Consumers below query exact OwnerId state. Seal the ownership phis that
     // are already present before those queries; otherwise the intersection at
@@ -8218,6 +8232,8 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // consume. The pass runs again after all late operations to seal any new
     // joins they introduce.
     materialize_exact_owner_join_transfers(&mut *blocks, builder);
+    drop_plan::materialize_successor_guard_authority(&mut *blocks);
+    drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     let resolved_outbound =
         resolve_outbound_actor_modes(&mut *blocks, builder, &projection_tainted);
     prepare_outbound_actor_payloads(
@@ -8273,7 +8289,7 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // ownership validation sees.
     drop_plan::materialize_successor_guard_authority(&mut *blocks);
     drop_plan::materialize_definition_site_drop_recipes(&mut *blocks, builder);
-    drop_plan::materialize_exact_overwrite_releases(&mut *blocks);
+    drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     // Call-carrier ownership is authored only after overwrite adoption, typed
     // handoffs, and ownership-phi generations are final. Querying the earlier
     // construction state could see both the retired and replacement
@@ -13647,6 +13663,17 @@ pub(in crate::lower) fn finalize_body(
         builder.consume_typed_publication_owners_at_inline_release(
             &mut blocks,
             releases_before_finalization,
+        );
+    }
+    // Debug aid: the construction-time event stream before any post-CFG
+    // ownership pass rewrites it (`HEW_DEBUG_CHECKED_FUNCTION` shows the
+    // sealed result; the difference between the two is what the passes did).
+    if std::env::var("HEW_DEBUG_RAW_FUNCTION")
+        .is_ok_and(|filter| builder.current_function_symbol.contains(&filter))
+    {
+        eprintln!(
+            "HEW_DEBUG_RAW {} blocks: {blocks:#?}",
+            builder.current_function_symbol
         );
     }
     // Name the `let`-bound locals from the emitted `Bind` stream before the

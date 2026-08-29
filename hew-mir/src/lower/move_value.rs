@@ -249,6 +249,7 @@ impl Builder {
                     ty: owned_ty,
                     site: arg.site,
                     source_is_prepared_owner: self.prepared_owned_call_sources.contains(&source),
+                    source_may_transfer: self.call_arg_source_may_transfer(source),
                 })
             })
             .collect();
@@ -264,6 +265,35 @@ impl Builder {
             .pending_owned_call_args
             .insert(self.current_block_id, PendingOwnedCallSite { args });
         debug_assert!(replaced.is_none(), "one call terminator per basic block");
+    }
+
+    /// Whether the post-CFG carrier pass may hand `source` to the callee by a
+    /// last-use MOVE (`Move` + `NeutralizePayloadSlot` of `source` itself).
+    ///
+    /// A move is only sound when `source` is the sole storage of the value:
+    /// a plain local, or a self-rooted whole carrier. A match payload binder
+    /// (authority `Whole(variant slot)`), a root-relative projection alias, or
+    /// a closure-environment load is a byte copy of storage that another owner
+    /// still releases, so neutralizing the copy leaves the original armed and
+    /// the callee's drop makes a second release. Those sources take the clone
+    /// strategy instead.
+    ///
+    /// SHORTCUT. WHY: the pass sees `Place`s only; the root-relative authority
+    /// that would let it neutralize the ORIGINAL slot on a proven last use is a
+    /// Builder-side map keyed at lowering time. WHEN: once every arm/field move
+    /// carries its own generation event (the ladder's virtual-value / `Place`
+    /// seam), the last-use transfer can be derived from replay for these
+    /// sources too. WHAT: the real solution neutralizes the authority's root
+    /// slot at the last use instead of cloning.
+    fn call_arg_source_may_transfer(&self, source: Place) -> bool {
+        if self.capture_env_owned_loads.contains_key(&source) {
+            return false;
+        }
+        match self.owned_carrier_authority(source) {
+            None | Some(OwnedCarrierNeutralizeTarget::ScopeExitTuple { .. }) => true,
+            Some(OwnedCarrierNeutralizeTarget::Whole(root)) => root == source,
+            Some(OwnedCarrierNeutralizeTarget::Projection { .. }) => false,
+        }
     }
 
     /// Register the callee half of an owned direct-call carrier contract.
@@ -835,46 +865,6 @@ impl Builder {
         self.transfer_owned_carrier_place(value, &ty)
     }
 
-    /// Forward a carrier-projected payload into a callee parameter whose root
-    /// stays on the `CoW` borrow spine.
-    ///
-    /// The call-consumption summary still sends the alias through the carrier
-    /// funnel so the enclosing enum slot is neutralized, but String/Bytes roots
-    /// never register a callee terminal owner. The binder therefore remains
-    /// responsible for the original count after the call. Keep this promotion
-    /// at the direct-call boundary: HIR may label both a match-arm return and a
-    /// borrowing call argument `Read`, so expression intent alone cannot
-    /// distinguish a genuine ownership transfer from this borrowed forward.
-    fn transfer_borrow_spine_carrier_payload(&mut self, expr: &HirExpr, value: Place) -> Place {
-        let delayed_payload_release = if matches!(
-            self.owned_carrier_authority(value),
-            Some(OwnedCarrierNeutralizeTarget::Whole(source)) if source != value
-        ) {
-            match &expr.kind {
-                HirExprKind::BindingRef {
-                    resolved: ResolvedRef::Binding(binding),
-                    ..
-                } => self
-                    .projected_payload_overwrite_flags
-                    .get(binding)
-                    .copied()
-                    .map(|flag| (*binding, flag)),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let transferred = self.transfer_owned_carrier_value(expr, value);
-        if let Some((binding, flag)) = delayed_payload_release {
-            self.projected_payload_delayed_releases.insert(binding);
-            self.push_instr(Instr::ConstI64 {
-                dest: flag,
-                value: 0,
-            });
-        }
-        transferred
-    }
-
     pub(crate) fn lower_let_value(&mut self, binding: BindingId, value: &HirExpr) -> Option<Place> {
         let generator_clone_only = self.prepass_generator_capture_bindings.contains(&binding)
             && !self.prepass_binding_ref_uses.contains(&binding);
@@ -936,26 +926,6 @@ impl Builder {
                 if consumes_user_resource && self.reject_capture_env_whole_escape_expr(arg) {
                     return None;
                 }
-                let is_move = move_all_args
-                    || callee_item.is_some_and(|item| {
-                        self.param_ownership
-                            .call_param_consume
-                            .get(&(item, index))
-                            .is_some_and(|v| v.is_consume())
-                    });
-                let target_is_owned_carrier = callee_item.is_some_and(|item| {
-                    self.param_ownership
-                        .param_consume
-                        .get(&(item, index))
-                        .copied()
-                        != Some(true)
-                        && self
-                            .param_ownership
-                            .call_param_owned_carrier
-                            .get(&(item, index))
-                            .copied()
-                            == Some(true)
-                });
                 let target_is_affine_consume = callee_item.is_some_and(|item| {
                     self.param_ownership
                         .param_consume
@@ -983,66 +953,55 @@ impl Builder {
                     self.consume_typed_produced_value_owner_at_terminal_boundary(arg.site, value);
                     return Some(value);
                 }
-                if is_move && target_is_owned_carrier {
+                if move_all_args {
+                    // Supervisor bootstrap: the synthesized callee owns the
+                    // spawned config snapshot and has no `ItemId` to consult.
                     if self.reject_capture_env_whole_escape_expr(arg) {
                         return None;
                     }
                     let value = self.lower_value(arg)?;
-                    // A whole carrier parameter can be read by more than one
-                    // freeing callee. Preserve its source until the post-CFG
-                    // carrier pass can use liveness to choose snapshot or
-                    // last-use transfer. Only a SELF-ROOTED whole (the carrier
-                    // slot itself) defers: a payload-binder authority points at
-                    // a variant slot inside a different root, and the post-CFG
-                    // pass would neutralize the binder copy instead of that
-                    // slot — it must transfer eagerly through the funnel.
-                    // Projection carriers still transfer eagerly so their
-                    // root-relative slot is neutralized once.
-                    if matches!(
-                        self.owned_carrier_authority(value),
-                        Some(OwnedCarrierNeutralizeTarget::Whole(root)) if root == value
-                    ) {
-                        return Some(value);
-                    }
-                    let record_layouts = outbound_record_layouts(self);
-                    let stays_on_borrow_spine =
-                        crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
-                            &self.subst_ty(&arg.ty),
-                            &record_layouts,
-                            &self.enum_layouts,
-                            &self.opaque_handle_names,
-                            &self.lifecycle_registry,
-                        )
-                        .is_ok_and(|plan| {
-                            super::snapshot_root_outside_carrier_protocol(plan.root())
-                        });
-                    if stays_on_borrow_spine {
-                        return Some(self.transfer_borrow_spine_carrier_payload(arg, value));
-                    }
                     return Some(self.transfer_owned_carrier_value(arg, value));
                 }
-                if !is_move || target_is_owned_carrier {
-                    return self.lower_method_arg_value(arg, is_move);
+                // Every other argument is a BORROW (`docs/v05/ownership.md`):
+                // the caller's binding is never consumed by a call, whatever
+                // the callee does with its parameter. When the callee's
+                // body-escape summary says it will own the parameter
+                // (`call_param_owned_carrier` → `ParamBoundaryMode::OwnedCarrier`),
+                // the post-CFG carrier pass (`prepare_owned_call_carriers`)
+                // picks the COST strategy from liveness — transfer on a proven
+                // last use, otherwise a snapshot clone — and never changes what
+                // this caller may do with the binding afterwards. A borrowing
+                // callee simply reads the caller-owned value.
+                if self.callee_param_is_owned_carrier(callee_item, index) {
+                    return self.lower_value(arg);
                 }
-
-                // The general call-consume table is deliberately fail-closed
-                // and can over-approximate borrow-only wrappers. A prepared
-                // carrier must transfer only to a matching callee carrier (or
-                // another explicit ownership boundary), otherwise a read such
-                // as `string.is_empty(path)` would neutralize `path` before its
-                // later use. Non-carrier arguments retain the historical move
-                // lowering unchanged.
-                if self.reject_capture_env_whole_escape_expr(arg) {
-                    return None;
-                }
-                let value = self.lower_value(arg)?;
-                if self.owned_carrier_authority(value).is_some() {
-                    Some(value)
-                } else {
-                    Some(self.transfer_owned_carrier_value(arg, value))
-                }
+                self.lower_method_arg_value(arg, false)
             })
             .collect()
+    }
+
+    /// True when `lower_params` will mint a scope-exit owner over parameter
+    /// `index` of `callee_item` from the body-escape summary alone (the
+    /// `OwnedCarrier` boundary mode). The affine `#[resource]` CONSUME
+    /// parameter is excluded: it is a source-level move with its own funnel.
+    fn callee_param_is_owned_carrier(
+        &self,
+        callee_item: Option<hew_hir::ItemId>,
+        index: usize,
+    ) -> bool {
+        callee_item.is_some_and(|item| {
+            self.param_ownership
+                .param_consume
+                .get(&(item, index))
+                .copied()
+                != Some(true)
+                && self
+                    .param_ownership
+                    .call_param_owned_carrier
+                    .get(&(item, index))
+                    .copied()
+                    == Some(true)
+        })
     }
 }
 

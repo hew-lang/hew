@@ -857,10 +857,24 @@ fn receiver_is_whole_owned_operand(receiver: &HirExpr) -> bool {
             | HirExprKind::RecordCloneCall { .. }
     )
 }
-/// Prove borrow-only direct-call parameters across every free function. This
-/// broader summary is consumed only by collection escape analysis; it does not
-/// change call-site move intent or register non-resource parameters for
-/// callee-side drops.
+/// Body-escape summary for every direct-call parameter across every free
+/// function: a parameter is CONSUME when the callee returns, stores, sends,
+/// captures, or forwards it to a consuming parameter, else BORROW.
+///
+/// Two consumers, neither of which is a legality decision at the call site:
+///
+/// * `owned_projection_sinks == false` → `call_param_consume`, read by the
+///   borrow-site collectors (`proven_borrow_arg_sites`) and by the
+///   enum-composite callee drop (`lower_params`, #2732).
+/// * `owned_projection_sinks == true` → `call_param_owned_carrier`, which
+///   makes the CALLEE mint a scope-exit owner over the parameter
+///   (`ParamBoundaryMode::OwnedCarrier`) and tells the caller's post-CFG
+///   carrier pass to hand it an owned copy — a last-use transfer or a
+///   snapshot clone (`prepare_owned_call_carriers`).
+///
+/// It never changes call-site move intent: a non-resource argument is a
+/// borrow of the caller's binding regardless of this verdict
+/// (`lower_direct_call_args`), so no `UseAfterConsume` can arise from it.
 fn compute_call_param_consumption(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     methods: &HashSet<hew_hir::ItemId>,

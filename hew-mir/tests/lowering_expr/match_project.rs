@@ -1357,18 +1357,22 @@ fn main() -> i64 {
             _ => None,
         })
         .collect();
+    // A call never consumes a non-resource argument: `stash` borrows `x`
+    // (the callee's own `push` retains the share it keeps), so the Ok payload
+    // slot is not neutralized and the shell keeps its guarded terminal drop
+    // for both arms.
     assert_eq!(
         forward_neutralized,
-        vec![(0, Some(call_arg))],
-        "the forwarded Ok payload transfers into the owning call argument; \
-         the read-only Err arm leaves its slot for the guarded terminal drop"
+        Vec::<(u32, Option<hew_mir::Place>)>::new(),
+        "a borrowing call argument never neutralizes the payload slot it was read from; \
+         got a transfer into {call_arg:?}"
     );
     assert!(
         forward.blocks.iter().all(|block| block
             .instructions
             .iter()
             .all(|instr| !matches!(instr, Instr::StringRetain { .. }))),
-        "a transferred call argument must not gain a second share"
+        "a borrowed call argument must not gain a caller-side share"
     );
 
     // The transferred binder's leaf release survives only as a
@@ -1540,7 +1544,19 @@ fn main() -> i64 {
         .expect("the project arm must publish its lexical scope exit");
 
     assert!(scope_exit.0.iter().any(|owner| owner.binding == y));
-    assert!(scope_exit.1.iter().any(|owner| owner.binding == x));
+    // `x` is the arm value: its generation ends at the arm's move into the
+    // join slot, so the scope exit neither owns nor carries it, and the next
+    // loop iteration can mint it afresh.
+    assert!(scope_exit.1.iter().all(|owner| owner.binding != x));
+    assert!(function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .any(|instruction| matches!(
+            instruction,
+            Instr::OwnershipEvent(hew_mir::OwnershipEvent::Transfer { owner, to: Some(_), .. })
+                if owner.binding == x
+        )));
     assert!(function
         .blocks
         .iter()

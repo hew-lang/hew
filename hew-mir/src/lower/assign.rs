@@ -112,11 +112,32 @@ impl Builder {
             }
         }
         let copy_in = self.assign_target_stays_copy_in(target, value);
+        // A Vec index assignment that MOVES a bound local (`v[i] = h`, routed
+        // to `hew_vec_set_owned_move` below) hands the value to the runtime
+        // only on the call's normal edge, after the bounds check lowered in
+        // between. Consuming `h` here would end its generation before the
+        // check and a second time at the call; defer it like every other
+        // catalogued consuming runtime argument.
+        let vec_set_moves_binding = !copy_in
+            && matches!(
+                &target.kind,
+                HirExprKind::ResolvedImplCall {
+                    target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Set),
+                    ..
+                }
+            )
+            && self.is_consumed_bound_local(value);
+        if vec_set_moves_binding {
+            self.deferred_affine_call_consume_sites.insert(value.site);
+        }
         let src = if copy_in {
             self.lower_value(value)
         } else {
             self.lower_value_for_move(value)
         };
+        if vec_set_moves_binding {
+            self.deferred_affine_call_consume_sites.remove(&value.site);
+        }
         let Some(src) = src else {
             return;
         };

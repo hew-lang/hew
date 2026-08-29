@@ -1918,7 +1918,7 @@ impl Builder {
         // own Move: the fresh join generation minted below is then the sole
         // owner of the slot. Without this handoff the arm owner relocates into
         // `place` and two live generations share one Place.
-        for owner in self.composite_join_relocated_owners(place, &ty) {
+        for owner in self.composite_join_relocated_owners(place, &ty, false) {
             self.set_owned_local_consumed_post_lowering(
                 owner,
                 Some(place),
@@ -2197,7 +2197,17 @@ impl Builder {
     /// so the join owner is the sole generation at `place`; a named payload
     /// binder used as a bare arm value (`.Ok(value) => value`) carries a
     /// Borrowed produced-value fact and is otherwise invisible to the join.
-    fn composite_join_relocated_owners(&self, place: Place, ty: &ResolvedTy) -> Vec<BindingId> {
+    ///
+    /// With `arm_local_only`, only owners bound in a scope that is no longer
+    /// active (the arm's own scope) qualify; owners of an enclosing scope are
+    /// still live on the sibling arms and belong to the divergent-selection
+    /// passes.
+    fn composite_join_relocated_owners(
+        &self,
+        place: Place,
+        ty: &ResolvedTy,
+        arm_local_only: bool,
+    ) -> Vec<BindingId> {
         if !self.instructions.is_empty() {
             return Vec::new();
         }
@@ -2208,6 +2218,11 @@ impl Builder {
                     entry.ty == *ty
                         && entry.disposition == Disposition::ScopeExit
                         && self.binding_locals.get(&entry.binding) == Some(&source)
+                        && (!arm_local_only
+                            || self
+                                .binding_scope
+                                .get(&entry.binding)
+                                .is_some_and(|scope| !self.active_scopes.contains(scope)))
                 });
                 owners
                     .next()
@@ -2449,12 +2464,15 @@ impl Builder {
         result_place: Place,
         result_ty: &ResolvedTy,
     ) {
-        // An arm whose value is a named owner moved into the join slot (a
-        // payload binder returned bare) has no Owned produced-value fact of
-        // its own; recover it from the predecessor's Move so its generation
-        // ends at the arm and the join owner is the sole generation here.
+        // An arm-local owner moved bare into the join slot (a payload binder
+        // returned as the arm value, `.Ok(value) => value`) has no Owned
+        // produced-value fact of its own and cannot be live after its arm;
+        // recover it from the predecessor's Move so its generation ends at the
+        // arm and the join owner is the sole generation here. Owners of an
+        // enclosing scope are left to the divergent-selection passes, which
+        // also release the unselected sibling on the other arms.
         let mut transferred: HashSet<BindingId> = self
-            .composite_join_relocated_owners(result_place, result_ty)
+            .composite_join_relocated_owners(result_place, result_ty, true)
             .into_iter()
             .collect();
         for source_site in source_sites {

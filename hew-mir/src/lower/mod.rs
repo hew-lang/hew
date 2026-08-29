@@ -528,9 +528,10 @@ struct Builder {
     /// physical neutralization and the owner transfer to `next`, leaving the
     /// same owner live for caller-side unwind cleanup.
     pending_affine_call_consumes: HashMap<u32, PendingAffineCallConsumeSite>,
-    /// HIR argument sites whose affine consume commits on the normal call edge:
-    /// either a declared-extern site recorded in `pending_affine_call_consumes`
-    /// or a catalogued runtime `ProvenConsume` site finalized by
+    /// HIR argument sites whose consume commits on the normal call edge:
+    /// either a declared-extern affine site recorded in
+    /// `pending_affine_call_consumes` or a catalogued runtime `ProvenConsume`
+    /// site (a collection ingress, a Vec index-assignment move) finalized by
     /// `splice_normal_call_ownership_commits`. Binding-ref lowering consults
     /// this exact-site set so a nested expression cannot accidentally defer a
     /// different consume of the same binding.
@@ -5751,19 +5752,22 @@ fn neutralize_divergent_selection_sources(
             ) else {
                 continue;
             };
-            if local_read_after_site(
+            let read_after = local_read_after_site(
                 blocks,
                 &builder.suspend_kinds,
                 owned_local,
                 site_block,
                 site_index,
-            ) {
+            );
+            let already =
+                source_slot_already_neutralized(blocks, site_block, site_index, owned_local);
+            if read_after {
                 continue;
             }
             // Another authority already nulls this slot at this move (a
             // whole-carrier or send-transfer consume). Its neutralize is the
             // same store; a second one is dead weight in the emitted IR.
-            if source_slot_already_neutralized(blocks, site_block, site_index, owned_local) {
+            if already {
                 continue;
             }
             inserts.push((site_block, site_index, owned_local, transferee));
@@ -7419,6 +7423,26 @@ fn discharged_declared_release_parent(
 /// caller owns every argument; only the normal successor transfers the proven
 /// consumed arguments, while the unwind successor must destroy them. Carrying
 /// the commit as a statement in `next` gives drop dataflow exactly that shape.
+/// Every block from which `target` is reachable, `target` included.
+fn reverse_reachable_blocks(blocks: &[BasicBlock], target: u32) -> HashSet<u32> {
+    let mut predecessors: HashMap<u32, Vec<u32>> = HashMap::new();
+    for block in blocks {
+        for successor in block.successors() {
+            predecessors.entry(successor).or_default().push(block.id);
+        }
+    }
+    let mut seen = HashSet::from([target]);
+    let mut stack = vec![target];
+    while let Some(block) = stack.pop() {
+        for predecessor in predecessors.get(&block).into_iter().flatten() {
+            if seen.insert(*predecessor) {
+                stack.push(*predecessor);
+            }
+        }
+    }
+    seen
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "normal-success call commits split CFG edges while preserving call-site owner and guard authority"
@@ -7465,16 +7489,24 @@ fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut
                 .get(&entry.binding)
                 .copied()
                 .unwrap_or(SiteId(0));
-            let source_already_consumes = block.statements.iter().any(|statement| {
-                matches!(
-                    statement,
-                    MirStatement::Use {
-                        binding,
-                        intent: IntentKind::Consume,
-                        ..
-                    } if *binding == entry.binding
-                )
-            });
+            // The source-level consume may sit in a predecessor of the call
+            // block (a Vec index assignment lowers its bounds check between
+            // the argument and the call), so look at every block that reaches
+            // this call, not only the call block itself.
+            let source_already_consumes = reverse_reachable_blocks(blocks, block.id)
+                .into_iter()
+                .filter_map(|id| blocks.iter().find(|candidate| candidate.id == id))
+                .flat_map(|candidate| candidate.statements.iter())
+                .any(|statement| {
+                    matches!(
+                        statement,
+                        MirStatement::Use {
+                            binding,
+                            intent: IntentKind::Consume,
+                            ..
+                        } if *binding == entry.binding
+                    )
+                });
             commits.push((
                 *next,
                 entry.binding,
@@ -8222,6 +8254,11 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // pass runs again after the ownership phis are sealed, because a loop
     // header names the generation that is actually live at the slot only
     // then, and once more at the end for the late carrier operations.
+    // The lowering-time overwrite release names the generation the Builder
+    // cursor knew, which on a sibling branch is stale; re-key it to the
+    // generation live at the slot first, or the replay sees the old
+    // generation still live and releases it a second time.
+    canonicalize_release_owner_ids(&mut *blocks);
     drop_plan::materialize_successor_guard_authority(&mut *blocks);
     drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     materialize_explicit_neutralize_transfers(&mut *blocks, builder);
@@ -8232,8 +8269,6 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // consume. The pass runs again after all late operations to seal any new
     // joins they introduce.
     materialize_exact_owner_join_transfers(&mut *blocks, builder);
-    drop_plan::materialize_successor_guard_authority(&mut *blocks);
-    drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     let resolved_outbound =
         resolve_outbound_actor_modes(&mut *blocks, builder, &projection_tainted);
     prepare_outbound_actor_payloads(
@@ -8259,6 +8294,14 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     release_last_borrowed_typed_owners(&mut *blocks, builder);
     canonicalize_ownership_transfer_places(&mut *blocks);
     deduplicate_ownership_spines(&mut *blocks, builder);
+    // Second overwrite-release run: the loop header phi now names the
+    // generation live at the slot, and the pre-minted adoptions above have
+    // been re-keyed to it, so the replay is consistent again (a reassigned
+    // `while let` scrutinee's iteration snapshot adopts the phi generation
+    // only here; releasing before that adoption ends a generation twice).
+    canonicalize_release_owner_ids(&mut *blocks);
+    drop_plan::materialize_successor_guard_authority(&mut *blocks);
+    drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     materialize_explicit_neutralize_transfers(&mut *blocks, builder);
     deduplicate_ownership_spines(&mut *blocks, builder);
     canonicalize_ownership_transfer_places(&mut *blocks);

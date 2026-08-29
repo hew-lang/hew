@@ -2572,6 +2572,19 @@ impl Builder {
                                 dest: flag,
                                 value: 1,
                             });
+                        } else if self.deferred_affine_call_consume_sites.contains(&expr.site) {
+                            // A catalogued consuming runtime call adopts the
+                            // value only on its normal edge. Keep the OwnerId
+                            // live through the invoke (and through any bounds
+                            // check lowered before it); the checker-visible
+                            // `Use { Consume }` above stays, and
+                            // `splice_normal_call_ownership_commits` publishes
+                            // the one terminal Transfer in the normal successor.
+                            self.set_owned_local_consumed_post_lowering(
+                                *id,
+                                None,
+                                super::DischargeSite::CallArgumentTransfer,
+                            );
                         } else {
                             self.mark_binding_moved(*id);
                         }

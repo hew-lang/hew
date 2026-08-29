@@ -695,8 +695,8 @@ fn unwired_vec_element_rejected_transitively() {
 /// element, a nested collection (`Vec<Vec<i64>>`), a heap-owning tuple, an
 /// owned record whose element release IS wired (harvested into
 /// `vec_owned_element_keys`), and an un-monomorphised generic `Vec<T>`
-/// skeleton (a free `TypeParam` owns no heap → `UnenumeratedShape`, never
-/// rejected). A bare indirect-enum local (NOT a `Vec` element) is also
+/// skeleton (a free `TypeParam` classifies `Plain`: the outer buffer release
+/// is the skeleton's cleanup, never rejected). A bare indirect-enum local (NOT a `Vec` element) is also
 /// untouched — its scope-exit node free is wired separately
 /// (`DropKind::IndirectEnum`).
 #[test]
@@ -1118,4 +1118,81 @@ fn is_owned_vec_element_matches_codegen_owned_vec_table() {
             "is_owned_vec_element({elem:?}) must equal the codegen owned-vec table"
         );
     }
+}
+
+/// Fail-closed: a `Vec` element whose `Named` head no layout registry can see
+/// is `Unsupported(UnknownValueClass)` — never admitted as plain, never given a
+/// buffer-only release symbol, and rejected by the compile walk. The
+/// heap-ownership authority answers "no obligation" for an unseen head exactly
+/// as for a heap-free one, so that answer alone must not select `hew_vec_free`
+/// (a `Vec<Ghost>` whose `Ghost` owns a string would leak every element).
+#[test]
+fn unregistered_named_element_fails_closed_everywhere() {
+    let builder = Builder::default();
+    for elem in [
+        unregistered_named("Ghost"),
+        ResolvedTy::Tuple(vec![unregistered_named("Ghost"), ResolvedTy::I64]),
+    ] {
+        assert_eq!(
+            builder.classify_vec_element_release(&elem),
+            VecElementRelease::Unsupported(FailClosedReason::UnknownValueClass),
+            "{elem:?}"
+        );
+        let v = vec_of_ty(elem.clone());
+        assert!(!builder.binding_ty_is_plain_vec(&v), "{elem:?}");
+        assert!(
+            crate::lower::drop_plan::owner_definition_drop_recipe(
+                &builder,
+                crate::model::OwnerId {
+                    binding: BindingId(500),
+                    generation: 0,
+                },
+                Place::Local(3),
+                &v,
+                0,
+            )
+            .is_none(),
+            "{elem:?} must publish no destructor recipe"
+        );
+        assert_eq!(
+            builder.project_field_inline_drop_symbol(&v),
+            ReleaseSymbolVerdict::Unwired(FailClosedReason::UnknownValueClass),
+            "{elem:?}"
+        );
+        assert!(
+            builder.unsupported_vec_element_in_ty(&v).is_some(),
+            "{elem:?} must be rejected at compile"
+        );
+    }
+}
+
+/// The complement: a heap-free record the registry DOES see (a generic
+/// instance the value-class table never marked `BitCopy`, such as
+/// `Slot<i64> { value: Option<i64> }`) is `Plain` — the authority saw every
+/// field, so the buffer-only free is the complete release and the program is
+/// not rejected.
+#[test]
+fn registered_heap_free_record_element_is_plain() {
+    let mut builder = Builder::default();
+    builder.record_field_orders.insert(
+        hew_hir::mangle_layout_key("Slot", &[ResolvedTy::I64]),
+        vec![(
+            "value".to_string(),
+            ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::I64]),
+        )],
+    );
+    let elem = ResolvedTy::Named {
+        name: "Slot".to_string(),
+        args: vec![ResolvedTy::I64],
+        builtin: None,
+        is_opaque: false,
+    };
+    assert!(!builder.ty_has_unregistered_named(&elem));
+    assert_eq!(
+        builder.classify_vec_element_release(&elem),
+        VecElementRelease::Plain
+    );
+    let v = vec_of_ty(elem);
+    assert!(builder.binding_ty_is_plain_vec(&v));
+    assert!(builder.unsupported_vec_element_in_ty(&v).is_none());
 }

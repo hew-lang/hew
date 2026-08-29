@@ -305,23 +305,6 @@ pub enum FailClosedReason {
     /// ownership the checker could not establish. Routes to
     /// [`Strategy::UnknownBlocked`].
     UnknownValueClass,
-    /// A [`ResolvedTy`] variant the classifier does not yet enumerate. The hard
-    /// anti-drift sentinel: adding a `ResolvedTy` variant without a `classify`
-    /// arm lands here (a compile error in the exhaustive match), never a silent
-    /// `false`.
-    ///
-    /// NOTE: unlike `NoReleaseProtocol`, an `Unsupported(UnenumeratedShape)`
-    /// `Vec` element is NOT compile-rejected by
-    /// `Builder::unsupported_vec_element_diagnostics` — it falls through both the
-    /// Plain and Owned buckets and emits NO scope-exit release, silently leaking
-    /// the OUTER Vec's own handle+buffer (a different thing from the element's
-    /// heap that `NoReleaseProtocol` guards). A heap-free direct user enum was a
-    /// live instance of this — never `BitCopy`, so the `BitCopy`-only Plain gate
-    /// mis-bucketed it here — now closed by routing direct enums through the
-    /// `named_elem_owns_heap` authority into the Plain bucket. Any future shape
-    /// that legitimately owns heap yet lands here must be added to a release
-    /// bucket or to the `NoReleaseProtocol` reject, never left on this arm.
-    UnenumeratedShape,
     /// A heap-owning value reached a release path with no release symbol / drop
     /// protocol assigned. Routes to `MirCheck::DropPlanUndetermined`.
     NoReleaseProtocol,
@@ -364,9 +347,10 @@ pub enum FailClosedReason {
 /// [`Unsupported`](VecElementRelease::Unsupported), never a silent miss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VecElementRelease {
-    /// `hew_vec_free` — the element owns no heap (a `BitCopy` scalar / aggregate)
-    /// or is a plain leaf the runtime walks itself (`string` via
-    /// `ElemKind::String`). Buffer + handle free.
+    /// `hew_vec_free` — the element owns no heap (a `BitCopy` scalar / aggregate,
+    /// a registered heap-free record/enum instance, a bare runtime handle, a
+    /// generic skeleton's free `TypeParam`) or is a plain leaf the runtime walks
+    /// itself (`string` via `ElemKind::String`). Buffer + handle free.
     Plain,
     /// `hew_vec_free_owned` — the element is an owned composite (a record / enum
     /// / tuple / nested collection that owns heap), constructed through the owned
@@ -386,9 +370,13 @@ pub enum VecElementRelease {
     /// `NoReleaseProtocol`) — see
     /// `Builder::unsupported_vec_element_diagnostics` — rather than constructed
     /// and silently leaked at scope exit, the leak-safe fail-closed direction.
-    /// The reject lifts once the per-element release is wired. Carrying the
+    /// The reject lifts once the per-element release is wired. An element whose
+    /// `Named` head no layout registry can see is `Unsupported(UnknownValueClass)`
+    /// and rejected the same way — the heap-ownership authority's "no
+    /// obligation" for an unseen head is not evidence. Carrying the
     /// [`FailClosedReason`] keeps the decision a typed, actionable "no" instead
-    /// of a silent non-owning `false`.
+    /// of a silent non-owning `false`; no consumer maps an `Unsupported` back to
+    /// a release symbol.
     Unsupported(FailClosedReason),
 }
 
@@ -1400,11 +1388,6 @@ impl FailClosedReason {
             FailClosedReason::UnknownValueClass => {
                 "ownership decision: value-class is Unknown (unmarked Named or unsubstituted \
                  type parameter); routed through Strategy::UnknownBlocked at the MIR boundary"
-            }
-            FailClosedReason::UnenumeratedShape => {
-                "ownership decision: ResolvedTy shape is not enumerated by the classifier — a \
-                 new type variant must add an explicit ownership arm (fail-closed, never a \
-                 silent non-owning default)"
             }
             FailClosedReason::NoReleaseProtocol => {
                 "ownership decision: value owns heap but no release protocol could be named — \

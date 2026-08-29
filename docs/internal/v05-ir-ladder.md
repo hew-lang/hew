@@ -571,7 +571,18 @@ that is not live), so a body-local generation cannot cross a join without an
 explicit `Release` in the event stream. Function-entry cancellation is the one
 exit that runs before MIR's leading parameter `Mint`s execute; its cleanup is
 the set of those parameter owners whose `ParamBoundary` decision fact (part of
-Checked MIR, not a lowering ledger) says the ABI argument arrives owned.
+Checked MIR, not a lowering ledger) says the ABI argument arrives owned. The
+event stream alone cannot name that set: an owned parameter's guarded `Mint`
+must be dropped unguarded there (its sidecar is not initialised yet), while a
+guarded `Mint` over a `BorrowReadOnly` parameter (`VecIter::next`'s `var
+self` cursor) must not be — the same event shape, distinguished only by the
+boundary mode.
+
+An owner's `DropRecipe` is published only when its release is fully known. A
+`Vec` element the layout registries cannot see (`Unsupported(UnknownValueClass)`)
+or whose per-element release is unwired (`Unsupported(NoReleaseProtocol)`)
+publishes no recipe and is rejected at compile; no consumer maps an
+`Unsupported` classification back to a buffer-only release symbol.
 
 A generation that is moved on one path into a join and still owned on
 another has no admissible plan entry at any later exit (a drop would

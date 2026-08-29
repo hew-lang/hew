@@ -660,17 +660,16 @@ impl Builder {
     ///     harvest-independent `elem_is_owned_abi_releasable` authority and
     ///     emit `hew_vec_free_owned`; a buffer-only free would leak every
     ///     element payload.
-    ///   - `UnenumeratedShape` — the element owns NO heap as a flat element
-    ///     (a free `TypeParam` in a generic skeleton, `Unit`, a bare runtime
-    ///     view) — the buffer-only free IS the complete release; refusing
-    ///     would reject un-monomorphised generic `Vec<T>` bodies that
-    ///     instantiate to plain elements.
+    ///   - `UnknownValueClass` — a `Named` head no layout registry can see —
+    ///     is [`ReleaseSymbolVerdict::Unwired`] too: a buffer-only free over an
+    ///     element the authority never saw is the leak surface, so the
+    ///     consulting site refuses at compile time.
     fn vec_release_symbol_verdict(&self, elem: &ResolvedTy) -> ReleaseSymbolVerdict {
         #[allow(
             clippy::match_same_arms,
             reason = "the repeated symbols are projections of distinct typed release \
-                      decisions; keeping the arms separate makes the owned, plain, \
-                      fail-closed, and unenumerated boundaries reviewable"
+                      decisions; keeping the arms separate makes the owned, plain, and \
+                      fail-closed boundaries reviewable"
         )]
         match self.classify_vec_element_release(elem) {
             VecElementRelease::ClosurePair => ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
@@ -684,7 +683,7 @@ impl Builder {
             VecElementRelease::Unsupported(reason @ FailClosedReason::NoReleaseProtocol) => {
                 ReleaseSymbolVerdict::Unwired(reason)
             }
-            VecElementRelease::Unsupported(_) => ReleaseSymbolVerdict::Wired("hew_vec_free"),
+            VecElementRelease::Unsupported(reason) => ReleaseSymbolVerdict::Unwired(reason),
         }
     }
 

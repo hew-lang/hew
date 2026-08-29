@@ -283,13 +283,13 @@ pub(super) fn owner_definition_drop_recipe(
                 crate::ownership::CowHeapRelease::VecClosurePairs
             }
             crate::ownership::VecElementRelease::Unsupported(
-                crate::ownership::FailClosedReason::UnenumeratedShape,
-            ) => crate::ownership::CowHeapRelease::VecPlain,
-            crate::ownership::VecElementRelease::Unsupported(
                 crate::ownership::FailClosedReason::NoReleaseProtocol,
             ) if builder.elem_is_owned_abi_releasable(element) => {
                 crate::ownership::CowHeapRelease::VecOwnedElement
             }
+            // No wired per-element release, or an element whose ownership the
+            // registries cannot see: publish no recipe rather than a
+            // buffer-only free that would leak every element node.
             crate::ownership::VecElementRelease::Unsupported(_) => return None,
         };
         (DropKind::CowHeap { release }, None)
@@ -849,6 +849,15 @@ pub(super) fn derive_drop_plans_from_replay(
 /// The typed parameter-boundary fact is the authority: a body-local Mint and a
 /// borrowed/representation-loan parameter can never enter this set merely by
 /// sharing a low-numbered local.
+///
+/// The event stream cannot replace the fact. Measured over the repro corpus,
+/// every vertical-slice fixture, and the goobers modules (~28,700 functions):
+/// "every unguarded `Mint` over a parameter local in the entry block" misses
+/// the ~400 owned parameters whose `Mint` is guarded (they are dropped
+/// UNGUARDED here, before their sidecar exists), and "every `Mint` over a
+/// parameter local" additionally admits the guarded cursor `Mint` that
+/// `VecIter::next`'s `var self` publishes over a `BorrowReadOnly` parameter —
+/// which the caller still owns. Only the boundary mode separates those two.
 fn entry_cancel_parameter_owners(
     blocks: &[BasicBlock],
     decisions: &[super::DecisionFact],

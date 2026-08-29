@@ -91,17 +91,21 @@ pub fn dump_mir(pipeline: &IrPipeline, stage: DumpStage) -> String {
 // Per-function renderers
 // ---------------------------------------------------------------------------
 
-/// Render one [`crate::model::MirCallableKey`] as `<declaration>::<instance>`,
+/// Render one [`crate::model::MirCallableKey`] as `<declaration> [instance]`,
 /// with a synthesized child rendered as its parent chain followed by the
 /// producer and ordinal that minted it.
+///
+/// The instance tag is bracketed rather than appended with `::` so the
+/// rendering cannot be mistaken for — or parsed back into — a declaration
+/// path: the key is not reconstructible from its rendering, by design.
 fn render_callable_key(key: &crate::model::MirCallableKey) -> String {
     use crate::model::{MirCallableInstance, SynthesizedCallable};
     match &key.instance {
         MirCallableInstance::Monomorphic => {
-            format!("{}::mono", key.declaration.full_path())
+            format!("{} [mono]", key.declaration.full_path())
         }
         MirCallableInstance::Generic { type_args } => format!(
-            "{}::generic<{}>",
+            "{} [generic {}]",
             key.declaration.full_path(),
             type_args
                 .iter()
@@ -110,7 +114,7 @@ fn render_callable_key(key: &crate::model::MirCallableKey) -> String {
                 .join(", ")
         ),
         MirCallableInstance::Polymorphic => {
-            format!("{}::poly", key.declaration.full_path())
+            format!("{} [poly]", key.declaration.full_path())
         }
         MirCallableInstance::Synthesized { parent, child } => {
             let child = match child {

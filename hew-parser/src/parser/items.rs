@@ -327,11 +327,8 @@ impl Parser<'_> {
         let supports_resource_marker = match self.peek_at(target_pos) {
             Some(Token::Enum | Token::Indirect) => true,
             Some(Token::Type) => {
-                !self
-                    .tokens
-                    .get(target_pos + 1)
-                    .is_some_and(|(token, _)| Self::is_ident_token(token))
-                    || !matches!(self.tokens.get(target_pos + 2), Some((Token::Equal, _)))
+                !self.is_type_alias_lookahead_at(target_pos)
+                    && !self.is_tuple_type_lookahead_at(target_pos)
             }
             _ => false,
         };
@@ -760,24 +757,28 @@ impl Parser<'_> {
     }
 
     pub(crate) fn is_type_alias_lookahead(&self) -> bool {
+        self.is_type_alias_lookahead_at(self.pos)
+    }
+
+    fn is_type_alias_lookahead_at(&self, start: usize) -> bool {
         // Check for `type Name =` or `type Name<...> =` (Name can be a
         // contextual keyword). A body declaration starts with `{` instead.
-        if !matches!(self.tokens.get(self.pos), Some((Token::Type, _)))
+        if !matches!(self.tokens.get(start), Some((Token::Type, _)))
             || !self
                 .tokens
-                .get(self.pos + 1)
+                .get(start + 1)
                 .is_some_and(|(tok, _)| Self::is_ident_token(tok))
         {
             return false;
         }
-        if matches!(self.tokens.get(self.pos + 2), Some((Token::Equal, _))) {
+        if matches!(self.tokens.get(start + 2), Some((Token::Equal, _))) {
             return true;
         }
-        if !matches!(self.tokens.get(self.pos + 2), Some((Token::Less, _))) {
+        if !matches!(self.tokens.get(start + 2), Some((Token::Less, _))) {
             return false;
         }
         let mut depth = 0usize;
-        for (index, (token, _)) in self.tokens.iter().enumerate().skip(self.pos + 2) {
+        for (index, (token, _)) in self.tokens.iter().enumerate().skip(start + 2) {
             match token {
                 Token::Less => depth += 1,
                 Token::Greater => depth = depth.saturating_sub(1),
@@ -793,15 +794,19 @@ impl Parser<'_> {
 
     /// Check for `type Name(...)` (including generic names) without consuming.
     pub(crate) fn is_tuple_type_lookahead(&self) -> bool {
-        if !matches!(self.tokens.get(self.pos), Some((Token::Type, _)))
+        self.is_tuple_type_lookahead_at(self.pos)
+    }
+
+    fn is_tuple_type_lookahead_at(&self, start: usize) -> bool {
+        if !matches!(self.tokens.get(start), Some((Token::Type, _)))
             || !self
                 .tokens
-                .get(self.pos + 1)
+                .get(start + 1)
                 .is_some_and(|(tok, _)| Self::is_ident_token(tok))
         {
             return false;
         }
-        let mut index = self.pos + 2;
+        let mut index = start + 2;
         if matches!(self.tokens.get(index), Some((Token::Less, _))) {
             let mut depth = 0usize;
             while let Some((token, _)) = self.tokens.get(index) {

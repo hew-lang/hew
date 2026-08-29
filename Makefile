@@ -144,8 +144,8 @@ MAKEFILE_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST))))
 # leave it empty to build for the host.
 TARGET_TRIPLE ?=
 CARGO_TARGET_FLAG := $(if $(TARGET_TRIPLE),--target $(TARGET_TRIPLE),)
-CARGO_TARGET_ROOT := $(shell scripts/cargo-output-dir.py --root)
-CARGO_NATIVE_OUT := $(shell scripts/cargo-output-dir.py --native $(CARGO_TARGET_FLAG))
+CARGO_TARGET_ROOT := $(shell $(PYTHON) scripts/cargo-output-dir.py --root)
+CARGO_NATIVE_OUT := $(shell $(PYTHON) scripts/cargo-output-dir.py --native $(CARGO_TARGET_FLAG))
 ifeq ($(CARGO_NATIVE_OUT),)
 $(error scripts/cargo-output-dir.py could not resolve Cargo's output directory)
 endif
@@ -259,7 +259,7 @@ endif
 
 # Host triple used to populate lib/<triple>/ for target-aware lib lookup.
 HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
-EFFECTIVE_CARGO_TARGET := $(shell scripts/cargo-output-dir.py --triple $(CARGO_TARGET_FLAG))
+EFFECTIVE_CARGO_TARGET := $(shell $(PYTHON) scripts/cargo-output-dir.py --triple $(CARGO_TARGET_FLAG))
 # Make assembles a runnable host toolchain. Cross-target native archives have
 # dedicated targets; accepting a foreign Cargo default here would mislabel that
 # archive as the host library and eventually try to execute a foreign hew.

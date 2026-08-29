@@ -1545,9 +1545,9 @@ impl Builder {
     /// The select terminator emits a `Terminator::Select`; the
     /// elaboration pass (`enumerate_exits` at lower.rs:6450) wires
     /// `ExitPath::Select { block: originating_bb, next: join_bb }`
-    /// into `drop_plans` automatically — the function-wide LIFO drop
-    /// plan is empty for this exit (per-arm loser cleanup happens at
-    /// the codegen dispatch site, not at function exit).
+    /// into `drop_plans` automatically — the exit's replay-derived
+    /// drop plan is empty (per-arm loser cleanup happens at the
+    /// codegen dispatch site, not at function exit).
     #[allow(
         clippy::too_many_lines,
         reason = "lower_select threads four responsibilities — arm-kind rejection, \

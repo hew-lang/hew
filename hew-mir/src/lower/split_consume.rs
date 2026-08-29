@@ -2458,7 +2458,7 @@ mod slice35_cross_block_proptests {
     /// dataflow-derived stale state on the same block (a Live entry
     /// followed by a Move-to-half transitions to Consumed before the
     /// block terminator, but the drop plan was assembled from the
-    /// pre-Move LIFO — fail-closed).
+    /// pre-Move owner state — fail-closed).
     fn build_split_block(parent: u32, terminator: Terminator) -> BasicBlock {
         BasicBlock {
             id: 0,

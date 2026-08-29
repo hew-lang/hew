@@ -1351,7 +1351,7 @@ impl Builder {
         //     and returns i32 0.
         //
         // Drop safety (CLAUDE.md §1): the handle's release is scheduled at
-        // scope exit by the enclosing function's LIFO drop plan via
+        // scope exit by the enclosing function's replay-derived drop plan via
         // `place_aware_drop_fn` → `hew_lambda_actor_release`. The state-drop
         // no-op stub is invoked exactly once by the runtime at actor
         // shutdown, releasing nothing for the no-capture MVP.
@@ -1984,8 +1984,8 @@ impl Builder {
             //     `Result::Err(error_dest)` into `dest`.
             // Marking the runtime call's `dest` as `Some(dest)` keeps
             // the dataflow ledger consistent (the dest binding becomes
-            // Live at the call), so the LIFO drop plan releases it on
-            // scope exit if it carries owned-handle resources.
+            // Live at the call), so the replay-derived exit plan releases
+            // it on scope exit if it carries owned-handle resources.
             let reply_ptr_slot = self.alloc_local(ResolvedTy::Pointer {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::Unit),

@@ -2053,7 +2053,7 @@ mod returned_member_retain_scope;
     clippy::too_many_lines,
     clippy::too_many_arguments,
     reason = "one IR-grounded free-count model: ctx-origin propagation + the three \
-              drop-source tallies (inline consumer drops, source LIFO drops, \
+              drop-source tallies (inline consumer drops, source scope-exit drops, \
               aggregate member drops) must share the same origin map; splitting \
               them scatters the exactly-once accounting. The suspend_kinds \
               side-table is threaded alongside the blocks so the bare-Suspend \
@@ -2282,7 +2282,7 @@ pub(super) fn detect_unproven_aggregate_handle_double_free(
     //   1. inline release `Drop { drop_fn: Some(_) }` already in the stream
     //      (the for-in / extraction consumer's free) — frees every origin the
     //      dropped local carries.
-    //   2. the SOURCE binding's standalone LIFO drop — emitted iff the binding is
+    //   2. the SOURCE binding's standalone scope-exit drop — emitted iff the binding is
     //      NOT in `source_excluded` (the elaborator's exclusion sets) — frees its
     //      own origin once.
     //   3. each owned-AGGREGATE binding's in-place member drop — emitted iff the
@@ -2324,7 +2324,7 @@ pub(super) fn detect_unproven_aggregate_handle_double_free(
         }
     }
 
-    // Sources 2 + 3: source LIFO drops and aggregate member drops.
+    // Sources 2 + 3: source scope-exit drops and aggregate member drops.
     let mut non_inline_freed: HashSet<u32> = HashSet::new();
     for (binding, _name, ty) in owned_locals {
         let Some(place) = binding_locals.get(binding) else {

@@ -16,7 +16,7 @@
 //!
 //! | Position | Support | Discharge / rejection authority |
 //! |---|---|---|
-//! | `Local` | `Implemented` | scope-exit LIFO drop plan (`lower/drop_plan.rs`) |
+//! | `Local` | `Implemented` | replay-derived exit drop plans (`lower/drop_plan.rs`) |
 //! | `RecordField` | `Implemented` | record lifecycle member drop |
 //! | `EnumPayload` | `Implemented` | tag-aware `EnumInPlace` drop (`ty_is_drop_obligated_enum_composite`) |
 //! | `TupleElement` | `Implemented` | tuple-composite drop (`ty_is_drop_obligated_tuple`) |

@@ -43,8 +43,11 @@
 #   five per body, against 5 046 queries). The falsifier: dropping the memo
 #   from `maybe_owner_states` alone - one lattice, no change in what any pass
 #   computes - takes the reading to 1 544 and fires this gate while leaving
-#   both the growth gate and the clock gate green. The ceiling sits above the
-#   measurement with room for one more genuine program version per body.
+#   both the growth gate and the clock gate green (`growth 224`, 480 ms). The
+#   ceiling leaves 69 replays of slack, which is less than one extra whole-
+#   function replay per body: a pass sequence that gains one is meant to fire
+#   this gate and have the conversation, because on this fixture one more per
+#   body is 85 more whole-CFG replays.
 #
 # check_wall_ms_ceiling
 #   Wall-clock ceiling for `hew check` on mir-lowering-shape.hew, scored as the

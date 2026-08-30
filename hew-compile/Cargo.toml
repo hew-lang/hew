@@ -13,14 +13,15 @@ categories = ["compilers"]
 [dependencies]
 hew-lexer = { path = "../hew-lexer" }
 hew-hir = { path = "../hew-hir" }
+hew-mir = { path = "../hew-mir" }
+hew-sir = { path = "../hew-sir" }
+hew-codegen-rs = { path = "../hew-codegen-rs" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
-hew-codegen-rs = { path = "../hew-codegen-rs" }
-hew-mir = { path = "../hew-mir" }
 hew-types = { path = "../hew-types", features = ["test"] }
 tempfile.workspace = true
 

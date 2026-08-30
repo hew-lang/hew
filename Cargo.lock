@@ -1825,6 +1825,7 @@ dependencies = [
  "hew-lexer",
  "hew-mir",
  "hew-parser",
+ "hew-sir",
  "hew-types",
  "serde",
  "tempfile",
@@ -1862,6 +1863,7 @@ version = "0.6.0-rc2"
 dependencies = [
  "dashmap",
  "hew-analysis",
+ "hew-compile",
  "hew-hir",
  "hew-lexer",
  "hew-mir",
@@ -2090,6 +2092,7 @@ name = "hew-wasm"
 version = "0.6.0-rc2"
 dependencies = [
  "hew-analysis",
+ "hew-compile",
  "hew-hir",
  "hew-lexer",
  "hew-mir",

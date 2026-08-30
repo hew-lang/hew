@@ -1,0 +1,40 @@
+//! The `first_symlink` loop must lower its owned path accumulator without
+//! violating the MIR discharge-authority invariant.
+
+import std.process;
+
+import std.string;
+
+import std.testing;
+
+fn is_symlink(path: string) -> bool {
+    let args: Vec<string> = Vec.new();
+    args.push("-L");
+    args.push(path);
+    match process.try_run_argv("test", args) {
+        .Ok(out) => out.exit_code == 0,
+        .Err(_) => false,
+    }
+}
+
+fn first_symlink(root: string, rel_path: string) -> string {
+    if is_symlink(root) {
+        return root;
+    }
+    let parts = string.split(rel_path, "/");
+    var prefix = root;
+    for part in parts {
+        if part != "" {
+            prefix = prefix + "/" + part;
+            if is_symlink(prefix) {
+                return prefix;
+            }
+        }
+    }
+    ""
+}
+
+#[test]
+fn scans_regular_path_components() {
+    testing.assert_eq_str(first_symlink(".", "does-not-exist/child"), "");
+}

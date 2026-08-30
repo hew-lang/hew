@@ -1,0 +1,21 @@
+//! An indirect call that returns an owned Result is rejected rather than
+//! lowering a match scrutinee with unresolved ownership.
+
+import std.testing;
+
+fn make(value: string) -> Result<string, string> {
+    Ok(value)
+}
+
+fn inspect() -> i64 {
+    let f = make;
+    match f("payload") {
+        .Ok(value) => value.len(),
+        .Err(_) => 0,
+    }
+}
+
+#[test]
+fn indirect_owned_result_call_scrutinee_fails_closed() {
+    testing.assert_eq(inspect(), 7);
+}

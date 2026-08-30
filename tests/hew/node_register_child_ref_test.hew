@@ -1,0 +1,21 @@
+//! Node registration accepts a stable reference to a supervised child.
+
+actor RegisteredWorker {
+    receive fn ping() -> i64 {
+        1
+    }
+}
+
+supervisor RegisteredWorkerPool {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child worker: RegisteredWorker;
+}
+
+#[test]
+fn node_register_accepts_supervised_child_ref() {
+    let sup = spawn RegisteredWorkerPool;
+    let _ = Node.register("registered-supervised-child", sup.worker);
+    supervisor_stop(sup);
+}

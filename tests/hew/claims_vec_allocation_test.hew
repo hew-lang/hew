@@ -1,0 +1,37 @@
+//! A `Vec` of the claim-projection record used by the operator path allocates
+//! its real record element size and retains each owned string field.
+
+import std.string;
+
+import std.testing;
+
+type ClaimView {
+    item: string;
+    run_id: string;
+    fence: i64;
+    expires_at: i64;
+    lifecycle_state: string;
+    checkpoint: i64;
+    exact_head_verifying: bool;
+}
+
+fn active_claims() -> Vec<ClaimView> {
+    let claims: Vec<ClaimView> = Vec.new();
+    for n in 0 .. 4 {
+        claims.push(ClaimView { item: "gitea:owner:repo:issue:" + string.from_int(n), run_id: "run-" + string.from_int(n), fence: n + 1, expires_at: 9000 + n, lifecycle_state: "Completed", checkpoint: n, exact_head_verifying: n == 2 });
+    }
+    claims
+}
+
+#[test]
+fn claim_projection_vec_allocates_and_preserves_fields() {
+    let claims = active_claims();
+    testing.assert_eq(claims.len(), 4);
+    testing.assert_eq_str(claims[3].item, "gitea:owner:repo:issue:3");
+    testing.assert_eq_str(claims[3].run_id, "run-3");
+    testing.assert_eq(claims[3].fence, 4);
+    testing.assert_eq(claims[3].expires_at, 9003);
+    testing.assert_eq_str(claims[3].lifecycle_state, "Completed");
+    testing.assert_eq(claims[3].checkpoint, 3);
+    testing.assert_true(claims[2].exact_head_verifying);
+}

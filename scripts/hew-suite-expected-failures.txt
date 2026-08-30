@@ -22,3 +22,11 @@ tests/hew/imported_machine_ownership_test.hew::imported_private_machine_crosses_
 tests/hew/imported_machine_ownership_test.hew::imported_payload_machine_covers_construction_calls_returns_and_record_storage compile
 tests/hew/imported_machine_ownership_test.hew::imported_machine_transitions_and_supports_dotted_unit_construction compile
 tests/hew/imported_machine_ownership_test.hew::module_qualified_variant_pattern_selects_the_matching_arm_for_both_states compile
+
+# Priority-1 upstream reductions from Goobers-Hew.  Each is intentionally an
+# executable desired-behaviour test: remove its row when the failure is fixed.
+tests/hew/call_scrutinee_indirect_ownership_test.hew::indirect_owned_result_call_scrutinee_fails_closed compile
+tests/hew/imported_supervisor_child_layout_test.hew::imported_actor_is_a_supervised_child compile
+tests/hew/journal_first_symlink_ownership_test.hew::scans_regular_path_components compile
+tests/hew/json_value_loop_reassign_test.hew::reassigns_json_resource_builder_in_loop compile
+tests/hew/node_register_child_ref_test.hew::node_register_accepts_supervised_child_ref compile

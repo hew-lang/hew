@@ -334,27 +334,9 @@ fn dump_basic_block(
 // ---------------------------------------------------------------------------
 
 fn render_place(place: &Place) -> String {
-    match place {
-        Place::Local(n) => format!("_{n}"),
-        Place::ReturnSlot => "ret".to_string(),
-        Place::DuplexHandle(n) => format!("duplex{n}"),
-        Place::LambdaActorHandle(n) => format!("lambda{n}"),
-        Place::ActorHandle(n) => format!("actor{n}"),
-        Place::SendHalf(n) => format!("send_half{n}"),
-        Place::RecvHalf(n) => format!("recv_half{n}"),
-        Place::MachineTag(n) => format!("mtag{n}"),
-        Place::MachineVariant {
-            local,
-            variant_idx,
-            field_idx,
-        } => format!("mvar{local}.{variant_idx}.{field_idx}"),
-        Place::EnumTag(n) => format!("etag{n}"),
-        Place::EnumVariant {
-            local,
-            variant_idx,
-            field_idx,
-        } => format!("evar{local}.{variant_idx}.{field_idx}"),
-    }
+    // The rendering table lives on `Display for Place` so diagnostics and
+    // dumps cannot drift apart.
+    place.to_string()
 }
 
 fn render_raw_value(value: RawValueId) -> String {

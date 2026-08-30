@@ -1742,20 +1742,22 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         "owner {owner} is released after its generation ended"
                     )),
                     Some(actual) if actual != place => Some(format!(
-                        "owner {owner} is released from {place:?}, but Checked MIR records its current place as {actual:?}"
+                        "owner {owner} is released from {place}, but Checked MIR records its current place as {actual}"
                     )),
                     Some(_) => None,
                 },
                 OwnershipEvent::GuardedRelease { owner, place, flag } => {
                     if published_guards.get(owner).map(|(published, _)| published) != Some(flag) {
                         Some(format!(
-                            "guarded release for {owner} names {flag:?}, but that owner publishes {:?}",
-                            published_guards.get(owner).map(|(published, _)| published)
+                            "guarded release for {owner} names {flag}, but that owner publishes {}",
+                            describe_optional_place(
+                                published_guards.get(owner).map(|(published, _)| published)
+                            )
                         ))
                     } else if live.get(owner).is_some_and(|actual| actual != place) {
                         Some(format!(
-                            "guarded release for {owner} names {place:?}, but Checked MIR records its current place as {:?}",
-                            live.get(owner)
+                            "guarded release for {owner} names {place}, but Checked MIR records its current place as {}",
+                            describe_optional_place(live.get(owner))
                         ))
                     } else {
                         None
@@ -1793,8 +1795,8 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         ))
                     } else if live.get(previous).is_some_and(|actual| actual != place) {
                         Some(format!(
-                            "reset source {previous} names {place:?}, but Checked MIR records its current place as {:?}",
-                            live.get(previous)
+                            "reset source {previous} names {place}, but Checked MIR records its current place as {}",
+                            describe_optional_place(live.get(previous))
                         ))
                     } else if live.contains_key(replacement) {
                         Some(format!("reset replacement {replacement} is already live"))
@@ -1983,7 +1985,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     block: block.id,
                     name: "ownership-place".to_owned(),
                     reason: format!(
-                        "place {place:?} has more than one live exact owner generation {} after instruction {instruction_index}",
+                        "place {place} has more than one live exact owner generation {} after instruction {instruction_index}",
                         owner_list(owners.iter())
                     ),
                 });
@@ -2051,20 +2053,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 _ => None,
             })
             .collect();
-        let binding_metadata: HashMap<BindingId, (String, SiteId)> = checked
-            .blocks
-            .iter()
-            .flat_map(|block| &block.statements)
-            .filter_map(|statement| match statement {
-                MirStatement::Bind {
-                    binding,
-                    name,
-                    site,
-                    ..
-                } => Some((*binding, (name.clone(), *site))),
-                _ => None,
-            })
-            .collect();
+        let binding_metadata = binding_definition_metadata(&checked.blocks);
         for (exit, plan) in &elaboration.drop_plans {
             let block_id = exit_block_id(exit);
             let Some(_block) = checked.blocks.iter().find(|block| block.id == block_id) else {
@@ -2138,11 +2127,11 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                                 block: block_id,
                                 name: "checked-ownership-plan".to_owned(),
                                 reason: format!(
-                                    "cleanup at {:?} is guarded by {}@{:?}, but live generation {owner} carries {:?}",
+                                    "cleanup at {} is guarded by {}@{}, but live generation {owner} carries {}",
                                     drop.place,
                                     guard.owner,
                                     guard.flag,
-                                    owner_guards.get(owner)
+                                    describe_optional_place(owner_guards.get(owner))
                                 ),
                             });
                         }
@@ -2177,7 +2166,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                             block: block_id,
                             name: "ownership-recipe".to_owned(),
                             reason: format!(
-                                "cleanup ritual at {:?} does not equal the definition-site recipe for {owner}",
+                                "cleanup ritual at {} does not equal the definition-site recipe for {owner}",
                                 drop.place
                             ),
                         }),
@@ -2217,7 +2206,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         block: block_id,
                         name: "checked-ownership-plan".to_owned(),
                         reason: format!(
-                            "cleanup at {:?} ambiguously matches multiple exact owner generations {}",
+                            "cleanup at {} ambiguously matches multiple exact owner generations {}",
                             drop.place,
                             owner_list(candidates.iter())
                         ),
@@ -2401,7 +2390,7 @@ fn second_mint_over_a_live_place_is_rejected() {
         "one finding per shared place, not one per later instruction: {findings:?}"
     );
     assert!(
-        findings[0].contains("Local(6)")
+        findings[0].contains("_6")
             && findings[0].contains("b2#0")
             && findings[0].contains("b4294967226#0")
             && findings[0].contains("after instruction 3"),
@@ -5977,7 +5966,7 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
                 findings.push(MirCheck::DropPlanUndetermined {
                     block,
                     reason: format!(
-                        "drop on place {:?} has kind {:?}, but the place \
+                        "drop on place {} has kind {:?}, but the place \
                          variant selects {:?}; elaborator must use the \
                          Place-driven kind (exit path: {kind_label})",
                         drop.place, drop.kind, expected,
@@ -5998,7 +5987,7 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
                 findings.push(MirCheck::DropPlanUndetermined {
                     block: block.id,
                     reason: format!(
-                        "cleanup drop on place {:?} has kind {:?}, but the \
+                        "cleanup drop on place {} has kind {:?}, but the \
                          place variant selects {:?}; elaborator must use the \
                          Place-driven kind",
                         drop.place, drop.kind, expected,
@@ -6161,7 +6150,7 @@ fn validate_unwind_cleanup_coverage_over(
                 findings.push(MirCheck::ObligationBalanceUnverified {
                     function: elab.name.clone(),
                     reason: format!(
-                        "unwind cleanup for call bb{} -> `{callee}` destroys place {:?} more \
+                        "unwind cleanup for call bb{} -> `{callee}` destroys place {} more \
                          than once",
                         block.id, drop.place,
                     ),
@@ -6210,7 +6199,7 @@ fn validate_unwind_cleanup_coverage_over(
                     findings.push(MirCheck::ObligationBalanceUnverified {
                     function: elab.name.clone(),
                     reason: format!(
-                        "indirect closure unwind cleanup for bb{} at {call_site} destroys place {:?} more than once",
+                        "indirect closure unwind cleanup for bb{} at {call_site} destroys place {} more than once",
                         block.id, drop.place,
                     ),
                 });
@@ -6272,25 +6261,41 @@ pub(super) fn terminator_mint_places(term: &Terminator) -> Vec<Place> {
 /// the mutable lowering ledger. Parameter slots are removed by the caller;
 /// alias-only registrations emit no mint, while a provisional owner demoted to
 /// an alias carries a program-point `Release` event that ends its generation.
+/// What the source calls each binding, and where it was defined.
+///
+/// The FIRST `Bind` for a binding wins: a `var` is re-bound at every
+/// assignment, and an obligation diagnostic anchors at the value's definition
+/// site, not at whichever assignment happened to come last in block order.
+/// A place that may be absent, rendered without the derived `Debug` shape.
+fn describe_optional_place(place: Option<&Place>) -> String {
+    place.map_or_else(|| "none".to_owned(), ToString::to_string)
+}
+
+fn binding_definition_metadata(blocks: &[BasicBlock]) -> HashMap<BindingId, (String, SiteId)> {
+    let mut metadata: HashMap<BindingId, (String, SiteId)> = HashMap::new();
+    for statement in blocks.iter().flat_map(|block| &block.statements) {
+        if let MirStatement::Bind {
+            binding,
+            name,
+            site,
+            ..
+        } = statement
+        {
+            metadata
+                .entry(*binding)
+                .or_insert_with(|| (name.clone(), *site));
+        }
+    }
+    metadata
+}
+
 fn tracked_obligation_locals_with_sites(
     builder: &Builder,
     blocks: &[BasicBlock],
 ) -> (BTreeMap<u32, String>, BTreeMap<u32, SiteId>) {
     let mut tracked: BTreeMap<u32, String> = BTreeMap::new();
     let mut mint_sites: BTreeMap<u32, SiteId> = BTreeMap::new();
-    let binding_metadata: HashMap<BindingId, (String, SiteId)> = blocks
-        .iter()
-        .flat_map(|block| &block.statements)
-        .filter_map(|statement| match statement {
-            MirStatement::Bind {
-                binding,
-                name,
-                site,
-                ..
-            } => Some((*binding, (name.clone(), *site))),
-            _ => None,
-        })
-        .collect();
+    let binding_metadata = binding_definition_metadata(blocks);
     for (owner, place, ty) in blocks
         .iter()
         .flat_map(|block| &block.instructions)

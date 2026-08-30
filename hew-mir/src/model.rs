@@ -4529,6 +4529,35 @@ pub enum Place {
     },
 }
 
+/// The one compact rendering of a `Place`. Diagnostics and dumps both use it,
+/// so no user-visible or engineer-visible surface ever prints the derived
+/// `Debug` form.
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(n) => write!(f, "_{n}"),
+            Self::ReturnSlot => write!(f, "ret"),
+            Self::DuplexHandle(n) => write!(f, "duplex{n}"),
+            Self::LambdaActorHandle(n) => write!(f, "lambda{n}"),
+            Self::ActorHandle(n) => write!(f, "actor{n}"),
+            Self::SendHalf(n) => write!(f, "send_half{n}"),
+            Self::RecvHalf(n) => write!(f, "recv_half{n}"),
+            Self::MachineTag(n) => write!(f, "mtag{n}"),
+            Self::MachineVariant {
+                local,
+                variant_idx,
+                field_idx,
+            } => write!(f, "mvar{local}.{variant_idx}.{field_idx}"),
+            Self::EnumTag(n) => write!(f, "etag{n}"),
+            Self::EnumVariant {
+                local,
+                variant_idx,
+                field_idx,
+            } => write!(f, "evar{local}.{variant_idx}.{field_idx}"),
+        }
+    }
+}
+
 /// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The
 /// signed-ness selector is intentional: Hew's spine treats `i64` as a
 /// signed 64-bit integer, so the default cmp lowerings are signed

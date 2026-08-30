@@ -1604,7 +1604,7 @@ mod slice3_invariants {
         };
         assert_eq!(*block, 0);
         assert!(
-            reason.contains("DuplexHandle") && reason.contains("Resource"),
+            reason.contains("duplex7") && reason.contains("Resource"),
             "diagnostic must name both the Place and the wrong kind: {reason}"
         );
     }

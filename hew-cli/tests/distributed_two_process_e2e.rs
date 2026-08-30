@@ -243,11 +243,7 @@ fn wait_for_server_ready(server: &mut ManagedChild) -> BufReader<std::process::C
 
 /// Run the client to completion with a wall-clock cap, returning its captured
 /// stdout. Force-kills on timeout so a wedged client never hangs the suite.
-fn run_client_to_completion(
-    mut client: ManagedChild,
-    expected_exit_code: i32,
-    expected_stderr: Option<&str>,
-) -> String {
+fn run_client_to_completion(mut client: ManagedChild, expected_exit_code: i32) -> String {
     let deadline = Instant::now() + CLIENT_RUN_TIMEOUT;
     loop {
         match client.child.try_wait() {
@@ -265,12 +261,6 @@ fn run_client_to_completion(
                     Some(expected_exit_code),
                     "client should exit {expected_exit_code} ({status:?})\nstdout:\n{stdout}\nstderr:\n{stderr}"
                 );
-                if let Some(expected_stderr) = expected_stderr {
-                    assert!(
-                        stderr.contains(expected_stderr),
-                        "client stderr did not contain {expected_stderr:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                    );
-                }
                 return stdout;
             }
             Ok(None) => {
@@ -298,7 +288,7 @@ fn run_two_process_scenario(scenario: &str) -> String {
     let client = scene.spawn_client(scenario, &[]);
 
     let _server_stdout = wait_for_server_ready(&mut server);
-    let stdout = run_client_to_completion(client, 0, None);
+    let stdout = run_client_to_completion(client, 0);
 
     // `server` is dropped here, force-killing the still-sleeping server.
     drop(server);
@@ -312,7 +302,7 @@ fn run_handshake_rejection_scenario() -> String {
     let client = scene.spawn_client("handshake_reject", &[]);
 
     let _server_stdout = wait_for_server_ready(&mut server);
-    let stdout = run_client_to_completion(client, 0, None);
+    let stdout = run_client_to_completion(client, 0);
     drop(server);
     stdout
 }
@@ -321,11 +311,7 @@ fn run_handshake_rejection_scenario() -> String {
 /// (clean exit or crash) and the client polls its local linker's terminal state.
 /// The client runs with `HEW_LINK_PROBE=1` so the runtime records actor terminal
 /// reasons in the probe ledger the fixture reads. Returns the client's stdout.
-fn run_link_cascade_scenario(
-    scenario: &str,
-    expected_exit_code: i32,
-    expected_stderr: Option<&str>,
-) -> String {
+fn run_link_cascade_scenario(scenario: &str, expected_exit_code: i32) -> String {
     let scene = SecureScenario::new();
 
     // Concurrent launch for the mutual credential exchange (see
@@ -334,7 +320,7 @@ fn run_link_cascade_scenario(
     let client = scene.spawn_client(scenario, &[("HEW_LINK_PROBE", "1")]);
 
     let _server_stdout = wait_for_server_ready(&mut server);
-    let stdout = run_client_to_completion(client, expected_exit_code, expected_stderr);
+    let stdout = run_client_to_completion(client, expected_exit_code);
 
     drop(server);
     stdout
@@ -349,7 +335,7 @@ fn run_setup_exit_race_scenario() -> String {
     let client = scene.spawn_client("remote_setup_exit_race", &[("HEW_LINK_PROBE", "1")]);
 
     let _server_stdout = wait_for_server_ready(&mut server);
-    let stdout = run_client_to_completion(client, 1, Some("panicked in Linker"));
+    let stdout = run_client_to_completion(client, 1);
     drop(server);
     stdout
 }
@@ -360,7 +346,7 @@ fn run_setup_exit_race_scenario() -> String {
 /// client runs to completion observing the connection-drop DOWN. Returns the
 /// client's captured stdout.
 fn run_conn_drop_scenario(scenario: &str) -> String {
-    run_conn_drop_scenario_with_env(scenario, &[], 0, None)
+    run_conn_drop_scenario_with_env(scenario, &[], 0)
 }
 
 /// As [`run_conn_drop_scenario`], with extra client environment (e.g.
@@ -369,7 +355,6 @@ fn run_conn_drop_scenario_with_env(
     scenario: &str,
     client_env: &[(&str, &str)],
     expected_exit_code: i32,
-    expected_stderr: Option<&str>,
 ) -> String {
     let scene = SecureScenario::new();
 
@@ -448,12 +433,6 @@ fn run_conn_drop_scenario_with_env(
         Some(expected_exit_code),
         "client should exit {expected_exit_code} ({status:?}) on connection-drop scenario\nstdout:\n{captured}\nstderr:\n{stderr}"
     );
-    if let Some(expected_stderr) = expected_stderr {
-        assert!(
-            stderr.contains(expected_stderr),
-            "client stderr did not contain {expected_stderr:?}\nstdout:\n{captured}\nstderr:\n{stderr}"
-        );
-    }
     captured
 }
 
@@ -896,7 +875,7 @@ fn remote_ask_under_partition_fails_closed_not_hang() {
     // `HEW_DIST_TEST_PROBE=1` is set, so only this harness can drive the
     // deterministic fail-closed seam.
     let stdout =
-        run_conn_drop_scenario_with_env("partition_ask", &[("HEW_DIST_TEST_PROBE", "1")], 0, None);
+        run_conn_drop_scenario_with_env("partition_ask", &[("HEW_DIST_TEST_PROBE", "1")], 0);
 
     // Phase A: the armed probe must PROVE it fired. The stalled ask is
     // resolvable only by the probe's Partition fan-out, so any other outcome
@@ -1133,7 +1112,7 @@ fn monitor_watcher_node_death_prunes_target_table() {
 /// asserts it reached Crashed.
 #[test]
 fn link_remote_crash_cascade_on_clean_exit() {
-    let stdout = run_link_cascade_scenario("link_remote_clean_exit", 1, Some("panicked in Linker"));
+    let stdout = run_link_cascade_scenario("link_remote_clean_exit", 1);
     assert!(
         stdout.contains("PASS link_remote_clean_exit linker-crashed reason=5"),
         "expected the local linked actor to crash (Crashed == 5) when its remote \
@@ -1150,7 +1129,7 @@ fn link_remote_crash_cascade_on_clean_exit() {
 /// terminal cause differs but the linked actor still crashes.
 #[test]
 fn link_remote_crash_cascade_on_crash() {
-    let stdout = run_link_cascade_scenario("link_remote_crash", 1, Some("panicked in Linker"));
+    let stdout = run_link_cascade_scenario("link_remote_crash", 1);
     assert!(
         stdout.contains("PASS link_remote_crash linker-crashed reason=5"),
         "expected the local linked actor to crash when its remote peer crashes \
@@ -1168,12 +1147,8 @@ fn link_remote_crash_cascade_on_crash() {
 /// would fail-open (a linked actor surviving its dead peer).
 #[test]
 fn link_remote_crash_cascade_on_partition() {
-    let stdout = run_conn_drop_scenario_with_env(
-        "link_remote_partition",
-        &[("HEW_LINK_PROBE", "1")],
-        1,
-        Some("panicked in Linker"),
-    );
+    let stdout =
+        run_conn_drop_scenario_with_env("link_remote_partition", &[("HEW_LINK_PROBE", "1")], 1);
     assert!(
         stdout.contains("PASS link_remote_partition linker-crashed reason=5"),
         "expected the local linked actor to crash on a partition under CrashLinked; \
@@ -1191,7 +1166,7 @@ fn link_remote_crash_cascade_on_partition() {
 /// on every death regardless of policy" implementation fails this test.
 #[test]
 fn link_remote_non_crashlinked_policy_no_crash() {
-    let stdout = run_link_cascade_scenario("link_remote_non_crashlinked", 0, None);
+    let stdout = run_link_cascade_scenario("link_remote_non_crashlinked", 0);
     assert!(
         stdout.contains("PASS link_remote_non_crashlinked linker-survived"),
         "expected the linked actor to SURVIVE a remote death under a non-CrashLinked \

@@ -72,7 +72,7 @@ fn all_instrs(pl: &IrPipeline, fn_name: &str) -> Vec<Instr> {
         .collect()
 }
 
-/// `record Point { x: i64, y: i64 }; let p = Point { x: 1, y: 2 };`
+/// `type Point { x: i64, y: i64 }; let p = Point { x: 1, y: 2 };`
 /// must produce a single `Instr::RecordInit` with two (offset, place) pairs
 /// at offsets 0 (`x`) and 1 (`y`). MIR diagnostics for the user-defined type
 /// are expected (unknown `ValueClass`) and do not block instruction emission.

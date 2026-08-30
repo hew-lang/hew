@@ -38,14 +38,14 @@ machine Holder {
         Full { item: Tag { code: self.item.code } }
     }
     on Bump: Vacant => Vacant reenter {
-        Vacant
+        .Vacant
     }
 }
 
 fn main() {
     var h = Holder.Vacant;
-    h.step(Fill);
-    h.step(Bump);
+    h.step(.Fill);
+    h.step(.Bump);
     let code = match h {
         Holder.Full { item } => item.code,
         Holder.Vacant => 0,

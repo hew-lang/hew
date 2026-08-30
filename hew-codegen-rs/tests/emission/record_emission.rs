@@ -114,7 +114,7 @@ fn try_emit_ll(source: &str, module_name: &str) -> Result<String, String> {
     std::fs::read_to_string(&ll_path).map_err(|e| e.to_string())
 }
 
-/// A named-form record `record Point { x: i64, y: i64 }` must register an
+/// A nominal record `type Point { x: i64, y: i64 }` must register an
 /// LLVM named struct `%Point = type { i64, i64 }` in the emitted module.
 #[test]
 fn record_layout_registers_named_struct_in_field_order() {

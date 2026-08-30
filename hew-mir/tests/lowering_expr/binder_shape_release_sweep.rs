@@ -561,11 +561,23 @@ fn the_sweep_can_observe_a_difference_in_release_count() {
 /// be comparing programs that own different things. What must hold is that
 /// inside each carrier the count still does not depend on how the payload's
 /// string was produced or where its scalar came from.
-#[test]
-fn release_count_is_invariant_across_carrier_class() {
+///
+/// Each carrier is an independent comparison plane. Running those planes as
+/// deterministic shards keeps every cell in the product while allowing the
+/// test runner to execute the four expensive planes concurrently.
+const CARRIER_CLASS_SHARDS: usize = 4;
+
+fn assert_carrier_class_invariant(shard: usize) {
     let mut failures: Vec<String> = Vec::new();
     let mut closed_gaps: Vec<String> = Vec::new();
-    for carrier in CARRIERS {
+    let mut carriers_checked = 0;
+    for carrier in CARRIERS
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| index % CARRIER_CLASS_SHARDS == shard)
+        .map(|(_, carrier)| carrier)
+    {
+        carriers_checked += 1;
         for (binder_name, binder) in BINDERS {
             if carrier.skip_binders.contains(binder_name) {
                 continue;
@@ -598,6 +610,10 @@ fn release_count_is_invariant_across_carrier_class() {
         }
     }
     assert!(
+        carriers_checked > 0,
+        "carrier-class shard {shard} must cover at least one carrier"
+    );
+    assert!(
         closed_gaps.is_empty(),
         "these cells are listed in KNOWN_GAPS but now compile — delete the entries so the \
          table cannot drift away from what the compiler does:\n{}",
@@ -612,6 +628,26 @@ fn release_count_is_invariant_across_carrier_class() {
          construction, so any refusal not in KNOWN_GAPS is a new seam:\n{}",
         failures.join("\n")
     );
+}
+
+#[test]
+fn release_count_is_invariant_across_carrier_class_shard_1_of_4() {
+    assert_carrier_class_invariant(0);
+}
+
+#[test]
+fn release_count_is_invariant_across_carrier_class_shard_2_of_4() {
+    assert_carrier_class_invariant(1);
+}
+
+#[test]
+fn release_count_is_invariant_across_carrier_class_shard_3_of_4() {
+    assert_carrier_class_invariant(2);
+}
+
+#[test]
+fn release_count_is_invariant_across_carrier_class_shard_4_of_4() {
+    assert_carrier_class_invariant(3);
 }
 
 // ── the extern-provenance plane ───────────────────────────────────────────

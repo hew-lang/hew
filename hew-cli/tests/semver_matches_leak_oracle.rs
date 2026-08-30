@@ -37,8 +37,7 @@
 //! a line count. The checksum is a fixed multiple of the frame count
 //! (`87381` per iteration: only the even-numbered weight exponents contribute),
 //! both frame counts pin an exact expected value. The runtime probe exercises
-//! the one normal-return plan; the release-count differential structurally
-//! accounts for the eight cancel/unwind plans.
+//! the normal-return plan.
 //!
 //! Fails closed exactly as the shared harness does: a non-macOS host records a
 //! compile-time `#[ignore]` skip (never a silent pass), and a macOS host with

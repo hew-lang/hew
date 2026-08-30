@@ -1,4 +1,4 @@
-// Owned-composite yield generalization, enum twin: a payload-carrying enum
+// Reproduction for #3104. Owned-composite yield generalization, enum twin: a payload-carrying enum
 // whose active variant owns heap (`Text(string)`) crosses the pump's
 // layout-witness send path with discriminant and payload intact; the pump
 // frees its producer copy per yield through the tag-dispatched enum in-place

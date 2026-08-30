@@ -17,9 +17,6 @@ ROOT = Path(__file__).resolve().parents[2]
 AUDIT = ROOT / "scripts/structural-authority-audit.py"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 MANIFEST = ROOT / "scripts/opaque-resource-lifecycle-evidence.json"
-WASM_EXPECTED_FAILURES = (
-    ROOT / "scripts/opaque-resource-lifecycle-expected-failures.txt"
-)
 HEW = Path(os.environ.get("HEW_BIN", ROOT / "target/debug/hew"))
 
 # run_bounded caps the child's RLIMIT_AS, which bounds ADDRESS SPACE, not
@@ -37,18 +34,6 @@ from bounded_subprocess import assert_bounding_contract, run_bounded  # noqa: E4
 
 def fail(message: str) -> None:
     raise AssertionError(message)
-
-
-def load_expected_failures(path: Path) -> set[str]:
-    entries = [
-        line.partition("#")[0].strip()
-        for line in path.read_text().splitlines()
-        if line.partition("#")[0].strip()
-    ]
-    failures = set(entries)
-    if len(failures) != len(entries):
-        fail(f"expected-failures file contains duplicate identities: {path.name}")
-    return failures
 
 
 def source_key(row: dict[str, object]) -> tuple[str, str]:
@@ -633,10 +618,7 @@ def assert_exact_llvm_release_chain(
 
 
 def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) -> None:
-    expected_failures = load_expected_failures(WASM_EXPECTED_FAILURES)
     accepted_inventory = set()
-    passing_programs = set()
-    runtime_failures: dict[str, str] = {}
     failures = []
 
     for index, case in enumerate(cases):
@@ -674,14 +656,6 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
                     memory_mb=WASM_RUNTIME_MEMORY_MB,
                 )
                 output = wasi.stdout + wasi.stderr
-                if (
-                    expected == "accepted"
-                    and wasi.returncode != 0
-                    and witness in output
-                    and not is_wasm_platform_rejection(output)
-                ):
-                    runtime_failures[test_id] = diagnostic_excerpt(output)
-                    continue
                 assert_wasm_disposition(
                     test_id,
                     expected,
@@ -689,8 +663,6 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
                     output,
                     witness,
                 )
-                if expected == "accepted":
-                    passing_programs.add(test_id)
             except AssertionError as error:
                 failures.append(str(error))
 
@@ -701,8 +673,8 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
             continue
 
         # These exact source-derived cases establish compiler implicit and
-        # explicit release lowering independently of public execution. Run
-        # them even when a public form matches a known runtime failure.
+        # explicit release lowering independently of the public execution
+        # result; collect their failures into the same final verdict.
         try:
             generic_sources = generic_lifecycle_sources(case)
         except AssertionError as error:
@@ -773,30 +745,11 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
             except AssertionError as error:
                 failures.append(str(error))
 
-    stale = sorted(expected_failures - accepted_inventory)
-    if stale:
-        failures.append(f"stale Wasm expected-failure identities: {stale}")
-    actual_failures = set(runtime_failures)
-    unexpected_failures = sorted(actual_failures - expected_failures)
-    unexpected_passes = sorted(expected_failures & passing_programs)
-    if unexpected_failures:
-        failures.append(
-            f"unexpected Wasm runtime failure identities: {unexpected_failures}\n"
-            + "\n".join(
-                f"{test_id}\n{runtime_failures[test_id]}"
-                for test_id in unexpected_failures
-            )
-        )
-    if unexpected_passes:
-        failures.append(
-            "Wasm runtime failures now pass; remove their ratchets: "
-            f"{unexpected_passes}"
-        )
     if failures:
         fail("Wasm lifecycle evidence failures:\n" + "\n".join(failures))
     print(
         f"Wasm lifecycle evidence: {len(accepted_inventory)} accepted-family "
-        f"programs evaluated; {len(expected_failures)} known runtime failures matched"
+        "programs passed"
     )
 
 

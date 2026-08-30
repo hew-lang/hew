@@ -128,7 +128,7 @@ fn grep_content(content: string, pat: regex.Pattern, cfg: Config, label: string,
         let test_line = if cfg.flag_i {
             raw_line.to_lower()
         } else {
-            raw_line
+            raw_line.clone()
         };
         let matched = pat.is_match(test_line);
         let print_this = if cfg.flag_v {

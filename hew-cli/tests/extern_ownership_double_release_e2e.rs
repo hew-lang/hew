@@ -54,7 +54,7 @@ use support::{
 /// live reference, so any further release by the Hew caller is a second
 /// release of a handle the caller no longer owns.
 const SPY_RUST: &str = r#"//! Exact release-counting spy over the pinned hew-cabi cstring header.
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// `hew-cabi` pins `CSTRING_HEADER_SIZE = 16` with the layout
 /// `{ magic: u64, rc: u32, _reserved: u32 }`, and hands out `base + 16`.
@@ -74,8 +74,8 @@ static RC_AT_RETAIN: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 /// representation change fails the test instead of reporting a fake zero.
 static BAD_HEADER: AtomicUsize = AtomicUsize::new(0);
 
-unsafe fn rc_ptr(data: *const u8) -> *mut u32 {
-    unsafe { data.offset(-8) as *mut u32 }
+unsafe fn rc_ptr(data: *const u8) -> *const AtomicU32 {
+    unsafe { data.offset(-8).cast() }
 }
 
 unsafe fn header_ok(data: *const u8) -> bool {
@@ -95,8 +95,7 @@ pub unsafe extern "C" fn spy_retain(data: *const u8) -> i64 {
     if slot >= SLOTS {
         return -1;
     }
-    let rc = unsafe { std::ptr::read_unaligned(rc_ptr(data)) };
-    unsafe { std::ptr::write_unaligned(rc_ptr(data), rc + BIAS) };
+    let rc = unsafe { (&*rc_ptr(data)).fetch_add(BIAS, Ordering::SeqCst) };
     RC_AT_RETAIN[slot].store(u64::from(rc), Ordering::SeqCst);
     HELD[slot].store(data as u64, Ordering::SeqCst);
     slot as i64
@@ -113,7 +112,7 @@ pub extern "C" fn spy_releases() -> i64 {
         if data.is_null() {
             continue;
         }
-        let rc = unsafe { std::ptr::read_unaligned(rc_ptr(data)) };
+        let rc = unsafe { (&*rc_ptr(data)).load(Ordering::SeqCst) };
         let expected = RC_AT_RETAIN[slot].load(Ordering::SeqCst) + u64::from(BIAS);
         total += expected as i64 - i64::from(rc);
     }
@@ -585,8 +584,8 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < 6 {
         match attempt(i) {
-            Ok(c) => { c.close(); }
-            Err(e) => { println(f"err={e}"); }
+            .Ok(c) => { c.close(); },
+            .Err(e) => { println(f"err={e}"); },
         }
         i = i + 1;
     }
@@ -687,17 +686,17 @@ fn a_returned_channel_pair_is_not_closed_by_its_producer() {
 /// ABI, and it is the only one on which a non-adopting foreign result is
 /// observable — stated plainly because it is a deliberately narrow hook.
 ///
-/// The host therefore mints a genuine header-aware handle itself (pinned
-/// 16-byte `{ magic, rc, _reserved }` header, `rc` biased so no release can
-/// free it underneath the probe) and keeps every pointer, so each compiler
-/// release is visible as an exact decrement.
+/// The host therefore asks the linked runtime to mint a genuine registered
+/// handle, biases its pinned `rc` so no release can free it underneath the
+/// probe, and keeps every pointer. Each compiler release is then visible as an
+/// exact decrement.
 ///
 /// Measured against the pre-fix compiler this fixture reports `releases=8` over
 /// eight frames: the wrapper laundered the extern's result into an "analyzed
 /// fresh" verdict, `main` minted a synthetic owner over it and dropped it. The
 /// fixed compiler reports zero.
-const HEADER_AWARE_SPY_RUST: &str = r#"//! Mints REAL header-aware handles and counts every release of them.
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+const HEADER_AWARE_SPY_RUST: &str = r#"//! Mints registered runtime handles and counts every release of them.
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// `hew-cabi` pins `CSTRING_HEADER_SIZE = 16`, `{ magic: u64, rc: u32, _pad: u32 }`.
 const HEADER: isize = 16;
@@ -712,32 +711,36 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 static HELD: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 
 extern "C" {
-    fn malloc(size: usize) -> *mut u8;
+    fn hew_string_concat(
+        a: *const std::ffi::c_char,
+        b: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_char;
     fn hew_string_drop(s: *mut std::ffi::c_char);
 }
 
-unsafe fn rc_ptr(data: *const u8) -> *mut u32 {
-    unsafe { data.offset(-8) as *mut u32 }
+unsafe fn rc_ptr(data: *const u8) -> *const AtomicU32 {
+    unsafe { data.offset(-8).cast() }
 }
 
-/// Hand Hew a handle in the runtime's own representation, WITHOUT copying it.
+/// Ask the linked Hew runtime to allocate the handle so its allocation-
+/// provenance registry recognizes the exact pointer.  A raw `{magic, rc}`
+/// buffer is deliberately not a managed string anymore.
 #[no_mangle]
 pub unsafe extern "C" fn spy_make_string() -> *mut std::ffi::c_char {
     let text = b"host-made\0";
-    let base = unsafe { malloc(HEADER as usize + text.len()) };
-    assert!(!base.is_null());
-    unsafe {
-        std::ptr::write_unaligned(base as *mut u64, MAGIC);
-        std::ptr::write_unaligned(base.offset(8) as *mut u32, 1u32 + BIAS);
-        std::ptr::write_unaligned(base.offset(12) as *mut u32, 0u32);
-        std::ptr::copy_nonoverlapping(text.as_ptr(), base.offset(HEADER), text.len());
-    }
-    let data = unsafe { base.offset(HEADER) };
+    let data = unsafe { hew_string_concat(text.as_ptr().cast(), std::ptr::null()) };
+    assert!(!data.is_null());
+    let magic = unsafe {
+        std::ptr::read_unaligned(data.cast::<u8>().offset(-HEADER).cast::<u64>())
+    };
+    assert_eq!(magic, MAGIC);
+    let previous = unsafe { (&*rc_ptr(data.cast())).fetch_add(BIAS, Ordering::SeqCst) };
+    assert_eq!(previous, 1);
     let slot = COUNT.fetch_add(1, Ordering::SeqCst);
     if slot < SLOTS {
         HELD[slot].store(data as u64, Ordering::SeqCst);
     }
-    data as *mut std::ffi::c_char
+    data
 }
 
 /// Net releases across every handed-out handle: `sum of (1 + BIAS - rc_now)`.
@@ -750,7 +753,7 @@ pub extern "C" fn spy_releases() -> i64 {
         if data.is_null() {
             continue;
         }
-        let rc = unsafe { std::ptr::read_unaligned(rc_ptr(data)) };
+        let rc = unsafe { (&*rc_ptr(data)).load(Ordering::SeqCst) };
         total += i64::from(1u32 + BIAS) - i64::from(rc);
     }
     total
@@ -908,11 +911,11 @@ fn main() -> i64 {
 }
 "#;
 
-/// Mints REAL header-aware `string` handles, wraps each in a `repr(C)` record,
+/// Mints registered runtime `string` handles, wraps each in a `repr(C)` record,
 /// and counts every release of them. Non-copying: the exact pointer handed to
 /// Hew is the one whose `rc` is observed, and the `rc` is biased so no release
 /// can free the buffer underneath the probe.
-const RECORD_SPY_RUST: &str = r#"use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+const RECORD_SPY_RUST: &str = r#"use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// `hew-cabi` pins `CSTRING_HEADER_SIZE = 16`, `{ magic: u64, rc: u32, _pad: u32 }`.
 const HEADER: isize = 16;
@@ -926,12 +929,15 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 static HELD: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 
 extern "C" {
-    fn malloc(size: usize) -> *mut u8;
+    fn hew_string_concat(
+        a: *const std::ffi::c_char,
+        b: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_char;
     fn hew_string_drop(s: *mut std::ffi::c_char);
 }
 
-unsafe fn rc_ptr(data: *const u8) -> *mut u32 {
-    unsafe { data.offset(-8) as *mut u32 }
+unsafe fn rc_ptr(data: *const u8) -> *const AtomicU32 {
+    unsafe { data.offset(-8).cast() }
 }
 
 /// The record the extern returns, in the C layout the declaration implies.
@@ -942,20 +948,21 @@ pub struct Holder {
 
 unsafe fn make_handle() -> *mut std::ffi::c_char {
     let text = b"host-made\0";
-    let base = unsafe { malloc(HEADER as usize + text.len()) };
-    assert!(!base.is_null());
-    unsafe {
-        std::ptr::write_unaligned(base as *mut u64, MAGIC);
-        std::ptr::write_unaligned(base.offset(8) as *mut u32, 1 + BIAS);
-        std::ptr::write_unaligned(base.offset(12) as *mut u32, 0u32);
-        std::ptr::copy_nonoverlapping(text.as_ptr(), base.offset(HEADER), text.len());
-    }
-    let data = unsafe { base.offset(HEADER) };
+    // Allocation must go through the linked runtime: `hew_string_drop` now
+    // rejects raw header lookalikes that are absent from its provenance registry.
+    let data = unsafe { hew_string_concat(text.as_ptr().cast(), std::ptr::null()) };
+    assert!(!data.is_null());
+    let magic = unsafe {
+        std::ptr::read_unaligned(data.cast::<u8>().offset(-HEADER).cast::<u64>())
+    };
+    assert_eq!(magic, MAGIC);
+    let previous = unsafe { (&*rc_ptr(data.cast())).fetch_add(BIAS, Ordering::SeqCst) };
+    assert_eq!(previous, 1);
     let slot = COUNT.fetch_add(1, Ordering::SeqCst);
     if slot < SLOTS {
         HELD[slot].store(data as u64, Ordering::SeqCst);
     }
-    data as *mut std::ffi::c_char
+    data
 }
 
 #[no_mangle]
@@ -981,7 +988,7 @@ pub extern "C" fn spy_releases() -> i64 {
         if data.is_null() {
             continue;
         }
-        let rc = unsafe { std::ptr::read_unaligned(rc_ptr(data)) };
+        let rc = unsafe { (&*rc_ptr(data)).load(Ordering::SeqCst) };
         total += i64::from(1u32 + BIAS) - i64::from(rc);
     }
     total

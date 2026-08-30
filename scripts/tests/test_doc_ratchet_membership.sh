@@ -111,6 +111,10 @@ if [[ "$fence_id" == "${HEW_BARE_VARIANT_FENCE_ID:-}" ]]; then
     printf '%s:1:1: warning: E_BARE_VARIANT_EXPR: bare variant is deprecated\n' "$2" >&2
 fi
 
+if [[ "$fence_id" == "${HEW_ABNORMAL_FENCE_ID:-}" ]]; then
+    exit "${HEW_ABNORMAL_STATUS:?}"
+fi
+
 while IFS= read -r failing_id; do
     [[ "$failing_id" == "$fence_id" ]] && exit 1
 done < "${HEW_FAIL_IDS:?}"
@@ -274,6 +278,23 @@ assert_contains "$HARNESS_OUTPUT" "E_BARE_VARIANT_PATTERN" \
     "bare variant rejection preserves the pattern diagnostic"
 assert_contains "$HARNESS_OUTPUT" "E_BARE_VARIANT_EXPR" \
     "bare variant rejection preserves the expression diagnostic"
+
+# A tracked compiler refusal must stay an ordinary diagnostic exit. Matching
+# the same fence identity and checksum cannot convert a panic/signal/harness
+# failure into an accepted known failure.
+first_failure="$(head -1 "$BASELINE_FAIL_IDS")"
+export HEW_ABNORMAL_FENCE_ID="$first_failure"
+export HEW_ABNORMAL_STATUS=139
+run_harness "$BASELINE_EXPECTED" "$BASELINE_FAIL_IDS" /dev/null
+unset HEW_ABNORMAL_FENCE_ID HEW_ABNORMAL_STATUS
+if [[ "$HARNESS_STATUS" -ne 0 ]]; then
+    pass "abnormal tracked-refusal outcome is rejected"
+else
+    fail "abnormal tracked-refusal outcome was accepted"
+fi
+assert_contains "$HARNESS_OUTPUT" \
+    "OUTCOME DRIFT: $first_failure (exit 139, expected structured diagnostic exit 1)" \
+    "abnormal tracked-refusal outcome names the exact fence and status"
 
 # Mutation 1: a listed failure now passes and must be rejected.
 first_failure=""

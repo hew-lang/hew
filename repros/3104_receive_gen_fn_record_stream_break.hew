@@ -1,4 +1,4 @@
-// Cancelling an owned-record stream mid-drain: `for await ... break` on an
+// Reproduction for #3104. Cancelling an owned-record stream mid-drain: `for await ... break` on an
 // infinite record generator must unwedge the pump via the peer-closed check
 // (the i64 cancellation proof) AND release the breaking iteration's record on
 // the break edge — the break jumps past the body-end release, so the
@@ -35,7 +35,7 @@ fn main() {
     println(f"total={total}");
     let r = await m.ping();
     match r {
-        Ok(v) => println(f"ping={v}"),
-        Err(_) => println("ping failed"),
+        .Ok(v) => println(f"ping={v}"),
+        .Err(_) => println("ping failed"),
     }
 }

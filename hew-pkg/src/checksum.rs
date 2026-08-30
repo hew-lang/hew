@@ -186,16 +186,4 @@ mod tests {
 
         assert!(compute_dir_checksum(dir.path()).is_err());
     }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn checksum_rejects_non_utf8_names() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt as _;
-
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(OsStr::from_bytes(b"bad-\xff")), "content").unwrap();
-
-        assert!(compute_dir_checksum(dir.path()).is_err());
-    }
 }

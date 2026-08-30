@@ -829,7 +829,10 @@ fn junit_failing_suite_emits_failure_element_and_exits_one() {
         stdout.contains(r#"<testcase name="bad""#),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("<failure message="), "stdout: {stdout}");
+    assert!(
+        stdout.contains(r#"<failure type="runtime" message="#),
+        "stdout: {stdout}"
+    );
     assert!(stdout.contains("boom"), "stdout: {stdout}");
 }
 

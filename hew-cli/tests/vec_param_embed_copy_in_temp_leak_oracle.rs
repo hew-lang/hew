@@ -942,7 +942,7 @@ fn prepared_resource_projection_transfers_once_into_direct_consume() {
 }
 
 #[test]
-fn non_cloneable_hybrid_enum_uses_legacy_callee_drop_after_transfer() {
+fn non_cloneable_hybrid_enum_publishes_callee_ownership_after_normal_return() {
     let hybrid_source = hybrid_enum_source(1);
     let checked = dump_checked_mir(&hybrid_source, "hybrid_enum_carrier");
     let inspect = checked
@@ -957,13 +957,46 @@ fn non_cloneable_hybrid_enum_uses_legacy_callee_drop_after_transfer() {
     );
     let main = checked.split("fn main").nth(1).expect("main checked MIR");
     assert_eq!(
-        main.matches("neutralize_payload").count(),
+        main.matches("[WholeCarrierConsume]").count(),
         1,
-        "the unique temporary must transfer sole ownership into inspect:\n{main}"
+        "the string payload must transfer exactly once into the enum carrier:\n{main}"
     );
+    let call_handoff = main
+        .lines()
+        .find(|line| line.contains("[SendTransferLastUse]"))
+        .expect("the enum carrier must move into a call-owned handoff local");
+    let call_owner = call_handoff
+        .split_once(" -> ")
+        .and_then(|(_, tail)| tail.split_whitespace().next())
+        .expect("call handoff must name its destination");
+    assert_eq!(
+        main.matches("[SendTransferLastUse]").count(),
+        1,
+        "the enum carrier must enter exactly one call-owned handoff local:\n{main}"
+    );
+    let call_line = main
+        .lines()
+        .find(|line| line.contains(&format!("call inspect({call_owner})")))
+        .unwrap_or_else(|| panic!("the handoff local must feed inspect:\n{main}"));
+    let normal_successor = call_line
+        .rsplit_once(" -> ")
+        .map(|(_, block)| block)
+        .expect("inspect call must have a normal successor");
+    let successor = main
+        .split_once(&format!("  {normal_successor}:"))
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split("\n  bb").next())
+        .expect("inspect normal successor must be present");
+    let owner_local = call_owner
+        .strip_prefix('_')
+        .expect("call owner must be a MIR local");
     assert!(
-        main.contains("call inspect("),
-        "the neutralized temporary must feed the direct callee:\n{main}"
+        successor.lines().any(|line| {
+            line.contains("ownership Transfer {")
+                && line.contains(&format!("from: Local({owner_local}), to: None"))
+        }),
+        "inspect must become sole owner only after the call returns normally; unwind keeps the \
+         caller-owned handoff live:\n{main}"
     );
 
     let elaborated = dump_elaborated_mir(&hybrid_source, "hybrid_enum_carrier");
@@ -1015,12 +1048,57 @@ fn hybrid_enum_text_transfer_drops_once_on_native_and_wasm() {
             1,
             "the successful inspect path must dispose its transferred enum exactly once ({target_name}):\n{return_path}"
         );
+        let trap_path = llvm_reachable_path(inspect, "bb4");
+        assert_eq!(
+            trap_path
+                .matches("call void @__hew_enum_drop_inplace_Mixed(")
+                .count(),
+            1,
+            "the unmatched-variant trap must keep its one enum cleanup ({target_name}):\n\
+             {trap_path}"
+        );
+        let cancellation_exits = inspect
+            .lines()
+            .filter_map(|line| line.split_once(':').map(|(label, _)| label))
+            .filter(|label| label.starts_with("cancel_exit"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cancellation_exits.len(),
+            3,
+            "entry, Text, and Opaque paths must each have a cancellation exit ({target_name}):\n\
+             {inspect}"
+        );
+        for block in cancellation_exits {
+            let path = llvm_reachable_path(inspect, block);
+            assert_eq!(
+                path.matches("call void @__hew_enum_drop_inplace_Mixed(")
+                    .count(),
+                1,
+                "{block} must keep its one mutually exclusive enum cleanup ({target_name}):\n\
+                 {path}"
+            );
+        }
+        let unwind_cleanup_count = if inspect.contains("invoke.cleanup:") {
+            let unwind_path = llvm_reachable_path(inspect, "invoke.cleanup");
+            assert_eq!(
+                unwind_path
+                    .matches("call void @__hew_enum_drop_inplace_Mixed(")
+                    .count(),
+                1,
+                "the native invoke unwind path must dispose its still-caller-owned enum once:\n\
+                 {unwind_path}"
+            );
+            1
+        } else {
+            0
+        };
         assert_eq!(
             inspect
                 .matches("call void @__hew_enum_drop_inplace_Mixed(")
                 .count(),
-            5,
-            "every return, trap, and cancellation exit must keep one mutually exclusive enum cleanup ({target_name}):\n{inspect}"
+            5 + unwind_cleanup_count,
+            "every return, trap, cancellation, and supported unwind exit must keep one \
+             mutually exclusive enum cleanup ({target_name}):\n{inspect}"
         );
         let drop_thunk = llvm_function_body(&ir, "__hew_enum_drop_inplace_Mixed");
         assert_eq!(

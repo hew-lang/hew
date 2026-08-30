@@ -42,7 +42,7 @@ fn run_fixture_and_assert_expected(fixture: &str) {
 }
 
 /// Validation candidate #2: `fork`+`await` over a plain scalar-field
-/// composite (`record Point { x: i64, y: i64 }`), never cancelled. Must
+/// composite (`type Point { x: i64, y: i64 }`), never cancelled. Must
 /// remain byte-identical to pre-fix behaviour (`x=11 y=22`).
 #[test]
 fn task_entry_composite_cancel_happy_path_unchanged() {
@@ -50,7 +50,7 @@ fn task_entry_composite_cancel_happy_path_unchanged() {
 }
 
 /// Validation candidate #4: `fork`+`await` over a composite with an owned
-/// heap field (`record Wrapped { s: string, n: i64 }`). The zero-initialized
+/// heap field (`type Wrapped { s: string, n: i64 }`). The zero-initialized
 /// cancel-path composite never reaches this happy path — this proves the
 /// fix does not disturb normal owned-field round-tripping.
 #[test]

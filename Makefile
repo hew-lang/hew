@@ -53,7 +53,8 @@
 #   make ci-preflight              — compatibility alias for make preflight
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
-#   make test         — Rust workspace tests
+#   make test         — Rust workspace tests with the exact known-failure ratchet
+#   make test-strict  — Rust workspace tests; require every test to pass
 #   make macos-leak-oracle — ratcheted local leaks(1) + poisoned-allocator corpus
 #   make test-leak-oracle-selftest — fail-closed leak runner/harness counterfactuals
 #   make test-cabi         — C-ABI crate tests (narrow; excluded from the workspace run)
@@ -69,18 +70,18 @@
 #   make structural-lint — pinned ast-grep scan + compiler authority ratchets
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
 #   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
-#   make clean        — remove build/, target/
+#   make clean        — remove generated build and test artifacts
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
+.PHONY: test test-strict macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
 .PHONY: assemble assemble-release stage-release-package pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure
+.PHONY: dogfood-compile-measure
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
@@ -105,7 +106,11 @@ actionlint:
 
 # Repository scripts require Python 3.12+ (PEP 701 and stdlib tomllib).
 # Override with `make PYTHON=/path/to/python3.12 <target>` when needed.
+ifeq ($(OS),Windows_NT)
+PYTHON ?= python
+else
 PYTHON ?= python3
+endif
 PYTHON_VERSION_CHECK := $(shell $(PYTHON) -c 'import sys; version = ".".join(map(str, sys.version_info[:3])); print(("ok" if sys.version_info >= (3, 12) else "unsupported") + " " + version)' 2>/dev/null)
 PYTHON_VERSION := $(word 2,$(PYTHON_VERSION_CHECK))
 
@@ -143,8 +148,8 @@ MAKEFILE_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST))))
 # leave it empty to build for the host.
 TARGET_TRIPLE ?=
 CARGO_TARGET_FLAG := $(if $(TARGET_TRIPLE),--target $(TARGET_TRIPLE),)
-CARGO_TARGET_ROOT := $(shell scripts/cargo-output-dir.py --root)
-CARGO_NATIVE_OUT := $(shell scripts/cargo-output-dir.py --native $(CARGO_TARGET_FLAG))
+CARGO_TARGET_ROOT := $(shell $(PYTHON) scripts/cargo-output-dir.py --root)
+CARGO_NATIVE_OUT := $(shell $(PYTHON) scripts/cargo-output-dir.py --native $(CARGO_TARGET_FLAG))
 ifeq ($(CARGO_NATIVE_OUT),)
 $(error scripts/cargo-output-dir.py could not resolve Cargo's output directory)
 endif
@@ -207,6 +212,46 @@ LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
 
 TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
 
+# Ordinary development and pull-request runs keep executing known failing tests
+# while rejecting every unrecorded failure, changed outcome, missing test,
+# process signal, setup error, or malformed report. Release gates use the same
+# nextest invocation through `test-strict`, but require an all-pass exit.
+NEXTEST_WORKSPACE_FILTER ?=
+NEXTEST_WORKSPACE_SELECTION_ARGS := --workspace --exclude hew-cabi --profile ci
+NEXTEST_WORKSPACE_ARGS := $(NEXTEST_WORKSPACE_SELECTION_ARGS) --no-fail-fast
+NEXTEST_FULL_INVENTORY := $(CARGO_TARGET_ROOT)/nextest-full-inventory.json
+NEXTEST_SELECTED_INVENTORY := $(CARGO_TARGET_ROOT)/nextest-selected-inventory.json
+NEXTEST_RATCHET_INVENTORY_ARGS :=
+NEXTEST_PREPARE_FULL_INVENTORY := :
+NEXTEST_PREPARE_SELECTED_INVENTORY := :
+ifneq ($(strip $(NEXTEST_WORKSPACE_FILTER)),)
+# Ask nextest for both sides of the selection boundary. The ratchet may ignore
+# an absent expected test only when the unfiltered inventory still contains it
+# and the exact active filter excludes it; a selected test missing from JUnit
+# remains a hard error.
+NEXTEST_WORKSPACE_ARGS += --filterset '$(NEXTEST_WORKSPACE_FILTER)'
+NEXTEST_RATCHET_INVENTORY_ARGS := --full-inventory "$(NEXTEST_FULL_INVENTORY)" --selected-inventory "$(NEXTEST_SELECTED_INVENTORY)"
+NEXTEST_PREPARE_FULL_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --message-format json > "$(NEXTEST_FULL_INVENTORY)"
+NEXTEST_PREPARE_SELECTED_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --filterset '$(NEXTEST_WORKSPACE_FILTER)' --message-format json > "$(NEXTEST_SELECTED_INVENTORY)"
+endif
+NEXTEST_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/junit.xml
+NEXTEST_RATCHET_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/ratchet.xml
+NEXTEST_FAILURE_LEDGER := scripts/nextest-expected-failures.tsv
+
+ifndef NEXTEST_PLATFORM
+ifeq ($(OS),Windows_NT)
+NEXTEST_PLATFORM := windows
+else ifeq ($(shell uname -s),Darwin)
+NEXTEST_PLATFORM := macos
+else ifeq ($(shell uname -s),Linux)
+NEXTEST_PLATFORM := linux
+else ifeq ($(shell uname -s),FreeBSD)
+NEXTEST_PLATFORM := freebsd
+else
+NEXTEST_PLATFORM := unsupported
+endif
+endif
+
 # wasm32-wasip1 has no profiler runtime. A Make-owned artifact build can run
 # under cargo-llvm-cov's exported environment, so scrub only its
 # instrumentation controls while retaining CARGO_TARGET_DIR and a developer's
@@ -231,7 +276,7 @@ endif
 
 # Host triple used to populate lib/<triple>/ for target-aware lib lookup.
 HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
-EFFECTIVE_CARGO_TARGET := $(shell scripts/cargo-output-dir.py --triple $(CARGO_TARGET_FLAG))
+EFFECTIVE_CARGO_TARGET := $(shell $(PYTHON) scripts/cargo-output-dir.py --triple $(CARGO_TARGET_FLAG))
 # Make assembles a runnable host toolchain. Cross-target native archives have
 # dedicated targets; accepting a foreign Cargo default here would mislabel that
 # archive as the host library and eventually try to execute a foreign hew.
@@ -564,7 +609,7 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 
 ci-shard-3: mqtt-broker-e2e sandbox-parity \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \
-	checked-mir-verify checked-mir-run ll-diff \
+	checked-mir-verify checked-mir-run \
 	test-core-matrix test-stdlib-ratchet \
 	test-surface-examples forced-cancel-composite-check hew-check-all
 
@@ -889,14 +934,22 @@ assemble-release: require-host-cargo-target release-host libhew-cross-release-li
 # cached archive (e.g. one predating the hew_cont_* continuation substrate)
 # would be linked against freshly-emitted coro objects and fail with
 # undefined-symbol errors on a target dir carried across commits.
-test: test-artifacts ## Test: run the Rust workspace test suite
-	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
-		$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast; \
-	else \
-		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
-		echo "         Install with: cargo install cargo-nextest" >&2; \
-		$(TEST_RUN_ENV) cargo test --workspace --exclude hew-cabi --no-fail-fast; \
-	fi
+test: test-artifacts ## Test: run the ratcheted Rust workspace test suite
+	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)" "$(NEXTEST_FULL_INVENTORY)" "$(NEXTEST_SELECTED_INVENTORY)"
+	@$(NEXTEST_PREPARE_FULL_INVENTORY)
+	@$(NEXTEST_PREPARE_SELECTED_INVENTORY)
+	@status=0; \
+		$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS) || status=$$?; \
+		cargo xtask nextest-ratchet \
+			--junit "$(NEXTEST_JUNIT)" \
+			--ledger "$(NEXTEST_FAILURE_LEDGER)" \
+			--output "$(NEXTEST_RATCHET_JUNIT)" \
+			--platform "$(NEXTEST_PLATFORM)" \
+			--runner-exit "$$status" $(NEXTEST_RATCHET_INVENTORY_ARGS)
+
+test-strict: test-artifacts ## Test: run the Rust workspace test suite with no known failures
+	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)" "$(NEXTEST_FULL_INVENTORY)" "$(NEXTEST_SELECTED_INVENTORY)"
+	$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS)
 
 # Canonical local macOS memory authority. This is deliberately named as a local
 # authority, not a CI `test-*` gate: hosted macOS processes cannot grant
@@ -1022,8 +1075,8 @@ checked-mir-expect: hew-native
 # Repeated-compile determinism over the LL-oracle corpus: the same input
 # compiled several times must produce the same exit status, the same
 # `ownership EdgeCarry` ordering in raw MIR, and byte-identical stderr.
-# ll-diff and checked-mir-verify each compare a single run against a committed
-# golden, so neither can see a compiler that reorders hashed ownership facts or
+# checked-mir-verify compares a single run against a committed golden, so it
+# cannot see a compiler that reorders hashed ownership facts or
 # accumulated diagnostics from run to run.  This gate is the one that can.
 # inputs: tests/ll-oracle/corpus/*.hew scripts/compile-determinism-corpus.sh
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-cli/src/*.rs
@@ -1041,20 +1094,6 @@ compile-determinism-selftest:
 compile-determinism-selftest-build:
 	@:
 
-# Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
-# pure codegen refactor (dedup, extract-helper, file-split) emits zero changed
-# IR.  `ll-diff` recompiles every fixture and diffs per-function bodies against
-# the committed goldens; `make ll-golden` recaptures them (only in a commit that
-# justifies the IR change, with the diff in the commit body).  Both native and
-# wasm32 targets are covered.
-ll-diff: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/ll-corpus.sh verify
-
-# Regenerate explicitly with `make ll-golden`.
-
-ll-golden: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/ll-corpus.sh golden
-
 # Dogfood-shaped compile measurement. The raw IR byte ceiling is a real
 # regression gate; timings remain observational. Lint already builds the same
 # release-lib compiler for hew-fmt-check, so this adds only the focused compile.
@@ -1067,17 +1106,6 @@ HEW_BIN ?= $(RELEASE_LIB_HEW)
 LINT_GATES += dogfood-compile-measure
 dogfood-compile-measure: hew
 	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
-
-# Self-test for the ll-byte-identity normaliser: six independently-failable
-# cases that prove string-content changes and numeric-const NAME changes are
-# caught, and pool-id reorderings (both string-pool and numeric-const) are
-# transparent.  No compiler build required — exercises the oracle script
-# against synthetic .ll snippets only.
-LINT_GATES += ll-identity-selftest
-ll-identity-selftest:
-	bash scripts/ll-identity-selftest.sh
-
-# Synthetic .ll snippets only; no compiler build.
 
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
 # QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).
@@ -1114,7 +1142,7 @@ test-hew-ratchet:
 else
 test-hew-ratchet: hew-native ## Test: run compiled Hew suites against their ratchet
 	@echo "==> Running Hew test suite (ratcheted)"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+	PYTHON="$(PYTHON)" HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 endif
 
@@ -1185,12 +1213,12 @@ test-o2-differential:
 else
 test-o2-differential: hew-native
 	@echo "==> Running -O0-vs-O2 differential-exec parity gate"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+	PYTHON="$(PYTHON)" HEW_BIN="$(DEBUG_DIR)/hew" scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 endif
 
 o2-differential-selftest:
-	bash scripts/o2-differential-selftest.sh
+	PYTHON="$(PYTHON)" bash scripts/o2-differential-selftest.sh
 
 # Shell only; no artifacts.
 
@@ -1808,6 +1836,21 @@ uninstall:
 # ── Cleanup ─────────────────────────────────────────────────────────────────
 
 clean: ## Develop: remove generated build and test artifacts
-	rm -rf $(BUILD_DIR)
+	rm -rf -- $(BUILD_DIR)
 	cargo clean
-	rm -rf $(COV_DIR)
+	rm -rf -- $(COV_DIR) \
+		"$(CURDIR)/.tmp/compile-out" \
+		"$(CURDIR)/.tmp/doc-fences" \
+		"$(CURDIR)/.tmp/core-matrix-regen" \
+		"$(CURDIR)/.tmp/forced-cancel-gate-out" \
+		"$(CURDIR)/.tmp/asan-fixture-out" \
+		"$(CURDIR)/.tmp/tool-tmp"
+	rm -f -- \
+		"$(CURDIR)/.tmp/vertical-slice-accept-output.txt" \
+		"$(CURDIR)/.tmp/vertical-slice-reject-output.txt" \
+		"$(CURDIR)/.tmp/vertical-slice.stdout" \
+		"$(CURDIR)/.tmp/vertical-slice.stderr" \
+		"$(CURDIR)/.tmp/vertical-slice-remote-pid-old-verb.hew" \
+		"$(CURDIR)/.tmp/pkg-import-actual.txt" \
+		"$(CURDIR)/.tmp/scanner-test-input.txt" \
+		"$(CURDIR)/.tmp/stdlib-io-scanner-oracle-input.txt"

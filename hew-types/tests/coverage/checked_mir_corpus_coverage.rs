@@ -74,6 +74,12 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_cancel_token_retain",
     "hew_dyn_box_alloc",
     "hew_dyn_box_free",
+    // Static `ChildRef` construction now carries the supervisor token and slot
+    // directly, so no Hew surface snapshots a child pointer through the legacy
+    // raw-supervisor lookup. The family remains implemented at the runtime ABI
+    // boundary; remove this pin if a source producer returns or the family is
+    // retired from the catalogue.
+    "hew_supervisor_child_get",
     // Fungible supervisor-child asks carry a typed role through MIR; codegen
     // injects this stable-token lookup immediately before each submission.
     "hew_local_pid_supervisor_child_get",

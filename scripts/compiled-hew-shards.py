@@ -15,7 +15,7 @@ from typing import NoReturn
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "lib"))
 from corpus_nonempty import assert_nonempty  # noqa: E402
-from hew_junit import JUnitError, parse as parse_hew_junit  # noqa: E402
+from hew_junit import FAILURE_KINDS, JUnitError, parse as parse_hew_junit  # noqa: E402
 
 
 PARTITION_RE = re.compile(r"^hash:([1-9][0-9]*)/([1-9][0-9]*)$")
@@ -62,7 +62,7 @@ def normalized_identity(classname: str, name: str) -> str:
 
 def parse_junit(path: Path) -> dict[str, str]:
     try:
-        report = parse_hew_junit(path)
+        report = parse_hew_junit(path, REPO_ROOT)
     except JUnitError as error:
         die(str(error))
     outcomes: dict[str, str] = {}
@@ -72,7 +72,7 @@ def parse_junit(path: Path) -> dict[str, str]:
             die(
                 f"JUnit report contains duplicate testcase identity: {path}: {identity}"
             )
-        outcomes[identity] = testcase.outcome
+        outcomes[identity] = testcase.failure_kind or testcase.outcome
     return outcomes
 
 
@@ -93,7 +93,7 @@ def report_failures(reports_dir: Path, shard_count: int) -> None:
                 continue
 
             try:
-                report = parse_hew_junit(path)
+                report = parse_hew_junit(path, REPO_ROOT)
             except JUnitError as error:
                 # This is the diagnostic pass that runs before the aggregate
                 # gate fails the job. Dying here would hide every other
@@ -123,7 +123,8 @@ def report_failures(reports_dir: Path, shard_count: int) -> None:
                 )
                 print(
                     f"COMPILED_HEW_FAILURE shard={shard} suite={label.upper()} "
-                    f"test={identity}\nassertion:\n{diagnostic}"
+                    f"test={identity} kind={testcase.failure_kind}\n"
+                    f"assertion:\n{diagnostic}"
                 )
 
 
@@ -187,7 +188,9 @@ def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
             die(
                 f"{label.upper()} report inventory differs from the listed {partition} inventory"
             )
-        expected_returncode = 1 if "FAILED" in outcomes.values() else 0
+        expected_returncode = int(
+            any(value in FAILURE_KINDS for value in outcomes.values())
+        )
         if returncode != expected_returncode:
             die(
                 f"{label.upper()} runner exited {returncode}, expected {expected_returncode} "
@@ -195,16 +198,28 @@ def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
             )
 
 
-def expected_failures(path: Path, full: set[str]) -> set[str]:
-    identities: list[str] = []
+def expected_failures(path: Path, full: set[str]) -> dict[str, str]:
+    expected: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         value = line.split("#", 1)[0].strip()
-        if value:
-            identities.append(value.split()[0])
-    expected = set(identities)
-    if len(identities) != len(expected):
-        die(f"expected-failures file contains duplicate identities: {path}")
-    unknown = expected - full
+        if not value:
+            continue
+        fields = value.split()
+        if len(fields) != 2:
+            die(
+                f"expected-failure entry must be '<identity> <failure-kind>': "
+                f"{path}: {value!r}"
+            )
+        identity, failure_kind = fields
+        if failure_kind not in FAILURE_KINDS:
+            die(
+                f"expected-failure entry has unsupported failure kind "
+                f"{failure_kind!r}: {path}: {identity}"
+            )
+        if identity in expected:
+            die(f"expected-failures file contains duplicate identities: {path}")
+        expected[identity] = failure_kind
+    unknown = set(expected) - full
     if unknown:
         die(
             f"expected failures are absent from the full inventory: {sorted(unknown)[:5]}"
@@ -263,12 +278,26 @@ def aggregate(
 
     if mode == "ratchet":
         expected = expected_failures(expected_failures_path, full)
-        actual = {identity for identity, outcome in o0.items() if outcome == "FAILED"}
-        if actual != expected:
+        actual = {
+            identity: outcome
+            for identity, outcome in o0.items()
+            if outcome in FAILURE_KINDS
+        }
+        if set(actual) != set(expected):
             die(
                 "O0 shard failure set differs from the ratchet: "
-                f"unexpected={sorted(actual - expected)[:5]} "
-                f"now_passing={sorted(expected - actual)[:5]}"
+                f"unexpected={sorted(set(actual) - set(expected))[:5]} "
+                f"now_passing={sorted(set(expected) - set(actual))[:5]}"
+            )
+        kind_differences = [
+            f"{identity}: expected={expected[identity]} actual={actual[identity]}"
+            for identity in sorted(expected)
+            if actual[identity] != expected[identity]
+        ]
+        if kind_differences:
+            die(
+                "O0 shard failure kinds differ from the ratchet: "
+                + "; ".join(kind_differences[:5])
             )
         print(
             f"compiled-Hew ratchet passed: {len(full)} tests across {shard_count} shards; "

@@ -1,7 +1,7 @@
 //! Registry selftest for platform-neutral byte-compare test artifacts.
 //!
 //! Every artifact class a byte-compare harness reads (MIR baselines,
-//! checked-MIR goldens, ll-diff goldens, release-count/manifest TSVs) MUST
+//! checked-MIR goldens, and manifest TSVs) MUST
 //! be pinned `text eol=lf` in `.gitattributes` and MUST contain no CRLF or
 //! UTF-8 BOM bytes on disk. Without this, a Windows checkout (CRLF
 //! `core.autocrlf`) silently corrupts the artifact and a byte-compare test
@@ -30,17 +30,12 @@ use std::process::Command;
 /// - `tests/mir-baselines`: committed `--dump-mir elab` baselines
 ///   (`*.mir`) and their `manifest.tsv` (funcupdate/reassign interface pin,
 ///   `hew-cli/tests/funcupdate_mir_baselines.rs`).
-/// - `tests/ll-oracle/corpus/golden`: native + wasm32 `--emit-llvm`
-///   ll-diff goldens (`*.ll`).
-/// - `hew-cli/tests/fixtures`: `.hew` compile fixtures and the
-///   `release-count-baseline.tsv` differential oracle
-///   (`hew-cli/tests/stdlib_corpus_release_count_differential.rs`).
+/// - `hew-cli/tests/fixtures`: `.hew` compile fixtures and package fixtures.
 /// - `examples/v05/checked-mir`: checked-MIR goldens (`*.expected`) and
 ///   their `golden/MANIFEST.sha256` byte-diff manifest
 ///   (`scripts/checked-mir-corpus.sh`).
 const ARTIFACT_ROOTS: &[&str] = &[
     "tests/mir-baselines",
-    "tests/ll-oracle/corpus/golden",
     "hew-cli/tests/fixtures",
     "examples/v05/checked-mir",
 ];

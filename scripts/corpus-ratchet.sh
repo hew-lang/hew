@@ -76,6 +76,9 @@ source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
 # shellcheck source=scripts/lib/bare-variant-ratchet.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
+# shellcheck source=scripts/lib/diagnostic-code-set.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/diagnostic-code-set.sh"
 
 usage() {
     cat <<'EOF'
@@ -214,22 +217,102 @@ require_hew_bin() {
 
 # EXPECTED_STR / ACTUAL_STR are newline-delimited sets of entry names. The
 # corpus hooks fill ACTUAL_STR; read_expected_failures fills EXPECTED_STR.
+# Hew-suite expected-failure rows pin a semantic compiled-test failure kind.
+# Other corpora may additionally pin one stable `E_*` diagnostic code. The path
+# remains the ratchet identity; the second field is corpus-specific metadata.
 EXPECTED_STR=""
 ACTUAL_STR=""
+EXPECTED_DIAGNOSTICS_STR=""
+EXPECTED_DIAGNOSTIC_CODE=""
+EXPECTED_FAILURE_KINDS_STR=""
+EXPECTED_FAILURE_KIND=""
 
-# Parse `<name> [ignored trailing fields] [# comment]` lines into EXPECTED_STR.
+# Parse corpus-specific expected-failure metadata. Hew-suite requires
+# `<name> <compile|runtime|timeout|launch>`; the check-only corpora retain
+# `<name> [E_DIAGNOSTIC_CODE]`. Reject every unsupported trailing field.
 read_expected_failures() {
-    local line name
+    local line entry name metadata trailing
     EXPECTED_STR=""
+    EXPECTED_DIAGNOSTICS_STR=""
+    EXPECTED_FAILURE_KINDS_STR=""
     while IFS= read -r line; do
-        name="${line%%#*}"
-        name="${name#"${name%%[! ]*}"}" # ltrim
-        name="${name%"${name##*[! ]}"}" # rtrim
+        entry="${line%%#*}"
+        entry="${entry#"${entry%%[![:space:]]*}"}" # ltrim
+        entry="${entry%"${entry##*[![:space:]]}"}" # rtrim
+        [[ -z "$entry" ]] && continue
+        name=""
+        metadata=""
+        trailing=""
+        read -r name metadata trailing <<<"$entry"
         [[ -z "$name" ]] && continue
-        name="${name%% *}"
-        [[ -z "$name" ]] && continue
+
+        if line_set_contains "$EXPECTED_STR" "$name"; then
+            echo "error: expected-failures file contains duplicate identity: $name" >&2
+            exit 1
+        fi
+
+        if [[ "$CORPUS" == "hew-suite" ]]; then
+            if [[ -z "$metadata" || -n "$trailing" ]]; then
+                echo "error: Hew-suite expected-failure entry must be '<identity> <failure-kind>': $entry" >&2
+                exit 1
+            fi
+            case "$metadata" in
+            compile | runtime | timeout | launch) ;;
+            *)
+                echo "error: unsupported Hew-suite failure kind '$metadata' for $name" >&2
+                exit 1
+                ;;
+            esac
+            EXPECTED_STR="${EXPECTED_STR}${name}"$'\n'
+            EXPECTED_FAILURE_KINDS_STR="${EXPECTED_FAILURE_KINDS_STR}${name}"$'\t'"${metadata}"$'\n'
+            continue
+        fi
+
+        if [[ -n "$trailing" ]]; then
+            echo "error: expected-failure entry has unsupported trailing fields: $entry" >&2
+            echo "       Format: <name> [E_DIAGNOSTIC_CODE] # comment" >&2
+            exit 1
+        fi
+        if [[ -n "$metadata" && ! "$metadata" =~ ^E_[A-Z0-9_]+$ ]]; then
+            echo "error: invalid expected diagnostic code '$metadata' for $name" >&2
+            echo "       Stable diagnostic codes must match E_[A-Z0-9_]+" >&2
+            exit 1
+        fi
         EXPECTED_STR="${EXPECTED_STR}${name}"$'\n'
+        if [[ -n "$metadata" ]]; then
+            EXPECTED_DIAGNOSTICS_STR="${EXPECTED_DIAGNOSTICS_STR}${name}"$'\t'"${metadata}"$'\n'
+        fi
     done <"$EXPECTED_FAILURES_FILE"
+}
+
+# Set EXPECTED_FAILURE_KIND for one Hew-suite identity.
+find_expected_failure_kind() {
+    local wanted="$1" name kind
+    EXPECTED_FAILURE_KIND=""
+    while IFS=$'\t' read -r name kind; do
+        [[ -z "$name" ]] && continue
+        if [[ "$name" == "$wanted" ]]; then
+            EXPECTED_FAILURE_KIND="$kind"
+            return 0
+        fi
+    done <<<"$EXPECTED_FAILURE_KINDS_STR"
+    return 1
+}
+
+# Set EXPECTED_DIAGNOSTIC_CODE and return success when an expected-failure row
+# pins a code for the requested identity. A line-based lookup keeps this script
+# compatible with the Bash 3 shipped by macOS.
+find_expected_diagnostic() {
+    local wanted="$1" name code
+    EXPECTED_DIAGNOSTIC_CODE=""
+    while IFS=$'\t' read -r name code; do
+        [[ -z "$name" ]] && continue
+        if [[ "$name" == "$wanted" ]]; then
+            EXPECTED_DIAGNOSTIC_CODE="$code"
+            return 0
+        fi
+    done <<<"$EXPECTED_DIAGNOSTICS_STR"
+    return 1
 }
 
 require_expected_failures_file() {
@@ -276,22 +359,34 @@ RATCHET_NOWPASS_HELP=""
 RATCHET_DIAGNOSTIC_FN=""
 RATCHET_EXTRA_FAIL_FN=""
 RATCHET_TAIL_FN=""
+# A listed `hew check` refusal is valid only through the compiler's ordinary
+# structured-diagnostic exit. Set membership must never bless a panic, signal,
+# timeout, or harness failure under the same fixture identity.
+RATCHET_REFUSAL_DRIFT_STR=""
 # Filled by RATCHET_EXTRA_FAIL_FN with the count of its own failure class, so a
 # corpus with a third mutation to detect (doc-fences' stale checksums) reports
 # it without the shared core knowing what it is.
 RATCHET_EXTRA_FAIL_COUNT=0
 
+record_expected_refusal_status() {
+    local identity="$1" status="$2"
+    if ((status != 1)) && line_set_contains "$EXPECTED_STR" "$identity"; then
+        RATCHET_REFUSAL_DRIFT_STR="${RATCHET_REFUSAL_DRIFT_STR}${identity}"$'\t'"${status}"$'\n'
+    fi
+}
+
 # Compare EXPECTED_STR against ACTUAL_STR and exit with the gate's verdict.
 ratchet_verdict() {
     local unexpected_failures unexpected_passes
-    local count_actual count_unexpected_fail count_unexpected_pass
-    local entry sorted_actual
+    local count_actual count_unexpected_fail count_unexpected_pass count_refusal_drift
+    local entry status sorted_actual
 
     unexpected_failures="$(set_difference "$ACTUAL_STR" "$EXPECTED_STR")"
     unexpected_passes="$(set_difference "$EXPECTED_STR" "$ACTUAL_STR")"
     count_actual="$(count_set "$ACTUAL_STR")"
     count_unexpected_fail="$(count_set "$unexpected_failures")"
     count_unexpected_pass="$(count_set "$unexpected_passes")"
+    count_refusal_drift="$(count_set "$RATCHET_REFUSAL_DRIFT_STR")"
 
     RATCHET_EXTRA_FAIL_COUNT=0
     if [[ -n "$RATCHET_EXTRA_FAIL_FN" ]]; then
@@ -299,7 +394,7 @@ ratchet_verdict() {
     fi
 
     if ((count_unexpected_fail == 0 && count_unexpected_pass == 0 && \
-        RATCHET_EXTRA_FAIL_COUNT == 0)); then
+        count_refusal_drift == 0 && RATCHET_EXTRA_FAIL_COUNT == 0)); then
         if ((count_actual == 0)); then
             ((RATCHET_ALL_PASS_LEADING_BLANK == 1)) && echo ""
             echo "${RATCHET_INDENT}${RATCHET_ALL_PASS_TEXT}"
@@ -346,6 +441,17 @@ ratchet_verdict() {
         echo ""
     fi
 
+    if ((count_refusal_drift > 0)); then
+        echo "$RATCHET_FAIL_PREFIX: $count_refusal_drift expected refusal(s) changed process outcome:"
+        while IFS=$'\t' read -r entry status; do
+            [[ -z "$entry" ]] && continue
+            echo "  OUTCOME DRIFT: $entry (exit $status, expected structured diagnostic exit 1)"
+        done <<<"$RATCHET_REFUSAL_DRIFT_STR"
+        echo ""
+        echo "  A listed compiler refusal cannot cover a panic, signal, timeout, or harness failure."
+        echo ""
+    fi
+
     if [[ -n "$RATCHET_EXTRA_FAIL_FN" ]] && ((RATCHET_EXTRA_FAIL_COUNT > 0)); then
         "$RATCHET_EXTRA_FAIL_FN" report
     fi
@@ -367,11 +473,12 @@ ratchet_verdict() {
 # outcomes. The structured report is the artifact and handoff boundary CI needs.
 
 STDERR_FILE=""
+HEW_SUITE_FAILURE_KIND_DRIFT=""
 
 run_hew_suite() {
     local tests_dir junit_output hew_junit_py fresh_report invalid_report rc
     local parsed summary_line report_total report_failures report_skipped
-    local status identity parsed_failed
+    local status identity failure_kind parsed_failed
 
     tests_dir="${HEW_TESTS_DIR:-$REPO_ROOT/tests/hew}"
     junit_output="${JUNIT_OUTPUT_ARG:-$REPO_ROOT/target/hew-test-reports/hew-suite-ratchet.xml}"
@@ -391,7 +498,7 @@ run_hew_suite() {
     fresh_report="${junit_output}.new.$$"
     trap 'rm -f "$STDERR_FILE" "${fresh_report:-}"' EXIT
     rc=0
-    "$HEW_BIN" test "$tests_dir" --format junit --allow-empty \
+    env HEW_OPT_LEVEL=0 "$HEW_BIN" test "$tests_dir" --format junit --allow-empty \
         >"$fresh_report" 2>"$STDERR_FILE" || rc=$?
 
     # Parsing owns both XML validity and the runner-status contract. In
@@ -399,7 +506,7 @@ run_hew_suite() {
     # not an invalid report; the ratchet below decides whether those failures
     # are expected. Publish only a coherent report, atomically.
     parsed=""
-    if ! parsed="$(python3 "$hew_junit_py" --runner-exit "$rc" "$fresh_report")"; then
+    if ! parsed="$("${PYTHON:-python3}" "$hew_junit_py" --runner-exit "$rc" "$fresh_report")"; then
         echo "error: hew test did not produce a coherent JUnit result for $tests_dir" >&2
         if [[ -s "$fresh_report" ]]; then
             invalid_report="${junit_output}.invalid.$$"
@@ -422,12 +529,16 @@ run_hew_suite() {
 
     # Emit the full per-test outcome set for the O2-differential gate to reuse
     # as its O0 baseline, reconstructed in the
-    # "test <path>::<name> ... ok|FAILED|ignored" form consumed by the
-    # differential gate. Written before the ratchet verdict is known — the
-    # outcome set is valid either way.
+    # "test <path>::<name> ... ok|ignored|FAILED[<tab><failure-kind>]" form
+    # consumed by the differential gate. Written before the ratchet verdict is
+    # known — the outcome set is valid either way.
     if [[ -n "$EMIT_O0_OUTCOMES_FILE" ]]; then
         printf '%s\n' "$parsed" |
-            awk -F'\t' '$1 != "__SUMMARY__" { print "test " $2 " ... " $1 }' |
+            awk -F'\t' '$1 != "__SUMMARY__" {
+                line = "test " $2 " ... " $1
+                if ($3 != "") line = line "\t" $3
+                print line
+            }' |
             sort >"$EMIT_O0_OUTCOMES_FILE"
     fi
 
@@ -438,9 +549,19 @@ run_hew_suite() {
         exit 1
     fi
 
-    while IFS=$'\t' read -r status identity; do
+    while IFS=$'\t' read -r status identity failure_kind; do
         [[ "$status" == "FAILED" ]] || continue
-        [[ -n "$identity" ]] && ACTUAL_STR="${ACTUAL_STR}${identity}"$'\n'
+        [[ -n "$identity" ]] || continue
+        ACTUAL_STR="${ACTUAL_STR}${identity}"$'\n'
+        if line_set_contains "$EXPECTED_STR" "$identity"; then
+            if ! find_expected_failure_kind "$identity"; then
+                echo "error: expected Hew-suite failure has no semantic kind: $identity" >&2
+                exit 1
+            fi
+            if [[ "$failure_kind" != "$EXPECTED_FAILURE_KIND" ]]; then
+                HEW_SUITE_FAILURE_KIND_DRIFT="${HEW_SUITE_FAILURE_KIND_DRIFT}${identity}"$'\t'"${EXPECTED_FAILURE_KIND}"$'\t'"${failure_kind}"$'\n'
+            fi
+        fi
     done <<<"$(printf '%s\n' "$parsed" | grep -v '^__SUMMARY__')"
 
     parsed_failed="$(count_set "$ACTUAL_STR")"
@@ -453,6 +574,28 @@ run_hew_suite() {
     echo "Expected failures: $(count_set "$EXPECTED_STR")"
     echo "Actual failures:   $(count_set "$ACTUAL_STR")"
     echo ""
+}
+
+# Reached through RATCHET_EXTRA_FAIL_FN; shellcheck cannot see an indirect call.
+# shellcheck disable=SC2317,SC2329
+hew_suite_extra_failures() {
+    local identity expected_kind actual_kind
+
+    case "$1" in
+    detect)
+        RATCHET_EXTRA_FAIL_COUNT="$(count_set "$HEW_SUITE_FAILURE_KIND_DRIFT")"
+        ;;
+    report)
+        echo "$RATCHET_FAIL_PREFIX: $RATCHET_EXTRA_FAIL_COUNT expected failure(s) changed semantic kind:"
+        while IFS=$'\t' read -r identity expected_kind actual_kind; do
+            [[ -z "$identity" ]] && continue
+            echo "  FAILURE KIND DRIFT: $identity (expected=$expected_kind actual=$actual_kind)"
+        done <<<"$HEW_SUITE_FAILURE_KIND_DRIFT"
+        echo ""
+        echo "  A ledgered failure cannot cover a different compile, runtime, timeout, or launch failure."
+        echo ""
+        ;;
+    esac
 }
 
 # Reached through RATCHET_TAIL_FN; shellcheck cannot see an indirect call.
@@ -494,6 +637,7 @@ run_stdlib() {
         check_output="$("$HEW_BIN" check "$f" 2>&1)" || check_status=$?
         if ((check_status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${relpath}"$'\n'
+            record_expected_refusal_status "$relpath" "$check_status"
         fi
         bare_variants=""
         if bare_variants="$(
@@ -569,7 +713,7 @@ stdlib_extra_failures() {
 #      naming conventions (*_reject.hew, *_rejected.hew, reject_*.hew,
 #      lsp_reject_*.hew, *_reject_reversed.hew). Matching on the basename
 #      substring captures all variants without false positives.
-is_reject_fixture() {
+is_separately_gated_or_reject_fixture() {
     local path="$1"
     local base
     base="$(basename "$path")"
@@ -586,6 +730,16 @@ is_reject_fixture() {
         # duplicate that verdict as a second, weaker expected-failures list.
         return 0
         ;;
+    tests/hew/*)
+        # Files that contribute actual test cases are compiled and run through
+        # `make test-hew-ratchet`, with exact per-test expected failures. Keep
+        # support modules and standalone programs in this sweep: discovery may
+        # parse them, but it does not independently type-check a file with no
+        # `#[test]` case.
+        if grep -qF '#[test]' "$REPO_ROOT/$path"; then
+            return 0
+        fi
+        ;;
     esac
     case "$base" in
     *"reject"*)
@@ -595,17 +749,25 @@ is_reject_fixture() {
     return 1
 }
 
+HEW_CORPUS_DIAGNOSTIC_DRIFT=""
+HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT=0
+HEW_CORPUS_TMPDIR=""
+
 run_hew_corpus() {
     local swept=() excluded=0 total f
+    local check_log status expected_code actual_codes check_index=0
 
     require_hew_bin
     require_expected_failures_file
     read_expected_failures
+    HEW_CORPUS_DIAGNOSTIC_DRIFT=""
+    HEW_CORPUS_TMPDIR="$(mktemp -d)"
+    trap '[[ -z "${HEW_CORPUS_TMPDIR:-}" ]] || rm -rf "$HEW_CORPUS_TMPDIR"' EXIT
 
     # Enumerate the corpus first so the floor can reject an empty or shrunken
     # sweep before spending minutes type-checking it.
     while IFS= read -r f; do
-        if is_reject_fixture "$f"; then
+        if is_separately_gated_or_reject_fixture "$f"; then
             excluded=$((excluded + 1))
             continue
         fi
@@ -619,17 +781,64 @@ run_hew_corpus() {
     corpus_nonempty_assert "hew-corpus-check-files" "$total" || exit 1
 
     for f in "${swept[@]}"; do
-        if ! "$HEW_BIN" check "$REPO_ROOT/$f" >/dev/null 2>&1; then
+        check_index=$((check_index + 1))
+        check_log="$HEW_CORPUS_TMPDIR/check-$check_index.log"
+        status=0
+        "$HEW_BIN" check "$REPO_ROOT/$f" >"$check_log" 2>&1 || status=$?
+        if ((status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${f}"$'\n'
+            record_expected_refusal_status "$f" "$status"
+            # Set membership alone is not enough for a known compiler refusal:
+            # every tracked failure must remain the normal diagnostic exit (1),
+            # never a panic, signal, or harness failure. Rows that pin a stable
+            # code additionally require that exact unique code set, so a second
+            # diagnostic class cannot hitchhike on the expected one.
+            if line_set_contains "$EXPECTED_STR" "$f"; then
+                expected_code="<none pinned>"
+                if find_expected_diagnostic "$f"; then
+                    expected_code="$EXPECTED_DIAGNOSTIC_CODE"
+                fi
+
+                if ((status == 1)) &&
+                    { [[ "$expected_code" != "<none pinned>" ]] &&
+                        ! diagnostic_log_has_exact_code "$check_log" "$expected_code"; }; then
+                    actual_codes="$(diagnostic_code_set "$check_log" | paste -sd, -)"
+                    [[ -n "$actual_codes" ]] || actual_codes="<none>"
+                    HEW_CORPUS_DIAGNOSTIC_DRIFT="${HEW_CORPUS_DIAGNOSTIC_DRIFT}${f}"$'\t'"${status}"$'\t'"${expected_code}"$'\t'"${actual_codes}"$'\n'
+                fi
+            fi
         fi
     done
 
     echo "==> Hew corpus compile sweep"
     echo "Files checked:          $total"
-    echo "Reject fixtures skipped: $excluded"
+    echo "Separately gated/reject skipped: $excluded"
     echo "Expected failures:      $(count_set "$EXPECTED_STR")"
     echo "Actual failures:        $(count_set "$ACTUAL_STR")"
     echo ""
+}
+
+# Reached through RATCHET_EXTRA_FAIL_FN; shellcheck cannot see an indirect call.
+# shellcheck disable=SC2317,SC2329
+hew_corpus_extra_failures() {
+    local path status expected actual
+    case "$1" in
+    detect)
+        HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT="$(count_set "$HEW_CORPUS_DIAGNOSTIC_DRIFT")"
+        RATCHET_EXTRA_FAIL_COUNT="$HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT"
+        ;;
+    report)
+        ((HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT > 0)) || return 0
+        echo "CORPUS FAIL: $HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT expected failure(s) changed diagnostic class:"
+        while IFS=$'\t' read -r path status expected actual; do
+            [[ -z "$path" ]] && continue
+            echo "  DIAGNOSTIC DRIFT: $path (exit $status, expected $expected, observed $actual)"
+        done <<<"$HEW_CORPUS_DIAGNOSTIC_DRIFT"
+        echo ""
+        echo "  Fix the regression, or update the shared expected-failures row only when the tracked issue's failure class intentionally changes."
+        echo ""
+        ;;
+    esac
 }
 
 # Reached through RATCHET_DIAGNOSTIC_FN; shellcheck cannot see an indirect call.
@@ -819,8 +1028,8 @@ run_doc_fences() {
         prefix="${entry##*:}"
         full_path="$REPO_ROOT/$doc_path"
         if [[ ! -f "$full_path" ]]; then
-            echo "warning: doc file not found: $full_path (skipping)" >&2
-            continue
+            echo "error: required doc-fence source not found: $full_path" >&2
+            exit 1
         fi
         echo "  Scanning: $doc_path"
         doc_fence_extract "$full_path" "$prefix"
@@ -861,6 +1070,7 @@ run_doc_fences() {
         else
             fail=$((fail + 1))
             ACTUAL_STR="${ACTUAL_STR}${fence_id}"$'\n'
+            record_expected_refusal_status "$fence_id" "$check_rc"
         fi
     done
 
@@ -948,6 +1158,7 @@ hew-suite)
     RATCHET_NOWPASS_HELP="  Delete these lines from:
   $EXPECTED_FAILURES_FILE
   (Do not restore a failing entry to make this green — fix the test.)"
+    RATCHET_EXTRA_FAIL_FN=hew_suite_extra_failures
     RATCHET_TAIL_FN=hew_suite_tail
     run_hew_suite
     ;;
@@ -971,6 +1182,7 @@ hew-corpus)
     RATCHET_FAIL_PREFIX="CORPUS FAIL"
     RATCHET_VERDICT_LABEL="Corpus sweep"
     RATCHET_DIAGNOSTIC_FN=hew_corpus_diagnostic
+    RATCHET_EXTRA_FAIL_FN=hew_corpus_extra_failures
     RATCHET_UNEXPECTED_HELP="  If these are deferred (NYI feature), add them to:
   $EXPECTED_FAILURES_FILE
   with a comment classifying the failure reason."

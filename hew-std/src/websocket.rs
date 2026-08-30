@@ -1622,7 +1622,7 @@ struct HewWsServerInner {
 #[derive(Debug, Default)]
 struct ActiveAcceptState {
     count: Mutex<usize>,
-    drained: Condvar,
+    changed: Condvar,
 }
 
 #[derive(Debug)]
@@ -1637,6 +1637,7 @@ impl ActiveAcceptState {
             return None;
         }
         *count += 1;
+        self.changed.notify_all();
         Some(ActiveAcceptGuard { state: self })
     }
 
@@ -1645,7 +1646,7 @@ impl ActiveAcceptState {
         cancel.store(true, Ordering::Release);
         while *count != 0 {
             count = self
-                .drained
+                .changed
                 .wait(count)
                 .unwrap_or_else(PoisonError::into_inner);
         }
@@ -1654,6 +1655,17 @@ impl ActiveAcceptState {
     #[cfg(test)]
     fn count(&self) -> usize {
         *lock_or_recover(&self.count)
+    }
+
+    #[cfg(test)]
+    fn wait_for_count(&self, expected: usize) {
+        let mut count = lock_or_recover(&self.count);
+        while *count != expected {
+            count = self
+                .changed
+                .wait(count)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     fn publish_if_open<T>(&self, cancel: &AtomicBool, publish: impl FnOnce() -> T) -> Option<T> {
@@ -1671,9 +1683,7 @@ impl Drop for ActiveAcceptGuard<'_> {
         let mut count = lock_or_recover(&self.state.count);
         assert!(*count > 0, "active websocket accept count underflow");
         *count -= 1;
-        if *count == 0 {
-            self.state.drained.notify_all();
-        }
+        self.state.changed.notify_all();
     }
 }
 
@@ -3083,12 +3093,7 @@ mod tests {
             hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
         });
 
-        assert!(
-            wait_for_condition(Duration::from_millis(200), || {
-                inner.active_accepts.count() == 1
-            }),
-            "accept loop should become active before cancellation"
-        );
+        inner.active_accepts.wait_for_count(1);
 
         unsafe { hew_ws_server_close(server) };
 
@@ -3302,12 +3307,7 @@ mod tests {
             let accept_thread = std::thread::spawn(move || unsafe {
                 hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
             });
-            assert!(
-                wait_for_condition(Duration::from_millis(200), || {
-                    inner.active_accepts.count() == 1
-                }),
-                "accept authority should become active"
-            );
+            inner.active_accepts.wait_for_count(1);
 
             unsafe { hew_ws_server_close(server) };
             // close is synchronous: cancel_and_wait only returns once every
@@ -3384,12 +3384,7 @@ mod tests {
                     hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
                 });
 
-                assert!(
-                    wait_for_condition(Duration::from_millis(200), || {
-                        inner.active_accepts.count() == 1
-                    }),
-                    "accept loop should become active before the owner stops"
-                );
+                inner.active_accepts.wait_for_count(1);
 
                 let state = CancelOwnerState {
                     server: server as usize,

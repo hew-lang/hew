@@ -29,6 +29,8 @@ use hew_mir::{
 };
 use hew_types::ResolvedTy;
 
+use crate::ir_assertions::{assert_target_call, cleanup_strategy};
+
 /// Build the hand-crafted `IrPipeline` that mirrors C-2's `lower_vec_index`
 /// output for a `Vec<i64>` container.
 ///
@@ -709,9 +711,11 @@ fn trap_path_emits_llvm_trap_then_unreachable() {
 fn continuation_path_calls_hew_vec_get_i64() {
     // The continuation block (success path) must call `hew_vec_get_i64`.
     let ll = emit_ll("vec_get_call");
-    assert!(
-        ll.contains("invoke i64 @hew_vec_get_i64("),
-        "continuation path must call hew_vec_get_i64; got:\n{ll}"
+    assert_target_call(
+        &ll,
+        cleanup_strategy(&ll),
+        "i64 @hew_vec_get_i64(",
+        "the continuation path",
     );
 }
 
@@ -719,8 +723,10 @@ fn continuation_path_calls_hew_vec_get_i64() {
 fn entry_block_calls_hew_vec_len() {
     // The entry block must call `hew_vec_len` before any branch.
     let ll = emit_ll("vec_len_call");
-    assert!(
-        ll.contains("invoke i64 @hew_vec_len("),
-        "entry block must call hew_vec_len; got:\n{ll}"
+    assert_target_call(
+        &ll,
+        cleanup_strategy(&ll),
+        "i64 @hew_vec_len(",
+        "the entry block",
     );
 }

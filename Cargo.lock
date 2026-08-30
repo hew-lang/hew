@@ -6047,6 +6047,7 @@ name = "xtask"
 version = "0.6.0-rc2"
 dependencies = [
  "hew-sandbox-wasm",
+ "quick-xml",
  "serde",
  "serde_json",
 ]

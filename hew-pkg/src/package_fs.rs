@@ -68,6 +68,11 @@ fn invalid_name(path: &str) -> io::Error {
     )
 }
 
+#[cfg(any(unix, test))]
+fn utf8_package_name<'a>(name: &'a [u8], path: &str) -> Result<&'a str, io::Error> {
+    std::str::from_utf8(name).map_err(|_| invalid_name(path))
+}
+
 fn invalid_component(path: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -113,8 +118,8 @@ mod platform {
     use std::ptr::NonNull;
 
     use super::{
-        canonical_child, changed_during_snapshot, invalid_component, invalid_name,
-        is_skipped_package_entry, unsupported_file_type, PackageFile,
+        canonical_child, changed_during_snapshot, invalid_component, is_skipped_package_entry,
+        unsupported_file_type, utf8_package_name, PackageFile,
     };
 
     struct DirStream(NonNull<libc::DIR>);
@@ -218,8 +223,7 @@ mod platform {
             if name_bytes == b"." || name_bytes == b".." {
                 continue;
             }
-            let name = std::str::from_utf8(name_bytes)
-                .map_err(|_| invalid_name(&format!("{prefix}/<non-UTF-8>")))?;
+            let name = utf8_package_name(name_bytes, &format!("{prefix}/<non-UTF-8>"))?;
             let path = canonical_child(prefix, name)?;
             let name = CString::new(name_bytes).map_err(|_| invalid_component(&path))?;
             let expected = stat_at(stream.fd(), &name)?;
@@ -652,6 +656,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["nested/a", "z"]
         );
+    }
+
+    #[test]
+    fn snapshot_rejects_non_utf8_entry_names_before_traversal() {
+        let error = utf8_package_name(b"bad-\xff", "<non-UTF-8>").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("not valid UTF-8"));
     }
 
     #[cfg(unix)]

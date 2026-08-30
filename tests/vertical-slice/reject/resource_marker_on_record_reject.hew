@@ -1,14 +1,7 @@
-// Ownership markers belong only to nominal `type` / `enum` declarations.
-// A record has no ResourceMarker slot; this must fail during parsing rather
-// than silently becoming a copyable record and reaching the clone below.
+// Ownership markers are valid on nominal product and enum declarations, but
+// aliases cannot carry resource semantics. Reject the marker at its source
+// attribute instead of silently discarding it before HIR.
 #[resource]
-type Token { id: i64 }
+type Metres = i64;
 
-impl Token {
-    fn close(self) {}
-}
-
-fn main() {
-    let t = Token { id: 1 };
-    let _copy = t.clone();
-}
+fn main() {}

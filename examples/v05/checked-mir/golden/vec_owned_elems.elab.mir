@@ -2,6 +2,7 @@ fn main -> ()
   statements:
     bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=Vec<string>
     bind BindingId(0) names site=SiteId(0) ty=Vec<string>
+    use BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=Vec<string> intent=Consume
     use BindingId(0) names site=SiteId(3) ty=Vec<string> intent=Read
     eval site=SiteId(2) ty=()
     use BindingId(0) names site=SiteId(6) ty=Vec<string> intent=Read
@@ -11,6 +12,7 @@ fn main -> ()
     use BindingId(0) names site=SiteId(12) ty=Vec<string> intent=Read
     bind BindingId(4294967230) __hew_produced_value site=SiteId(11) ty=string
     bind BindingId(1) who site=SiteId(11) ty=string
+    use BindingId(4294967230) __hew_produced_value site=SiteId(11) ty=string intent=Consume
     use BindingId(1) who site=SiteId(15) ty=string intent=Read
     eval site=SiteId(14) ty=()
     use BindingId(0) names site=SiteId(19) ty=Vec<string> intent=Read
@@ -19,6 +21,7 @@ fn main -> ()
     use BindingId(0) names site=SiteId(23) ty=Vec<string> intent=Read
     bind BindingId(4294967228) __hew_produced_value site=SiteId(22) ty=Vec<string>
     bind BindingId(2) tail site=SiteId(22) ty=Vec<string>
+    use BindingId(4294967228) __hew_produced_value site=SiteId(22) ty=Vec<string> intent=Consume
     use BindingId(2) tail site=SiteId(28) ty=Vec<string> intent=Read
     eval site=SiteId(26) ty=()
     use BindingId(0) names site=SiteId(30) ty=Vec<string> intent=Capture
@@ -30,6 +33,7 @@ fn main -> ()
     use BindingId(4) __hew_for_iter_3 site=SiteId(44) ty=VecIter<string> intent=Read
     bind BindingId(4294967227) __hew_produced_value site=SiteId(46) ty=Option<string>
     bind BindingId(6) __hew_iter_value_5 site=SiteId(46) ty=Option<string>
+    use BindingId(4294967227) __hew_produced_value site=SiteId(46) ty=Option<string> intent=Consume
     use BindingId(4) __hew_for_iter_3 site=SiteId(49) ty=VecIter<string> intent=Read
     use BindingId(4) __hew_for_iter_3 site=SiteId(47) ty=VecIter<string> intent=Modify
     eval site=SiteId(52) ty=()
@@ -38,9 +42,11 @@ fn main -> ()
     bind BindingId(7) n site=SiteId(60) ty=string
     use BindingId(7) n site=SiteId(58) ty=string intent=Read
     eval site=SiteId(57) ty=()
+    use BindingId(7) n site=SiteId(60) ty=string intent=Consume
     eval site=SiteId(64) ty=()
     bind BindingId(4294967226) __hew_produced_value site=SiteId(65) ty=Vec<Point>
     bind BindingId(8) pts site=SiteId(65) ty=Vec<Point>
+    use BindingId(4294967226) __hew_produced_value site=SiteId(65) ty=Vec<Point> intent=Consume
     use BindingId(8) pts site=SiteId(68) ty=Vec<Point> intent=Read
     eval site=SiteId(67) ty=()
     use BindingId(8) pts site=SiteId(73) ty=Vec<Point> intent=Read
@@ -51,191 +57,386 @@ fn main -> ()
     eval site=SiteId(80) ty=()
     bind BindingId(4294967225) __hew_produced_value site=SiteId(84) ty=Vec<Tag>
     bind BindingId(10) tags site=SiteId(84) ty=Vec<Tag>
+    use BindingId(4294967225) __hew_produced_value site=SiteId(84) ty=Vec<Tag> intent=Consume
     use BindingId(10) tags site=SiteId(87) ty=Vec<Tag> intent=Read
     bind BindingId(4294967224) __hew_produced_value site=SiteId(88) ty=Tag
+    use BindingId(4294967224) __hew_produced_value site=SiteId(88) ty=Tag intent=Consume
     eval site=SiteId(86) ty=()
     use BindingId(10) tags site=SiteId(92) ty=Vec<Tag> intent=Read
     bind BindingId(4294967223) __hew_produced_value site=SiteId(93) ty=Tag
+    use BindingId(4294967223) __hew_produced_value site=SiteId(93) ty=Tag intent=Consume
     eval site=SiteId(91) ty=()
     use BindingId(10) tags site=SiteId(97) ty=Vec<Tag> intent=Read
     bind BindingId(4294967222) __hew_produced_value site=SiteId(96) ty=Tag
     bind BindingId(11) t site=SiteId(96) ty=Tag
+    use BindingId(4294967222) __hew_produced_value site=SiteId(96) ty=Tag intent=Consume
     use BindingId(11) t site=SiteId(101) ty=Tag intent=Read
     eval site=SiteId(99) ty=()
     use BindingId(10) tags site=SiteId(104) ty=Vec<Tag> intent=Read
     bind BindingId(4294967221) __hew_produced_value site=SiteId(103) ty=Vec<Tag>
     bind BindingId(12) tail_tags site=SiteId(103) ty=Vec<Tag>
+    use BindingId(4294967221) __hew_produced_value site=SiteId(103) ty=Vec<Tag> intent=Consume
     use BindingId(12) tail_tags site=SiteId(110) ty=Vec<Tag> intent=Read
     bind BindingId(4294967220) __hew_produced_value site=SiteId(109) ty=Tag
     eval site=SiteId(107) ty=()
+    drop BindingId(4294967220) __hew_produced_value ty=Tag
     drop BindingId(12) tail_tags ty=Vec<Tag>
+    drop BindingId(4294967221) __hew_produced_value ty=Vec<Tag>
+    drop BindingId(11) t ty=Tag
+    drop BindingId(4294967222) __hew_produced_value ty=Tag
     drop BindingId(4294967223) __hew_produced_value ty=Tag
     drop BindingId(4294967224) __hew_produced_value ty=Tag
     drop BindingId(10) tags ty=Vec<Tag>
+    drop BindingId(4294967225) __hew_produced_value ty=Vec<Tag>
     drop BindingId(8) pts ty=Vec<Point>
+    drop BindingId(4294967226) __hew_produced_value ty=Vec<Point>
+    drop BindingId(7) n ty=string
+    drop BindingId(6) __hew_iter_value_5 ty=Option<string>
+    drop BindingId(4294967227) __hew_produced_value ty=Option<string>
+    drop BindingId(4) __hew_for_iter_3 ty=VecIter<string>
     drop BindingId(2) tail ty=Vec<string>
+    drop BindingId(4294967228) __hew_produced_value ty=Vec<string>
+    drop BindingId(4294967229) __hew_produced_value ty=string
     drop BindingId(1) who ty=string
+    drop BindingId(4294967230) __hew_produced_value ty=string
     drop BindingId(0) names ty=Vec<string>
+    drop BindingId(4294967231) __hew_produced_value ty=Vec<string>
   drop_plans:
     call[bb0 Vec::new -> bb1] ->
+      (none)
+    unwind[bb0 Vec::new] ->
       (none)
     cancel[bb0] ->
       (none)
     call[bb1 hew_vec_push_str -> bb2] ->
       (none)
+    unwind[bb1 hew_vec_push_str] ->
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     call[bb2 hew_vec_push_str -> bb3] ->
       (none)
+    unwind[bb2 hew_vec_push_str] ->
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     call[bb3 hew_vec_push_str -> bb4] ->
       (none)
-    branch[bb4: bb5/bb6] ->
-      (none)
-    panic[bb5] ->
+    unwind[bb3 hew_vec_push_str] ->
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    call[bb6 println_str -> bb7] ->
+    call[bb4 hew_vec_len -> bb5] ->
       (none)
-    branch[bb7: bb8/bb9] ->
+    unwind[bb4 hew_vec_len] ->
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    branch[bb5: bb6/bb7] ->
       (none)
-    panic[bb8] ->
+    panic[bb6] ->
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb7 hew_vec_get_str -> bb8] ->
+      (none)
+    unwind[bb7 hew_vec_get_str] ->
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb8 println_str -> bb9] ->
+      (none)
+    unwind[bb8 println_str] ->
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    call[bb9 println_str -> bb10] ->
+    call[bb9 hew_vec_len -> bb10] ->
       (none)
+    unwind[bb9 hew_vec_len] ->
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     branch[bb10: bb11/bb12] ->
       (none)
     panic[bb11] ->
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    branch[bb12: bb11/bb13] ->
+    call[bb12 hew_vec_get_str -> bb13] ->
       (none)
-    call[bb13 hew_vec_len -> bb14] ->
+    unwind[bb12 hew_vec_get_str] ->
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb13 println_str -> bb14] ->
       (none)
-    call[bb14 println_i64 -> bb15] ->
+    unwind[bb13 println_str] ->
+      drop _13 ty=string kind=cow_heap(hew_string_drop)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    branch[bb14: bb15/bb16] ->
       (none)
-    goto[bb15->bb16] ->
+    panic[bb15] ->
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb16 hew_vec_len -> bb17] ->
       (none)
-    call[bb16 hew_vec_len -> bb18] ->
+    unwind[bb16 hew_vec_len] ->
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    branch[bb17: bb15/bb18] ->
       (none)
-    branch[bb17: bb32/bb33] ->
+    call[bb18 hew_vec_slice_range_str -> bb19] ->
       (none)
-    branch[bb18: bb19/bb20] ->
+    unwind[bb18 hew_vec_slice_range_str] ->
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb19 hew_vec_len -> bb20] ->
       (none)
-    goto[bb19->bb21] ->
-      (none)
-    call[bb20 hew_vec_get_clone -> bb22] ->
-      (none)
-    branch[bb21: bb26/bb29] ->
-      (none)
-    branch[bb22: bb23/bb24] ->
-      (none)
-    panic[bb23] ->
+    unwind[bb19 hew_vec_len] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    goto[bb24->bb21] ->
+    call[bb20 println_i64 -> bb21] ->
       (none)
-    cancel[bb24] ->
+    unwind[bb20 println_i64] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    goto[bb25->bb16] ->
+    goto[bb21->bb22] ->
       (none)
-    cancel[bb25] ->
+    call[bb22 hew_vec_len -> bb24] ->
+      (none)
+    unwind[bb22 hew_vec_len] ->
+      drop _25 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(4), generation: 0 }@_26
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    call[bb26 println_str -> bb30] ->
+    branch[bb23: bb38/bb39] ->
       (none)
-    goto[bb27->bb17] ->
+    branch[bb24: bb25/bb26] ->
       (none)
-    cancel[bb27] ->
+    goto[bb25->bb27] ->
+      (none)
+    call[bb26 hew_vec_get_clone -> bb28] ->
+      (none)
+    unwind[bb26 hew_vec_get_clone] ->
+      drop _25 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(4), generation: 0 }@_26
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    panic[bb28] ->
+    branch[bb27: bb32/bb35] ->
+      (none)
+    branch[bb28: bb29/bb30] ->
+      (none)
+    panic[bb29] ->
+      drop _39 ty=Option<string> kind=enum_in_place
+      drop _25 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(4), generation: 0 }@_26
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    branch[bb29: bb27/bb28] ->
-      (none)
-    goto[bb30->bb25] ->
+    goto[bb30->bb27] ->
       (none)
     cancel[bb30] ->
+      drop _28 ty=Option<string> kind=enum_in_place
+      drop _25 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(4), generation: 0 }@_26
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    goto[bb31->bb25] ->
+    goto[bb31->bb22] ->
       (none)
     cancel[bb31] ->
-      (none)
-    goto[bb32->bb33] ->
-      (none)
-    call[bb33 Vec::new -> bb34] ->
-      (none)
-    call[bb34 hew_vec_push_layout -> bb35] ->
-      (none)
-    call[bb35 hew_vec_push_layout -> bb36] ->
-      (none)
-    branch[bb36: bb37/bb38] ->
-      (none)
-    panic[bb37] ->
-      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _25 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(4), generation: 0 }@_26
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    call[bb38 println_i64 -> bb39] ->
+    call[bb32 println_str -> bb36] ->
+      (none)
+    unwind[bb32 println_str] ->
+      drop _51 ty=string kind=cow_heap(hew_string_drop)
+      drop _25 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(4), generation: 0 }@_26
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    goto[bb33->bb23] ->
+      (none)
+    cancel[bb33] ->
+      drop _25 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(4), generation: 0 }@_26
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    panic[bb34] ->
+      drop _25 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(4), generation: 0 }@_26
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    branch[bb35: bb33/bb34] ->
+      (none)
+    goto[bb36->bb31] ->
+      (none)
+    cancel[bb36] ->
+      drop _25 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(4), generation: 0 }@_26
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    goto[bb37->bb31] ->
+      (none)
+    cancel[bb37] ->
+      (none)
+    goto[bb38->bb39] ->
       (none)
     call[bb39 Vec::new -> bb40] ->
       (none)
-    call[bb40 hew_vec_push_owned_move -> bb41] ->
+    unwind[bb39 Vec::new] ->
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb40 hew_vec_push_layout -> bb41] ->
       (none)
-    call[bb41 hew_vec_push_owned_move -> bb42] ->
+    unwind[bb40 hew_vec_push_layout] ->
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb41 hew_vec_push_layout -> bb42] ->
       (none)
-    branch[bb42: bb43/bb44] ->
+    unwind[bb41 hew_vec_push_layout] ->
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb42 hew_vec_len -> bb43] ->
       (none)
-    panic[bb43] ->
+    unwind[bb42 hew_vec_len] ->
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    branch[bb43: bb44/bb45] ->
+      (none)
+    panic[bb44] ->
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb45 hew_vec_get_layout -> bb46] ->
+      (none)
+    unwind[bb45 hew_vec_get_layout] ->
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb46 println_i64 -> bb47] ->
+      (none)
+    unwind[bb46 println_i64] ->
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb47 Vec::new -> bb48] ->
+      (none)
+    unwind[bb47 Vec::new] ->
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb48 hew_vec_push_owned_move -> bb49] ->
+      (none)
+    unwind[bb48 hew_vec_push_owned_move] ->
+      drop _72 ty=Tag kind=record_in_place
       drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    call[bb44 hew_vec_get_clone -> bb45] ->
+    call[bb49 hew_vec_push_owned_move -> bb50] ->
       (none)
-    call[bb45 println_i64 -> bb46] ->
-      (none)
-    branch[bb46: bb47/bb48] ->
-      (none)
-    panic[bb47] ->
+    unwind[bb49 hew_vec_push_owned_move] ->
+      drop _75 ty=Tag kind=record_in_place
       drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    branch[bb48: bb47/bb49] ->
+    call[bb50 hew_vec_len -> bb51] ->
       (none)
-    branch[bb49: bb50/bb51] ->
+    unwind[bb50 hew_vec_len] ->
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    branch[bb51: bb52/bb53] ->
       (none)
-    panic[bb50] ->
+    panic[bb52] ->
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb53 hew_vec_get_clone -> bb54] ->
+      (none)
+    unwind[bb53 hew_vec_get_clone] ->
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb54 println_i64 -> bb55] ->
+      (none)
+    unwind[bb54 println_i64] ->
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    branch[bb55: bb56/bb57] ->
+      (none)
+    panic[bb56] ->
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb57 hew_vec_len -> bb58] ->
+      (none)
+    unwind[bb57 hew_vec_len] ->
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    branch[bb58: bb56/bb59] ->
+      (none)
+    call[bb59 hew_vec_slice_range_owned -> bb60] ->
+      (none)
+    unwind[bb59 hew_vec_slice_range_owned] ->
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb60 hew_vec_len -> bb61] ->
+      (none)
+    unwind[bb60 hew_vec_len] ->
       drop _88 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
-    call[bb51 hew_vec_get_clone -> bb52] ->
+    branch[bb61: bb62/bb63] ->
       (none)
-    call[bb52 println_i64 -> bb53] ->
+    panic[bb62] ->
+      drop _88 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb63 hew_vec_get_clone -> bb64] ->
       (none)
-    return[bb53] ->
+    unwind[bb63 hew_vec_get_clone] ->
+      drop _88 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb64 println_i64 -> bb65] ->
+      (none)
+    unwind[bb64 println_i64] ->
+      drop _88 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    return[bb65] ->
       drop _88 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
@@ -247,9 +448,13 @@ fn i8::fmt -> string
   statements:
     use BindingId(21) val site=SiteId(183) ty=i8 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(181) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(181) ty=string intent=Consume
     return site=Some(SiteId(181)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -260,9 +465,13 @@ fn i16::fmt -> string
   statements:
     use BindingId(22) val site=SiteId(187) ty=i16 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(185) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(185) ty=string intent=Consume
     return site=Some(SiteId(185)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -273,9 +482,13 @@ fn i32::fmt -> string
   statements:
     use BindingId(23) val site=SiteId(190) ty=i32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(189) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(189) ty=string intent=Consume
     return site=Some(SiteId(189)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -286,9 +499,13 @@ fn i64::fmt -> string
   statements:
     use BindingId(24) val site=SiteId(193) ty=i64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(192) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(192) ty=string intent=Consume
     return site=Some(SiteId(192)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_i64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_i64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -299,9 +516,13 @@ fn u8::fmt -> string
   statements:
     use BindingId(25) val site=SiteId(196) ty=u8 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(195) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(195) ty=string intent=Consume
     return site=Some(SiteId(195)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u8_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u8_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -312,9 +533,13 @@ fn u16::fmt -> string
   statements:
     use BindingId(26) val site=SiteId(199) ty=u16 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(198) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(198) ty=string intent=Consume
     return site=Some(SiteId(198)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_uint_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_uint_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -325,9 +550,13 @@ fn u32::fmt -> string
   statements:
     use BindingId(27) val site=SiteId(202) ty=u32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(201) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(201) ty=string intent=Consume
     return site=Some(SiteId(201)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_uint_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_uint_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -338,9 +567,13 @@ fn u64::fmt -> string
   statements:
     use BindingId(28) val site=SiteId(205) ty=u64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(204) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(204) ty=string intent=Consume
     return site=Some(SiteId(204)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -351,9 +584,13 @@ fn isize::fmt -> string
   statements:
     use BindingId(29) val site=SiteId(209) ty=isize intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(207) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(207) ty=string intent=Consume
     return site=Some(SiteId(207)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_i64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_i64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -364,9 +601,13 @@ fn usize::fmt -> string
   statements:
     use BindingId(30) val site=SiteId(213) ty=usize intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(211) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(211) ty=string intent=Consume
     return site=Some(SiteId(211)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_u64_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_u64_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -377,9 +618,13 @@ fn bool::fmt -> string
   statements:
     use BindingId(31) val site=SiteId(216) ty=bool intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(215) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(215) ty=string intent=Consume
     return site=Some(SiteId(215)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_bool_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_bool_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -390,9 +635,13 @@ fn char::fmt -> string
   statements:
     use BindingId(32) val site=SiteId(219) ty=char intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(218) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(218) ty=string intent=Consume
     return site=Some(SiteId(218)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_char_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_char_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -403,9 +652,13 @@ fn f64::fmt -> string
   statements:
     use BindingId(33) val site=SiteId(222) ty=f64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(221) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(221) ty=string intent=Consume
     return site=Some(SiteId(221)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_float_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_float_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -416,9 +669,13 @@ fn f32::fmt -> string
   statements:
     use BindingId(34) val site=SiteId(226) ty=f32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(224) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(224) ty=string intent=Consume
     return site=Some(SiteId(224)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_float_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_float_to_string] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -486,14 +743,25 @@ fn duration::fmt -> string
     use BindingId(40) val site=SiteId(244) ty=duration intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(242) ty=string
     bind BindingId(4294967230) __hew_produced_value site=SiteId(241) ty=string
+    use BindingId(4294967230) __hew_produced_value site=SiteId(241) ty=string intent=Consume
     return site=Some(SiteId(241)) ty=string
+    drop BindingId(4294967230) __hew_produced_value ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_duration_nanos -> bb1] ->
+      (none)
+    unwind[bb0 hew_duration_nanos] ->
       (none)
     cancel[bb0] ->
       (none)
     call[bb1 hew_i64_to_string -> bb2] ->
       (none)
-    return[bb2] ->
+    unwind[bb1 hew_i64_to_string] ->
+      (none)
+    call[bb2 hew_string_concat -> bb3] ->
+      (none)
+    unwind[bb2 hew_string_concat] ->
+      drop _2 ty=string kind=cow_heap(hew_string_drop)
+    return[bb3] ->
       (none)
 

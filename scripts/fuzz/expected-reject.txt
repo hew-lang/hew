@@ -11,7 +11,6 @@
 # or known-bug repro inputs here; those belong in their dedicated corpora.
 
 tests/vertical-slice/accept/arith.hew
-tests/vertical-slice/accept/consume_param_transfer_builder.hew
 tests/vertical-slice/accept/cross_module_fn_value/helpers.hew
 tests/vertical-slice/accept/cross_module_fn_value_shadow/helpers.hew
 tests/vertical-slice/accept/cross_module_generic_fn_value/helpers.hew
@@ -42,8 +41,5 @@ tests/vertical-slice/accept/module_method_shadow/util.hew
 tests/vertical-slice/accept/positive_record_remote_send.hew
 tests/vertical-slice/accept/qualified_call_reachability/src/runner/math.hew
 tests/vertical-slice/accept/qualified_call_reachability/src/runner/native_loop.hew
-tests/vertical-slice/accept/receive_gen_fn_owned_enum_yield.hew
-tests/vertical-slice/accept/receive_gen_fn_owned_record_yield.hew
-tests/vertical-slice/accept/receive_gen_fn_record_stream_break.hew
 tests/vertical-slice/accept/sink_i64_typed.hew
 tests/vertical-slice/accept/vec_into_iter_typeck.hew

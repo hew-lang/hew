@@ -20,6 +20,8 @@ use hew_mir::{
 };
 use hew_types::ResolvedTy;
 
+use crate::ir_assertions::{call_pattern, cleanup_strategy};
+
 /// Build a minimal `IrPipeline` containing one function with a single typed
 /// terminal runtime call. Mirrors the shape `lower_hir_module` produces.
 ///
@@ -781,12 +783,15 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
     // pre-constructed task pointer. We assert this on the order of the
     // *call* instructions (not the declarations, which may be re-ordered
     // by LLVM module pretty-printing).
+    let strategy = cleanup_strategy(&ir);
+    let task_new_pattern = call_pattern(strategy, "ptr @hew_task_new");
+    let task_scope_spawn_pattern = call_pattern(strategy, "void @hew_task_scope_spawn");
     let task_new_call_pos = ir
-        .find("invoke ptr @hew_task_new")
-        .expect("terminal task construction must emit `invoke ptr @hew_task_new`");
+        .find(&task_new_pattern)
+        .unwrap_or_else(|| panic!("terminal task construction must emit `{task_new_pattern}`"));
     let task_scope_spawn_call_pos = ir
-        .find("invoke void @hew_task_scope_spawn")
-        .expect("terminal scope spawn must emit `invoke void @hew_task_scope_spawn`");
+        .find(&task_scope_spawn_pattern)
+        .unwrap_or_else(|| panic!("terminal scope spawn must emit `{task_scope_spawn_pattern}`"));
     assert!(
         task_new_call_pos < task_scope_spawn_call_pos,
         "hew_task_new call must precede hew_task_scope_spawn call \

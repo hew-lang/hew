@@ -2,6 +2,8 @@
 //!
 //! Supports coloured text (default) and `JUnit` XML for CI integration.
 
+#[cfg(test)]
+use super::runner::TestFailureKind;
 use super::runner::{TestOutcome, TestSummary};
 
 /// Output format for test results.
@@ -83,8 +85,8 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
         out.push_str("\nfailures:\n\n");
         for result in &failures {
             let _ = writeln!(out, "---- {} ----", result.test.name);
-            if let TestOutcome::Failed(msg) = &result.outcome {
-                out.push_str(msg);
+            if let TestOutcome::Failed(failure) = &result.outcome {
+                out.push_str(&failure.message);
                 out.push('\n');
             }
             if !result.output.is_empty() {
@@ -180,12 +182,13 @@ fn render_junit(summary: &TestSummary, invocation_root: &std::path::Path) -> Str
 
             match &result.outcome {
                 TestOutcome::Passed => {}
-                TestOutcome::Failed(msg) => {
+                TestOutcome::Failed(failure) => {
                     writeln!(
                         out,
-                        r#"      <failure message="{}">{}</failure>"#,
-                        xml_escape(msg),
-                        xml_escape(msg),
+                        r#"      <failure type="{}" message="{}">{}</failure>"#,
+                        failure.kind.as_str(),
+                        xml_escape(&failure.message),
+                        xml_escape(&failure.message),
                     )
                     .unwrap();
                     if !result.output.is_empty() {
@@ -317,7 +320,7 @@ mod tests {
                     should_panic: false,
                     serial: false,
                 },
-                outcome: TestOutcome::Failed("assertion failed".into()),
+                outcome: TestOutcome::failed(TestFailureKind::Runtime, "assertion failed"),
                 output: "debug line".into(),
                 duration: std::time::Duration::from_millis(13),
             }],
@@ -356,7 +359,7 @@ mod tests {
                         should_panic: false,
                         serial: false,
                     },
-                    outcome: TestOutcome::Failed("expected 4, got 5".into()),
+                    outcome: TestOutcome::failed(TestFailureKind::Runtime, "expected 4, got 5"),
                     output: "debug output".into(),
                     duration: std::time::Duration::from_millis(50),
                 },
@@ -383,8 +386,9 @@ mod tests {
         );
         assert!(rendered
             .contains(r#"<testsuite name="math_test.hew" tests="2" failures="1" skipped="0""#));
-        assert!(rendered
-            .contains(r#"<failure message="expected 4, got 5">expected 4, got 5</failure>"#));
+        assert!(rendered.contains(
+            r#"<failure type="runtime" message="expected 4, got 5">expected 4, got 5</failure>"#
+        ));
         assert!(rendered.contains(r"<system-out>debug output</system-out>"));
         assert!(rendered.contains(r"<skipped/>"));
     }

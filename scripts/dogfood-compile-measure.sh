@@ -50,8 +50,8 @@ if [[ ! -f "$ir" ]]; then
 fi
 
 # LLVM prints the target datalayout and triple in the module header. Those
-# lines describe the host target, not the dogfood program, so count only the
-# complete `define … }` blocks just as the LLVM identity oracle does.
+# lines describe the host target, not the dogfood program, so the size ceiling
+# counts only complete `define … }` blocks.
 ll_bytes="$(
     awk '
         /^define / { in_function = 1 }

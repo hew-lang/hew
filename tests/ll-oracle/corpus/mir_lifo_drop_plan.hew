@@ -1,4 +1,4 @@
-// ll-oracle corpus fixture: LIFO scope-exit drop plan.
+// Compiler corpus fixture: LIFO scope-exit drop plan.
 //
 // Exercises the MIR drop-plan construction in hew-mir/src/lower.rs:
 // `build_lifo_drops` and `enumerate_exits`. Three owned heap-string locals
@@ -6,8 +6,9 @@
 // remain owned by `main` and are released at scope exit. The drop plan must
 // emit them in strict last-in-first-out order (c, then b, then a) — the one
 // ordering a behaviour-preserving code move can silently perturb if a
-// map/set/static feeding emission is relocated. Proves the LIFO drop-plan
-// ordering stays byte-identical across the lower.rs file-split.
+// map/set/static feeding emission is relocated. This corpus preserves the
+// input shape and raw-MIR parity; focused ownership tests own the ordering
+// invariant.
 fn measure(s: string) -> i64 {
     s.len()
 }

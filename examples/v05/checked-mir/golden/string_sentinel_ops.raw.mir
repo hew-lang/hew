@@ -68,6 +68,8 @@ fn main() -> () [conv=default]
     stmt: bind BindingId(0) s site=SiteId(0) ty=string
     stmt: use BindingId(0) s site=SiteId(2) ty=string intent=Read
     _0 = string_lit "hello world"
+    ownership Mint { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(0), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     _1 = move _0
     _3 = string_lit "world"
     _4 = call hew_string_find(_1, _3) [authority=Runtime(StringFind)] -> bb1
@@ -96,8 +98,11 @@ fn main() -> () [conv=default]
     _9 = icmp.eq _5 _8
     branch _9 ? bb4 : bb5
   bb7:
+    ownership ScopeExit { scopes: [ScopeId(1)], owners: [], carry_places: [Local(2)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 2 }
     goto bb2
   bb8:
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 2 }
     goto bb2
   bb9:
     _15 = move etag14
@@ -124,8 +129,11 @@ fn main() -> () [conv=default]
     _19 = icmp.eq _15 _18
     branch _19 ? bb12 : bb13
   bb15:
+    ownership ScopeExit { scopes: [ScopeId(2)], owners: [], carry_places: [Local(12)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 10 }
     goto bb10
   bb16:
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 10 }
     goto bb10
   bb17:
     _25 = move etag24
@@ -153,8 +161,11 @@ fn main() -> () [conv=default]
     _29 = icmp.eq _25 _28
     branch _29 ? bb20 : bb21
   bb23:
+    ownership ScopeExit { scopes: [ScopeId(3)], owners: [], carry_places: [Local(22)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 18 }
     goto bb18
   bb24:
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 18 }
     goto bb18
   bb25:
     _36 = move etag35
@@ -182,8 +193,11 @@ fn main() -> () [conv=default]
     _40 = icmp.eq _36 _39
     branch _40 ? bb28 : bb29
   bb31:
+    ownership ScopeExit { scopes: [ScopeId(4)], owners: [], carry_places: [Local(33)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 26 }
     goto bb26
   bb32:
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 26 }
     goto bb26
   bb33:
     _47 = move etag46
@@ -210,8 +224,11 @@ fn main() -> () [conv=default]
     _51 = icmp.eq _47 _50
     branch _51 ? bb36 : bb37
   bb39:
+    ownership ScopeExit { scopes: [ScopeId(5)], owners: [], carry_places: [Local(44)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 34 }
     goto bb34
   bb40:
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 34 }
     goto bb34
   bb41:
     _57 = move etag56
@@ -237,8 +254,11 @@ fn main() -> () [conv=default]
     _61 = icmp.eq _57 _60
     branch _61 ? bb44 : bb45
   bb47:
+    ownership ScopeExit { scopes: [ScopeId(6)], owners: [], carry_places: [Local(54)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 42 }
     goto bb42
   bb48:
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(0), generation: 0 }, place: Local(1), target: 42 }
     goto bb42
 
 fn i8::fmt(i8) -> string [conv=default]
@@ -252,7 +272,11 @@ fn i8::fmt(i8) -> string [conv=default]
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(137) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(137) ty=string intent=Consume
     stmt: return site=Some(SiteId(137)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -267,7 +291,11 @@ fn i16::fmt(i16) -> string [conv=default]
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(141) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(141) ty=string intent=Consume
     stmt: return site=Some(SiteId(141)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -280,7 +308,11 @@ fn i32::fmt(i32) -> string [conv=default]
     _1 = call hew_int_to_string(_0) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(145) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(145) ty=string intent=Consume
     stmt: return site=Some(SiteId(145)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -293,7 +325,11 @@ fn i64::fmt(i64) -> string [conv=default]
     _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(148) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(148) ty=string intent=Consume
     stmt: return site=Some(SiteId(148)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -306,7 +342,11 @@ fn u8::fmt(u8) -> string [conv=default]
     _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(151) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(151) ty=string intent=Consume
     stmt: return site=Some(SiteId(151)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -319,7 +359,11 @@ fn u16::fmt(u16) -> string [conv=default]
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(154) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(154) ty=string intent=Consume
     stmt: return site=Some(SiteId(154)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -332,7 +376,11 @@ fn u32::fmt(u32) -> string [conv=default]
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(157) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(157) ty=string intent=Consume
     stmt: return site=Some(SiteId(157)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -345,7 +393,11 @@ fn u64::fmt(u64) -> string [conv=default]
     _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(160) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(160) ty=string intent=Consume
     stmt: return site=Some(SiteId(160)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -360,7 +412,11 @@ fn isize::fmt(isize) -> string [conv=default]
     _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(163) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(163) ty=string intent=Consume
     stmt: return site=Some(SiteId(163)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -375,7 +431,11 @@ fn usize::fmt(usize) -> string [conv=default]
     _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(167) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(167) ty=string intent=Consume
     stmt: return site=Some(SiteId(167)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -388,7 +448,11 @@ fn bool::fmt(bool) -> string [conv=default]
     _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(171) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(171) ty=string intent=Consume
     stmt: return site=Some(SiteId(171)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -401,7 +465,11 @@ fn char::fmt(char) -> string [conv=default]
     _1 = call hew_char_to_string(_0) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(174) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(174) ty=string intent=Consume
     stmt: return site=Some(SiteId(174)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -414,7 +482,11 @@ fn f64::fmt(f64) -> string [conv=default]
     _1 = call hew_float_to_string(_0) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(177) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(177) ty=string intent=Consume
     stmt: return site=Some(SiteId(177)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -429,7 +501,11 @@ fn f32::fmt(f32) -> string [conv=default]
     _2 = call hew_float_to_string(_1) -> bb1
   bb1:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(180) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(180) ty=string intent=Consume
     stmt: return site=Some(SiteId(180)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -529,11 +605,19 @@ fn duration::fmt(duration) -> string [conv=default]
     _2 = call hew_i64_to_string(_1) -> bb2
   bb2:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(198) ty=string
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(197) ty=string
-    stmt: return site=Some(SiteId(197)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     _3 = string_lit "ns"
-    _4 = call_rt hew_string_concat(_2, _3)
+    _4 = call hew_string_concat(_2, _3) [authority=Runtime(StringConcat)] -> bb3
+  bb3:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(197) ty=string
+    stmt: use BindingId(4294967230) __hew_produced_value site=SiteId(197) ty=string intent=Consume
+    stmt: return site=Some(SiteId(197)) ty=string
     drop _2 ty=string fn=release(hew_string_drop)
+    ownership Release { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2) }
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(4), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 1 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, from: Local(4), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _4
     return
 

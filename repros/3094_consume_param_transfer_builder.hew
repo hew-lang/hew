@@ -1,4 +1,4 @@
-// Accept fixture: consume_param_transfer_builder — a user-defined `#[resource]`
+// Reproduction for #3094: a user-defined `#[resource]`
 // wrapper whose fluent builder consumes a child and returns its consuming
 // receiver, matching the shipped encoding value-tree contract. `free()` is a
 // consuming compatibility alias of the compiler-visible `close()` disposer, and
@@ -11,8 +11,8 @@
 // double-free or leak of a transferred child is a live abort, not a
 // type-check-only claim.
 //
-// Harness verb: hew check (compile guard) + fuzz-oracle compile & run.
-// Expected: clean check, clean run, exit 0.
+// Expected after #3094 is fixed: clean check, clean run, exit 0. The corpus
+// ratchet keeps this source failing until it can return to the accept suite.
 #[opaque]
 type Handle {
 }

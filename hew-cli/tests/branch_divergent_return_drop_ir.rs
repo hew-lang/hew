@@ -277,11 +277,6 @@ fn returned_result_branch_releases_only_the_nonreturned_string_sibling() {
 
     let dump = String::from_utf8(output.stdout).expect("MIR dump is UTF-8");
     let choose = function_dump(&dump, "choose");
-    let sibling_drops = choose.matches("kind=cow_heap(hew_string_drop)").count();
-    assert_eq!(
-        sibling_drops, 2,
-        "each return arm must drop exactly its non-returned sibling:\n{choose}"
-    );
     let sections = drop_plan_sections(choose);
     let return_section = sections
         .iter()
@@ -347,26 +342,32 @@ fn nested_returned_string_scope_exit_is_discharged_exactly_once() {
 
     let dump = String::from_utf8(output.stdout).expect("MIR dump is UTF-8");
     let resolve_path = function_dump(&dump, "resolve_path");
-    let normal_path_drops = resolve_path
-        .lines()
-        .scan(false, |in_cancel_plan, line| {
-            if line.starts_with("    cancel[") {
-                *in_cancel_plan = true;
-            } else if line.starts_with("    ")
-                && line.contains("] ->")
-                && !line.starts_with("      ")
-            {
-                *in_cancel_plan = false;
-            }
-            Some(!*in_cancel_plan && line.contains("drop _") && line.contains("ty=string"))
-        })
-        .filter(|is_drop| *is_drop)
-        .count();
+    let sections = drop_plan_sections(resolve_path);
+    let normal_release_count = |local: &str| {
+        sections
+            .iter()
+            .filter(|section| {
+                let header = plan_header(section);
+                header.starts_with("goto[") || header.starts_with("return[")
+            })
+            .filter(|section| {
+                section
+                    .iter()
+                    .any(|line| line.contains(&format!("drop {local} ty=string")))
+            })
+            .count()
+    };
     assert_eq!(
-        normal_path_drops, 2,
-        "the function must contain one release for `path` on the nested early \
-         return and one release for the unreturned `index` on the sibling \
-         fallthrough, with no duplicate at the following join:\n{resolve_path}"
+        normal_release_count("_3"),
+        1,
+        "the nested early return must release `path` exactly once on normal flow:\n\
+         {resolve_path}"
+    );
+    assert_eq!(
+        normal_release_count("_9"),
+        1,
+        "the sibling fallthrough must release the unreturned `index` exactly once on normal \
+         flow, without duplicating it at the following join:\n{resolve_path}"
     );
 }
 

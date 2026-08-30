@@ -22,6 +22,8 @@ use hew_mir::{
 };
 use hew_types::ResolvedTy;
 
+use crate::ir_assertions::{assert_target_call, cleanup_strategy};
+
 /// Mirror of `lower_vec_slice` for `Vec<i64>` with closed `[start..end)`.
 ///
 /// Locals layout:
@@ -326,9 +328,11 @@ fn trap_path_emits_llvm_trap_then_unreachable() {
 #[test]
 fn continuation_calls_slice_range_i64() {
     let ll = emit_ll("slice_call");
-    assert!(
-        ll.contains("invoke ptr @hew_vec_slice_range_i64("),
-        "continuation must call hew_vec_slice_range_i64; got:\n{ll}"
+    assert_target_call(
+        &ll,
+        cleanup_strategy(&ll),
+        "ptr @hew_vec_slice_range_i64(",
+        "the slice continuation",
     );
 }
 
@@ -337,8 +341,10 @@ fn entry_calls_hew_vec_len_for_end_check() {
     // The second bounds check (end > len) calls hew_vec_len. The first
     // bounds check is start > end and needs no runtime probe.
     let ll = emit_ll("slice_len_call");
-    assert!(
-        ll.contains("invoke i64 @hew_vec_len("),
-        "after-check1 block must call hew_vec_len; got:\n{ll}"
+    assert_target_call(
+        &ll,
+        cleanup_strategy(&ll),
+        "i64 @hew_vec_len(",
+        "the after-check1 block",
     );
 }

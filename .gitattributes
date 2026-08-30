@@ -12,12 +12,8 @@
 # including its final separator line; pin LF so a Windows checkout can't
 # introduce a false byte-compare failure.
 *.mir text eol=lf -blank-at-eof
-# ll-diff goldens (tests/ll-oracle/corpus/golden/{native,wasm32}/*.ll) are
-# compared byte-for-byte against a fresh `--emit-llvm` dump.
-*.ll text eol=lf
-# Manifests and release-count baselines compared/parsed byte-for-byte
-# (tests/mir-baselines/**/manifest.tsv,
-# hew-cli/tests/fixtures/release-count-baseline.tsv, scripts/*.tsv).
+# Manifests and inventories compared/parsed byte-for-byte
+# (tests/mir-baselines/**/manifest.tsv and scripts/*.tsv).
 *.tsv text eol=lf
 # Checked-MIR corpus manifest (examples/v05/checked-mir/golden/MANIFEST.sha256)
 # is diffed byte-for-byte against a freshly rendered manifest.

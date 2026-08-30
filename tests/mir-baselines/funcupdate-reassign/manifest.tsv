@@ -1,6 +1,6 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
-# generating-revision: faaa17012
+# generating-revision: 133a534331
 # generating-context: v0.6.0-rc1 integration branch (semantic state; compilation was
 #   unblocked by the follow-up exhaustive Sender classification only)
 #   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
@@ -79,8 +79,8 @@
 #   `vec_string_projection_forward_has_one_release_per_exit` pins exactly one
 #   release per exceptional edge, one inline overwrite release, and none on the
 #   return edge.
-#   Refreshed at the rc1 identity-substrate stage E, together with the ll-oracle
-#   and checked-mir goldens (the RC branch's committed goldens had gone stale
+#   Refreshed at the rc1 identity-substrate stage E together with the
+#   checked-mir goldens (the RC branch's committed goldens had gone stale
 #   under the whole RC stack; every lane since gated capture-vs-capture, and
 #   this is the one regen window). The delta here is a single class: a
 #   producing call now publishes `bind __hew_produced_value` at the call site
@@ -90,16 +90,24 @@
 #   normalization between the stage-E base and tip, so no part of this refresh
 #   comes from the identity work — it is pre-existing RC drift the stale
 #   baselines were hiding.
+#   Refreshed after the unwind-safe RAII hard cutover. The string-parsing
+#   helper chunks now discharge each short-lived slice at their explicit
+#   `hew_string_drop`, so that call's own unwind edge and downstream terminal
+#   edges no longer try to release the same owner again. In
+#   `VecAcc__recv__checksum`, the guarded VecIter release before the final
+#   arithmetic similarly leaves no cursor owner for the later panic, unwind,
+#   or return edges. Only stale drop-plan entries were removed; the CFG,
+#   statements, and values are unchanged.
 #
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
 # normalization: three run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both
 #   sides into per-function chunks (column-0 `fn ` lines) and sorts by
 #   signature line; (2) within each chunk, BindingId/SiteId values are
-#   renumbered in first-occurrence order; (3) trailing newline bytes are
-#   discarded because the emitter may append one final blank line. Within-chunk
-#   content order is preserved, so a reordered drop inside a chunk remains
-#   detectable.
+#   renumbered in first-occurrence order; (3) blank separators after each
+#   function are normalized because the emitter's final empty line otherwise
+#   follows whichever function map iteration emits last. Within-function content
+#   order is preserved, so a reordered drop inside a chunk remains detectable.
 #
 # Purpose: the Coarse freshness summary (`compute_fn_returns_fresh_owner` /
 # `return_value_may_alias_borrow`) feeds the destructive-funcupdate base gate

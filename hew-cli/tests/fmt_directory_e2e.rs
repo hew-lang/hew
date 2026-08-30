@@ -66,8 +66,8 @@ fn fmt_check_directory_reports_drift_in_deterministic_order_without_writing() {
 
     let expected = [
         Path::new(".").join("main.hew"),
-        Path::new(".").join("nested/alpha.hew"),
-        Path::new(".").join("nested/zeta.hew"),
+        Path::new(".").join("nested").join("alpha.hew"),
+        Path::new(".").join("nested").join("zeta.hew"),
     ]
     .map(|path| format!("{}: needs formatting\n", path.display()))
     .concat();
@@ -105,8 +105,8 @@ fn fmt_directory_repairs_every_source_then_check_passes() {
     let output = run_hew(&project, &["fmt", "."]);
 
     let expected = [
-        Path::new(".").join("nested/alpha.hew"),
-        Path::new(".").join("nested/zeta.hew"),
+        Path::new(".").join("nested").join("alpha.hew"),
+        Path::new(".").join("nested").join("zeta.hew"),
     ]
     .map(|path| format!("Formatted {}\n", path.display()))
     .concat();
@@ -182,7 +182,7 @@ fn fmt_directory_deduplicates_overlapping_and_aliased_inputs() {
 
     let expected = format!(
         "{}: needs formatting\n",
-        Path::new(".").join("nested/alpha.hew").display()
+        Path::new(".").join("nested").join("alpha.hew").display()
     );
     assert_output(&output, 1, "", &expected);
     assert_eq!(

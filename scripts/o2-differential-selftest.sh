@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # o2-differential-selftest.sh - Self-proof for scripts/o2-differential.sh.
 #
-# Eight independently-failable cases prove: the differential gate distinguishes
+# Fourteen independently-failable cases prove: the differential gate distinguishes
 # O0/O2 outcome sets, accepts identical outcome sets, fails closed when a test
 # runner does not produce a summary, refuses to report success over an outcome
 # set smaller than the declared floor (two EMPTY sets compare identical), and
 # refuses to run at all over a non-default corpus whose size nobody declared;
+# rejects compile failures that drift to runtime, timeout, or launch failures;
 # and (C1, the ratchet->differential handoff) the --o0-outcomes pre-captured-file path is behaviourally
 # EQUIVALENT to a fresh self-run O0 pass on both the identical-outcomes case
-# and the divergence-caught case, and fails closed when the handoff file is
-# missing or empty.
+# and every divergence case, and fails closed when the handoff file is missing
+# or empty.
 #
 # Exit codes:
 #   0  all cases pass
@@ -52,7 +53,7 @@ case "${O2_DIFF_SELFTEST_CASE:-}" in
   divergence-caught)
     if [[ "${HEW_OPT_LEVEL:-0}" == "2" ]]; then
       cat <<'XML'
-<testsuites tests="2" failures="1" skipped="0"><testsuite name="fixture" tests="2" failures="1" skipped="0"><testcase classname="fixture.hew" name="alpha"/><testcase classname="fixture.hew" name="beta"><failure message="counterfactual">counterfactual</failure></testcase></testsuite></testsuites>
+<testsuites tests="2" failures="1" skipped="0"><testsuite name="fixture" tests="2" failures="1" skipped="0"><testcase classname="fixture.hew" name="alpha"/><testcase classname="fixture.hew" name="beta"><failure type="runtime" message="counterfactual">counterfactual</failure></testcase></testsuite></testsuites>
 XML
       exit 1
     else
@@ -60,6 +61,16 @@ XML
 <testsuites tests="2" failures="0" skipped="0"><testsuite name="fixture" tests="2" failures="0" skipped="0"><testcase classname="fixture.hew" name="alpha"/><testcase classname="fixture.hew" name="beta"/></testsuite></testsuites>
 XML
     fi
+    ;;
+  kind-drift-runtime|kind-drift-timeout|kind-drift-launch)
+    kind="${O2_DIFF_SELFTEST_CASE#kind-drift-}"
+    if [[ "${HEW_OPT_LEVEL:-0}" != "2" ]]; then
+      kind="compile"
+    fi
+    cat <<XML
+<testsuites tests="2" failures="1" skipped="0"><testsuite name="fixture" tests="2" failures="1" skipped="0"><testcase classname="fixture.hew" name="alpha"/><testcase classname="fixture.hew" name="beta"><failure type="$kind" message="same diagnostic">same diagnostic</failure></testcase></testsuite></testsuites>
+XML
+    exit 1
     ;;
   baseline-identical)
     cat <<'XML'
@@ -98,7 +109,23 @@ run_case() {
     fi
 }
 
+assert_kind_drift_visible() {
+    local name="$1"
+    local actual_kind="$2"
+    local log="$TMPDIR_BASE/$name.log"
+
+    grep -Fq "FAILED"$'\t'"compile" "$log" ||
+        fail "$name" "O0 compile failure kind was absent from the outcome diff"
+    grep -Fq "FAILED"$'\t'"$actual_kind" "$log" ||
+        fail "$name" "O2 $actual_kind failure kind was absent from the outcome diff"
+}
+
 run_case "divergence-caught" 1 "divergence-caught" --min-outcomes 2
+for kind in runtime timeout launch; do
+    name="failure-kind-drift-$kind"
+    run_case "$name" 1 "kind-drift-$kind" --min-outcomes 2
+    assert_kind_drift_visible "$name" "$kind"
+done
 run_case "baseline-identical" 0 "baseline-identical" --min-outcomes 2
 run_case "no-summary-fail-closed" 1 "no-summary-fail-closed" --min-outcomes 2
 
@@ -123,24 +150,38 @@ capture_o0_outcomes() {
     local parsed rc=0
     O2_DIFF_SELFTEST_CASE="$stub_case" HEW_OPT_LEVEL=0 "$STUB" test "$TESTS_DIR" \
         --format junit >"$report" || rc=$?
-    parsed="$(python3 "$JUNIT_PARSER" --runner-exit "$rc" "$report")" ||
+    parsed="$("${PYTHON:-python3}" "$JUNIT_PARSER" --runner-exit "$rc" "$report")" ||
         fail "capture-$stub_case" "stub did not produce coherent JUnit"
     printf '%s\n' "$parsed" |
-        awk -F'\t' '$1 != "__SUMMARY__" { print "test " $2 " ... " $1 }' |
+        awk -F'\t' '$1 != "__SUMMARY__" {
+            line = "test " $2 " ... " $1
+            if ($3 != "") line = line "\t" $3
+            print line
+        }' |
         sort >"$out"
 }
 
 BASELINE_O0_FILE="$TMPDIR_BASE/baseline-identical.o0.txt"
 DIVERGENCE_O0_FILE="$TMPDIR_BASE/divergence-caught.o0.txt"
+KIND_DRIFT_O0_FILE="$TMPDIR_BASE/kind-drift.o0.txt"
 capture_o0_outcomes "baseline-identical" "$BASELINE_O0_FILE"
 capture_o0_outcomes "divergence-caught" "$DIVERGENCE_O0_FILE"
+capture_o0_outcomes "kind-drift-runtime" "$KIND_DRIFT_O0_FILE"
+grep -Fq "FAILED"$'\t'"compile" "$KIND_DRIFT_O0_FILE" ||
+    fail "capture-kind-drift" "the O0 handoff dropped its compile failure kind"
 
 run_case "outcomes-handoff-identical" 0 "baseline-identical" \
     --min-outcomes 2 --o0-outcomes "$BASELINE_O0_FILE"
 run_case "outcomes-handoff-divergence-caught" 1 "divergence-caught" \
     --min-outcomes 2 --o0-outcomes "$DIVERGENCE_O0_FILE"
+for kind in runtime timeout launch; do
+    name="outcomes-handoff-failure-kind-drift-$kind"
+    run_case "$name" 1 "kind-drift-$kind" \
+        --min-outcomes 2 --o0-outcomes "$KIND_DRIFT_O0_FILE"
+    assert_kind_drift_visible "$name" "$kind"
+done
 run_case "outcomes-handoff-missing-file-fails-closed" 1 "baseline-identical" \
     --min-outcomes 2 --o0-outcomes "$TMPDIR_BASE/does-not-exist.txt"
 
 echo ""
-echo "o2-differential-selftest: all 8 cases PASS"
+echo "o2-differential-selftest: all 14 cases PASS"

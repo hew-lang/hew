@@ -110,7 +110,33 @@ struct BasicBlock {
     name: String,
     body: String,
     successors: Vec<String>,
-    terminates: bool,
+    is_cleanup_exit: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SlotCleanupState {
+    Uninitialized,
+    Live,
+    Released,
+    Null,
+}
+
+impl SlotCleanupState {
+    const fn index(self) -> usize {
+        match self {
+            Self::Uninitialized => 0,
+            Self::Live => 1,
+            Self::Released => 2,
+            Self::Null => 3,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SlotCleanupEvent {
+    Assign,
+    Drop,
+    Clear,
 }
 
 fn function_body<'a>(ir: &'a str, name: &str) -> &'a str {
@@ -155,15 +181,20 @@ fn basic_blocks(body: &str) -> Vec<BasicBlock> {
         if let Some(name) = name {
             let body = lines.join("\n");
             let successors = body.lines().flat_map(successor_labels).collect();
-            let terminates = body.lines().any(|line| {
+            // A live lexical owner must be released both when the function
+            // returns normally and when structured unwinding leaves it.
+            // `unreachable` is deliberately not a cleanup exit: it follows a
+            // process-fatal trap/abort or an impossible path, where lexical
+            // cleanup is neither observable nor expected.
+            let is_cleanup_exit = body.lines().any(|line| {
                 let instruction = line.trim_start();
-                instruction.starts_with("ret ")
+                instruction.starts_with("ret ") || instruction.starts_with("resume ")
             });
             blocks.push(BasicBlock {
                 name,
                 body,
                 successors,
-                terminates,
+                is_cleanup_exit,
             });
         }
         lines.clear();
@@ -190,15 +221,45 @@ fn basic_blocks(body: &str) -> Vec<BasicBlock> {
     blocks
 }
 
-fn slot_is_assigned(block: &BasicBlock, slot: &str) -> bool {
-    block
-        .body
-        .lines()
-        .any(|line| line.contains("store ") && line.contains(&format!("ptr %{slot},")))
-}
-
 fn is_call_instruction(line: &str) -> bool {
     line.contains("call ") || line.contains("invoke ")
+}
+
+fn slot_cleanup_events(block: &BasicBlock, slot: &str, drop_symbol: &str) -> Vec<SlotCleanupEvent> {
+    let lines: Vec<_> = block.body.lines().collect();
+    let destination = format!(", ptr %{slot},");
+    let load = format!("load ptr, ptr %{slot},");
+    let drop = format!("@{drop_symbol}(");
+    let mut events = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        if line.contains("store ptr ") && line.contains(&destination) {
+            let event = if line.trim_start().starts_with("store ptr null,") {
+                SlotCleanupEvent::Clear
+            } else {
+                SlotCleanupEvent::Assign
+            };
+            events.push((index, event));
+        }
+
+        if line.contains(&load) {
+            if let Some((offset, _)) = lines[index + 1..]
+                .iter()
+                .take(2)
+                .enumerate()
+                .find(|(_, line)| is_call_instruction(line) && line.contains(&drop))
+            {
+                events.push((index + offset + 1, SlotCleanupEvent::Drop));
+            }
+        }
+    }
+
+    events.sort_by_key(|(index, _)| *index);
+    events.into_iter().map(|(_, event)| event).collect()
+}
+
+fn slot_is_assigned(block: &BasicBlock, slot: &str) -> bool {
+    slot_cleanup_events(block, slot, "hew_string_drop").contains(&SlotCleanupEvent::Assign)
 }
 
 fn slot_release_count(block: &BasicBlock, slot: &str, drop_symbol: &str) -> usize {
@@ -228,23 +289,56 @@ fn unbalanced_cleanup_exits(blocks: &[BasicBlock], slot: &str, drop_symbol: &str
         .iter()
         .position(|block| slot_is_assigned(block, slot))
         .unwrap_or_else(|| panic!("witness must assign %{slot}"));
-    let mut pending = vec![(start, false)];
-    let mut seen = vec![[false; 2]; blocks.len()];
+    let mut pending = vec![(start, SlotCleanupState::Uninitialized)];
+    let mut seen = vec![[false; 4]; blocks.len()];
     let mut unbalanced = Vec::new();
 
-    while let Some((index, released)) = pending.pop() {
-        if seen[index][usize::from(released)] {
+    while let Some((index, mut state)) = pending.pop() {
+        if seen[index][state.index()] {
             continue;
         }
-        seen[index][usize::from(released)] = true;
+        seen[index][state.index()] = true;
         let block = &blocks[index];
-        let release_count = slot_release_count(block, slot, drop_symbol);
-        if release_count > 1 || (released && release_count == 1) {
-            unbalanced.push(format!("{} (duplicate cleanup)", block.name));
+
+        let mut invalid = None;
+        for event in slot_cleanup_events(block, slot, drop_symbol) {
+            state = match (state, event) {
+                (
+                    SlotCleanupState::Uninitialized
+                    | SlotCleanupState::Null
+                    | SlotCleanupState::Released,
+                    SlotCleanupEvent::Assign,
+                ) => SlotCleanupState::Live,
+                (SlotCleanupState::Live, SlotCleanupEvent::Drop) => SlotCleanupState::Released,
+                (SlotCleanupState::Null, SlotCleanupEvent::Drop | SlotCleanupEvent::Clear)
+                | (
+                    SlotCleanupState::Uninitialized | SlotCleanupState::Released,
+                    SlotCleanupEvent::Clear,
+                ) => SlotCleanupState::Null,
+                (SlotCleanupState::Live, SlotCleanupEvent::Assign) => {
+                    invalid = Some("overwritten before cleanup");
+                    break;
+                }
+                (SlotCleanupState::Live, SlotCleanupEvent::Clear) => {
+                    invalid = Some("cleared without cleanup");
+                    break;
+                }
+                (SlotCleanupState::Released, SlotCleanupEvent::Drop) => {
+                    invalid = Some("duplicate cleanup");
+                    break;
+                }
+                (SlotCleanupState::Uninitialized, SlotCleanupEvent::Drop) => {
+                    invalid = Some("cleanup before assignment");
+                    break;
+                }
+            };
+        }
+        if let Some(reason) = invalid {
+            unbalanced.push(format!("{} ({reason})", block.name));
             continue;
         }
-        let released = released || release_count == 1;
-        if block.terminates && !released {
+
+        if block.is_cleanup_exit && state == SlotCleanupState::Live {
             unbalanced.push(format!("{} (missing cleanup)", block.name));
             continue;
         }
@@ -253,7 +347,7 @@ fn unbalanced_cleanup_exits(blocks: &[BasicBlock], slot: &str, drop_symbol: &str
                 .iter()
                 .position(|block| block.name == *successor)
                 .unwrap_or_else(|| panic!("{} branches to unknown {successor}", block.name));
-            pending.push((index, released));
+            pending.push((index, state));
         }
     }
     unbalanced
@@ -262,7 +356,7 @@ fn unbalanced_cleanup_exits(blocks: &[BasicBlock], slot: &str, drop_symbol: &str
 fn remove_return_path_string_release(body: &str, blocks: &[BasicBlock], slot: &str) -> String {
     let cleanup_block = blocks
         .iter()
-        .find(|block| block.terminates && slot_is_released_by(block, slot, "hew_string_drop"))
+        .find(|block| block.is_cleanup_exit && slot_is_released_by(block, slot, "hew_string_drop"))
         .unwrap_or_else(|| panic!("witness must release %{slot} before returning"));
     let block_start = body
         .find(&format!("\n{}:", cleanup_block.name))
@@ -285,6 +379,52 @@ fn remove_return_path_string_release(body: &str, blocks: &[BasicBlock], slot: &s
         "@hew_string_clone",
     );
     altered
+}
+
+#[test]
+fn cleanup_cfg_treats_resume_as_an_owner_exit() {
+    let missing_cleanup = basic_blocks(
+        r"entry:
+  store ptr %value, ptr %local_2, align 8
+  br label %unwind
+
+unwind:
+  resume { ptr, i32 } zeroinitializer",
+    );
+    assert_eq!(
+        unbalanced_cleanup_exits(&missing_cleanup, "local_2", "hew_string_drop"),
+        vec!["unwind (missing cleanup)".to_owned()],
+        "a live owner reaching resume must be rejected"
+    );
+
+    let released_before_resume = basic_blocks(
+        r"entry:
+  store ptr %value, ptr %local_2, align 8
+  br label %unwind
+
+unwind:
+  %owned = load ptr, ptr %local_2, align 8
+  call void @hew_string_drop(ptr %owned)
+  resume { ptr, i32 } zeroinitializer",
+    );
+    assert!(
+        unbalanced_cleanup_exits(&released_before_resume, "local_2", "hew_string_drop").is_empty(),
+        "a resume path that releases its live owner must remain valid"
+    );
+
+    let process_fatal = basic_blocks(
+        r"entry:
+  store ptr %value, ptr %local_2, align 8
+  br label %fatal
+
+fatal:
+  call void @llvm.trap()
+  unreachable",
+    );
+    assert!(
+        unbalanced_cleanup_exits(&process_fatal, "local_2", "hew_string_drop").is_empty(),
+        "unreachable after a process-fatal trap is not a lexical cleanup exit"
+    );
 }
 
 #[test]

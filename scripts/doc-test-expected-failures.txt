@@ -38,6 +38,20 @@
 #             pool reserved-word clash, or a checker-boundary HIR error.
 #             Fix: compiler follow-on; annotate fence for now.
 #
+# OWNERSHIP-AUTHORITY — A correct fence is refused by Checked MIR because the
+#             frozen cleanup plan is validated against the ownership event
+#             stream rather than derived from it, so an owner that is live on an
+#             unwind edge has no matching destructor in the plan.
+#             WHY here: the refusal predates this gate being restored. The gate
+#             does not run to completion on main, so the fence's failure was
+#             unobserved rather than absent; it reproduces identically on main's
+#             tip and on this branch.
+#             WHEN it goes: when drop plans are derived from the event stream
+#             (#3079). The related fluent-transfer drift is #3094.
+#             Tracked with the core-matrix cells in #3145.
+#             WHAT the real fix is: one ownership authority in hew-mir, not a
+#             wider expected-failures list.
+#
 # STDLIB-OWNERSHIP-IMBALANCE — stdlib ownership imbalance under the new
 #             produced-value authority. Lift: the stdlib ownership-rebalance fix
 #             landing on this integration branch (a dedicated lane is being
@@ -59,6 +73,8 @@
 
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).
+
+guide-0101   4195702107   # OWNERSHIP-AUTHORITY: fluent `Stack<T>` chain — `s2` unreleased on the unwind exit path
 
 # ─── Spec failures (86) ──────────────────────────────────────────────────────────
 
@@ -130,7 +146,7 @@ spec-0104   3140632977   # NYI: bare `select { ... }` — select statement not y
 spec-0105   670504171   # SNIPPET: bare `let` — timer/duration illustration
 spec-0106   868010148   # IMPL-GAP: supervisor init arg not a declared state field (E_NOT_YET_IMPLEMENTED)
 spec-0107   982438679   # IMPL-GAP: `pool` is a reserved word — pool-supervisor API in flux
-spec-0108   3896519088   # IMPL-GAP: `pool` as pattern — reserved word clash in supervisor syntax
+spec-0108   1721392010   # IMPL-GAP: `pool` as pattern — reserved word clash in supervisor syntax
 spec-0110   3534476634   # FRAGMENT: references `prices` from prior fence context — context-dependent
 spec-0111   759184928   # SNIPPET: bare `let` — wire schema illustration
 spec-0112   2109671045   # SNIPPET: bare `match` — wire format pattern illustration

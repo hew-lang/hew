@@ -1751,8 +1751,7 @@ impl ExternContractTable {
 /// that reading every such declaration silently licenses a caller-side free of
 /// a pointer the host may already have freed, and heap corruption is neither
 /// diagnosable nor recoverable, whereas the leak this file chooses is bounded,
-/// observable, and — as of this round — measured file by file by the
-/// release-count differential over the shipped corpora.
+/// observable, and can be caught by executable ownership and leak oracles.
 ///
 /// Making the declaration load-bearing is the right end state and is a
 /// front-end change, not a MIR one: the checker would have to REQUIRE an
@@ -1965,8 +1964,8 @@ fn extern_result_is_audited_owned_transfer(symbol: &str, declared_arity: usize) 
 ///
 /// Fail-closed in every direction: any conjunct answering `false` restores the
 /// pre-existing verdict, which is `{OPAQUE}` ⇒ no mint ⇒ a leak. A leak is
-/// bounded and is measured file by file by the release-count differential; a
-/// double free is neither.
+/// bounded and can be caught by executable ownership and leak oracles; a double
+/// free is neither.
 fn extern_result_is_measured_transfer(
     symbol: &str,
     decl: &hew_hir::HirExternFn,

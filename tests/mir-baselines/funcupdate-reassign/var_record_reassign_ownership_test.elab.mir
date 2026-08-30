@@ -41,6 +41,7 @@ fn grow -> S
     return[bb3] ->
       (none)
 
+
 fn _mk_pair -> Pair
   statements:
     bind BindingId(4294967231) __hew_produced_value site=SiteId(18) ty=Vec<i64>
@@ -979,17 +980,17 @@ fn VecAcc__recv__checksum -> i64
     branch[bb19: bb20/bb21] ->
       (none)
     panic[bb20] ->
-      drop _6 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(26), generation: 0 }@_7
+      (none)
     call[bb21 hew_vec_len -> bb22] ->
       (none)
     unwind[bb21 hew_vec_len] ->
-      drop _6 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(26), generation: 0 }@_7
+      (none)
     branch[bb22: bb23/bb24] ->
       (none)
     panic[bb23] ->
-      drop _6 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(26), generation: 0 }@_7
+      (none)
     return[bb24] ->
-      drop _6 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=OwnerId { binding: BindingId(26), generation: 0 }@_7
+      (none)
 
 fn Swapper__recv__seed -> ()
   statements:
@@ -2142,4 +2143,3 @@ fn duration::fmt -> string
       drop _2 ty=string kind=cow_heap(hew_string_drop)
     return[bb3] ->
       (none)
-

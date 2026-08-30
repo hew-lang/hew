@@ -1,17 +1,22 @@
 //! Exact ownership oracle for a retained local copy of a matched enum's
 //! `string` payload.
 //!
-//! The destructure binder aliases the parent's rc=1 payload. A later
-//! local-to-local share emits one retain, so the destination must balance that
-//! independent `+1` while the parent enum balances the original ref. The same
-//! rule applies when the destination lives in a nested lexical block.
+//! Destructuring transfers the parent's rc=1 payload into the payload binder
+//! and neutralizes the enum slot. A later local-to-local share emits one
+//! retain, so the binder balances the original reference and the destination
+//! balances the independent `+1`. The same rule applies in nested scopes.
 
 #![cfg(unix)]
 
+#[path = "support/payload_handoff_mir.rs"]
+mod payload_handoff_mir;
 mod support;
 
 use std::process::Command;
 
+use payload_handoff_mir::{
+    drop_plan_counts, function_section, retained_payload_locals, unique_drop_locals,
+};
 use support::leak_slope::{
     compile_to_native, measure_leaks_exact, run_probe_witness, run_under_malloc_scribble,
     HIGH_FRAMES, LOW_FRAMES,
@@ -109,24 +114,44 @@ fn dump_mir(stage: &str) -> String {
     String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
 }
 
-fn function_section<'a>(dump: &'a str, name: &str) -> &'a str {
-    let marker = format!("fn {name}");
-    let start = dump
-        .find(&marker)
-        .unwrap_or_else(|| panic!("missing `{marker}` in MIR dump:\n{dump}"));
-    let tail = &dump[start..];
-    tail.find("\nfn ").map_or(tail, |next| &tail[..next])
-}
-
-fn unique_drop_locals<'a>(section: &'a str, marker: &str) -> Vec<&'a str> {
-    let mut locals = section
-        .lines()
-        .filter(|line| line.contains(marker))
-        .filter_map(|line| line.split_whitespace().nth(1))
-        .collect::<Vec<_>>();
-    locals.sort_unstable();
-    locals.dedup();
-    locals
+fn assert_payload_drop_authority(
+    name: &str,
+    raw_section: &str,
+    elaborated_section: &str,
+    expected_payload_owners: usize,
+) {
+    assert_eq!(
+        unique_drop_locals(elaborated_section, "ty=Box kind=enum_in_place").len(),
+        1,
+        "{name} must preserve exactly one parent composite authority:\n{elaborated_section}"
+    );
+    let payload_locals = retained_payload_locals(raw_section, "string.retain_fresh_share ");
+    assert_eq!(
+        payload_locals.len(),
+        expected_payload_owners,
+        "{name} must track exactly {expected_payload_owners} payload owner(s):\n{raw_section}"
+    );
+    for local in payload_locals {
+        let raw_normal = raw_section
+            .matches(&format!(
+                "drop {local} ty=string fn=release(hew_string_drop)"
+            ))
+            .count();
+        let marker = format!("drop {local} ty=string kind=cow_heap(hew_string_drop)");
+        let (planned_normal, exceptional, max_per_plan) =
+            drop_plan_counts(elaborated_section, &marker);
+        assert_eq!(
+            raw_normal + planned_normal,
+            1,
+            "{name} must release {local} exactly once on successful normal flow:\n\
+             raw:\n{raw_section}\nelaborated:\n{elaborated_section}"
+        );
+        assert!(
+            exceptional > 0 && max_per_plan == 1,
+            "{name} must clean {local} on each applicable exceptional exit without duplicating \
+             it within one plan:\n{elaborated_section}"
+        );
+    }
 }
 
 #[test]
@@ -149,39 +174,17 @@ fn mir_pins_retains_and_noncompeting_drop_authorities() {
 
     let elaborated = dump_mir("elab");
     for name in ["same_scope", "nested_scope"] {
+        let raw_section = function_section(&raw, name);
         let section = function_section(&elaborated, name);
-        assert_eq!(
-            unique_drop_locals(section, "ty=Box kind=enum_in_place").len(),
-            1,
-            "{name} must retain exactly one parent payload authority:\n{section}"
-        );
-        assert_eq!(
-            unique_drop_locals(section, "ty=string kind=cow_heap(hew_string_drop)").len(),
-            1,
-            "{name} must balance the retained destination exactly once:\n{section}"
-        );
+        assert_payload_drop_authority(name, raw_section, section, 2);
     }
+
     let chained = function_section(&elaborated, "chained");
-    assert_eq!(
-        unique_drop_locals(chained, "ty=Box kind=enum_in_place").len(),
-        1,
-        "the retained chain must preserve the original parent owner:\n{chained}"
-    );
-    assert_eq!(
-        unique_drop_locals(chained, "ty=string kind=cow_heap(hew_string_drop)").len(),
-        2,
-        "both retained chain destinations must balance their independent refs:\n{chained}"
-    );
+    assert_payload_drop_authority("chained", chained_raw, chained, 3);
+
+    let direct_raw = function_section(&raw, "direct");
     let direct = function_section(&elaborated, "direct");
-    assert_eq!(
-        unique_drop_locals(direct, "ty=Box kind=enum_in_place").len(),
-        1,
-        "the no-handoff control must keep its parent authority:\n{direct}"
-    );
-    assert!(
-        unique_drop_locals(direct, "ty=string kind=cow_heap(hew_string_drop)").is_empty(),
-        "the non-retained payload alias must not gain a competing drop:\n{direct}"
-    );
+    assert_payload_drop_authority("direct", direct_raw, direct, 1);
 }
 
 #[cfg_attr(

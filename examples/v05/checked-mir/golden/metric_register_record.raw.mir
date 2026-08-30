@@ -73,6 +73,7 @@ fn std.metrics.Counter::inc(std.metrics.Counter) -> () [conv=default]
     call hew_metric_counter_inc(_1) -> bb1
   bb1:
     stmt: eval site=SiteId(34) ty=()
+    ownership ScopeExit { scopes: [ScopeId(2)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std.metrics.Counter::add(std.metrics.Counter, i64) -> () [conv=default]
@@ -87,6 +88,7 @@ fn std.metrics.Counter::add(std.metrics.Counter, i64) -> () [conv=default]
     call hew_metric_counter_add(_2, _1) -> bb1
   bb1:
     stmt: eval site=SiteId(39) ty=()
+    ownership ScopeExit { scopes: [ScopeId(4)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std.metrics.Gauge::inc(std.metrics.Gauge) -> () [conv=default]
@@ -99,6 +101,7 @@ fn std.metrics.Gauge::inc(std.metrics.Gauge) -> () [conv=default]
     call hew_metric_gauge_inc(_1) -> bb1
   bb1:
     stmt: eval site=SiteId(45) ty=()
+    ownership ScopeExit { scopes: [ScopeId(6)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std.metrics.Gauge::dec(std.metrics.Gauge) -> () [conv=default]
@@ -111,6 +114,7 @@ fn std.metrics.Gauge::dec(std.metrics.Gauge) -> () [conv=default]
     call hew_metric_gauge_dec(_1) -> bb1
   bb1:
     stmt: eval site=SiteId(50) ty=()
+    ownership ScopeExit { scopes: [ScopeId(8)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std.metrics.Gauge::set(std.metrics.Gauge, i64) -> () [conv=default]
@@ -125,6 +129,7 @@ fn std.metrics.Gauge::set(std.metrics.Gauge, i64) -> () [conv=default]
     call hew_metric_gauge_set(_2, _1) -> bb1
   bb1:
     stmt: eval site=SiteId(55) ty=()
+    ownership ScopeExit { scopes: [ScopeId(10)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std.metrics.Gauge::add(std.metrics.Gauge, i64) -> () [conv=default]
@@ -139,6 +144,7 @@ fn std.metrics.Gauge::add(std.metrics.Gauge, i64) -> () [conv=default]
     call hew_metric_gauge_add(_2, _1) -> bb1
   bb1:
     stmt: eval site=SiteId(61) ty=()
+    ownership ScopeExit { scopes: [ScopeId(12)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std.metrics.Histogram::observe(std.metrics.Histogram, f64) -> () [conv=default]
@@ -153,6 +159,7 @@ fn std.metrics.Histogram::observe(std.metrics.Histogram, f64) -> () [conv=defaul
     call hew_metric_histogram_record(_2, _1) -> bb1
   bb1:
     stmt: eval site=SiteId(67) ty=()
+    ownership ScopeExit { scopes: [ScopeId(14)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std$metrics$counter(string) -> std.metrics.Counter [conv=default]
@@ -177,6 +184,7 @@ fn std$metrics$counter(string) -> std.metrics.Counter [conv=default]
     stmt: bind BindingId(15) id site=SiteId(73) ty=i64
     stmt: use BindingId(15) id site=SiteId(78) ty=i64 intent=Read
     _2 = move _1
+    ownership ScopeExit { scopes: [ScopeId(16)], owners: [], carry_places: [Local(2)], carried: [] }
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
@@ -188,23 +196,31 @@ fn std$metrics$counter(string) -> std.metrics.Counter [conv=default]
   bb3:
     goto bb4
   bb4:
-    stmt: eval site=SiteId(93) ty=()
-    stmt: use BindingId(15) id site=SiteId(95) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(94)) ty=std.metrics.Counter
+    stmt: eval site=SiteId(94) ty=()
+    stmt: use BindingId(15) id site=SiteId(96) ty=i64 intent=Read
+    stmt: return site=Some(SiteId(95)) ty=std.metrics.Counter
     _12 = record_init std.metrics.Counter { .0=_3 }
     ret = move _12
     return
   bb5:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(85) ty=string
-    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(81) ty=string
-    _9 = call_rt hew_string_concat(_7, _8)
-    drop _8 ty=string fn=release(hew_string_drop)
-    _10 = string_lit "`"
-    _11 = call_rt hew_string_concat(_9, _10)
-    drop _9 ty=string fn=release(hew_string_drop)
-    call hew_panic_msg(_11) -> bb6
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(86) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(8), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    _9 = call hew_string_concat(_7, _8) [authority=Runtime(StringConcat)] -> bb6
   bb6:
+    drop _8 ty=string fn=release(hew_string_drop)
+    ownership Release { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(8) }
+    _10 = string_lit "`"
+    _11 = call hew_string_concat(_9, _10) [authority=Runtime(StringConcat)] -> bb7
+  bb7:
+    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(81) ty=string
+    drop _9 ty=string fn=release(hew_string_drop)
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(11), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 1 } }
+    call hew_panic_msg(_11) [authority=NoReturnExtern] -> bb8
+  bb8:
     stmt: eval site=SiteId(80) ty=!
+    ownership ScopeExit { scopes: [ScopeId(17)], owners: [], carry_places: [], carried: [] }
     goto bb4
 
 fn std$metrics$try_counter(string) -> Result<std.metrics.Counter, std.metrics.MetricsError> [conv=default]
@@ -226,42 +242,61 @@ fn std$metrics$try_counter(string) -> Result<std.metrics.Counter, std.metrics.Me
     _14: i64
     _15: Result<std.metrics.Counter, std.metrics.MetricsError>
   bb0:
-    stmt: use BindingId(16) name site=SiteId(98) ty=string intent=Read
+    stmt: use BindingId(16) name site=SiteId(99) ty=string intent=Read
     _1 = call hew_metric_counter_register(_0) -> bb1
   bb1:
-    stmt: bind BindingId(17) id site=SiteId(96) ty=i64
-    stmt: use BindingId(17) id site=SiteId(102) ty=i64 intent=Read
+    stmt: bind BindingId(17) id site=SiteId(97) ty=i64
+    stmt: use BindingId(17) id site=SiteId(103) ty=i64 intent=Read
     _2 = move _1
+    ownership ScopeExit { scopes: [ScopeId(19)], owners: [], carry_places: [Local(2)], carried: [] }
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
     branch _6 ? bb2 : bb3
   bb2:
-    stmt: use BindingId(16) name site=SiteId(107) ty=string intent=Read
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(106) ty=std.metrics.MetricsError
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(105) ty=Result<std.metrics.Counter, std.metrics.MetricsError>
+    stmt: use BindingId(16) name site=SiteId(108) ty=string intent=Read
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(107) ty=std.metrics.MetricsError
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(106) ty=Result<std.metrics.Counter, std.metrics.MetricsError>
     _9 = const.i64 0
     mtag8 = move _9
     string.retain _0
     mvar8.0.0 = move _0
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(8), ty: Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 0 } }
     _10 = const.i64 1
     mtag7 = move _10
     mvar7.1.0 = move _8
+    neutralize_payload _8 -> mvar7.1.0 [WholeCarrierConsume]
+    ownership Relocate { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(8), to: MachineVariant { local: 7, variant_idx: 1, field_idx: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: MachineVariant { local: 7, variant_idx: 1, field_idx: 0 }, to: Some(Local(7)), to_owner: None, to_ty: None }
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(7), ty: Named { name: "Result", args: [Named { name: "std.metrics.Counter", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Result", args: [Named { name: "std.metrics.Counter", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 1 } }
     _11 = move _7
+    neutralize_payload _7 -> _11 [WholeCarrierConsume]
+    ownership ScopeExit { scopes: [ScopeId(20)], owners: [], carry_places: [Local(11)], carried: [] }
+    ownership Relocate { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, from: Local(7), to: Local(11) }
     _4 = move _11
+    neutralize_payload _11 -> _4 [WholeCarrierConsume]
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, from: Local(11), to: Some(Local(4)), to_owner: None, to_ty: None }
     goto bb4
   bb3:
-    stmt: use BindingId(17) id site=SiteId(111) ty=i64 intent=Read
+    stmt: use BindingId(17) id site=SiteId(112) ty=i64 intent=Read
     _13 = record_init std.metrics.Counter { .0=_3 }
     _14 = const.i64 0
     mtag12 = move _14
     mvar12.0.0 = move _13
+    neutralize_payload _13 -> mvar12.0.0 [ReturnedAggregateMemberConsume]
     _15 = move _12
+    ownership ScopeExit { scopes: [ScopeId(21)], owners: [], carry_places: [Local(15)], carried: [] }
     _4 = move _15
     goto bb4
   bb4:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(100) ty=Result<std.metrics.Counter, std.metrics.MetricsError>
-    stmt: return site=Some(SiteId(100)) ty=Result<std.metrics.Counter, std.metrics.MetricsError>
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(101) ty=Result<std.metrics.Counter, std.metrics.MetricsError>
+    stmt: use BindingId(4294967229) __hew_produced_value site=SiteId(101) ty=Result<std.metrics.Counter, std.metrics.MetricsError> intent=Consume
+    stmt: return site=Some(SiteId(101)) ty=Result<std.metrics.Counter, std.metrics.MetricsError>
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, place: Local(4), ty: Named { name: "Result", args: [Named { name: "std.metrics.Counter", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Result", args: [Named { name: "std.metrics.Counter", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 2 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, from: Local(4), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _4
     return
 
@@ -281,40 +316,49 @@ fn std$metrics$gauge(string) -> std.metrics.Gauge [conv=default]
     _11: string
     _12: std.metrics.Gauge
   bb0:
-    stmt: use BindingId(18) name site=SiteId(114) ty=string intent=Read
+    stmt: use BindingId(18) name site=SiteId(115) ty=string intent=Read
     _1 = call hew_metric_gauge_register(_0) -> bb1
   bb1:
-    stmt: bind BindingId(19) id site=SiteId(112) ty=i64
-    stmt: use BindingId(19) id site=SiteId(117) ty=i64 intent=Read
+    stmt: bind BindingId(19) id site=SiteId(113) ty=i64
+    stmt: use BindingId(19) id site=SiteId(118) ty=i64 intent=Read
     _2 = move _1
+    ownership ScopeExit { scopes: [ScopeId(23)], owners: [], carry_places: [Local(2)], carried: [] }
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
     branch _6 ? bb2 : bb3
   bb2:
-    stmt: use BindingId(18) name site=SiteId(122) ty=string intent=Read
+    stmt: use BindingId(18) name site=SiteId(123) ty=string intent=Read
     _7 = string_lit "metrics.gauge: registration rejected for `"
     _8 = call to_string_str(_0) -> bb5
   bb3:
     goto bb4
   bb4:
-    stmt: eval site=SiteId(132) ty=()
-    stmt: use BindingId(19) id site=SiteId(134) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(133)) ty=std.metrics.Gauge
+    stmt: eval site=SiteId(134) ty=()
+    stmt: use BindingId(19) id site=SiteId(136) ty=i64 intent=Read
+    stmt: return site=Some(SiteId(135)) ty=std.metrics.Gauge
     _12 = record_init std.metrics.Gauge { .0=_3 }
     ret = move _12
     return
   bb5:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(124) ty=string
-    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(120) ty=string
-    _9 = call_rt hew_string_concat(_7, _8)
-    drop _8 ty=string fn=release(hew_string_drop)
-    _10 = string_lit "`"
-    _11 = call_rt hew_string_concat(_9, _10)
-    drop _9 ty=string fn=release(hew_string_drop)
-    call hew_panic_msg(_11) -> bb6
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(126) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(8), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    _9 = call hew_string_concat(_7, _8) [authority=Runtime(StringConcat)] -> bb6
   bb6:
-    stmt: eval site=SiteId(119) ty=!
+    drop _8 ty=string fn=release(hew_string_drop)
+    ownership Release { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(8) }
+    _10 = string_lit "`"
+    _11 = call hew_string_concat(_9, _10) [authority=Runtime(StringConcat)] -> bb7
+  bb7:
+    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(121) ty=string
+    drop _9 ty=string fn=release(hew_string_drop)
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(11), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 1 } }
+    call hew_panic_msg(_11) [authority=NoReturnExtern] -> bb8
+  bb8:
+    stmt: eval site=SiteId(120) ty=!
+    ownership ScopeExit { scopes: [ScopeId(24)], owners: [], carry_places: [], carried: [] }
     goto bb4
 
 fn std$metrics$try_gauge(string) -> Result<std.metrics.Gauge, std.metrics.MetricsError> [conv=default]
@@ -336,42 +380,61 @@ fn std$metrics$try_gauge(string) -> Result<std.metrics.Gauge, std.metrics.Metric
     _14: i64
     _15: Result<std.metrics.Gauge, std.metrics.MetricsError>
   bb0:
-    stmt: use BindingId(20) name site=SiteId(137) ty=string intent=Read
+    stmt: use BindingId(20) name site=SiteId(139) ty=string intent=Read
     _1 = call hew_metric_gauge_register(_0) -> bb1
   bb1:
-    stmt: bind BindingId(21) id site=SiteId(135) ty=i64
-    stmt: use BindingId(21) id site=SiteId(141) ty=i64 intent=Read
+    stmt: bind BindingId(21) id site=SiteId(137) ty=i64
+    stmt: use BindingId(21) id site=SiteId(143) ty=i64 intent=Read
     _2 = move _1
+    ownership ScopeExit { scopes: [ScopeId(26)], owners: [], carry_places: [Local(2)], carried: [] }
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
     branch _6 ? bb2 : bb3
   bb2:
-    stmt: use BindingId(20) name site=SiteId(146) ty=string intent=Read
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(145) ty=std.metrics.MetricsError
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(144) ty=Result<std.metrics.Gauge, std.metrics.MetricsError>
+    stmt: use BindingId(20) name site=SiteId(148) ty=string intent=Read
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(147) ty=std.metrics.MetricsError
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(146) ty=Result<std.metrics.Gauge, std.metrics.MetricsError>
     _9 = const.i64 0
     mtag8 = move _9
     string.retain _0
     mvar8.0.0 = move _0
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(8), ty: Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 0 } }
     _10 = const.i64 1
     mtag7 = move _10
     mvar7.1.0 = move _8
+    neutralize_payload _8 -> mvar7.1.0 [WholeCarrierConsume]
+    ownership Relocate { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(8), to: MachineVariant { local: 7, variant_idx: 1, field_idx: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: MachineVariant { local: 7, variant_idx: 1, field_idx: 0 }, to: Some(Local(7)), to_owner: None, to_ty: None }
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(7), ty: Named { name: "Result", args: [Named { name: "std.metrics.Gauge", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Result", args: [Named { name: "std.metrics.Gauge", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 1 } }
     _11 = move _7
+    neutralize_payload _7 -> _11 [WholeCarrierConsume]
+    ownership ScopeExit { scopes: [ScopeId(27)], owners: [], carry_places: [Local(11)], carried: [] }
+    ownership Relocate { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, from: Local(7), to: Local(11) }
     _4 = move _11
+    neutralize_payload _11 -> _4 [WholeCarrierConsume]
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, from: Local(11), to: Some(Local(4)), to_owner: None, to_ty: None }
     goto bb4
   bb3:
-    stmt: use BindingId(21) id site=SiteId(150) ty=i64 intent=Read
+    stmt: use BindingId(21) id site=SiteId(152) ty=i64 intent=Read
     _13 = record_init std.metrics.Gauge { .0=_3 }
     _14 = const.i64 0
     mtag12 = move _14
     mvar12.0.0 = move _13
+    neutralize_payload _13 -> mvar12.0.0 [ReturnedAggregateMemberConsume]
     _15 = move _12
+    ownership ScopeExit { scopes: [ScopeId(28)], owners: [], carry_places: [Local(15)], carried: [] }
     _4 = move _15
     goto bb4
   bb4:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(139) ty=Result<std.metrics.Gauge, std.metrics.MetricsError>
-    stmt: return site=Some(SiteId(139)) ty=Result<std.metrics.Gauge, std.metrics.MetricsError>
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(141) ty=Result<std.metrics.Gauge, std.metrics.MetricsError>
+    stmt: use BindingId(4294967229) __hew_produced_value site=SiteId(141) ty=Result<std.metrics.Gauge, std.metrics.MetricsError> intent=Consume
+    stmt: return site=Some(SiteId(141)) ty=Result<std.metrics.Gauge, std.metrics.MetricsError>
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, place: Local(4), ty: Named { name: "Result", args: [Named { name: "std.metrics.Gauge", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Result", args: [Named { name: "std.metrics.Gauge", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 2 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, from: Local(4), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _4
     return
 
@@ -391,40 +454,49 @@ fn std$metrics$histogram(string) -> std.metrics.Histogram [conv=default]
     _11: string
     _12: std.metrics.Histogram
   bb0:
-    stmt: use BindingId(22) name site=SiteId(153) ty=string intent=Read
+    stmt: use BindingId(22) name site=SiteId(155) ty=string intent=Read
     _1 = call hew_metric_histogram_register_simple(_0) -> bb1
   bb1:
-    stmt: bind BindingId(23) id site=SiteId(151) ty=i64
-    stmt: use BindingId(23) id site=SiteId(156) ty=i64 intent=Read
+    stmt: bind BindingId(23) id site=SiteId(153) ty=i64
+    stmt: use BindingId(23) id site=SiteId(158) ty=i64 intent=Read
     _2 = move _1
+    ownership ScopeExit { scopes: [ScopeId(30)], owners: [], carry_places: [Local(2)], carried: [] }
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
     branch _6 ? bb2 : bb3
   bb2:
-    stmt: use BindingId(22) name site=SiteId(161) ty=string intent=Read
+    stmt: use BindingId(22) name site=SiteId(163) ty=string intent=Read
     _7 = string_lit "metrics.histogram: registration rejected for `"
     _8 = call to_string_str(_0) -> bb5
   bb3:
     goto bb4
   bb4:
-    stmt: eval site=SiteId(171) ty=()
-    stmt: use BindingId(23) id site=SiteId(173) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(172)) ty=std.metrics.Histogram
+    stmt: eval site=SiteId(174) ty=()
+    stmt: use BindingId(23) id site=SiteId(176) ty=i64 intent=Read
+    stmt: return site=Some(SiteId(175)) ty=std.metrics.Histogram
     _12 = record_init std.metrics.Histogram { .0=_3 }
     ret = move _12
     return
   bb5:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(163) ty=string
-    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(159) ty=string
-    _9 = call_rt hew_string_concat(_7, _8)
-    drop _8 ty=string fn=release(hew_string_drop)
-    _10 = string_lit "`"
-    _11 = call_rt hew_string_concat(_9, _10)
-    drop _9 ty=string fn=release(hew_string_drop)
-    call hew_panic_msg(_11) -> bb6
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(166) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(8), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    _9 = call hew_string_concat(_7, _8) [authority=Runtime(StringConcat)] -> bb6
   bb6:
-    stmt: eval site=SiteId(158) ty=!
+    drop _8 ty=string fn=release(hew_string_drop)
+    ownership Release { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(8) }
+    _10 = string_lit "`"
+    _11 = call hew_string_concat(_9, _10) [authority=Runtime(StringConcat)] -> bb7
+  bb7:
+    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(161) ty=string
+    drop _9 ty=string fn=release(hew_string_drop)
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(11), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 1 } }
+    call hew_panic_msg(_11) [authority=NoReturnExtern] -> bb8
+  bb8:
+    stmt: eval site=SiteId(160) ty=!
+    ownership ScopeExit { scopes: [ScopeId(31)], owners: [], carry_places: [], carried: [] }
     goto bb4
 
 fn std$metrics$try_histogram(string) -> Result<std.metrics.Histogram, std.metrics.MetricsError> [conv=default]
@@ -446,42 +518,61 @@ fn std$metrics$try_histogram(string) -> Result<std.metrics.Histogram, std.metric
     _14: i64
     _15: Result<std.metrics.Histogram, std.metrics.MetricsError>
   bb0:
-    stmt: use BindingId(24) name site=SiteId(176) ty=string intent=Read
+    stmt: use BindingId(24) name site=SiteId(179) ty=string intent=Read
     _1 = call hew_metric_histogram_register_simple(_0) -> bb1
   bb1:
-    stmt: bind BindingId(25) id site=SiteId(174) ty=i64
-    stmt: use BindingId(25) id site=SiteId(180) ty=i64 intent=Read
+    stmt: bind BindingId(25) id site=SiteId(177) ty=i64
+    stmt: use BindingId(25) id site=SiteId(183) ty=i64 intent=Read
     _2 = move _1
+    ownership ScopeExit { scopes: [ScopeId(33)], owners: [], carry_places: [Local(2)], carried: [] }
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
     branch _6 ? bb2 : bb3
   bb2:
-    stmt: use BindingId(24) name site=SiteId(185) ty=string intent=Read
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(184) ty=std.metrics.MetricsError
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(183) ty=Result<std.metrics.Histogram, std.metrics.MetricsError>
+    stmt: use BindingId(24) name site=SiteId(188) ty=string intent=Read
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(187) ty=std.metrics.MetricsError
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(186) ty=Result<std.metrics.Histogram, std.metrics.MetricsError>
     _9 = const.i64 0
     mtag8 = move _9
     string.retain _0
     mvar8.0.0 = move _0
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(8), ty: Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 0 } }
     _10 = const.i64 1
     mtag7 = move _10
     mvar7.1.0 = move _8
+    neutralize_payload _8 -> mvar7.1.0 [WholeCarrierConsume]
+    ownership Relocate { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(8), to: MachineVariant { local: 7, variant_idx: 1, field_idx: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: MachineVariant { local: 7, variant_idx: 1, field_idx: 0 }, to: Some(Local(7)), to_owner: None, to_ty: None }
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(7), ty: Named { name: "Result", args: [Named { name: "std.metrics.Histogram", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Result", args: [Named { name: "std.metrics.Histogram", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 1 } }
     _11 = move _7
+    neutralize_payload _7 -> _11 [WholeCarrierConsume]
+    ownership ScopeExit { scopes: [ScopeId(34)], owners: [], carry_places: [Local(11)], carried: [] }
+    ownership Relocate { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, from: Local(7), to: Local(11) }
     _4 = move _11
+    neutralize_payload _11 -> _4 [WholeCarrierConsume]
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, from: Local(11), to: Some(Local(4)), to_owner: None, to_ty: None }
     goto bb4
   bb3:
-    stmt: use BindingId(25) id site=SiteId(189) ty=i64 intent=Read
+    stmt: use BindingId(25) id site=SiteId(192) ty=i64 intent=Read
     _13 = record_init std.metrics.Histogram { .0=_3 }
     _14 = const.i64 0
     mtag12 = move _14
     mvar12.0.0 = move _13
+    neutralize_payload _13 -> mvar12.0.0 [ReturnedAggregateMemberConsume]
     _15 = move _12
+    ownership ScopeExit { scopes: [ScopeId(35)], owners: [], carry_places: [Local(15)], carried: [] }
     _4 = move _15
     goto bb4
   bb4:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(178) ty=Result<std.metrics.Histogram, std.metrics.MetricsError>
-    stmt: return site=Some(SiteId(178)) ty=Result<std.metrics.Histogram, std.metrics.MetricsError>
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(181) ty=Result<std.metrics.Histogram, std.metrics.MetricsError>
+    stmt: use BindingId(4294967229) __hew_produced_value site=SiteId(181) ty=Result<std.metrics.Histogram, std.metrics.MetricsError> intent=Consume
+    stmt: return site=Some(SiteId(181)) ty=Result<std.metrics.Histogram, std.metrics.MetricsError>
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, place: Local(4), ty: Named { name: "Result", args: [Named { name: "std.metrics.Histogram", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Result", args: [Named { name: "std.metrics.Histogram", args: [], builtin: None, is_opaque: false }, Named { name: "std.metrics.MetricsError", args: [], builtin: None, is_opaque: false }], builtin: Some(Result), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 2 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, from: Local(4), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _4
     return
 
@@ -491,12 +582,16 @@ fn i8::fmt(i8) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(34) val site=SiteId(260) ty=i8 intent=Read
+    stmt: use BindingId(34) val site=SiteId(263) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(258) ty=string
-    stmt: return site=Some(SiteId(258)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(261) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(261) ty=string intent=Consume
+    stmt: return site=Some(SiteId(261)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -506,12 +601,16 @@ fn i16::fmt(i16) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(35) val site=SiteId(264) ty=i16 intent=Read
+    stmt: use BindingId(35) val site=SiteId(267) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(262) ty=string
-    stmt: return site=Some(SiteId(262)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(265) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(265) ty=string intent=Consume
+    stmt: return site=Some(SiteId(265)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -520,11 +619,15 @@ fn i32::fmt(i32) -> string [conv=default]
     _0: i32
     _1: string
   bb0:
-    stmt: use BindingId(36) val site=SiteId(267) ty=i32 intent=Read
+    stmt: use BindingId(36) val site=SiteId(270) ty=i32 intent=Read
     _1 = call hew_int_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(266) ty=string
-    stmt: return site=Some(SiteId(266)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(269) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(269) ty=string intent=Consume
+    stmt: return site=Some(SiteId(269)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -533,11 +636,15 @@ fn i64::fmt(i64) -> string [conv=default]
     _0: i64
     _1: string
   bb0:
-    stmt: use BindingId(37) val site=SiteId(270) ty=i64 intent=Read
+    stmt: use BindingId(37) val site=SiteId(273) ty=i64 intent=Read
     _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(269) ty=string
-    stmt: return site=Some(SiteId(269)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(272) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(272) ty=string intent=Consume
+    stmt: return site=Some(SiteId(272)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -546,11 +653,15 @@ fn u8::fmt(u8) -> string [conv=default]
     _0: u8
     _1: string
   bb0:
-    stmt: use BindingId(38) val site=SiteId(273) ty=u8 intent=Read
+    stmt: use BindingId(38) val site=SiteId(276) ty=u8 intent=Read
     _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(272) ty=string
-    stmt: return site=Some(SiteId(272)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(275) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(275) ty=string intent=Consume
+    stmt: return site=Some(SiteId(275)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -559,11 +670,15 @@ fn u16::fmt(u16) -> string [conv=default]
     _0: u16
     _1: string
   bb0:
-    stmt: use BindingId(39) val site=SiteId(276) ty=u16 intent=Read
+    stmt: use BindingId(39) val site=SiteId(279) ty=u16 intent=Read
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(275) ty=string
-    stmt: return site=Some(SiteId(275)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(278) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(278) ty=string intent=Consume
+    stmt: return site=Some(SiteId(278)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -572,11 +687,15 @@ fn u32::fmt(u32) -> string [conv=default]
     _0: u32
     _1: string
   bb0:
-    stmt: use BindingId(40) val site=SiteId(279) ty=u32 intent=Read
+    stmt: use BindingId(40) val site=SiteId(282) ty=u32 intent=Read
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(278) ty=string
-    stmt: return site=Some(SiteId(278)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(281) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(281) ty=string intent=Consume
+    stmt: return site=Some(SiteId(281)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -585,11 +704,15 @@ fn u64::fmt(u64) -> string [conv=default]
     _0: u64
     _1: string
   bb0:
-    stmt: use BindingId(41) val site=SiteId(282) ty=u64 intent=Read
+    stmt: use BindingId(41) val site=SiteId(285) ty=u64 intent=Read
     _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(281) ty=string
-    stmt: return site=Some(SiteId(281)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(284) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(284) ty=string intent=Consume
+    stmt: return site=Some(SiteId(284)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -599,12 +722,16 @@ fn isize::fmt(isize) -> string [conv=default]
     _1: i64
     _2: string
   bb0:
-    stmt: use BindingId(42) val site=SiteId(286) ty=isize intent=Read
+    stmt: use BindingId(42) val site=SiteId(289) ty=isize intent=Read
     _1 = cast _0 isize -> i64
     _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(284) ty=string
-    stmt: return site=Some(SiteId(284)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(287) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(287) ty=string intent=Consume
+    stmt: return site=Some(SiteId(287)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -614,12 +741,16 @@ fn usize::fmt(usize) -> string [conv=default]
     _1: u64
     _2: string
   bb0:
-    stmt: use BindingId(43) val site=SiteId(290) ty=usize intent=Read
+    stmt: use BindingId(43) val site=SiteId(293) ty=usize intent=Read
     _1 = cast _0 usize -> u64
     _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(288) ty=string
-    stmt: return site=Some(SiteId(288)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(291) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(291) ty=string intent=Consume
+    stmt: return site=Some(SiteId(291)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -628,11 +759,15 @@ fn bool::fmt(bool) -> string [conv=default]
     _0: bool
     _1: string
   bb0:
-    stmt: use BindingId(44) val site=SiteId(293) ty=bool intent=Read
+    stmt: use BindingId(44) val site=SiteId(296) ty=bool intent=Read
     _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(292) ty=string
-    stmt: return site=Some(SiteId(292)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(295) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(295) ty=string intent=Consume
+    stmt: return site=Some(SiteId(295)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -641,11 +776,15 @@ fn char::fmt(char) -> string [conv=default]
     _0: char
     _1: string
   bb0:
-    stmt: use BindingId(45) val site=SiteId(296) ty=char intent=Read
+    stmt: use BindingId(45) val site=SiteId(299) ty=char intent=Read
     _1 = call hew_char_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(295) ty=string
-    stmt: return site=Some(SiteId(295)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(298) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(298) ty=string intent=Consume
+    stmt: return site=Some(SiteId(298)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -654,11 +793,15 @@ fn f64::fmt(f64) -> string [conv=default]
     _0: f64
     _1: string
   bb0:
-    stmt: use BindingId(46) val site=SiteId(299) ty=f64 intent=Read
+    stmt: use BindingId(46) val site=SiteId(302) ty=f64 intent=Read
     _1 = call hew_float_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(298) ty=string
-    stmt: return site=Some(SiteId(298)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(301) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(301) ty=string intent=Consume
+    stmt: return site=Some(SiteId(301)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _1
     return
 
@@ -668,12 +811,16 @@ fn f32::fmt(f32) -> string [conv=default]
     _1: f64
     _2: string
   bb0:
-    stmt: use BindingId(47) val site=SiteId(303) ty=f32 intent=Read
+    stmt: use BindingId(47) val site=SiteId(306) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
     _2 = call hew_float_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(301) ty=string
-    stmt: return site=Some(SiteId(301)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(304) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(304) ty=string intent=Consume
+    stmt: return site=Some(SiteId(304)) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
     return
 
@@ -681,8 +828,8 @@ fn string::fmt(string) -> string [conv=default]
   locals:
     _0: string
   bb0:
-    stmt: use BindingId(48) val site=SiteId(305) ty=string intent=Read
-    stmt: return site=Some(SiteId(305)) ty=string
+    stmt: use BindingId(48) val site=SiteId(308) ty=string intent=Read
+    stmt: return site=Some(SiteId(308)) ty=string
     string.retain _0
     ret = move _0
     return
@@ -694,14 +841,14 @@ fn duration::from_nanos(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(49) n site=SiteId(307) ty=i64 intent=Read
+    stmt: use BindingId(49) n site=SiteId(310) ty=i64 intent=Read
     _1 = const.duration 1ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(306)) ty=duration
+    stmt: return site=Some(SiteId(309)) ty=duration
     ret = move _2
     return
 
@@ -712,14 +859,14 @@ fn duration::from_micros(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(50) n site=SiteId(310) ty=i64 intent=Read
+    stmt: use BindingId(50) n site=SiteId(313) ty=i64 intent=Read
     _1 = const.duration 1000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(309)) ty=duration
+    stmt: return site=Some(SiteId(312)) ty=duration
     ret = move _2
     return
 
@@ -730,14 +877,14 @@ fn duration::from_millis(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(51) n site=SiteId(313) ty=i64 intent=Read
+    stmt: use BindingId(51) n site=SiteId(316) ty=i64 intent=Read
     _1 = const.duration 1000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(312)) ty=duration
+    stmt: return site=Some(SiteId(315)) ty=duration
     ret = move _2
     return
 
@@ -748,14 +895,14 @@ fn duration::from_secs(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(52) n site=SiteId(316) ty=i64 intent=Read
+    stmt: use BindingId(52) n site=SiteId(319) ty=i64 intent=Read
     _1 = const.duration 1000000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(315)) ty=duration
+    stmt: return site=Some(SiteId(318)) ty=duration
     ret = move _2
     return
 
@@ -767,17 +914,25 @@ fn duration::fmt(duration) -> string [conv=default]
     _3: string
     _4: string
   bb0:
-    stmt: use BindingId(53) val site=SiteId(321) ty=duration intent=Read
+    stmt: use BindingId(53) val site=SiteId(324) ty=duration intent=Read
     _1 = call hew_duration_nanos(_0) -> bb1
   bb1:
     _2 = call hew_i64_to_string(_1) -> bb2
   bb2:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(319) ty=string
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(318) ty=string
-    stmt: return site=Some(SiteId(318)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(322) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     _3 = string_lit "ns"
-    _4 = call_rt hew_string_concat(_2, _3)
+    _4 = call hew_string_concat(_2, _3) [authority=Runtime(StringConcat)] -> bb3
+  bb3:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(321) ty=string
+    stmt: use BindingId(4294967230) __hew_produced_value site=SiteId(321) ty=string intent=Consume
+    stmt: return site=Some(SiteId(321)) ty=string
     drop _2 ty=string fn=release(hew_string_drop)
+    ownership Release { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2) }
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(4), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 1 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, from: Local(4), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _4
     return
 

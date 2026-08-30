@@ -487,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_record_type_def_to_record_declaration_span() {
+    fn resolves_nominal_type_def_to_declaration_span() {
         let source =
             "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
         let (parse_result, type_check) = parse_and_type_check(source);

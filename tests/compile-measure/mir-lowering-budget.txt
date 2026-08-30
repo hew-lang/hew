@@ -1,6 +1,12 @@
 # Wall-clock ceiling for `hew check` on tests/compile-measure/mir-lowering-shape.hew,
 # scored as the fastest of three runs (see scripts/bench-mir.sh).
 #
+# Where the number comes from: on the machine this was set on, the fixture took
+# 4383 ms before the per-block CFG replays were removed and settles around
+# 1180 ms after, rising to about 1250 ms with a dozen other builds running. The
+# ceiling is twice the settled figure: a loaded runner stays well inside it,
+# and a return to per-block replay blows through it by more than three times.
+#
 # SHORTCUT. WHY: a wall-clock ceiling is a proxy for the real invariant, which
 # is that MIR lowering cost is proportional to function size; nothing in the
 # tree can assert that shape directly, so a machine-dependent number stands in
@@ -12,4 +18,4 @@
 #
 # Ratchet: lower this manually after a measured, reviewed improvement. Never
 # raise it to make a red gate pass; a regression here is the gate working.
-check_wall_ms_ceiling=6000
+check_wall_ms_ceiling=2400

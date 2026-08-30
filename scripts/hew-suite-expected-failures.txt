@@ -15,3 +15,14 @@
 # the ratchet: a known compiler refusal cannot silently become a hung,
 # unstartable, or crashing binary under the same test identity.
 #
+# Priority-1 upstream reductions from Goobers-Hew.  Each is intentionally an
+# executable desired-behaviour test: remove its row when the failure is fixed.
+# #3173 currently refuses indirect owned call scrutinees with E_NOT_YET_IMPLEMENTED.
+tests/hew/call_scrutinee_indirect_ownership_test.hew::indirect_owned_result_call_scrutinee_preserves_payload compile
+# #3173 cannot attach an imported actor protocol descriptor and then reports the
+# unresolved imported child/handler as E_NOT_YET_IMPLEMENTED.
+tests/hew/imported_supervisor_child_layout_test.hew::imported_actor_is_a_supervised_child compile
+# #3173 reports the ownership-generation lowering invariant as E_MIR_ICE.
+tests/hew/journal_first_symlink_ownership_test.hew::scans_regular_path_components compile
+# #3173 reports the ownership-generation lowering invariant as E_MIR_ICE.
+tests/hew/json_value_loop_reassign_test.hew::reassigns_json_resource_builder_in_loop compile

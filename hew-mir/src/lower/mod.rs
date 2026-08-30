@@ -4892,6 +4892,26 @@ fn cfg_reachable_over(
 ///   leak at abort is safe where a possible double-free is not;
 /// * a consumption reachable from itself (a consuming match on a loop
 ///   path) would discharge once per iteration — fail closed.
+///
+/// SHORTCUT (the exit set is two terminators, not every exit edge).
+/// WHY: the loop below only visits `Return` and `Trap` blocks, so a callee
+/// that unwinds out of an INNER call while the carrier is still whole never
+/// releases the incoming copy. The obvious repair — mint the parameter as an
+/// owner with an `OwnedCarrier` guard so the replay-derived plans carry the
+/// release on the unwind edges too — does not compose today: the carrier
+/// transfer seams (`transfer_owned_carrier_place`, the consuming project-match
+/// in `pattern.rs`) END the carrier's generation at the handoff without
+/// publishing a successor, so the replay reads every later transfer as a
+/// transfer of an ended generation and the caller's reuse downgrades to a
+/// use-after-consume.
+/// WHEN: delete this pass once every carrier transfer seam publishes a
+/// successor generation; the release then falls out of the same event replay
+/// as every other owner and needs no per-terminator append.
+/// WHAT: the real solution is one guarded owner minted at parameter entry,
+/// released by the ordinary exit-plan derivation on every edge. The direction
+/// of the gap is under-release (a leak on the unwind edge), never a double
+/// free. Tracked as #3160; the discarded attempt is preserved at
+/// `.tmp/ownership-seams/f3-inflight.patch`.
 fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
     if builder.owned_carrier_params.is_empty() {
         return;

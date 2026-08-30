@@ -78,6 +78,46 @@ fn xnode_registry_key(name: &str, args: &[ResolvedTy]) -> String {
     }
 }
 
+/// Resolve `name`/`args` to a registered enum layout AND its
+/// [`MachineCodegenLayout`], trying both [`xnode_registry_key`] and the
+/// machine class-tag mangled key.
+///
+/// WHY this second try is needed (#3122): `xnode_registry_key` mangles only
+/// GENERIC instantiations (`mangle_with_shortened_args`); it never applies
+/// the `mc$$Name$$` machine class tag. A machine's own state enum and its
+/// `<Machine>Event` companion are registered in `enum_layouts` /
+/// `machine_layouts` under that class-tagged key
+/// (`hew_mir::model::machine_enum_view` / `machine_event_enum_view` carry
+/// `MachineLayout::name` / `event_name` verbatim, and those are minted via
+/// `hew_hir::machine_layout_key` — see `hew-mir/src/model.rs`
+/// `find_enum_layout`, the MIR-side lookup authority this mirrors). Probing
+/// only the bare key made a machine-owned enum invisible to the wire codec:
+/// it fell through to "not a registered record layout" even after the
+/// checker granted it `Send`.
+///
+/// Returns the RESOLVED key (whichever form matched) alongside the layout
+/// pair — callers thread it onward into the wire-tag lookups
+/// (`cbor_variant_tag` et al.), which are best-effort (they fall back to a
+/// positional tag on a miss), so passing the mangled form there is safe:
+/// compiler-synthesized enums have no `wire_layouts` entry either way.
+fn resolve_machine_enum_key<'a, 'ctx>(
+    name: &str,
+    args: &[ResolvedTy],
+    machine_layouts: &'a MachineLayoutMap<'ctx>,
+    enum_layouts: &'a [EnumLayout],
+) -> Option<(String, &'a MachineCodegenLayout<'ctx>, &'a EnumLayout)> {
+    [
+        xnode_registry_key(name, args),
+        hew_hir::machine_layout_key(name, args),
+    ]
+    .into_iter()
+    .find_map(|key| {
+        let layout = machine_layouts.get(&key)?;
+        let el = enum_layouts.iter().find(|e| e.name == key)?;
+        Some((key, layout, el))
+    })
+}
+
 /// Emit inline drop calls for any heap-owning fields written by the decode walk
 /// into `dst`.  Used on the decode-failure path (Fix 3b): the destination struct
 /// was zero-initialised before the walk, so every field the walk did NOT reach is
@@ -207,8 +247,10 @@ fn emit_de_drop_owned<'ctx>(
                 return Ok(());
             }
             let key = xnode_registry_key(name, args);
-            if let Some(el) = enum_layouts.iter().find(|e| e.name == key) {
-                let drop_fn = get_or_declare_enum_drop_inplace(ctx, llvm_mod, &key);
+            if let Some((enum_key, layout, el)) =
+                resolve_machine_enum_key(name, args, machine_layouts, enum_layouts)
+            {
+                let drop_fn = get_or_declare_enum_drop_inplace(ctx, llvm_mod, &enum_key);
                 if el.is_indirect {
                     // An indirect (recursive) enum's `dst` holds a heap-node
                     // POINTER: `emit_de_enum_cbor` stored the `hew_alloc`'d node
@@ -230,15 +272,9 @@ fn emit_de_drop_owned<'ctx>(
                     builder
                         .build_call(drop_fn, &[node.into()], "de_drop_enum_node")
                         .llvm_ctx("de drop indirect enum node call")?;
-                    let layout = machine_layouts.get(&key).ok_or_else(|| {
-                        CodegenError::FailClosed(format!(
-                            "indirect-enum decode cleanup: enum `{key}` has no \
-                             MachineCodegenLayout — codec/layout registration drift"
-                        ))
-                    })?;
                     let node_size = layout.outer_struct.size_of().ok_or_else(|| {
                         CodegenError::FailClosed(format!(
-                            "indirect-enum decode cleanup: enum `{key}` outer struct \
+                            "indirect-enum decode cleanup: enum `{enum_key}` outer struct \
                              has no size"
                         ))
                     })?;
@@ -690,16 +726,15 @@ fn emit_ser_named_cbor<'ctx>(
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args);
     // Enum: encode under the map-of-one shape.
-    if let (Some(layout), Some(el)) = (
-        machine_layouts.get(&key),
-        enum_layouts.iter().find(|e| e.name == key),
-    ) {
+    if let Some((enum_key, layout, el)) =
+        resolve_machine_enum_key(name, args, machine_layouts, enum_layouts)
+    {
         return emit_ser_enum_cbor(
             ctx,
             llvm_mod,
             builder,
             func,
-            &key,
+            &enum_key,
             layout,
             el,
             value_ptr,
@@ -1161,16 +1196,15 @@ fn emit_de_named_cbor<'ctx>(
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args);
     // Enum: decode the map-of-one shape.
-    if let (Some(layout), Some(el)) = (
-        machine_layouts.get(&key),
-        enum_layouts.iter().find(|e| e.name == key),
-    ) {
+    if let Some((enum_key, layout, el)) =
+        resolve_machine_enum_key(name, args, machine_layouts, enum_layouts)
+    {
         return emit_de_enum_cbor(
             ctx,
             llvm_mod,
             builder,
             func,
-            &key,
+            &enum_key,
             layout,
             el,
             dst,
@@ -3266,10 +3300,9 @@ fn emit_ser_option_cbor<'ctx>(
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
     let key = xnode_registry_key(name, args);
-    let (Some(layout), Some(el)) = (
-        machine_layouts.get(&key),
-        enum_layouts.iter().find(|e| e.name == key),
-    ) else {
+    let Some((_enum_key, layout, el)) =
+        resolve_machine_enum_key(name, args, machine_layouts, enum_layouts)
+    else {
         return Err(CodegenError::FailClosed(format!(
             "wire CBOR serialize: Option `{name}` (key `{key}`) has no enum layout"
         )));
@@ -3399,10 +3432,9 @@ fn emit_de_option_cbor<'ctx>(
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
     let key = xnode_registry_key(name, args);
-    let (Some(layout), Some(el)) = (
-        machine_layouts.get(&key),
-        enum_layouts.iter().find(|e| e.name == key),
-    ) else {
+    let Some((_enum_key, layout, el)) =
+        resolve_machine_enum_key(name, args, machine_layouts, enum_layouts)
+    else {
         return Err(CodegenError::FailClosed(format!(
             "wire CBOR deserialize: Option `{name}` (key `{key}`) has no enum layout"
         )));

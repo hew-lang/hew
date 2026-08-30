@@ -38,8 +38,9 @@ use std::collections::HashSet;
 use hew_types::{BuiltinType, ResolvedTy};
 
 use crate::model::{
-    find_enum_layout, find_record_layout_for_ty, is_indirect_enum, machine_enum_views, EnumLayout,
-    IrPipeline, RawMirFunction, RecordLayout, SupervisorLayout,
+    find_enum_layout, find_record_layout_for_ty, is_indirect_enum, machine_enum_views,
+    machine_event_enum_views, EnumLayout, IrPipeline, RawMirFunction, RecordLayout,
+    SupervisorLayout,
 };
 use crate::{Instr, Place, StateFieldCloneKind, Terminator};
 
@@ -92,6 +93,7 @@ impl IrPipeline {
             .iter()
             .cloned()
             .chain(machine_enum_views(&self.machine_layouts))
+            .chain(machine_event_enum_views(&self.machine_layouts))
             .collect();
 
         // A machine local admitted for a scope-exit release rides the same

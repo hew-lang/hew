@@ -19,14 +19,12 @@ const CEILING: usize = 10_000;
 
 const _: () = assert!(CEILING <= 10_000);
 
-/// Exact post-hard-cutover sizes for the three pre-existing oversized modules.
+/// Exact post-hard-cutover sizes for the pre-existing oversized modules.
 /// These are no-growth caps, not a new general ceiling: even one added line
 /// trips the ratchet, and every unlisted module remains capped at [`CEILING`].
-const HARD_CUTOVER_CEILINGS: &[(&str, usize)] = &[
-    ("drop_plan.rs", 15_950),
-    ("mod.rs", 16_268),
-    ("temp_drop.rs", 10_851),
-];
+/// A module that comes back under [`CEILING`] loses its exception here rather
+/// than keeping a cap no longer binding on it.
+const HARD_CUTOVER_CEILINGS: &[(&str, usize)] = &[("mod.rs", 16_268), ("temp_drop.rs", 10_851)];
 
 fn ceiling_for(relative: &Path) -> usize {
     HARD_CUTOVER_CEILINGS

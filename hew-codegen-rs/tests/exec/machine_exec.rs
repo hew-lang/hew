@@ -301,17 +301,18 @@ fn step_function_body<'a>(ir: &'a str, machine: &str) -> &'a str {
     &tail[..end]
 }
 
-/// The program entry body symbol.
+/// The body of the program entry, whatever the target named it.
 ///
-/// The exported `main` is a wrapper that runs this beneath the runtime's
-/// unwind boundary (hew-lang/hew#3074), so the entry's own calls are here.
-const ENTRY_BODY_DEFINE: &str = "@__hew_main_body(";
-
+/// The exported `main` may be a wrapper that runs the entry beneath an entry
+/// wrapper (the runtime's unwind boundary on structured-unwind natives, the
+/// export wrapper on wasm32), so the entry's own calls live under the symbol
+/// codegen picked for this triple, not necessarily `@main`.
 fn main_function_body(ir: &str) -> &str {
+    let entry = format!("@{}(", crate::ir_assertions::entry_body_symbol(ir));
     let start = ir
-        .find(ENTRY_BODY_DEFINE)
+        .find(&entry)
         .and_then(|at| ir[..at].rfind("define "))
-        .unwrap_or_else(|| panic!("missing user entry body in IR:\n{ir}"));
+        .unwrap_or_else(|| panic!("missing user entry body `{entry}` in IR:\n{ir}"));
     let tail = &ir[start..];
     let end = tail.find("\n}\n").unwrap_or(tail.len());
     &tail[..end]

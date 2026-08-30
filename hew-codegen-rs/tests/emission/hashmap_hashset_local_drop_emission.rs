@@ -15,6 +15,7 @@
 //! LESSONS: cleanup-all-exits (P0), boundary-fail-closed (P0),
 //! container-ingress-ownership-is-per-container (P0).
 
+use crate::ir_assertions::entry_body_symbol;
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
@@ -69,12 +70,6 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// The program entry body symbol.
-///
-/// The exported `main` is a wrapper that runs this beneath the runtime's
-/// unwind boundary (hew-lang/hew#3074), so the entry's own drops are here.
-const ENTRY_BODY: &str = "__hew_main_body";
-
 /// The body text of `define ... @<name>(...) { ... }`, from the `define` line up
 /// to (and excluding) the terminating `}` line. Lets a test scope its call
 /// count to ONE function instead of the whole module.
@@ -117,7 +112,7 @@ fn hashmap_hashset_local_drop_emission_local_map_frees_in_main() {
         ",
         "local_map_free",
     );
-    let main_body = function_body(&ll, ENTRY_BODY);
+    let main_body = function_body(&ll, entry_body_symbol(&ll));
     assert_eq!(
         count(main_body, "call void @hew_hashmap_free_layout("),
         1,
@@ -138,7 +133,7 @@ fn hashmap_hashset_local_drop_emission_local_set_frees_in_main() {
         ",
         "local_set_free",
     );
-    let main_body = function_body(&ll, ENTRY_BODY);
+    let main_body = function_body(&ll, entry_body_symbol(&ll));
     assert_eq!(
         count(main_body, "call void @hew_hashset_free_layout("),
         1,
@@ -162,7 +157,7 @@ fn hashmap_hashset_local_drop_emission_map_and_set_both_free_in_main() {
         ",
         "local_map_and_set_free",
     );
-    let main_body = function_body(&ll, ENTRY_BODY);
+    let main_body = function_body(&ll, entry_body_symbol(&ll));
     assert_eq!(
         count(main_body, "call void @hew_hashmap_free_layout("),
         1,
@@ -202,7 +197,7 @@ fn hashmap_hashset_local_drop_emission_spawn_escaped_map_not_freed_in_main() {
         ",
         "spawn_escaped_map",
     );
-    let main_body = function_body(&ll, ENTRY_BODY);
+    let main_body = function_body(&ll, entry_body_symbol(&ll));
     assert_eq!(
         count(main_body, "call void @hew_hashmap_free_layout("),
         0,
@@ -244,7 +239,7 @@ fn hashmap_hashset_local_drop_emission_alias_then_spawn_escaped_map_not_freed_in
         ",
         "alias_spawn_escaped_map",
     );
-    let main_body = function_body(&ll, ENTRY_BODY);
+    let main_body = function_body(&ll, entry_body_symbol(&ll));
     assert_eq!(
         count(main_body, "call void @hew_hashmap_free_layout("),
         0,

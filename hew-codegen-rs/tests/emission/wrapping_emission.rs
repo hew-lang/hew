@@ -13,6 +13,7 @@
 
 use std::path::Path;
 
+use crate::ir_assertions::entry_body_symbol;
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
 use hew_types::TypeCheckOutput;
@@ -60,7 +61,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// Slice the emitted module down to the program entry body (`@__hew_main_body`).
+/// Slice the emitted module down to the program entry body.
 ///
 /// The negative assertions below (no `with.overflow`, no `@llvm.trap`) are
 /// about the WRAPPING OPERATION under test, not the whole module: every module
@@ -69,11 +70,12 @@ fn emit_ll(source: &str, module_name: &str) -> String {
 /// `smul.with.overflow` + `@llvm.trap` (default trap-on-overflow arithmetic).
 /// Scoping to the entry body keeps the assertion about `&+`/`&-`/`&*` precise.
 fn main_body(ll: &str) -> String {
+    let entry = format!("@{}(", entry_body_symbol(ll));
     let start = ll
         .find("define")
-        .and_then(|defs| ll[defs..].find("@__hew_main_body").map(|m| defs + m))
+        .and_then(|defs| ll[defs..].find(&entry).map(|m| defs + m))
         .map(|m| ll[..m].rfind("define").unwrap_or(m))
-        .expect("emitted module must define @__hew_main_body");
+        .unwrap_or_else(|| panic!("emitted module must define {entry}"));
     let rest = &ll[start..];
     let end = rest[1..]
         .find("\ndefine")

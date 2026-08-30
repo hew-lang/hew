@@ -127,7 +127,20 @@ fn llvm_function_body<'a>(ir: &'a str, name: &str) -> &'a str {
     &rest[..byte_end]
 }
 
-fn assert_owned_release_symbol(source: &str, fixture: &str, function: &str) {
+/// The symbol carrying the entry's own body in this module, asked of codegen
+/// rather than assumed: the target's entry wrapper decides the name.
+fn entry_body_symbol(ir: &str) -> &'static str {
+    let triple = ir
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("target triple = \"")
+                .and_then(|value| value.strip_suffix('"'))
+        })
+        .unwrap_or_else(|| panic!("emitted LLVM IR must declare its target triple:\n{ir}"));
+    hew_codegen_rs::entry_body_symbol_for_triple(triple)
+}
+
+fn assert_owned_release_symbol(source: &str, fixture: &str, function: Option<&str>) {
     require_codegen();
     let dir = tempfile::Builder::new()
         .prefix(&format!("owned-vec-symbol-{fixture}-"))
@@ -135,6 +148,7 @@ fn assert_owned_release_symbol(source: &str, fixture: &str, function: &str) {
         .expect("tempdir");
     let bin = compile_to_native(source, dir.path(), fixture);
     let ir = std::fs::read_to_string(bin.with_extension("ll")).expect("read emitted LLVM IR");
+    let function = function.unwrap_or_else(|| entry_body_symbol(&ir));
     let body = llvm_function_body(&ir, function);
     assert!(
         body.contains("call void @hew_vec_free_owned("),
@@ -149,17 +163,14 @@ fn assert_owned_release_symbol(source: &str, fixture: &str, function: &str) {
 
 #[test]
 fn affected_release_sites_emit_owned_symbol() {
-    // The exported `main` is a wrapper around the entry body, which is where
-    // the entry's own releases are emitted (hew-lang/hew#3074).
-    assert_owned_release_symbol(
-        &generator_yield_source(3),
-        "generator_symbol",
-        "__hew_main_body",
-    );
+    // `None` selects the program entry body: on a target that wraps `main` for
+    // its unwind boundary the entry's own releases live under the wrapped
+    // symbol, not the exported one (hew-lang/hew#3074).
+    assert_owned_release_symbol(&generator_yield_source(3), "generator_symbol", None);
     assert_owned_release_symbol(
         &field_reassignment_source(3),
         "field_symbol",
-        "replace_holder",
+        Some("replace_holder"),
     );
 }
 

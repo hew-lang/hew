@@ -899,9 +899,10 @@ fn semantic_unreachable_emits_bare_llvm_unreachable_without_trap_or_drop_plan() 
     module
         .verify()
         .expect("bare LLVM unreachable must leave a valid module");
+    let entry_body = entry_body_symbol_for_triple(&module.get_triple().as_str().to_string_lossy());
     let main = module
-        .get_function(NATIVE_MAIN_BODY_SYMBOL)
-        .expect("fixture must emit its entry body")
+        .get_function(entry_body)
+        .unwrap_or_else(|| panic!("fixture must emit its entry body `{entry_body}`"))
         .print_to_string()
         .to_string();
     assert!(
@@ -12848,23 +12849,6 @@ fn llvm_defined_function_body<'a>(ir: &'a str, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("unterminated LLVM function `{name}`"))
         + 3;
     &tail[..end]
-}
-
-/// The symbol carrying the entry's own body for a given target.
-///
-/// wasm32 renames it for the export wrapper, and a target whose unwind lands in
-/// LLVM cleanup pads renames it for the process-entry catch boundary
-/// (hew-lang/hew#3074). Everywhere else `main` is still the body itself.
-fn entry_body_symbol_for_triple(triple: &str) -> &'static str {
-    if triple.starts_with("wasm32") {
-        "__original_main"
-    } else if cleanup_capabilities_for_target(triple).unwind_strategy
-        == CleanupUnwindStrategy::StructuredLlvm
-    {
-        NATIVE_MAIN_BODY_SYMBOL
-    } else {
-        "main"
-    }
 }
 
 fn cleanup_strategy_test_triples() -> Vec<String> {

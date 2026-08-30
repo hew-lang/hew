@@ -1740,7 +1740,8 @@ fn llvm_codegen_lock() -> &'static Mutex<()> {
 ///
 /// On non-macOS hosts the system default triple is returned unchanged.
 #[cfg(target_os = "macos")]
-fn native_emission_triple() -> String {
+#[must_use]
+pub fn native_emission_triple() -> String {
     let default = TargetMachine::get_default_triple();
     let default_str = default.as_str().to_string_lossy();
 
@@ -1763,7 +1764,8 @@ fn native_emission_triple() -> String {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn native_emission_triple() -> String {
+#[must_use]
+pub fn native_emission_triple() -> String {
     TargetMachine::get_default_triple()
         .as_str()
         .to_string_lossy()
@@ -33774,10 +33776,9 @@ fn declare_function<'ctx>(
         BasicTypeEnum::VectorType(v) => v.fn_type(&param_tys, false),
         BasicTypeEnum::ScalableVectorType(v) => v.fn_type(&param_tys, false),
     };
-    let wraps_native_entry =
-        is_native_process_entry(func) && native_unwind_enabled(llvm_mod);
+    let wraps_native_entry = is_native_process_entry(func) && native_unwind_enabled(llvm_mod);
     let symbol_name = if emit_wasm_entry_alias && func.name == "main" {
-        "__original_main"
+        WASM_MAIN_BODY_SYMBOL
     } else if wraps_native_entry {
         NATIVE_MAIN_BODY_SYMBOL
     } else {
@@ -33808,7 +33809,11 @@ fn declare_function<'ctx>(
 /// land ([`emit_native_main_unwind_wrapper`]). A target on the crash-owner
 /// registry instead keeps the boundary-free `hew_panic` exit.
 fn native_unwind_enabled(llvm_mod: &LlvmModule<'_>) -> bool {
-    let triple = llvm_mod.get_triple().as_str().to_string_lossy().into_owned();
+    let triple = llvm_mod
+        .get_triple()
+        .as_str()
+        .to_string_lossy()
+        .into_owned();
     cleanup_capabilities_for_target(&triple).unwind_strategy
         == CleanupUnwindStrategy::StructuredLlvm
 }
@@ -33846,6 +33851,33 @@ fn is_native_process_entry(func: &RawMirFunction) -> bool {
 /// [`emit_native_main_unwind_wrapper`]; this is the function it hands to the
 /// runtime's catch boundary.
 const NATIVE_MAIN_BODY_SYMBOL: &str = "__hew_main_body";
+
+/// Internal symbol carrying the generated program entry on wasm32.
+///
+/// The exported `main` there is the export wrapper emitted by
+/// [`emit_wasm_main_export_wrapper`].
+const WASM_MAIN_BODY_SYMBOL: &str = "__original_main";
+
+/// The symbol carrying the program entry's own body on a given target.
+///
+/// One authority for a name that three different renames can claim: wasm32
+/// renames the body for its export wrapper, a target whose unwind lands in LLVM
+/// cleanup pads renames it for the process-entry catch boundary
+/// (hew-lang/hew#3074), and everywhere else `main` is still the body itself.
+/// IR oracles that want the entry's own drops and calls must ask this rather
+/// than assume a name, or they read an empty wrapper - or nothing - on a target
+/// that renamed differently than they expected.
+pub fn entry_body_symbol_for_triple(triple: &str) -> &'static str {
+    if triple.starts_with("wasm32") {
+        WASM_MAIN_BODY_SYMBOL
+    } else if cleanup_capabilities_for_target(triple).unwind_strategy
+        == CleanupUnwindStrategy::StructuredLlvm
+    {
+        NATIVE_MAIN_BODY_SYMBOL
+    } else {
+        "main"
+    }
+}
 
 /// Adapter that calls the entry body on the boundary's behalf.
 ///

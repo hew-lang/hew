@@ -5109,6 +5109,73 @@ mod tests {
         );
     }
 
+    /// The positive control for the block-send admission wake: a producer that
+    /// parked on a full bounded mailbox is resumed when the consumer frees a
+    /// slot. Its refusal sibling below reincarnates before the wake, so only
+    /// this test shows the wake edge firing at all.
+    #[test]
+    fn blocked_sender_wake_resumes_the_registering_incarnation() {
+        let _guard = crate::runtime_test_guard();
+        let sched = NoWorkerSchedulerForTest::install();
+        let sender = crate::test_actor::TrackedTestActor::install_parked();
+
+        // SAFETY: this test exclusively owns the bounded mailbox and slot.
+        let mailbox = unsafe {
+            crate::mailbox::hew_mailbox_new_with_policy(
+                1,
+                crate::internal::types::HewOverflowPolicy::Block,
+            )
+        };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox and payload are valid for the complete copying call.
+            unsafe { crate::mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+        let slot = crate::read_slot::hew_read_slot_new();
+        assert_eq!(
+            // SAFETY: sender, mailbox, and slot remain live until the waiter is resolved.
+            unsafe {
+                crate::mailbox::mailbox_await_send(
+                    mailbox,
+                    2,
+                    ptr::null_mut(),
+                    0,
+                    sender.ptr(),
+                    slot,
+                )
+            },
+            crate::mailbox::MAILBOX_AWAIT_SEND_SUSPEND,
+            "a full bounded Block mailbox must park the producer"
+        );
+
+        // Freeing the queue slot admits the waiter and resolves its wake.
+        // SAFETY: this test is the mailbox's sole consumer.
+        let first = unsafe { crate::mailbox::hew_mailbox_try_recv(mailbox) };
+        assert!(!first.is_null());
+        // SAFETY: dequeue transferred ownership of the first node.
+        unsafe { crate::mailbox::hew_msg_node_free(first) };
+
+        assert_eq!(
+            // SAFETY: the test holds the creator ref on the slot.
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            crate::read_slot::ReadStatus::Data as i32,
+            "admission must deposit capacity readiness before waking"
+        );
+        crate::test_actor::assert_woken(&sched, &sender, "blocked-sender");
+
+        // SAFETY: this test is still the mailbox's sole consumer.
+        let second = unsafe { crate::mailbox::hew_mailbox_try_recv(mailbox) };
+        assert!(!second.is_null(), "the parked send must have been admitted");
+        // SAFETY: this test owns the admitted node, slot, and mailbox.
+        unsafe {
+            crate::mailbox::hew_msg_node_free(second);
+            crate::read_slot::hew_read_slot_free(slot);
+            crate::mailbox::mailbox_close(mailbox);
+            crate::mailbox::hew_mailbox_free(mailbox);
+        }
+    }
+
     /// A blocked sender wake carries the incarnation that registered, not the
     /// allocation address. The hook destroys that sender after readiness is
     /// deposited, then deterministically placement-allocates a fresh suspended

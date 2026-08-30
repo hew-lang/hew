@@ -1504,13 +1504,19 @@ fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::Run
 /// scheduler's own unit tests call it directly to exercise the CAS and
 /// pending-wake discipline in isolation.
 ///
+/// That is enforced by visibility, not by this comment: the function is private
+/// to this module, so the only callers it can ever have are
+/// `enqueue_resume_by_incarnation` and the tests below. A readiness source in
+/// another module cannot name it, and so cannot reintroduce the address-keyed
+/// wake this change removed.
+///
 /// # Safety
 ///
 /// `actor`, if non-null, must be pinned live by the caller for the duration of
 /// this call. `cont`, if non-null, must be the continuation parked on `actor`
 /// (a `coro.begin` frame). The caller (a readiness source) owns the wake edge;
 /// the executor owns teardown.
-pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_void) {
+unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_void) {
     if actor.is_null() {
         return;
     }

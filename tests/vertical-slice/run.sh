@@ -146,31 +146,16 @@ run_actor_bounds_trap_fixture() {
     local expected_diagnostic="$2"
     local expected_actor="${3:-}"
     local expected_status="${4:-1}"
-    local known_missing_actor_issue="${5:-}"
     run_accept_expect_status "${fixture}" "${expected_status}"
     if ! grep -qF -- "${expected_diagnostic}" "${stderr_output}"; then
         echo "${fixture}: missing expected actor panic diagnostic: ${expected_diagnostic}" >&2
         cat "${stderr_output}" >&2
         exit 1
     fi
-    if [[ -n "${known_missing_actor_issue}" ]] &&
-        ! grep -qF -- "${expected_actor}" "${stderr_output}"; then
-        if [[ "$(cat "${stderr_output}")" != "${expected_diagnostic}" ]]; then
-            echo "${fixture}: #${known_missing_actor_issue} changed from the exact context-free diagnostic" >&2
-            cat "${stderr_output}" >&2
-            exit 1
-        fi
-        echo "KNOWN ${fixture} (#${known_missing_actor_issue}: missing actor crash context)"
-        return
-    fi
     if [[ -n "${expected_actor}" ]] &&
         ! grep -qF -- "${expected_actor}" "${stderr_output}"; then
         echo "${fixture}: missing expected actor context: ${expected_actor}" >&2
         cat "${stderr_output}" >&2
-        exit 1
-    fi
-    if [[ -n "${known_missing_actor_issue}" ]]; then
-        echo "${fixture}: #${known_missing_actor_issue} is fixed; remove this known-failure ratchet" >&2
         exit 1
     fi
     if grep -qF -- 'hew: trap in main context' "${stderr_output}"; then
@@ -2325,21 +2310,19 @@ run_accept_expect_status "std_panic_wrappers_success" 0
 run_accept_expect_trap "crash_main_context_diagnostic"
 grep -q 'hew: trap in main context' "${stderr_output}"
 
-# F4.3's desired contract names `Crasher::on_trigger` rather than an opaque
-# message type. #3126 currently exits 1 with empty stderr; this shrink-only
-# ratchet admits exactly that missing diagnostic and rejects any other output
-# (including the desired context, which means the ledger can be removed).
+# F4.3: an actor crash must name the function/context in the diagnostic, not
+# emit an opaque msg_type integer. The fixture spawns an actor that traps in
+# its handler; `crash::record_logical_crash` resolves the handler name from the
+# dispatch-fn registry ("Crasher::on_trigger") rather than printing
+# "msg_type=-N". The unsupervised crash must also report exit 1 after main's
+# sleep gives the diagnostic time to settle.
 run_accept_expect_status "crash_actor_context_diagnostic" 1
-if grep -q 'Crasher' "${stderr_output}"; then
-    echo "crash_actor_context_diagnostic: #3126 is fixed; remove this known-failure ratchet" >&2
-    exit 1
-fi
-if [[ -s "${stderr_output}" ]]; then
-    echo "crash_actor_context_diagnostic: #3126 changed from the exact empty-stderr failure" >&2
+grep -q 'Crasher' "${stderr_output}"
+if grep -q 'msg_type=-' "${stderr_output}"; then
+    echo "crash_actor_context_diagnostic: stderr still contains opaque msg_type=-N format" >&2
     cat "${stderr_output}" >&2
     exit 1
 fi
-echo "KNOWN crash_actor_context_diagnostic (#3126: missing local actor crash context)"
 
 # Runtime FFI bounds checks inside actor dispatch must crash only the actor, not
 # the scheduler. Each fixture sends a crashing message and then proves actor
@@ -2350,74 +2333,62 @@ run_actor_bounds_trap_fixture \
     "vec_set_oob_actor_isolated" \
     "PANIC: Vec.set() index 99 out of bounds (len 1)" \
     "VecSetCrasher" \
-    0 \
-    3126
+    0
 run_actor_bounds_trap_fixture \
     "vec_pop_empty_actor_isolated" \
     "PANIC: Vec.pop() on an empty vector" \
     "VecPopCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "vec_remove_oob_actor_isolated" \
     "PANIC: Vec.remove() index 99 out of bounds (len 1)" \
     "VecRemoveCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "vec_remove_layout_oob_actor_isolated" \
     "PANIC: Vec.remove() index 99 out of bounds (len 1)" \
     "VecRemoveLayoutCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "bytes_index_oob_actor_isolated" \
     "PANIC: bytes[i] index 99 out of bounds (len 1)" \
     "BytesIndexCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "bytes_slice_oob_actor_isolated" \
     "PANIC: bytes slice range 0..99 out of bounds (len 2)" \
     "BytesSliceCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "bytes_pop_empty_actor_isolated" \
     "PANIC: bytes.pop() on an empty buffer" \
     "BytesPopCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "bytes_set_oob_actor_isolated" \
     "PANIC: bytes.set() index 99 out of bounds (len 1)" \
     "BytesSetCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "string_index_oob_actor_isolated" \
     "PANIC: string[i] index 99 out of bounds (len 3)" \
     "StringIndexCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "string_slice_oob_actor_isolated" \
     "PANIC: string slice range 1..99 out of bounds (len 5)" \
     "StringSliceCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "deque_pop_front_empty_actor_isolated" \
     "PANIC: Deque.pop_front() on an empty deque" \
     "DequePopFrontCrasher" \
-    1 \
-    3126
+    1
 run_actor_bounds_trap_fixture \
     "deque_pop_back_empty_actor_isolated" \
     "PANIC: Deque.pop_back() on an empty deque" \
     "DequePopBackCrasher" \
-    1 \
-    3126
+    1
 
 run_accept_expect_status "directory_module_call" 7
 

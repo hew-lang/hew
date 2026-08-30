@@ -279,6 +279,12 @@ thread_local! {
     /// normally. Nested drains snapshot the set depth on entry and release only
     /// their own frames on exit, so an outer drain's held frames stay held (and
     /// their addresses reserved) across an inner drain.
+    ///
+    /// This set covers only the drain's own window. A generated cleanup landing
+    /// pad on the unwind edge reaches the same handle BEFORE the scheduler
+    /// catches the unwind and opens that window, so `hew_cont_destroy`'s skip is
+    /// keyed on [`frame_is_crash_owned`]: the abandoned activation record is the
+    /// frame's owner from the unwind onward, and this set takes over from it.
     static CRASH_QUARANTINED_FRAMES: RefCell<Vec<*mut c_void>> =
         const { RefCell::new(Vec::new()) };
 }
@@ -311,6 +317,32 @@ fn frame_is_quarantined(handle: *mut c_void) -> bool {
         return false;
     }
     CRASH_QUARANTINED_FRAMES.with(|frames| frames.borrow().contains(&handle))
+}
+
+/// Whether the crash-reclamation authority — not the ordinary destroy owner —
+/// owns `handle`'s frame.
+///
+/// A frame is crash-owned from the moment a language unwind abandons it
+/// mid-execution until the drain that reclaims it releases its storage:
+///
+///   * it still carries a live activation record on this worker's active-frame
+///     stack. `hew_cont_resume` (and the tracked ramp) push that record and pop
+///     it only on the normal return edge; an unwind out of the coroutine body
+///     deliberately leaves it standing so scheduler recovery can find the
+///     abandoned frame. Until the drain runs, that record IS the frame's owner.
+///   * or the drain has already claimed it and is holding its storage until it
+///     unwinds ([`CRASH_QUARANTINED_FRAMES`]).
+///
+/// Both states mean the same thing for [`hew_cont_destroy`]: the frame was
+/// abandoned between suspend points, so re-entering its suspend cleanup outline
+/// would re-release registrations its resume edge already released, and freeing
+/// it would race the drain's single free. The check is thread-local because a
+/// frame is only ever active on the worker that resumed it.
+fn frame_is_crash_owned(handle: *mut c_void) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    active_coroutine_contains(handle) || frame_is_quarantined(handle)
 }
 
 struct CrashCleanupDrainGuard;
@@ -1938,14 +1970,17 @@ pub unsafe extern "C-unwind" fn hew_cont_destroy(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
-    // Exactly-once reconciliation with the crash drain. If this handle's frame
-    // is held by an in-progress crash recovery (a `receive gen fn` generator
-    // that faulted while running, so its coro frame is quarantined on the active
-    // drain, awaiting its deferred free), a pump escrow thunk that also owns the
-    // generator companion must NOT re-enter the abandoned frame's cleanup
-    // outline or free it: the drain owns that single free. Skip — do not consume
-    // the record; the drain, not this call, releases the held frame.
-    if frame_is_quarantined(handle) {
+    // Exactly-once reconciliation with the crash-reclamation authority. A frame
+    // a language unwind abandoned between suspend points belongs to that
+    // authority for the whole recovery: from the abandoned activation record
+    // `hew_cont_resume` left standing, through the drain's quarantine, to the
+    // drain's single free. Both a generated cleanup landing pad running ON the
+    // unwind edge (a `receive gen fn` pump dropping its faulted producer
+    // generator) and a crash-cleanup escrow thunk running after the catch reach
+    // this destroy for such a frame; neither may re-enter its cleanup outline or
+    // free it. Skip — do not consume the record; the drain, not this call,
+    // releases the frame.
+    if frame_is_crash_owned(handle) {
         return;
     }
     // Make the frame registry discoverable to cleanup-outline deactivate /
@@ -2287,6 +2322,91 @@ mod tests {
         CRASH_QUARANTINED_FRAMES.with(|frames| frames.borrow_mut().clear());
         // SAFETY: `frame` is still the live tracked allocation; free it once.
         unsafe { hew_cont_frame_free(frame) };
+    }
+
+    // Stand-in for a `CoroSplit` `.destroy` outline: it records that it was
+    // entered and frees the frame, exactly as the real outline's trailing
+    // `coro.free` does. `hew_cont_destroy_skips_a_frame_abandoned_mid_execution`
+    // asserts it is never entered for a crash-owned frame.
+    static ABANDONED_OUTLINE_ENTERED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    unsafe extern "C-unwind" fn abandoned_frame_destroy_outline(frame: *mut c_void) {
+        ABANDONED_OUTLINE_ENTERED.store(true, std::sync::atomic::Ordering::SeqCst);
+        // SAFETY: the outline's trailing `coro.free` releases the frame the
+        // destroy was driven into; mirroring it makes a non-skipping destroy
+        // observable as the frame actually going away.
+        unsafe { hew_cont_frame_free(frame) };
+    }
+
+    #[test]
+    fn hew_cont_destroy_skips_a_frame_abandoned_mid_execution() {
+        // #2865, the running-producer leg. A `receive gen fn` producer that
+        // traps mid-stream is abandoned by the language unwind while its
+        // activation record is still standing (`hew_cont_resume` pops only on
+        // the normal return edge). On that same unwind a generated cleanup
+        // landing pad drops the pump's `Generator` value and reaches this frame
+        // through `hew_cont_destroy` — BEFORE the scheduler catches the unwind,
+        // so before the drain's quarantine exists. Destroy must still skip: the
+        // crash-reclamation authority owns the frame from the abandoned record
+        // onward. A non-skipping destroy drives the abandoned frame's cleanup
+        // outline, whose resume edge already released its registrations, frees
+        // the frame, and leaves the stale record naming freed storage for the
+        // drain to read back as a live registry pointer.
+        ABANDONED_OUTLINE_ENTERED.store(false, std::sync::atomic::Ordering::SeqCst);
+        // SAFETY: the tracked allocator returns a live frame needing one
+        // matching free, performed at the end of the test.
+        let frame = unsafe { hew_cont_frame_alloc_tracked(64) };
+        assert!(!frame.is_null());
+        // Plant the destroy fn-ptr where `CoroSplit` stores it (frame slot 1),
+        // so a non-skipping destroy really enters an outline.
+        // SAFETY: `frame` has 64 writable bytes and the prefix is its first two
+        // pointer-sized slots.
+        unsafe {
+            ptr::write(
+                frame.cast::<CoroFramePrefix>(),
+                CoroFramePrefix {
+                    resume: None,
+                    destroy: Some(abandoned_frame_destroy_outline),
+                },
+            );
+        }
+        // The ramp record `hew_cont_frame_alloc_tracked` pushed stands in for
+        // the abandoned activation an unwound resume leaves behind.
+        assert!(active_coroutine_contains(frame));
+        assert!(!frame_is_quarantined(frame), "no drain has claimed it yet");
+
+        // SAFETY: the reconciliation guard fires before any dereference of the
+        // handle; if it did not, the planted outline is a real callable.
+        unsafe { hew_cont_destroy(frame) };
+
+        assert!(
+            !ABANDONED_OUTLINE_ENTERED.load(std::sync::atomic::Ordering::SeqCst),
+            "destroy must not re-enter an abandoned frame's cleanup outline"
+        );
+        // The skip left the record untouched, so the drain still finds exactly
+        // one frame to reclaim — and no freed storage under a live record.
+        assert_eq!(
+            active_frames().iter().filter(|f| **f == frame).count(),
+            1,
+            "skip must leave the abandoned activation record exactly as it was"
+        );
+
+        // Counterfactual: with no activation record and no quarantine, the same
+        // handle is an ordinary destroy the guard must NOT refuse — that leg is
+        // the suspended-teardown twin, and refusing it would leak every
+        // generator whose producer parked. The guard is the record, not the
+        // pointer.
+        assert!(remove_matching_active_frame(frame));
+        assert!(!frame_is_crash_owned(frame));
+        // SAFETY: `frame` is the live tracked allocation and no record names it;
+        // this destroy takes the ordinary path into the planted outline, which
+        // frees it exactly once.
+        unsafe { hew_cont_destroy(frame) };
+        assert!(
+            ABANDONED_OUTLINE_ENTERED.load(std::sync::atomic::Ordering::SeqCst),
+            "an unclaimed frame must still reach its cleanup outline"
+        );
     }
 
     // ABA regression (#2865): between a reclaimed frame's

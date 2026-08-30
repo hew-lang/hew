@@ -8,12 +8,31 @@
 //! prints, and it is live when `main` panics. Its output can only appear if the
 //! panic unwound through the MIR-authored cleanup pad. Before the unification
 //! the runtime exited from `hew_panic` and the line was missing.
+//!
+//! The boundary exists only where cleanup is structured LLVM unwinding. On a
+//! crash-owner-registry target - wasm32 and windows-msvc, which Inkwell cannot
+//! give valid MSVC EH funclets - `hew_panic` still exits the process directly
+//! and no scope exit runs, exactly as every other `invoke` cleanup edge is
+//! absent there. Rather than skip, the test pins that behaviour too, so the day
+//! the boundary reaches those targets this test fails and gets updated.
 
 mod support;
 
 use std::path::Path;
 
+use hew_codegen_rs::{
+    cleanup_capabilities_for_target, native_emission_triple, CleanupUnwindStrategy,
+};
+
 use support::{describe_output, repo_root, require_codegen, run_bounded_hew_run, tempdir};
+
+/// The cleanup mechanism codegen will pick for the binary this test runs.
+///
+/// Asks the production authority about the triple codegen actually emits for,
+/// rather than reading `cfg!(windows)` as a stand-in for it.
+fn native_unwind_strategy() -> CleanupUnwindStrategy {
+    cleanup_capabilities_for_target(&native_emission_triple()).unwind_strategy
+}
 
 /// `main` panics with a live `#[resource]` binding.
 const PANIC_WITH_LIVE_RESOURCE: &str = r#"
@@ -86,12 +105,31 @@ fn main_context_panic_runs_the_live_resource_close_and_keeps_the_panic_status() 
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(
-        stdout.replace("\r\n", "\n"),
-        "work\n7\n",
-        "the live resource's close must run during the unwind, after the body's own output; {}",
-        describe_output(&output)
-    );
+    match native_unwind_strategy() {
+        CleanupUnwindStrategy::StructuredLlvm => assert_eq!(
+            stdout.replace("\r\n", "\n"),
+            "work\n7\n",
+            "the live resource's close must run during the unwind, after the body's own \
+             output; {}",
+            describe_output(&output)
+        ),
+        // WHY: a crash-owner-registry target emits no landing pads at all, so
+        // `hew_panic` exits from where it stands and the live `Conn` is
+        // reclaimed by the OS rather than by its `close`.
+        // WHEN OBSOLETE: when that target gains executable unwind cleanup -
+        // MSVC EH funclets through Inkwell, or a registry sweep that runs
+        // scope exits on the panic path.
+        // WHAT THE REAL FIX IS: extend the boundary to that target, at which
+        // point this arm starts failing and both arms collapse into the
+        // structured one above.
+        CleanupUnwindStrategy::CrashOwnerRegistry => assert_eq!(
+            stdout.replace("\r\n", "\n"),
+            "work\n",
+            "without structured unwind cleanup the close cannot run, and nothing else may \
+             print in its place; {}",
+            describe_output(&output)
+        ),
+    }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

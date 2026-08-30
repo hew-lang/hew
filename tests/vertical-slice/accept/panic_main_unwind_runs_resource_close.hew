@@ -1,0 +1,31 @@
+// hew-lang/hew#3074: `panic()` in main context unwinds with cleanup, exactly
+// as it already does inside an actor.
+//
+// `Conn` is a `#[resource]` type whose `close` prints the consumed `fd`. It is
+// live when `main` panics, so the MIR-authored cleanup landing pad over the
+// `hew_panic_msg` call must dispatch `Conn::close` on the way out. Before the
+// unification the runtime exited the process from `hew_panic` instead of
+// unwinding, so no landing pad ever ran and the `7` line was missing.
+//
+// Observable contract:
+//   stdout: "work" then "7"  (close ran during the unwind)
+//   stderr: "boom"           (the panic message, and no Rust `panicked at`)
+//   status: 101              (hew_panic's clean-exit contract, preserved)
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(c: Conn) {
+        print(c.fd);
+        println("");
+    }
+}
+
+fn main() -> i64 {
+    let c: Conn = Conn { fd: 7 };
+    println("work");
+    panic("boom");
+    0
+}

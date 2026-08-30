@@ -219,10 +219,21 @@ run_accept_expect_status_and_stdout() {
 }
 
 # Run a fixture that is expected to call panic() — verifies exit 101 (hew_panic's
-# clean-exit contract) and that the panic message appears on stderr.
+# clean-exit contract), that the panic message appears on stderr, and that the
+# stderr shape is Hew's and not Rust's.
+#
+# The `panicked at` control matters because a main-context panic is now a real
+# Rust unwind (hew-lang/hew#3074): if the runtime's typed-unwind hook filter
+# stops recognising it, the default hook prints `panicked at src/actor.rs:...`
+# and every panic in the corpus starts leaking runtime internals to users while
+# still exiting 101. Exit status alone cannot see that.
+#
+# An optional third argument names an expected-stdout file to diff, for
+# fixtures whose cleanup output is the point.
 run_accept_expect_panic() {
     local fixture="$1"
     local expected_stderr_substr="$2"
+    local expected_stdout="${3:-}"
     echo "RUN ${fixture}"
     compile_accept "${fixture}"
     local bin="${ROOT}/.tmp/compile-out/${fixture}"
@@ -243,6 +254,15 @@ run_accept_expect_panic() {
         echo "expected ${fixture} stderr to contain: ${expected_stderr_substr}" >&2
         cat "${stderr_output}" >&2
         exit 1
+    fi
+    if grep -qF -- "panicked at" "${stderr_output}"; then
+        echo "expected ${fixture} stderr to carry only the Hew panic message," >&2
+        echo "but it also carries Rust's default panic hook output" >&2
+        cat "${stderr_output}" >&2
+        exit 1
+    fi
+    if [[ -n "${expected_stdout}" ]]; then
+        diff -u "${expected_stdout}" "${stdout_output}"
     fi
     echo "PASS ${fixture}"
 }
@@ -2300,8 +2320,16 @@ run_accept_expect_stdout "template_negative_try_errors"
 run_check_run_expect_stdout "unicode_oracle"
 run_check_run_expect_stdout "unicode_error_oracle"
 
-run_accept_expect_status "panic" 101
-grep -q 'panic fixture' "${stderr_output}"
+run_accept_expect_panic "panic" "panic fixture"
+
+# hew-lang/hew#3074: a main-context `panic()` is a controlled unwind, so a live
+# `#[resource]` value's close runs on the way out. The stdout diff is the drop
+# proof (pre-fix the process exited from `hew_panic` and `7` never appeared);
+# the helper's exit-101 and stderr-shape checks are the negative controls that
+# keep the unification from being bought with a changed panic status or Rust's
+# default hook output.
+run_accept_expect_panic "panic_main_unwind_runs_resource_close" "boom" \
+    "${ROOT}/tests/vertical-slice/accept/panic_main_unwind_runs_resource_close.expected"
 
 run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_regex_new_invalid.hew" "std_panic_wrapper_regex_new_invalid" 101
 grep -q 'regex.new: invalid pattern' "${stderr_output}"

@@ -33774,10 +33774,21 @@ fn declare_function<'ctx>(
         BasicTypeEnum::VectorType(v) => v.fn_type(&param_tys, false),
         BasicTypeEnum::ScalableVectorType(v) => v.fn_type(&param_tys, false),
     };
+    let wraps_native_entry =
+        func.name == "main" && native_unwind_enabled(llvm_mod);
     let symbol_name = if emit_wasm_entry_alias && func.name == "main" {
         "__original_main"
+    } else if wraps_native_entry {
+        NATIVE_MAIN_BODY_SYMBOL
     } else {
         &func.name
+    };
+    // The native entry body is reached only through the runtime's catch
+    // boundary, so it is not part of the module's external surface.
+    let linkage = if wraps_native_entry {
+        Some(Linkage::Internal)
+    } else {
+        linkage
     };
     let llvm_fn = llvm_mod.add_function(symbol_name, fn_ty, linkage);
     Ok(FnSymbol::Real {
@@ -33787,6 +33798,154 @@ fn declare_function<'ctx>(
         extern_record_ret: None,
         extern_malloc_string_ret: false,
     })
+}
+
+/// Whether this module's target lands a Hew unwind in LLVM cleanup pads.
+///
+/// One decision behind two things that must never disagree: the `invoke`
+/// cleanup edges that discharge drops while an exception travels, and the
+/// process-entry `catch_unwind` boundary that gives the exception somewhere to
+/// land ([`emit_native_main_unwind_wrapper`]). A target on the crash-owner
+/// registry instead keeps the boundary-free `hew_panic` exit.
+fn native_unwind_enabled(llvm_mod: &LlvmModule<'_>) -> bool {
+    let triple = llvm_mod.get_triple().as_str().to_string_lossy().into_owned();
+    cleanup_capabilities_for_target(&triple).unwind_strategy
+        == CleanupUnwindStrategy::StructuredLlvm
+}
+
+/// Internal symbol carrying the generated program entry on native targets.
+///
+/// The exported `main` is the wrapper emitted by
+/// [`emit_native_main_unwind_wrapper`]; this is the function it hands to the
+/// runtime's catch boundary.
+const NATIVE_MAIN_BODY_SYMBOL: &str = "__hew_main_body";
+
+/// Fixed-width adapter over the entry body, so the runtime boundary has one
+/// signature regardless of what the source `main` returns.
+const NATIVE_MAIN_ENTRY_SYMBOL: &str = "__hew_main_entry";
+
+/// Emit the native `main` that runs the program beneath the runtime's
+/// `catch_unwind` boundary.
+///
+/// A `panic()` in main context is a controlled unwind, exactly as it is inside
+/// an actor: the platform unwinder needs a handler for phase-2 cleanup to run,
+/// and libc's process entry frame is not one. `main` therefore becomes a
+/// wrapper that hands [`NATIVE_MAIN_BODY_SYMBOL`] to `hew_main_unwind_boundary`,
+/// which catches the typed unwind after every MIR-authored landing pad on the
+/// way out has discharged its drops.
+fn emit_native_main_unwind_wrapper<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    fn_symbols: &FnSymbolMap<'ctx>,
+) -> CodegenResult<()> {
+    let Some(symbol) = fn_symbols.get("main").copied() else {
+        return Ok(());
+    };
+    let (body, _return_ty, _returns_unit) =
+        symbol.real("main", "emit_native_main_unwind_wrapper")?;
+    let body_ty = body.get_type();
+    if !body_ty.get_param_types().is_empty() {
+        return Err(CodegenError::FailClosed(format!(
+            "native entry wrapper expected parameterless main, got {} parameters",
+            body_ty.get_param_types().len()
+        )));
+    }
+    let body_return = body_ty.get_return_type();
+    let entry_int = match body_return {
+        None => None,
+        Some(BasicTypeEnum::IntType(int_ty)) => Some(int_ty),
+        Some(other) => {
+            return Err(CodegenError::FailClosed(format!(
+                "native entry wrapper supports a unit or integer `main` result, got {other:?}"
+            )));
+        }
+    };
+
+    let i64_ty = ctx.i64_type();
+    let builder = ctx.create_builder();
+
+    // Fixed-width adapter: `i64 __hew_main_entry()`.
+    let entry = llvm_mod.add_function(
+        NATIVE_MAIN_ENTRY_SYMBOL,
+        i64_ty.fn_type(&[], false),
+        Some(Linkage::Internal),
+    );
+    let entry_block = ctx.append_basic_block(entry, "entry");
+    builder.position_at_end(entry_block);
+    let body_call = builder
+        .build_call(body, &[], "__hew_main_body_call")
+        .llvm_ctx("native entry adapter call")?;
+    let status = match entry_int {
+        None => i64_ty.const_zero(),
+        Some(int_ty) => {
+            let value = body_call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("native entry adapter call returned void".into())
+                })?
+                .into_int_value();
+            if int_ty.get_bit_width() == 64 {
+                value
+            } else {
+                builder
+                    .build_int_s_extend(value, i64_ty, "__hew_main_status")
+                    .llvm_ctx("native entry adapter status widen")?
+            }
+        }
+    };
+    builder
+        .build_return(Some(&status))
+        .llvm_ctx("native entry adapter return")?;
+
+    // The exported entry: `main` calls the boundary with the adapter.
+    let boundary = llvm_mod
+        .get_function("hew_main_unwind_boundary")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function(
+                "hew_main_unwind_boundary",
+                i64_ty.fn_type(&[ctx.ptr_type(AddressSpace::default()).into()], false),
+                Some(Linkage::External),
+            )
+        });
+    let wrapper = llvm_mod.add_function("main", body_ty, Some(Linkage::External));
+    let wrapper_block = ctx.append_basic_block(wrapper, "entry");
+    builder.position_at_end(wrapper_block);
+    let boundary_call = builder
+        .build_call(
+            boundary,
+            &[entry.as_global_value().as_pointer_value().into()],
+            "hew_main_unwind_boundary_call",
+        )
+        .llvm_ctx("native main boundary call")?;
+    match entry_int {
+        None => {
+            builder
+                .build_return(None)
+                .llvm_ctx("native main wrapper return void")?;
+        }
+        Some(int_ty) => {
+            let status = boundary_call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_main_unwind_boundary returned void".into())
+                })?
+                .into_int_value();
+            let status = if int_ty.get_bit_width() == 64 {
+                status
+            } else {
+                builder
+                    .build_int_truncate(status, int_ty, "__hew_main_status_narrow")
+                    .llvm_ctx("native main wrapper status narrow")?
+            };
+            builder
+                .build_return(Some(&status))
+                .llvm_ctx("native main wrapper return")?;
+        }
+    }
+
+    Ok(())
 }
 
 fn emit_wasm_main_export_wrapper<'ctx>(
@@ -37385,6 +37544,8 @@ fn build_module_for_target<'ctx>(
         .collect::<CodegenResult<HashMap<_, _>>>()?;
     if emit_wasm_entry_alias {
         emit_wasm_main_export_wrapper(ctx, &llvm_mod, &fn_symbols)?;
+    } else if native_unwind_enabled(&llvm_mod) {
+        emit_native_main_unwind_wrapper(ctx, &llvm_mod, &fn_symbols)?;
     }
     // W3.030 Stage 2 V13: verify every `ElabDrop { drop_fn: Some(_) }`
     // resolves to one of the two `DropDispatch` arms (runtime symbol or

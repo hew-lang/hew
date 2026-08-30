@@ -3900,6 +3900,15 @@ Signal handlers run on an alternate signal stack, record the terminal cause
 using async-signal-safe operations, and terminate; the runtime never jumps out
 of an arbitrary instruction or resumes a potentially corrupted process.
 
+A `panic()` outside an actor unwinds the same way. The generated entry runs
+beneath a runtime-owned catch boundary, so the same LLVM cleanup pads discharge
+the same drop obligations - `#[resource]` closes included - before the process
+ends with the panic status and the panic message on stderr. There is no
+main-context carve-out: cleanup is not conditional on where the call sits. The
+one stack with no boundary is a synchronous lifecycle hook, which runs on the
+spawning thread with no recovery frame beneath it; a panic there is
+process-fatal without cleanup, and the OS reclaims what is left.
+
 The `panic()` builtin triggers the recoverable language-panic path for testing.
 
 ### 5.8 Process Exit Status (normative)

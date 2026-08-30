@@ -963,8 +963,13 @@ pub(super) fn analyze_document(
     // unconditional-ERROR HIR mapping above.
     if hir_diagnostics.is_empty() {
         if let Some(hir_module) = hir_module.as_ref() {
-            let mir_lint_diagnostics =
-                build_mir_lint_lsp_diagnostics(uri, source, &line_offsets, hir_module);
+            let mir_lint_diagnostics = build_mir_lint_lsp_diagnostics(
+                uri,
+                source,
+                &line_offsets,
+                hir_module,
+                type_output.as_ref().expect("HIR requires type checking"),
+            );
             merge_diagnostics(&mut diagnostics_by_uri, &mir_lint_diagnostics);
         }
     }
@@ -1274,20 +1279,24 @@ fn collect_hir_diagnostics(
 ///
 /// # Panics
 ///
-/// Never. MIR lowering can reject code the checker accepted, and
-/// [`hew_mir::lower_hir_module_with_facts`] reports that through
-/// `IrPipeline::diagnostics`, which this function ignores entirely: a lowering
-/// failure degrades silently to "no MIR lints" and leaves the already-computed
-/// HIR diagnostics untouched.
+/// Never. The shared compiler session owns MIR lowering and all build checks;
+/// this presentation layer only chooses how its lint findings are rendered.
 fn build_mir_lint_lsp_diagnostics(
     root_uri: &Url,
     root_source: &str,
     root_line_offsets: &[usize],
     hir_module: &hew_hir::HirModule,
+    tco: &TypeCheckOutput,
 ) -> DiagnosticMap {
     let mut diagnostics_by_uri = DiagnosticMap::new();
 
-    let pipeline = hew_mir::lower_hir_module_with_facts(hir_module, hew_mir::PointerWidth::Bits64);
+    // The LSP has no target selector, so it uses the same native target facts
+    // as a default `hew build`. The session fixes the check set to Build.
+    let session = hew_compile::Session::new(
+        hew_compile::SessionTarget::native(),
+        hew_compile::DiagnosticPolicy::default(),
+    );
+    let pipeline = session.lower_hir_module(hir_module, tco).pipeline;
     // `pipeline.diagnostics` (the hard `E_MIR_*` move/init errors) are
     // deliberately dropped: the CLI is the gate for those, and surfacing them
     // here would turn a lowering failure into a user-visible editor error.
@@ -2683,10 +2692,50 @@ mod tests {
             hir_diagnostics.is_empty(),
             "fixture must lower cleanly: {hir_diagnostics:?}"
         );
-        build_mir_lint_lsp_diagnostics(&uri, source, &line_offsets, &module)
+        build_mir_lint_lsp_diagnostics(&uri, source, &line_offsets, &module, &type_output)
             .get(&uri)
             .cloned()
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn lsp_and_build_session_report_the_same_mir_lints() {
+        let uri = Url::parse("file:///session_agreement.hew").unwrap();
+        let parse_result = hew_parser::parse(MIR_DEAD_STORE);
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&parse_result.program);
+        let (hir_diagnostics, module) = collect_hir_diagnostics(&parse_result.program, &tco);
+        assert!(hir_diagnostics.is_empty(), "fixture must lower cleanly");
+
+        let build = hew_compile::Session::new(
+            hew_compile::SessionTarget::native(),
+            hew_compile::DiagnosticPolicy::default(),
+        )
+        .lower_hir_module(&module, &tco);
+        let lsp = build_mir_lint_lsp_diagnostics(
+            &uri,
+            MIR_DEAD_STORE,
+            &compute_line_offsets(MIR_DEAD_STORE),
+            &module,
+            &tco,
+        );
+        let lsp_codes = lsp
+            .get(&uri)
+            .into_iter()
+            .flatten()
+            .filter_map(|diagnostic| match &diagnostic.code {
+                Some(NumberOrString::String(code)) => Some(code.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let build_codes = build
+            .pipeline
+            .lint_warnings
+            .iter()
+            .map(|warning| warning.lint.as_str().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(lsp_codes, build_codes);
     }
 
     #[test]

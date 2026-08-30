@@ -287,23 +287,19 @@ fn lower_verified_hir_to_pipeline(
 ) -> Result<(hew_mir::IrPipeline, Option<SirLaneReport>), ()> {
     match sir_mode {
         compile::SirMode::Disabled => {
-            let mut pipeline =
-                hew_mir::lower_hir_module_with_facts(module, mir_pointer_width(target));
-            pipeline.attach_lowering_facts(tco);
-            Ok((pipeline, None))
+            let output = compiler_session(target).lower_hir_module(module, tco);
+            Ok((output.pipeline, None))
         }
         compile::SirMode::Lower => {
             let sir = lower_verified_hir_to_sir(module)?;
-            let component = hew_mir::lower_entry_component(&sir.module).map_err(|error| {
+            let session = compiler_session(target);
+            let component = session.lower_sir_module(&sir.module).map_err(|error| {
                 eprintln!("SIR strict lowering failed: {error}");
                 report_strict_sir_missing_body(module, &sir, error.missing_body);
             })?;
             let callables = component.callables().to_vec();
             let pipeline = component.into_pipeline();
-            if let Err(error) = hew_codegen_rs::validate_codegen_front_for_triple(
-                &pipeline,
-                target.normalized_triple(),
-            ) {
+            if let Some(error) = session.check_pipeline(&pipeline) {
                 eprintln!("SIR strict backend-front validation failed: {error}");
                 return Err(());
             }
@@ -596,6 +592,17 @@ fn mir_pointer_width(target: &target::TargetSpec) -> hew_mir::PointerWidth {
     }
 }
 
+fn compiler_session(target: &target::TargetSpec) -> hew_compile::Session {
+    hew_compile::Session::new(
+        hew_compile::SessionTarget {
+            hir_arch: hir_target_arch(target),
+            pointer_width: mir_pointer_width(target),
+            codegen_triple: Some(target.normalized_triple().to_string()),
+        },
+        hew_compile::DiagnosticPolicy::default(),
+    )
+}
+
 /// `true` when `input` is a compiler-owned, import-only stdlib substrate in a
 /// Hew source checkout. Recognised by canonical path shape plus an enclosing
 /// checkout root, so lookalike external paths cannot skip deep gates.
@@ -657,11 +664,9 @@ fn run_check_deep_gates(
         return Err(());
     }
 
-    let mut pipeline =
-        hew_mir::lower_hir_module_with_facts(&lower_output.module, mir_pointer_width(target));
-    // Clone checker-authored layout-fact lifecycle into the pipeline
-    // (see the matching invocation in `check_command`).
-    pipeline.attach_lowering_facts(tco);
+    let output = compiler_session(target).lower_hir_module(&lower_output.module, tco);
+    let codegen_error = output.codegen_error;
+    let pipeline = output.pipeline;
     if render_pipeline_mir_diagnostics(
         &state.program,
         &state.source,
@@ -677,7 +682,7 @@ fn run_check_deep_gates(
     // only after the codegen-front gate has had its say.
     let lint_denied = render_pipeline_mir_lints(&state.source, input, &pipeline, levels);
 
-    if let Err(error) = hew_codegen_rs::validate_codegen_front(&pipeline) {
+    if let Some(error) = codegen_error {
         diagnostic::render_codegen_front_diagnostic(&error, Some((state.source.as_str(), input)));
         return Err(());
     }
@@ -703,9 +708,9 @@ fn build_explain_cow_pipeline(
     if !lowered.diagnostics.is_empty() {
         return None;
     }
-    let mut pipeline =
-        hew_mir::lower_hir_module_with_facts(&lowered.module, mir_pointer_width(target));
-    pipeline.attach_lowering_facts(tco);
+    let pipeline = compiler_session(target)
+        .lower_hir_module(&lowered.module, tco)
+        .pipeline;
     // Advisory diagnostics (obligation under-release leaks) are non-blocking; the
     // explain-cow view is still valid, so proceed unless a hard error is present.
     pipeline.diagnostics.is_empty().then_some(pipeline)

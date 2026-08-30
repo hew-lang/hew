@@ -27,6 +27,7 @@ wasm-opt = ["-O1", "--enable-bulk-memory"]
 
 [dependencies]
 hew-analysis = { path = "../hew-analysis" }
+hew-compile = { path = "../hew-compile", default-features = false }
 hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }
 hew-mir = { path = "../hew-mir" }

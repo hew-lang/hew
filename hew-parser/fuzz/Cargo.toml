@@ -16,6 +16,7 @@ hew-lexer = { path = "../../hew-lexer" }
 hew-parser = { path = ".." }
 hew-types = { path = "../../hew-types" }
 hew-hir = { path = "../../hew-hir" }
+hew-compile = { path = "../../hew-compile" }
 hew-mir = { path = "../../hew-mir" }
 
 [[bin]]

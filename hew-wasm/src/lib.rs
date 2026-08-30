@@ -539,13 +539,19 @@ struct AnalyzedSource {
 /// Lower to MIR and collect the MIR-stage lint findings, applying the same
 /// suppression policy the CLI's `render_pipeline_mir_lints` applies.
 ///
-/// Degrades silently to an empty vector on any lowering trouble: MIR lowering
-/// can reject code the checker accepted, and those hard `E_MIR_*` diagnostics
-/// (`IrPipeline::diagnostics`) are deliberately dropped here rather than being
-/// promoted into browser-visible errors. The playground's authority for hard
-/// errors stays at the parse/check/HIR stages.
-fn collect_mir_lints(source: &str, hir_module: &hew_hir::HirModule) -> Vec<hew_mir::MirLint> {
-    let pipeline = hew_mir::lower_hir_module_with_facts(hir_module, hew_mir::PointerWidth::Bits32);
+/// Degrades silently to an empty vector on any lowering trouble. The shared
+/// session still runs the build check set at wasm32 pointer width; this browser
+/// renderer retains its historical warning-only presentation policy.
+fn collect_mir_lints(
+    source: &str,
+    hir_module: &hew_hir::HirModule,
+    tco: &hew_types::TypeCheckOutput,
+) -> Vec<hew_mir::MirLint> {
+    let session = hew_compile::Session::new(
+        hew_compile::SessionTarget::wasm32(),
+        hew_compile::DiagnosticPolicy::default(),
+    );
+    let pipeline = session.lower_hir_module(hir_module, tco).pipeline;
     let levels = hew_types::LintLevels::default();
     pipeline
         .lint_warnings
@@ -635,7 +641,7 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
             // skipping it also keeps the added browser cost off every buffer
             // that is mid-edit and already erroring.
             if diags.is_empty() {
-                mir_lints = collect_mir_lints(source, &lower_output.module);
+                mir_lints = collect_mir_lints(source, &lower_output.module, &tco);
             }
             diags
         } else {
@@ -2318,6 +2324,42 @@ mod tests {
         assert!(
             !diags.iter().any(|d| d["kind"] == "dead_store"),
             "hew:allow must suppress the playground surfacing too: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn wasm_session_uses_build_checks_at_wasm32_width() {
+        let parsed = hew_parser::parse(MIR_DEAD_STORE);
+        let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+            hew_types::module_registry::build_module_search_paths(),
+        ));
+        let tco = checker.check_program(&parsed.program);
+        let hir = hew_hir::lower_program(
+            &parsed.program,
+            &tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::X86_64,
+        );
+        let wasm = hew_compile::Session::new(
+            hew_compile::SessionTarget::wasm32(),
+            hew_compile::DiagnosticPolicy::default(),
+        );
+        let build = hew_compile::Session::new(
+            hew_compile::SessionTarget::native(),
+            hew_compile::DiagnosticPolicy::default(),
+        );
+
+        assert_eq!(wasm.checks, build.checks);
+        assert_eq!(wasm.target.pointer_width, hew_mir::PointerWidth::Bits32);
+        assert_eq!(
+            wasm.lower_hir_module(&hir.module, &tco)
+                .pipeline
+                .lint_warnings,
+            build
+                .lower_hir_module(&hir.module, &tco)
+                .pipeline
+                .lint_warnings,
+            "wasm must run the build check set while retaining its own ABI width"
         );
     }
 }

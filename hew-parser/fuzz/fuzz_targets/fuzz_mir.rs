@@ -3,7 +3,6 @@
 mod support;
 
 use hew_hir::{lower_program_host_target, verify_hir, ResolutionCtx};
-use hew_mir::lower_hir_module;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -28,6 +27,10 @@ fuzz_target!(|data: &[u8]| {
             return;
         }
 
-        let _ = lower_hir_module(&hir.module);
+        let _ = hew_compile::Session::new(
+            hew_compile::SessionTarget::native(),
+            hew_compile::DiagnosticPolicy::default(),
+        )
+        .lower_hir_module(&hir.module, &type_check);
     }
 });

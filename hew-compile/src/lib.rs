@@ -55,6 +55,147 @@ pub struct FrontendOptions {
     pub lint_levels: hew_types::LintLevels,
 }
 
+/// Target facts that must stay coupled while a source is lowered.
+///
+/// This deliberately contains only facts passed by existing hosts: the HIR
+/// architecture, MIR pointer width, and optional backend target triple.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTarget {
+    pub hir_arch: hew_hir::TargetArch,
+    pub pointer_width: hew_mir::PointerWidth,
+    pub codegen_triple: Option<String>,
+}
+
+impl SessionTarget {
+    #[must_use]
+    pub fn native() -> Self {
+        Self {
+            hir_arch: hew_hir::TargetArch::host(),
+            pointer_width: hew_mir::PointerWidth::Bits64,
+            codegen_triple: None,
+        }
+    }
+
+    #[must_use]
+    pub fn wasm32() -> Self {
+        Self {
+            // WHY: the browser sandbox supports actors and machines even
+            // though the wasm codegen target rejects them. WHEN: the browser
+            // executes the same wasm substrate as native builds. REAL FIX:
+            // use TargetArch::Wasm32 here and remove this analysis-only split.
+            hir_arch: hew_hir::TargetArch::X86_64,
+            pointer_width: hew_mir::PointerWidth::Bits32,
+            codegen_triple: None,
+        }
+    }
+}
+
+/// The fixed compiler check set. Hosts cannot select a narrower subset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CheckSet {
+    #[default]
+    Build,
+}
+
+/// Policy used when exposing diagnostics produced by a compilation session.
+#[derive(Debug, Clone, Default)]
+pub struct DiagnosticPolicy {
+    pub warnings_as_errors: bool,
+    pub lint_levels: hew_types::LintLevels,
+}
+
+/// The sole authority for HIR verification, MIR lowering, and backend-front
+/// checks. Every host enters through this type with its target facts explicit.
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub target: SessionTarget,
+    pub checks: CheckSet,
+    pub diagnostic_policy: DiagnosticPolicy,
+}
+
+impl Session {
+    #[must_use]
+    pub fn new(target: SessionTarget, diagnostic_policy: DiagnosticPolicy) -> Self {
+        Self {
+            target,
+            checks: CheckSet::Build,
+            diagnostic_policy,
+        }
+    }
+
+    #[must_use]
+    pub fn from_frontend_options(target: SessionTarget, options: &FrontendOptions) -> Self {
+        Self::new(
+            target,
+            DiagnosticPolicy {
+                warnings_as_errors: options.warnings_as_errors,
+                lint_levels: options.lint_levels.clone(),
+            },
+        )
+    }
+
+    /// Lower already verified HIR through the complete build check set.
+    ///
+    /// The MIR lowering below runs unconditionally for every host: it is the
+    /// one pipeline every `Session` produces, which is what keeps wasm and
+    /// native lint output identical. The native LLVM backend-front check
+    /// (`check_pipeline`) layers on top of that when the `codegen` feature is
+    /// compiled in; hosts that build without it (hew-wasm) still get the
+    /// exact same pipeline, just without a codegen verdict they never read.
+    #[must_use]
+    pub fn lower_hir_module(
+        &self,
+        module: &hew_hir::HirModule,
+        tco: &hew_types::TypeCheckOutput,
+    ) -> SessionOutput {
+        let mut pipeline = hew_mir::lower_hir_module_with_facts(module, self.target.pointer_width);
+        pipeline.attach_lowering_facts(tco);
+        #[cfg(feature = "codegen")]
+        let codegen_error = self.check_pipeline(&pipeline);
+        SessionOutput {
+            pipeline,
+            #[cfg(feature = "codegen")]
+            codegen_error,
+        }
+    }
+
+    /// Lower the strict SIR lane through this same session authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`hew_mir::SirMirLoweringError`] when the entry point's
+    /// component cannot be closed over the SIR module (for example a
+    /// missing callable body).
+    pub fn lower_sir_module(
+        &self,
+        module: &hew_sir::SemModule,
+    ) -> Result<hew_mir::SirMirComponent, hew_mir::SirMirLoweringError> {
+        hew_mir::lower_entry_component(module)
+    }
+
+    #[cfg(feature = "codegen")]
+    #[must_use]
+    pub fn check_pipeline(
+        &self,
+        pipeline: &hew_mir::IrPipeline,
+    ) -> Option<hew_codegen_rs::CodegenError> {
+        match self.target.codegen_triple.as_deref() {
+            Some(triple) => {
+                hew_codegen_rs::validate_codegen_front_for_triple(pipeline, triple).err()
+            }
+            None => hew_codegen_rs::validate_codegen_front(pipeline).err(),
+        }
+    }
+}
+
+/// Checked MIR and the backend-front result produced by [`Session`].
+#[derive(Debug)]
+pub struct SessionOutput {
+    pub pipeline: hew_mir::IrPipeline,
+    #[cfg(feature = "codegen")]
+    pub codegen_error: Option<hew_codegen_rs::CodegenError>,
+}
+
 #[derive(Debug, Clone)]
 pub enum FrontendDiagnosticKind {
     Message(FrontendMessageDiagnostic),
@@ -2609,6 +2750,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "codegen")]
     #[test]
     fn remote_pid_lookup_annotation_reaches_mir_with_its_builtin_carrier() {
         let dir = tempfile::tempdir().expect("create temp dir");

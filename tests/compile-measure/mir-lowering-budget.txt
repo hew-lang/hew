@@ -1,22 +1,52 @@
-# Wall-clock ceiling for `hew check` on tests/compile-measure/mir-lowering-shape.hew,
-# scored as the fastest of three runs (see scripts/bench-mir.sh).
+# Budgets for `make bench-mir` (scripts/bench-mir.sh). Two numbers, because the
+# gate checks two different things about MIR lowering cost.
 #
-# Where the number comes from: on the machine this was set on, the fixture took
-# 4383 ms before the redundant whole-function derivations were removed and
-# settles near 700 ms after, drifting to about 900 ms with a dozen other builds
-# running. The ceiling is a little over twice the settled figure: a loaded
-# runner stays well inside it, and a return to per-block CFG replay or to a
-# dominator fixpoint over an unordered set blows through it several times over.
+# derivation_growth_ceiling
+#   How many more whole-function owner-state derivations `hew check` may make on
+#   tests/compile-measure/mir-lowering-shape.hew than on its small twin
+#   mir-lowering-shape-small.hew. The two files differ in exactly one body:
+#   `emit_document` lowers to 338 basic blocks in the large fixture and 85 in
+#   the small one. A pass that derives owner state once per invocation adds the
+#   same count to both, so the difference stays near zero however large the body
+#   grows; a pass that derives inside a per-block loop adds one derivation per
+#   block, so a single once-per-body pass regressing that way moves the
+#   difference by about 253 and a pass that runs several times per body moves it
+#   by a multiple of that.
 #
-# SHORTCUT. WHY: a wall-clock ceiling is a proxy for the real invariant, which
-# is that MIR lowering cost is proportional to function size; nothing in the
-# tree can assert that shape directly, so a machine-dependent number stands in
-# for it. WHEN obsolete: when the ownership replay is a single incremental
-# analysis whose visit count can be asserted (a counter of block visits per
-# function, compared against block count), this file is replaced by that
-# behavioural assertion. WHAT the real fix is: assert the complexity, not the
-# clock — one replay per pass, no replay inside a per-block loop.
+#   Measured here: 224 (5046 derivations on the large fixture, 4822 on the
+#   small). The falsifier: putting the derivation in `prepare_owned_call_carriers`
+#   back inside its per-block loop — the smallest such regression there is, one
+#   pass running once per body — moves the difference to 439 while leaving the
+#   wall time at 673 ms, comfortably inside the clock ceiling below. The count
+#   gate fires on it and the clock gate does not, which is the whole reason this
+#   number exists. The ceiling sits between the two readings with room for the
+#   pass sequence to gain a few per-invocation derivations without a false red.
 #
-# Ratchet: lower this manually after a measured, reviewed improvement. Never
-# raise it to make a red gate pass; a regression here is the gate working.
-check_wall_ms_ceiling=1500
+#   This is the behavioural assertion the wall-clock budget below used to stand
+#   in for. It has no clock in it, so it reads the same on a fast laptop and a
+#   loaded CI runner, and its failure message names the defect (a derivation
+#   inside a per-block loop) rather than the symptom (a slow compile).
+#
+# check_wall_ms_ceiling
+#   Wall-clock ceiling for `hew check` on mir-lowering-shape.hew, scored as the
+#   fastest of three runs.
+#
+#   Where the number comes from: on the machine this was set on, the fixture
+#   took 4383 ms before the redundant whole-function derivations were removed
+#   and settles near 620 ms after, drifting to about 900 ms with a dozen other
+#   builds running. The ceiling is a little under twice the settled figure.
+#
+#   SHORTCUT. WHY: wall time still catches costs that are not owner-state
+#   derivations at all — the reachability and dominance rebuilds, the projection
+#   alias fixpoint, HIR-to-Raw value lowering — and no counter in the tree
+#   covers those. WHEN obsolete: when each of those derivations is counted
+#   against its call site the way the owner-state replays now are, so the growth
+#   gate covers them too. WHAT the real fix is: extend
+#   `crate::timing::derivation` to the remaining whole-function analyses and
+#   fold them into derivation_growth_ceiling, then delete this number.
+#
+# Ratchet: lower either number manually after a measured, reviewed improvement.
+# Never raise one to make a red gate pass; a regression here is the gate
+# working.
+derivation_growth_ceiling=300
+check_wall_ms_ceiling=1200

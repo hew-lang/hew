@@ -947,24 +947,48 @@ pub(super) fn corroborated_retained_string_move_sites(
     local_tys: &[ResolvedTy],
 ) -> HashSet<(u32, usize)> {
     let _timing = crate::timing::stage("corroborated_retained_string_move_sites");
+    // The `FreshShare` arm below reads neither the write census nor the cycle
+    // set; only the `Always` arm does. Both describe the whole function and
+    // this runs fifteen times per body, so skip them outright when no `Always`
+    // retain sits immediately before a move.
+    let has_always_share = blocks.iter().any(|block| {
+        block.instructions.windows(2).any(|pair| {
+            matches!(
+                pair,
+                [
+                    Instr::StringRetain {
+                        condition: StringRetainCondition::Always,
+                        ..
+                    },
+                    Instr::Move { .. }
+                ]
+            )
+        })
+    });
     let mut write_counts: HashMap<u32, usize> = HashMap::new();
-    for block in blocks {
-        for instr in &block.instructions {
-            let (_, writes, _) = dataflow::instr_reads_writes(instr);
-            for place in writes {
+    if has_always_share {
+        for block in blocks {
+            for instr in &block.instructions {
+                let (_, writes, _) = dataflow::instr_reads_writes(instr);
+                for place in writes {
+                    if let Some(local) = base_local(place) {
+                        *write_counts.entry(local).or_default() += 1;
+                    }
+                }
+            }
+            for place in dataflow::terminator_write_places(&block.terminator) {
                 if let Some(local) = base_local(place) {
                     *write_counts.entry(local).or_default() += 1;
                 }
             }
         }
-        for place in dataflow::terminator_write_places(&block.terminator) {
-            if let Some(local) = base_local(place) {
-                *write_counts.entry(local).or_default() += 1;
-            }
-        }
     }
 
-    let cyclic_blocks: HashSet<u32> = crate::lower::cfg_util::blocks_on_a_cycle(blocks);
+    let cyclic_blocks: HashSet<u32> = if has_always_share {
+        crate::lower::cfg_util::blocks_on_a_cycle(blocks)
+    } else {
+        HashSet::new()
+    };
     let mut sites = HashSet::new();
     for block in blocks {
         // A `FreshShare`-marked retain + move pair is admitted even on a
@@ -8462,6 +8486,18 @@ pub(super) fn corroborated_retained_bytes_move_sites(
     local_tys: &[ResolvedTy],
 ) -> HashSet<(u32, usize)> {
     let _timing = crate::timing::stage("corroborated_retained_bytes_move_sites");
+    // Both derivations below describe the whole function and are read only
+    // where a retain sits immediately before a move. Most bodies have no such
+    // pair, and this runs ten times per body, so establish that the question
+    // can have an answer before paying for the write census and the cycle set.
+    if !blocks.iter().any(|block| {
+        block
+            .instructions
+            .windows(2)
+            .any(|pair| matches!(pair, [Instr::BytesRetain { .. }, Instr::Move { .. }]))
+    }) {
+        return HashSet::new();
+    }
     let mut write_counts: HashMap<u32, usize> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {

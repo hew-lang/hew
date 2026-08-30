@@ -6967,6 +6967,103 @@ mod tests {
         }
     }
 
+    /// Incarnation control for the restart-await wake edge (#3069), notify arm.
+    ///
+    /// `RestartAwaitWaiter` captures the awaiting actor's incarnation at park
+    /// time. `reincarnate` decides whether that actor dies and has its
+    /// allocation handed to a fresh, unrelated incarnation before
+    /// `notify_restart` drains the registry - the state a restart cycle
+    /// produces when the awaiting actor itself is the one that went away.
+    fn run_restart_await_notify_family(reincarnate: bool) {
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let victim = crate::test_actor::TrackedTestActor::install_parked();
+        // SAFETY: test owns the supervisor tree; nulling the slot under lock is
+        // the documented way to present a Transient (mid-restart) child.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
+
+            let slot = crate::read_slot::hew_read_slot_new();
+            let rc = hew_supervisor_restart_await_suspend(sup, 0, victim.ptr(), slot);
+            assert_eq!(
+                rc, RESTART_AWAIT_SUSPEND,
+                "a Transient child must park the awaiting actor"
+            );
+
+            if reincarnate {
+                victim.reincarnate_parked();
+            }
+
+            // The restart landed: restore the slot, then fire the notify wake.
+            store_child_slot(&raw mut *sup, 0, child);
+            notify_restart(sup);
+
+            if reincarnate {
+                crate::test_actor::assert_not_woken(&sched, &victim, "restart-await");
+            } else {
+                crate::test_actor::assert_woken(&sched, &victim, "restart-await");
+            }
+
+            // The caller releases the creator ref exactly as the bind edge does.
+            crate::read_slot::hew_read_slot_free(slot);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn restart_await_notify_does_not_resume_a_reused_address() {
+        run_restart_await_notify_family(true);
+    }
+
+    #[test]
+    fn restart_await_notify_resumes_the_registering_incarnation() {
+        run_restart_await_notify_family(false);
+    }
+
+    /// Incarnation control for the restart-await wake edge (#3069), TEARDOWN
+    /// arm. Supervisor teardown drains the same registry through a separate
+    /// call site, so it needs its own control: an awaiter that died before
+    /// teardown must not hand its wake to whatever now occupies its address.
+    fn run_restart_await_teardown_family(reincarnate: bool) {
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let victim = crate::test_actor::TrackedTestActor::install_parked();
+        // SAFETY: as above; the supervisor is consumed by the normal stop path.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
+
+            let slot = crate::read_slot::hew_read_slot_new();
+            let rc = hew_supervisor_restart_await_suspend(sup, 0, victim.ptr(), slot);
+            assert_eq!(rc, RESTART_AWAIT_SUSPEND);
+
+            if reincarnate {
+                victim.reincarnate_parked();
+            }
+
+            // Teardown with the waiter still parked: the drain wakes it so the
+            // resumed actor re-resolves a shut-down supervisor and fails closed.
+            hew_supervisor_stop(sup);
+
+            if reincarnate {
+                crate::test_actor::assert_not_woken(&sched, &victim, "restart-await-teardown");
+            } else {
+                crate::test_actor::assert_woken(&sched, &victim, "restart-await-teardown");
+            }
+
+            crate::read_slot::hew_read_slot_free(slot);
+        }
+    }
+
+    #[test]
+    fn restart_await_teardown_does_not_resume_a_reused_address() {
+        run_restart_await_teardown_family(true);
+    }
+
+    #[test]
+    fn restart_await_teardown_resumes_the_registering_incarnation() {
+        run_restart_await_teardown_family(false);
+    }
+
     /// The abandon edge: detach removes the waiter and releases its ref, so a
     /// later `notify_restart` finds nothing to wake (no double-free, no leak).
     #[test]

@@ -4327,4 +4327,146 @@ mod tests {
         unsafe { hew_io_poller_stop(poller) };
         reset_reactor();
     }
+
+    // ── #3069: wake by incarnation, not by address ───────────────────────────
+    //
+    // The reactor is the cross-thread family: a worker registers the wait and
+    // the reactor thread fires it, so the registering actor can be dead by the
+    // time readiness lands. `actor_snapshot_alive` cannot separate "still the
+    // registrant" from "somebody else now occupies that box" — after a
+    // reincarnation the address is genuinely live — so the incarnation captured
+    // in `Registration::new` is the only thing standing between a stale wake and
+    // a stranger being moved `Suspended -> Runnable` with no readiness behind
+    // it. The sibling families live in `crate::wake_incarnation_tests`.
+
+    /// Drive a real resume-mode readiness through `handle_ready_fd`, optionally
+    /// reincarnating the registrant at the same address first.
+    #[cfg(unix)]
+    fn run_reactor_resume_incarnation(reincarnate: bool) {
+        use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
+        use std::io::Write;
+        const KEY: usize = 0x0300_6900;
+
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: every pointer here is a fresh test-owned poller, socket, slot,
+        // or stub actor, released before this function returns.
+        unsafe {
+            let poller = hew_io_poller_new();
+            assert!(!poller.is_null());
+            let (conn, mut client) = crate::transport::tcp_socketpair_conn_for_test();
+            let fd = crate::transport::tcp_conn_raw_fd(conn).expect("conn fd");
+            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+            assert_eq!(
+                hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ),
+                0
+            );
+
+            let victim = TrackedTestActor::install_parked();
+            let actor_ref = crate::transport::hew_actor_ref_local(victim.ptr());
+            let slot = crate::read_slot::hew_read_slot_new();
+            // The registration-owned slot ref (`reactor_await_read`'s retain).
+            crate::read_slot::read_slot_retain(slot);
+            inject_resume_registration_for_test(fd, conn, actor_ref, KEY, slot);
+
+            client.write_all(b"readiness").expect("client write");
+            client.flush().ok();
+            std::thread::sleep(Duration::from_millis(20));
+
+            if reincarnate {
+                victim.reincarnate_parked();
+            }
+
+            handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+
+            if reincarnate {
+                assert_not_woken(&sched, &victim, "reactor-resume");
+            } else {
+                assert_woken(&sched, &victim, "reactor-resume");
+            }
+
+            // The one-shot registration is gone (and with it its slot ref), so
+            // this releases the last reference.
+            assert_eq!(registration_count_for_test(), 0);
+            crate::read_slot::hew_read_slot_free(slot);
+
+            drop(client);
+            crate::transport::tcp_close_raw_for_test(conn);
+            hew_io_poller_stop(poller);
+        }
+        reset_reactor();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reactor_read_wake_does_not_resume_a_reused_address() {
+        run_reactor_resume_incarnation(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reactor_read_wake_resumes_the_registering_incarnation() {
+        run_reactor_resume_incarnation(false);
+    }
+
+    /// The orphan-close arm: a registration that never reached the poller still
+    /// wakes its registrant so the handler fails closed instead of hanging. It
+    /// wakes from `Registration.actor` on a thread that never saw the
+    /// registrant, so it carries the same staleness hazard as the readiness arm.
+    fn run_reactor_orphan_close_incarnation(reincarnate: bool) {
+        use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
+        const KEY: usize = 0x0300_6901;
+
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: the registration, slot, and stub actor are all test-owned and
+        // released before this function returns.
+        unsafe {
+            let victim = TrackedTestActor::install_parked();
+            let actor_ref = crate::transport::hew_actor_ref_local(victim.ptr());
+            let slot = crate::read_slot::hew_read_slot_new();
+            // The registration-owned slot ref, released by `Drop for Registration`.
+            crate::read_slot::read_slot_retain(slot);
+            let reg = Registration::new(
+                /* conn */ -1,
+                actor_ref,
+                KEY,
+                RegMode::Resume { read_slot: slot },
+            );
+
+            if reincarnate {
+                victim.reincarnate_parked();
+            }
+
+            deliver_orphan_close(&reg);
+
+            if reincarnate {
+                assert_not_woken(&sched, &victim, "reactor-orphan-close");
+            } else {
+                assert_woken(&sched, &victim, "reactor-orphan-close");
+            }
+
+            drop(reg);
+            crate::read_slot::hew_read_slot_free(slot);
+        }
+        reset_reactor();
+    }
+
+    #[test]
+    fn reactor_orphan_close_wake_does_not_resume_a_reused_address() {
+        run_reactor_orphan_close_incarnation(true);
+    }
+
+    #[test]
+    fn reactor_orphan_close_wake_resumes_the_registering_incarnation() {
+        run_reactor_orphan_close_incarnation(false);
+    }
 }

@@ -226,3 +226,75 @@ fn scope_wake_does_not_resume_a_reused_address() {
 fn scope_wake_resumes_the_registering_incarnation() {
     run_scope_family(false);
 }
+
+// ── scope join (await over the whole scope: wait-ALL) ────────────────────────
+
+/// The scope-JOIN arm is a second, independent wake edge in `task_scope`: the
+/// per-task `await` above resumes on ONE child, while `hew_task_scope_completion_observe`
+/// registers a counting observer per outstanding child and resumes when the LAST
+/// one lands. Every other test of this entry point passes a null actor, so the
+/// join edge is only ever driven with `ActorIncarnation::NONE` and neither arm
+/// of its wake is controlled.
+///
+/// The arbiter is created with a null actor so the deadline arm cannot wake:
+/// the only wake reaching the scheduler here is the join's.
+fn run_scope_join_family(reincarnate: bool) {
+    use crate::await_cancel::{hew_await_cancel_free, hew_await_cancel_new};
+    use crate::task_scope::{
+        hew_task_new, hew_task_scope_complete_task, hew_task_scope_completion_observe,
+        hew_task_scope_destroy, hew_task_scope_new, hew_task_scope_spawn, SCOPE_JOIN_SUSPEND,
+    };
+
+    let sched = NoWorkerSchedulerForTest::install();
+    let victim = TrackedTestActor::install_parked();
+
+    // SAFETY: the test owns every scope/task/arbiter pointer exclusively.
+    unsafe {
+        let scope = hew_task_scope_new();
+        let first = hew_task_new();
+        let last = hew_task_new();
+        hew_task_scope_spawn(scope, first);
+        hew_task_scope_spawn(scope, last);
+
+        let reg = hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+        let parked = hew_task_scope_completion_observe(scope, reg, victim.ptr());
+        assert_eq!(
+            parked, SCOPE_JOIN_SUSPEND,
+            "outstanding children must park the joining actor"
+        );
+
+        if reincarnate {
+            victim.reincarnate_parked();
+        }
+
+        // Only the LAST child wins the join, so the first completion must be a
+        // no-op on the wake edge in both arms.
+        hew_task_scope_complete_task(scope, first);
+        assert_eq!(
+            sched.pop_global(),
+            None,
+            "the join must not wake before its last child completes"
+        );
+
+        hew_task_scope_complete_task(scope, last);
+
+        if reincarnate {
+            assert_not_woken(&sched, &victim, "scope-join");
+        } else {
+            assert_woken(&sched, &victim, "scope-join");
+        }
+
+        hew_await_cancel_free(reg);
+        hew_task_scope_destroy(scope);
+    }
+}
+
+#[test]
+fn scope_join_wake_does_not_resume_a_reused_address() {
+    run_scope_join_family(true);
+}
+
+#[test]
+fn scope_join_wake_resumes_the_registering_incarnation() {
+    run_scope_join_family(false);
+}

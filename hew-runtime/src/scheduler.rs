@@ -6755,7 +6755,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn stop_latched_during_resume_terminates_a_reparking_continuation() {
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
         STOP_ON_RESUME_TERMINATED.store(0, Ordering::Release);
 
         // SAFETY: fresh mailbox owned by this test.
@@ -6794,6 +6794,9 @@ mod tests {
         // path; the outline latches the stop; the poll reports `Pending`.
         // SAFETY: the actor is live (tracked) and `handle` is its parked frame.
         unsafe { enqueue_resume_pinned(actor_ptr, handle) };
+        // A worker dequeues before it activates; the dequeue releases the
+        // queue entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
 
         assert_eq!(
@@ -6858,7 +6861,7 @@ mod tests {
         // tracked in `LIVE_ACTORS` for the whole of it.
         unsafe impl Send for AskTarget {}
 
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
         let baseline = crate::reply_channel::active_channel_count();
 
         // SAFETY: fresh mailbox owned by this test.
@@ -6923,6 +6926,9 @@ mod tests {
         // SAFETY: the actor is live and owned by this test.
         unsafe { crate::actor::hew_actor_stop(actor_ptr) };
         // Drive the activation the stop queued (no workers under this guard).
+        // A worker dequeues before it activates; the dequeue releases the
+        // queue entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -6996,7 +7002,7 @@ mod tests {
             Value,
         }
 
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
 
         // SAFETY: fresh mailbox owned by this test, with one message to drive
         // the single dispatch that parks the pump.
@@ -7077,6 +7083,9 @@ mod tests {
         // SAFETY: the actor is live and owned by this test.
         unsafe { crate::actor::hew_actor_stop(actor_ptr) };
         // Drive the activation the stop queued (no workers under this guard).
+        // A worker dequeues before it activates; the dequeue releases the
+        // queue entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),

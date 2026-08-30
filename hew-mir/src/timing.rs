@@ -28,6 +28,14 @@ struct Accumulator {
     stages: HashMap<&'static str, (Duration, u64)>,
     /// Total lowering time per function symbol.
     functions: HashMap<String, Duration>,
+    /// How many whole-function derivations each call site asked for.
+    ///
+    /// A stage total says a pass is expensive; it does not say whether the
+    /// expense is one derivation per body or one per block. The call site is
+    /// the actionable half, so the report names it.
+    derivations: HashMap<(&'static str, String), u64>,
+    /// Function bodies whose lowering has been attributed.
+    bodies: u64,
 }
 
 thread_local! {
@@ -87,6 +95,25 @@ pub fn record_stage(stage: &'static str, started: Option<Instant>) {
     });
 }
 
+/// Count one whole-function analysis derivation against the site that asked.
+///
+/// `#[track_caller]` on the derivation itself makes `Location::caller()` the
+/// line that requested it, so the report distinguishes a pass that derives
+/// once per body from one that derives once per block.
+pub fn derivation(analysis: &'static str, caller: &'static std::panic::Location<'static>) {
+    if !enabled() {
+        return;
+    }
+    let site = format!("{}:{}", caller.file(), caller.line());
+    ACCUMULATOR.with(|accumulator| {
+        *accumulator
+            .borrow_mut()
+            .derivations
+            .entry((analysis, site))
+            .or_insert(0) += 1;
+    });
+}
+
 /// Mark the start of one function's lowering, or `None` when measurement is off.
 ///
 /// The symbol is not known until the body is sealed, so the start and the
@@ -103,8 +130,9 @@ pub fn function_end(symbol: &str, started: Option<Instant>) {
     };
     let elapsed = started.elapsed();
     ACCUMULATOR.with(|accumulator| {
+        let mut accumulator = accumulator.borrow_mut();
+        accumulator.bodies += 1;
         *accumulator
-            .borrow_mut()
             .functions
             .entry(symbol.to_string())
             .or_insert(Duration::ZERO) += elapsed;
@@ -119,11 +147,14 @@ pub fn report(limit: usize) {
     if !enabled() {
         return;
     }
-    let (stages, functions) = ACCUMULATOR.with(|accumulator| {
+    let (stages, functions, derivations, bodies) = ACCUMULATOR.with(|accumulator| {
         let mut accumulator = accumulator.borrow_mut();
+        let bodies = std::mem::take(&mut accumulator.bodies);
         (
             std::mem::take(&mut accumulator.stages),
             std::mem::take(&mut accumulator.functions),
+            std::mem::take(&mut accumulator.derivations),
+            bodies,
         )
     });
 
@@ -134,6 +165,22 @@ pub fn report(limit: usize) {
             "hew measure: mir stage {stage} {:.3} ms ({calls} calls)",
             elapsed.as_secs_f64() * 1_000.0
         );
+    }
+
+    let mut derivations: Vec<_> = derivations.into_iter().collect();
+    derivations.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    let mut totals: HashMap<&'static str, u64> = HashMap::new();
+    for ((analysis, site), count) in &derivations {
+        *totals.entry(analysis).or_insert(0) += count;
+        eprintln!("hew measure: mir derivation {analysis} {site} {count}");
+    }
+    let mut totals: Vec<_> = totals.into_iter().collect();
+    totals.sort_unstable();
+    for (analysis, count) in totals {
+        // Printed as two integers rather than a ratio: the complexity gate in
+        // `scripts/bench-mir.sh` divides them, and an integer pair parses the
+        // same on every locale and rounding mode.
+        eprintln!("hew measure: mir derivations {analysis} {count} bodies {bodies}");
     }
 
     let mut functions: Vec<_> = functions.into_iter().collect();

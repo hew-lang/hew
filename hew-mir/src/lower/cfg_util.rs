@@ -248,10 +248,13 @@ pub(super) fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u3
             }
         })
         .collect();
-    // Visit order for the fixpoint below. The least fixed point does not depend
-    // on it, but reverse postorder reaches a block after its predecessors, so
-    // the whole set settles in a couple of passes instead of one pass per level
-    // of the CFG. Iterating the reachable HASH SET meant no order at all.
+    // Visit order for the fixpoint below. The iteration seeds every non-entry
+    // block with the whole reachable set and only ever narrows it by
+    // intersection, so it settles on the GREATEST fixed point and that answer
+    // does not depend on the order. Order buys convergence speed: reverse
+    // postorder reaches a block after its predecessors, so the whole set
+    // settles in a couple of passes instead of one pass per level of the CFG.
+    // Iterating the reachable HASH SET meant no order at all.
     let successors = successors_by_id(blocks);
     let mut order: Vec<u32> = Vec::with_capacity(reachable.len());
     let mut visited: HashSet<u32> = HashSet::from([entry]);
@@ -274,8 +277,16 @@ pub(super) fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u3
     order.reverse();
     // A reachable id with no block of its own is never reached by the walk;
     // keep it in the iteration set so the loop below sees exactly the blocks it
-    // saw before.
-    order.extend(reachable.iter().copied().filter(|id| !visited.contains(id)));
+    // saw before. Sorted, because a hash-set order here would make the removal
+    // cascade below - and so a dominance answer on a malformed CFG - differ
+    // between runs of the same compiler on the same input.
+    let mut unwalked: Vec<u32> = reachable
+        .iter()
+        .copied()
+        .filter(|id| !visited.contains(id))
+        .collect();
+    unwalked.sort_unstable();
+    order.extend(unwalked);
 
     loop {
         let mut changed = false;
@@ -283,13 +294,18 @@ pub(super) fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u3
             if block == entry {
                 continue;
             }
+            // A block whose predecessors have all been removed loses its own
+            // entry, and that removal can strand a further block. Recording it
+            // as a change keeps the loop running until the cascade is complete,
+            // so the answer does not depend on where in `order` the removed
+            // block happened to sit.
             let Some(preds) = predecessors.get(&block) else {
-                dominators.remove(&block);
+                changed |= dominators.remove(&block).is_some();
                 continue;
             };
             let mut pred_dominators = preds.iter().filter_map(|pred| dominators.get(pred));
             let Some(mut next) = pred_dominators.next().cloned() else {
-                dominators.remove(&block);
+                changed |= dominators.remove(&block).is_some();
                 continue;
             };
             for pred_doms in pred_dominators {

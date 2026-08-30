@@ -8483,10 +8483,12 @@ fn block_index_by_id(blocks: &[BasicBlock]) -> HashMap<u32, usize> {
         .collect()
 }
 
+#[track_caller]
 pub(super) fn exact_owner_states(
     blocks: &[BasicBlock],
 ) -> (HashMap<u32, ExactOwnerState>, HashMap<u32, ExactOwnerState>) {
     let _timing = crate::timing::stage("exact_owner_states");
+    crate::timing::derivation("exact_owner_states", std::panic::Location::caller());
     let index = block_index_by_id(blocks);
     let mut entries = HashMap::from([(ENTRY_BLOCK_ID, ExactOwnerState::new())]);
     let mut exits = HashMap::new();
@@ -8524,10 +8526,12 @@ pub(super) fn exact_owner_states(
     (entries, exits)
 }
 
+#[track_caller]
 pub(super) fn maybe_owner_states(
     blocks: &[BasicBlock],
 ) -> (HashMap<u32, MaybeOwnerState>, HashMap<u32, MaybeOwnerState>) {
     let _timing = crate::timing::stage("maybe_owner_states");
+    crate::timing::derivation("maybe_owner_states", std::panic::Location::caller());
     let index = block_index_by_id(blocks);
     let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MaybeOwnerState::new())]);
     let mut exits = HashMap::new();

@@ -1253,18 +1253,16 @@ fn main() -> i64 {
 
     // The terminal carrier drop remains on the return path; the neutralized
     // slot is null there, so it releases only what the carrier still owns.
+    // Asserted against the RETURN exit's own block: "a drop exists somewhere in
+    // the function" would be satisfied by a drop on a path the return never
+    // reaches, which is the shape a carrier leak takes.
+    let return_exits = exits_releasing_carrier(&pipeline, "ef");
     assert!(
-        ef.blocks
+        return_exits
             .iter()
-            .flat_map(|block| block.instructions.iter())
-            .any(|instr| matches!(
-                instr,
-                Instr::ValueSnapshotDrop {
-                    value: hew_mir::Place::Local(0),
-                    ..
-                }
-            )),
-        "the carrier param keeps its terminal snapshot drop"
+            .any(|exit| matches!(exit, ExitPath::Return { .. })),
+        "the carrier param keeps its terminal snapshot drop on the return exit; \
+         releasing exits were {return_exits:?}"
     );
     // No string-typed binder drop competes with the returned share: the
     // payload is freed exactly once, by the caller of `ef`.
@@ -1787,4 +1785,123 @@ fn main() -> i64 {
         inline_owner_releases, 1,
         "the successful loop iteration must release the old result generation once"
     );
+}
+
+/// Every exit of `name` that releases the whole call-carrier parameter.
+///
+/// A carrier's cleanup reaches an exit two ways: as an `ElabDrop` over the
+/// parameter in that exit's drop plan, or as a guarded `ValueSnapshotDrop`
+/// materialized into the exit's own block. Both count; what does not count is
+/// a release somewhere else in the function, which is how a leak on one exit
+/// hides behind a drop on another.
+fn exits_releasing_carrier(pipeline: &IrPipeline, name: &str) -> Vec<ExitPath> {
+    let raw = find_fn(pipeline, name);
+    let releases_in_block = |block_id: u32| {
+        raw.blocks
+            .iter()
+            .find(|block| block.id == block_id)
+            .is_some_and(|block| {
+                block.instructions.iter().any(|instruction| {
+                    matches!(
+                        instruction,
+                        Instr::ValueSnapshotDrop {
+                            value: Place::Local(0),
+                            ..
+                        }
+                    )
+                })
+            })
+    };
+    pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == name)
+        .unwrap_or_else(|| panic!("function `{name}` not found in elaborated MIR"))
+        .drop_plans
+        .iter()
+        .filter(|(exit, plan)| {
+            plan.drops.iter().any(|drop| drop.place == Place::Local(0))
+                || releases_in_block(exit_block(exit))
+        })
+        .map(|(exit, _)| exit.clone())
+        .collect()
+}
+
+fn exit_block(exit: &ExitPath) -> u32 {
+    match exit {
+        ExitPath::Return { block }
+        | ExitPath::Goto { block, .. }
+        | ExitPath::Branch { block, .. }
+        | ExitPath::Call { block, .. }
+        | ExitPath::Unwind { block, .. }
+        | ExitPath::Panic { block }
+        | ExitPath::Cancel { block }
+        | ExitPath::Yield { block, .. }
+        | ExitPath::Send { block, .. }
+        | ExitPath::Ask { block, .. }
+        | ExitPath::Select { block, .. }
+        | ExitPath::Join { block, .. }
+        | ExitPath::Suspend { block, .. } => *block,
+    }
+}
+
+/// A call-carrier parameter must be released on the exceptional edge of an
+/// inner call, not only on the ordinary ones.
+///
+/// `ef` owns `e` for its whole body. `may_fail` can unwind out of the middle of
+/// that body, and `ExitPath::Unwind`'s own contract is that its plan "destroys
+/// every live owner before LLVM `resume` propagates the exception". Today the
+/// carrier's cleanup is not a drop plan at all: it is a guarded
+/// `ValueSnapshotDrop` materialized into the return and panic blocks, so the
+/// unwind edges carry nothing and the carrier leaks when `may_fail` throws.
+///
+/// IGNORED, not deleted, and not weakened to match what lowering does. The fix
+/// is not a patch on this shape: it is deleting the second discharge authority
+/// that materializes carrier cleanup as instructions outside the Checked-MIR
+/// replay, so that carrier release is planned per exit like every other owner.
+/// That is the single-ownership-authority work (F1), not a compile-time change.
+/// Un-ignore it when carrier discharge goes through `derive_drop_plans_from_replay`.
+#[test]
+#[ignore = "carrier cleanup is materialized outside the drop-plan authority; unwind edges are uncovered until F1 deletes that path"]
+fn carrier_param_is_released_on_the_unwind_edge_of_an_inner_call() {
+    let pipeline = pipeline_with_tc(
+        r#"
+fn may_fail(n: i64) -> i64 {
+    if n > 10 { panic("boom"); }
+    n + 1
+}
+
+fn ef(e: Result<string, string>, n: i64) -> string {
+    let guard = may_fail(n);
+    match e { Ok(x) => x, Err(y) => "e" + "rr" }
+}
+
+fn main() -> i64 {
+    let s = ef(Ok("a" + "b"), 1);
+    s.len()
+}
+"#,
+    );
+    let releasing = exits_releasing_carrier(&pipeline, "ef");
+    let unwind_exits: Vec<&ExitPath> = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "ef")
+        .expect("ef in elaborated MIR")
+        .drop_plans
+        .iter()
+        .map(|(exit, _)| exit)
+        .filter(|exit| matches!(exit, ExitPath::Unwind { .. }))
+        .collect();
+    assert!(
+        !unwind_exits.is_empty(),
+        "the fixture must contain an inner potentially-unwinding call, or it \
+         proves nothing about unwind cleanup"
+    );
+    for exit in unwind_exits {
+        assert!(
+            releasing.contains(exit),
+            "{exit:?} leaves the carrier parameter live; releasing exits were {releasing:?}"
+        );
+    }
 }

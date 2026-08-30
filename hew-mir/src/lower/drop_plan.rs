@@ -8465,15 +8465,30 @@ pub(super) fn apply_maybe_owner_ops(instructions: &[Instr], live: &mut MaybeOwne
     }
 }
 
+/// Position of every block in `blocks`, keyed by its id.
+///
+/// The owner-state replays pop block ids off a worklist and revisit a block
+/// once per predecessor generation change. Resolving each pop by scanning
+/// `blocks` made a replay quadratic in block count on its own, which is the
+/// wrong cost for an analysis whose real work is linear in instructions.
+fn block_index_by_id(blocks: &[BasicBlock]) -> HashMap<u32, usize> {
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(position, block)| (block.id, position))
+        .collect()
+}
+
 pub(super) fn exact_owner_states(
     blocks: &[BasicBlock],
 ) -> (HashMap<u32, ExactOwnerState>, HashMap<u32, ExactOwnerState>) {
     let _timing = crate::timing::stage("exact_owner_states");
+    let index = block_index_by_id(blocks);
     let mut entries = HashMap::from([(ENTRY_BLOCK_ID, ExactOwnerState::new())]);
     let mut exits = HashMap::new();
     let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
     while let Some(block_id) = queue.pop_front() {
-        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
+        let Some(block) = index.get(&block_id).map(|position| &blocks[*position]) else {
             continue;
         };
         let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();
@@ -8509,11 +8524,12 @@ pub(super) fn maybe_owner_states(
     blocks: &[BasicBlock],
 ) -> (HashMap<u32, MaybeOwnerState>, HashMap<u32, MaybeOwnerState>) {
     let _timing = crate::timing::stage("maybe_owner_states");
+    let index = block_index_by_id(blocks);
     let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MaybeOwnerState::new())]);
     let mut exits = HashMap::new();
     let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
     while let Some(block_id) = queue.pop_front() {
-        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
+        let Some(block) = index.get(&block_id).map(|position| &blocks[*position]) else {
             continue;
         };
         let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();

@@ -3434,6 +3434,16 @@ impl Builder {
     /// and suppressing it would leak the parent's other fields. A handle
     /// payload has no retain, so the binder and the parent would otherwise
     /// both release it.
+    ///
+    /// SHORTCUT - WHY: only a DIRECT handle payload is proven here. A payload
+    /// that is itself an aggregate owning a handle (`Option<Inner>` where
+    /// `Inner` holds a `Vec`) classifies `ByteCopyAlias` and answers `false`,
+    /// so it keeps today's competing release (#3168). Widening it needs a
+    /// transfer authority for the nested aggregate, not just its root, which
+    /// is more than the reported class asks for. WHEN OBSOLETE: once a nested
+    /// aggregate payload carries its own handoff authority. WHAT: recurse this
+    /// classification through `ByteCopyAlias` payloads and publish the
+    /// transfer for the exact nested leaf rather than the root generation.
     fn projected_enum_payload_is_handle_transfer(&self, ty: &ResolvedTy) -> bool {
         let subst = self.subst_ty(ty);
         let ResolvedTy::Named { name, args, .. } = &subst else {

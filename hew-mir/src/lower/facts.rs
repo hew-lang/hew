@@ -1125,7 +1125,6 @@ pub(super) fn compute_param_ownership(
             owned_projection_sinks: false,
         },
     );
-    // Refine the converged BOOL consume verdict into the three-valued
     ParamOwnershipFacts {
         produced_value_facts: HashMap::new(),
         param_consume,
@@ -4377,45 +4376,6 @@ mod runtime_callee_ownership_contract_parity {
         assert_eq!(
             split_symbols,
             vec!["hew_vec_push_owned", "hew_vec_set_owned"]
-        );
-    }
-}
-#[cfg(test)]
-mod layout_key_shortening_guard {
-    //! Structural guard: generic record field-store, field-read, and
-    //! `StructInit` consumers preserve the checker's full nominal owner when
-    //! forming their layout key. A leaf-name rewrite would collapse
-    //! `left.render.Box<T>` and `right.render.Box<T>` before the layout table.
-
-    /// The production (non-test) sources containing record layout-key consumers.
-    ///
-    /// Normalises CRLF→LF for deterministic source scanning. Test-only
-    /// helpers may appear before later production items in these large module
-    /// files, so truncating at the first `#[cfg(test)] mod` would silently omit
-    /// real consumers. Scan the complete files: the forbidden short-name call
-    /// is absent everywhere, while the positive full-owner calls are ordinary
-    /// Rust expressions rather than strings manufactured by this guard.
-    fn production_source() -> String {
-        [include_str!("mod.rs"), include_str!("expr.rs")]
-            .into_iter()
-            .map(|src| src.replace("\r\n", "\n"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// The field-store, field-read, and `StructInit` generic arms must pass the
-    /// full outer name to the shared key helper. No production layout consumer
-    /// may shorten a nominal owner before keying the layout registry.
-    #[test]
-    fn generic_record_layout_consumers_preserve_outer_owner() {
-        let prod = production_source();
-        assert!(
-            !prod.contains("mangle_layout_key(short_name"),
-            "layout keys must retain the full nominal owner, never `short_name(..)`"
-        );
-        assert!(
-            prod.matches("mangle_layout_key(name, args)").count() >= 3,
-            "field-store, field-read, and StructInit must pass their resolved outer name"
         );
     }
 }

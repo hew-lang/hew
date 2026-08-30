@@ -834,6 +834,21 @@ struct Builder {
     /// carrier/Terminator field) so the carriers collapse onto one
     /// `Terminator::Suspend` while the emitted IR stays byte-identical.
     pub(crate) suspend_kinds: HashMap<u32, SuspendKind>,
+    /// The owner ledger. Entries are ADDED only by the three warranted
+    /// registrars in `ownership.rs` (`register_owned_local`,
+    /// `register_owned_local_alias`, `adopt_synthetic_owned_local`), each of
+    /// which demands an [`owner_mint::OwnerMintWarrant`] so no mint is decided
+    /// without asking the provenance authority.
+    ///
+    /// SHORTCUT — WHY: the field is `pub(crate)` and `OwnedLocalEntry` is a
+    /// private item of this module, so every child of `lower` can push an
+    /// entry directly and mint a scope-exit owner having asked nothing; the
+    /// discipline is a convention here, not a compile-time brace. WHEN
+    /// obsolete: when the ledger becomes a newtype whose inner `Vec` is
+    /// private to `owner_mint` and whose only adding method takes a warrant.
+    /// WHAT: that newtype — the read paths (`iter`, `iter_mut`, indexing) stay
+    /// open, only the add path narrows, which turns this comment into a type
+    /// error for anyone who bypasses it.
     pub(crate) owned_locals: Vec<OwnedLocalEntry>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
     /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`

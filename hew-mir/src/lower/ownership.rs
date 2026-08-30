@@ -3705,6 +3705,16 @@ impl Builder {
     /// behind — so the drop-elaboration view is byte-identical to the pre-
     /// disposition ledger. The retracted entries survive in the whole ledger
     /// ([`Builder::owned_locals_ledger`]) for an end-of-pass scan to observe.
+    ///
+    /// SHORTCUT — WHY: the string and bytes finalizers classify a slot as a
+    /// mint or a retain while lowering is still emitting events, so they
+    /// cannot replay a finished stream and read this Builder ledger view of
+    /// scope-exit-live owners instead. WHEN obsolete: once every owner
+    /// generation publishes its mint and its end as events at lowering time
+    /// (the same condition as [`Builder::owned_locals_ledger`]'s marker), the
+    /// finalizers classify from replay. WHAT: derive the scope-exit-live set
+    /// from Checked-MIR event replay and delete this ledger reader; nothing
+    /// downstream of `seal_checked` may read it.
     pub(crate) fn owned_locals_snapshot(&self) -> Vec<(BindingId, String, ResolvedTy)> {
         self.owned_locals
             .iter()

@@ -881,6 +881,7 @@ fn entry_cancel_parameter_owners(
                 super::ParamBoundaryMode::TransferResource
                     | super::ParamBoundaryMode::OwnedMessage
                     | super::ParamBoundaryMode::OwnedCarrier
+                    | super::ParamBoundaryMode::OwnedCursor
             )
             .then_some(fact.param_index)
         })
@@ -937,6 +938,11 @@ fn entry_cancel_owner_requires_typed_owned_parameter_boundary() {
         entry_cancel_parameter_owners(&blocks, &[boundary(super::ParamBoundaryMode::OwnedMessage)]),
         HashMap::from([(owner, Place::Local(0))]),
         "an owned message is physically live after ABI ingress and before MIR replay"
+    );
+    assert_eq!(
+        entry_cancel_parameter_owners(&blocks, &[boundary(super::ParamBoundaryMode::OwnedCursor)]),
+        HashMap::from([(owner, Place::Local(0))]),
+        "an OwnedCursor parameter is physically live after ABI ingress and before its guard exists"
     );
     assert!(
         entry_cancel_parameter_owners(

@@ -24414,6 +24414,26 @@ pub(crate) fn emit_helper_crash_cleanup_deactivate_before_write(
     Ok(())
 }
 
+fn emit_owned_param_helper_crash_cleanup_deactivations(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    modes: &[Option<ParamBoundaryMode>],
+) -> CodegenResult<()> {
+    for (arg, mode) in args.iter().zip(modes) {
+        if matches!(
+            mode,
+            Some(
+                ParamBoundaryMode::TransferResource
+                    | ParamBoundaryMode::OwnedCarrier
+                    | ParamBoundaryMode::OwnedCursor
+            )
+        ) {
+            emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *arg)?;
+        }
+    }
+    Ok(())
+}
+
 /// Transfer dynamic cleanup authority away from owners whose MIR consume
 /// guard is set on this path.
 ///
@@ -31007,14 +31027,7 @@ fn lower_terminator<'ctx>(
                 }
             }
             if let Some(modes) = fn_ctx.param_boundary_modes.get(callee) {
-                for (arg, mode) in args.iter().zip(modes) {
-                    if matches!(
-                        mode,
-                        Some(ParamBoundaryMode::TransferResource | ParamBoundaryMode::OwnedCarrier)
-                    ) {
-                        emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *arg)?;
-                    }
-                }
+                emit_owned_param_helper_crash_cleanup_deactivations(fn_ctx, args, modes)?;
             }
             emit_helper_crash_cleanup_deactivate_consumed_owners(fn_ctx, args)?;
             if let Some(dest) = dest {

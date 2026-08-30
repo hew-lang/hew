@@ -1142,6 +1142,12 @@ fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
                 let _ = cursor.next();
             }
         }
+
+        fn cursor_param_step() {}
+
+        fn owned_cursor_param(cursor: VecIter<i64>) {
+            cursor_param_step();
+        }
         ",
     );
 
@@ -1162,10 +1168,12 @@ fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
         "the fixture must produce first-class cursor abandon releases"
     );
     for (function, exit, drop) in &cursor_drops {
-        assert!(
-            drop.guard.is_some(),
-            "{function}: every cursor abandon release must be flag-gated: \
-             {exit:?} -> {drop:?}"
+        let is_owned_cursor_entry_cancel =
+            *function == "owned_cursor_param" && matches!(exit, ExitPath::Cancel { block: 0 });
+        assert_eq!(
+            drop.guard.is_none(),
+            is_owned_cursor_entry_cancel,
+            "{function}: only the OwnedCursor function-entry cancellation edge runs before the parameter guard exists: {exit:?} -> {drop:?}"
         );
         assert_eq!(
             drop.kind,
@@ -1175,6 +1183,20 @@ fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
             "{function}: VecIter<i64> must select the plain Vec release"
         );
     }
+
+    let owned_cursor_entry_cancel = cursor_drops
+        .iter()
+        .filter(|(function, exit, drop)| {
+            *function == "owned_cursor_param"
+                && matches!(exit, ExitPath::Cancel { block: 0 })
+                && drop.place == Place::Local(0)
+                && drop.guard.is_none()
+        })
+        .count();
+    assert_eq!(
+        owned_cursor_entry_cancel, 1,
+        "the real OwnedCursor parameter must publish exactly one unguarded VecIterCursor descriptor for cancellation between ABI ingress and guard initialisation: {cursor_drops:#?}"
+    );
 
     for (needle, expected_path, live_at_return) in [
         ("cancel_cursor", "cancel", false),

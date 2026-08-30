@@ -111,6 +111,27 @@ impl Builder {
                 }
             }
         }
+        let collection_index_ingress = matches!(
+            &target.kind,
+            HirExprKind::Index { container, .. }
+                if matches!(
+                    self.subst_ty(&container.ty),
+                    ResolvedTy::Named {
+                        builtin: Some(BuiltinType::Vec | BuiltinType::HashMap),
+                        ..
+                    }
+                )
+        );
+        if collection_index_ingress {
+            let value_ty = self.subst_ty(&value.ty);
+            if self.reject_vec_iter_collection_storage_boundary(
+                &value_ty,
+                value.site,
+                "a collection index assignment",
+            ) {
+                return;
+            }
+        }
         let copy_in = self.assign_target_stays_copy_in(target, value);
         // A Vec index assignment that MOVES a bound local (`v[i] = h`, routed
         // to `hew_vec_set_owned_move` below) hands the value to the runtime

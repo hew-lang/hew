@@ -8370,6 +8370,10 @@ pub enum ParamBoundaryMode {
     TransferResource,
     OwnedMessage,
     OwnedCarrier,
+    /// A by-value `VecIter<T>` cursor whose caller transfers the sole cursor
+    /// generation immediately before a direct Hew invoke. The callee owns
+    /// normal, unwind, and entry-cancel cleanup from ABI ingress.
+    OwnedCursor,
     /// A representation mutation reached a boundary whose alias/callee
     /// authority is not proven. Checked MIR keeps this refusal explicit.
     RejectUnprovenRepresentationMutation,

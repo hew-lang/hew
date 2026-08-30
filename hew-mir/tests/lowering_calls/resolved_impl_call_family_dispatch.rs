@@ -45,14 +45,15 @@
 use std::collections::HashMap;
 
 use hew_hir::{
-    ids::IdGen, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt,
-    HirStmtKind, IntentKind, ScopeId, TypeClassTable, ValueClass,
+    ids::IdGen, lower_program, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral,
+    HirModule, HirStmt, HirStmtKind, IntentKind, ResolutionCtx, ScopeId, TypeClassTable,
+    ValueClass,
 };
 use hew_mir::lower_hir_module;
 use hew_mir::model::{IrPipeline, MirDiagnosticKind, Terminator};
 use hew_types::{
-    BuiltinType, CallTarget, HashMapMethod, HashSetMethod, ImplId, MethodTargetFamily, ResolvedTy,
-    TyPattern, VecMethod,
+    module_registry::ModuleRegistry, BuiltinType, CallTarget, Checker, HashMapMethod,
+    HashSetMethod, ImplId, MethodTargetFamily, ResolvedTy, TyPattern, VecMethod,
 };
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
@@ -525,5 +526,86 @@ fn wellformed_hashmap_dispatch_emits_symbol_as_callee() {
         "the owned-rewrite must not fire for a non-Vec-push family; a \
          spurious rewrite would prove the callee selection is not \
          family-gated. Got: {callees:?}"
+    );
+}
+
+#[test]
+fn vec_push_rejects_supported_exact_cursor_before_effectful_receiver() {
+    let parsed = hew_parser::parse(
+        r"
+        fn receiver_sentinel() -> Vec<i64> { Vec.new() }
+
+        fn main() {
+            receiver_sentinel().push(1);
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let checked_program = checker.check_program(&parsed.program);
+    assert!(
+        checked_program.errors.is_empty(),
+        "type errors: {:#?}",
+        checked_program.errors
+    );
+    let mut hir = lower_program(
+        &parsed.program,
+        &checked_program,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let cursor_ty =
+        ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![ResolvedTy::I64]);
+    let vec_cursor_ty = ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![cursor_ty.clone()]);
+    let main = hir
+        .module
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main HIR");
+    let HirStmtKind::Expr(call) = &mut main.body.statements[0].kind else {
+        panic!("main statement must retain Vec.push")
+    };
+    let HirExprKind::ResolvedImplCall {
+        receiver,
+        args,
+        target_symbol,
+        type_args,
+        ..
+    } = &mut call.kind
+    else {
+        panic!("Vec.push must lower as ResolvedImplCall: {call:#?}")
+    };
+    receiver.ty = vec_cursor_ty;
+    args[0].ty = cursor_ty;
+    *target_symbol = "hew_vec_push_layout".to_string();
+    *type_args = vec![TyPattern::App {
+        ctor: "VecIter".to_string(),
+        args: vec![TyPattern::Primitive("i64".to_string())],
+    }];
+
+    let pipeline = lower_hir_module(&hir.module);
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct == "VecIter value at a runtime collection storage boundary"
+        )),
+        "Vec.push has no OwnedCursor storage protocol even for a standalone-supported cursor: {:#?}",
+        pipeline.diagnostics
+    );
+    let callees = callees_of(&pipeline);
+    assert!(
+        callees.iter().all(|callee| {
+            callee != "receiver_sentinel" && !callee.starts_with("hew_vec_push")
+        }),
+        "the typed collection preflight must reject before lowering the effectful receiver or emitting the runtime push: {callees:?}"
     );
 }

@@ -18,7 +18,16 @@ use super::{
 
 impl Builder {
     pub(super) fn binding_ref_use_intent(&self, expr: &HirExpr) -> IntentKind {
-        if self
+        if self.deferred_affine_call_consume_sites.contains(&expr.site)
+            && self.ty_is_exact_vec_iter(&self.subst_ty(&expr.ty))
+        {
+            // A direct OwnedCursor call consumes the named cursor only at the
+            // final invoke boundary. Keep the checker and runtime guard live
+            // while all later argument expressions are still evaluating; the
+            // post-CFG call-site pass authors the matching Consume once entry
+            // is inevitable.
+            IntentKind::Read
+        } else if self
             .projected_resource_direct_move_sites
             .last()
             .is_some_and(|site| *site == expr.site)

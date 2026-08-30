@@ -270,6 +270,7 @@ fn render_param_boundary_mode(fact: ParamBoundaryFact) -> &'static str {
         ParamBoundaryMode::TransferResource => "transfer-resource",
         ParamBoundaryMode::OwnedMessage => "owned-message",
         ParamBoundaryMode::OwnedCarrier => "owned-carrier",
+        ParamBoundaryMode::OwnedCursor => "owned-cursor",
         ParamBoundaryMode::RejectUnprovenRepresentationMutation => {
             "reject-unproven-representation-mutation"
         }

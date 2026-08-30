@@ -405,9 +405,47 @@ struct PendingOwnedCallArg {
     source_may_transfer: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingOwnedCallAnchor {
+    DirectTerminator,
+}
+
+#[derive(Debug, Clone)]
+struct PendingOwnedCursorArg {
+    index: usize,
+    source: Place,
+    ty: ResolvedTy,
+    site: SiteId,
+}
+
 #[derive(Debug, Clone, Default)]
 struct PendingOwnedCallSite {
-    args: Vec<PendingOwnedCallArg>,
+    anchor: Option<PendingOwnedCallAnchor>,
+    carrier_args: Vec<PendingOwnedCallArg>,
+    cursor_args: Vec<PendingOwnedCursorArg>,
+}
+
+#[derive(Debug, Clone)]
+struct CommittedOwnedCursorArg {
+    source: Place,
+    flag: Place,
+    site: SiteId,
+}
+
+#[derive(Debug, Clone)]
+struct CommittedOwnedCursorCall {
+    block: u32,
+    anchor: PendingOwnedCallAnchor,
+    args: Vec<CommittedOwnedCursorArg>,
+}
+
+struct CursorCommit {
+    owner: crate::model::OwnerId,
+    source: Place,
+    flag: Place,
+    site: SiteId,
+    name: String,
+    ty: ResolvedTy,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -520,7 +558,7 @@ struct Builder {
     /// Direct-call arguments whose callee body is proven to carry the value
     /// into an owning sink. Resolved after CFG construction so liveness and
     /// projection taint choose snapshot versus last-use transfer.
-    pending_owned_call_args: HashMap<u32, PendingOwnedCallSite>,
+    pending_owned_call_args: HashMap<u32, Vec<PendingOwnedCallSite>>,
     /// Affine whole-local arguments whose declared extern contract consumes the
     /// value only after the call returns normally. The HIR `Use { Consume }`
     /// remains in the call block for move checking, while these facts defer
@@ -4434,11 +4472,12 @@ fn prepare_owned_call_carriers(
     blocks: &mut [BasicBlock],
     builder: &mut Builder,
     projection_tainted: &HashSet<u32>,
-) {
+) -> Vec<CommittedOwnedCursorCall> {
     let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
     let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_owned_call_args);
     let mut normal_owner_commits = Vec::new();
+    let mut cursor_blocked = HashSet::new();
 
     for block_index in 0..blocks.len() {
         // Earlier call sites may have just committed ownership transfers.
@@ -4446,15 +4485,44 @@ fn prepare_owned_call_carriers(
         // than carrying one pre-rewrite whole-function snapshot through every
         // block (which made every historical generation appear live later).
         let (owner_entries, owner_exits) = drop_plan::exact_owner_states(blocks);
+        let block_id = blocks[block_index].id;
         let block = &mut blocks[block_index];
-        let Some(site) = pending.get(&block.id) else {
+        let Some(sites) = pending.get(&block_id) else {
             continue;
         };
+        let [site] = sites.as_slice() else {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "multiple owned call-site anchors in one direct-call block"
+                        .to_string(),
+                    site: sites
+                        .iter()
+                        .flat_map(|site| {
+                            site.cursor_args
+                                .iter()
+                                .map(|arg| arg.site)
+                                .chain(site.carrier_args.iter().map(|arg| arg.site))
+                        })
+                        .next()
+                        .unwrap_or(SiteId(0)),
+                },
+                note: "a direct-call block has one terminator and must resolve exactly one typed ownership anchor"
+                    .to_string(),
+            });
+            cursor_blocked.insert(block_id);
+            continue;
+        };
+        let diagnostics_before = builder.diagnostics.len();
         let Terminator::Call { args, next, .. } = &mut block.terminator else {
             builder.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "owned call-carrier facts without call terminator".to_string(),
-                    site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                    site: site
+                        .cursor_args
+                        .first()
+                        .map(|arg| arg.site)
+                        .or_else(|| site.carrier_args.first().map(|arg| arg.site))
+                        .unwrap_or(SiteId(0)),
                 },
                 note: "raw call-carrier facts must be discharged before checked MIR".to_string(),
             });
@@ -4470,7 +4538,7 @@ fn prepare_owned_call_carriers(
             .get(&block.id)
             .cloned()
             .unwrap_or_else(|| owner_entries.get(&block.id).cloned().unwrap_or_default());
-        for arg in &site.args {
+        for arg in &site.carrier_args {
             let plan =
                 match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                     &arg.ty,
@@ -4754,18 +4822,440 @@ fn prepare_owned_call_carriers(
                 successor.instructions.insert(0, instruction);
             }
         }
+        if builder.diagnostics.len() != diagnostics_before {
+            cursor_blocked.insert(block_id);
+        }
     }
 
-    for (block, site) in pending {
+    let committed = prepare_owned_cursor_calls(blocks, builder, &pending, &cursor_blocked);
+
+    for (&block, sites) in &pending {
         if !blocks.iter().any(|candidate| candidate.id == block) {
             builder.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("pending owned call-carrier block bb{block} is missing"),
-                    site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                    site: sites
+                        .iter()
+                        .flat_map(|site| {
+                            site.cursor_args
+                                .iter()
+                                .map(|arg| arg.site)
+                                .chain(site.carrier_args.iter().map(|arg| arg.site))
+                        })
+                        .next()
+                        .unwrap_or(SiteId(0)),
                 },
                 note: "raw call-carrier facts must be discharged before checked MIR".to_string(),
             });
         }
+    }
+    committed
+}
+
+/// Commit the direct-call half of the `OwnedCursor` ABI after every ordinary
+/// owned-carrier preparation has finished.
+///
+/// The semantic Transfer is intentionally visible before scope-exit cleanup
+/// derivation, so the call and call-unwind paths no longer retain caller
+/// authority. A final pass re-anchors this non-unwinding flag/Transfer pair
+/// after all later CFG materialisation, immediately next to the invoke.
+fn owned_cursor_owner_and_guard(
+    blocks: &[BasicBlock],
+    builder: &mut Builder,
+    exit: &drop_plan::ExactOwnerState,
+    call_args: &[Place],
+    arg: &PendingOwnedCursorArg,
+) -> Option<(crate::model::OwnerId, Place)> {
+    if !matches!(arg.source, Place::Local(_)) || call_args.get(arg.index) != Some(&arg.source) {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "non-local OwnedCursor argument".to_string(),
+                site: arg.site,
+            },
+            note: "the direct cursor ABI requires the exact whole local passed at its typed argument index"
+                .to_string(),
+        });
+        return None;
+    }
+    let owners_at_source = exit
+        .iter()
+        .filter_map(|(owner, place)| (*place == arg.source).then_some(*owner))
+        .collect::<Vec<_>>();
+    let [owner] = owners_at_source.as_slice() else {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "OwnedCursor argument without one caller owner".to_string(),
+                site: arg.site,
+            },
+            note: "a borrowed closure parameter or ambiguous cursor lineage cannot be forwarded into an owner-minting direct callee"
+                .to_string(),
+        });
+        return None;
+    };
+    let live_binding_owners = exit
+        .keys()
+        .filter(|candidate| candidate.binding == owner.binding)
+        .count();
+    if live_binding_owners != 1 {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "ambiguous OwnedCursor owner generation".to_string(),
+                site: arg.site,
+            },
+            note: "the caller must expose exactly one live owner generation at the cursor argument"
+                .to_string(),
+        });
+        return None;
+    }
+    let flags = blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::Guard {
+                owner: guarded,
+                flag,
+                kind: crate::model::OwnershipGuardKind::VecIter,
+            }) if *guarded == *owner => Some(*flag),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    if flags.len() != 1 {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "OwnedCursor argument without one caller guard".to_string(),
+                site: arg.site,
+            },
+            note: "the terminal handoff must disarm the exact guarded cursor release before invoke"
+                .to_string(),
+        });
+        return None;
+    }
+    let flag = *flags.iter().next().expect("one VecIter guard flag");
+    Some((*owner, flag))
+}
+
+fn owned_cursor_commit_for_arg(
+    builder: &mut Builder,
+    owner: crate::model::OwnerId,
+    flag: Place,
+    arg: &PendingOwnedCursorArg,
+) -> Option<CursorCommit> {
+    let Some((name, owned_ty)) = builder.owned_locals.iter().find_map(|entry| {
+        (entry.binding == owner.binding).then(|| (entry.name.clone(), entry.ty.clone()))
+    }) else {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "OwnedCursor argument without a caller ledger entry".to_string(),
+                site: arg.site,
+            },
+            note: "the checker Consume and ownership Transfer must name the same cursor binding"
+                .to_string(),
+        });
+        return None;
+    };
+    if owned_ty != arg.ty {
+        builder.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "OwnedCursor argument type mismatch".to_string(),
+                site: arg.site,
+            },
+            note: format!(
+                "caller owner has type `{}` but the direct parameter receives `{}`",
+                owned_ty.user_facing(),
+                arg.ty.user_facing()
+            ),
+        });
+        return None;
+    }
+    Some(CursorCommit {
+        owner,
+        source: arg.source,
+        flag,
+        site: arg.site,
+        name,
+        ty: owned_ty,
+    })
+}
+
+fn collect_owned_cursor_commits(
+    blocks: &[BasicBlock],
+    builder: &mut Builder,
+    block_id: u32,
+    call_args: &[Place],
+    site: &PendingOwnedCallSite,
+) -> Vec<CursorCommit> {
+    let (_, owner_exits) = drop_plan::exact_owner_states(blocks);
+    let exit = owner_exits.get(&block_id).cloned().unwrap_or_default();
+    site.cursor_args
+        .iter()
+        .filter_map(|arg| {
+            let (owner, flag) =
+                owned_cursor_owner_and_guard(blocks, builder, &exit, call_args, arg)?;
+            owned_cursor_commit_for_arg(builder, owner, flag, arg)
+        })
+        .collect()
+}
+
+fn commit_owned_cursor_args(
+    block: &mut BasicBlock,
+    builder: &mut Builder,
+    commits: Vec<CursorCommit>,
+    block_id: u32,
+    anchor: PendingOwnedCallAnchor,
+) -> CommittedOwnedCursorCall {
+    let mut committed_args = Vec::with_capacity(commits.len());
+    for commit in commits {
+        block.statements.push(MirStatement::Use {
+            binding: commit.owner.binding,
+            name: commit.name,
+            site: commit.site,
+            ty: commit.ty,
+            intent: IntentKind::Consume,
+        });
+        block.instructions.push(Instr::ConstI64 {
+            dest: commit.flag,
+            value: 1,
+        });
+        block.instructions.push(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Transfer {
+                owner: commit.owner,
+                from: commit.source,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            },
+        ));
+        builder.set_owned_local_consumed_post_lowering(
+            commit.owner.binding,
+            None,
+            DischargeSite::BindingMoved,
+        );
+        committed_args.push(CommittedOwnedCursorArg {
+            source: commit.source,
+            flag: commit.flag,
+            site: commit.site,
+        });
+    }
+    CommittedOwnedCursorCall {
+        block: block_id,
+        anchor,
+        args: committed_args,
+    }
+}
+
+fn prepare_owned_cursor_calls(
+    blocks: &mut [BasicBlock],
+    builder: &mut Builder,
+    pending: &HashMap<u32, Vec<PendingOwnedCallSite>>,
+    blocked: &HashSet<u32>,
+) -> Vec<CommittedOwnedCursorCall> {
+    let mut committed_calls = Vec::new();
+    for block_index in 0..blocks.len() {
+        let block_id = blocks[block_index].id;
+        if blocked.contains(&block_id) {
+            continue;
+        }
+        let Some(sites) = pending.get(&block_id) else {
+            continue;
+        };
+        let [site] = sites.as_slice() else {
+            continue;
+        };
+        if site.cursor_args.is_empty() {
+            continue;
+        }
+        let Some(anchor) = site.anchor else {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "OwnedCursor call without a typed invoke anchor".to_string(),
+                    site: site.cursor_args[0].site,
+                },
+                note: "cursor ownership may commit only at a typed ordinary direct-call terminator"
+                    .to_string(),
+            });
+            continue;
+        };
+        if anchor != PendingOwnedCallAnchor::DirectTerminator {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "OwnedCursor call at an unsupported invoke anchor".to_string(),
+                    site: site.cursor_args[0].site,
+                },
+                note: "only an ordinary direct Hew call has the callee entry owner required by OwnedCursor"
+                    .to_string(),
+            });
+            continue;
+        }
+        let Terminator::Call { args, .. } = &blocks[block_index].terminator else {
+            continue;
+        };
+
+        let mut duplicated = HashSet::new();
+        let mut unique_sources = HashSet::new();
+        for arg in &site.cursor_args {
+            if !unique_sources.insert(arg.source) {
+                duplicated.insert(arg.source);
+            }
+        }
+        if let Some(arg) = site
+            .cursor_args
+            .iter()
+            .find(|arg| duplicated.contains(&arg.source))
+        {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "duplicate OwnedCursor argument".to_string(),
+                    site: arg.site,
+                },
+                note:
+                    "one cursor owner cannot be transferred into two parameters of the same invoke"
+                        .to_string(),
+            });
+            continue;
+        }
+
+        let diagnostics_before = builder.diagnostics.len();
+        let commits = collect_owned_cursor_commits(blocks, builder, block_id, args, site);
+        if builder.diagnostics.len() != diagnostics_before
+            || commits.len() != site.cursor_args.len()
+        {
+            continue;
+        }
+
+        committed_calls.push(commit_owned_cursor_args(
+            &mut blocks[block_index],
+            builder,
+            commits,
+            block_id,
+            anchor,
+        ));
+    }
+    committed_calls
+}
+
+/// Move every already-validated cursor commit to the literal end of its call
+/// block after all cleanup and ownership canonicalisation has finished.
+///
+/// The pair contains only a non-unwinding flag store and a semantic event.
+/// Requiring the exact pair to survive, then asserting the complete suffix,
+/// makes it impossible for a later allocating clone/drop preparation to sit
+/// between caller relinquishment and the invoke.
+fn assert_owned_cursor_call_handoff_suffix(
+    instructions: &[Instr],
+    args: &[CommittedOwnedCursorArg],
+) {
+    let suffix_start = instructions.len() - args.len() * 2;
+    for (arg, pair) in args
+        .iter()
+        .zip(instructions[suffix_start..].chunks_exact(2))
+    {
+        assert!(
+            matches!(
+                pair,
+                [
+                    Instr::ConstI64 { dest, value: 1 },
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        from,
+                        to: None,
+                        ..
+                    })
+                ] if *dest == arg.flag && *from == arg.source
+            ),
+            "OwnedCursor transfer must be the final side-effecting sequence before invoke"
+        );
+    }
+}
+
+fn reanchor_owned_cursor_call_handoffs(
+    blocks: &mut [BasicBlock],
+    builder: &mut Builder,
+    committed: &[CommittedOwnedCursorCall],
+) {
+    for call in committed {
+        let block = blocks
+            .iter_mut()
+            .find(|block| block.id == call.block)
+            .expect("a committed OwnedCursor call block must survive finalisation");
+        assert!(
+            matches!(
+                (call.anchor, &block.terminator),
+                (
+                    PendingOwnedCallAnchor::DirectTerminator,
+                    Terminator::Call { .. }
+                )
+            ),
+            "OwnedCursor commit must remain anchored to its exact direct invoke"
+        );
+
+        let mut pair_indices = Vec::with_capacity(call.args.len());
+        for arg in &call.args {
+            let matches = block
+                .instructions
+                .windows(2)
+                .enumerate()
+                .filter_map(|(index, pair)| {
+                    matches!(
+                        pair,
+                        [
+                            Instr::ConstI64 { dest, value: 1 },
+                            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                                from,
+                                to: None,
+                                ..
+                            })
+                        ] if *dest == arg.flag && *from == arg.source
+                    )
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let [index] = matches.as_slice() else {
+                panic!(
+                    "OwnedCursor commit at {:?} must retain one exact flag/Transfer pair",
+                    arg.site
+                );
+            };
+            pair_indices.push(*index);
+        }
+        assert!(
+            pair_indices.windows(2).all(|pair| pair[0] + 1 < pair[1]),
+            "OwnedCursor commit pairs must remain distinct and argument ordered"
+        );
+
+        let mut pairs = Vec::with_capacity(call.args.len());
+        for index in pair_indices.into_iter().rev() {
+            let flag = block.instructions.remove(index);
+            shift_instr_spans_on_remove(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+            let transfer = block.instructions.remove(index);
+            shift_instr_spans_on_remove(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+            pairs.push((flag, transfer));
+        }
+        pairs.reverse();
+        for (flag, transfer) in pairs {
+            let insert_at = block.instructions.len();
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(insert_at).unwrap_or(u32::MAX),
+            );
+            block.instructions.push(flag);
+            let insert_at = block.instructions.len();
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(insert_at).unwrap_or(u32::MAX),
+            );
+            block.instructions.push(transfer);
+        }
+
+        assert_owned_cursor_call_handoff_suffix(&block.instructions, &call.args);
     }
 }
 
@@ -8380,7 +8870,8 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // generation at one argument slot and publish two cleanup authorities.
     // This boundary now emits one pre-call Relocate from exact predecessor
     // state and one normal-success Transfer for that same OwnerId.
-    prepare_owned_call_carriers(&mut *blocks, builder, &projection_tainted);
+    let committed_owned_cursor_calls =
+        prepare_owned_call_carriers(&mut *blocks, builder, &projection_tainted);
     canonicalize_terminal_transfer_owner_ids(&mut *blocks);
     canonicalize_stale_relocation_and_reset_owner_ids(&mut *blocks);
     canonicalize_release_owner_ids(&mut *blocks);
@@ -8407,6 +8898,7 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // the same generations its immutable replay derives. Ambiguous, ownerless,
     // and wrong-place edges remain untouched for validation to reject.
     canonicalize_join_incoming_owner_ids(&mut *blocks, builder);
+    reanchor_owned_cursor_call_handoffs(&mut *blocks, builder, &committed_owned_cursor_calls);
 }
 
 /// End an extracted string payload's owner before passing its exact handle to
@@ -14684,6 +15176,23 @@ impl Builder {
                 .copied()
                 == Some(true);
             let owned_ty = self.subst_ty(&param.ty);
+            let param_site =
+                SiteId(u32::try_from(i).expect("function parameter count exceeds u32::MAX"));
+            // Exact cursor identity is authoritative even when the element's
+            // release protocol is unavailable. Refuse that parameter before
+            // any owner/carrier registry can reinterpret it as an ordinary
+            // record. The fatal diagnostic gates codegen; BorrowReadOnly is
+            // only the inert placeholder needed to keep the per-parameter
+            // fact vector structurally total for diagnostic Raw MIR.
+            if self.reject_unsupported_vec_iter_boundary(
+                &owned_ty,
+                param_site,
+                "a function parameter",
+            ) {
+                self.param_boundary_modes
+                    .push(ParamBoundaryMode::BorrowReadOnly);
+                continue;
+            }
             // The authored `#[resource] close(self)` receiver is a consuming
             // ABI boundary even though its body is the close ritual itself and
             // therefore must not register a recursive callee-side scope drop.
@@ -14702,13 +15211,38 @@ impl Builder {
             // synthetic cursor as a user record would later request an invalid
             // `RecordInPlace` drop.  It still crosses the call boundary by
             // value; only the callee-side cleanup representation is special.
-            let param_is_vec_iter_cursor = self.vec_iter_cursor_release_symbol(&owned_ty).is_some();
+            let param_is_vec_iter_cursor = self.ty_is_exact_vec_iter(&owned_ty);
+            // OwnedCursor is one total ABI mode for an ordinary direct Hew
+            // call. ClosureInvoke deliberately borrows its cursor parameters,
+            // while actor/task/message ingress has no cursor handoff contract
+            // and must fail closed. A non-intrinsic mutable-receiver call is
+            // rejected at its caller because normal return cannot yet rearm a
+            // fresh owner; the emitted Default-convention callee body still
+            // mints its honest entry/unwind authority.
+            let vec_iter_boundary_mode =
+                self.vec_iter_param_boundary_mode(&owned_ty, self.current_function_call_conv);
+            let param_is_owned_cursor =
+                vec_iter_boundary_mode == Some(ParamBoundaryMode::OwnedCursor);
+            if param_is_vec_iter_cursor
+                && self.current_function_call_conv != crate::model::FunctionCallConv::ClosureInvoke
+                && !param_is_owned_cursor
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "VecIter parameter at an unsupported call convention"
+                            .to_string(),
+                        site: param_site,
+                    },
+                    note: "OwnedCursor is defined only for ordinary direct Hew calls; closure invokes borrow cursor storage, while actor/task and message ingress require separate typed protocols"
+                        .to_string(),
+                });
+            }
             let param_is_owned_carrier = if param_is_vec_iter_cursor {
                 false
             } else {
                 self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed)
             };
-            if param_is_vec_iter_cursor && !self.vec_iter_drop_flags.contains_key(&param.id) {
+            if param_is_owned_cursor && !self.vec_iter_drop_flags.contains_key(&param.id) {
                 if !self.owner_generations.contains_key(&param.id) {
                     let warrant = self.owner_warrant_for_owned_parameter(param.id, &owned_ty);
                     self.register_owned_local(
@@ -14769,6 +15303,7 @@ impl Builder {
                 .get(&(func.id, i))
                 .copied()
                 == Some(true)
+                && !param_is_vec_iter_cursor
                 && !matches!(
                     self.subst_ty(&param.ty),
                     ResolvedTy::String | ResolvedTy::Bytes
@@ -14777,6 +15312,7 @@ impl Builder {
             let mut callee_owns_param = param_is_consumed
                 || param_is_close_receiver
                 || param_is_owned_carrier
+                || param_is_owned_cursor
                 || param_summary_owned
                 || self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler;
             if matches!(self.subst_ty(&param.ty), ResolvedTy::Bytes)
@@ -14886,7 +15422,9 @@ impl Builder {
                     self.borrowed_value_param_locals.insert(local);
                 }
             }
-            let mode = if self.current_function_call_conv
+            let mode = if let Some(cursor_mode) = vec_iter_boundary_mode {
+                cursor_mode
+            } else if self.current_function_call_conv
                 == crate::model::FunctionCallConv::ActorHandler
                 && param.id != SENTINEL_CRASH_MESSAGE_BINDING
                 && !self

@@ -13,14 +13,14 @@ use super::{
     mangle_layout_key, mangle_machine_step, monomorphic_user_record_key, numeric_method_op,
     numeric_method_signedness, option_payload_ty, runtime_symbol_for_call_expr, signed_min_value,
     ty_is_closure_pair, ty_is_generator_handle, ty_is_indirect_enum, ty_is_stream_handle,
-    unary_op_label, unresolved_fn_sig_reason, user_record_layout_key, ActorStateLoadMode, BinaryOp,
-    BindingId, Builder, BuiltinType, ChildKind, ClosurePairRhs, CmpPred, Disposition,
-    FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind, HirLiteral,
-    HirStmtKind, HirVarSelfMethodTarget, Instr, IntArithOp, IntSignedness, IntentKind,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, NumericMethodFamily,
-    PendingAffineCallConsumeArg, PendingAffineCallConsumeSite, Place, ProjectedPayloadOrigin,
-    ProjectedPayloadRejectReason, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy,
-    RuntimeCallContext, SiteId, SuspendKind, Terminator, TrapKind, UnaryOp, ValueClass,
+    unary_op_label, unresolved_fn_sig_reason, user_record_layout_key, ActorStateLoadMode,
+    AffineCallConsumeCandidate, BinaryOp, BindingId, Builder, BuiltinType, ChildKind,
+    ClosurePairRhs, CmpPred, Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap,
+    HashSet, HirExpr, HirExprKind, HirLiteral, HirStmtKind, HirVarSelfMethodTarget, Instr,
+    IntArithOp, IntSignedness, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    NumericMethodFamily, PendingAffineCallConsumeArg, PendingAffineCallConsumeSite, Place,
+    ProjectedPayloadOrigin, ProjectedPayloadRejectReason, ReleaseSymbolVerdict, ResolvedRef,
+    ResolvedTy, RuntimeCallContext, SiteId, SuspendKind, Terminator, TrapKind, UnaryOp, ValueClass,
     VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX, SENTINEL_RECV_GEN_COMPANION_BINDING,
 };
 #[cfg(test)]
@@ -1708,7 +1708,7 @@ impl Builder {
                     .is_some_and(|place| self.borrowed_runtime_result_places.contains(&place));
                 let ordinary_owner_warrant = if !dyn_owned
                     && !borrowed_runtime_result
-                    && self.vec_iter_cursor_release_symbol(&binding_ty).is_none()
+                    && !self.ty_is_exact_vec_iter(&binding_ty)
                 {
                     self.let_binder_owner_warrant(
                         binding.id,
@@ -2233,10 +2233,14 @@ impl Builder {
                 return;
             }
             let discarded_vec_iter_ty = self.subst_ty(&expr.ty);
-            if self
-                .vec_iter_cursor_release_symbol(&discarded_vec_iter_ty)
-                .is_some()
-            {
+            if self.reject_unsupported_vec_iter_boundary(
+                &discarded_vec_iter_ty,
+                expr.site,
+                "a discarded cursor value",
+            ) {
+                return;
+            }
+            if self.ty_is_exact_vec_iter(&discarded_vec_iter_ty) {
                 if let Some(place) = self.lower_vec_iter_value_for_read(expr) {
                     if let Some(flag) = self.vec_iter_value_drop_flags.get(&expr.site).copied() {
                         let owner = self.vec_iter_value_owners.get(&expr.site).copied();
@@ -2275,6 +2279,10 @@ impl Builder {
     /// The one publication boundary for expression results. Recursive lowering
     /// returns here before a parent advances to its next argument or field.
     pub(crate) fn lower_value(&mut self, expr: &HirExpr) -> Option<Place> {
+        let expr_ty = self.subst_ty(&expr.ty);
+        if self.reject_unsupported_vec_iter_boundary(&expr_ty, expr.site, "an expression value") {
+            return None;
+        }
         let value = self.lower_value_inner(expr);
         if let Some(place) = value {
             // Specialised HIR rewrites retain consumed checker children as
@@ -2837,6 +2845,32 @@ impl Builder {
                     ResolvedTy::Function { params, ret } => (params.clone(), (**ret).clone()),
                     _ => unreachable!("guard above ensures Function ty"),
                 };
+                for ty in &param_tys {
+                    let ty = self.subst_ty(ty);
+                    if self.reject_unsupported_vec_iter_boundary(
+                        &ty,
+                        expr.site,
+                        "a named-function value parameter",
+                    ) {
+                        return None;
+                    }
+                }
+                if param_tys
+                    .iter()
+                    .any(|ty| self.ty_is_exact_vec_iter(&self.subst_ty(ty)))
+                {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "named function `{fn_symbol}` with a VecIter parameter used as a value"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "ClosureInvoke borrows cursor parameters, while the wrapped direct Hew function owns them; the named-function shim cannot bridge those ABIs until it authors an exact owner handoff"
+                            .to_string(),
+                    });
+                    return None;
+                }
                 // A first-class string-returning named function crosses the
                 // uniform ClosureInvoke ABI. Admit it only when the module's
                 // string-carrier authority proves the target already returns
@@ -3637,12 +3671,38 @@ impl Builder {
                                     ..
                                 } if self.suspending_closure_bindings.contains(id)
                             );
+                    for arg in args {
+                        let arg_ty = self.subst_ty(&arg.ty);
+                        if self.reject_unsupported_vec_iter_boundary(
+                            &arg_ty,
+                            arg.site,
+                            "an indirect closure-call argument",
+                        ) {
+                            return None;
+                        }
+                    }
+                    if callee_suspends
+                        && args
+                            .iter()
+                            .any(|arg| self.ty_is_exact_vec_iter(&self.subst_ty(&arg.ty)))
+                    {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "VecIter argument at a suspending closure call"
+                                    .to_string(),
+                                site: expr.site,
+                            },
+                            note: "closure invocation borrows VecIter arguments, but a borrowed cursor cannot cross suspension or cancellation without an abandonment owner protocol"
+                                .to_string(),
+                        });
+                        return None;
+                    }
                     let callee_place = self.lower_value(callee)?;
                     let mut arg_places = Vec::with_capacity(args.len());
                     let mut vec_iter_read_args = Vec::new();
                     for arg in args {
                         let arg_ty = self.subst_ty(&arg.ty);
-                        if self.vec_iter_cursor_release_symbol(&arg_ty).is_some() {
+                        if self.ty_is_exact_vec_iter(&arg_ty) {
                             let place = self.lower_vec_iter_value_for_read(arg)?;
                             if let Some(flag) =
                                 self.vec_iter_value_drop_flags.get(&arg.site).copied()
@@ -3814,15 +3874,15 @@ impl Builder {
                 // single-module construction never carries a dotted name and
                 // falls through to the bare syntactic `name` byte-identically.
                 let expr_ty = self.subst_ty(&expr.ty);
-                let record_key = user_record_layout_key(&expr_ty).unwrap_or_else(|| name.clone());
-                let is_vec_iter_cursor = matches!(
+                if self.reject_unsupported_vec_iter_boundary(
                     &expr_ty,
-                    ResolvedTy::Named {
-                        args,
-                        builtin: Some(BuiltinType::VecIter),
-                        ..
-                    } if args.len() == 1
-                );
+                    expr.site,
+                    "a cursor construction",
+                ) {
+                    return None;
+                }
+                let record_key = user_record_layout_key(&expr_ty).unwrap_or_else(|| name.clone());
+                let is_vec_iter_cursor = self.ty_is_exact_vec_iter(&expr_ty);
                 // Look up the declaration-order field list for this record.
                 // If it's missing, the checker allowed a type that was never
                 // registered — fail closed rather than silently producing
@@ -4963,6 +5023,30 @@ impl Builder {
                 signature,
                 ..
             } => {
+                for arg in args {
+                    let arg_ty = self.subst_ty(&arg.ty);
+                    if self.reject_unsupported_vec_iter_boundary(
+                        &arg_ty,
+                        arg.site,
+                        "a dynamic-trait call argument",
+                    ) {
+                        return None;
+                    }
+                }
+                if let Some(arg) = args
+                    .iter()
+                    .find(|arg| self.ty_is_exact_vec_iter(&self.subst_ty(&arg.ty)))
+                {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "VecIter argument at a dynamic-trait call".to_string(),
+                            site: arg.site,
+                        },
+                        note: "an erased indirect signature carries no OwnedCursor entry fact, so MIR cannot transfer the caller owner or mint a callee owner"
+                            .to_string(),
+                    });
+                    return None;
+                }
                 // Lower the receiver (a `dyn Trait` fat pointer) and the
                 // ordinary args. `Instr::CallTraitMethod` GEPs into the
                 // vtable at `slot`, loads the function pointer, and calls
@@ -5103,6 +5187,37 @@ impl Builder {
                                 type_args.len()
                             );
                         }
+                    }
+                }
+
+                // Every typed collection storage operation is preflighted
+                // before the receiver or any explicit operand is lowered.
+                // HashMap/HashSet insert own all explicit operands; Vec push
+                // owns arg 0 and Vec set owns arg 1. No runtime collection ABI
+                // carries an OwnedCursor handoff, even when the cursor's own
+                // field release is supported, so an exact VecIter must never
+                // fall through to byte-copy/move ingress.
+                let cursor_storage_args: Vec<&HirExpr> = match target_family {
+                    hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Insert)
+                    | hew_types::MethodTargetFamily::HashSet(hew_types::HashSetMethod::Insert) => {
+                        args.iter().collect()
+                    }
+                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push) => {
+                        args.first().into_iter().collect()
+                    }
+                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Set) => {
+                        args.get(1).into_iter().collect()
+                    }
+                    _ => Vec::new(),
+                };
+                for arg in cursor_storage_args {
+                    let arg_ty = self.subst_ty(&arg.ty);
+                    if self.reject_vec_iter_collection_storage_boundary(
+                        &arg_ty,
+                        arg.site,
+                        "a runtime collection store",
+                    ) {
+                        return None;
                     }
                 }
 
@@ -5892,27 +6007,23 @@ impl Builder {
                     }
                     mangled
                 };
-                // Lower receiver as first arg + the explicit args.
-                let receiver_place = self.lower_value(receiver)?;
-                let mut arg_places = vec![receiver_place];
-                for arg in args {
-                    arg_places.push(self.lower_value(arg)?);
-                }
-                let dest = if matches!(resolved_ret_ty, ResolvedTy::Unit) {
-                    None
-                } else {
-                    Some(self.alloc_local(resolved_ret_ty))
-                };
-                let next = self.alloc_block();
-                self.finish_current_block(Terminator::Call {
-                    callee: callee_symbol,
-                    authority: crate::model::CallAuthority::default(),
-                    args: arg_places,
-                    dest,
-                    next,
-                });
-                self.start_block(next);
-                dest
+                // The registry carries the exact emitted HirFn ItemId, so a
+                // static trait call can enter the same typed direct-call
+                // ownership funnel as source-level ordinary calls. Keep the
+                // receiver at parameter index zero and explicit arguments in
+                // declaration order: ownership summaries and boundary modes
+                // are keyed by those exact indices.
+                let mut call_args = Vec::with_capacity(args.len() + 1);
+                call_args.push(receiver.as_ref().clone());
+                call_args.extend(args.iter().cloned());
+                self.lower_direct_call(
+                    &callee_symbol,
+                    None,
+                    Some(entry.item),
+                    &call_args,
+                    &resolved_ret_ty,
+                    expr.site,
+                )
             }
             HirExprKind::VarSelfMethodCall {
                 receiver,
@@ -8889,6 +9000,24 @@ impl Builder {
         ret_ty: &ResolvedTy,
         receiver_ty: &ResolvedTy,
     ) -> Option<Place> {
+        let resolved_receiver_ty = self.subst_ty(receiver_ty);
+        if self.reject_unsupported_vec_iter_boundary(
+            &resolved_receiver_ty,
+            receiver.site,
+            "a var-self receiver",
+        ) {
+            return None;
+        }
+        for arg in args {
+            let arg_ty = self.subst_ty(&arg.ty);
+            if self.reject_unsupported_vec_iter_boundary(
+                &arg_ty,
+                arg.site,
+                "a var-self explicit argument",
+            ) {
+                return None;
+            }
+        }
         let (binding_id, receiver_name, receiver_slot) = self.var_self_receiver_slot(receiver)?;
         // Generic `Iterator::next(var self)` calls retain their static-trait
         // HIR shape until the enclosing function is monomorphised.  Direct
@@ -8914,6 +9043,31 @@ impl Builder {
                 return result;
             }
         }
+        if self.ty_is_exact_vec_iter(&resolved_receiver_ty) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "non-intrinsic VecIter var-self call".to_string(),
+                    site,
+                },
+                note: "an ordinary mutable-receiver call would transfer the cursor into the callee but the current dual-return writeback does not mint and guard a fresh caller owner generation"
+                    .to_string(),
+            });
+            return None;
+        }
+        if let Some(cursor_arg) = args
+            .iter()
+            .find(|arg| self.ty_is_exact_vec_iter(&self.subst_ty(&arg.ty)))
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "VecIter argument at a var-self call bridge".to_string(),
+                    site: cursor_arg.site,
+                },
+                note: "the var-self dual-return lowering does not yet enter the late OwnedCursor argument protocol; the cursor remains caller-owned until that bridge can transfer it immediately before invoke"
+                    .to_string(),
+            });
+            return None;
+        }
         let callee_symbol = match target {
             HirVarSelfMethodTarget::Direct => {
                 self.resolve_var_self_direct_callee(call_target, site, receiver_ty)?
@@ -8938,7 +9092,26 @@ impl Builder {
             arg_places.push(self.lower_value(arg)?);
         }
         let resolved_ret_ty = self.subst_ty(ret_ty);
-        let resolved_receiver_ty = self.subst_ty(receiver_ty);
+        Some(self.finish_var_self_dual_return_call(
+            callee_symbol,
+            arg_places,
+            resolved_ret_ty,
+            &resolved_receiver_ty,
+            (binding_id, receiver_name, receiver_slot),
+            site,
+        ))
+    }
+
+    fn finish_var_self_dual_return_call(
+        &mut self,
+        callee_symbol: String,
+        arg_places: Vec<Place>,
+        resolved_ret_ty: ResolvedTy,
+        resolved_receiver_ty: &ResolvedTy,
+        receiver: (BindingId, String, Place),
+        site: SiteId,
+    ) -> Place {
+        let (binding_id, receiver_name, receiver_slot) = receiver;
         let tuple_ty =
             ResolvedTy::Tuple(vec![resolved_ret_ty.clone(), resolved_receiver_ty.clone()]);
         let tuple_place = self.alloc_local(tuple_ty);
@@ -8966,10 +9139,10 @@ impl Builder {
         self.restore_var_self_receiver_binding(
             binding_id,
             &receiver_name,
-            &resolved_receiver_ty,
+            resolved_receiver_ty,
             site,
         );
-        Some(result_place)
+        result_place
     }
 
     ///
@@ -8999,6 +9172,146 @@ impl Builder {
         )
     }
 
+    fn preflight_direct_call(
+        &mut self,
+        callee_symbol: &str,
+        callee_item: Option<hew_hir::ItemId>,
+        hir_args: &[hew_hir::HirExpr],
+        ret_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+        authority: crate::CallAuthority,
+    ) -> Option<bool> {
+        // CAP-11 fail-closed gate: a call producing `Generator<..>` may
+        // ultimately flat-copy a fn-valued argument into the generator env.
+        // Refuse captures whose environment provenance is unproven.
+        if ty_is_generator_handle(ret_ty) {
+            self.reject_unproven_generator_fn_args(hir_args);
+        }
+        if self.reject_opaque_foreign_callable_result(callee_symbol, ret_ty, site) {
+            return None;
+        }
+        for arg in hir_args {
+            let arg_ty = self.subst_ty(&arg.ty);
+            if self.reject_unsupported_vec_iter_boundary(
+                &arg_ty,
+                arg.site,
+                "a direct-call argument",
+            ) {
+                return None;
+            }
+        }
+        let vec_iter_arg = hir_args
+            .iter()
+            .find(|arg| self.ty_is_exact_vec_iter(&self.subst_ty(&arg.ty)));
+        let ordinary_owned_cursor_call =
+            callee_item.is_some() && matches!(authority, crate::CallAuthority::Direct);
+        if let Some(arg) = vec_iter_arg.filter(|_| !ordinary_owned_cursor_call) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "VecIter argument at an unsupported call authority".to_string(),
+                    site: arg.site,
+                },
+                note: "OwnedCursor requires an ordinary direct Hew callee whose emitted parameter boundary mints the inverse owner; runtime, extern, compiler, and symbol-only calls are refused"
+                    .to_string(),
+            });
+            return None;
+        }
+        // U3 / U9 preflight happens before argument lowering so a refusal
+        // leaves no partial MIR.
+        if self.reject_opaque_foreign_call_arg_transfers(callee_item, hir_args) {
+            return None;
+        }
+        Some(ordinary_owned_cursor_call)
+    }
+
+    fn finish_direct_call(
+        &mut self,
+        callee_symbol: &str,
+        authority: crate::CallAuthority,
+        arg_places: Vec<Place>,
+        dest: Option<Place>,
+        next: u32,
+        ret_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let authority = if matches!(ret_ty, ResolvedTy::Never) {
+            authority.with_no_return()
+        } else {
+            authority
+        };
+        self.finish_current_block(Terminator::Call {
+            callee: callee_symbol.to_string(),
+            authority,
+            args: arg_places,
+            dest,
+            next,
+        });
+        // A `Never` call has no live fallthrough. Open a referenced dead block
+        // so later join analysis cannot mistake its continuation for reachable
+        // code, while still retaining the target through body sealing.
+        if matches!(ret_ty, ResolvedTy::Never) {
+            self.start_dead_block(next);
+            self.dead_cursor_is_call_continuation = true;
+        } else {
+            self.start_block(next);
+        }
+        dest
+    }
+
+    fn prepare_direct_call_normal_success(
+        &mut self,
+        callee_symbol: &str,
+        callee_item: Option<hew_hir::ItemId>,
+        hir_args: &[hew_hir::HirExpr],
+        arg_places: &[Place],
+        pending_affine_consumes: Vec<AffineCallConsumeCandidate>,
+        ordinary_owned_cursor_call: bool,
+    ) -> u32 {
+        let next = self.alloc_block();
+        let proven_borrow_args: HashSet<usize> = hir_args
+            .iter()
+            .enumerate()
+            .filter_map(|(index, arg)| {
+                self.param_ownership
+                    .proven_borrow_arg_sites
+                    .contains(&arg.site)
+                    .then_some(index)
+            })
+            .collect();
+        self.finalize_borrowed_argument_owners(
+            callee_symbol,
+            hir_args,
+            arg_places,
+            &proven_borrow_args,
+        );
+        if !proven_borrow_args.is_empty() {
+            self.proven_borrow_call_args
+                .insert(self.current_block_id, proven_borrow_args);
+        }
+        if !pending_affine_consumes.is_empty() {
+            let args = pending_affine_consumes
+                .into_iter()
+                .map(|candidate| PendingAffineCallConsumeArg {
+                    index: candidate.index,
+                    binding: candidate.binding,
+                    source: arg_places[candidate.index],
+                    guard: candidate.guard,
+                    site: candidate.site,
+                })
+                .collect();
+            let replaced = self
+                .pending_affine_call_consumes
+                .insert(self.current_block_id, PendingAffineCallConsumeSite { args });
+            debug_assert!(replaced.is_none(), "one call terminator per basic block");
+        }
+        self.note_owned_call_site(
+            callee_item,
+            hir_args,
+            arg_places,
+            ordinary_owned_cursor_call,
+        );
+        next
+    }
+
     /// Lower a direct call using the checker/HIR-projected authority. The
     /// `Extern` variant is the capability to read an audited FFI parameter
     /// contract; it does not select a specialised codegen ABI.
@@ -9024,27 +9337,14 @@ impl Builder {
             builtin,
             builtin.map_or("", |f| f.c_symbol()),
         );
-        // CAP-11 fail-closed gate: a call producing `Generator<..>` may
-        // ultimately flat-copy a fn-valued argument into the generator env
-        // (`Terminator::MakeGenerator`'s heap-copy), and the body side never
-        // drops a fn-typed capture. Refuse a capturing closure or any fn value
-        // whose env provenance is unproven (parameter/call result) at the
-        // crossing. Named-fn references and capture-free closures stay
-        // admitted: their env word is null by construction.
-        if ty_is_generator_handle(ret_ty) {
-            self.reject_unproven_generator_fn_args(hir_args);
-        }
-        if self.reject_opaque_foreign_callable_result(callee_symbol, ret_ty, site) {
-            return None;
-        }
-        // U3 / U9 preflight, BEFORE any argument lowering so a refusal leaves no
-        // partial MIR — the same posture the #2648 scrutinee reject takes. A
-        // callee-owned parameter mints its scope-exit owner from the parameter's
-        // TYPE inside the callee, a frame with no expression to ask about; this
-        // is where the question is answerable, so this is where it is asked.
-        if self.reject_opaque_foreign_call_arg_transfers(callee_item, hir_args) {
-            return None;
-        }
+        let ordinary_owned_cursor_call = self.preflight_direct_call(
+            callee_symbol,
+            callee_item,
+            hir_args,
+            ret_ty,
+            site,
+            authority,
+        )?;
         // Keep declared-extern affine consumes caller-owned through the call.
         // Their exact HIR sites preserve `Use { Consume }` while deferring the
         // guard, physical neutralization, and `OwnerId` commit to the normal
@@ -9052,14 +9352,41 @@ impl Builder {
         // caller transfers before invoke and the callee owns from entry.
         let pending_affine_consumes =
             self.affine_call_consume_candidates(callee_symbol, callee_item, hir_args);
+        let pending_owned_cursor_sites = if ordinary_owned_cursor_call {
+            hir_args
+                .iter()
+                .filter(|arg| self.ty_is_exact_vec_iter(&self.subst_ty(&arg.ty)))
+                .map(|arg| arg.site)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         self.activate_affine_call_consume_sites(&pending_affine_consumes);
+        self.deferred_affine_call_consume_sites
+            .extend(pending_owned_cursor_sites.iter().copied());
 
         // Lower each argument left-to-right. If any fails to produce a Place,
         // fail the whole call after retiring the transient site context —
         // argument diagnostics already capture the root cause.
         let lowered_args = self.lower_direct_call_args(callee_symbol, callee_item, hir_args);
         self.deactivate_affine_call_consume_sites(&pending_affine_consumes);
+        for site in &pending_owned_cursor_sites {
+            self.deferred_affine_call_consume_sites.remove(site);
+        }
         let arg_places = lowered_args?;
+
+        // A by-value cursor handoff is materialised post-CFG, after every
+        // ordinary owned-carrier clone/move has completed. Keep only the typed
+        // diversion guard here: a suspending builtin does not use the ordinary
+        // direct-Hew OwnedCursor boundary and must fail closed.
+        let pending_vec_iter_site = ordinary_owned_cursor_call
+            .then(|| {
+                hir_args.iter().find_map(|arg| {
+                    self.ty_is_exact_vec_iter(&self.subst_ty(&arg.ty))
+                        .then_some(arg.site)
+                })
+            })
+            .flatten();
 
         // Allocate a destination local for the return value, unless the
         // callee is declared Unit-returning or divergent. Never-returning
@@ -9082,113 +9409,32 @@ impl Builder {
             dest,
             &arg_places,
         ) {
+            if let Some(site) = pending_vec_iter_site {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "temporary VecIter ownership across a suspending direct-call diversion"
+                            .to_string(),
+                        site,
+                    },
+                    note: "the by-value cursor transfer is defined at an ordinary Hew call entry; MIR refuses to guess an ownership boundary for a suspending builtin"
+                        .to_string(),
+                });
+                return None;
+            }
             return dest;
         }
 
-        let next = self.alloc_block();
-        let proven_borrow_args: HashSet<usize> = hir_args
-            .iter()
-            .enumerate()
-            .filter_map(|(index, arg)| {
-                self.param_ownership
-                    .proven_borrow_arg_sites
-                    .contains(&arg.site)
-                    .then_some(index)
-            })
-            .collect();
-        // #2743 — complete the caller-side owner handoff for every typed owned
-        // composite/string argument TEMPORARY passed to a BORROWING parameter.
-        // The temporary has no user `let`, so its publication owner is the one
-        // exact generation that must reach scope-exit planning. This sink only
-        // changes that owner's structural role; it never reclassifies or remints
-        // the value.
-        //
-        // Exactly-once gate is per type, aligned with the prover's own
-        // borrow-vs-consume exemption:
-        //  - record / tuple / enum: BORROW iff the arg site is in
-        //    `proven_borrow_args` (the same `proven_borrow_call_args` exemption
-        //    the composite provers read). A CONSUMING composite callee's temp is
-        //    NOT registered here (its arg is absent from `proven_borrow_args`); the
-        //    callee owns and drops it (#2732 for enums) — mutually exclusive.
-        //  - string: handed off iff the callee is a USER free function (a string
-        //    param is never recorded in `proven_borrow_arg_sites` — its borrow
-        //    model is the separate refcount contract). The string sole-owner
-        //    prover then gates the actual drop exactly as for the named
-        //    `let s = a+b; h(s)` shape (borrow admits, consume/escape excludes).
-        //    Runtime borrowing receivers (`(a+b).len()` = `hew_string_length`)
-        //    are deliberately excluded: their nested temp already gets an
-        //    exactly-once inline release from `apply_nested_fresh_string_temp_drops`.
-        self.finalize_borrowed_argument_owners(
+        // Establish ordinary borrowed-carrier and cursor facts only after all
+        // arguments and any suspending diversion have completed.
+        let next = self.prepare_direct_call_normal_success(
             callee_symbol,
+            callee_item,
             hir_args,
             &arg_places,
-            &proven_borrow_args,
+            pending_affine_consumes,
+            ordinary_owned_cursor_call,
         );
-        if !proven_borrow_args.is_empty() {
-            self.proven_borrow_call_args
-                .insert(self.current_block_id, proven_borrow_args);
-        }
-        if !pending_affine_consumes.is_empty() {
-            let args = pending_affine_consumes
-                .into_iter()
-                .map(|candidate| PendingAffineCallConsumeArg {
-                    index: candidate.index,
-                    binding: candidate.binding,
-                    source: arg_places[candidate.index],
-                    guard: candidate.guard,
-                    site: candidate.site,
-                })
-                .collect();
-            let replaced = self
-                .pending_affine_call_consumes
-                .insert(self.current_block_id, PendingAffineCallConsumeSite { args });
-            debug_assert!(replaced.is_none(), "one call terminator per basic block");
-        }
-        self.note_owned_call_site(callee_item, hir_args, &arg_places);
-        let authority = if matches!(ret_ty, ResolvedTy::Never) {
-            authority.with_no_return()
-        } else {
-            authority
-        };
-        self.finish_current_block(Terminator::Call {
-            callee: callee_symbol.to_string(),
-            authority,
-            args: arg_places,
-            dest,
-            next,
-        });
-        // A `Never`-typed direct call (the runtime `panic()`/`exit()` shims,
-        // and any other callee whose checker-resolved return type is
-        // `ResolvedTy::Never`) never falls through to `next` at runtime — the
-        // call terminator is a real divergence, exactly like an explicit
-        // `return`. `start_block` always opens a normally-reachable cursor
-        // (see its own doc comment), so a plain `start_block(next)` here
-        // would silently mark the continuation reachable even though no
-        // predecessor can ever reach it. That falsifies every downstream
-        // `!self.cursor_unreachable` join-reachability check (If/match arm
-        // lowering) for an all-panic/exit diverging arm: the join gets
-        // wrongly admitted as reachable, and MIR's mixed-divergence recovery
-        // then tries to move the substituted `Unit` (i8) result local into a
-        // non-scalar (ptr/struct) return slot — a `Move type mismatch`
-        // codegen-front fail-closed abort (hew-lang/hew#1913). Use
-        // `start_dead_block` instead, mirroring the early-return path's own
-        // dead-end convention, so the continuation is correctly flagged
-        // unreachable and every existing join-reachability gate works for
-        // `panic()`/`exit()` the same way it already does for `return`.
-        if matches!(ret_ty, ResolvedTy::Never) {
-            self.start_dead_block(next);
-            // Unlike the `return`-seeded dead block this convention mirrors,
-            // THIS dead block's id is already referenced by the `Call`
-            // terminator just sealed above (`next`). Flag it so
-            // `seal_body_blocks` seals rather than drops it if it ends up
-            // empty at true function end (hew-lang/hew#2425) — see that
-            // field's doc comment for the full mechanism.
-            self.dead_cursor_is_call_continuation = true;
-        } else {
-            self.start_block(next);
-        }
-
-        dest
+        self.finish_direct_call(callee_symbol, authority, arg_places, dest, next, ret_ty)
     }
 
     /// Reject a foreign result that can carry a callable returning `string`.

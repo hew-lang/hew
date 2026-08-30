@@ -3,8 +3,8 @@ use super::{
     ty_is_indirect_enum, BasicBlock, BindingId, Builder, CaptureEnvOwnedLoad, Disposition,
     FieldLoadClass, HashMap, HashSet, HirBinding, HirExpr, HirExprKind, Instr, MirDiagnostic,
     MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedCarrierParam,
-    PendingOwnedCallArg, PendingOwnedCallSite, Place, ProjectedPayloadOrigin, ResolvedRef,
-    ResolvedTy, SiteId, SnapshotFieldKind, SuspendKind,
+    PendingOwnedCallAnchor, PendingOwnedCallArg, PendingOwnedCallSite, PendingOwnedCursorArg,
+    Place, ProjectedPayloadOrigin, ResolvedRef, ResolvedTy, SiteId, SnapshotFieldKind, SuspendKind,
 };
 
 /// Whether a scope-exit tuple can safely have one of its projected ownership
@@ -260,21 +260,26 @@ impl Builder {
         callee_item: Option<hew_hir::ItemId>,
         hir_args: &[HirExpr],
         arg_places: &[Place],
+        ordinary_owned_cursor_call: bool,
     ) {
         let Some(callee_item) = callee_item else {
             return;
         };
-        let args: Vec<PendingOwnedCallArg> = hir_args
+        let carrier_args: Vec<PendingOwnedCallArg> = hir_args
             .iter()
             .zip(arg_places.iter().copied())
             .enumerate()
             .filter_map(|(index, (arg, source))| {
                 let owned_ty = self.subst_ty(&arg.ty);
+                let is_vec_iter = self.ty_is_exact_vec_iter(&owned_ty);
                 // An indirect enum local is an owning pointer slot, not the
                 // inline tagged-union storage consumed by the structural
                 // snapshot protocol. Its existing match/move authority remains
                 // responsible until an allocating node-clone protocol exists.
-                (!ty_is_indirect_enum(&owned_ty, &self.enum_layouts)
+                // `VecIter<T>` has its own total by-value cursor ABI and must
+                // never enter the normal-success owned-carrier protocol.
+                (!is_vec_iter
+                    && !ty_is_indirect_enum(&owned_ty, &self.enum_layouts)
                     && !self.ty_is_machine(&owned_ty)
                     && self
                         .param_ownership
@@ -298,18 +303,56 @@ impl Builder {
                 })
             })
             .collect();
-        if args.is_empty() {
+        let cursor_args: Vec<PendingOwnedCursorArg> = hir_args
+            .iter()
+            .zip(arg_places.iter().copied())
+            .enumerate()
+            .filter_map(|(index, (arg, source))| {
+                let ty = self.subst_ty(&arg.ty);
+                if !ordinary_owned_cursor_call || !self.ty_is_exact_vec_iter(&ty) {
+                    return None;
+                }
+                let boundary_mode = self.vec_iter_param_boundary_mode(
+                    &ty,
+                    crate::model::FunctionCallConv::Default,
+                );
+                if boundary_mode != Some(crate::model::ParamBoundaryMode::OwnedCursor)
+                    || arg.intent == hew_hir::IntentKind::Modify
+                {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "non-intrinsic VecIter var-self call".to_string(),
+                            site: arg.site,
+                        },
+                        note: "only the compiler's in-place VecIter.next expansion preserves a mutable cursor receiver; an ordinary direct call needs a proven normal-return owner rearm"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                Some(PendingOwnedCursorArg {
+                    index,
+                    source,
+                    ty,
+                    site: arg.site,
+                })
+            })
+            .collect();
+        if carrier_args.is_empty() && cursor_args.is_empty() {
             return;
         }
-        for arg in &args {
+        for arg in &carrier_args {
             if arg.source_is_prepared_owner {
                 self.prepared_owned_call_sources.remove(&arg.source);
             }
         }
-        let replaced = self
-            .pending_owned_call_args
-            .insert(self.current_block_id, PendingOwnedCallSite { args });
-        debug_assert!(replaced.is_none(), "one call terminator per basic block");
+        self.pending_owned_call_args
+            .entry(self.current_block_id)
+            .or_default()
+            .push(PendingOwnedCallSite {
+                anchor: Some(PendingOwnedCallAnchor::DirectTerminator),
+                carrier_args,
+                cursor_args,
+            });
     }
 
     /// Whether the post-CFG carrier pass may hand `source` to the callee by a
@@ -355,6 +398,7 @@ impl Builder {
     ) -> bool {
         let owned_ty = self.subst_ty(&param.ty);
         let is_carrier = !param_is_consumed
+            && !self.ty_is_exact_vec_iter(&owned_ty)
             && self
                 .param_ownership
                 .call_param_owned_carrier
@@ -602,15 +646,21 @@ impl Builder {
         requested_transfer: bool,
         composite_result_handoff: bool,
     ) -> Option<Place> {
+        let expr_ty = self.subst_ty(&expr.ty);
+        if self.reject_unsupported_vec_iter_boundary(
+            &expr_ty,
+            expr.site,
+            "a whole-value cursor move",
+        ) {
+            return None;
+        }
         if requested_transfer && self.reject_vec_iter_borrowed_source_move(expr) {
             return None;
         }
         if self.reject_capture_env_whole_escape_expr(expr) {
             return None;
         }
-        let vec_iter_move = self
-            .vec_iter_cursor_release_symbol(&self.subst_ty(&expr.ty))
-            .is_some();
+        let vec_iter_move = self.ty_is_exact_vec_iter(&expr_ty);
         let mut pushed_result_flag = false;
         let mut result_flag = None;
         let mut owns_vec_iter_snapshot = false;
@@ -927,12 +977,13 @@ impl Builder {
     }
 
     pub(crate) fn lower_method_arg_value(&mut self, arg: &HirExpr, is_move: bool) -> Option<Place> {
+        let arg_ty = self.subst_ty(&arg.ty);
+        if self.reject_unsupported_vec_iter_boundary(&arg_ty, arg.site, "a method-call argument") {
+            return None;
+        }
         if is_move {
             self.lower_value_for_move(arg)
-        } else if self
-            .vec_iter_cursor_release_symbol(&self.subst_ty(&arg.ty))
-            .is_some()
-        {
+        } else if self.ty_is_exact_vec_iter(&arg_ty) {
             self.lower_vec_iter_value_for_read(arg)
         } else {
             self.lower_value(arg)
@@ -971,12 +1022,15 @@ impl Builder {
                 if consumes_user_resource && self.reject_capture_env_whole_escape_expr(arg) {
                     return None;
                 }
+                let arg_ty = self.subst_ty(&arg.ty);
+                let arg_is_vec_iter = self.ty_is_exact_vec_iter(&arg_ty);
                 let target_is_affine_consume = callee_item.is_some_and(|item| {
                     self.param_ownership
                         .param_consume
                         .get(&(item, index))
                         .copied()
                         == Some(true)
+                        && !arg_is_vec_iter
                         && !(index == 0
                             && self.param_ownership.true_receiver_methods.contains(&item))
                 });
@@ -1019,25 +1073,12 @@ impl Builder {
                 // lowering funnel the argument takes here. A borrowing callee
                 // simply reads the caller-owned value.
                 let value = self.lower_method_arg_value(arg, false)?;
-                // The one exception is the by-value `VecIter<T>` cursor: it has
-                // no borrowed callee representation, so `lower_params` makes
-                // every such parameter callee-owned regardless of the summary.
-                // Author the caller half here for a cursor TEMPORARY, whose
-                // synthetic owner no other seam discharges. A summary-owned
-                // carrier keeps its post-CFG pass, which decides transfer
-                // versus clone and authors its own transition.
-                if callee_item.is_some_and(|item| {
-                    self.param_ownership
-                        .call_param_owned_carrier
-                        .get(&(item, index))
-                        .copied()
-                        != Some(true)
-                }) && self
-                    .vec_iter_cursor_release_symbol(&self.subst_ty(&arg.ty))
-                    .is_some()
-                {
-                    self.relinquish_vec_iter_cursor_argument(arg.site, value);
-                }
+                // A by-value `VecIter<T>` has no borrowed callee
+                // representation, but its caller-side transition cannot happen
+                // while arguments are still being evaluated: a later argument
+                // can exit before the callee is entered. The direct-call wrapper
+                // identifies the synthetic cursor after this loop and authors
+                // its transition in the final call block.
                 Some(value)
             })
             .collect()

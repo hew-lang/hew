@@ -2332,6 +2332,8 @@ run_accept_expect_panic "panic" "panic fixture"
 # default hook output.
 run_accept_expect_panic "panic_main_unwind_runs_resource_close" "boom" \
     "${ROOT}/tests/vertical-slice/accept/panic_main_unwind_runs_resource_close.expected"
+run_accept_expect_panic "vec_iter_free_fold_unwind" "free fold boom" \
+    "${ROOT}/tests/vertical-slice/accept/vec_iter_free_fold_unwind.expected"
 
 run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_regex_new_invalid.hew" "std_panic_wrapper_regex_new_invalid" 101
 grep -q 'regex.new: invalid pattern' "${stderr_output}"

@@ -136,6 +136,53 @@ fn call_i64_user_fn_emits_call_instruction() {
     );
 }
 
+#[test]
+fn owned_cursor_direct_call_disarms_caller_cleanup_before_callee_entry() {
+    let source = r#"
+        fn take_cursor(cursor: VecIter<i64>) {}
+
+        fn main() {
+            let values: Vec<i64> = Vec.new();
+            values.push(1);
+            take_cursor(values.into_iter());
+        }
+    "#;
+    let ll = emit_ll(source, "owned_cursor_direct_call");
+    let caller = function_ir(&ll, "__hew_main_body");
+    let callee = function_ir(&ll, "take_cursor");
+    let invoke = caller
+        .find("@take_cursor(")
+        .unwrap_or_else(|| panic!("main must invoke the exact cursor callee:\n{caller}"));
+    let disarm = caller[..invoke]
+        .rfind("store i64 1, ptr %local_")
+        .unwrap_or_else(|| {
+            panic!("the caller must disarm its cursor guard before invoke:\n{caller}")
+        });
+    assert!(
+        disarm < invoke,
+        "OwnedCursor guard disarm must precede the exact direct invoke:\n{caller}"
+    );
+    let invoke_tail = &caller[invoke..];
+    let unwind_prefix = "unwind label %";
+    let unwind_start = invoke_tail
+        .find(unwind_prefix)
+        .map(|offset| offset + unwind_prefix.len())
+        .unwrap_or_else(|| panic!("the direct cursor invoke must name its unwind edge:\n{caller}"));
+    let unwind_label = invoke_tail[unwind_start..]
+        .split_whitespace()
+        .next()
+        .expect("the invoke unwind label must not be empty");
+    let caller_unwind = block_ir(caller, unwind_label);
+    assert!(
+        !caller_unwind.contains("@hew_vec_free("),
+        "the caller must not retain cursor release authority on callee unwind:\n{caller_unwind}"
+    );
+    assert!(
+        callee.contains("@hew_vec_free("),
+        "the entered callee must own and release the cursor snapshot:\n{callee}"
+    );
+}
+
 /// `add` itself must have a `define` with two i64 parameters and use them
 /// (via `add nsw` / `add` instruction) in its body. Verifies the
 /// parameter-prologue: `lower_function` stores each LLVM param into the

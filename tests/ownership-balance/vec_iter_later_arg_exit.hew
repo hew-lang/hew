@@ -1,0 +1,24 @@
+import std.iter;
+
+fn call_or_return(k: i64, enter: bool) -> i64 {
+    let xs: Vec<i64> = Vec.new();
+    xs.push(k);
+    xs.push(k + 1);
+    xs.into_iter().fold(
+        if enter { 0 } else { return -1 },
+        |acc: i64, x: i64| acc + x,
+    )
+}
+
+fn main() {
+    var total = 0;
+    var k = 0;
+    while k < 200000 {
+        // A false condition exits before the callee owns the cursor. The true
+        // control enters the same callee and transfers the cursor exactly once.
+        total = total + call_or_return(k, false);
+        total = total + call_or_return(k, true);
+        k = k + 1;
+    }
+    println(total);
+}

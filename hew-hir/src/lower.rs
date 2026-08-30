@@ -13051,6 +13051,7 @@ impl LowerCtx {
         let mut method_trait_method_ids: Vec<Option<hew_types::DefId>> =
             Vec::with_capacity(decl.methods.len());
         let mut method_ids: Vec<Option<hew_types::DefId>> = Vec::with_capacity(decl.methods.len());
+        let mut method_item_ids: Vec<ItemId> = Vec::with_capacity(decl.methods.len());
         // W3.042 S2-S1: stash the resolved impl-target type so that `Self`
         // appearing in any method's parameter/return annotation (notably the
         // parser-injected `self: Self` for bare `self` / `var self` receivers)
@@ -13165,6 +13166,7 @@ impl LowerCtx {
                         .or_insert_with(|| symbol.clone());
                 }
             }
+            method_item_ids.push(hir_method.id);
             items.push(HirItem::Function(hir_method));
             method_symbols.push(symbol.clone());
             method_names.push(method.name.clone());
@@ -13284,6 +13286,7 @@ impl LowerCtx {
                                     .or_insert_with(|| symbol.clone());
                             }
                         }
+                        method_item_ids.push(hir_method.id);
                         items.push(HirItem::Function(hir_method));
                         method_symbols.push(symbol.clone());
                         method_names.push(fn_decl.name.clone());
@@ -13336,6 +13339,7 @@ impl LowerCtx {
             method_declaring_trait_ids,
             method_trait_method_ids,
             method_ids,
+            method_item_ids,
             span,
         }));
     }

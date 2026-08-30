@@ -8251,6 +8251,12 @@ fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut
             }
         }
     }
+    // Every candidate below needs a `FieldDropInPlace` naming it, so a body
+    // with none owes nothing here — and both derivations that follow describe
+    // the whole function.
+    if transfer_blocks.is_empty() || mint_blocks.is_empty() {
+        return;
+    }
     let dominators = block_dominators(blocks);
     // One successor map and one reachability answer per transfer block, shared
     // by every exit and candidate that asks about it. Recomputing reachability

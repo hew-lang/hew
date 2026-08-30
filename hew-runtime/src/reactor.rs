@@ -4418,6 +4418,20 @@ mod tests {
     /// wakes from `Registration.actor` on a thread that never saw the
     /// registrant, so it carries the same staleness hazard as the readiness arm.
     fn run_reactor_orphan_close_incarnation(reincarnate: bool) {
+        run_reactor_orphan_close_arm(reincarnate, OrphanArm::Resume);
+    }
+
+    /// Which orphan-close arm to drive. Both read the same `Registration.actor`,
+    /// but through different call sites, so each carries its own control.
+    #[derive(Clone, Copy)]
+    enum OrphanArm {
+        /// `resume_with_status` - the read-suspension arm.
+        Resume,
+        /// The accept-suspension arm's own `enqueue_resume_by_incarnation`.
+        Accept,
+    }
+
+    fn run_reactor_orphan_close_arm(reincarnate: bool, arm: OrphanArm) {
         use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
         const KEY: usize = 0x0300_6901;
 
@@ -4435,12 +4449,11 @@ mod tests {
             let slot = crate::read_slot::hew_read_slot_new();
             // The registration-owned slot ref, released by `Drop for Registration`.
             crate::read_slot::read_slot_retain(slot);
-            let reg = Registration::new(
-                /* conn */ -1,
-                actor_ref,
-                KEY,
-                RegMode::Resume { read_slot: slot },
-            );
+            let mode = match arm {
+                OrphanArm::Resume => RegMode::Resume { read_slot: slot },
+                OrphanArm::Accept => RegMode::Accept { read_slot: slot },
+            };
+            let reg = Registration::new(/* conn */ -1, actor_ref, KEY, mode);
 
             if reincarnate {
                 victim.reincarnate_parked();
@@ -4448,10 +4461,14 @@ mod tests {
 
             deliver_orphan_close(&reg);
 
+            let family = match arm {
+                OrphanArm::Resume => "reactor-orphan-close-resume",
+                OrphanArm::Accept => "reactor-orphan-close-accept",
+            };
             if reincarnate {
-                assert_not_woken(&sched, &victim, "reactor-orphan-close");
+                assert_not_woken(&sched, &victim, family);
             } else {
-                assert_woken(&sched, &victim, "reactor-orphan-close");
+                assert_woken(&sched, &victim, family);
             }
 
             drop(reg);
@@ -4468,5 +4485,15 @@ mod tests {
     #[test]
     fn reactor_orphan_close_wake_resumes_the_registering_incarnation() {
         run_reactor_orphan_close_incarnation(false);
+    }
+
+    #[test]
+    fn reactor_accept_orphan_close_wake_does_not_resume_a_reused_address() {
+        run_reactor_orphan_close_arm(true, OrphanArm::Accept);
+    }
+
+    #[test]
+    fn reactor_accept_orphan_close_wake_resumes_the_registering_incarnation() {
+        run_reactor_orphan_close_arm(false, OrphanArm::Accept);
     }
 }

@@ -1396,6 +1396,73 @@ impl Builder {
         !owners.is_empty()
     }
 
+    /// Relinquish a caller-side `VecIter<T>` cursor TEMPORARY at a direct Hew
+    /// call, the caller half of the by-value cursor ABI.
+    ///
+    /// `lower_params` makes every by-value `VecIter<T>` parameter callee-owned
+    /// (`scope_vec_iter_bindings` + its guard flag) whatever the borrow/consume
+    /// summary says: the cursor protocol has no borrowed callee representation.
+    /// A named argument authors the matching caller-side transition from its
+    /// HIR `Consume` intent, and a summary-owned carrier authors it in the
+    /// post-CFG carrier pass. A temporary receiver has neither — the checker
+    /// has no binding to stamp — so its synthetic owner stayed live and the
+    /// caller's exit plan released a cursor the callee had already freed.
+    ///
+    /// Emitted before the invoke, matching
+    /// [`Self::consume_typed_produced_value_owner_at_terminal_boundary`]: the
+    /// callee owns cleanup on both the return and the unwind edge.
+    pub(crate) fn relinquish_vec_iter_cursor_argument(
+        &mut self,
+        site: SiteId,
+        value: Place,
+    ) -> bool {
+        // Only the synthetic temp registrar publishes here; a named binding
+        // argument is absent from this map and keeps its own lineage.
+        let Some(owner) = self.vec_iter_value_owners.get(&site).copied() else {
+            return false;
+        };
+        if self.binding_locals.get(&owner.binding) != Some(&value)
+            || self.owner_generations.get(&owner.binding).copied() != Some(owner.generation)
+        {
+            return false;
+        }
+        let Some((name, ty)) = self.owned_locals.iter().find_map(|entry| {
+            (entry.binding == owner.binding).then(|| (entry.name.clone(), entry.ty.clone()))
+        }) else {
+            return false;
+        };
+        if let Some(flag) = self.vec_iter_value_drop_flags.get(&site).copied() {
+            // Disarm the caller's guarded cursor release: the callee's own
+            // parameter guard is the single release authority from entry.
+            self.push_instr(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
+        self.push_instr(Instr::OwnershipEvent(
+            crate::model::OwnershipEvent::Transfer {
+                owner,
+                from: value,
+                to: None,
+                to_owner: None,
+                to_ty: None,
+            },
+        ));
+        self.statements.push(MirStatement::Use {
+            binding: owner.binding,
+            name,
+            site,
+            ty,
+            intent: IntentKind::Consume,
+        });
+        self.set_owned_local_consumed_post_lowering(
+            owner.binding,
+            None,
+            DischargeSite::BindingMoved,
+        );
+        true
+    }
+
     /// End the supplied live owner generations as whole-value transfers to
     /// `destination`. The caller derives these identities and their current
     /// places by replaying the explicit MIR owner stream to the insertion

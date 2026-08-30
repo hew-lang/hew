@@ -1018,7 +1018,27 @@ impl Builder {
                 // this caller may do with the binding afterwards, nor which
                 // lowering funnel the argument takes here. A borrowing callee
                 // simply reads the caller-owned value.
-                self.lower_method_arg_value(arg, false)
+                let value = self.lower_method_arg_value(arg, false)?;
+                // The one exception is the by-value `VecIter<T>` cursor: it has
+                // no borrowed callee representation, so `lower_params` makes
+                // every such parameter callee-owned regardless of the summary.
+                // Author the caller half here for a cursor TEMPORARY, whose
+                // synthetic owner no other seam discharges. A summary-owned
+                // carrier keeps its post-CFG pass, which decides transfer
+                // versus clone and authors its own transition.
+                if callee_item.is_some_and(|item| {
+                    self.param_ownership
+                        .call_param_owned_carrier
+                        .get(&(item, index))
+                        .copied()
+                        != Some(true)
+                }) && self
+                    .vec_iter_cursor_release_symbol(&self.subst_ty(&arg.ty))
+                    .is_some()
+                {
+                    self.relinquish_vec_iter_cursor_argument(arg.site, value);
+                }
+                Some(value)
             })
             .collect()
     }

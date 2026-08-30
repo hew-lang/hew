@@ -4413,6 +4413,71 @@ mod tests {
         run_reactor_resume_incarnation(false);
     }
 
+    /// The accept-readiness arm. It has its OWN `enqueue_resume_by_incarnation`
+    /// call site, reached only when a real `accept()` deposits a handle, so the
+    /// read-readiness pair above does not cover it.
+    #[cfg(unix)]
+    fn run_reactor_accept_incarnation(reincarnate: bool) {
+        use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
+        const KEY: usize = 0x0300_6902;
+
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: every pointer here is a fresh test-owned poller, listener,
+        // slot, or stub actor, released before this function returns.
+        unsafe {
+            let poller = hew_io_poller_new();
+            assert!(!poller.is_null());
+            let (listener, client) = crate::transport::tcp_listener_with_pending_conn_for_test();
+            let fd = crate::transport::tcp_listener_raw_fd(listener).expect("listener fd");
+            assert_eq!(
+                hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ),
+                0
+            );
+
+            let victim = TrackedTestActor::install_parked();
+            let actor_ref = crate::transport::hew_actor_ref_local(victim.ptr());
+            let slot = crate::read_slot::hew_read_slot_new();
+            // The registration-owned slot ref (`reactor_await_accept`'s retain).
+            crate::read_slot::read_slot_retain(slot);
+            inject_accept_registration_for_test(fd, listener, actor_ref, KEY, slot);
+
+            if reincarnate {
+                victim.reincarnate_parked();
+            }
+
+            handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+
+            if reincarnate {
+                assert_not_woken(&sched, &victim, "reactor-accept");
+            } else {
+                assert_woken(&sched, &victim, "reactor-accept");
+            }
+
+            crate::read_slot::hew_read_slot_free(slot);
+            drop(client);
+            crate::transport::tcp_close_raw_for_test(listener);
+            hew_io_poller_stop(poller);
+        }
+        reset_reactor();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reactor_accept_wake_does_not_resume_a_reused_address() {
+        run_reactor_accept_incarnation(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reactor_accept_wake_resumes_the_registering_incarnation() {
+        run_reactor_accept_incarnation(false);
+    }
+
     /// The orphan-close arm: a registration that never reached the poller still
     /// wakes its registrant so the handler fails closed instead of hanging. It
     /// wakes from `Registration.actor` on a thread that never saw the

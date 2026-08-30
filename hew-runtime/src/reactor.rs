@@ -4339,6 +4339,46 @@ mod tests {
     // a stranger being moved `Suspended -> Runnable` with no readiness behind
     // it. The sibling families live in `crate::wake_incarnation_tests`.
 
+    /// Block until `fd` is readable, so the incarnation arms observe readiness
+    /// instead of guessing at it. Without this the socket can still be empty
+    /// when `handle_ready_fd` runs: the read takes the `WouldBlock` branch,
+    /// deposits nothing, and wakes nobody for a reason that has nothing to do
+    /// with incarnation resolution.
+    ///
+    /// The timeout is a failure bound, not a correctness guess: the wait itself
+    /// is on real readiness, and the bound only turns a socket that never
+    /// becomes readable into a failed run rather than a hung one. It can go
+    /// away when the harness gains a general deadline for a blocking test call;
+    /// the real shape then is an unbounded `poll` under that deadline.
+    #[cfg(unix)]
+    fn wait_readable_for_test(fd: c_int) {
+        const READINESS_TIMEOUT_MS: c_int = 10_000;
+        loop {
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `pfd` is a live single-element `pollfd` array owned here.
+            let rc = unsafe { libc::poll(&raw mut pfd, 1, READINESS_TIMEOUT_MS) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                panic!("poll for readiness failed: {err}");
+            }
+            assert!(rc > 0, "the socket never became readable");
+            assert_ne!(
+                pfd.revents & libc::POLLIN,
+                0,
+                "poll reported readiness without POLLIN: revents {}",
+                pfd.revents
+            );
+            return;
+        }
+    }
+
     /// Drive a real resume-mode readiness through `handle_ready_fd`, optionally
     /// reincarnating the registrant at the same address first.
     #[cfg(unix)]
@@ -4375,13 +4415,23 @@ mod tests {
 
             client.write_all(b"readiness").expect("client write");
             client.flush().ok();
-            std::thread::sleep(Duration::from_millis(20));
+            wait_readable_for_test(fd);
 
             if reincarnate {
                 victim.reincarnate_parked();
             }
 
             handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+
+            // Readiness reached the slot in BOTH arms: the only difference
+            // between them is whether incarnation resolution let the wake
+            // through. Without this the refusal arm would also pass on a read
+            // that found nothing to deposit.
+            assert_eq!(
+                crate::read_slot::hew_read_slot_status(slot),
+                crate::read_slot::ReadStatus::Data as i32,
+                "the readiness the test wrote must have been deposited"
+            );
 
             if reincarnate {
                 assert_not_woken(&sched, &victim, "reactor-resume");
@@ -4446,11 +4496,23 @@ mod tests {
             crate::read_slot::read_slot_retain(slot);
             inject_accept_registration_for_test(fd, listener, actor_ref, KEY, slot);
 
+            // The pending connection is queued in the kernel before the accept
+            // runs, for the same reason the read arm waits on real readiness: a
+            // `WouldBlock` accept deposits nothing and wakes nobody, which
+            // would let the refusal arm pass without exercising the resolver.
+            wait_readable_for_test(fd);
+
             if reincarnate {
                 victim.reincarnate_parked();
             }
 
             handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+
+            assert_eq!(
+                crate::read_slot::hew_read_slot_status(slot),
+                crate::read_slot::ReadStatus::Data as i32,
+                "the accepted connection handle must have been deposited"
+            );
 
             if reincarnate {
                 assert_not_woken(&sched, &victim, "reactor-accept");

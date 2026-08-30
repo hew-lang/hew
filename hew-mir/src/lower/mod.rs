@@ -5851,6 +5851,18 @@ fn neutralize_divergent_selection_sources(
 
     let mut inserts: Vec<(u32, usize, u32, u32)> = Vec::new();
     for block in blocks.iter() {
+        // Whether a transfer in this block is conditional is a property of the
+        // BLOCK, not of the instruction: it asks whether some return exit is
+        // not dominated by this block. Asking it once per move re-scanned every
+        // exit for every move in the body.
+        let conditional = return_exits.iter().any(|exit| {
+            dominators
+                .get(exit)
+                .is_some_and(|doms| !doms.contains(&block.id))
+        });
+        if !conditional {
+            continue;
+        }
         for (instr_index, instr) in block.instructions.iter().enumerate() {
             let Instr::Move {
                 dest: Place::Local(dest_local),
@@ -5860,14 +5872,6 @@ fn neutralize_divergent_selection_sources(
                 continue;
             };
             if dest_local == src_local {
-                continue;
-            }
-            let conditional = return_exits.iter().any(|exit| {
-                dominators
-                    .get(exit)
-                    .is_some_and(|doms| !doms.contains(&block.id))
-            });
-            if !conditional {
                 continue;
             }
             // `if`/`else` value lowering copies each arm's value through a

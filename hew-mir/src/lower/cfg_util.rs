@@ -217,6 +217,7 @@ pub(super) fn reachable_from(successors: &HashMap<u32, Vec<u32>>, start: u32) ->
 /// Returns an empty map when the block list is empty or carries duplicate ids,
 /// so a malformed CFG can never yield a dominance claim.
 pub(super) fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u32>> {
+    let _timing = crate::timing::stage("block_dominators");
     let Some(entry) = blocks.first().map(|block| block.id) else {
         return HashMap::new();
     };
@@ -247,9 +248,38 @@ pub(super) fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u3
             }
         })
         .collect();
+    // Visit order for the fixpoint below. The least fixed point does not depend
+    // on it, but reverse postorder reaches a block after its predecessors, so
+    // the whole set settles in a couple of passes instead of one pass per level
+    // of the CFG. Iterating the reachable HASH SET meant no order at all.
+    let successors = successors_by_id(blocks);
+    let mut order: Vec<u32> = Vec::with_capacity(reachable.len());
+    let mut visited: HashSet<u32> = HashSet::from([entry]);
+    let mut stack: Vec<(u32, usize)> = vec![(entry, 0)];
+    while let Some(&(block, index)) = stack.last() {
+        let outgoing = successors.get(&block).map_or(&[][..], Vec::as_slice);
+        if index < outgoing.len() {
+            if let Some(top) = stack.last_mut() {
+                top.1 = index + 1;
+            }
+            let next = outgoing[index];
+            if reachable.contains(&next) && visited.insert(next) {
+                stack.push((next, 0));
+            }
+        } else {
+            order.push(block);
+            stack.pop();
+        }
+    }
+    order.reverse();
+    // A reachable id with no block of its own is never reached by the walk;
+    // keep it in the iteration set so the loop below sees exactly the blocks it
+    // saw before.
+    order.extend(reachable.iter().copied().filter(|id| !visited.contains(id)));
+
     loop {
         let mut changed = false;
-        for &block in &reachable {
+        for &block in &order {
             if block == entry {
                 continue;
             }
@@ -257,10 +287,8 @@ pub(super) fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u3
                 dominators.remove(&block);
                 continue;
             };
-            let mut pred_dominators = preds
-                .iter()
-                .filter_map(|pred| dominators.get(pred).cloned());
-            let Some(mut next) = pred_dominators.next() else {
+            let mut pred_dominators = preds.iter().filter_map(|pred| dominators.get(pred));
+            let Some(mut next) = pred_dominators.next().cloned() else {
                 dominators.remove(&block);
                 continue;
             };

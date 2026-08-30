@@ -38,6 +38,7 @@
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime + wire JSON/YAML/TOML archives
 #   make stage-release-package — assemble a validated distributable tree
+#   make dev-dist    — package the current development build as a portable .tgz
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
 #   make baselines                 — regenerate deterministic generated metadata
 #   make baselines-check           — verify deterministic generated metadata
@@ -78,7 +79,7 @@
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
-.PHONY: assemble assemble-release stage-release-package pre-release windows-release-candidate publish-docs
+.PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: dogfood-compile-measure
@@ -488,6 +489,14 @@ RELEASE_PACKAGE_NATIVE_LIB_NAME ?= $(LIBHEW_NAME)
 RELEASE_PACKAGE_WASI_LIB_DIR ?= $(WASM_RELEASE_DIR)
 RELEASE_PACKAGE_DEST ?= $(BUILD_DIR)/release-package
 RELEASE_PACKAGE_COMPLETIONS ?= $(if $(filter Windows_NT,$(OS)),bash zsh fish powershell,bash zsh fish)
+
+# `make dev-dist` produces a self-contained, host-specific development
+# toolchain. The archive name is derived from the staged binary so it always
+# matches `hew --version`, including the git development identity.
+DEV_DIST_DIR ?= dist
+DEV_DIST_STAGE_DIR ?= $(BUILD_DIR)/dev-dist-stage
+DEV_DIST_PREFIX ?= hew
+
 stage-release-package: ## Release: stage a validated distributable toolchain tree
 	@sh "$(MAKEFILE_ROOT)/scripts/stage-release-package.sh" \
 		--source-dir "$(RELEASE_PACKAGE_SOURCE_DIR)" \
@@ -499,6 +508,30 @@ stage-release-package: ## Release: stage a validated distributable toolchain tre
 		--wasi-lib-dir "$(RELEASE_PACKAGE_WASI_LIB_DIR)" \
 		--destination "$(RELEASE_PACKAGE_DEST)" \
 		--completion-shells "$(RELEASE_PACKAGE_COMPLETIONS)"
+
+dev-dist: assemble-release ## Release: package the current development build as a portable .tgz
+	@set -eu; \
+	version="$$("$(RELEASE_HEW)" --version | sed -n 's/^hew //p')"; \
+	[ -n "$$version" ] || { echo "Error: could not determine the Hew version" >&2; exit 1; }; \
+	case "$$version" in *[!A-Za-z0-9.+-]*) echo "Error: unsafe Hew version: $$version" >&2; exit 1;; esac; \
+	package="$(DEV_DIST_PREFIX)-v$$version-$(HOST_TRIPLE)"; \
+	stage_root="$(DEV_DIST_STAGE_DIR)"; \
+	stage="$$stage_root/$$package"; \
+	archive="$(DEV_DIST_DIR)/$$package.tgz"; \
+	rm -rf "$$stage_root"; \
+	mkdir -p "$$stage_root" "$(DEV_DIST_DIR)"; \
+	sh "$(MAKEFILE_ROOT)/scripts/stage-release-package.sh" \
+		--source-dir "$(RELEASE_PACKAGE_SOURCE_DIR)" \
+		--bin-dir "$(RELEASE_PACKAGE_BIN_DIR)" \
+		--bin-suffix "$(RELEASE_PACKAGE_BIN_SUFFIX)" \
+		--native-lib "$(RELEASE_PACKAGE_NATIVE_LIB)" \
+		--native-triple "$(RELEASE_PACKAGE_NATIVE_TRIPLE)" \
+		--native-lib-name "$(RELEASE_PACKAGE_NATIVE_LIB_NAME)" \
+		--wasi-lib-dir "$(RELEASE_PACKAGE_WASI_LIB_DIR)" \
+		--destination "$$stage" \
+		--completion-shells "$(RELEASE_PACKAGE_COMPLETIONS)"; \
+	tar -C "$$stage_root" -czf "$$archive" "$$package"; \
+	printf 'Created %s\nInstall with: sudo mkdir -p /opt/hew && sudo tar -xzf %s -C /opt/hew --strip-components=1\n' "$$archive" "$$archive"
 
 wasm-runtime: wasm-runtime-debug
 

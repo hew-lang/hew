@@ -2137,7 +2137,8 @@ impl Builder {
         blocks: &mut [BasicBlock],
         released_before_splices: &HashSet<u32>,
     ) {
-        let (entries, _) = super::drop_plan::exact_owner_states(blocks);
+        let exact_states = super::drop_plan::exact_owner_states(blocks);
+        let entries = &exact_states.0;
         let mut release_sites = Vec::new();
         for block in blocks.iter() {
             let mut live = entries.get(&block.id).cloned().unwrap_or_default();

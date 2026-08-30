@@ -156,8 +156,10 @@ pub(in crate::lower) fn conditional_consume_edge_releases(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
 ) -> EdgeReleases {
-    let (exact_entries, exact_exits) = exact_owner_states(blocks);
-    let (maybe_entries, _) = maybe_owner_states(blocks);
+    let exact_states = exact_owner_states(blocks);
+    let (exact_entries, exact_exits) = (&exact_states.0, &exact_states.1);
+    let maybe_states = maybe_owner_states(blocks);
+    let maybe_entries = &maybe_states.0;
     let (ended_entries, _) = maybe_ended_owner_states(blocks);
 
     let mut recipes = HashMap::<OwnerId, Vec<OwnerDropRecipe>>::new();

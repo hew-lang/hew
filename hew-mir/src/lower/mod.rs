@@ -4514,7 +4514,9 @@ fn prepare_owned_call_carriers(
             cursor_blocked.insert(block_id);
             continue;
         };
-        let (owner_entries, owner_exits) = drop_plan::exact_owner_states(blocks);
+        let exact_states = drop_plan::exact_owner_states(blocks);
+        let owner_entries = &exact_states.0;
+        let owner_exits = &exact_states.1;
         let block = &mut blocks[block_index];
         let diagnostics_before = builder.diagnostics.len();
         let Terminator::Call { args, next, .. } = &mut block.terminator else {
@@ -5316,7 +5318,8 @@ fn prepare_outbound_actor_payloads(
 ) {
     let _timing = crate::timing::stage("prepare_outbound_actor_payloads");
     let record_layouts = outbound_record_layouts(builder);
-    let (owner_entries, _) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let owner_entries = &exact_states.0;
     for block in blocks.iter_mut() {
         let Some(sites) = resolved.get(&block.id) else {
             continue;
@@ -5972,7 +5975,8 @@ fn materialize_one_divergent_selection_arm_closure(
 ) -> bool {
     use crate::model::OwnershipEvent;
 
-    let (_, exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exits = &exact_states.1;
     let mut predecessors = HashMap::<u32, Vec<u32>>::new();
     for block in blocks.iter() {
         for successor in block.successors() {
@@ -7744,7 +7748,8 @@ fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut
     // still destroy it. Resolve the exact live generation from MIR state at
     // the call, then commit the close in its normal successor. This is the
     // receiver sibling of the ProvenConsume argument protocol above.
-    let (_, owner_exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let owner_exits = &exact_states.1;
     let guards = blocks
         .iter()
         .flat_map(|block| &block.instructions)
@@ -7888,7 +7893,8 @@ fn collect_affine_call_consume_commits(
     builder: &mut Builder,
     pending: HashMap<u32, PendingAffineCallConsumeSite>,
 ) -> Vec<AffineCallConsumeCommit> {
-    let (_, owner_exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let owner_exits = &exact_states.1;
     let mut predecessors = HashMap::<u32, Vec<u32>>::new();
     for block in blocks {
         for successor in block.successors() {
@@ -7907,7 +7913,7 @@ fn collect_affine_call_consume_commits(
         .collect::<HashMap<_, _>>();
     let resolution = AffineCallConsumeResolution {
         blocks,
-        owner_exits: &owner_exits,
+        owner_exits,
         predecessors: &predecessors,
         guards: &guards,
     };
@@ -8577,7 +8583,8 @@ fn materialize_opaque_projected_payload_handoffs(blocks: &mut [BasicBlock], buil
     if candidates.is_empty() {
         return;
     }
-    let (_, exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exits = &exact_states.1;
     for block in blocks {
         let Terminator::Call { args, .. } = &block.terminator else {
             continue;
@@ -8671,7 +8678,9 @@ fn materialize_edge_local_retained_join_releases(blocks: &mut [BasicBlock], buil
         edges: Vec<EdgePlan>,
     }
 
-    let (exact_entries, exact_exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exact_entries = &exact_states.0;
+    let exact_exits = &exact_states.1;
     let predecessors = blocks
         .iter()
         .flat_map(|block| {
@@ -9335,7 +9344,7 @@ fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
     // a re-key actually changed them. Re-deriving it per block instead made the
     // pass quadratic in block count for the sake of a rewrite that fires on a
     // handful of instructions in a whole body.
-    let mut entries = drop_plan::exact_owner_states(blocks).0;
+    let mut entries = drop_plan::exact_owner_states(blocks).0.clone();
     for block_index in 0..blocks.len() {
         drop_plan::debug_assert_exact_entries_current(
             blocks,
@@ -9369,7 +9378,7 @@ fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
             drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
         }
         if rekeyed {
-            entries = drop_plan::exact_owner_states(blocks).0;
+            entries.clone_from(&drop_plan::exact_owner_states(blocks).0);
         }
     }
 }
@@ -9390,8 +9399,8 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
     // Both replays are pure functions of `blocks`; they are re-derived only
     // after a re-key or a reset-to-mint rewrite changed them, not once per
     // block. See `canonicalize_terminal_transfer_owner_ids`.
-    let (mut exact_entries, _) = drop_plan::exact_owner_states(blocks);
-    let (mut maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+    let mut exact_entries = drop_plan::exact_owner_states(blocks).0.clone();
+    let mut maybe_entries = drop_plan::maybe_owner_states(blocks).0.clone();
     for block_index in 0..blocks.len() {
         drop_plan::debug_assert_exact_entries_current(
             blocks,
@@ -9460,8 +9469,8 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
             drop_plan::apply_maybe_owner_ops(std::slice::from_ref(&operation), &mut maybe);
         }
         if rewrote {
-            exact_entries = drop_plan::exact_owner_states(blocks).0;
-            maybe_entries = drop_plan::maybe_owner_states(blocks).0;
+            exact_entries.clone_from(&drop_plan::exact_owner_states(blocks).0);
+            maybe_entries.clone_from(&drop_plan::maybe_owner_states(blocks).0);
         }
     }
 }
@@ -9486,7 +9495,8 @@ mod stale_owner_canonicalization_tests;
 /// re-derived by the final run.
 fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let _timing = crate::timing::stage("materialize_explicit_goto_edge_carries");
-    let (_, exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exits = &exact_states.1;
     for block in blocks {
         let Terminator::Goto { target } = block.terminator else {
             continue;
@@ -9702,8 +9712,10 @@ fn materialize_conditional_scope_exit_releases(
 ) {
     let _timing = crate::timing::stage("materialize_conditional_scope_exit_releases");
     loop {
-        let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
-        let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+        let exact_states = drop_plan::exact_owner_states(blocks);
+        let exact_entries = &exact_states.0;
+        let maybe_states = drop_plan::maybe_owner_states(blocks);
+        let maybe_entries = &maybe_states.0;
         let recipes = blocks
             .iter()
             .flat_map(|block| &block.instructions)
@@ -10301,8 +10313,11 @@ fn relocate_nested_owner_place(
 )]
 fn materialize_explicit_move_relocations(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let _timing = crate::timing::stage("materialize_explicit_move_relocations");
-    let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
-    let (exact_entries, exact_exits) = drop_plan::exact_owner_states(blocks);
+    let maybe_states = drop_plan::maybe_owner_states(blocks);
+    let maybe_entries = &maybe_states.0;
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exact_entries = &exact_states.0;
+    let exact_exits = &exact_states.1;
     let mut predecessors: HashMap<u32, Vec<u32>> = HashMap::new();
     for block in blocks.iter() {
         for successor in block.successors() {
@@ -10550,11 +10565,11 @@ fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], build
     let _timing = crate::timing::stage("materialize_explicit_nested_move_relocations");
     // The replay is a pure function of `blocks`; only this pass's own event
     // insertions invalidate it. See `canonicalize_terminal_transfer_owner_ids`.
-    let mut entries = drop_plan::exact_owner_states(blocks).0;
+    let mut entries = drop_plan::exact_owner_states(blocks).0.clone();
     let mut inserted_event = false;
     for block_index in 0..blocks.len() {
         if inserted_event {
-            entries = drop_plan::exact_owner_states(blocks).0;
+            entries.clone_from(&drop_plan::exact_owner_states(blocks).0);
             inserted_event = false;
         }
         drop_plan::debug_assert_exact_entries_current(
@@ -10661,7 +10676,8 @@ fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], build
 /// split proof.  Builder binding/projection ledgers do not participate.
 fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let _timing = crate::timing::stage("materialize_explicit_projection_adoptions");
-    let (entries, _) = drop_plan::maybe_owner_states(blocks);
+    let maybe_states = drop_plan::maybe_owner_states(blocks);
+    let entries = &maybe_states.0;
     // Contextual resource binders already carry a typed, path-specific
     // neutralization. In a guarded match arm that handoff deliberately lives
     // in the guard's true successor; materializing the generic Move/Mint
@@ -10755,7 +10771,8 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
 )]
 fn canonicalize_preminted_move_adoptions(blocks: &mut [BasicBlock]) {
     let _timing = crate::timing::stage("canonicalize_preminted_move_adoptions");
-    let (entries, _) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let entries = &exact_states.0;
     for block in blocks {
         let mut live = entries.get(&block.id).cloned().unwrap_or_default();
         let mut index = 0;
@@ -11238,7 +11255,8 @@ fn terminal_transfer_precedes_actor_state_store_commit(block: &BasicBlock, index
 /// transfer. Any mismatch in source, destination, or exact owner state remains
 /// validator-visible.
 fn canonicalize_pre_move_terminal_relocations(blocks: &mut [BasicBlock]) {
-    let (entries, _) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let entries = &exact_states.0;
     for block in blocks {
         let mut live = entries.get(&block.id).cloned().unwrap_or_default();
         for index in 0..block.instructions.len() {
@@ -11460,7 +11478,8 @@ fn duplicate_neutralize_before_relocation(block: &BasicBlock, index: usize) -> O
 fn deduplicate_ownership_spines(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let _timing = crate::timing::stage("deduplicate_ownership_spines");
     canonicalize_pre_move_terminal_relocations(blocks);
-    let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exact_entries = &exact_states.0;
     for block in blocks {
         let exact_entry = exact_entries.get(&block.id).cloned().unwrap_or_default();
         let mut seen = Vec::<Instr>::new();
@@ -11755,9 +11774,9 @@ fn canonicalize_release_owner_ids(blocks: &mut [BasicBlock]) {
                 .is_some_and(|(published_flag, _)| *published_flag == flag)
     };
 
-    let (entries, _) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
     for block in blocks {
-        let mut live = entries.get(&block.id).cloned().unwrap_or_default();
+        let mut live = exact_states.0.get(&block.id).cloned().unwrap_or_default();
         for instruction in &mut block.instructions {
             match instruction {
                 Instr::OwnershipEvent(OwnershipEvent::Release { owner, place })
@@ -11814,8 +11833,10 @@ fn canonicalize_release_owner_ids(blocks: &mut [BasicBlock]) {
 )]
 fn canonicalize_join_dominated_rearm_lineages(blocks: &mut [BasicBlock], builder: &mut Builder) {
     loop {
-        let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
-        let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+        let exact_states = drop_plan::exact_owner_states(blocks);
+        let exact_entries = &exact_states.0;
+        let maybe_states = drop_plan::maybe_owner_states(blocks);
+        let maybe_entries = &maybe_states.0;
         let mut selected = None;
         'blocks: for (block_index, block) in blocks.iter().enumerate() {
             let mut exact = exact_entries.get(&block.id).cloned().unwrap_or_default();
@@ -12553,7 +12574,8 @@ mod lexical_scope_join_tests {
                 Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. }),
             ] if *released == owner(0) && owners == &[owner(0)]
         ));
-        let (_, exits) = drop_plan::exact_owner_states(&blocks);
+        let exact_states = drop_plan::exact_owner_states(&blocks);
+        let exits = &exact_states.1;
         assert!(exits.get(&2).is_some_and(HashMap::is_empty));
     }
 
@@ -12567,7 +12589,8 @@ mod lexical_scope_join_tests {
         materialize_explicit_scope_exits(&mut blocks, &mut builder);
 
         assert_eq!(blocks[2].instructions.len(), 1);
-        let (_, exits) = drop_plan::exact_owner_states(&blocks);
+        let exact_states = drop_plan::exact_owner_states(&blocks);
+        let exits = &exact_states.1;
         assert_eq!(
             exits.get(&2).and_then(|state| state.get(&owner(0))),
             Some(&Place::Local(0))
@@ -13222,11 +13245,11 @@ fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder:
     // The replay is a pure function of `blocks`, so it is re-derived only after
     // an event was actually inserted, not once per block. See
     // `canonicalize_terminal_transfer_owner_ids`.
-    let mut entries = drop_plan::exact_owner_states(blocks).0;
+    let mut entries = drop_plan::exact_owner_states(blocks).0.clone();
     let mut inserted = false;
     for block_index in 0..blocks.len() {
         if inserted {
-            entries = drop_plan::exact_owner_states(blocks).0;
+            entries.clone_from(&drop_plan::exact_owner_states(blocks).0);
             inserted = false;
         }
         drop_plan::debug_assert_exact_entries_current(
@@ -13763,8 +13786,10 @@ fn release_partially_transferred_return_carrier(
 fn release_partially_transferred_return_carriers(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let _timing = crate::timing::stage("release_partially_transferred_return_carriers");
     let record_layouts = outbound_record_layouts(builder);
-    let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
-    let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exact_entries = &exact_states.0;
+    let maybe_states = drop_plan::maybe_owner_states(blocks);
+    let maybe_entries = &maybe_states.0;
     for block in blocks {
         if !matches!(block.terminator, Terminator::Return) {
             continue;
@@ -14420,7 +14445,9 @@ pub(crate) fn lower_function(
         .is_ok_and(|filter| checked.name.contains(&filter))
     {
         eprintln!("HEW_DEBUG_CHECKED {checked:#?}");
-        let (entries, exits) = drop_plan::exact_owner_states(&checked.blocks);
+        let exact_states = drop_plan::exact_owner_states(&checked.blocks);
+        let entries = &exact_states.0;
+        let exits = &exact_states.1;
         eprintln!("HEW_DEBUG_OWNER_STATES entries={entries:#?} exits={exits:#?}");
     }
     findings.extend(validate_ownership_events(&checked));

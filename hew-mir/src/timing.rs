@@ -36,6 +36,13 @@ struct Accumulator {
     totals: HashMap<&'static str, u64>,
     /// The same count broken down by call site, when the build knows it.
     derivations: HashMap<(&'static str, String), u64>,
+    /// How many of those queries the memo could not answer and had to replay.
+    ///
+    /// A query is a pass asking for owner state; a replay is the whole-function
+    /// worklist actually running. The pair separates "how often does lowering
+    /// ask" from "how often does it recompute", which are the two things
+    /// `make bench-mir` gates on, and only the second is work.
+    replays: HashMap<&'static str, u64>,
     /// Function bodies whose lowering has been attributed.
     bodies: u64,
 }
@@ -97,6 +104,25 @@ pub fn record_stage(stage: &'static str, started: Option<Instant>) {
     });
 }
 
+/// Count one whole-function replay: a derivation the memo could not answer.
+///
+/// [`derivation`] counts questions; this counts the answers that had to be
+/// computed from scratch. `make bench-mir` holds an absolute ceiling on this
+/// per body, which is the number that says whether owner state is derived once
+/// per function or dozens of times.
+pub fn replay(analysis: &'static str) {
+    if !enabled() {
+        return;
+    }
+    ACCUMULATOR.with(|accumulator| {
+        *accumulator
+            .borrow_mut()
+            .replays
+            .entry(analysis)
+            .or_insert(0) += 1;
+    });
+}
+
 /// Count one whole-function analysis derivation.
 ///
 /// The total is what says whether lowering cost tracks the pass sequence or the
@@ -151,17 +177,19 @@ pub fn report(limit: usize) {
     if !enabled() {
         return;
     }
-    let (stages, functions, derivations, totals, bodies) = ACCUMULATOR.with(|accumulator| {
-        let mut accumulator = accumulator.borrow_mut();
-        let bodies = std::mem::take(&mut accumulator.bodies);
-        (
-            std::mem::take(&mut accumulator.stages),
-            std::mem::take(&mut accumulator.functions),
-            std::mem::take(&mut accumulator.derivations),
-            std::mem::take(&mut accumulator.totals),
-            bodies,
-        )
-    });
+    let (stages, functions, derivations, totals, replays, bodies) =
+        ACCUMULATOR.with(|accumulator| {
+            let mut accumulator = accumulator.borrow_mut();
+            let bodies = std::mem::take(&mut accumulator.bodies);
+            (
+                std::mem::take(&mut accumulator.stages),
+                std::mem::take(&mut accumulator.functions),
+                std::mem::take(&mut accumulator.derivations),
+                std::mem::take(&mut accumulator.totals),
+                std::mem::take(&mut accumulator.replays),
+                bodies,
+            )
+        });
 
     let mut stages: Vec<_> = stages.into_iter().collect();
     stages.sort_by_key(|(_, (elapsed, _))| std::cmp::Reverse(*elapsed));
@@ -184,6 +212,11 @@ pub fn report(limit: usize) {
         // `scripts/bench-mir.sh` divides them, and an integer pair parses the
         // same on every locale and rounding mode.
         eprintln!("hew measure: mir derivations {analysis} {count} bodies {bodies}");
+    }
+    let mut replays: Vec<_> = replays.into_iter().collect();
+    replays.sort_unstable();
+    for (analysis, count) in replays {
+        eprintln!("hew measure: mir replays {analysis} {count} bodies {bodies}");
     }
 
     let mut functions: Vec<_> = functions.into_iter().collect();

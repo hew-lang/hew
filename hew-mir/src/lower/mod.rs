@@ -13099,8 +13099,16 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
 )]
 fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let _timing = crate::timing::stage("materialize_explicit_neutralize_transfers");
+    // The replay is a pure function of `blocks`, so it is re-derived only after
+    // an event was actually inserted, not once per block. See
+    // `canonicalize_terminal_transfer_owner_ids`.
+    let mut entries = drop_plan::exact_owner_states(blocks).0;
+    let mut inserted = false;
     for block_index in 0..blocks.len() {
-        let (entries, _) = drop_plan::exact_owner_states(blocks);
+        if inserted {
+            entries = drop_plan::exact_owner_states(blocks).0;
+            inserted = false;
+        }
         let block_id = blocks[block_index].id;
         let mut live = entries.get(&block_id).cloned().unwrap_or_default();
         let mut last_relocation: HashMap<Place, (Place, Vec<crate::model::OwnerId>)> =
@@ -13255,6 +13263,7 @@ fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder:
                 blocks[block_index]
                     .instructions
                     .insert(index + 1, event.clone());
+                inserted = true;
                 drop_plan::apply_exact_owner_ops(std::slice::from_ref(&event), &mut live);
             }
             index += 1;

@@ -438,6 +438,26 @@ thread_local! {
         std::cell::RefCell::new(OwnerStateMemo::default());
 }
 
+/// Debug-only: check that a memo hit is what a fresh replay would have said.
+///
+/// The memo's whole soundness argument is that [`OwnerStateKey`] covers
+/// everything the replays read. A key that omitted one input - the successor
+/// list, say - would still compare equal after a rewrite that changed the
+/// answer, and the damage would surface as an obligation imbalance somewhere
+/// else entirely. This is the counterfactual: on every hit, derive again and
+/// compare. Gated by [`owner_state_caches_checked`], so it is compiled out of
+/// release and opt-in for a debug compiler; a hit costs a replay under it.
+fn debug_assert_memo_hit_is_current<T: PartialEq>(cached: &T, derive: impl FnOnce() -> T) {
+    if !owner_state_caches_checked() {
+        return;
+    }
+    assert!(
+        *cached == derive(),
+        "an owner-state memo hit disagrees with a fresh replay: the key does \
+         not cover everything the replay reads"
+    );
+}
+
 /// Adopt `blocks` as the memo's subject, discarding anything derived from
 /// another program. Returns whether the memo already held this one.
 fn owner_state_memo_admit(blocks: &[BasicBlock]) -> bool {
@@ -465,6 +485,7 @@ pub(in crate::lower) fn exact_owner_states(blocks: &[BasicBlock]) -> std::rc::Rc
     crate::timing::derivation("exact_owner_states", derivation_site());
     if owner_state_memo_admit(blocks) {
         if let Some(cached) = OWNER_STATE_MEMO.with(|memo| memo.borrow().exact.clone()) {
+            debug_assert_memo_hit_is_current(&*cached, || exact_owner_states_unattributed(blocks));
             return cached;
         }
     }
@@ -523,6 +544,7 @@ pub(in crate::lower) fn maybe_owner_states(blocks: &[BasicBlock]) -> std::rc::Rc
     crate::timing::derivation("maybe_owner_states", derivation_site());
     if owner_state_memo_admit(blocks) {
         if let Some(cached) = OWNER_STATE_MEMO.with(|memo| memo.borrow().maybe.clone()) {
+            debug_assert_memo_hit_is_current(&*cached, || maybe_owner_states_unattributed(blocks));
             return cached;
         }
     }

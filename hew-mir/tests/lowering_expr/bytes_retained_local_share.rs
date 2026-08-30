@@ -53,17 +53,34 @@ fn owned_partner_escape() -> bytes {
         .find(|function| function.name == "owned_partner_escape")
         .expect("owned_partner_escape Checked MIR");
 
+    // The retain must be spliced immediately before the share's Move so no
+    // later pass reads the pair as an adoption. The alias's own Mint is a
+    // separate claim: it may be published before or after the physical move
+    // depending on which pass authored it, so it is asserted by presence, not
+    // by adjacency.
     let retained_copy = function.blocks.iter().find_map(|block| {
-        block.instructions.windows(3).find_map(|window| match window {
-            [
-                Instr::BytesRetain { value: source },
-                Instr::Move { dest, src },
-                Instr::OwnershipEvent(OwnershipEvent::Mint { place, .. }),
-            ] if source == src && dest == place => Some((*source, *dest)),
-            _ => None,
-        })
+        block
+            .instructions
+            .windows(2)
+            .find_map(|window| match window {
+                [Instr::BytesRetain { value: source }, Instr::Move { dest, src }]
+                    if source == src && dest != src =>
+                {
+                    Some((*source, *dest))
+                }
+                _ => None,
+            })
     });
-    let (source, alias) = retained_copy.expect("typed Bytes share must retain then mint alias");
+    let (source, alias) = retained_copy.expect("typed Bytes share must retain before the move");
+    assert!(
+        function.blocks.iter().any(
+            |block| block.instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instr::OwnershipEvent(OwnershipEvent::Mint { place, .. }) if *place == alias
+            ))
+        ),
+        "the retained alias must own its own minted generation"
+    );
     assert!(!function
         .blocks
         .iter()

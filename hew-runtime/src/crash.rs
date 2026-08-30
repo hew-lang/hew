@@ -162,13 +162,22 @@ fn push_crash_report_to(log: &PoisonSafe<VecDeque<CrashReport>>, report: CrashRe
 }
 
 /// Record a logical actor failure caught by the scheduler's language-unwind
-/// boundary.
+/// boundary, and report it once on stderr.
 ///
 /// Logical failures do not carry hardware `siginfo_t`; the typed Hew trap code
 /// occupies `signal`, matching the historical recovery report and the public
 /// `CrashReport`/observe schema. The scheduler supplies the message type when a
-/// mailbox node backs the activation; resumed continuations use zero.
-pub(crate) fn record_logical_crash(actor_id: u64, code: i32, msg_type: i32) {
+/// mailbox node backs the activation; resumed continuations use zero, and
+/// `dispatch_ptr` is the crashing actor's dispatch function as a `usize` (zero
+/// when the activation has none) — the key both context registries are stamped
+/// with at startup.
+pub(crate) fn record_logical_crash(actor_id: u64, code: i32, msg_type: i32, dispatch_ptr: usize) {
+    push_logical_crash_report(actor_id, code, msg_type);
+    emit_crash_diagnostic(actor_id, code, msg_type, dispatch_ptr);
+}
+
+/// Put one logical failure in the crash log without reporting it.
+fn push_logical_crash_report(actor_id: u64, code: i32, msg_type: i32) {
     let report = CrashReport {
         actor_id,
         actor_pid: actor_id,
@@ -183,12 +192,41 @@ pub(crate) fn record_logical_crash(actor_id: u64, code: i32, msg_type: i32) {
     push_crash_report(report);
 }
 
+/// Write the single user-facing line for a logical actor crash.
+///
+/// This is the only stderr writer on the crash path. `emit_crash_diagnostic_sig_safe`
+/// went with the siglongjmp recovery tier; the unwind path that replaced it stamps
+/// the trap code, suppresses the typed `HewPanic` message in the panic hook and
+/// records the crash silently, so an unsupervised crash reached the user as exit 1
+/// with nothing written at all. `record_logical_crash` is the one funnel every
+/// logical crash passes through, which is why the line is written here rather than
+/// at either scheduler catch site — one crash, one line.
+///
+/// Context is resolved from the registries codegen stamps at startup: the
+/// fully-qualified handler name when `(dispatch_ptr, msg_type)` is registered,
+/// otherwise the actor's type name. Both degrade to a named actor, never to the
+/// opaque `msg_type=-N` form the retired diagnostic printed.
+fn emit_crash_diagnostic(actor_id: u64, code: i32, msg_type: i32, dispatch_ptr: usize) {
+    use crate::profiler::actor_registry;
+
+    let context = actor_registry::handler_name_by_ptr(dispatch_ptr, msg_type)
+        .unwrap_or_else(|| actor_registry::lookup_dispatch_type_by_ptr_owned(dispatch_ptr));
+    let reason = match crate::internal::types::ExitReason::from_error_code(code) {
+        crate::internal::types::ExitReason::Signal(signal) => format!("Signal({signal})"),
+        named => named.trap_kind_name().to_owned(),
+    };
+    eprintln!("hew: actor crash in {context} (actor {actor_id}): {reason}");
+}
+
 /// Record a fault-injected crash in the global crash log.
 ///
 /// Uses `signal = -1` so injected failures remain distinguishable from typed
-/// logical traps and hardware signals.
+/// logical traps and hardware signals. Deliberately silent: a deterministic
+/// simulation hook is the harness asking for a crash, not a program fault the
+/// user has to diagnose, and the injecting frame has already released the actor
+/// it would name.
 pub(crate) fn record_injected_crash(actor_id: u64) {
-    record_logical_crash(actor_id, -1, 0);
+    push_logical_crash_report(actor_id, -1, 0);
 }
 
 // ── Monotonic timestamp utility ─────────────────────────────────────────

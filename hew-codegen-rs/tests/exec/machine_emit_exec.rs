@@ -311,33 +311,34 @@ fn machine_emit_placeholder_lowers_to_push_call() {
 ///
 /// 1. Emit the pipeline to `.ll`.
 /// 2. Parse the `.ll` back into an inkwell `Module`.
-/// 3. Create an MCJIT `ExecutionEngine` and wire the machine emit runtime
-///    symbols plus Rust's unwind personality through `add_global_mapping`. The
-///    macOS test-binary dynamic-symbol table does not expose `#[no_mangle]`
-///    runtime exports for JIT-host lookup, so explicit mappings are mandatory;
-///    see the inline comment at the mapping site for the platform rationale.
-/// 4. Clear any stale events from prior tests on this thread.
-/// 5. Invoke the `caller` function (which calls the step stub).
-/// 6. The unit step stub emits event 0 then event 1 and returns cleanly
+/// 3. Create an MCJIT `ExecutionEngine`, which resolves the module's `hew_*`
+///    references against the runtime linked into this test binary through the
+///    binary's own dynamic symbol table. `hew-codegen-rs/build.rs` is what
+///    makes that table complete on ELF; see its
+///    `export_runtime_symbols_to_jit_hosts` for why.
+/// 4. Check every referenced declaration resolves, so a symbol the JIT cannot
+///    find fails by name rather than as a bare SIGSEGV.
+/// 5. Clear any stale events from prior tests on this thread.
+/// 6. Invoke the `caller` function (which calls the step stub).
+/// 7. The unit step stub emits event 0 then event 1 and returns cleanly
 ///    (no trap); `caller` then returns unit as well.
-/// 7. Assert the outermost keep-exit preserved both events, then drain and
+/// 8. Assert the outermost keep-exit preserved both events, then drain and
 ///    verify their machine identity and FIFO tag order.
 ///
 /// This test is NOT `#[ignore]`d, unlike the MCJIT execution tests that were
-/// removed alongside it. Those also called `add_global_mapping` — the
-/// difference is completeness, not technique: each mapped only a subset, or
-/// mapped conditionally, and fell back to the engine's dynamic-symbol
-/// generator for the rest. That generator cannot see a Rust test binary's
-/// `#[no_mangle]` exports, so an unresolved reference can materialize as a null
-/// address and SIGSEGV. This one binds every symbol it needs by address up front
-/// (step 3) and `.expect()`s each, so no symbol reaches the generator. Removing
-/// any one of those mappings reproduces the siblings' crash exactly.
+/// removed alongside it. Those hand-listed a few symbols through
+/// `add_global_mapping` and left every other reference to the engine's
+/// process-symbol resolver, which on ELF saw nothing and left the relocation
+/// at address 0. Step 3 removes the hand-list, so the set of symbols the JIT
+/// can see is the set the binary actually links, and step 4 makes any
+/// remaining gap a named failure.
 #[test]
 #[cfg(unix)]
 fn machine_emit_push_populates_thread_queue_in_fifo_order() {
     use inkwell::context::Context;
     use inkwell::memory_buffer::MemoryBuffer;
     use inkwell::targets::{InitializationConfig, Target};
+    use inkwell::values::BasicValue;
     use inkwell::OptimizationLevel;
 
     // ── Compile to .ll ───────────────────────────────────────────────────────
@@ -369,54 +370,44 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         .create_module_from_ir(buf)
         .expect("parse .ll into inkwell Module");
 
-    // Look up all declarations before JIT takes ownership of the module.
-    let emit_push_decl = module
-        .get_function("hew_machine_emit_push")
-        .expect("emitted module must declare hew_machine_emit_push");
-    let step_enter_decl = module
-        .get_function("hew_machine_emit_step_enter")
-        .expect("emitted module must declare hew_machine_emit_step_enter");
-    let step_exit_decl = module
-        .get_function("hew_machine_emit_step_exit_keep")
-        .expect("emitted module must declare hew_machine_emit_step_exit_keep");
-    let personality_decl = module
-        .get_function("rust_eh_personality")
-        .expect("unwind-capable caller must declare rust_eh_personality");
-
     let ee = module
         .create_jit_execution_engine(OptimizationLevel::None)
         .expect("create_jit_execution_engine must succeed");
 
-    // Wire the JIT symbol resolver to the actual machine emit functions from
-    // the `hew-runtime` dev-dep and Rust's linked unwind personality.
-    //
-    // WHY add_global_mapping is required here: Rust test binaries on macOS
-    // (and Linux with default linker flags) do not export all `#[no_mangle]`
-    // symbols to the dynamic symbol table; the MCJIT engine's default symbol
-    // resolver cannot find them by name. `add_global_mapping` bypasses the
-    // resolver and directly wires each JIT reference to its in-process
-    // function pointer, which is always reachable by address.
-    unsafe extern "C" {
-        fn hew_machine_emit_push(
-            queue: *mut std::ffi::c_void,
-            machine_id: u64,
-            tag: u32,
-            payload: *const u8,
-        ) -> i32;
-        fn hew_machine_emit_step_enter(queue: *mut std::ffi::c_void) -> i32;
-        fn hew_machine_emit_step_exit_keep(queue: *mut std::ffi::c_void) -> i32;
-        fn rust_eh_personality();
+    // Fail closed on symbol resolution. MCJIT resolves a reference it cannot
+    // find in the module through the process symbol table, and leaves it at
+    // address 0 when that lookup misses too - reporting nothing, so the fault
+    // only surfaces when JIT-compiled code calls through it, as a signal with
+    // no diagnostic. Probe the same process table here, through the same
+    // `dlsym` the engine's resolver uses, so an unresolvable runtime symbol
+    // names itself instead.
+    for declaration in module.get_functions() {
+        if declaration.count_basic_blocks() != 0
+            || declaration
+                .as_global_value()
+                .as_pointer_value()
+                .get_first_use()
+                .is_none()
+        {
+            // Defined in this module, or declared by the emitted prelude and
+            // never referenced - neither reaches the symbol resolver.
+            continue;
+        }
+        let symbol = declaration
+            .get_name()
+            .to_str()
+            .expect("LLVM symbol names are UTF-8");
+        let query = std::ffi::CString::new(symbol).expect("LLVM symbol names carry no NUL");
+        // SAFETY: `query` is a live NUL-terminated C string; RTLD_DEFAULT
+        // searches the already-loaded process image and loads nothing.
+        let address = unsafe { libc::dlsym(libc::RTLD_DEFAULT, query.as_ptr()) };
+        assert!(
+            !address.is_null(),
+            "the JIT-executed module references `{symbol}`, which this test binary does not \
+             export for the JIT to resolve; calling it would fault on a null address. See \
+             `export_runtime_symbols_to_jit_hosts` in hew-codegen-rs/build.rs"
+        );
     }
-    ee.add_global_mapping(&emit_push_decl, hew_machine_emit_push as *const () as usize);
-    ee.add_global_mapping(
-        &step_enter_decl,
-        hew_machine_emit_step_enter as *const () as usize,
-    );
-    ee.add_global_mapping(
-        &step_exit_decl,
-        hew_machine_emit_step_exit_keep as *const () as usize,
-    );
-    ee.add_global_mapping(&personality_decl, rust_eh_personality as *const () as usize);
 
     // Clear any stale events from a prior test on this thread.
     thread_emit_clear();

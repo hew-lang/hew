@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    export_runtime_symbols_to_jit_hosts();
     println!("cargo:rerun-if-changed=src/llvm_debug_info_shim.cpp");
     // llvm-sys re-resolves its LLVM install when this changes; the shim must
     // re-compile against the SAME install, or a cached shim object built from
@@ -25,6 +26,28 @@ fn main() {
         .flag_if_supported("/std:c++17")
         .warnings(false)
         .compile("hew_llvm_debug_info_shim");
+}
+
+/// Make this crate's test binaries export their dynamic symbol table.
+///
+/// The `exec` tests JIT-compile an emitted module and call it in-process, so
+/// MCJIT has to resolve the module's `hew_*` runtime references back to the
+/// runtime linked into the test binary. Mach-O puts every global symbol in the
+/// dynamic symbol table, so the JIT's process-symbol resolver finds them and
+/// the same test passes on macOS. ELF exports nothing from an executable
+/// unless the link asks, so on Linux that resolver found nothing, MCJIT left
+/// the relocation at address 0, and the JIT-compiled call dereferenced null -
+/// a bare SIGSEGV with no diagnostic.
+///
+/// `--export-dynamic` gives ELF the same property, which makes the test
+/// binary's own dynamic symbol table the single authority for which runtime
+/// symbols a JIT-executed test can see, on both platforms.
+fn export_runtime_symbols_to_jit_hosts() {
+    // Windows resolves JIT symbols from the PE export table and has no
+    // equivalent flag; the JIT exec tests are `#[cfg(unix)]` anyway.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-arg-tests=-Wl,--export-dynamic");
+    }
 }
 
 /// The `llvm-config` llvm-sys itself used, threaded through Cargo's

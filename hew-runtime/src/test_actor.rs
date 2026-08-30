@@ -214,6 +214,23 @@ impl std::ops::Deref for TrackedTestActor {
 
 impl Drop for TrackedTestActor {
     fn drop(&mut self) {
+        // Allocation-lease tripwire. A wake that wins the `Suspended -> Runnable`
+        // CAS raises `send_pin_count` and pushes the raw pointer onto the global
+        // queue; the lease is released only when something pops it. Freeing the
+        // box under a held lease leaves a dangling pointer in the queue - the
+        // exact invariant the incarnation-keyed wake depends on - so a test that
+        // fires a wake must consume it (`pop_global` / `activate_one_global`).
+        // Skipped while unwinding so a failing assertion is not masked by a
+        // double panic in Drop.
+        if !std::thread::panicking() {
+            assert_eq!(
+                self.send_pin_count.load(Ordering::Acquire),
+                0,
+                "a tracked stub actor was freed while a scheduler queue entry \
+                 still held a pin lease on it: the test fired a wake it never \
+                 consumed"
+            );
+        }
         // Idempotent: `untrack_actor` only removes a matching entry, so a
         // double-untrack (the test already called `untrack`) is a no-op.
         live_actors::untrack_actor(self.ptr);

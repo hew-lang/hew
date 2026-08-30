@@ -9477,7 +9477,7 @@ mod tests {
 
     #[test]
     fn parked_reply_table_complete_resumes_via_pending_handle() {
-        let _guard = crate::runtime_test_guard();
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
         let key = ConnectionKey {
             conn_mgr: 101,
             conn_id: 21,
@@ -9497,6 +9497,13 @@ mod tests {
 
         assert_eq!(reply, remote_void_reply_sentinel());
         assert_eq!(hew_node_ask_take_last_error(), AskError::None as i32);
+        // Consume the wake this completion fired: the queue entry holds a pin
+        // lease on the stub's allocation, and the stub is freed at end of scope.
+        assert_eq!(
+            sched.pop_global(),
+            Some(parked_actor),
+            "the completion must resume the registering incarnation exactly once"
+        );
     }
 
     /// Issue #2652 D12: a reply that arrives on a DIFFERENT `(conn_mgr, conn_id)`
@@ -9580,7 +9587,7 @@ mod tests {
 
     #[test]
     fn parked_reply_timeout_finishes_with_timeout_error() {
-        let _guard = crate::runtime_test_guard();
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
         let key = ConnectionKey {
             conn_mgr: 102,
             conn_id: 22,
@@ -9598,11 +9605,18 @@ mod tests {
 
         assert!(reply.is_null());
         assert_eq!(hew_node_ask_take_last_error(), AskError::Timeout as i32);
+        // The failure edge wakes the parked caller; consume the queue entry so
+        // its pin lease is released before the stub allocation is freed.
+        assert_eq!(
+            sched.pop_global(),
+            Some(parked_actor),
+            "the timeout must resume the registering incarnation exactly once"
+        );
     }
 
     #[test]
     fn parked_reply_connection_drop_finishes_with_connection_dropped_error() {
-        let _guard = crate::runtime_test_guard();
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
         let key = ConnectionKey {
             conn_mgr: 103,
             conn_id: 23,
@@ -9623,11 +9637,18 @@ mod tests {
             hew_node_ask_take_last_error(),
             AskError::ConnectionDropped as i32
         );
+        // As above: the connection failure edge wakes the parked caller, and the
+        // queue entry's pin lease must be released before the stub is freed.
+        assert_eq!(
+            sched.pop_global(),
+            Some(parked_actor),
+            "a dropped connection must resume the registering incarnation once"
+        );
     }
 
     #[test]
     fn parked_reply_cancel_removes_pending_entry() {
-        let _guard = crate::runtime_test_guard();
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
         let key = ConnectionKey {
             conn_mgr: 104,
             conn_id: 24,
@@ -9643,6 +9664,12 @@ mod tests {
         unsafe { hew_node_api_ask_cancel(handle) };
         // The entry is gone: a late reply finds nothing to complete.
         assert!(!reply_table().complete(id, Vec::new()));
+        assert_eq!(
+            sched.pop_global(),
+            None,
+            "a cancelled ask must not wake the parked caller"
+        );
+        let _ = parked_actor;
     }
 
     #[test]

@@ -2156,6 +2156,7 @@ pub(super) fn derive_cow_sole_owner(
     extern_contracts: &crate::return_provenance::ExternContractTable,
     owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> StringDropDerivation {
+    let _timing = crate::timing::stage("derive_cow_sole_owner");
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
         if !matches!(ty, ResolvedTy::String) {
@@ -5461,6 +5462,7 @@ pub(super) fn finalize_string_ownership(
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) {
+    let _timing = crate::timing::stage("finalize_string_ownership");
     // Retain/mint classification must see only canonical user-facing owners.
     // Synthetic produced-value slots mint their owners once their physical
     // handoff has been made explicit; including them here makes two bindings

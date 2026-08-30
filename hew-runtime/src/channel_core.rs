@@ -33,6 +33,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 use hew_cabi::sink::TrySendResult;
 use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
@@ -50,6 +51,11 @@ pub const STREAM_AWAIT_SUSPEND: i32 = 0;
 /// peer closed, or the ring had space). The caller MUST NOT suspend; it binds
 /// the result on the immediate edge.
 pub const STREAM_AWAIT_READY: i32 = 1;
+
+/// How often a thread blocked on a full ring re-reads the runtime's shutdown
+/// phase. Matches the shutdown drain's own poll cadence, so a send abandoned at
+/// the drain edge is observed within one drain tick.
+const SHUTDOWN_PHASE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// One parked peer (a consumer awaiting an item, or a producer blocked on a full
 /// ring). The core owns one in-flight ref on `slot`.
@@ -509,9 +515,21 @@ impl ChannelCore {
         STREAM_AWAIT_READY
     }
 
-    /// Blocking producer send (default callers). Parks the FOREIGN thread on the
+    /// Blocking producer send (default callers). Parks the calling thread on the
     /// condvar until the ring has space; silently discards after any terminal
-    /// close or producer fault.
+    /// close or producer fault; fails closed once the runtime drain begins.
+    ///
+    /// A send that is still full when the runtime reaches [`crate::shutdown::PHASE_DRAIN`]
+    /// can
+    /// never complete on its own terms: `main` has returned, the drain is
+    /// already counting down to abandoning in-flight work, and the drain
+    /// deliberately refuses to join a worker still inside a handler. Parking
+    /// through that window turns a producer's backpressure into an
+    /// unattributed `shutdown drain timed out` exit. The send instead fails
+    /// closed naming the channel's shape and the sending actor, which is the
+    /// same verdict the drain would reach later - deterministic, attributed, and
+    /// reached before the deadline instead of after it. Backpressure while the
+    /// runtime is running or quiescing is untouched.
     pub fn blocking_send(&self, item: Vec<u8>) {
         let consumer_wake;
         {
@@ -531,12 +549,35 @@ impl ChannelCore {
                     consumer_wake = inner.consumer.take();
                     break;
                 }
+                if crate::shutdown::hew_shutdown_phase() >= crate::shutdown::PHASE_DRAIN {
+                    let capacity = inner.capacity;
+                    let queued = inner.queue.len();
+                    let layout = inner.elem_layout;
+                    drop(inner);
+                    // Release the undeliverable envelope's owned heap before
+                    // aborting so the abandoned send is not also a leak.
+                    Self::drop_envelope(layout.as_ref(), item);
+                    Self::abort_send_abandoned_at_shutdown(capacity, queued);
+                }
                 #[cfg(test)]
                 self.rendezvous_before_wait();
-                inner = self
+                // SHORTCUT: poll the shutdown phase instead of being woken by
+                // it.
+                // WHY: shutdown publishes a phase, not a wake edge, and no
+                //   readiness source outside this core can notify this condvar.
+                // WHEN OBSOLETE: once `channel.send` has a suspending ramp of
+                //   its own (the `await_send` park already on this core) a
+                //   producer no longer holds a worker and the drain converges
+                //   without any phase probe.
+                // WHAT THE REAL FIX IS: lower `channel.Sender.send` in an
+                //   execution context through `await_send`, the way
+                //   `channel.Receiver.recv` already lowers through
+                //   `hew_channel_await_recv`.
+                let (guard, _timeout) = self
                     .cv
-                    .wait(inner)
+                    .wait_timeout(inner, SHUTDOWN_PHASE_POLL_INTERVAL)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                inner = guard;
             }
         }
         if let Some(w) = consumer_wake {
@@ -710,6 +751,30 @@ impl ChannelCore {
         for item in discarded {
             Self::drop_envelope(layout.as_ref(), item);
         }
+    }
+
+    /// Fail closed on a send that the drain will never let complete: never a
+    /// silent park into the drain deadline. Named so the message identifies
+    /// the channel's shape and the sending actor.
+    ///
+    /// Aborts rather than panicking: the only callers reach this through the
+    /// `extern "C"` send entries, which are `nounwind`, so a panic here becomes
+    /// a double-panic abort with the real message buried. This is the same
+    /// fail-closed shape the sibling boundary uses
+    /// ([`crate::channel_common::abort_elem_witness`]).
+    fn abort_send_abandoned_at_shutdown(capacity: usize, queued: usize) -> ! {
+        let actor = crate::actor::hew_actor_current_id_silent();
+        let sender = if actor < 0 {
+            "outside any actor handler".to_string()
+        } else {
+            format!("in actor {actor}")
+        };
+        eprintln!(
+            "PANIC: channel send abandoned during shutdown: channel is full \
+             (capacity {capacity}, {queued} queued) and the runtime drain has \
+             begun, so this send {sender} can never complete"
+        );
+        std::process::abort();
     }
 
     /// Fail closed on an empty-and-faulted read: never a silent EOF.

@@ -354,6 +354,17 @@ fn try_send_bytes(
     }
 }
 
+/// Native/wasm32 divergence on a full channel, stated in one place.
+///
+/// Both targets fail closed on a send that cannot complete, and neither ever
+/// drops the element silently. They differ in when "cannot complete" is
+/// decided: wasm32 has no send park at all, so a full ring is terminal on the
+/// spot; native parks for backpressure and fails closed only once the runtime
+/// drain has begun (`ChannelCore::blocking_send`), because until then a live
+/// receiver can still make room. wasm32 is therefore strictly stricter, and a
+/// program whose producers outrun their consumer traps here where native would
+/// have backpressured. The two converge when `channel.Sender.send` gains the
+/// cooperative suspending ramp its receiver counterpart already has.
 fn send_bytes(
     sender: &HewWasmChannelSender,
     bytes: Vec<u8>,

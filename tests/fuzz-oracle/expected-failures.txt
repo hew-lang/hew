@@ -57,11 +57,6 @@ int_negate_runtime_min_traps.hew  # intentional trap: negating a runtime i32::MI
 receive_gen_fn_fault_trap.hew  # intentional abort: a receive-gen producer that traps mid-stream fault-closes the stream so the consumer observes the fault on its next resume → SIGABRT (signal 6)
 receive_gen_fn_teardown_fault.hew  # intentional abort: a receive-gen producer torn down (actor stopped) while its stream is live and parked fault-closes the stream so the consumer observes the fault → SIGABRT (signal 6)
 
-# Runtime regressions retain their positive fixture and desired `.expected`
-# output. A clean execution is a NOW-PASSES ratchet violation that requires
-# removing the entry and restoring its direct vertical-slice invocation.
-arena_nested_vec_reuse.hew  # Arena<Vec<T>>::remove invalid-frees its payload and slot reuse segfaults; issue: #3090
-
 # Actor-isolated crash fixtures (`*_actor_isolated.hew`). Each crashes ONE
 # unsupervised actor and then proves an independent probe actor still answers:
 # the crash is isolated, not cascaded. Their exit status is now non-zero,

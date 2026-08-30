@@ -1,0 +1,15 @@
+// Reject fixture: machine_context_variant_unknown — the negative control for
+// #3149. A machine's own transition body resolves the contextual `.Variant`
+// spelling against the machine while the declaring file is an imported
+// dependency; a variant the machine does not declare is still refused there,
+// so the fix resolves the expected type rather than waving the arm through.
+//
+// Harness verb: hew check
+// Expected: rejected with E_PATH_MEMBER_NOT_FOUND naming the machine's
+// module-qualified owner and the undeclared variant.
+import lights;
+
+fn main() -> i64 {
+    let _light = lights.initial();
+    0
+}

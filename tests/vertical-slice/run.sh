@@ -505,6 +505,19 @@ compile_accept "machine_fork_args_spawn"
 # type is normalised before the enum-layout probe so the bare-name view is found.
 run_accept_expect_status "machine_generic_record_field" 0
 
+# Reject: negative control for #3149. A machine's own transition body resolves
+# the contextual `.Variant` spelling against the machine while the declaring
+# file is an imported dependency; a variant the machine never declared is still
+# refused there, and the diagnostic names the module-qualified owner the fix
+# mints. The accept side of the same shape lives in
+# tests/hew/imported_machine_context_variant_test.hew.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/machine_context_variant_unknown/main.hew" \
+    'E_PATH_MEMBER_NOT_FOUND: expected type `lights.Light` has no variant `Nope`' \
+    "machine_context_variant_unknown"
+echo "PASS machine_context_variant_unknown (reject)"
+
 # #2434 split coverage: the generic-record owned-field path is clean on its own
 # (`string.repeat` single fresh producer), while the real leak root is the
 # record-free nested concat temp in `first + " " + last`.

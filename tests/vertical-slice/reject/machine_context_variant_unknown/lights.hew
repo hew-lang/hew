@@ -1,0 +1,24 @@
+// Producer module: a machine whose transition body names a state that does
+// not exist. Resolving the contextual spelling cross-module must not mean
+// accepting any dotted name that appears in a transition body.
+pub machine Light {
+    events {
+        Toggle;
+    }
+
+    state On;
+    state Off;
+
+    on Toggle: On => Off {
+        .Nope
+    }
+    on Toggle: Off => On {
+        .On
+    }
+
+    default { state }
+}
+
+pub fn initial() -> Light {
+    .On
+}

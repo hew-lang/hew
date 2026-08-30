@@ -1,0 +1,29 @@
+//! The #3149 shape reached through an ALIASED import.
+//!
+//! The alias renames the importer's binding, not the declaring module's own
+//! identity, so the machine's transition bodies must resolve their contextual
+//! `.Variant` spelling exactly as they do under a plain import. Both spellings
+//! are covered because the alias takes a different registration path through
+//! the importer's binding tables.
+
+import tests.hew.machine_context_variant_support.light_defs as lights;
+
+import std.testing;
+
+#[test]
+fn contextual_transition_bodies_run_under_an_aliased_import() {
+    var light = lights.initial();
+    light.step(lights.LightEvent.Toggle);
+    testing.assert_eq_str(light.state_name(), "Off");
+}
+
+#[test]
+fn aliased_import_reaches_the_struct_payload_state_the_contextual_body_built() {
+    var light = lights.Light.On;
+    light.step(lights.LightEvent.Label);
+    let label = match light {
+        lights.Light.Named { label } => label,
+        _ => "none",
+    };
+    testing.assert_eq_str(label, "LIT");
+}

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`panic()` in main context unwinds with cleanup.** A panic outside an actor
+  now runs the same drop obligations and `#[resource]` closes as a panic inside
+  one, instead of ending the process with them skipped. The panic status and the
+  message on stderr are unchanged.
+
 ### Changed (breaking)
 
 - **Supervised actors use `ChildRef<T>` handles.** Named child and static-pool
@@ -146,17 +153,17 @@ than double-free risks.
   block. Declaring any of them is now a compile error naming the symbol. The
   affected symbols and their replacements:
 
-  | Removed from the user surface | Replacement |
-  | --- | --- |
-  | `hew_mailbox_has_messages` | `hew_mailbox_has_user_messages` — the old name answered "any message at all", including undelivered lifecycle signals, so a receive loop could spin on a message it could never read |
-  | `hew_actor_link`, `hew_actor_monitor` | the `link(target)` / `monitor(target)` language forms; the compiler supplies the calling actor as the subject |
-  | `hew_local_pid_link`, `hew_local_pid_monitor` | same |
-  | `hew_actor_trap` | `trap(code)` / an actor crash; the compiler lowers a trap to `hew_trap_with_code` |
-  | `hew_actor_free` | let the runtime reclaim the actor: `hew_actor_stop`, group teardown, or `hew_runtime_cleanup` |
-  | `hew_mailbox_new`, `hew_mailbox_new_bounded`, `hew_mailbox_new_coalesce`, `hew_mailbox_new_with_policy`, `hew_mailbox_free` | a mailbox is created and destroyed with its actor; use the spawn entry points |
-  | `hew_mailbox_send_sys`, `hew_mailbox_try_recv_sys`, `hew_mailbox_sys_len`, `hew_mailbox_try_recv` | none — lifecycle messages are delivered by the runtime to `#[on(exit)]` / `#[on(down)]`, and a receive is what an actor's `#[on(...)]` handlers already are |
-  | `hew_supervisor_start`, `hew_supervisor_add_child_spec`, `hew_supervisor_add_child_dynamic`, `hew_supervisor_remove_child`, `hew_supervisor_handle_crash` | the `supervise` language form; the compiler emits the whole construction sequence |
-  | `hew_supervisor_notify_child_event` | renamed `hew_supervisor_notify_child_actor_event` and not user-declarable |
+  | Removed from the user surface                                                                                                                             | Replacement                                                                                                                                                                          |
+  | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+  | `hew_mailbox_has_messages`                                                                                                                                | `hew_mailbox_has_user_messages` — the old name answered "any message at all", including undelivered lifecycle signals, so a receive loop could spin on a message it could never read |
+  | `hew_actor_link`, `hew_actor_monitor`                                                                                                                     | the `link(target)` / `monitor(target)` language forms; the compiler supplies the calling actor as the subject                                                                        |
+  | `hew_local_pid_link`, `hew_local_pid_monitor`                                                                                                             | same                                                                                                                                                                                 |
+  | `hew_actor_trap`                                                                                                                                          | `trap(code)` / an actor crash; the compiler lowers a trap to `hew_trap_with_code`                                                                                                    |
+  | `hew_actor_free`                                                                                                                                          | let the runtime reclaim the actor: `hew_actor_stop`, group teardown, or `hew_runtime_cleanup`                                                                                        |
+  | `hew_mailbox_new`, `hew_mailbox_new_bounded`, `hew_mailbox_new_coalesce`, `hew_mailbox_new_with_policy`, `hew_mailbox_free`                               | a mailbox is created and destroyed with its actor; use the spawn entry points                                                                                                        |
+  | `hew_mailbox_send_sys`, `hew_mailbox_try_recv_sys`, `hew_mailbox_sys_len`, `hew_mailbox_try_recv`                                                         | none — lifecycle messages are delivered by the runtime to `#[on(exit)]` / `#[on(down)]`, and a receive is what an actor's `#[on(...)]` handlers already are                          |
+  | `hew_supervisor_start`, `hew_supervisor_add_child_spec`, `hew_supervisor_add_child_dynamic`, `hew_supervisor_remove_child`, `hew_supervisor_handle_crash` | the `supervise` language form; the compiler emits the whole construction sequence                                                                                                    |
+  | `hew_supervisor_notify_child_event`                                                                                                                       | renamed `hew_supervisor_notify_child_actor_event` and not user-declarable                                                                                                            |
 
   A symbol staying linkable for ahead-of-time embedders is unchanged; what is
   withdrawn is the ability for Hew source to declare it. `make lint` computes
@@ -182,7 +189,7 @@ than double-free risks.
   no fallback to an older epoch. Mismatched keys, stale sessions, malformed
   reserved fields, and unbound peers are rejected before route publication.
 - **Receiver-local route slots.** `Node::allow_peer(route_slot,
-  credential_hex)` pins a peer credential to a non-zero local `u16` alias; slot
+credential_hex)` pins a peer credential to a non-zero local `u16` alias; slot
   `0` is reserved. Route slots are never distributed identity. The runtime
   enforces one-to-one slot/credential bindings and derives each peer `NodeId`
   after transport authentication.
@@ -590,7 +597,7 @@ the structured changelog.
   children.
 - **`PartitionDetected` mesh signal:** When the local node loses connectivity to
   a peer, monitors of remote actors receive a `PartitionDetected { node, last_seen
-  }` notification distinct from ordinary actor-exit signals.
+}` notification distinct from ordinary actor-exit signals.
 - **Actor `Blocked` state removed:** The scheduler now models awaits and blocking
   I/O through receive-cursor state on the actor's mailbox/scope, simplifying the
   runtime and the traces it emits.
@@ -748,7 +755,7 @@ the structured changelog.
   declarations are unchanged.
 - **Legacy CLI compile surface.** `hew compile` is the single v0.5 IR-ladder
   entry point, and `hew build` is its native-binary front end (like `go
-  build`). The dormant legacy run/build bodies and the old
+build`). The dormant legacy run/build bodies and the old
   `compile::compile()` entry point are gone.
 - **`hew-codegen` C++/MLIR subtree retired.** The C++ MLIR-based code generator,
   its generated msgpack reader, and the `hew-astgen` helper crate are deleted.
@@ -763,7 +770,7 @@ the structured changelog.
   `handle(msg)`.
 - **`spawn (params) => body` lambda-actor syntax.** The parser emits
   `E_SPAWN_LAMBDA_SYNTAX_REMOVED` with a fixit note. Use `actor |params| { body
-  }` instead.
+}` instead.
 - **`terminate { }` block.** Migrate cleanup logic to
   `#[on(stop)] fn <name>() { ... }` inside the actor body.
 - **`=~` and `!~` regex operators.** Use `p.is_match(s)` for a boolean match
@@ -953,7 +960,7 @@ See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
 - **Runtime/WASM parity proof:** closed-mailbox send behavior plus mailbox/scheduler/reply-channel
   parity are now explicitly covered in the native and wasm test matrix (#754).
 - **CLI/docs truth surfaces:** the CLI/playground docs, first-run examples, and `hew fmt`/`hew
-  doc` guidance now match the actual user-facing behavior more closely (#720, #748, #752, #755).
+doc` guidance now match the actual user-facing behavior more closely (#720, #748, #752, #755).
 
 ### Known Limitations
 

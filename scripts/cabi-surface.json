@@ -8823,6 +8823,19 @@
       "availability": [
         "native"
       ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_main_unwind_boundary( unsafe extern \"C-unwind\" fn(*mut c_void), *mut c_void, )"
+      },
+      "symbol": "hew_main_unwind_boundary"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",

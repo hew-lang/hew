@@ -321,11 +321,50 @@ pub fn current_context() -> *mut HewExecutionContext {
     CURRENT_EXECUTION_CONTEXT.with(Cell::get)
 }
 
-/// Whether the currently installed execution context is backed by a live
-/// runtime-owned unwind boundary on this stack.
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// Depth of live process-entry `catch_unwind` boundaries on this thread.
+    ///
+    /// The generated `main` runs beneath a runtime-owned catch boundary
+    /// (`hew_main_unwind_boundary`) that is NOT a dispatch: there is no actor,
+    /// no mailbox and no reply channel, so it deliberately installs no
+    /// [`HewExecutionContext`]. Installing one would make main indistinguishable
+    /// from an actor dispatch to every `current_context().is_null()` reader -
+    /// `hew_observe_barrier` refuses to run inside a dispatch, tracing and arena
+    /// routing read the carrier's lanes - so the boundary records itself here
+    /// instead. [`current_context_can_unwind`] stays the single reader.
+    static PROCESS_ENTRY_UNWIND_BOUNDARIES: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Enter a process-entry unwind boundary for the current thread.
+///
+/// Paired with [`leave_process_entry_unwind_boundary`]; the runtime's main
+/// boundary restores the previous depth on both the normal and the caught-panic
+/// leg so a nested `hew build`-style embedding cannot leak the marker.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn enter_process_entry_unwind_boundary() {
+    PROCESS_ENTRY_UNWIND_BOUNDARIES.with(|depth| depth.set(depth.get().saturating_add(1)));
+}
+
+/// Leave a process-entry unwind boundary for the current thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn leave_process_entry_unwind_boundary() {
+    PROCESS_ENTRY_UNWIND_BOUNDARIES.with(|depth| depth.set(depth.get().saturating_sub(1)));
+}
+
+/// Whether this stack is enclosed by a live runtime-owned unwind boundary.
+///
+/// Two frames can own one: a scheduler dispatch carrier (the
+/// [`HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED`] bit) and the process entry frame
+/// (`hew_main_unwind_boundary`). Both answer the same question - may a typed
+/// language unwind start here and be caught - and this is the only function
+/// that answers it.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub(crate) fn current_context_can_unwind() -> bool {
+    if PROCESS_ENTRY_UNWIND_BOUNDARIES.with(Cell::get) > 0 {
+        return true;
+    }
     let ctx = current_context();
     if ctx.is_null() {
         return false;
@@ -670,6 +709,62 @@ mod tests {
         fn drop(&mut self) {
             let _ = set_current_context(ptr::null_mut());
         }
+    }
+
+    /// The process-entry boundary must answer the unwind question without
+    /// pretending to be a dispatch.
+    ///
+    /// `hew_observe_barrier` and the tracing/arena readers use
+    /// `current_context().is_null()` to mean "not inside an actor dispatch". A
+    /// main-context boundary that installed a carrier to carry the unwind bit
+    /// would silently flip all of them, so the marker is deliberately separate
+    /// and only `current_context_can_unwind` reads it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn process_entry_boundary_permits_unwind_without_installing_a_context() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+
+        assert!(
+            !current_context_can_unwind(),
+            "a bare thread has no catch boundary"
+        );
+
+        enter_process_entry_unwind_boundary();
+        assert!(
+            current_context_can_unwind(),
+            "the process-entry boundary must permit a typed unwind"
+        );
+        assert!(
+            current_context().is_null(),
+            "the process-entry boundary must not read as an actor dispatch"
+        );
+
+        leave_process_entry_unwind_boundary();
+        assert!(
+            !current_context_can_unwind(),
+            "leaving the boundary must retract the permission"
+        );
+    }
+
+    /// The marker is per-thread: a scheduler worker must not inherit main's
+    /// boundary and start an unwind that nothing on its stack catches.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn process_entry_boundary_does_not_leak_across_threads() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+
+        enter_process_entry_unwind_boundary();
+        let observed = thread::spawn(current_context_can_unwind)
+            .join()
+            .expect("probe thread must not panic");
+        leave_process_entry_unwind_boundary();
+
+        assert!(
+            !observed,
+            "another thread must not see main's catch boundary"
+        );
     }
 
     #[test]

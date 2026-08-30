@@ -9,6 +9,9 @@ fn run_hew_command(command: &mut Command, label: impl Into<String>) -> Output {
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
+#[path = "ir_assertions.rs"]
+mod ir_assertions;
+
 #[path = "exec/bytes_index_exec.rs"]
 mod bytes_index_exec;
 #[path = "exec/coro_emission_exec.rs"]

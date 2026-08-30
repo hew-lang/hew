@@ -899,9 +899,10 @@ fn semantic_unreachable_emits_bare_llvm_unreachable_without_trap_or_drop_plan() 
     module
         .verify()
         .expect("bare LLVM unreachable must leave a valid module");
+    let entry_body = entry_body_symbol_for_triple(&module.get_triple().as_str().to_string_lossy());
     let main = module
-        .get_function("main")
-        .expect("fixture must emit its main function")
+        .get_function(entry_body)
+        .unwrap_or_else(|| panic!("fixture must emit its entry body `{entry_body}`"))
         .print_to_string()
         .to_string();
     assert!(
@@ -3392,11 +3393,7 @@ fn join_owned_replies_stage_until_atomic_result_publication() {
         module
             .verify()
             .unwrap_or_else(|error| panic!("{triple}: owned join staging verify: {error}"));
-        let main_symbol = if triple.starts_with("wasm32") {
-            "__original_main"
-        } else {
-            "main"
-        };
+        let main_symbol = entry_body_symbol_for_triple(&triple);
         let main = module
             .get_function(main_symbol)
             .unwrap_or_else(|| panic!("{triple}: {main_symbol} function"))

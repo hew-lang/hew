@@ -45,7 +45,7 @@ pub(crate) mod wire;
 pub use llvm::{
     cleanup_capabilities_for_target, emit_module, emit_module_objects,
     emit_module_objects_without_llvm, emit_module_without_llvm, emit_wasi_entry_adapter,
-    validate_codegen_front, validate_codegen_front_for_triple, verify_pipeline,
-    CleanupTargetCapabilities, CleanupUnwindStrategy, CodegenError, EmitArtefacts, EmitOptions,
-    OptLevel,
+    entry_body_symbol_for_triple, native_emission_triple, validate_codegen_front,
+    validate_codegen_front_for_triple, verify_pipeline, CleanupTargetCapabilities,
+    CleanupUnwindStrategy, CodegenError, EmitArtefacts, EmitOptions, OptLevel,
 };

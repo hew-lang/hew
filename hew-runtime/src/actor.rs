@@ -7124,12 +7124,18 @@ pub(crate) fn install_hew_panic_hook() {
 
 /// Trigger a panic in the current execution context.
 ///
-/// Inside a native actor this Rust-unwinds through the MIR-authored LLVM cleanup
-/// edges and is caught exactly once by the scheduler. Hardware signals never
-/// use this path. On wasm32 it stamps the panic sentinel and terminates the
-/// module because portable WASM EH is not enabled by the shipped target.
+/// On a native target this Rust-unwinds through the MIR-authored LLVM cleanup
+/// edges whenever a runtime-owned catch boundary encloses the stack, so drop
+/// obligations discharge and `#[resource]` closes run. Both boundaries answer to
+/// [`crate::execution_context::current_context_can_unwind`]: the scheduler's
+/// actor dispatch and the process entry frame installed by
+/// [`hew_main_unwind_boundary`]. Hardware signals never use this path. On wasm32
+/// it stamps the panic sentinel and terminates the module because portable WASM
+/// EH is not enabled by the shipped target.
 ///
-/// Outside an actor (e.g. `main`): exits the process with code 101.
+/// With no catch boundary at all - a synchronous lifecycle hook running on the
+/// spawning stack - process termination is the ownership boundary and the OS
+/// reclaims what is left.
 ///
 /// This function never returns.
 #[no_mangle]
@@ -7148,19 +7154,72 @@ pub extern "C-unwind" fn hew_panic() {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let actor_stamped = crate::trap_code::stamp_current_actor_error_code(101);
-        if actor_stamped && crate::execution_context::current_context_can_unwind() {
+        // The stamp publishes the crash code to the actor the scheduler is about
+        // to transition to Crashed. Outside an actor it is a no-op read of a
+        // null actor lane, so it never gates the unwind decision.
+        let _ = crate::trap_code::stamp_current_actor_error_code(101);
+        if crate::execution_context::current_context_can_unwind() {
             std::panic::panic_any(HewPanic { code: 101 });
         }
-        // A generated native `main` has no Rust catch boundary. Starting a
-        // foreign exception here would therefore ask the platform unwinder to
-        // cross the process entry frame and can terminate with an unwinder
-        // initialization failure instead of Hew's documented panic status.
-        // A synchronous lifecycle hook also installs an actor context, but has
-        // no catch boundary. In either that case or main/free-function context,
-        // process termination is the ownership boundary and the OS reclaims all
-        // remaining process resources.
+        // No catch boundary encloses this stack - a synchronous lifecycle hook
+        // runs on the spawning thread with no scheduler recovery frame beneath
+        // it. Starting a foreign exception would ask the platform unwinder to
+        // cross a frame that cannot catch it and can terminate with an unwinder
+        // initialization failure instead of Hew's documented panic status, so
+        // process termination is the ownership boundary here and the OS reclaims
+        // all remaining process resources.
         std::process::exit(101);
+    }
+}
+
+/// Run the generated program entry beneath the runtime's catch boundary.
+///
+/// The generated native `main` is a thin wrapper that hands its body to this
+/// function, which is what makes a main-context `panic()` a controlled unwind
+/// rather than an immediate exit: the platform unwinder finds a handler, so
+/// phase-2 cleanup runs every MIR-authored landing pad on the way out and drop
+/// obligations discharge exactly as they do inside an actor. The process still
+/// ends with the panic's status and its message already on stderr.
+///
+/// `body` is the generated `__hew_main_entry` adapter and `frame` the caller's
+/// argument-and-result frame for it. Everything shaped by the source travels in
+/// that frame so this stays one function with one signature. `body` is
+/// `extern "C-unwind"` because a Hew panic crosses it as a foreign exception.
+///
+/// # Safety
+///
+/// `body` must be the generated entry adapter for this module and `frame` the
+/// matching caller-allocated frame.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_main_unwind_boundary(
+    body: unsafe extern "C-unwind" fn(*mut std::ffi::c_void),
+    frame: *mut std::ffi::c_void,
+) {
+    // A program that never starts the scheduler still needs the typed-unwind
+    // filter, or Rust's default hook prints `panicked at ...` for a panic this
+    // very frame is about to catch.
+    install_hew_panic_hook();
+    crate::execution_context::enter_process_entry_unwind_boundary();
+    // SAFETY: the caller guarantees `body` is the generated entry adapter and
+    // `frame` its matching frame.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        body(frame);
+    }));
+    crate::execution_context::leave_process_entry_unwind_boundary();
+    match result {
+        Ok(()) => (),
+        Err(payload) => {
+            // Same disposition as the scheduler's dispatch boundary: the typed
+            // payload carries the status, anything else is an unclassified
+            // crash, and the payload is released through the containment
+            // authority before the process ends.
+            let code = payload
+                .downcast_ref::<HewPanic>()
+                .map_or(101, |panic| panic.code);
+            crate::util::quarantine_panic_payload(payload);
+            std::process::exit(code);
+        }
     }
 }
 
@@ -8503,6 +8562,41 @@ mod tests {
         assert!(
             !is_caught_hew_panic(&ordinary),
             "ordinary Rust panics must continue through the prior hook"
+        );
+    }
+
+    unsafe extern "C-unwind" fn main_boundary_status_body(frame: *mut c_void) {
+        assert!(
+            crate::execution_context::current_context_can_unwind(),
+            "the generated entry body runs inside the runtime's catch boundary"
+        );
+        // SAFETY: this probe's frame is a live `i64` result slot.
+        unsafe { frame.cast::<i64>().write(7) };
+    }
+
+    /// The main boundary is transparent on the normal leg: it deposits the
+    /// body's status and retracts the unwind permission afterwards.
+    ///
+    /// The panic leg ends the process, so it is proven end to end by
+    /// `hew-cli/tests/panic_main_unwind_e2e.rs` instead.
+    #[test]
+    fn main_unwind_boundary_returns_the_body_status_and_retracts_permission() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let mut status: i64 = 0;
+
+        // SAFETY: the probe body has the generated entry ABI, never unwinds,
+        // and writes exactly the `i64` this slot holds.
+        unsafe {
+            hew_main_unwind_boundary(
+                main_boundary_status_body,
+                (&raw mut status).cast::<c_void>(),
+            );
+        }
+
+        assert_eq!(status, 7, "the boundary must deposit the body's status");
+        assert!(
+            !crate::execution_context::current_context_can_unwind(),
+            "the boundary must retract the unwind permission when the body returns"
         );
     }
 

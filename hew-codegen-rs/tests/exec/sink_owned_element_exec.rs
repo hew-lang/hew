@@ -847,7 +847,11 @@ fn main() {
         "the moved Stream half must be closed EXACTLY once (state_drop_fn)"
     );
     assert_eq!(
-        count_source_calls_in_function(&ir, "main", "hew_sink_close"),
+        count_source_calls_in_function(
+            &ir,
+            crate::ir_assertions::entry_body_symbol(&ir),
+            "hew_sink_close"
+        ),
         1,
         "main must contain exactly one source sink.close() call; elaborated \
          cleanup exits are mutually exclusive and covered by the scribble run"

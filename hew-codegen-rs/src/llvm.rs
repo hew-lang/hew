@@ -1740,7 +1740,8 @@ fn llvm_codegen_lock() -> &'static Mutex<()> {
 ///
 /// On non-macOS hosts the system default triple is returned unchanged.
 #[cfg(target_os = "macos")]
-fn native_emission_triple() -> String {
+#[must_use]
+pub fn native_emission_triple() -> String {
     let default = TargetMachine::get_default_triple();
     let default_str = default.as_str().to_string_lossy();
 
@@ -1763,7 +1764,8 @@ fn native_emission_triple() -> String {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn native_emission_triple() -> String {
+#[must_use]
+pub fn native_emission_triple() -> String {
     TargetMachine::get_default_triple()
         .as_str()
         .to_string_lossy()
@@ -33774,10 +33776,20 @@ fn declare_function<'ctx>(
         BasicTypeEnum::VectorType(v) => v.fn_type(&param_tys, false),
         BasicTypeEnum::ScalableVectorType(v) => v.fn_type(&param_tys, false),
     };
+    let wraps_native_entry = is_native_process_entry(func) && native_unwind_enabled(llvm_mod);
     let symbol_name = if emit_wasm_entry_alias && func.name == "main" {
-        "__original_main"
+        WASM_MAIN_BODY_SYMBOL
+    } else if wraps_native_entry {
+        NATIVE_MAIN_BODY_SYMBOL
     } else {
         &func.name
+    };
+    // The native entry body is reached only through the runtime's catch
+    // boundary, so it is not part of the module's external surface.
+    let linkage = if wraps_native_entry {
+        Some(Linkage::Internal)
+    } else {
+        linkage
     };
     let llvm_fn = llvm_mod.add_function(symbol_name, fn_ty, linkage);
     Ok(FnSymbol::Real {
@@ -33787,6 +33799,257 @@ fn declare_function<'ctx>(
         extern_record_ret: None,
         extern_malloc_string_ret: false,
     })
+}
+
+/// Whether this module's target lands a Hew unwind in LLVM cleanup pads.
+///
+/// One decision behind two things that must never disagree: the `invoke`
+/// cleanup edges that discharge drops while an exception travels, and the
+/// process-entry `catch_unwind` boundary that gives the exception somewhere to
+/// land ([`emit_native_main_unwind_wrapper`]). A target on the crash-owner
+/// registry instead keeps the boundary-free `hew_panic` exit.
+fn native_unwind_enabled(llvm_mod: &LlvmModule<'_>) -> bool {
+    let triple = llvm_mod
+        .get_triple()
+        .as_str()
+        .to_string_lossy()
+        .into_owned();
+    cleanup_capabilities_for_target(&triple).unwind_strategy
+        == CleanupUnwindStrategy::StructuredLlvm
+}
+
+/// Mark a function as carrying an unwind table.
+///
+/// A frame a foreign exception passes through must be walkable even when it has
+/// no cleanup of its own. Best-effort in the same sense as
+/// [`apply_optnone_for_debug`]: an LLVM build that does not expose the enum
+/// attribute leaves the function on the target's default, which is already
+/// unwind-table-emitting on every platform Hew ships an unwinding target for.
+fn apply_uwtable<'ctx>(ctx: &'ctx Context, func: inkwell::values::FunctionValue<'ctx>) {
+    use inkwell::attributes::{Attribute, AttributeLoc};
+    let kind_id = Attribute::get_named_enum_kind_id("uwtable");
+    if kind_id != 0 {
+        func.add_attribute(
+            AttributeLoc::Function,
+            ctx.create_enum_attribute(kind_id, 2),
+        );
+    }
+}
+
+/// Whether this MIR function is the module's process entry.
+///
+/// A function that merely shares the name while carrying the receive-handler
+/// dispatch parameter is a handler, not an entry, and keeps the plain `main`
+/// symbol.
+fn is_native_process_entry(func: &RawMirFunction) -> bool {
+    func.name == "main" && !is_receive_handler(func)
+}
+
+/// Internal symbol carrying the generated program entry on native targets.
+///
+/// The exported `main` is the wrapper emitted by
+/// [`emit_native_main_unwind_wrapper`]; this is the function it hands to the
+/// runtime's catch boundary.
+const NATIVE_MAIN_BODY_SYMBOL: &str = "__hew_main_body";
+
+/// Internal symbol carrying the generated program entry on wasm32.
+///
+/// The exported `main` there is the export wrapper emitted by
+/// [`emit_wasm_main_export_wrapper`].
+const WASM_MAIN_BODY_SYMBOL: &str = "__original_main";
+
+/// The symbol carrying the program entry's own body on a given target.
+///
+/// One authority for a name that three different renames can claim: wasm32
+/// renames the body for its export wrapper, a target whose unwind lands in LLVM
+/// cleanup pads renames it for the process-entry catch boundary
+/// (hew-lang/hew#3074), and everywhere else `main` is still the body itself.
+/// IR oracles that want the entry's own drops and calls must ask this rather
+/// than assume a name, or they read an empty wrapper - or nothing - on a target
+/// that renamed differently than they expected.
+pub fn entry_body_symbol_for_triple(triple: &str) -> &'static str {
+    if triple.starts_with("wasm32") {
+        WASM_MAIN_BODY_SYMBOL
+    } else if cleanup_capabilities_for_target(triple).unwind_strategy
+        == CleanupUnwindStrategy::StructuredLlvm
+    {
+        NATIVE_MAIN_BODY_SYMBOL
+    } else {
+        "main"
+    }
+}
+
+/// Adapter that calls the entry body on the boundary's behalf.
+///
+/// The boundary is one runtime function with one signature, while `main`'s
+/// arguments and result follow the source's. The adapter therefore takes a
+/// single pointer to a caller-allocated frame holding the arguments followed by
+/// the result slot, so no shape of `main` needs a different boundary.
+const NATIVE_MAIN_ENTRY_SYMBOL: &str = "__hew_main_entry";
+
+/// Emit the native `main` that runs the program beneath the runtime's
+/// `catch_unwind` boundary.
+///
+/// A `panic()` in main context is a controlled unwind, exactly as it is inside
+/// an actor: the platform unwinder needs a handler for phase-2 cleanup to run,
+/// and libc's process entry frame is not one. `main` therefore becomes a
+/// wrapper that hands [`NATIVE_MAIN_BODY_SYMBOL`] to `hew_main_unwind_boundary`
+/// through [`NATIVE_MAIN_ENTRY_SYMBOL`], and the boundary catches the typed
+/// unwind after every MIR-authored landing pad on the way out has discharged
+/// its drops. On the normal leg the wrapper passes its arguments through and
+/// returns exactly what the body returned, so nothing about a program that does
+/// not panic changes.
+fn emit_native_main_unwind_wrapper<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    fn_symbols: &FnSymbolMap<'ctx>,
+) -> CodegenResult<()> {
+    let Some(symbol) = fn_symbols.get("main").copied() else {
+        return Ok(());
+    };
+    let (body, _return_ty, _returns_unit) =
+        symbol.real("main", "emit_native_main_unwind_wrapper")?;
+    let body_ty = body.get_type();
+    let arg_tys: Vec<BasicTypeEnum<'ctx>> = body_ty
+        .get_param_types()
+        .into_iter()
+        .map(BasicTypeEnum::try_from)
+        .collect::<Result<_, _>>()
+        .map_err(|()| {
+            CodegenError::FailClosed("native entry parameter is not a basic type".into())
+        })?;
+    let body_return = body_ty.get_return_type();
+
+    // Frame layout: the entry's arguments, then its result slot.
+    let mut frame_fields: Vec<BasicTypeEnum<'ctx>> = arg_tys.clone();
+    if let Some(ret) = body_return {
+        frame_fields.push(ret);
+    }
+    let frame_ty = ctx.struct_type(&frame_fields, false);
+    let result_index = u32::try_from(arg_tys.len())
+        .map_err(|_| CodegenError::FailClosed("native entry has too many parameters".into()))?;
+
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let builder = ctx.create_builder();
+
+    // `void __hew_main_entry(ptr %frame)`.
+    let entry = llvm_mod.add_function(
+        NATIVE_MAIN_ENTRY_SYMBOL,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    );
+    // A Hew panic travels through this frame on its way to the boundary's
+    // handler, so the unwinder must be able to walk it. Neither the adapter nor
+    // the wrapper has a landing pad of its own, which is exactly the shape that
+    // would otherwise be emitted without an unwind table.
+    apply_uwtable(ctx, entry);
+    let entry_block = ctx.append_basic_block(entry, "entry");
+    builder.position_at_end(entry_block);
+    let frame = entry
+        .get_first_param()
+        .ok_or_else(|| CodegenError::Llvm("native entry adapter is missing its frame".into()))?
+        .into_pointer_value();
+    let mut call_args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(arg_tys.len());
+    for (index, arg_ty) in arg_tys.iter().enumerate() {
+        let index = u32::try_from(index)
+            .map_err(|_| CodegenError::FailClosed("native entry has too many parameters".into()))?;
+        let slot = builder
+            .build_struct_gep(frame_ty, frame, index, "__hew_main_arg_slot")
+            .llvm_ctx("native entry adapter argument slot")?;
+        let value = builder
+            .build_load(*arg_ty, slot, "__hew_main_arg")
+            .llvm_ctx("native entry adapter argument load")?;
+        call_args.push(value.into());
+    }
+    let call = builder
+        .build_call(body, &call_args, "__hew_main_body_call")
+        .llvm_ctx("native entry adapter call")?;
+    if body_return.is_some() {
+        let value = call.try_as_basic_value().basic().ok_or_else(|| {
+            CodegenError::FailClosed("native entry adapter call returned void".into())
+        })?;
+        let slot = builder
+            .build_struct_gep(frame_ty, frame, result_index, "__hew_main_result_slot")
+            .llvm_ctx("native entry adapter result slot")?;
+        builder
+            .build_store(slot, value)
+            .llvm_ctx("native entry adapter result store")?;
+    }
+    builder
+        .build_return(None)
+        .llvm_ctx("native entry adapter return")?;
+
+    // The exported entry: `main` builds the frame, runs the body through the
+    // boundary, and returns whatever landed in the result slot.
+    let boundary = llvm_mod
+        .get_function("hew_main_unwind_boundary")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function(
+                "hew_main_unwind_boundary",
+                ctx.void_type()
+                    .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    let wrapper = llvm_mod.add_function("main", body_ty, Some(Linkage::External));
+    apply_uwtable(ctx, wrapper);
+    let wrapper_block = ctx.append_basic_block(wrapper, "entry");
+    builder.position_at_end(wrapper_block);
+    let wrapper_frame = builder
+        .build_alloca(frame_ty, "__hew_main_frame")
+        .llvm_ctx("native main frame")?;
+    // The boundary never returns on the panic leg, so the result slot is only
+    // read after a normal body return - a defined initial value keeps the load
+    // well-formed regardless.
+    builder
+        .build_store(wrapper_frame, frame_ty.const_zero())
+        .llvm_ctx("native main frame init")?;
+    for index in 0..result_index {
+        let value = wrapper.get_nth_param(index).ok_or_else(|| {
+            CodegenError::Llvm("native main wrapper is missing a forwarded parameter".into())
+        })?;
+        let slot = builder
+            .build_struct_gep(frame_ty, wrapper_frame, index, "__hew_main_arg_slot")
+            .llvm_ctx("native main argument slot")?;
+        builder
+            .build_store(slot, value)
+            .llvm_ctx("native main argument store")?;
+    }
+    builder
+        .build_call(
+            boundary,
+            &[
+                entry.as_global_value().as_pointer_value().into(),
+                wrapper_frame.into(),
+            ],
+            "hew_main_unwind_boundary_call",
+        )
+        .llvm_ctx("native main boundary call")?;
+    match body_return {
+        None => {
+            builder
+                .build_return(None)
+                .llvm_ctx("native main wrapper return void")?;
+        }
+        Some(ret_ty) => {
+            let slot = builder
+                .build_struct_gep(
+                    frame_ty,
+                    wrapper_frame,
+                    result_index,
+                    "__hew_main_result_slot",
+                )
+                .llvm_ctx("native main result slot")?;
+            let value = builder
+                .build_load(ret_ty, slot, "__hew_main_result")
+                .llvm_ctx("native main result load")?;
+            builder
+                .build_return(Some(&value))
+                .llvm_ctx("native main wrapper return")?;
+        }
+    }
+
+    Ok(())
 }
 
 fn emit_wasm_main_export_wrapper<'ctx>(
@@ -37385,6 +37648,10 @@ fn build_module_for_target<'ctx>(
         .collect::<CodegenResult<HashMap<_, _>>>()?;
     if emit_wasm_entry_alias {
         emit_wasm_main_export_wrapper(ctx, &llvm_mod, &fn_symbols)?;
+    } else if native_unwind_enabled(&llvm_mod)
+        && pipeline.raw_mir.iter().any(is_native_process_entry)
+    {
+        emit_native_main_unwind_wrapper(ctx, &llvm_mod, &fn_symbols)?;
     }
     // W3.030 Stage 2 V13: verify every `ElabDrop { drop_fn: Some(_) }`
     // resolves to one of the two `DropDispatch` arms (runtime symbol or

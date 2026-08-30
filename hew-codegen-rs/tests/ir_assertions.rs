@@ -3,7 +3,9 @@
     reason = "this support module is shared by separate emission and structural test roots"
 )]
 
-use hew_codegen_rs::{cleanup_capabilities_for_target, CleanupUnwindStrategy};
+use hew_codegen_rs::{
+    cleanup_capabilities_for_target, entry_body_symbol_for_triple, CleanupUnwindStrategy,
+};
 use std::path::Path;
 
 pub(crate) fn read_llvm_ir(path: &Path) -> String {
@@ -14,15 +16,26 @@ pub(crate) fn read_llvm_ir(path: &Path) -> String {
         .replace("\r\n", "\n")
 }
 
-pub(crate) fn cleanup_strategy(ir: &str) -> CleanupUnwindStrategy {
-    let triple = ir
-        .lines()
+fn module_triple(ir: &str) -> &str {
+    ir.lines()
         .find_map(|line| {
             line.strip_prefix("target triple = \"")
                 .and_then(|value| value.strip_suffix('"'))
         })
-        .unwrap_or_else(|| panic!("emitted LLVM IR must declare its target triple:\n{ir}"));
-    cleanup_capabilities_for_target(triple).unwind_strategy
+        .unwrap_or_else(|| panic!("emitted LLVM IR must declare its target triple:\n{ir}"))
+}
+
+pub(crate) fn cleanup_strategy(ir: &str) -> CleanupUnwindStrategy {
+    cleanup_capabilities_for_target(module_triple(ir)).unwind_strategy
+}
+
+/// The symbol carrying the entry's own body in this module.
+///
+/// The name depends on the target: wasm32 and the structured-unwind natives
+/// each rename the body for their own entry wrapper, so an oracle scoped to the
+/// entry must ask codegen's authority rather than assume `@main`.
+pub(crate) fn entry_body_symbol(ir: &str) -> &'static str {
+    entry_body_symbol_for_triple(module_triple(ir))
 }
 
 pub(crate) fn call_pattern(strategy: CleanupUnwindStrategy, signature: &str) -> String {

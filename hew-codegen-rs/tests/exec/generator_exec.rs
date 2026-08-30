@@ -325,20 +325,22 @@ fn emit_llvm_ir(repo: &Path, stem: &str, source: &str) -> String {
 }
 
 /// Count direct `call void @<symbol>(` sites for a release symbol in the
-/// `main` function body of emitted LLVM IR. The duplicate-free regression
+/// program entry's own body in emitted LLVM IR. The duplicate-free regression
 /// (Defect 1) is invisible to a presence oracle (`contains`) because the
 /// second free is masked by a runtime null-guard — only the COUNT of emitted
-/// call sites distinguishes exactly-once from a double-free. Scoped to `@main`
-/// so the per-symbol release helper thunks (e.g. the tuple drop thunk's own
-/// single call) are counted via `count_release_calls_in_module` instead.
+/// call sites distinguishes exactly-once from a double-free. Scoped to the
+/// entry body — whose symbol depends on the target's entry wrapper — so the
+/// per-symbol release helper thunks (e.g. the tuple drop thunk's own single
+/// call) are counted via `count_release_calls_in_module` instead.
 fn count_main_release_calls(ir: &str, symbol: &str) -> usize {
+    let entry_define = format!("@{}(", crate::ir_assertions::entry_body_symbol(ir));
     let needle = format!("call void @{symbol}(");
     let mut in_main = false;
     let mut count = 0;
     let mut block_count = 0;
     let mut excluded_block = false;
     for line in ir.lines() {
-        if line.starts_with("define ") && line.contains("@main(") {
+        if line.starts_with("define ") && line.contains(&entry_define) {
             in_main = true;
             continue;
         }

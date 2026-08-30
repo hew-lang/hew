@@ -72,8 +72,23 @@ pub(crate) fn stub_actor() -> HewActor {
 }
 
 /// Distinct ids for stub actors so tests sharing a registry cannot collide.
+///
+/// The live-actor registry is keyed by actor id, and `track_actor` REFUSES a
+/// duplicate. A test that installs a stub alongside really-spawned actors (a
+/// supervisor tree, say) therefore has to keep the two id spaces apart: the
+/// spawn allocator counts up from 1, so a stub counter that also starts at 1
+/// collides as soon as both appear in one test.
+///
+/// SHORTCUT: the separation is a disjoint high base rather than a shared
+/// allocator. WHY: the production allocator needs an installed runtime, and
+/// stubs are built before one exists in several tests. WHEN OBSOLETE: if stub
+/// construction ever runs only under an installed runtime, take ids from
+/// `crate::pid::next_actor_id` and delete the base. WHAT THE REAL FIX IS: one
+/// id allocator for every tracked actor, stub or spawned.
+const STUB_ACTOR_ID_BASE: u64 = 1 << 40;
+
 fn next_stub_actor_id() -> u64 {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    static NEXT_ID: AtomicU64 = AtomicU64::new(STUB_ACTOR_ID_BASE);
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 

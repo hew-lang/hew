@@ -5824,6 +5824,11 @@ fn neutralize_divergent_selection_sources(
     if candidate_locals.is_empty() {
         return;
     }
+    // One successor map and one reachability answer per selection site. The
+    // read-after-site proof runs for every candidate move, and rebuilding the
+    // successor map per proof made the pass quadratic in block count.
+    let successors = cfg_util::successors_by_id(blocks);
+    let mut reach_by_site: HashMap<u32, HashSet<u32>> = HashMap::new();
 
     // A transfer is CONDITIONAL when its block does not dominate every return
     // exit: some path reaches an exit WITHOUT executing the move, and on that
@@ -5881,12 +5886,16 @@ fn neutralize_divergent_selection_sources(
             ) else {
                 continue;
             };
+            let reachable = reach_by_site
+                .entry(site_block)
+                .or_insert_with(|| cfg_util::reachable_from(&successors, site_block));
             let read_after = local_read_after_site(
                 blocks,
                 &builder.suspend_kinds,
                 owned_local,
                 site_block,
                 site_index,
+                reachable,
             );
             let already =
                 source_slot_already_neutralized(blocks, site_block, site_index, owned_local);
@@ -6311,8 +6320,8 @@ fn local_read_after_site(
     local: u32,
     site_block: u32,
     site_index: usize,
+    reachable: &HashSet<u32>,
 ) -> bool {
-    let reachable = cfg_util::blocks_reachable_from(blocks, site_block);
     let site_on_cycle = reachable.contains(&site_block);
     let reads = |place: Place| base_local(place) == Some(local);
     for block in blocks {
@@ -8243,6 +8252,17 @@ fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut
         }
     }
     let dominators = block_dominators(blocks);
+    // One successor map and one reachability answer per transfer block, shared
+    // by every exit and candidate that asks about it. Recomputing reachability
+    // inside the exit-by-candidate-by-transfer loop rebuilt the successor map
+    // for each question.
+    let successors = cfg_util::successors_by_id(blocks);
+    let mut reach_by_transfer: HashMap<u32, HashSet<u32>> = HashMap::new();
+    for transfer in transfer_blocks.values().flatten().copied() {
+        reach_by_transfer
+            .entry(transfer)
+            .or_insert_with(|| cfg_util::reachable_from(&successors, transfer));
+    }
     let mut inserts = Vec::new();
     for block in blocks
         .iter()
@@ -8264,7 +8284,9 @@ fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut
             }
             let transfer_can_reach_exit = transfers.iter().any(|transfer| {
                 *transfer == block.id
-                    || cfg_util::blocks_reachable_from(blocks, *transfer).contains(&block.id)
+                    || reach_by_transfer
+                        .get(transfer)
+                        .is_some_and(|reach| reach.contains(&block.id))
             });
             if transfer_can_reach_exit {
                 continue;

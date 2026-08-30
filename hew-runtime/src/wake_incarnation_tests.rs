@@ -21,17 +21,18 @@
 
 use std::ptr;
 
+use crate::lifetime::live_actors;
 use crate::scheduler::NoWorkerSchedulerForTest;
-use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
+use crate::test_actor::{assert_not_woken, assert_woken, ReplacementIdentity, TrackedTestActor};
 
 // ── timer / deadline (await_cancel) ──────────────────────────────────────────
 
 /// Register the shared deadline arbiter against a parked actor, then fire the
 /// timeout arm.
 ///
-/// `reincarnate` decides whether the registering incarnation dies (and has its
-/// address reused) before the timer fires.
-fn run_timer_family(reincarnate: bool) {
+/// `replacement` decides whether the registering incarnation dies before the
+/// timer fires, and under which identity its address comes back.
+fn run_timer_family(replacement: Option<ReplacementIdentity>) {
     use crate::await_cancel::{
         hew_await_cancel_cancel, hew_await_cancel_free, hew_await_cancel_new, AwaitCancelStatus,
     };
@@ -43,8 +44,36 @@ fn run_timer_family(reincarnate: bool) {
     // of it.
     let reg = unsafe { hew_await_cancel_new(victim.ptr(), None, ptr::null_mut()) };
 
-    if reincarnate {
-        victim.reincarnate_parked();
+    let reincarnate = replacement.is_some();
+    match replacement {
+        Some(ReplacementIdentity::Fresh) => {
+            victim.reincarnate_parked();
+        }
+        Some(ReplacementIdentity::SameIdNewSerial) => {
+            let dead = victim.incarnation();
+            let reborn = victim.reincarnate_parked_reusing_id();
+            // Pin the mechanism, not just the outcome. The replacement answers
+            // to the same actor ID, so the resolver's ID lookup SUCCEEDS here
+            // and only the serial comparison can refuse the dead incarnation's
+            // wake. Without these two lines the test would still pass with the
+            // serial comparison deleted, exactly like the fresh-identity
+            // negatives.
+            assert_eq!(
+                dead.actor_id(),
+                reborn.actor_id(),
+                "the replacement must reuse the dead incarnation's id"
+            );
+            assert!(
+                live_actors::with_live_incarnation(reborn, |_| ()).is_some(),
+                "the reused id must resolve to the live replacement"
+            );
+            assert!(
+                live_actors::with_live_incarnation(dead, |_| ()).is_none(),
+                "the serial comparison must refuse an incarnation that shares \
+                 its id with a live actor"
+            );
+        }
+        None => {}
     }
 
     // The timer wheel's deadline arm: settle the wait as TimedOut and wake.
@@ -69,12 +98,24 @@ fn run_timer_family(reincarnate: bool) {
 
 #[test]
 fn timer_wake_does_not_resume_a_reused_address() {
-    run_timer_family(true);
+    run_timer_family(Some(ReplacementIdentity::Fresh));
+}
+
+/// The serial half of the identity, on its own.
+///
+/// Every other negative here reincarnates under a fresh actor ID, so the
+/// resolver refuses at the ID lookup and the serial comparison in
+/// `with_actor_send_by_identity` is never reached - deleting that comparison
+/// would leave them all green. This replacement keeps the dead incarnation's
+/// ID, so the lookup succeeds and only the serial can refuse the wake.
+#[test]
+fn timer_wake_does_not_resume_a_reused_id_under_a_new_serial() {
+    run_timer_family(Some(ReplacementIdentity::SameIdNewSerial));
 }
 
 #[test]
 fn timer_wake_resumes_the_registering_incarnation() {
-    run_timer_family(false);
+    run_timer_family(None);
 }
 
 // ── channel (typed stream pipe) ──────────────────────────────────────────────

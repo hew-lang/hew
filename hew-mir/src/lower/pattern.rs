@@ -4820,6 +4820,14 @@ impl Builder {
         self.suppress_typed_produced_owner_sites
             .remove(&scrutinee.site);
         let scrutinee_place = scrutinee_place?;
+        // An unguarded match that binds a payload out of an inline field
+        // projection takes ownership of that field: the arm binder is minted a
+        // scope-exit owner, so the root aggregate must not also release it.
+        if arms.iter().all(|arm| arm.guard.is_none())
+            && arms.iter().any(|arm| !arm.bindings.is_empty())
+        {
+            self.publish_consuming_match_projection(scrutinee);
+        }
         let scrutinee_local = match scrutinee_place {
             Place::Local(n) => n,
             other => {

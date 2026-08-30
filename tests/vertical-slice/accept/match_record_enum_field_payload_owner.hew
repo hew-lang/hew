@@ -1,0 +1,45 @@
+// A payload bound out of an inline enum FIELD of a live record is the sole
+// owner of that field's heap. The record must not release it a second time
+// (the `Arena<Vec<T>>::remove` invalid free, #3090), the payload must stay
+// readable after the record it came from goes out of scope, and the record's
+// other owned field must still be released exactly once.
+type Pair {
+    other: Vec<i64>;
+    value: Option<Vec<i64>>;
+}
+
+// The payload escapes past the record's scope exit: `p` is dropped on return,
+// so a surviving root-generation drop would free the returned buffer.
+fn take() -> Vec<i64> {
+    let p = Pair { other: [7, 8], value: Some([1, 2, 3]) };
+    match p.value {
+        .Some(v) => v,
+        .None => [],
+    }
+}
+
+// The vacant arm hands out no payload, so the record keeps both its fields
+// and must still release them without touching the returned literal.
+fn take_vacant() -> Vec<i64> {
+    let p = Pair { other: [4, 5, 6], value: None };
+    match p.value {
+        .Some(v) => v,
+        .None => [],
+    }
+}
+
+fn main() {
+    let taken = take();
+    println(taken.len());
+    println(taken[2]);
+    println(take_vacant().len());
+
+    // Reading the payload interiorly, with the record still live, must leave
+    // the record owning both fields.
+    let p = Pair { other: [7, 8], value: Some([1, 2]) };
+    match p.value {
+        .Some(v) => println(v[0] + v[1]),
+        .None => println("none"),
+    }
+    println(p.other[0] + p.other[1]);
+}

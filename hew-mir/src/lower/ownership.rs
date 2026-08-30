@@ -3390,6 +3390,77 @@ impl Builder {
         self.publish_projection_source_transfer(value);
     }
 
+    /// Publish the aggregate source handoff when an unguarded consuming match
+    /// destructures an inline (`ByteCopyAlias`) field projection.
+    ///
+    /// `match slot.value { .Some(v) => ... }` loads the inline
+    /// enum/record field by byte copy - no retain - and then moves the active
+    /// payload into the arm binder, which
+    /// [`Builder::register_owned_local`] mints a scope-exit owner for
+    /// (`scrutinee_payload_owner_bindings`). Without this transfer the root
+    /// aggregate's generation still reaches its terminal recursive drop and
+    /// releases the same heap the binder now owns - the `Arena<Vec<T>>::remove`
+    /// double free. Ending the root generation here leaves the binder the sole
+    /// owner; the root's remaining owned fields are discharged by the escaped-
+    /// sibling field splice, so the handoff does not leak them.
+    pub(crate) fn publish_consuming_match_projection(&mut self, value: &HirExpr) {
+        // A PROJECTION only. `projection_root_binding` also resolves a bare
+        // `BindingRef`, so without this the transfer would fire for
+        // `match r { .. }` over a whole local and end the generation of a
+        // scrutinee that was never projected out of - the call-carrier and
+        // let-bound scrutinee releases depend on that generation surviving.
+        if !matches!(
+            value.kind,
+            HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
+        ) {
+            return;
+        }
+        if self.classify_field_load(&value.ty) != Some(FieldLoadClass::ByteCopyAlias) {
+            return;
+        }
+        if !self.projected_enum_payload_is_handle_transfer(&value.ty) {
+            return;
+        }
+        self.publish_projection_source_transfer(value);
+    }
+
+    /// True when the inline enum type `ty` carries a payload the destructure
+    /// hands over as a bare heap handle - a `Vec` / `HashMap` / `HashSet` /
+    /// generator / indirect-enum node leaf.
+    ///
+    /// This is what separates the handoff from the retain. A `string` or
+    /// `bytes` payload is copy-on-write: the binder takes a balanced `+1` of its own
+    /// (`FieldLoadClass::Retained`), so the parent aggregate keeps its cleanup
+    /// and suppressing it would leak the parent's other fields. A handle
+    /// payload has no retain, so the binder and the parent would otherwise
+    /// both release it.
+    ///
+    /// SHORTCUT - WHY: only a DIRECT handle payload is proven here. A payload
+    /// that is itself an aggregate owning a handle (`Option<Inner>` where
+    /// `Inner` holds a `Vec`) classifies `ByteCopyAlias` and answers `false`,
+    /// so it keeps today's competing release (#3168). Widening it needs a
+    /// transfer authority for the nested aggregate, not just its root, which
+    /// is more than the reported class asks for. WHEN OBSOLETE: once a nested
+    /// aggregate payload carries its own handoff authority. WHAT: recurse this
+    /// classification through `ByteCopyAlias` payloads and publish the
+    /// transfer for the exact nested leaf rather than the root generation.
+    fn projected_enum_payload_is_handle_transfer(&self, ty: &ResolvedTy) -> bool {
+        let subst = self.subst_ty(ty);
+        let ResolvedTy::Named { name, args, .. } = &subst else {
+            return false;
+        };
+        let Some(layout) = crate::model::find_enum_layout(name, args, &self.enum_layouts) else {
+            return false;
+        };
+        layout
+            .variants
+            .iter()
+            .flat_map(|variant| variant.field_tys.iter())
+            .any(|field_ty| {
+                self.classify_field_load(field_ty) == Some(FieldLoadClass::HandleTransfer)
+            })
+    }
+
     fn publish_projection_source_transfer(&mut self, value: &HirExpr) {
         let Some(root_binding) = Self::projection_root_binding(value) else {
             return;

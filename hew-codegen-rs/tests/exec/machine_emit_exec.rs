@@ -314,7 +314,7 @@ fn machine_emit_placeholder_lowers_to_push_call() {
 /// 3. Create an MCJIT `ExecutionEngine`, which resolves the module's `hew_*`
 ///    references against the runtime linked into this test binary through the
 ///    binary's own dynamic symbol table. `hew-codegen-rs/build.rs` is what
-///    makes that table complete on ELF; see its
+///    makes that table complete, on ELF and on Mach-O alike; see its
 ///    `export_runtime_symbols_to_jit_hosts` for why.
 /// 4. Check every referenced declaration resolves, so a symbol the JIT cannot
 ///    find fails by name rather than as a bare SIGSEGV.
@@ -328,10 +328,10 @@ fn machine_emit_placeholder_lowers_to_push_call() {
 /// This test is NOT `#[ignore]`d, unlike the MCJIT execution tests that were
 /// removed alongside it. Those hand-listed a few symbols through
 /// `add_global_mapping` and left every other reference to the engine's
-/// process-symbol resolver, which on ELF saw nothing and left the relocation
-/// at address 0. Step 3 removes the hand-list, so the set of symbols the JIT
-/// can see is the set the binary actually links, and step 4 makes any
-/// remaining gap a named failure.
+/// process-symbol resolver, which saw nothing on either platform and left the
+/// relocation at address 0. Step 3 removes the hand-list, so the set of
+/// symbols the JIT can see is the set the binary actually links, and step 4
+/// makes any remaining gap a named failure.
 #[test]
 #[cfg(unix)]
 fn machine_emit_push_populates_thread_queue_in_fifo_order() {

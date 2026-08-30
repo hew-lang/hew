@@ -32,22 +32,27 @@ fn main() {
 ///
 /// The `exec` tests JIT-compile an emitted module and call it in-process, so
 /// MCJIT has to resolve the module's `hew_*` runtime references back to the
-/// runtime linked into the test binary. Mach-O puts every global symbol in the
-/// dynamic symbol table, so the JIT's process-symbol resolver finds them and
-/// the same test passes on macOS. ELF exports nothing from an executable
-/// unless the link asks, so on Linux that resolver found nothing, MCJIT left
-/// the relocation at address 0, and the JIT-compiled call dereferenced null -
-/// a bare SIGSEGV with no diagnostic.
+/// runtime linked into the test binary. No executable format exports those
+/// symbols on its own: ELF puts nothing from an executable in the dynamic
+/// symbol table unless the link asks, and Mach-O only writes an export trie
+/// for an executable when the link asks. Without that, the JIT's
+/// process-symbol resolver finds nothing, MCJIT leaves the relocation at
+/// address 0, and the JIT-compiled call dereferences null - a bare SIGSEGV
+/// with no diagnostic.
 ///
-/// `--export-dynamic` gives ELF the same property, which makes the test
-/// binary's own dynamic symbol table the single authority for which runtime
-/// symbols a JIT-executed test can see, on both platforms.
+/// Asking for it on each platform makes the test binary's own dynamic symbol
+/// table the single authority for which runtime symbols a JIT-executed test
+/// can see. The spellings differ: GNU/BSD ld takes `--export-dynamic`, ld64
+/// takes `-export_dynamic`.
 fn export_runtime_symbols_to_jit_hosts() {
     // Windows resolves JIT symbols from the PE export table and has no
     // equivalent flag; the JIT exec tests are `#[cfg(unix)]` anyway.
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        println!("cargo:rustc-link-arg-tests=-Wl,--export-dynamic");
-    }
+    let flag = match env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("macos") => "-Wl,-export_dynamic",
+        Ok("linux") | Ok("freebsd") => "-Wl,--export-dynamic",
+        _ => return,
+    };
+    println!("cargo:rustc-link-arg-tests={flag}");
 }
 
 /// The `llvm-config` llvm-sys itself used, threaded through Cargo's

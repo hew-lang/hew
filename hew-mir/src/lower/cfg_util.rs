@@ -172,6 +172,21 @@ pub(super) fn successors_by_id(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> 
         .collect()
 }
 
+/// Block ids that lie on a cycle: a block reachable from its own successors,
+/// so its instructions re-execute for a second dynamic generation.
+///
+/// One successor map serves every block. Asking `blocks_reachable_from` per
+/// block rebuilt that map for each question, which made the whole answer
+/// quadratic in block count before any traversal.
+pub(super) fn blocks_on_a_cycle(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let successors = successors_by_id(blocks);
+    blocks
+        .iter()
+        .map(|block| block.id)
+        .filter(|id| reachable_from(&successors, *id).contains(id))
+        .collect()
+}
+
 /// Block ids transitively reachable FROM `start` over `successors`; `start`
 /// itself appears only when a cycle re-enters it.
 pub(super) fn reachable_from(successors: &HashMap<u32, Vec<u32>>, start: u32) -> HashSet<u32> {

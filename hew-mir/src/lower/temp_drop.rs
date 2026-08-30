@@ -939,6 +939,7 @@ pub(super) fn corroborated_retained_string_move_sites(
     blocks: &[BasicBlock],
     local_tys: &[ResolvedTy],
 ) -> HashSet<(u32, usize)> {
+    let _timing = crate::timing::stage("corroborated_retained_string_move_sites");
     let mut write_counts: HashMap<u32, usize> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
@@ -956,11 +957,7 @@ pub(super) fn corroborated_retained_string_move_sites(
         }
     }
 
-    let cyclic_blocks: HashSet<u32> = blocks
-        .iter()
-        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
-        .map(|block| block.id)
-        .collect();
+    let cyclic_blocks: HashSet<u32> = crate::lower::cfg_util::blocks_on_a_cycle(blocks);
     let mut sites = HashSet::new();
     for block in blocks {
         // A `FreshShare`-marked retain + move pair is admitted even on a
@@ -3818,6 +3815,7 @@ fn compute_projection_alias_taint_impl(
 /// load. The destination is then the sole owner of those bits, not an interior
 /// alias of the aggregate root.
 pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let _timing = crate::timing::stage("aggregate_projection_transfer_dests");
     // Projection paths are nested, not sibling field sets. Build the inverse
     // edge map produced by the actual Record/TupleFieldLoad chain so each
     // neutralize authority can be corroborated backwards from its recorded
@@ -8456,6 +8454,7 @@ pub(super) fn corroborated_retained_bytes_move_sites(
     blocks: &[BasicBlock],
     local_tys: &[ResolvedTy],
 ) -> HashSet<(u32, usize)> {
+    let _timing = crate::timing::stage("corroborated_retained_bytes_move_sites");
     let mut write_counts: HashMap<u32, usize> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
@@ -8472,11 +8471,7 @@ pub(super) fn corroborated_retained_bytes_move_sites(
         }
     }
 
-    let cyclic_blocks: HashSet<u32> = blocks
-        .iter()
-        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
-        .map(|block| block.id)
-        .collect();
+    let cyclic_blocks: HashSet<u32> = crate::lower::cfg_util::blocks_on_a_cycle(blocks);
     let mut sites = HashSet::new();
     for block in blocks {
         if cyclic_blocks.contains(&block.id) {

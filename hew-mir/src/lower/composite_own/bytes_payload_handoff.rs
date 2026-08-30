@@ -1,6 +1,6 @@
 use super::{
-    base_local, blocks_reachable_from, bytes_place_is_typed, BasicBlock, BindingId, HashMap,
-    HashSet, Instr, Place, ResolvedTy,
+    base_local, bytes_place_is_typed, BasicBlock, BindingId, HashMap, HashSet, Instr, Place,
+    ResolvedTy,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,11 +30,7 @@ fn local_static_write_counts(blocks: &[BasicBlock]) -> HashMap<u32, usize> {
 }
 
 fn cyclic_block_ids(blocks: &[BasicBlock]) -> HashSet<u32> {
-    blocks
-        .iter()
-        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
-        .map(|block| block.id)
-        .collect()
+    crate::lower::cfg_util::blocks_on_a_cycle(blocks)
 }
 
 /// Raw bytes-payload shares for which the bytes prover may mint one retained

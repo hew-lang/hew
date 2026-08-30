@@ -2647,13 +2647,27 @@ if [[ "$(cat "${stdout_output}")" != $'worker got payload: \ndone' ]]; then
 fi
 echo "KNOWN actor_nested_handle_tuple_transfer (#3127: actor message loses the nested string payload)"
 
-# Accept + run: the minimal shape behind the empty payload the tuple-transfer
-# fixture above reports. A `match` whose scrutinee is a channel `recv()` mints
-# no `__hew_call_scrutinee` owner, so the arm binder's drop canonicalizes onto
-# the match result and releases the string the match just produced. The second
-# half binds the carrier to a local first - that shape mints the owner and is
-# the negative control.
-run_accept_expect_stdout "channel_recv_match_result_survives"
+# The minimal shape behind the empty payload the tuple-transfer fixture above
+# reports: no actor and no tuple. A `match` whose scrutinee is a channel
+# `recv()` mints no `__hew_call_scrutinee` owner, so the arm binder's drop
+# canonicalizes onto the match result and releases the string the match just
+# produced. The second half binds the carrier to a local first - that shape
+# mints the owner and is the negative control, so it must keep printing its
+# payload while the direct match does not. Same shrink-only ratchet as
+# `actor_nested_handle_tuple_transfer` above: it admits exactly the current
+# failure and rejects anything else, including the fix.
+run_accept_expect_status "channel_recv_match_result_survives" 0
+if diff -u "${ROOT}/tests/vertical-slice/accept/channel_recv_match_result_survives.expected" \
+    "${stdout_output}" >/dev/null; then
+    echo "channel_recv_match_result_survives: #3127 is fixed; remove this known-failure ratchet" >&2
+    exit 1
+fi
+if [[ "$(cat "${stdout_output}")" != $'direct: []\nvia local: [via local]' ]]; then
+    echo "channel_recv_match_result_survives: #3127 changed from the exact empty-payload failure" >&2
+    cat "${stdout_output}" >&2
+    exit 1
+fi
+echo "KNOWN channel_recv_match_result_survives (#3127: match on an intercepted recv drops its payload)"
 
 # Accept + run: user records named `Sender` and `Receiver` are not builtin
 # channel handles. They must keep ordinary actor-send treatment and emit CBOR

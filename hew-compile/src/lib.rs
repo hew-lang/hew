@@ -135,6 +135,13 @@ impl Session {
     }
 
     /// Lower already verified HIR through the complete build check set.
+    ///
+    /// The MIR lowering below runs unconditionally for every host: it is the
+    /// one pipeline every `Session` produces, which is what keeps wasm and
+    /// native lint output identical. The native LLVM backend-front check
+    /// (`check_pipeline`) layers on top of that when the `codegen` feature is
+    /// compiled in; hosts that build without it (hew-wasm) still get the
+    /// exact same pipeline, just without a codegen verdict they never read.
     #[must_use]
     pub fn lower_hir_module(
         &self,
@@ -143,9 +150,11 @@ impl Session {
     ) -> SessionOutput {
         let mut pipeline = hew_mir::lower_hir_module_with_facts(module, self.target.pointer_width);
         pipeline.attach_lowering_facts(tco);
+        #[cfg(feature = "codegen")]
         let codegen_error = self.check_pipeline(&pipeline);
         SessionOutput {
             pipeline,
+            #[cfg(feature = "codegen")]
             codegen_error,
         }
     }
@@ -164,6 +173,7 @@ impl Session {
         hew_mir::lower_entry_component(module)
     }
 
+    #[cfg(feature = "codegen")]
     #[must_use]
     pub fn check_pipeline(
         &self,
@@ -182,6 +192,7 @@ impl Session {
 #[derive(Debug)]
 pub struct SessionOutput {
     pub pipeline: hew_mir::IrPipeline,
+    #[cfg(feature = "codegen")]
     pub codegen_error: Option<hew_codegen_rs::CodegenError>,
 }
 
@@ -2739,6 +2750,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "codegen")]
     #[test]
     fn remote_pid_lookup_annotation_reaches_mir_with_its_builtin_carrier() {
         let dir = tempfile::tempdir().expect("create temp dir");

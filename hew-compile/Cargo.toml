@@ -15,7 +15,7 @@ hew-lexer = { path = "../hew-lexer" }
 hew-hir = { path = "../hew-hir" }
 hew-mir = { path = "../hew-mir" }
 hew-sir = { path = "../hew-sir" }
-hew-codegen-rs = { path = "../hew-codegen-rs" }
+hew-codegen-rs = { path = "../hew-codegen-rs", optional = true }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
@@ -24,6 +24,19 @@ toml.workspace = true
 [dev-dependencies]
 hew-types = { path = "../hew-types", features = ["test"] }
 tempfile.workspace = true
+
+[features]
+default = ["codegen"]
+# Native LLVM backend-front verification (`Session::check_pipeline`). Off by
+# default for browser-hosted consumers (hew-wasm) that only need the MIR
+# pipeline for lints and never touch a codegen result -- WHY: linking
+# hew-codegen-rs pulls in inkwell/llvm-sys, which needs system LLVM to even
+# compile. WHEN this can go away: never as a default off-switch, but if
+# hew-codegen-rs itself drops native LLVM the split is moot. WHAT the real
+# boundary is: hew-wasm is documented analysis-only (no native codegen), so
+# this feature keeps that boundary honest at the dependency graph level while
+# `Session` and its MIR lowering stay the single authority every host shares.
+codegen = ["dep:hew-codegen-rs"]
 
 [lints]
 workspace = true

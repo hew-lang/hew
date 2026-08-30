@@ -594,6 +594,112 @@ pub(super) fn finalize_string_local_share_intents(
     }
 }
 
+/// Mint the destination's `+1` for a `let next = current` **bytes** copy at the
+/// same phase the string spine uses.
+///
+/// A bytes let-share reaches this point as an adjacent `Mint(dest); Move(dest,
+/// source)` pair. `canonicalize_preminted_move_adoptions` reads that adjacency
+/// as an adoption and rewrites it into `Move; Transfer(source -> dest owner)`,
+/// which ends the SOURCE binding's generation: the replay then sees no owner
+/// for it at the lexical close, `materialize_explicit_scope_exits` publishes no
+/// release, and the source's reference is dropped on no normal path at all.
+/// The string spine avoids that by splicing its retain between the two
+/// instructions here, before the canonicalizer runs; this is the same
+/// operation for bytes, so every downstream scanner sees one authority on the
+/// same terms.
+///
+/// A proven function-wide last use (unique move in the entry block with no
+/// later read) is a genuine handoff and mints nothing: the existing bytes
+/// handoff machinery in `finalize_bytes_ownership` remains its only authority.
+pub(super) fn finalize_bytes_local_share_intents(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidates: Vec<(BindingId, BindingId)> =
+        builder.bytes_local_share_sites.values().copied().collect();
+
+    let mut retained_moves = Vec::new();
+    for (source_binding, dest_binding) in candidates {
+        let Some(source_local) = builder
+            .binding_locals
+            .get(&source_binding)
+            .and_then(|place| base_local(*place))
+        else {
+            continue;
+        };
+        let Some(dest_local) = builder
+            .binding_locals
+            .get(&dest_binding)
+            .and_then(|place| base_local(*place))
+        else {
+            continue;
+        };
+        if source_local == dest_local {
+            continue;
+        }
+
+        let move_sites: Vec<(u32, usize)> = blocks
+            .iter()
+            .flat_map(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(index, instr)| {
+                        matches!(
+                            instr,
+                            Instr::Move {
+                                dest: Place::Local(dl),
+                                src: Place::Local(sl),
+                            } if *dl == dest_local && *sl == source_local
+                        )
+                        .then_some((block.id, index))
+                    })
+            })
+            .collect();
+        let [(move_block, move_index)] = move_sites.as_slice() else {
+            // Ambiguous lowering keeps the pre-existing derivation authority.
+            continue;
+        };
+        if blocks.first().map(|block| block.id) == Some(*move_block)
+            && !local_is_used_after(
+                blocks,
+                &builder.suspend_kinds,
+                source_local,
+                *move_block,
+                *move_index,
+            )
+        {
+            // Function-wide last use: a genuine handoff, not a co-own share.
+            continue;
+        }
+        retained_moves.push((*move_block, *move_index, Place::Local(source_local)));
+    }
+
+    // Insert in reverse program order so earlier recorded instruction indices
+    // remain stable.
+    retained_moves.sort_unstable_by_key(|(block, index, _)| (*block, *index));
+    retained_moves.dedup();
+    for (block_id, move_index, source) in retained_moves.into_iter().rev() {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        if move_index > 0
+            && matches!(
+                block.instructions.get(move_index - 1),
+                Some(Instr::BytesRetain { value }) if *value == source
+            )
+        {
+            continue;
+        }
+        block
+            .instructions
+            .insert(move_index, Instr::BytesRetain { value: source });
+        super::shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block_id,
+            u32::try_from(move_index).unwrap_or(u32::MAX),
+        );
+    }
+}
+
 /// Aggregate-ingress retain sites known before retain instructions are spliced
 /// into raw MIR. The escaped-projection sibling pass runs at this earlier
 /// phase, so it consumes this view instead of attempting to rediscover the

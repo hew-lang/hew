@@ -902,7 +902,7 @@ impl Builder {
         // this edge — the retained binding and the original each release
         // their own count.
         if self.string_local_share_sites.contains_key(&expr.site)
-            || self.bytes_local_share_sites.contains(&expr.site)
+            || self.bytes_local_share_sites.contains_key(&expr.site)
         {
             return value;
         }

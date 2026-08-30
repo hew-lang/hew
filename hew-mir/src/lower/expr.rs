@@ -1549,10 +1549,15 @@ impl Builder {
                 };
                 self.pending_closure_literal_suspends = None;
                 self.pending_closure_literal_heap = None;
-                if matches!(binding_ty, ResolvedTy::Bytes)
-                    && matches!(value.kind, HirExprKind::BindingRef { .. })
-                {
-                    self.bytes_local_share_sites.insert(value.site);
+                if matches!(binding_ty, ResolvedTy::Bytes) {
+                    if let HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(source),
+                        ..
+                    } = value.kind
+                    {
+                        self.bytes_local_share_sites
+                            .insert(value.site, (source, binding.id));
+                    }
                 }
                 if matches!(binding_ty, ResolvedTy::String) {
                     if let HirExprKind::BindingRef {

@@ -25,7 +25,7 @@ impl Builder {
         {
             IntentKind::Consume
         } else if self.param_ownership.borrow_arg_sites.contains(&expr.site)
-            || self.bytes_local_share_sites.contains(&expr.site)
+            || self.bytes_local_share_sites.contains_key(&expr.site)
             || self.string_local_share_sites.contains_key(&expr.site)
         {
             IntentKind::Read

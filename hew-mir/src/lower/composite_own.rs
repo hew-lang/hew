@@ -1676,6 +1676,18 @@ pub(super) fn derive_local_bytes_drop_allowed(
             if payload_handoff_sites.contains_key(&(block.id, instr_index)) {
                 continue;
             }
+            // The local-share spine already minted this move's `+1` at the
+            // pre-dataflow splice (`finalize_bytes_local_share_intents`), which
+            // is the single authority for a `let next = current` co-own share.
+            // Minting a second one here would leave one reference unreleased.
+            if instr_index > 0
+                && matches!(
+                    block.instructions.get(instr_index - 1),
+                    Some(Instr::BytesRetain { value }) if *value == *src
+                )
+            {
+                continue;
+            }
             if let Some(&root) = alias_of.get(&src_local) {
                 // Source is itself an owned bytes candidate (or its alias): both
                 // ends are locals that drop at scope exit, so retain once, gated

@@ -171,8 +171,8 @@ use self::temp_drop::{
     apply_nested_fresh_string_temp_drops, bytes_interior_producer_dest, bytes_place_is_typed,
     bytes_runtime_arg_is_borrow, bytes_share_sink_places, classify_actor_state_load_modes,
     close_obligated_borrow_alias_violations, collection_borrow_getter_alias_locals,
-    compute_collection_interior_alias_taint, finalize_bytes_ownership,
-    finalize_string_local_share_intents, finalize_string_ownership,
+    compute_collection_interior_alias_taint, finalize_bytes_local_share_intents,
+    finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
     interior_alias_receiver_violations, string_call_borrows, string_field_load_producer_dest,
 };
 
@@ -803,10 +803,12 @@ struct Builder {
     pub(crate) typed_borrowed_string_publication_locals: HashSet<u32>,
     /// Bytes counterpart of `typed_borrowed_string_publication_locals`.
     pub(crate) typed_borrowed_bytes_publication_locals: HashSet<u32>,
-    /// Binding-reference sites used as the RHS of `let next = current` for
-    /// `bytes`. Stage S1 treats these as retained shares, so their checker use
-    /// intent is downgraded from `Consume` to `Read`.
-    pub(crate) bytes_local_share_sites: HashSet<SiteId>,
+    /// Candidate `let next = current` bytes copies, keyed by the RHS site and
+    /// carrying `(source, destination)` bindings. These are retained shares, so
+    /// their checker use intent is downgraded from `Consume` to `Read`, and
+    /// `finalize_bytes_local_share_intents` mints the destination's `+1` before
+    /// the adoption canonicalizer can fold the two owners into one.
+    pub(crate) bytes_local_share_sites: HashMap<SiteId, (BindingId, BindingId)>,
     /// Candidate `let next = current` string copies, keyed by the RHS site and
     /// carrying `(source, destination)` bindings. Finalized MIR decides whether
     /// the source is used after the copy (genuine co-owner) or handed off.
@@ -7305,6 +7307,7 @@ fn splice_body_ownership_releases(
     splice_affine_call_argument_consumes(blocks, builder);
     splice_retained_field_aggregate_commits(blocks, builder);
     finalize_string_local_share_intents(&mut *blocks, builder);
+    finalize_bytes_local_share_intents(&mut *blocks, builder);
     splice_escaped_record_sibling_field_drops(blocks, builder);
     splice_pretransfer_record_exit_drops(&mut *blocks, builder);
 }

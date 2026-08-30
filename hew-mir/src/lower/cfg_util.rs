@@ -178,16 +178,30 @@ pub(super) fn shift_instr_spans_on_remove(
 /// Block ids transitively reachable FROM `start` (via its successors; `start`
 /// itself is included only when a cycle re-enters it).
 pub(super) fn blocks_reachable_from(blocks: &[BasicBlock], start: u32) -> HashSet<u32> {
-    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+    reachable_from(&successors_by_id(blocks), start)
+}
+
+/// Each block's successor list, keyed by block id.
+///
+/// A caller that asks about reachability from many different starts builds this
+/// once and calls [`reachable_from`]; rebuilding the map per query made such a
+/// caller quadratic in block count.
+pub(super) fn successors_by_id(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
+    blocks
+        .iter()
+        .map(|block| (block.id, block.successors()))
+        .collect()
+}
+
+/// Block ids transitively reachable FROM `start` over `successors`; `start`
+/// itself appears only when a cycle re-enters it.
+pub(super) fn reachable_from(successors: &HashMap<u32, Vec<u32>>, start: u32) -> HashSet<u32> {
     let mut seen: HashSet<u32> = HashSet::new();
-    let mut work: Vec<u32> = by_id
-        .get(&start)
-        .map(|b| b.successors())
-        .unwrap_or_default();
+    let mut work: Vec<u32> = successors.get(&start).cloned().unwrap_or_default();
     while let Some(id) = work.pop() {
         if seen.insert(id) {
-            if let Some(b) = by_id.get(&id) {
-                work.extend(b.successors());
+            if let Some(next) = successors.get(&id) {
+                work.extend(next.iter().copied());
             }
         }
     }

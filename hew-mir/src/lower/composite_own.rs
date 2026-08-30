@@ -631,6 +631,12 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
 
     let mut roots: Vec<u32> = scans.keys().copied().collect();
     roots.sort_unstable();
+    // One successor map and one reachability answer per escape block, shared by
+    // every root that escapes there. Recomputing reachability per root rebuilt
+    // the whole successor map each time and made the pass quadratic in block
+    // count on bodies with many owned records.
+    let successors = super::cfg_util::successors_by_id(blocks);
+    let mut reach_by_escape: HashMap<u32, HashSet<u32>> = HashMap::new();
     for root in roots {
         if explicit_projection_roots.contains(&root) {
             continue;
@@ -648,7 +654,9 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         {
             continue;
         }
-        let reach = blocks_reachable_from(blocks, esc_block);
+        let reach = reach_by_escape
+            .entry(esc_block)
+            .or_insert_with(|| super::cfg_util::reachable_from(&successors, esc_block));
         if reach.contains(&esc_block) {
             continue;
         }

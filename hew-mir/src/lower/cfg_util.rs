@@ -11,20 +11,11 @@ pub(super) fn local_is_used_after(
     move_block: u32,
     move_index: usize,
 ) -> bool {
-    let mut reachable = HashSet::new();
-    let mut frontier = blocks
-        .iter()
-        .find(|block| block.id == move_block)
-        .map(BasicBlock::successors)
-        .unwrap_or_default();
-    while let Some(block_id) = frontier.pop() {
-        if !reachable.insert(block_id) {
-            continue;
-        }
-        if let Some(block) = blocks.iter().find(|block| block.id == block_id) {
-            frontier.extend(block.successors());
-        }
-    }
+    // The successor walk resolves a block id per pop. Scanning `blocks` for
+    // each made the walk quadratic in block count, and this proof runs once per
+    // candidate instruction.
+    let successors = successors_by_id(blocks);
+    let reachable = reachable_from(&successors, move_block);
 
     blocks.iter().any(|block| {
         let start = if block.id == move_block {
@@ -52,20 +43,8 @@ pub(super) fn local_is_rewritten_after_current_iteration(
     release_block: u32,
     release_index: usize,
 ) -> bool {
-    let mut reachable = HashSet::new();
-    let mut frontier = blocks
-        .iter()
-        .find(|block| block.id == release_block)
-        .map(BasicBlock::successors)
-        .unwrap_or_default();
-    while let Some(block_id) = frontier.pop() {
-        if !reachable.insert(block_id) {
-            continue;
-        }
-        if let Some(block) = blocks.iter().find(|block| block.id == block_id) {
-            frontier.extend(block.successors());
-        }
-    }
+    let successors = successors_by_id(blocks);
+    let reachable = reachable_from(&successors, release_block);
 
     let mut reaches_release = HashSet::from([release_block]);
     loop {

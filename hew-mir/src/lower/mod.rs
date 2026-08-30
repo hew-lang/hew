@@ -9275,10 +9275,15 @@ pub(super) fn prove_retained_bytes_local_share(
 /// candidates remain untouched so validation fails closed.
 fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
     let _timing = crate::timing::stage("canonicalize_terminal_transfer_owner_ids");
+    // The replay is a pure function of `blocks`, so it is re-derived only after
+    // a re-key actually changed them. Re-deriving it per block instead made the
+    // pass quadratic in block count for the sake of a rewrite that fires on a
+    // handful of instructions in a whole body.
+    let mut entries = drop_plan::exact_owner_states(blocks).0;
     for block_index in 0..blocks.len() {
-        let (entries, _) = drop_plan::exact_owner_states(blocks);
         let block_id = blocks[block_index].id;
         let mut live = entries.get(&block_id).cloned().unwrap_or_default();
+        let mut rekeyed = false;
         for instruction_index in 0..blocks[block_index].instructions.len() {
             let instruction = &mut blocks[block_index].instructions[instruction_index];
             if let Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
@@ -9295,11 +9300,15 @@ fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
                         .collect::<Vec<_>>();
                     if let [replacement] = candidates.as_slice() {
                         *owner = *replacement;
+                        rekeyed = true;
                     }
                 }
             }
             let instruction = instruction.clone();
             drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+        }
+        if rekeyed {
+            entries = drop_plan::exact_owner_states(blocks).0;
         }
     }
 }
@@ -9317,12 +9326,16 @@ fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
 /// Checked-MIR validator still fails closed.
 fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) {
     let _timing = crate::timing::stage("canonicalize_stale_relocation_and_reset_owner_ids");
+    // Both replays are pure functions of `blocks`; they are re-derived only
+    // after a re-key or a reset-to-mint rewrite changed them, not once per
+    // block. See `canonicalize_terminal_transfer_owner_ids`.
+    let (mut exact_entries, _) = drop_plan::exact_owner_states(blocks);
+    let (mut maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
     for block_index in 0..blocks.len() {
-        let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
-        let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
         let block_id = blocks[block_index].id;
         let mut exact = exact_entries.get(&block_id).cloned().unwrap_or_default();
         let mut maybe = maybe_entries.get(&block_id).cloned().unwrap_or_default();
+        let mut rewrote = false;
 
         for instruction_index in 0..blocks[block_index].instructions.len() {
             let instruction = &mut blocks[block_index].instructions[instruction_index];
@@ -9343,6 +9356,7 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
                     if let [replacement] = exact_candidates.as_slice() {
                         if maybe_candidates.len() == 1 && maybe_candidates.contains(replacement) {
                             *owner = *replacement;
+                            rewrote = true;
                         }
                     }
                 }
@@ -9365,6 +9379,7 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
                             place: *place,
                             ty: ty.clone(),
                         });
+                        rewrote = true;
                     }
                 }
                 _ => {}
@@ -9372,6 +9387,10 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
             let operation = instruction.clone();
             drop_plan::apply_exact_owner_ops(std::slice::from_ref(&operation), &mut exact);
             drop_plan::apply_maybe_owner_ops(std::slice::from_ref(&operation), &mut maybe);
+        }
+        if rewrote {
+            exact_entries = drop_plan::exact_owner_states(blocks).0;
+            maybe_entries = drop_plan::maybe_owner_states(blocks).0;
         }
     }
 }

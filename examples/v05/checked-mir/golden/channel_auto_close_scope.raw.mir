@@ -1,4 +1,5 @@
 fn main() -> () [conv=default]
+  key: main [mono]
   locals:
     _0: i64
     _1: (Sender<string>, Receiver<string>)
@@ -87,6 +88,7 @@ fn main() -> () [conv=default]
     goto bb4
 
 fn std.channel.Sender::send(Sender, string) -> () [conv=default]
+  key: std.channel.Sender::<impl std.channel.SenderMethods for std.channel.Sender>::send [mono]
   locals:
     _0: Sender
     _1: string
@@ -100,6 +102,7 @@ fn std.channel.Sender::send(Sender, string) -> () [conv=default]
     return
 
 fn std.channel.Sender::clone(Sender) -> Sender [conv=default]
+  key: std.channel.Sender::<impl std.channel.SenderMethods for std.channel.Sender>::clone [mono]
   locals:
     _0: Sender
     _1: Sender
@@ -115,6 +118,7 @@ fn std.channel.Sender::clone(Sender) -> Sender [conv=default]
     return
 
 fn std.channel.Sender::close(Sender) -> () [conv=default]
+  key: std.channel.Sender::<impl std.channel.SenderMethods for std.channel.Sender>::close [mono]
   locals:
     _0: Sender
   bb0:
@@ -126,6 +130,7 @@ fn std.channel.Sender::close(Sender) -> () [conv=default]
     return
 
 fn std.channel.Receiver::recv(Receiver) -> Option<string> [conv=default]
+  key: std.channel.Receiver::<impl std.channel.ReceiverMethods for std.channel.Receiver>::recv [mono]
   locals:
     _0: Receiver
     _1: Option<string>
@@ -148,6 +153,7 @@ fn std.channel.Receiver::recv(Receiver) -> Option<string> [conv=default]
     return
 
 fn std.channel.Receiver::try_recv(Receiver) -> Option<string> [conv=default]
+  key: std.channel.Receiver::<impl std.channel.ReceiverMethods for std.channel.Receiver>::try_recv [mono]
   locals:
     _0: Receiver
     _1: Option<string>
@@ -170,6 +176,7 @@ fn std.channel.Receiver::try_recv(Receiver) -> Option<string> [conv=default]
     return
 
 fn std.channel.Receiver::close(Receiver) -> () [conv=default]
+  key: std.channel.Receiver::<impl std.channel.ReceiverMethods for std.channel.Receiver>::close [mono]
   locals:
     _0: Receiver
   bb0:
@@ -181,6 +188,7 @@ fn std.channel.Receiver::close(Receiver) -> () [conv=default]
     return
 
 fn std$channel$new(i64) -> (Sender, Receiver) [conv=default]
+  key: std.channel.new [mono]
   locals:
     _0: i64
     _1: (Sender, Receiver)
@@ -235,6 +243,7 @@ fn std$channel$new(i64) -> (Sender, Receiver) [conv=default]
     goto bb2
 
 fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
+  key: std.channel.try_new [mono]
   locals:
     _0: i64
     _1: ()
@@ -431,6 +440,7 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     return
 
 fn std.channel.ChannelPair::close(std.channel.ChannelPair) -> () [conv=default]
+  key: std.channel.ChannelPair::<impl inherent for std.channel.ChannelPair>::close [mono]
   locals:
     _0: std.channel.ChannelPair
     _1: i64
@@ -450,6 +460,7 @@ fn std.channel.ChannelPair::close(std.channel.ChannelPair) -> () [conv=default]
     return
 
 fn i8::fmt(i8) -> string [conv=default]
+  key: std.builtins.i8::<impl std.builtins.Display for std.builtins.i8>::fmt [mono]
   locals:
     _0: i8
     _1: i32
@@ -469,6 +480,7 @@ fn i8::fmt(i8) -> string [conv=default]
     return
 
 fn i16::fmt(i16) -> string [conv=default]
+  key: std.builtins.i16::<impl std.builtins.Display for std.builtins.i16>::fmt [mono]
   locals:
     _0: i16
     _1: i32
@@ -488,6 +500,7 @@ fn i16::fmt(i16) -> string [conv=default]
     return
 
 fn i32::fmt(i32) -> string [conv=default]
+  key: std.builtins.i32::<impl std.builtins.Display for std.builtins.i32>::fmt [mono]
   locals:
     _0: i32
     _1: string
@@ -505,6 +518,7 @@ fn i32::fmt(i32) -> string [conv=default]
     return
 
 fn i64::fmt(i64) -> string [conv=default]
+  key: std.builtins.i64::<impl std.builtins.Display for std.builtins.i64>::fmt [mono]
   locals:
     _0: i64
     _1: string
@@ -522,6 +536,7 @@ fn i64::fmt(i64) -> string [conv=default]
     return
 
 fn u8::fmt(u8) -> string [conv=default]
+  key: std.builtins.u8::<impl std.builtins.Display for std.builtins.u8>::fmt [mono]
   locals:
     _0: u8
     _1: string
@@ -539,6 +554,7 @@ fn u8::fmt(u8) -> string [conv=default]
     return
 
 fn u16::fmt(u16) -> string [conv=default]
+  key: std.builtins.u16::<impl std.builtins.Display for std.builtins.u16>::fmt [mono]
   locals:
     _0: u16
     _1: string
@@ -556,6 +572,7 @@ fn u16::fmt(u16) -> string [conv=default]
     return
 
 fn u32::fmt(u32) -> string [conv=default]
+  key: std.builtins.u32::<impl std.builtins.Display for std.builtins.u32>::fmt [mono]
   locals:
     _0: u32
     _1: string
@@ -573,6 +590,7 @@ fn u32::fmt(u32) -> string [conv=default]
     return
 
 fn u64::fmt(u64) -> string [conv=default]
+  key: std.builtins.u64::<impl std.builtins.Display for std.builtins.u64>::fmt [mono]
   locals:
     _0: u64
     _1: string
@@ -590,6 +608,7 @@ fn u64::fmt(u64) -> string [conv=default]
     return
 
 fn isize::fmt(isize) -> string [conv=default]
+  key: std.builtins.isize::<impl std.builtins.Display for std.builtins.isize>::fmt [mono]
   locals:
     _0: isize
     _1: i64
@@ -609,6 +628,7 @@ fn isize::fmt(isize) -> string [conv=default]
     return
 
 fn usize::fmt(usize) -> string [conv=default]
+  key: std.builtins.usize::<impl std.builtins.Display for std.builtins.usize>::fmt [mono]
   locals:
     _0: usize
     _1: u64
@@ -628,6 +648,7 @@ fn usize::fmt(usize) -> string [conv=default]
     return
 
 fn bool::fmt(bool) -> string [conv=default]
+  key: std.builtins.bool::<impl std.builtins.Display for std.builtins.bool>::fmt [mono]
   locals:
     _0: bool
     _1: string
@@ -645,6 +666,7 @@ fn bool::fmt(bool) -> string [conv=default]
     return
 
 fn char::fmt(char) -> string [conv=default]
+  key: std.builtins.char::<impl std.builtins.Display for std.builtins.char>::fmt [mono]
   locals:
     _0: char
     _1: string
@@ -662,6 +684,7 @@ fn char::fmt(char) -> string [conv=default]
     return
 
 fn f64::fmt(f64) -> string [conv=default]
+  key: std.builtins.f64::<impl std.builtins.Display for std.builtins.f64>::fmt [mono]
   locals:
     _0: f64
     _1: string
@@ -679,6 +702,7 @@ fn f64::fmt(f64) -> string [conv=default]
     return
 
 fn f32::fmt(f32) -> string [conv=default]
+  key: std.builtins.f32::<impl std.builtins.Display for std.builtins.f32>::fmt [mono]
   locals:
     _0: f32
     _1: f64
@@ -698,6 +722,7 @@ fn f32::fmt(f32) -> string [conv=default]
     return
 
 fn string::fmt(string) -> string [conv=default]
+  key: std.builtins.string::<impl std.builtins.Display for std.builtins.string>::fmt [mono]
   locals:
     _0: string
   bb0:
@@ -708,6 +733,7 @@ fn string::fmt(string) -> string [conv=default]
     return
 
 fn duration::from_nanos(i64) -> duration [conv=default]
+  key: std.builtins.duration::<impl inherent for std.builtins.duration>::from_nanos [mono]
   locals:
     _0: i64
     _1: duration
@@ -726,6 +752,7 @@ fn duration::from_nanos(i64) -> duration [conv=default]
     return
 
 fn duration::from_micros(i64) -> duration [conv=default]
+  key: std.builtins.duration::<impl inherent for std.builtins.duration>::from_micros [mono]
   locals:
     _0: i64
     _1: duration
@@ -744,6 +771,7 @@ fn duration::from_micros(i64) -> duration [conv=default]
     return
 
 fn duration::from_millis(i64) -> duration [conv=default]
+  key: std.builtins.duration::<impl inherent for std.builtins.duration>::from_millis [mono]
   locals:
     _0: i64
     _1: duration
@@ -762,6 +790,7 @@ fn duration::from_millis(i64) -> duration [conv=default]
     return
 
 fn duration::from_secs(i64) -> duration [conv=default]
+  key: std.builtins.duration::<impl inherent for std.builtins.duration>::from_secs [mono]
   locals:
     _0: i64
     _1: duration
@@ -780,6 +809,7 @@ fn duration::from_secs(i64) -> duration [conv=default]
     return
 
 fn duration::fmt(duration) -> string [conv=default]
+  key: std.builtins.duration::<impl std.builtins.Display for std.builtins.duration>::fmt [mono]
   locals:
     _0: duration
     _1: i64

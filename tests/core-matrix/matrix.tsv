@@ -74,7 +74,7 @@ enum_payload__equality	PASS
 enum_payload__format	NYI-CLEAN	tests/core-matrix/cells/enum_payload__format.hew:9:18: error: type `Shape` does not implement `Display` (f-string interpolation requires `impl Display for Shape`)
 enum_payload__index	PASS
 enum_payload__iterate	PASS
-enum_payload__map_key	NYI-CLEAN	tests/core-matrix/cells/enum_payload__map_key.hew:11:11: error: HashMap key type `Shape` must be a `record`-keyword type to use the layout key ABI; found an enum which is not guaranteed Copy value-semantic
+enum_payload__map_key	NYI-CLEAN	tests/core-matrix/cells/enum_payload__map_key.hew:9:12: error: HashMap key type `Shape` must be a `record`-keyword type to use the layout key ABI; found an enum which is not guaranteed Copy value-semantic
 enum_payload__move	PASS
 enum_payload__mutate	PASS
 enum_payload__pass_fn	PASS
@@ -90,7 +90,7 @@ enum_unit__equality	PASS
 enum_unit__format	NYI-CLEAN	tests/core-matrix/cells/enum_unit__format.hew:8:18: error: type `Colour` does not implement `Display` (f-string interpolation requires `impl Display for Colour`)
 enum_unit__index	PASS
 enum_unit__iterate	PASS
-enum_unit__map_key	NYI-CLEAN	tests/core-matrix/cells/enum_unit__map_key.hew:8:12: error: HashMap key type `Colour` must be a `record`-keyword type to use the layout key ABI; found an enum which is not guaranteed Copy value-semantic
+enum_unit__map_key	NYI-CLEAN	tests/core-matrix/cells/enum_unit__map_key.hew:9:5: error: HashMap key type `Colour` must be a `record`-keyword type to use the layout key ABI; found an enum which is not guaranteed Copy value-semantic
 enum_unit__move	PASS
 enum_unit__mutate	PASS
 enum_unit__pass_fn	PASS
@@ -196,8 +196,8 @@ i64__read_back	PASS
 i64__return_fn	PASS
 i64__store_map_value	PASS
 i64__store_vec	PASS
-machine__across_suspend	NYI-INTERNAL	tests/core-matrix/cells/machine__across_suspend.hew:7:33: warning: E_BARE_VARIANT_EXPR: bare variant `Zero` is deprecated; use `.Zero` when the surrounding type selects the enum, or qualify the variant with its type
-machine__actor_send	NYI-INTERNAL	tests/core-matrix/cells/machine__actor_send.hew:7:33: warning: E_BARE_VARIANT_EXPR: bare variant `Zero` is deprecated; use `.Zero` when the surrounding type selects the enum, or qualify the variant with its type
+machine__across_suspend	PASS
+machine__actor_send	PASS
 machine__clone	NYI-CLEAN	tests/core-matrix/cells/machine__clone.hew:14:13: error: no method `clone` on `Counter`
 machine__construct	PASS
 machine__drop_early_return	NYI-CLEAN	tests/core-matrix/cells/machine__drop_early_return.hew:12:1: error: machine `Gate` state `Opened` holds `#[resource]`/`#[linear]` value `Tok`: a resource in a machine state payload is not released on transition or scope
@@ -207,7 +207,7 @@ machine__equality	PASS
 machine__format	NYI-CLEAN	tests/core-matrix/cells/machine__format.hew:14:18: error: type `Counter` does not implement `Display` (f-string interpolation requires `impl Display for Counter`)
 machine__index	PASS
 machine__iterate	NYI-CLEAN	tests/core-matrix/cells/machine__iterate.hew:20:14: error: `VecIter<Counter>` is not supported: `VecIter.next()` clones each element into an independent owner, but non-value type `Counter` has no semantic clone/retain op
-machine__map_key	NYI-CLEAN	tests/core-matrix/cells/machine__map_key.hew:14:12: error: HashMap key type `Counter` must be a `record`-keyword type to use the layout key ABI; found a machine which is not guaranteed Copy value-semantic
+machine__map_key	NYI-CLEAN	tests/core-matrix/cells/machine__map_key.hew:16:11: error: HashMap key type `Counter` must be a `record`-keyword type to use the layout key ABI; found a machine which is not guaranteed Copy value-semantic
 machine__move	PASS
 machine__mutate	PASS
 machine__pass_fn	PASS
@@ -245,7 +245,7 @@ option__equality	PASS
 option__format	NYI-CLEAN	tests/core-matrix/cells/option__format.hew:3:18: error: type `Option<i64>` does not implement `Display` (f-string interpolation requires `impl Display for Option<i64>`)
 option__index	PASS
 option__iterate	PASS
-option__map_key	NYI-CLEAN	tests/core-matrix/cells/option__map_key.hew:4:5: error: HashMap key type `Option` contains a field of type `Option<i64>` which is not a fixed-size Copy type; layout keys require all fields to be fixed-width primitives or
+option__map_key	NYI-CLEAN	tests/core-matrix/cells/option__map_key.hew:5:11: error: HashMap key type `Option` contains a field of type `Option<i64>` which is not a fixed-size Copy type; layout keys require all fields to be fixed-width primitives o
 option__move	PASS
 option__mutate	PASS
 option__pass_fn	PASS
@@ -302,7 +302,7 @@ result__equality	PASS
 result__format	NYI-CLEAN	tests/core-matrix/cells/result__format.hew:3:18: error: type `Result<i64, string>` does not implement `Display` (f-string interpolation requires `impl Display for Result<i64, string>`)
 result__index	NYI-CLEAN	tests/core-matrix/cells/result__index.hew:4:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Vec runtime
 result__iterate	NYI-CLEAN	tests/core-matrix/cells/result__iterate.hew:4:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Vec runtime
-result__map_key	NYI-CLEAN	tests/core-matrix/cells/result__map_key.hew:3:12: error: HashMap key type `Result` contains a field of type `Result<i64, string>` which is not a fixed-size Copy type; layout keys require all fields to be fixed-width prim
+result__map_key	NYI-CLEAN	tests/core-matrix/cells/result__map_key.hew:4:5: error: HashMap key type `Result` contains a field of type `Result<i64, string>` which is not a fixed-size Copy type; layout keys require all fields to be fixed-width primi
 result__move	PASS
 result__mutate	PASS
 result__pass_fn	PASS
@@ -334,8 +334,8 @@ traitobj__equality	NYI-INTERNAL	tests/core-matrix/cells/traitobj__equality.hew:3
 traitobj__format	NYI-CLEAN	tests/core-matrix/cells/traitobj__format.hew:32:18: error: type `dyn Named` does not implement `Display` (f-string interpolation requires `impl Display for dyn Named`)
 traitobj__iterate	NYI-CLEAN	tests/core-matrix/cells/traitobj__iterate.hew:36:14: error: direct `for` over `Vec<dyn Trait>` would require a cloneable borrowed snapshot; use `for value in values.into_iter()` to consume and move each trait object inst
 traitobj__map_key	NYI-CLEAN	tests/core-matrix/cells/traitobj__map_key.hew:32:12: error: `dyn Named` does not satisfy the required bounds for `Map` (K: Hash, K: Eq)
-traitobj__move	NYI-INTERNAL	error: E_MIR_CHECK: discharge-authority corroboration in `main`: owner OwnerId { binding: BindingId(4), generation: 0 } is transferred after its generation ended at instruction 16
-traitobj__mutate	NYI-INTERNAL	error: E_MIR_CHECK: discharge-authority corroboration in `main`: cleanup at Local(3) ambiguously matches multiple exact owner generations [OwnerId { binding: BindingId(4), generation: 1 }, OwnerId { binding: BindingId(4)
+traitobj__move	NYI-INTERNAL	error: E_MIR_ICE: internal compiler error: the ownership lowering of `main` violates its `ownership-generation` invariant (owner b4#0 is transferred after its generation ended at instruction 16)
+traitobj__mutate	NYI-INTERNAL	error: E_MIR_ICE: internal compiler error: the ownership lowering of `main` violates its `ownership-place` invariant (place _3 has more than one live exact owner generation [b4#0, b4#1] after instruction 24)
 traitobj__pass_fn	PASS
 traitobj__read_back	NYI-CLEAN	tests/core-matrix/cells/traitobj__read_back.hew:34:11: error: `Vec<dyn Trait>.get()` is not supported because returning an owned element would require a semantic trait-object clone; use pop/remove or consuming iteration
 traitobj__return_fn	PASS
@@ -371,7 +371,7 @@ vec__equality	PASS
 vec__format	NYI-CLEAN	tests/core-matrix/cells/vec__format.hew:5:18: error: type `Vec<i64>` does not implement `Display` (f-string interpolation requires `impl Display for Vec<i64>`)
 vec__index	PASS
 vec__iterate	PASS
-vec__map_key	NYI-CLEAN	tests/core-matrix/cells/vec__map_key.hew:7:11: error: HashMap key type `Vec` contains a field of type `Vec<i64>` which is not a fixed-size Copy type; layout keys require all fields to be fixed-width primitives or nested
+vec__map_key	NYI-CLEAN	tests/core-matrix/cells/vec__map_key.hew:5:12: error: HashMap key type `Vec` contains a field of type `Vec<i64>` which is not a fixed-size Copy type; layout keys require all fields to be fixed-width primitives or nested
 vec__move	PASS
 vec__mutate	PASS
 vec__pass_fn	PASS

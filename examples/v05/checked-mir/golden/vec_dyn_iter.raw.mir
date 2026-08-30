@@ -1,4 +1,5 @@
 fn Person::label_size(Person) -> i64 [conv=default]
+  key: Person::<impl inherent for Person>::label_size [mono]
   locals:
     _0: Person
     _1: string
@@ -14,6 +15,7 @@ fn Person::label_size(Person) -> i64 [conv=default]
     return
 
 fn Parcel::label_size(Parcel) -> i64 [conv=default]
+  key: Parcel::<impl inherent for Parcel>::label_size [mono]
   locals:
     _0: Parcel
     _1: string
@@ -29,6 +31,7 @@ fn Parcel::label_size(Parcel) -> i64 [conv=default]
     return
 
 fn make_person(string) -> dyn Labeled [conv=default]
+  key: make_person [mono]
   locals:
     _0: string
     _1: i64
@@ -70,6 +73,7 @@ fn make_person(string) -> dyn Labeled [conv=default]
     return
 
 fn make_parcel(string) -> dyn Labeled [conv=default]
+  key: make_parcel [mono]
   locals:
     _0: string
     _1: i64
@@ -111,6 +115,7 @@ fn make_parcel(string) -> dyn Labeled [conv=default]
     return
 
 fn main() -> () [conv=default]
+  key: main [mono]
   locals:
     _0: Vec<dyn Labeled>
     _1: Vec<dyn Labeled>
@@ -539,6 +544,7 @@ fn main() -> () [conv=default]
     return
 
 fn std$string$from_int(i64) -> string [conv=default]
+  key: std.string.from_int [mono]
   locals:
     _0: i64
     _1: string
@@ -556,6 +562,7 @@ fn std$string$from_int(i64) -> string [conv=default]
     return
 
 fn std$string$from_float(f64) -> string [conv=default]
+  key: std.string.from_float [mono]
   locals:
     _0: f64
     _1: string
@@ -573,6 +580,7 @@ fn std$string$from_float(f64) -> string [conv=default]
     return
 
 fn std$string$from_bool(bool) -> string [conv=default]
+  key: std.string.from_bool [mono]
   locals:
     _0: bool
     _1: string
@@ -601,6 +609,7 @@ fn std$string$from_bool(bool) -> string [conv=default]
     return
 
 fn std$string$from_char(i64) -> string [conv=default]
+  key: std.string.from_char [mono]
   locals:
     _0: i64
     _1: ()
@@ -695,6 +704,7 @@ fn std$string$from_char(i64) -> string [conv=default]
     return
 
 fn std$string$to_int(string) -> Option<i64> [conv=default]
+  key: std.string.to_int [mono]
   locals:
     _0: string
     _1: Option<i64>
@@ -763,6 +773,7 @@ fn std$string$to_int(string) -> Option<i64> [conv=default]
     branch _7 ? bb4 : bb5
 
 fn std$string$try_to_int(string) -> Result<i64, string> [conv=default]
+  key: std.string.try_to_int [mono]
   locals:
     _0: string
     _1: i64
@@ -1166,6 +1177,7 @@ fn std$string$try_to_int(string) -> Result<i64, string> [conv=default]
     goto bb50
 
 fn std$string$to_float(string) -> f64 [conv=default]
+  key: std.string.to_float [mono]
   locals:
     _0: string
     _1: f64
@@ -1226,6 +1238,7 @@ fn std$string$to_float(string) -> f64 [conv=default]
     branch _7 ? bb4 : bb5
 
 fn std$string$try_to_float(string) -> Result<f64, string> [conv=default]
+  key: std.string.try_to_float [mono]
   locals:
     _0: string
     _1: Result<f64, string>
@@ -1281,6 +1294,7 @@ fn std$string$try_to_float(string) -> Result<f64, string> [conv=default]
     goto bb4
 
 fn std$string$is_valid_float_literal(string) -> bool [conv=default]
+  key: std.string.is_valid_float_literal [mono]
   locals:
     _0: string
     _1: i64
@@ -1456,6 +1470,7 @@ fn std$string$is_valid_float_literal(string) -> bool [conv=default]
     goto bb26
 
 fn std$string$float_parse_start(string, i64) -> i64 [conv=default]
+  key: std.string.float_parse_start [mono]
   locals:
     _0: string
     _1: i64
@@ -1550,6 +1565,7 @@ fn std$string$float_parse_start(string, i64) -> i64 [conv=default]
     goto bb10
 
 fn std$string$parse_valid_float_literal(string) -> f64 [conv=default]
+  key: std.string.parse_valid_float_literal [mono]
   locals:
     _0: string
     _1: i64
@@ -1710,6 +1726,7 @@ fn std$string$parse_valid_float_literal(string) -> f64 [conv=default]
     return
 
 fn std$string$digit_value(string) -> i64 [conv=default]
+  key: std.string.digit_value [mono]
   locals:
     _0: string
     _1: i64
@@ -1839,6 +1856,7 @@ fn std$string$digit_value(string) -> i64 [conv=default]
     goto bb1
 
 fn std$string$find_exponent_index(string, i64, i64) -> i64 [conv=default]
+  key: std.string.find_exponent_index [mono]
   locals:
     _0: string
     _1: i64
@@ -1973,6 +1991,7 @@ fn std$string$find_exponent_index(string, i64, i64) -> i64 [conv=default]
     trap(IntegerOverflow)
 
 fn std$string$is_valid_float_significand(string, i64, i64) -> bool [conv=default]
+  key: std.string.is_valid_float_significand [mono]
   locals:
     _0: string
     _1: i64
@@ -2154,6 +2173,7 @@ fn std$string$is_valid_float_significand(string, i64, i64) -> bool [conv=default
     trap(IntegerOverflow)
 
 fn std$string$is_valid_float_exponent(string, i64, i64) -> bool [conv=default]
+  key: std.string.is_valid_float_exponent [mono]
   locals:
     _0: string
     _1: i64
@@ -2373,6 +2393,7 @@ fn std$string$is_valid_float_exponent(string, i64, i64) -> bool [conv=default]
     trap(IntegerOverflow)
 
 fn std$string$parse_float_significand(string, i64, i64) -> f64 [conv=default]
+  key: std.string.parse_float_significand [mono]
   locals:
     _0: string
     _1: i64
@@ -2562,6 +2583,7 @@ fn std$string$parse_float_significand(string, i64, i64) -> f64 [conv=default]
     trap(IntegerOverflow)
 
 fn std$string$parse_float_exponent(string, i64, i64) -> i64 [conv=default]
+  key: std.string.parse_float_exponent [mono]
   locals:
     _0: string
     _1: i64
@@ -2803,6 +2825,7 @@ fn std$string$parse_float_exponent(string, i64, i64) -> i64 [conv=default]
     goto bb33
 
 fn std$string$apply_float_exponent(f64, i64) -> f64 [conv=default]
+  key: std.string.apply_float_exponent [mono]
   locals:
     _0: f64
     _1: i64
@@ -2921,6 +2944,7 @@ fn std$string$apply_float_exponent(f64, i64) -> f64 [conv=default]
     return
 
 fn std$string$digit_to_float(i64) -> f64 [conv=default]
+  key: std.string.digit_to_float [mono]
   locals:
     _0: i64
     _1: f64
@@ -3050,6 +3074,7 @@ fn std$string$digit_to_float(i64) -> f64 [conv=default]
     goto bb1
 
 fn std$string$is_empty(string) -> bool [conv=default]
+  key: std.string.is_empty [mono]
   locals:
     _0: string
     _1: bool
@@ -3062,6 +3087,7 @@ fn std$string$is_empty(string) -> bool [conv=default]
     return
 
 fn std$string$repeat(string, i64) -> string [conv=default]
+  key: std.string.repeat [mono]
   locals:
     _0: string
     _1: i64
@@ -3081,6 +3107,7 @@ fn std$string$repeat(string, i64) -> string [conv=default]
     return
 
 fn std$string$pad_left(string, i64, string) -> string [conv=default]
+  key: std.string.pad_left [mono]
   locals:
     _0: string
     _1: i64
@@ -3170,6 +3197,7 @@ fn std$string$pad_left(string, i64, string) -> string [conv=default]
     return
 
 fn std$string$pad_right(string, i64, string) -> string [conv=default]
+  key: std.string.pad_right [mono]
   locals:
     _0: string
     _1: i64
@@ -3259,6 +3287,7 @@ fn std$string$pad_right(string, i64, string) -> string [conv=default]
     return
 
 fn std$string$is_numeric(string) -> bool [conv=default]
+  key: std.string.is_numeric [mono]
   locals:
     _0: string
     _1: i64
@@ -3375,6 +3404,7 @@ fn std$string$is_numeric(string) -> bool [conv=default]
     trap(IntegerOverflow)
 
 fn std$string$count(string, string) -> i64 [conv=default]
+  key: std.string.count [mono]
   locals:
     _0: string
     _1: string
@@ -3541,6 +3571,7 @@ fn std$string$count(string, string) -> i64 [conv=default]
     goto bb7
 
 fn std$string$starts_with(string, string) -> bool [conv=default]
+  key: std.string.starts_with [mono]
   locals:
     _0: string
     _1: string
@@ -3555,6 +3586,7 @@ fn std$string$starts_with(string, string) -> bool [conv=default]
     return
 
 fn std$string$ends_with(string, string) -> bool [conv=default]
+  key: std.string.ends_with [mono]
   locals:
     _0: string
     _1: string
@@ -3569,6 +3601,7 @@ fn std$string$ends_with(string, string) -> bool [conv=default]
     return
 
 fn std$string$contains(string, string) -> bool [conv=default]
+  key: std.string.contains [mono]
   locals:
     _0: string
     _1: string
@@ -3583,6 +3616,7 @@ fn std$string$contains(string, string) -> bool [conv=default]
     return
 
 fn std$string$is_ascii(string) -> bool [conv=default]
+  key: std.string.is_ascii [mono]
   locals:
     _0: string
     _1: i64
@@ -3696,6 +3730,7 @@ fn std$string$is_ascii(string) -> bool [conv=default]
     trap(IntegerOverflow)
 
 fn std$string$trim(string) -> string [conv=default]
+  key: std.string.trim [mono]
   locals:
     _0: string
     _1: string
@@ -3713,6 +3748,7 @@ fn std$string$trim(string) -> string [conv=default]
     return
 
 fn std$string$replace(string, string, string) -> string [conv=default]
+  key: std.string.replace [mono]
   locals:
     _0: string
     _1: string
@@ -3734,6 +3770,7 @@ fn std$string$replace(string, string, string) -> string [conv=default]
     return
 
 fn std$string$split(string, string) -> Vec<string> [conv=default]
+  key: std.string.split [mono]
   locals:
     _0: string
     _1: string
@@ -3753,6 +3790,7 @@ fn std$string$split(string, string) -> Vec<string> [conv=default]
     return
 
 fn std$string$lines(string) -> Vec<string> [conv=default]
+  key: std.string.lines [mono]
   locals:
     _0: string
     _1: Vec<string>
@@ -4108,6 +4146,7 @@ fn std$string$lines(string) -> Vec<string> [conv=default]
     return
 
 fn std$string$join(Vec<string>, string) -> string [conv=default]
+  key: std.string.join [mono]
   locals:
     _0: Vec<string>
     _1: string
@@ -4255,6 +4294,7 @@ fn std$string$join(Vec<string>, string) -> string [conv=default]
     trap(IntegerOverflow)
 
 fn std.string.string::len(string) -> i64 [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::len [mono]
   locals:
     _0: string
     _1: i64
@@ -4265,6 +4305,7 @@ fn std.string.string::len(string) -> i64 [conv=default]
     return
 
 fn std.string.string::is_empty(string) -> bool [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::is_empty [mono]
   locals:
     _0: string
     _1: bool
@@ -4275,6 +4316,7 @@ fn std.string.string::is_empty(string) -> bool [conv=default]
     return
 
 fn std.string.string::contains(string, string) -> bool [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::contains [mono]
   locals:
     _0: string
     _1: string
@@ -4286,6 +4328,7 @@ fn std.string.string::contains(string, string) -> bool [conv=default]
     return
 
 fn std.string.string::starts_with(string, string) -> bool [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::starts_with [mono]
   locals:
     _0: string
     _1: string
@@ -4297,6 +4340,7 @@ fn std.string.string::starts_with(string, string) -> bool [conv=default]
     return
 
 fn std.string.string::ends_with(string, string) -> bool [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::ends_with [mono]
   locals:
     _0: string
     _1: string
@@ -4308,6 +4352,7 @@ fn std.string.string::ends_with(string, string) -> bool [conv=default]
     return
 
 fn std.string.string::to_upper(string) -> string [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::to_upper [mono]
   locals:
     _0: string
     _1: string
@@ -4318,6 +4363,7 @@ fn std.string.string::to_upper(string) -> string [conv=default]
     return
 
 fn std.string.string::to_lower(string) -> string [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::to_lower [mono]
   locals:
     _0: string
     _1: string
@@ -4328,6 +4374,7 @@ fn std.string.string::to_lower(string) -> string [conv=default]
     return
 
 fn std.string.string::trim(string) -> string [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::trim [mono]
   locals:
     _0: string
     _1: string
@@ -4338,6 +4385,7 @@ fn std.string.string::trim(string) -> string [conv=default]
     return
 
 fn std.string.string::is_digit(string) -> bool [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::is_digit [mono]
   locals:
     _0: string
     _1: bool
@@ -4348,6 +4396,7 @@ fn std.string.string::is_digit(string) -> bool [conv=default]
     return
 
 fn std.string.string::is_alpha(string) -> bool [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::is_alpha [mono]
   locals:
     _0: string
     _1: bool
@@ -4358,6 +4407,7 @@ fn std.string.string::is_alpha(string) -> bool [conv=default]
     return
 
 fn std.string.string::is_alphanumeric(string) -> bool [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::is_alphanumeric [mono]
   locals:
     _0: string
     _1: bool
@@ -4368,6 +4418,7 @@ fn std.string.string::is_alphanumeric(string) -> bool [conv=default]
     return
 
 fn std.string.string::clone(string) -> string [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::clone [mono]
   locals:
     _0: string
     _1: string
@@ -4378,6 +4429,7 @@ fn std.string.string::clone(string) -> string [conv=default]
     return
 
 fn std.string.string::replace(string, string, string) -> string [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::replace [mono]
   locals:
     _0: string
     _1: string
@@ -4390,6 +4442,7 @@ fn std.string.string::replace(string, string, string) -> string [conv=default]
     return
 
 fn std.string.string::split(string, string) -> Vec<string> [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::split [mono]
   locals:
     _0: string
     _1: string
@@ -4407,6 +4460,7 @@ fn std.string.string::split(string, string) -> Vec<string> [conv=default]
     return
 
 fn std.string.string::lines(string) -> Vec<string> [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::lines [mono]
   locals:
     _0: string
     _1: Vec<string>
@@ -4423,6 +4477,7 @@ fn std.string.string::lines(string) -> Vec<string> [conv=default]
     return
 
 fn std.string.string::find(string, string) -> Option<i64> [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::find [mono]
   locals:
     _0: string
     _1: string
@@ -4436,6 +4491,7 @@ fn std.string.string::find(string, string) -> Option<i64> [conv=default]
     return
 
 fn std.string.string::slice(string, i64, i64) -> string [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::slice [mono]
   locals:
     _0: string
     _1: i64
@@ -4448,6 +4504,7 @@ fn std.string.string::slice(string, i64, i64) -> string [conv=default]
     return
 
 fn std.string.string::repeat(string, i64) -> string [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::repeat [mono]
   locals:
     _0: string
     _1: i64
@@ -4459,6 +4516,7 @@ fn std.string.string::repeat(string, i64) -> string [conv=default]
     return
 
 fn std.string.string::char_at(string, i64) -> Option<char> [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::char_at [mono]
   locals:
     _0: string
     _1: i64
@@ -4472,6 +4530,7 @@ fn std.string.string::char_at(string, i64) -> Option<char> [conv=default]
     return
 
 fn std.string.string::get(string, i64) -> Option<char> [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::get [mono]
   locals:
     _0: string
     _1: i64
@@ -4485,6 +4544,7 @@ fn std.string.string::get(string, i64) -> Option<char> [conv=default]
     return
 
 fn std.string.string::chars(string) -> Vec<char> [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::chars [mono]
   locals:
     _0: string
     _1: Vec<char>
@@ -4501,6 +4561,7 @@ fn std.string.string::chars(string) -> Vec<char> [conv=default]
     return
 
 fn std.string.string::char_count_utf8(string) -> i64 [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::char_count_utf8 [mono]
   locals:
     _0: string
     _1: i64
@@ -4511,6 +4572,7 @@ fn std.string.string::char_count_utf8(string) -> i64 [conv=default]
     return
 
 fn std.string.string::codepoint_at_utf8(string, i64) -> Option<i64> [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::codepoint_at_utf8 [mono]
   locals:
     _0: string
     _1: i64
@@ -4524,6 +4586,7 @@ fn std.string.string::codepoint_at_utf8(string, i64) -> Option<i64> [conv=defaul
     return
 
 fn std.string.string::to_bytes(string) -> bytes [conv=default]
+  key: std.string.string::<impl inherent for std.string.string>::to_bytes [mono]
   locals:
     _0: string
     _1: bytes
@@ -4540,6 +4603,7 @@ fn std.string.string::to_bytes(string) -> bytes [conv=default]
     return
 
 fn i8::fmt(i8) -> string [conv=default]
+  key: std.builtins.i8::<impl std.builtins.Display for std.builtins.i8>::fmt [mono]
   locals:
     _0: i8
     _1: i32
@@ -4559,6 +4623,7 @@ fn i8::fmt(i8) -> string [conv=default]
     return
 
 fn i16::fmt(i16) -> string [conv=default]
+  key: std.builtins.i16::<impl std.builtins.Display for std.builtins.i16>::fmt [mono]
   locals:
     _0: i16
     _1: i32
@@ -4578,6 +4643,7 @@ fn i16::fmt(i16) -> string [conv=default]
     return
 
 fn i32::fmt(i32) -> string [conv=default]
+  key: std.builtins.i32::<impl std.builtins.Display for std.builtins.i32>::fmt [mono]
   locals:
     _0: i32
     _1: string
@@ -4595,6 +4661,7 @@ fn i32::fmt(i32) -> string [conv=default]
     return
 
 fn i64::fmt(i64) -> string [conv=default]
+  key: std.builtins.i64::<impl std.builtins.Display for std.builtins.i64>::fmt [mono]
   locals:
     _0: i64
     _1: string
@@ -4612,6 +4679,7 @@ fn i64::fmt(i64) -> string [conv=default]
     return
 
 fn u8::fmt(u8) -> string [conv=default]
+  key: std.builtins.u8::<impl std.builtins.Display for std.builtins.u8>::fmt [mono]
   locals:
     _0: u8
     _1: string
@@ -4629,6 +4697,7 @@ fn u8::fmt(u8) -> string [conv=default]
     return
 
 fn u16::fmt(u16) -> string [conv=default]
+  key: std.builtins.u16::<impl std.builtins.Display for std.builtins.u16>::fmt [mono]
   locals:
     _0: u16
     _1: string
@@ -4646,6 +4715,7 @@ fn u16::fmt(u16) -> string [conv=default]
     return
 
 fn u32::fmt(u32) -> string [conv=default]
+  key: std.builtins.u32::<impl std.builtins.Display for std.builtins.u32>::fmt [mono]
   locals:
     _0: u32
     _1: string
@@ -4663,6 +4733,7 @@ fn u32::fmt(u32) -> string [conv=default]
     return
 
 fn u64::fmt(u64) -> string [conv=default]
+  key: std.builtins.u64::<impl std.builtins.Display for std.builtins.u64>::fmt [mono]
   locals:
     _0: u64
     _1: string
@@ -4680,6 +4751,7 @@ fn u64::fmt(u64) -> string [conv=default]
     return
 
 fn isize::fmt(isize) -> string [conv=default]
+  key: std.builtins.isize::<impl std.builtins.Display for std.builtins.isize>::fmt [mono]
   locals:
     _0: isize
     _1: i64
@@ -4699,6 +4771,7 @@ fn isize::fmt(isize) -> string [conv=default]
     return
 
 fn usize::fmt(usize) -> string [conv=default]
+  key: std.builtins.usize::<impl std.builtins.Display for std.builtins.usize>::fmt [mono]
   locals:
     _0: usize
     _1: u64
@@ -4718,6 +4791,7 @@ fn usize::fmt(usize) -> string [conv=default]
     return
 
 fn bool::fmt(bool) -> string [conv=default]
+  key: std.builtins.bool::<impl std.builtins.Display for std.builtins.bool>::fmt [mono]
   locals:
     _0: bool
     _1: string
@@ -4735,6 +4809,7 @@ fn bool::fmt(bool) -> string [conv=default]
     return
 
 fn char::fmt(char) -> string [conv=default]
+  key: std.builtins.char::<impl std.builtins.Display for std.builtins.char>::fmt [mono]
   locals:
     _0: char
     _1: string
@@ -4752,6 +4827,7 @@ fn char::fmt(char) -> string [conv=default]
     return
 
 fn f64::fmt(f64) -> string [conv=default]
+  key: std.builtins.f64::<impl std.builtins.Display for std.builtins.f64>::fmt [mono]
   locals:
     _0: f64
     _1: string
@@ -4769,6 +4845,7 @@ fn f64::fmt(f64) -> string [conv=default]
     return
 
 fn f32::fmt(f32) -> string [conv=default]
+  key: std.builtins.f32::<impl std.builtins.Display for std.builtins.f32>::fmt [mono]
   locals:
     _0: f32
     _1: f64
@@ -4788,6 +4865,7 @@ fn f32::fmt(f32) -> string [conv=default]
     return
 
 fn string::fmt(string) -> string [conv=default]
+  key: std.builtins.string::<impl std.builtins.Display for std.builtins.string>::fmt [mono]
   locals:
     _0: string
   bb0:
@@ -4798,6 +4876,7 @@ fn string::fmt(string) -> string [conv=default]
     return
 
 fn duration::from_nanos(i64) -> duration [conv=default]
+  key: std.builtins.duration::<impl inherent for std.builtins.duration>::from_nanos [mono]
   locals:
     _0: i64
     _1: duration
@@ -4816,6 +4895,7 @@ fn duration::from_nanos(i64) -> duration [conv=default]
     return
 
 fn duration::from_micros(i64) -> duration [conv=default]
+  key: std.builtins.duration::<impl inherent for std.builtins.duration>::from_micros [mono]
   locals:
     _0: i64
     _1: duration
@@ -4834,6 +4914,7 @@ fn duration::from_micros(i64) -> duration [conv=default]
     return
 
 fn duration::from_millis(i64) -> duration [conv=default]
+  key: std.builtins.duration::<impl inherent for std.builtins.duration>::from_millis [mono]
   locals:
     _0: i64
     _1: duration
@@ -4852,6 +4933,7 @@ fn duration::from_millis(i64) -> duration [conv=default]
     return
 
 fn duration::from_secs(i64) -> duration [conv=default]
+  key: std.builtins.duration::<impl inherent for std.builtins.duration>::from_secs [mono]
   locals:
     _0: i64
     _1: duration
@@ -4870,6 +4952,7 @@ fn duration::from_secs(i64) -> duration [conv=default]
     return
 
 fn duration::fmt(duration) -> string [conv=default]
+  key: std.builtins.duration::<impl std.builtins.Display for std.builtins.duration>::fmt [mono]
   locals:
     _0: duration
     _1: i64

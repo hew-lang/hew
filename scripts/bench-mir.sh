@@ -25,14 +25,21 @@
 #                   adds time, so the minimum estimates the true cost and a slow
 #                   neighbour cannot fail the gate on its own.
 #
-#   derivations   — the number of whole-function owner-state derivations must
-#                   not grow much between the small fixture and the large one.
-#                   A pass that derives once per invocation contributes the same
-#                   count to both; a pass that derives inside a per-block loop
+#   derivations   — the number of whole-function owner-state QUERIES must not
+#                   grow much between the small fixture and the large one.
+#                   A pass that asks once per invocation contributes the same
+#                   count to both; a pass that asks inside a per-block loop
 #                   contributes the body's block count, which differs by 253
 #                   between the two. This gate has no clock in it, so it fails
 #                   identically on a fast laptop and a loaded CI runner, and it
 #                   names the defect rather than its symptom.
+#
+#   replays       — how many of those queries actually recomputed, per body.
+#                   Growth alone cannot see a large FIXED cost: fifty passes
+#                   each replaying the whole function once contributes the same
+#                   count to both fixtures and passes the growth gate while
+#                   being exactly the cost F5 exists to remove. This ceiling is
+#                   absolute, so it does see it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -99,30 +106,39 @@ budget_value() {
 
 ceiling="$(budget_value check_wall_ms_ceiling)"
 growth_ceiling="$(budget_value derivation_growth_ceiling)"
+replay_ceiling="$(budget_value replays_per_100_bodies_ceiling)"
 
-# Total whole-function owner-state derivations for one fixture, summed over
-# every analysis the timing report names. `hew check` prints these to stderr
-# under HEW_MEASURE_TIMINGS as `mir derivations <analysis> <count> bodies <n>`.
-derivations() {
-    local source="$1" report="$tmpdir/derivations.log" total
+# One fixture's owner-state accounting, summed over every analysis the timing
+# report names. `hew check` prints these to stderr under HEW_MEASURE_TIMINGS as
+# `mir derivations <analysis> <count> bodies <n>` (queries) and
+# `mir replays <analysis> <count> bodies <n>` (the ones that recomputed).
+# Prints "<queries> <replays> <bodies>". awk does the summing: a `bc` that is
+# not installed would abort the assignment under `set -e` with no diagnostic,
+# and these are integers.
+measure() {
+    local source="$1" report="$tmpdir/derivations.log" reading
     if ! HEW_MEASURE_TIMINGS=1 "$HEW_BIN" check "$source" >"$report" 2>&1; then
         cat "$report" >&2
         echo "bench-mir: the fixture must compile clean; a rejected fixture measures nothing" >&2
         exit 1
     fi
-    total="$(sed -n 's/^hew measure: mir derivations [a-z_]* \([0-9]*\) bodies [0-9]*$/\1/p' "$report" |
-        paste -sd+ - | bc)"
-    if [[ ! "$total" =~ ^[0-9]+$ || "$total" -eq 0 ]]; then
-        echo "bench-mir: no derivation counts in the timing report for $source" >&2
-        echo "  HEW_MEASURE_TIMINGS must name every owner-state derivation site; an" >&2
+    reading="$(awk '
+        $4 == "derivations" { queries += $6; bodies = $8 }
+        $4 == "replays"     { replays += $6; bodies = $8 }
+        END { print queries + 0, replays + 0, bodies + 0 }
+    ' "$report")"
+    read -r queries replays bodies <<<"$reading"
+    if ((queries == 0 || replays == 0 || bodies == 0)); then
+        echo "bench-mir: no owner-state accounting in the timing report for $source" >&2
+        echo "  HEW_MEASURE_TIMINGS must name every owner-state query and replay; an" >&2
         echo "  empty reading would let this gate pass while measuring nothing." >&2
         exit 2
     fi
-    printf '%s' "$total"
+    printf '%s %s %s' "$queries" "$replays" "$bodies"
 }
 
-large_derivations="$(derivations "$FIXTURE")"
-small_derivations="$(derivations "$SMALL")"
+read -r large_derivations large_replays large_bodies <<<"$(measure "$FIXTURE")"
+read -r small_derivations _ _ <<<"$(measure "$SMALL")"
 growth=$((large_derivations - small_derivations))
 echo "bench-mir: owner-state derivations: $large_derivations on the large body," \
     "$small_derivations on the small one (growth $growth, ceiling $growth_ceiling)"
@@ -134,6 +150,21 @@ if ((growth > growth_ceiling)); then
     echo "    make hew-native" >&2
     echo "    HEW_STD=$ROOT/std HEW_MEASURE_TIMINGS=1 target/debug/hew check $SMALL 2>&1 | grep 'mir derivation '" >&2
     echo "  and compare the per-site counts against the same run on $FIXTURE." >&2
+    exit 1
+fi
+
+replays_per_100_bodies=$((large_replays * 100 / large_bodies))
+echo "bench-mir: owner-state replays: $large_replays over $large_bodies bodies" \
+    "($replays_per_100_bodies per 100 bodies, ceiling $replay_ceiling)"
+if ((replays_per_100_bodies > replay_ceiling)); then
+    echo "bench-mir: owner state is being replayed too often per body:" \
+        "$replays_per_100_bodies > $replay_ceiling per 100 bodies" >&2
+    echo "  A query that the memo used to answer is recomputing. Either a pass" >&2
+    echo "  now rewrites the ownership operations where it did not before, or a" >&2
+    echo "  caller bypassed \`exact_owner_states\`/\`maybe_owner_states\`." >&2
+    echo "  Read the per-site table from a debug build to see which:" >&2
+    echo "    make hew-native" >&2
+    echo "    HEW_STD=$ROOT/std HEW_MEASURE_TIMINGS=1 target/debug/hew check $FIXTURE 2>&1 | grep 'mir derivation '" >&2
     exit 1
 fi
 

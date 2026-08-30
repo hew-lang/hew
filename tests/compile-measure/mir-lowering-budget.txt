@@ -2,7 +2,7 @@
 # gate checks two different things about MIR lowering cost.
 #
 # derivation_growth_ceiling
-#   How many more whole-function owner-state derivations `hew check` may make on
+#   How many more whole-function owner-state QUERIES `hew check` may make on
 #   tests/compile-measure/mir-lowering-shape.hew than on its small twin
 #   mir-lowering-shape-small.hew. The two files differ in exactly one body:
 #   `emit_document` lowers to 338 basic blocks in the large fixture and 85 in
@@ -13,7 +13,7 @@
 #   difference by about 253 and a pass that runs several times per body moves it
 #   by a multiple of that.
 #
-#   Measured here: 224 (5046 derivations on the large fixture, 4822 on the
+#   Measured here: 224 (5046 queries on the large fixture, 4822 on the
 #   small). The falsifier: putting the derivation in `prepare_owned_call_carriers`
 #   back inside its per-block loop — the smallest such regression there is, one
 #   pass running once per body — moves the difference to 439 while leaving the
@@ -27,14 +27,38 @@
 #   loaded CI runner, and its failure message names the defect (a derivation
 #   inside a per-block loop) rather than the symptom (a slow compile).
 #
+# replays_per_100_bodies_ceiling
+#   How many of those queries may actually recompute, per hundred function
+#   bodies. Owner state is memoized on the exact projection the replays read
+#   (`drop_plan::owner_state`), so a query only costs a replay when a pass
+#   between it and the previous one changed the ownership operations.
+#
+#   The growth ceiling above cannot see a large FIXED cost: fifty passes each
+#   replaying the whole function once per body contribute the same count to
+#   both fixtures, so the difference stays near zero while every body pays for
+#   fifty whole-CFG replays. That is exactly the cost F5 exists to remove, so
+#   this second number is absolute rather than differential.
+#
+#   Measured here: 531 (452 replays over 85 bodies on the large fixture, about
+#   five per body, against 5 046 queries). The falsifier: dropping the memo
+#   from `maybe_owner_states` alone - one lattice, no change in what any pass
+#   computes - takes the reading to 1 544 and fires this gate while leaving
+#   both the growth gate and the clock gate green. The ceiling sits above the
+#   measurement with room for one more genuine program version per body.
+#
 # check_wall_ms_ceiling
 #   Wall-clock ceiling for `hew check` on mir-lowering-shape.hew, scored as the
 #   fastest of three runs.
 #
 #   Where the number comes from: on the machine this was set on, the fixture
 #   took 4383 ms before the redundant whole-function derivations were removed
-#   and settles near 620 ms after, drifting to about 900 ms with a dozen other
-#   builds running. The ceiling is a little under twice the settled figure.
+#   and settles near 480 ms after, drifting to about 900 ms with a dozen other
+#   builds running. This gate runs in the `lint` job on a 4-vCPU hosted runner
+#   whose single-thread throughput is roughly half this machine's, so the
+#   ceiling is set at about four times the settled local figure. It is loose on
+#   purpose: the two counting gates above carry the behavioural assertion, and
+#   a clock that false-reds the lint job on unrelated changes costs more than
+#   it catches.
 #
 #   SHORTCUT. WHY: wall time still catches costs that are not owner-state
 #   derivations at all — the reachability and dominance rebuilds, the projection
@@ -49,4 +73,5 @@
 # Never raise one to make a red gate pass; a regression here is the gate
 # working.
 derivation_growth_ceiling=300
-check_wall_ms_ceiling=1200
+replays_per_100_bodies_ceiling=600
+check_wall_ms_ceiling=2000

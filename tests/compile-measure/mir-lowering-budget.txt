@@ -1,0 +1,15 @@
+# Wall-clock ceiling for `hew check` on tests/compile-measure/mir-lowering-shape.hew,
+# scored as the fastest of three runs (see scripts/bench-mir.sh).
+#
+# SHORTCUT. WHY: a wall-clock ceiling is a proxy for the real invariant, which
+# is that MIR lowering cost is proportional to function size; nothing in the
+# tree can assert that shape directly, so a machine-dependent number stands in
+# for it. WHEN obsolete: when the ownership replay is a single incremental
+# analysis whose visit count can be asserted (a counter of block visits per
+# function, compared against block count), this file is replaced by that
+# behavioural assertion. WHAT the real fix is: assert the complexity, not the
+# clock — one replay per pass, no replay inside a per-block loop.
+#
+# Ratchet: lower this manually after a measured, reviewed improvement. Never
+# raise it to make a red gate pass; a regression here is the gate working.
+check_wall_ms_ceiling=6000

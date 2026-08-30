@@ -82,7 +82,7 @@
 .PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: dogfood-compile-measure
+.PHONY: dogfood-compile-measure bench-mir
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
@@ -1139,6 +1139,12 @@ HEW_BIN ?= $(RELEASE_LIB_HEW)
 LINT_GATES += dogfood-compile-measure
 dogfood-compile-measure: hew
 	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
+
+# MIR lowering time budget. The IR-size gate above measures what lowering
+# produces; this one measures what lowering costs.
+LINT_GATES += bench-mir
+bench-mir: hew ## Test: fail when MIR lowering time exceeds its budget
+	HEW_BIN="$(HEW_BIN)" bash scripts/bench-mir.sh
 
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
 # QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).

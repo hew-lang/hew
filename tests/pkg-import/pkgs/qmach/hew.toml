@@ -1,0 +1,6 @@
+[package]
+name = "hew::qmach"
+version = "0.1.0"
+description = "Package-imported machine fixture: qualified machine + event companion access"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

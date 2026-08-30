@@ -1,0 +1,6 @@
+[package]
+name = "hew::qmachbad"
+version = "0.1.0"
+description = "Reject fixture: a package machine transition body naming an undeclared state"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

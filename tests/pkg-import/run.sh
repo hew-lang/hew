@@ -413,6 +413,16 @@ fixtures=(
     # HIR's collision-gated transform (`Result<Unique, mixreply.Colliding>`) and
     # tripping MIR's actor-reply equality. Prints `1` then `9`.
     mixed_collision_reply
+    # Issue #3153: a `pub machine` reached through a package import is named by
+    # the importer under its module binding, for the machine type
+    # (`qmach.Light`) and for its synthesized `LightEvent` companion. The export
+    # ledger `resolve_module_type` reads is keyed by the exact source owner
+    # (`hew.qmach`), so recording the machine's pair only under the lexical
+    # binding (`qmach`) left both spellings refused as "no exported type". A
+    # file import cannot catch it: that route already records both keys. Driving
+    # `step` twice also runs the machine's own contextual `.Variant` transition
+    # bodies, `reenter` arm included, on the package route (#3149 guard).
+    qualified_machine_event_access
 )
 
 for fixture in "${fixtures[@]}"; do
@@ -1080,6 +1090,30 @@ if grep -q "E_CODEGEN_FRONT_FAIL_CLOSED" <<<"${two_module_generic_reject_out}"; 
     exit 1
 fi
 echo "PASS ${two_module_generic_reject}"
+
+# Negative control for the package-imported machine surface (#3153): making the
+# machine reachable through the package route must not make its transition
+# bodies permissive. An undeclared state named from the machine's own body is
+# still refused, and the diagnostic names the QUALIFIED owner
+# (`hew.qmachbad.Gate`) — the bare spelling would mean the body was checked
+# against an identity the import path retires (#3149).
+machine_state_reject="machine_unknown_state_reject"
+machine_state_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${machine_state_reject}.hew" 2>&1)" && {
+    echo "FAIL ${machine_state_reject}: hew check unexpectedly succeeded (undeclared machine state slipped the gate)" >&2
+    echo "${machine_state_out}" >&2
+    exit 1
+}
+if ! grep -q "E_PATH_MEMBER_NOT_FOUND: expected type \`hew.qmachbad.Gate\` has no variant \`Nope\`" <<<"${machine_state_out}"; then
+    echo "FAIL ${machine_state_reject}: expected an owner-qualified no-variant diagnostic" >&2
+    echo "${machine_state_out}" >&2
+    exit 1
+fi
+if grep -qE "E_HIR|E_MIR|E_CODEGEN_FRONT" <<<"${machine_state_out}"; then
+    echo "FAIL ${machine_state_reject}: undeclared state reached a downstream lowering boundary" >&2
+    echo "${machine_state_out}" >&2
+    exit 1
+fi
+echo "PASS ${machine_state_reject}"
 
 # Memory-safety pass on the ask-reply + explicit-release path (macOS only:
 # MallocScribble/MallocGuardEdges are libmalloc features).

@@ -1,0 +1,38 @@
+//! A `pub machine` reached through a package import (#3153).
+//!
+//! The importer names both the machine (`qmach.Light`) and its synthesized
+//! event companion (`qmach.LightEvent`) under the module binding. The export
+//! ledger is keyed by the exact source owner (`hew.qmach`), so recording the
+//! machine's pair only under the lexical binding (`qmach`) left the qualified
+//! lookup with nothing to find.
+//!
+//! Every transition body uses the contextual dotted spelling, including the
+//! `reenter` arm, so the module also covers the #3149 shape on the package
+//! route rather than only on a plain file import.
+
+pub machine Light {
+    events {
+        Toggle;
+        Ping;
+    }
+
+    state On;
+    state Off;
+
+    on Toggle: On => Off {
+        .Off
+    }
+    on Toggle: Off => On {
+        .On
+    }
+    on Ping: On => On reenter {
+        .On
+    }
+
+    default { state }
+}
+
+/// Factory returning the contextual spelling from a plain fn tail.
+pub fn initial() -> Light {
+    .On
+}

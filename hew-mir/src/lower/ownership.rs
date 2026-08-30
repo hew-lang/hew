@@ -3390,6 +3390,26 @@ impl Builder {
         self.publish_projection_source_transfer(value);
     }
 
+    /// Publish the aggregate source handoff when an unguarded consuming match
+    /// destructures an inline (`ByteCopyAlias`) field projection.
+    ///
+    /// `match slot.value { .Some(v) => ... }` loads the inline
+    /// enum/record field by byte copy - no retain - and then moves the active
+    /// payload into the arm binder, which
+    /// [`Builder::register_owned_local`] mints a scope-exit owner for
+    /// (`scrutinee_payload_owner_bindings`). Without this transfer the root
+    /// aggregate's generation still reaches its terminal recursive drop and
+    /// releases the same heap the binder now owns - the `Arena<Vec<T>>::remove`
+    /// double free. Ending the root generation here leaves the binder the sole
+    /// owner; the root's remaining owned fields are discharged by the escaped-
+    /// sibling field splice, so the handoff does not leak them.
+    pub(crate) fn publish_consuming_match_projection(&mut self, value: &HirExpr) {
+        if self.classify_field_load(&value.ty) != Some(FieldLoadClass::ByteCopyAlias) {
+            return;
+        }
+        self.publish_projection_source_transfer(value);
+    }
+
     fn publish_projection_source_transfer(&mut self, value: &HirExpr) {
         let Some(root_binding) = Self::projection_root_binding(value) else {
             return;

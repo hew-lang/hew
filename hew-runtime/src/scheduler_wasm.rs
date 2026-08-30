@@ -1150,12 +1150,17 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 /// Native wakes resolve an `ActorIncarnation` against the live-actor registry
 /// (`scheduler::enqueue_resume_by_incarnation`, #3069) because a wake recorded
 /// on one thread can fire after the registrant died and its allocation was
-/// reused. The cooperative twin has no such window: a readiness source and the
-/// wake it fires run in the same single-threaded activation with no allocator
-/// turn between them, so an address recorded at park time still names the
-/// registrant when the wake fires. Recorded in
-/// `docs/sandbox-vm-divergences.md`; revisit this argument before wasm gains
-/// preemption, threads, or an out-of-activation readiness source.
+/// reused. Two things keep the twin out of that window. It runs on a single
+/// worker thread, so no other thread frees the registrant mid-wake. And its
+/// only address-keyed caller, `reply_channel_wasm::hew_reply`, takes the
+/// parked branch only when `caller_actor` is non-null, which the E10
+/// actor-decl admission gate prevents in every admitted program; the branch
+/// exists for native parity, not because the VM reaches it.
+///
+/// Single-threadedness alone would not carry it: that reply fires from the
+/// callee's activation, not the one where the caller parked. Recorded in
+/// `docs/sandbox-vm-divergences.md`; revisit when E10 lifts, or when wasm
+/// gains preemption, threads, or an out-of-activation readiness source.
 ///
 /// Publishes
 /// to the run queue before storing `Suspended -> Runnable`; if shutdown already

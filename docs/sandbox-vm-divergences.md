@@ -61,9 +61,11 @@ The browser sandbox runs inside a Web Worker and executes VM work on a single Ja
 
 Native readiness sources wake a parked actor by *incarnation* - an actor id plus a never-reissued spawn serial, resolved against the live-actor registry - so a wake recorded before the registrant died is dropped rather than delivered to whatever actor later occupies the same allocation (issue #3069). The wasm runtime twin (`scheduler_wasm::enqueue_resume`, `reply_channel_wasm`) still wakes by raw actor address.
 
-This is an accepted divergence, not an unfixed hazard: the cooperative twin runs one activation at a time on a single worker thread, so a readiness source and the wake it fires are never separated by an allocator turn, and an address recorded at park time still names the registrant when the wake fires. The native hazard needs a wake recorded on one thread and fired on another.
+This is an accepted divergence, not an unfixed hazard, and two things hold it up together. The twin runs on a single worker thread, so no other thread can free the registrant while a wake is in flight - the native hazard needs a wake recorded on one thread and fired on another. And the twin's only address-keyed wake, `reply_channel_wasm::hew_reply`, sits behind the E10 actor-decl admission gate: no admitted wasm program declares an actor, so `caller_actor` is null in every reply the VM can reach and the parked branch never runs. That branch is kept for native parity, not because anything exercises it.
 
-The argument is what makes the divergence sound, so it has to be rechecked before wasm gains preemption, real threads, or any readiness source that fires outside the activation that registered it. `wasm_parity_tests` covers the shared mailbox and scheduler surface; it does not and cannot prove this particular property, which is about the execution model rather than the ABI.
+Single-threadedness alone would not be enough once the parked branch became reachable. The reply fires from the callee's activation, which is not the activation where the caller parked, so an address recorded at park time is separated from its wake by everything the callee did in between.
+
+Both halves are load-bearing, so the divergence has to be rechecked when either gives way: when E10 lifts and admitted programs can declare actors, or when wasm gains preemption, real threads, or a readiness source firing outside the activation that registered it. `wasm_parity_tests` covers the shared mailbox and scheduler surface; it does not and cannot prove this property, which is about the execution model rather than the ABI.
 
 ## Regex engine differences
 

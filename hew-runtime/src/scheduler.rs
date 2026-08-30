@@ -1515,14 +1515,16 @@ pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_vo
         return;
     }
 
-    // W6.010 caller-actor UAF guard (S1). `enqueue_resume` is reached not only by
+    // W6.010 caller-actor UAF guard (S1). This entry point is reached not only by
     // a live reply but also by the orphan-retire teardown
     // (`hew_reply_channel_retire_orphaned_ask_sender_ref`), which the CALLEE
-    // mailbox runs during its own teardown. The reply channel stores a raw
-    // `caller_actor` pointer that nothing nulls when the CALLER is freed, and
-    // `cleanup_all_actors` frees actors in nondeterministic `HashMap` order — so
-    // the caller box can already be freed when the callee teardown fires this
-    // wake. Dereferencing `actor` directly would be a heap-use-after-free.
+    // mailbox runs during its own teardown. `cleanup_all_actors` frees actors in
+    // nondeterministic `HashMap` order, so the caller box can already be freed
+    // when the callee teardown fires this wake. Dereferencing `actor` directly
+    // would be a heap-use-after-free. (Production callers arrive through
+    // `enqueue_resume_by_incarnation`, which has already refused a wake whose
+    // incarnation is gone; this guard is what makes the raw-pointer entry point
+    // safe for the scheduler's own tests and for a pin held across the call.)
     //
     // `with_live_actor` makes the liveness check and the wake one atomic action:
     // it holds the `LIVE_ACTORS` registry lock across the closure, and EVERY free

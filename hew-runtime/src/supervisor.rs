@@ -6933,8 +6933,9 @@ mod tests {
             store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
             let slot = crate::read_slot::hew_read_slot_new();
-            // A null actor is fine: the wake path re-validates via enqueue_resume,
-            // which drops a null/dead actor's wake with no deref.
+            // A null actor records `ActorIncarnation::NONE`, which never resolves,
+            // so the drain runs with no wake. The incarnation controls for this
+            // edge live in `restart_await_notify_*`.
             let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
 
             assert_eq!(

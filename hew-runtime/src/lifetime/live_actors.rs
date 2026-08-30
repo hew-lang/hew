@@ -578,8 +578,11 @@ pub(crate) struct ActorIncarnation {
 impl ActorIncarnation {
     /// No wake target.
     ///
-    /// Actor id `0` is the runtime's invalid-actor sentinel (`hew_pid_make`
-    /// refuses to mint it), so it can never name a real incarnation. Sources
+    /// Actor id `0` is the runtime's invalid-actor sentinel. Minting refuses
+    /// it: [`crate::pid::next_actor_id`] rejects any slot that fails
+    /// `actor_slot_fits_internal_alias`, slot `0` included, before it can reach
+    /// the packing primitive - which masks rather than refuses. So `0` can never
+    /// name a real incarnation. Sources
     /// that park without an actor — a foreign thread, or an await registered
     /// before the caller is known — record this.
     pub(crate) const NONE: Self = Self {

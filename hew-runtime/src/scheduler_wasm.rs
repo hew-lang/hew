@@ -1143,8 +1143,21 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 }
 
 /// Wake a `Suspended` actor whose parked continuation became resumable (wasm
-/// cooperative half). The single resume edge every wasm readiness source feeds,
-/// mirroring the native `scheduler::enqueue_resume` over the same ABI. Publishes
+/// cooperative half). The single resume edge every wasm readiness source feeds.
+///
+/// # Divergence from native: this twin wakes by ADDRESS
+///
+/// Native wakes resolve an `ActorIncarnation` against the live-actor registry
+/// (`scheduler::enqueue_resume_by_incarnation`, #3069) because a wake recorded
+/// on one thread can fire after the registrant died and its allocation was
+/// reused. The cooperative twin has no such window: a readiness source and the
+/// wake it fires run in the same single-threaded activation with no allocator
+/// turn between them, so an address recorded at park time still names the
+/// registrant when the wake fires. Recorded in
+/// `docs/sandbox-vm-divergences.md`; revisit this argument before wasm gains
+/// preemption, threads, or an out-of-activation readiness source.
+///
+/// Publishes
 /// to the run queue before storing `Suspended -> Runnable`; if shutdown already
 /// took the queue, leaves the parked frame untouched for cleanup. Records a
 /// pending wake when the park has not yet published a handle (FG3 window).

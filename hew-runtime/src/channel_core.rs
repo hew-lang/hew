@@ -21,9 +21,11 @@
 //! A parked peer is recorded as a `Waiter { actor, slot }`; the core holds an
 //! independent in-flight ref on the slot (`read_slot_retain`) for as long as the
 //! registration lives, released on EVERY exit (normal wake, detach, close). The
-//! wake itself goes through [`crate::scheduler::enqueue_resume`], which
-//! re-confirms the caller actor's liveness under the `LIVE_ACTORS` lock and
-//! drops the wake with no deref if the actor was freed. The deposit checks the
+//! wake itself goes through
+//! [`crate::scheduler::enqueue_resume_by_incarnation`], which resolves the
+//! recorded incarnation in the live-actor registry and drops the wake, with no
+//! deref, when that incarnation is gone - whether the address was freed or now
+//! belongs to a different actor. The deposit checks the
 //! slot's cancelled flag, so an abandon edge that won the race makes a late wake
 //! a no-op. Wakes are always performed AFTER the core lock is released to avoid
 //! re-entrancy into the scheduler under the channel lock.
@@ -113,10 +115,11 @@ pub struct ChannelCore {
     wait_probe: Mutex<Option<std::sync::Arc<std::sync::Barrier>>>,
 }
 
-// SAFETY: every field of `Inner` is accessed only under `inner`'s lock. The raw
-// `*mut HewActor` / `*mut HewReadSlot` in a `Waiter` are never dereferenced
-// here: the actor goes through `enqueue_resume`'s liveness-checked wake and the
-// slot through the atomic read-slot API. The contained `Vec<u8>` items are owned.
+// SAFETY: every field of `Inner` is accessed only under `inner`'s lock. A
+// `Waiter` carries no actor pointer at all - `actor` is an `ActorIncarnation`,
+// a pair of scalars resolved against the live-actor registry at wake time - and
+// its raw `*mut HewReadSlot` is only ever touched through the atomic read-slot
+// API. The contained `Vec<u8>` items are owned.
 unsafe impl Send for ChannelCore {}
 // SAFETY: as above — all shared mutation is serialised by the `Mutex`.
 unsafe impl Sync for ChannelCore {}
@@ -702,8 +705,8 @@ impl ChannelCore {
         }
         for producer in producer_wakes {
             // SAFETY: removed under the lock; the core owns the producer slot's
-            // in-flight ref. A stale faulting actor is rejected by
-            // `enqueue_resume`; any distinct live producer reaches its unit
+            // in-flight ref. A producer whose incarnation is gone has its wake
+            // dropped at resolution; any producer still live reaches its unit
             // send continuation instead of remaining parked forever.
             unsafe { Self::wake(producer) };
         }

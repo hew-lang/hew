@@ -125,7 +125,7 @@ pub use self::consts::{build_const_descriptors, is_string_const_ty};
 #[cfg(not(test))]
 use self::drop_plan::{
     affine_release_needs_drop_flag, binder_read_is_borrow_safe_instr,
-    binder_read_is_borrow_safe_terminator, builtin_method_arg_is_move_ingress, check_to_diagnostic,
+    binder_read_is_borrow_safe_terminator, builtin_method_arg_is_move_ingress,
     classify_closure_pair_rhs, classify_dyn_trait_storage, cow_value_leaf_drop_symbol,
     describe_vec_element, dyn_rebind_source_binding, elaborate,
     field_override_uses_record_field_drop, project_findings, render_owned_handle_ty,
@@ -14028,11 +14028,7 @@ pub(crate) fn lower_function(
     dataflow_result
         .checks
         .extend(validate_outbound_actor_modes(&raw));
-    let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
-        .checks
-        .iter()
-        .filter_map(check_to_diagnostic)
-        .collect();
+    let mut diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
     diagnostics.extend(move_value::ordinary_projection_transfer_diagnostics(
         &raw.blocks,
         &builder.suspend_kinds,
@@ -14204,7 +14200,7 @@ pub(crate) fn lower_function(
     {
         eprintln!("HEW_DEBUG_FINDINGS {findings:#?}");
     }
-    diagnostics.extend(project_findings(findings));
+    diagnostics.extend(project_findings(&findings));
     LoweredFunction {
         raw,
         checked,

@@ -20,7 +20,7 @@ mod conditional_consume_release;
 mod diagnostic_projection;
 
 pub(super) use conditional_consume_release::materialize_conditional_consume_releases;
-pub(super) use diagnostic_projection::{check_to_diagnostic, project_findings};
+pub(super) use diagnostic_projection::project_findings;
 
 /// Drop-elaboration pass over a `CheckedMirFunction`.
 ///
@@ -1239,9 +1239,7 @@ pub(super) fn seal_checked(
         &builder.enum_layouts,
         &field_drop_admissible,
     ) {
-        if let Some(diagnostic) = check_to_diagnostic(&check) {
-            diagnostics.push(diagnostic);
-        }
+        diagnostics.extend(project_findings(std::slice::from_ref(&check)));
     }
     let checked = CheckedMirFunction {
         name,
@@ -2469,7 +2467,7 @@ fn verifier_findings_project_to_one_internal_error_without_debug_identities() {
             "finding leaks Debug identities: {reason}"
         );
     }
-    let diagnostics = project_findings(findings);
+    let diagnostics = project_findings(&findings);
     let [diagnostic] = diagnostics.as_slice() else {
         panic!("one internal error per function, got {diagnostics:#?}");
     };

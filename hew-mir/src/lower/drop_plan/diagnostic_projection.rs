@@ -18,8 +18,9 @@ fn obligation_under_release_note(provenance: ObligationMintProvenance) -> String
     }
 }
 
-/// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
-/// rejection surface. `CheckedMirFunction::checks` is the single
+/// Project one Checked MIR finding to a `MirDiagnostic` for the CLI
+/// rejection surface. Private on purpose: `project_findings` is the only way
+/// out of this module, so no caller can skip the consolidation rules. `CheckedMirFunction::checks` is the single
 /// source of truth for move/borrow/init legality; this function
 /// adapts those findings to the older `MirDiagnostic` channel the
 /// driver already consumes. Variants whose construction surface
@@ -30,7 +31,7 @@ fn obligation_under_release_note(provenance: ObligationMintProvenance) -> String
     reason = "one exhaustive MirCheck -> MirDiagnostic projection; each arm is a \
               single distinct mapping and splitting scatters the projection table"
 )]
-pub(in crate::lower) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
+fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
     match check {
         MirCheck::UseAfterConsume {
             binding,
@@ -325,41 +326,48 @@ fn merge_unbalanced_owner(target: &mut MirCheck, source: &MirCheck) {
 ///    share both are the same value. The leak/double-free direction never
 ///    merges, because the two say opposite things about the same value.
 /// 2. **At most one internal-compiler-error per function.** A finding whose
-///    cause is a lowering invariant (not the user's program) is projected to
-///    `MirDiagnosticKind::LoweringInvariant`; the first one per function is
-///    kept and the rest are dropped, because every later one is a
-///    consequence of the same inconsistent MIR and repeating them buries the
-///    user's own errors. `HEW_DEBUG_CHECKED_FUNCTION` dumps the unprojected
+///    cause is a compiler defect and not the user's program - named by
+///    `MirDiagnosticKind::internal_compiler_error_function`, which covers the
+///    lowering invariants and both obligation imbalances - is kept only the
+///    first time per function; every later one is a consequence of the same
+///    inconsistent MIR and repeating them buries the user's own errors. That
+///    cap also settles the one case rule 1 leaves standing: a value the
+///    compiler both leaks on one exit and double-frees on another produces
+///    two findings that must not be merged into one sentence, and the cap
+///    reports the first. `HEW_DEBUG_CHECKED_FUNCTION` dumps the unprojected
 ///    finding list beforehand, so a compiler engineer still sees the ones
 ///    this rule drops.
-pub(in crate::lower) fn project_findings(findings: Vec<MirCheck>) -> Vec<MirDiagnostic> {
+pub(in crate::lower) fn project_findings(findings: &[MirCheck]) -> Vec<MirDiagnostic> {
     let mut coalesced: Vec<MirCheck> = Vec::with_capacity(findings.len());
     for finding in findings {
-        let Some(key) = unbalanced_owner_key(&finding) else {
-            coalesced.push(finding);
+        let Some(key) = unbalanced_owner_key(finding) else {
+            coalesced.push(finding.clone());
             continue;
         };
         let prior = coalesced
             .iter()
             .position(|prior| unbalanced_owner_key(prior).as_ref() == Some(&key));
         match prior {
-            Some(index) => merge_unbalanced_owner(&mut coalesced[index], &finding),
-            None => coalesced.push(finding),
+            Some(index) => merge_unbalanced_owner(&mut coalesced[index], finding),
+            None => coalesced.push(finding.clone()),
         }
     }
 
-    let mut reported_invariant_functions = Vec::<String>::new();
+    let mut reported_internal_functions = Vec::<String>::new();
     coalesced
         .iter()
         .filter_map(check_to_diagnostic)
         .filter(|diagnostic| {
-            let MirDiagnosticKind::LoweringInvariant { function, .. } = &diagnostic.kind else {
+            let Some(function) = diagnostic.kind.internal_compiler_error_function() else {
                 return true;
             };
-            if reported_invariant_functions.contains(function) {
+            if reported_internal_functions
+                .iter()
+                .any(|seen| seen == function)
+            {
                 return false;
             }
-            reported_invariant_functions.push(function.clone());
+            reported_internal_functions.push(function.to_owned());
             true
         })
         .collect()
@@ -369,11 +377,16 @@ pub(in crate::lower) fn project_findings(findings: Vec<MirCheck>) -> Vec<MirDiag
 mod tests {
     use super::{project_findings, MirCheck, MirDiagnosticKind};
     use crate::model::{NeutralizeAuthority, ObligationMintProvenance};
-    use hew_hir::SiteId;
+    use hew_hir::{BindingId, SiteId};
 
-    fn under_released(block: u32, site: u32, provenance: ObligationMintProvenance) -> MirCheck {
+    fn under_released_in(
+        function: &str,
+        block: u32,
+        site: u32,
+        provenance: ObligationMintProvenance,
+    ) -> MirCheck {
         MirCheck::ObligationUnderReleased {
-            function: "f".to_owned(),
+            function: function.to_owned(),
             blocks: vec![block],
             site: SiteId(site),
             name: "s".to_owned(),
@@ -383,12 +396,25 @@ mod tests {
         }
     }
 
+    fn under_released(block: u32, site: u32, provenance: ObligationMintProvenance) -> MirCheck {
+        under_released_in("f", block, site, provenance)
+    }
+
     fn drift(function: &str, block: u32, rule: &str) -> MirCheck {
         MirCheck::DischargeAuthorityDrift {
             function: function.to_owned(),
             block,
             name: rule.to_owned(),
             reason: format!("{rule} failed in bb{block}"),
+        }
+    }
+
+    fn use_after_consume() -> MirCheck {
+        MirCheck::UseAfterConsume {
+            binding: BindingId(1),
+            name: "held".to_owned(),
+            consumed_at: SiteId(11),
+            used_at: SiteId(12),
         }
     }
 
@@ -404,7 +430,7 @@ mod tests {
 
     #[test]
     fn one_owner_double_freed_on_two_exits_yields_one_diagnostic() {
-        let diagnostics = project_findings(vec![over_released(4, 3), over_released(1, 3)]);
+        let diagnostics = project_findings(&[over_released(4, 3), over_released(1, 3)]);
         let [diagnostic] = diagnostics.as_slice() else {
             panic!("expected one diagnostic for one owner, got {diagnostics:#?}");
         };
@@ -417,21 +443,27 @@ mod tests {
     }
 
     #[test]
-    fn a_leak_and_a_double_free_over_one_owner_stay_separate_diagnostics() {
-        let diagnostics = project_findings(vec![
+    fn a_leak_and_a_double_free_over_one_owner_report_once() {
+        let diagnostics = project_findings(&[
             under_released(7, 3, ObligationMintProvenance::Ordinary),
             over_released(7, 3),
         ]);
-        assert_eq!(
-            diagnostics.len(),
-            2,
-            "opposite imbalances over one owner must not fold: {diagnostics:#?}"
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("expected one diagnostic for one owner, got {diagnostics:#?}");
+        };
+        assert!(
+            matches!(
+                diagnostic.kind,
+                MirDiagnosticKind::ObligationUnderReleased { .. }
+            ),
+            "the first imbalance survives the per-function cap, unmerged with \
+             the opposite claim: {diagnostic:#?}"
         );
     }
 
     #[test]
     fn one_owner_unbalanced_on_three_exits_yields_one_diagnostic() {
-        let diagnostics = project_findings(vec![
+        let diagnostics = project_findings(&[
             under_released(7, 3, ObligationMintProvenance::Ordinary),
             under_released(2, 3, ObligationMintProvenance::ExplicitRetain),
             under_released(7, 3, ObligationMintProvenance::Ordinary),
@@ -467,17 +499,46 @@ mod tests {
     }
 
     #[test]
-    fn distinct_mint_sites_stay_distinct_diagnostics() {
-        let diagnostics = project_findings(vec![
-            under_released(7, 3, ObligationMintProvenance::Ordinary),
-            under_released(7, 4, ObligationMintProvenance::Ordinary),
+    fn distinct_mint_sites_in_distinct_functions_stay_distinct_diagnostics() {
+        let diagnostics = project_findings(&[
+            under_released_in("f", 7, 3, ObligationMintProvenance::Ordinary),
+            under_released_in("g", 7, 4, ObligationMintProvenance::Ordinary),
         ]);
         assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
     }
 
     #[test]
+    fn two_leaked_owners_in_one_function_report_the_first_only() {
+        let diagnostics = project_findings(&[
+            under_released(7, 3, ObligationMintProvenance::Ordinary),
+            under_released(7, 4, ObligationMintProvenance::Ordinary),
+        ]);
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("one inconsistent lowering reports once, got {diagnostics:#?}");
+        };
+        let MirDiagnosticKind::ObligationUnderReleased { site, .. } = &diagnostic.kind else {
+            panic!("expected ObligationUnderReleased, got {diagnostic:#?}");
+        };
+        assert_eq!(*site, SiteId(3), "the first finding is the one kept");
+    }
+
+    #[test]
+    fn an_obligation_imbalance_is_internal_and_a_use_after_consume_is_not() {
+        let diagnostics = project_findings(&[
+            under_released(7, 3, ObligationMintProvenance::Ordinary),
+            over_released(2, 9),
+            use_after_consume(),
+        ]);
+        let classified = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.kind.internal_compiler_error_function())
+            .collect::<Vec<_>>();
+        assert_eq!(classified, [Some("f"), None]);
+    }
+
+    #[test]
     fn lowering_invariants_report_once_per_function() {
-        let diagnostics = project_findings(vec![
+        let diagnostics = project_findings(&[
             drift("f", 1, "ownership-place"),
             drift("f", 2, "ownership-generation"),
             MirCheck::DischargeAuthorityMissing {
@@ -506,15 +567,15 @@ mod tests {
 
     #[test]
     fn user_findings_are_not_suppressed_by_an_invariant_in_the_same_function() {
-        let diagnostics = project_findings(vec![
+        let diagnostics = project_findings(&[
             drift("f", 1, "ownership-place"),
-            under_released(7, 3, ObligationMintProvenance::Ordinary),
+            use_after_consume(),
             drift("f", 2, "ownership-place"),
         ]);
         assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
         assert!(matches!(
             diagnostics[1].kind,
-            MirDiagnosticKind::ObligationUnderReleased { .. }
+            MirDiagnosticKind::UseAfterConsume { .. }
         ));
     }
 }

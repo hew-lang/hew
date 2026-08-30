@@ -214,7 +214,7 @@ fn explicit_owner_transfer_flags_fabricated_source() {
 }
 
 /// The unverified verdict is a hard diagnostic with NO allowlist escape:
-/// `check_to_diagnostic` must upgrade it so the CLI rejects the program.
+/// `project_findings` must upgrade it so the CLI rejects the program.
 #[test]
 fn unverified_balance_upgrades_to_hard_diagnostic() {
     let check = MirCheck::ObligationBalanceUnverified {
@@ -222,7 +222,7 @@ fn unverified_balance_upgrades_to_hard_diagnostic() {
         reason: "cap exhausted".to_string(),
     };
     assert!(
-        check_to_diagnostic(&check).is_some(),
+        !super::diagnostic_projection::project_findings(std::slice::from_ref(&check)).is_empty(),
         "an unverified balance verdict must surface as a hard diagnostic"
     );
 }

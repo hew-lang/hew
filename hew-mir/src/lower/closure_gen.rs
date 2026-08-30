@@ -4,15 +4,15 @@
 )]
 
 use super::{
-    base_local, check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow,
-    elaborate, finalize_bytes_ownership, finalize_string_ownership,
-    materialize_explicit_goto_edge_carries, seal_checked, terminator_is_suspend_carrier,
-    ActorStateLoadMode, BindingId, Builder, BuiltinType, CaptureEnvSource, ClosureEnvAllocation,
-    ClosureEnvFieldInit, ClosureEnvFieldOwnership, Disposition, FieldOffset, HashSet, HirBlock,
-    HirExpr, HirExprKind, HirFn, Instr, IntentKind, LambdaCapture, LoweredFunction, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, ReleaseSymbolVerdict, ResolvedRef,
-    ResolvedTy, SiteId, SourceOrigin, StreamProducerPumpCtx, SuspendKind, Terminator,
-    ValueClass, SENTINEL_STREAM_SEND_VALUE_BINDING,
+    base_local, check_function, collect_unknown_type_diagnostics, dataflow, elaborate,
+    finalize_bytes_ownership, finalize_string_ownership, materialize_explicit_goto_edge_carries,
+    project_findings, seal_checked, terminator_is_suspend_carrier, ActorStateLoadMode, BindingId,
+    Builder, BuiltinType, CaptureEnvSource, ClosureEnvAllocation, ClosureEnvFieldInit,
+    ClosureEnvFieldOwnership, Disposition, FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind,
+    HirFn, Instr, IntentKind, LambdaCapture, LoweredFunction, MirDiagnostic, MirDiagnosticKind,
+    MirStatement, Place, RawMirFunction, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SiteId,
+    SourceOrigin, StreamProducerPumpCtx, SuspendKind, Terminator, ValueClass,
+    SENTINEL_STREAM_SEND_VALUE_BINDING,
 };
 use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
@@ -1012,11 +1012,7 @@ impl Builder {
             span: body.span.clone(),
         };
         let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
-        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
+        let mut diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
         finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
@@ -1197,11 +1193,7 @@ impl Builder {
             span: 0..0,
         };
         let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
-        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
+        let mut diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
         finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
@@ -1745,11 +1737,7 @@ impl Builder {
         };
 
         let dataflow_result = check_function(&body_builder, &raw.blocks, &synthetic_fn);
-        let mut body_diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
+        let mut body_diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
         finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
@@ -2587,11 +2575,7 @@ impl Builder {
         };
 
         let dataflow_result = check_function(&body_builder, &raw.blocks, &synthetic_fn);
-        let mut body_diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
+        let mut body_diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
         finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);

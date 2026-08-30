@@ -8002,7 +8002,10 @@ pub enum MirDiagnosticKind {
     /// S1 obligation-balance under-release (leak): surfaced from
     /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has fewer
     /// discharges than owner mints on a CFG exit. Every instance is a blocking
-    /// compiler-invariant failure.
+    /// compiler-invariant failure, so it reports through the
+    /// internal-compiler-error channel
+    /// (`internal_compiler_error_function`, `E_MIR_ICE`) and not as a fault in
+    /// the user's program.
     ObligationUnderReleased {
         function: String,
         blocks: Vec<u32>,
@@ -8014,7 +8017,8 @@ pub enum MirDiagnosticKind {
     /// S1 obligation-balance over-release (double-free): surfaced from
     /// `MirCheck::ObligationOverReleased`. Two or more definite discharges
     /// on one CFG path. Unconditional hard error — memory-unsafe, no
-    /// allowlist escape.
+    /// allowlist escape — and, like under-release, a compiler-invariant
+    /// failure reported through the internal-compiler-error channel.
     ObligationOverReleased {
         function: String,
         blocks: Vec<u32>,
@@ -8253,6 +8257,33 @@ pub enum MirDiagnosticKind {
     /// When the full env-materialization protocol for Duplex captures is
     /// implemented, remove this guard AND the checker gate in `check_call`.
     ClosureCapturesDuplexHandle { name: String, site: SiteId },
+}
+
+impl MirDiagnosticKind {
+    /// The function whose lowering is at fault, when this diagnostic reports a
+    /// compiler defect rather than a fault in the user's program.
+    ///
+    /// Three kinds are internal. `LoweringInvariant` says so by name. The two
+    /// obligation imbalances join it because the user never writes a release:
+    /// the compiler decides where every owned value is discharged, so a mint
+    /// that no exit discharges (leak), or one that two discharges reach
+    /// (double-free), is the compiler disagreeing with itself about a drop
+    /// plan it built. No source edit is the fix.
+    ///
+    /// This is the one authority for that classification. `hew-cli` renders
+    /// what it names through the internal-compiler-error channel (`E_MIR_ICE`,
+    /// bug-report note), and `project_findings` reports at most one of them
+    /// per function so a single inconsistent lowering cannot bury the user's
+    /// own errors.
+    #[must_use]
+    pub fn internal_compiler_error_function(&self) -> Option<&str> {
+        match self {
+            Self::LoweringInvariant { function, .. }
+            | Self::ObligationUnderReleased { function, .. }
+            | Self::ObligationOverReleased { function, .. } => Some(function),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

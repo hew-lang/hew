@@ -124,15 +124,17 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::OutboundModeUnresolved { .. }
         | hew_mir::MirDiagnosticKind::MustConsume { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
-        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
-        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "E_MIR_CHECK",
-        // Internal-compiler-error channel: a lowering invariant failed. The
-        // program is not at fault; the code is distinct so tooling never
-        // files it with the user's ownership errors.
-        hew_mir::MirDiagnosticKind::LoweringInvariant { .. } => "E_MIR_ICE",
+        // Internal-compiler-error channel: a lowering invariant failed, or the
+        // compiler's own drop plan does not release an owned value exactly
+        // once. The program is not at fault; the code is distinct so tooling
+        // never files these with the user's ownership errors. `hew-mir`'s
+        // `internal_compiler_error_function` is the authority for the set.
+        hew_mir::MirDiagnosticKind::LoweringInvariant { .. }
+        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. } => "E_MIR_ICE",
         hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
         | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
             "E_NOT_YET_IMPLEMENTED"
@@ -816,8 +818,9 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
                 format!("owned value `{name}` of type `{local_ty}`")
             };
             format!(
-                "obligation balance in `{function}`: {typed_name} is never \
-                 released on {} exit path(s) (leak): {reason}",
+                "internal compiler error: the drop plan the compiler built for \
+                 `{function}` never releases {typed_name} on {} of its exit \
+                 path(s) (leak): {reason}",
                 blocks.len(),
             )
         }
@@ -829,8 +832,9 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             ..
         } => {
             format!(
-                "obligation balance in `{function}`: owned value `{name}` is \
-                 released more than once on {} exit path(s) (double-free): {reason}",
+                "internal compiler error: the drop plan the compiler built for \
+                 `{function}` releases owned value `{name}` more than once on \
+                 {} of its exit path(s) (double-free): {reason}",
                 blocks.len(),
             )
         }
@@ -1017,6 +1021,13 @@ fn push_lowering_invariant_notes(notes: &mut Vec<String>, block: Option<u32>) {
     );
 }
 
+/// An obligation imbalance rides the internal channel too: the failing exits,
+/// then the same bug-report ask a lowering invariant gets.
+fn push_obligation_notes(notes: &mut Vec<String>, label: &str, blocks: &[u32]) {
+    notes.push(format!("{label} exits: {}", mir_block_list(blocks)));
+    push_lowering_invariant_notes(notes, None);
+}
+
 fn mir_block_list(blocks: &[u32]) -> String {
     blocks
         .iter()
@@ -1099,10 +1110,10 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             push_lowering_invariant_notes(&mut notes, *block);
         }
         hew_mir::MirDiagnosticKind::ObligationUnderReleased { blocks, .. } => {
-            notes.push(format!("unreleased exits: {}", mir_block_list(blocks)));
+            push_obligation_notes(&mut notes, "unreleased", blocks);
         }
         hew_mir::MirDiagnosticKind::ObligationOverReleased { blocks, .. } => {
-            notes.push(format!("double-released exits: {}", mir_block_list(blocks)));
+            push_obligation_notes(&mut notes, "double-released", blocks);
         }
         hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { field_index, .. } => {
             notes.push(format!("field index: {field_index}"));
@@ -1617,6 +1628,82 @@ mod tests {
             !rendered.contains("OwnerId {") && !rendered.contains("BindingId("),
             "Debug identities leaked: {rendered}"
         );
+    }
+
+    /// An obligation imbalance is the compiler disagreeing with the drop plan
+    /// it built, so it renders on the same internal channel: the ICE code, the
+    /// count of failing exits, and the bug-report ask.
+    #[test]
+    fn an_unbalanced_owner_renders_on_the_internal_channel_with_its_exit_count() {
+        let diagnostic = hew_mir::MirDiagnostic {
+            kind: hew_mir::MirDiagnosticKind::ObligationUnderReleased {
+                function: "emit_workflow".to_owned(),
+                blocks: vec![26, 31, 44],
+                site: hew_hir::SiteId(7),
+                name: "__hew_produced_value".to_owned(),
+                local_ty: "WfTask".to_owned(),
+                reason: "the exit plan for the unwind path out of `emit_workflow` omits \
+                         its cleanup"
+                    .to_owned(),
+            },
+            note: "every heap-owning owned value must be released exactly once".to_owned(),
+        };
+
+        assert_eq!(mir_diagnostic_prefix(&diagnostic.kind), "E_MIR_ICE");
+        let message = mir_diagnostic_message(&diagnostic);
+        let notes = mir_context_notes(&diagnostic);
+        let rendered = std::iter::once(message.as_str())
+            .chain(notes.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            message.starts_with("E_MIR_ICE: internal compiler error"),
+            "{message}"
+        );
+        assert!(
+            message.contains("3 of its exit path(s)"),
+            "the exit count travels with the one diagnostic: {message}"
+        );
+        assert!(
+            rendered.contains("unreleased exits: bb26, bb31, bb44"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("not in your program") && rendered.contains("report it"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("OwnerId {") && !rendered.contains("BindingId("),
+            "Debug identities leaked: {rendered}"
+        );
+    }
+
+    /// A double-free joins the same channel; the user-facing ownership errors
+    /// (a consumed binding reused) stay on `E_MIR_CHECK`.
+    #[test]
+    fn a_double_free_is_internal_and_a_use_after_consume_is_not() {
+        let double_free = hew_mir::MirDiagnosticKind::ObligationOverReleased {
+            function: "render".to_owned(),
+            blocks: vec![4],
+            site: hew_hir::SiteId(9),
+            name: "line".to_owned(),
+            reason: "the return path releases it twice".to_owned(),
+        };
+        let use_after_consume = hew_mir::MirDiagnosticKind::UseAfterConsume {
+            binding: hew_hir::BindingId(3),
+            name: "held".to_owned(),
+            consumed_at: hew_hir::SiteId(1),
+            used_at: hew_hir::SiteId(2),
+        };
+
+        assert_eq!(mir_diagnostic_prefix(&double_free), "E_MIR_ICE");
+        assert_eq!(
+            double_free.internal_compiler_error_function(),
+            Some("render")
+        );
+        assert_eq!(mir_diagnostic_prefix(&use_after_consume), "E_MIR_CHECK");
+        assert_eq!(use_after_consume.internal_compiler_error_function(), None);
     }
 
     fn sample_type_error() -> hew_types::TypeError {

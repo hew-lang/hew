@@ -4479,14 +4479,20 @@ fn prepare_owned_call_carriers(
     let mut normal_owner_commits = Vec::new();
     let mut cursor_blocked = HashSet::new();
 
+    // Earlier call sites may have just committed ownership transfers, so the
+    // immutable MIR state must be re-read before inspecting a later site
+    // rather than carried as one pre-rewrite snapshot (which made every
+    // historical generation appear live later). The replay is a pure function
+    // of `blocks`, so it is derived on the first carrier site and re-derived
+    // only after this pass appended an operation — blocks with no pending
+    // carrier never needed it at all.
+    let mut owner_states: Option<(
+        HashMap<u32, drop_plan::ExactOwnerState>,
+        HashMap<u32, drop_plan::ExactOwnerState>,
+    )> = None;
+    let mut appended = false;
     for block_index in 0..blocks.len() {
-        // Earlier call sites may have just committed ownership transfers.
-        // Recompute the immutable MIR state before inspecting this site rather
-        // than carrying one pre-rewrite whole-function snapshot through every
-        // block (which made every historical generation appear live later).
-        let (owner_entries, owner_exits) = drop_plan::exact_owner_states(blocks);
         let block_id = blocks[block_index].id;
-        let block = &mut blocks[block_index];
         let Some(sites) = pending.get(&block_id) else {
             continue;
         };
@@ -4512,6 +4518,18 @@ fn prepare_owned_call_carriers(
             cursor_blocked.insert(block_id);
             continue;
         };
+        if appended {
+            owner_states = None;
+            appended = false;
+        }
+        if owner_states.is_none() {
+            owner_states = Some(drop_plan::exact_owner_states(blocks));
+        }
+        let states = owner_states
+            .as_ref()
+            .expect("owner states are derived above for every carrier site");
+        let (owner_entries, owner_exits) = (&states.0, &states.1);
+        let block = &mut blocks[block_index];
         let diagnostics_before = builder.diagnostics.len();
         let Terminator::Call { args, next, .. } = &mut block.terminator else {
             builder.diagnostics.push(MirDiagnostic {
@@ -4684,6 +4702,7 @@ fn prepare_owned_call_carriers(
                     transferee: Some(dest),
                     authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
                 });
+                appended = true;
                 drop_plan::apply_exact_owner_ops(
                     &block.instructions[block.instructions.len().saturating_sub(2)..],
                     &mut exact_owners,
@@ -4700,6 +4719,7 @@ fn prepare_owned_call_carriers(
                             to: dest,
                         },
                     ));
+                    appended = true;
                     normal_owner_commits.push((*next, *owner, arg.source, dest));
                     builder.set_owned_local_consumed_post_lowering(
                         owner.binding,
@@ -4758,6 +4778,7 @@ fn prepare_owned_call_carriers(
                         plan,
                         boundary: crate::model::PreparedCarrierBoundary::LocalCall,
                     });
+                    appended = true;
                     if let Some(slot) = args.get_mut(arg.index) {
                         *slot = dest;
                     }
@@ -10497,8 +10518,15 @@ fn materialize_explicit_move_relocations(blocks: &mut [BasicBlock], builder: &mu
 /// payload owners across local-to-local moves.
 fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let _timing = crate::timing::stage("materialize_explicit_nested_move_relocations");
+    // The replay is a pure function of `blocks`; only this pass's own event
+    // insertions invalidate it. See `canonicalize_terminal_transfer_owner_ids`.
+    let mut entries = drop_plan::exact_owner_states(blocks).0;
+    let mut inserted_event = false;
     for block_index in 0..blocks.len() {
-        let (entries, _) = drop_plan::exact_owner_states(blocks);
+        if inserted_event {
+            entries = drop_plan::exact_owner_states(blocks).0;
+            inserted_event = false;
+        }
         let block_id = blocks[block_index].id;
         let mut live = entries.get(&block_id).cloned().unwrap_or_default();
         let mut index = 0;
@@ -10576,6 +10604,7 @@ fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], build
                 blocks[block_index]
                     .instructions
                     .insert(insert_at, inserted.clone());
+                inserted_event = true;
                 drop_plan::apply_exact_owner_ops(std::slice::from_ref(&inserted), &mut live);
                 insert_at += 1;
             }

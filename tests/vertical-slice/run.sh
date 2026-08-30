@@ -5936,6 +5936,10 @@ run_accept_expect_stdout "guarded_arms_sink_fallthrough"
 run_accept_expect_stdout "guarded_arms_over_carrier_param"
 run_accept_expect_stdout "if_let_over_carrier_param"
 run_accept_expect_stdout "value_receiver_reused_after_method"
+# The cost strategy a callee summary selects is a fact about the path that
+# transfers, never about the binding: a sibling branch that only reads the
+# same record must still release it at its own exit.
+run_accept_expect_stdout "carrier_transfer_sibling_path_release"
 
 # The index-assignment move is decided by the argument's own use: an earlier
 # consume of the same binding elsewhere in the loop body neither hides nor

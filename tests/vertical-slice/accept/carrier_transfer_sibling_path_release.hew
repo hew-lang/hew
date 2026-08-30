@@ -1,0 +1,44 @@
+// A call never consumes a non-resource argument, and the cost strategy the
+// callee summary selects must not change what any OTHER path does.
+//
+// `keep` owns its `Holder` parameter (it pushes it into a Vec), so the callee
+// summary is OwnedCarrier and the caller may transfer the record on a proven
+// last use. `h` reaches `keep` only on the `then` path. The `else` path merely
+// reads `h`, so it must still release `h`'s two heap strings at its own exit:
+// the transfer publishes a path fact, not a whole-binding one.
+//
+// The counterfactual is the `else=` line: if the transfer's consume were read
+// as a fact about the binding rather than about the then-path, the else exit
+// would lose its release (a leak the ownership verifier does not see) or drop
+// a value it does not own (a double free that aborts here).
+type Holder { items: Vec<string>, label: string }
+
+fn keep(h: Holder) -> i64 {
+    let v: Vec<Holder> = [];
+    v.push(h);
+    v.len()
+}
+
+fn borrowed(h: Holder) -> i64 {
+    h.label.len()
+}
+
+fn run(cond: bool) -> i64 {
+    let h = Holder { items: ["a" + "b"], label: "x" + "y" };
+    var total = 0;
+    if cond {
+        total = total + keep(h);
+    } else {
+        total = total + borrowed(h);
+    }
+    total
+}
+
+fn main() -> i64 {
+    println(f"then={run(true)}");
+    println(f"else={run(false)}");
+    // Take the else path twice more: a per-visit under-release on the sibling
+    // path would compound, and a per-visit over-release would abort.
+    println(f"again={run(false) + run(false)}");
+    0
+}

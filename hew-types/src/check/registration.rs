@@ -11309,6 +11309,8 @@ impl Checker {
                     }
                     self.record_module_type_export(module_short, &md.name);
                     self.record_module_type_export(module_short, &event_name);
+                    self.record_module_type_export(module_full_path, &md.name);
+                    self.record_module_type_export(module_full_path, &event_name);
                     // Bare publication of the machine and its companion event
                     // enum is gated together so a named/glob import exposes both
                     // or neither; `Prelude` publishes both unconditionally.
@@ -12467,6 +12469,8 @@ impl Checker {
                     }
                     self.record_module_type_export(module_short, &md.name);
                     self.record_module_type_export(module_short, &event_name);
+                    self.record_module_type_export(module_full_path, &md.name);
+                    self.record_module_type_export(module_full_path, &event_name);
                     // Bare publication of the machine and its event enum is
                     // opt-in, gated together so a named/glob import exposes both
                     // or neither.

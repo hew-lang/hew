@@ -1,0 +1,9 @@
+// Negative control for the package-imported machine surface: an undeclared
+// state named from the machine's own transition body must still be refused,
+// with the diagnostic naming the qualified owner.
+import hew.qmachbad;
+
+fn main() {
+    let gate = qmachbad.Gate.Closed;
+    println(gate.state_name());
+}

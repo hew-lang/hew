@@ -1,0 +1,16 @@
+// A machine imported from a package is named through its module binding for
+// both the machine type (`qmach.Light`) and its synthesized event companion
+// (`qmach.LightEvent`), the way a `pub enum` or `pub type` already is (#3153).
+// Driving `step` twice also runs the machine's own contextual `.Variant`
+// transition bodies, including the `reenter` arm, through the package route.
+import hew.qmach;
+
+fn main() {
+    var light = qmach.initial();
+    light.step(qmach.LightEvent.Toggle);
+    println(light.state_name());
+
+    var lit = qmach.Light.On;
+    lit.step(qmach.LightEvent.Ping);
+    println(lit.state_name());
+}

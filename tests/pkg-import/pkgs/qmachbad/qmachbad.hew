@@ -1,0 +1,20 @@
+//! Negative control for the package-imported machine surface (#3153).
+//!
+//! `.Nope` names no declared state. Resolving the machine through the package
+//! route must still refuse it, and the diagnostic must name the qualified
+//! owner (`hew.qmachbad.Gate`) rather than the bare declaration spelling.
+
+pub machine Gate {
+    events {
+        Open;
+    }
+
+    state Closed;
+    state Opened;
+
+    on Open: Closed => Opened {
+        .Nope
+    }
+
+    default { state }
+}

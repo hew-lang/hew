@@ -77,6 +77,7 @@ pub(super) fn derive_elaboration(
     builder: &Builder,
     flat_statements: &[MirStatement],
 ) -> (ElaboratedMirFunction, Vec<MirDiagnostic>) {
+    let _timing = crate::timing::stage("derive_elaboration");
     let mut elaboration_diagnostics = Vec::new();
     // Statements stream: retained for snapshot/compat continuity with the
     // pre-Cluster-3 elaborator. Every owner binding gets a checker-stream
@@ -369,6 +370,7 @@ pub(super) fn owner_definition_drop_recipe(
 /// consulted.
 pub(super) fn materialize_successor_guard_authority(blocks: &mut [BasicBlock]) {
     use crate::model::OwnershipEvent;
+    let _timing = crate::timing::stage("materialize_successor_guard_authority");
 
     loop {
         let mut guards = HashMap::new();
@@ -673,6 +675,7 @@ pub(super) fn materialize_definition_site_drop_recipes(
     builder: &Builder,
 ) {
     use crate::model::OwnershipEvent;
+    let _timing = crate::timing::stage("materialize_definition_site_drop_recipes");
 
     let mut binding_order = HashMap::<BindingId, u32>::new();
     let mut next_order = 0_u32;
@@ -1033,6 +1036,7 @@ pub(super) fn materialize_exact_overwrite_releases(
     builder: Option<&Builder>,
 ) {
     use crate::model::OwnershipEvent;
+    let _timing = crate::timing::stage("materialize_exact_overwrite_releases");
 
     let mut recipes = blocks
         .iter()
@@ -1236,6 +1240,7 @@ pub(super) fn seal_checked(
     builder: &Builder,
     flat_statements: &[MirStatement],
 ) -> (CheckedMirFunction, Vec<MirDiagnostic>) {
+    let _timing = crate::timing::stage("seal_checked");
     let (mut ownership_elaboration, mut diagnostics) = derive_elaboration(
         &name,
         &key,
@@ -1519,6 +1524,7 @@ fn goto_edge_carry_checks(
 )]
 pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<MirCheck> {
     use crate::model::{OwnerId, OwnershipEvent};
+    let _timing = crate::timing::stage("validate_ownership_events");
 
     let (entries, exits) = exact_owner_states(&checked.blocks);
     let (maybe_entries, maybe_exits) = maybe_owner_states(&checked.blocks);
@@ -8462,6 +8468,7 @@ pub(super) fn apply_maybe_owner_ops(instructions: &[Instr], live: &mut MaybeOwne
 pub(super) fn exact_owner_states(
     blocks: &[BasicBlock],
 ) -> (HashMap<u32, ExactOwnerState>, HashMap<u32, ExactOwnerState>) {
+    let _timing = crate::timing::stage("exact_owner_states");
     let mut entries = HashMap::from([(ENTRY_BLOCK_ID, ExactOwnerState::new())]);
     let mut exits = HashMap::new();
     let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
@@ -8501,6 +8508,7 @@ pub(super) fn exact_owner_states(
 pub(super) fn maybe_owner_states(
     blocks: &[BasicBlock],
 ) -> (HashMap<u32, MaybeOwnerState>, HashMap<u32, MaybeOwnerState>) {
+    let _timing = crate::timing::stage("maybe_owner_states");
     let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MaybeOwnerState::new())]);
     let mut exits = HashMap::new();
     let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);

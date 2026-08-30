@@ -4008,7 +4008,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // Reject here rather than emitting a module with a duplicated identity.
     diagnostics.extend(crate::identity::validate_unique_callable_keys(&raw_mir));
 
-    IrPipeline {
+    let pipeline = IrPipeline {
         raw_mir,
         checked_mir,
         elaborated_mir,
@@ -4056,7 +4056,10 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         user_clone_record_seeds: Vec::new(),
         lint_warnings,
         lifecycle_registry,
-    }
+    };
+    // Whole-module report: the stage table and the slowest function bodies.
+    crate::timing::report(20);
+    pipeline
 }
 
 /// Module-global RAII-2 (#1295) param-ownership facts. See
@@ -4465,6 +4468,7 @@ fn prepare_owned_call_carriers(
     builder: &mut Builder,
     projection_tainted: &HashSet<u32>,
 ) -> Vec<CommittedOwnedCursorCall> {
+    let _timing = crate::timing::stage("prepare_owned_call_carriers");
     let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
     let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_owned_call_args);
@@ -8321,6 +8325,7 @@ fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, build
 /// These run after the checker statement snapshot because they rewrite operands
 /// rather than discharge values.
 fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
+    let _timing = crate::timing::stage("prepare_body_transfers");
     builder.resolve_local_names_from_binds(&*blocks);
     // P0 #2432 — classify every `ActorStateFieldLoad`'s own/borrow `mode`
     // over the fully finalised blocks (every splice pass above has already
@@ -9269,6 +9274,7 @@ pub(super) fn prove_retained_bytes_local_share(
 /// identity is dead and exactly one live owner carries `from`. Zero or multiple
 /// candidates remain untouched so validation fails closed.
 fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
+    let _timing = crate::timing::stage("canonicalize_terminal_transfer_owner_ids");
     for block_index in 0..blocks.len() {
         let (entries, _) = drop_plan::exact_owner_states(blocks);
         let block_id = blocks[block_index].id;
@@ -9310,6 +9316,7 @@ fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
 /// any generation of that binding. Ambiguous states stay untouched so the
 /// Checked-MIR validator still fails closed.
 fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) {
+    let _timing = crate::timing::stage("canonicalize_stale_relocation_and_reset_owner_ids");
     for block_index in 0..blocks.len() {
         let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
         let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
@@ -9830,6 +9837,7 @@ fn materialize_conditional_scope_exit_releases(
     reason = "scope-exit publication derives exact releases and rewrites each affected program point atomically"
 )]
 fn materialize_explicit_scope_exits(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_scope_exits");
     // Join sealing must reason about the lexical boundary before its physical
     // drops exist; use that same scope-aware state here to materialize those
     // drops. Strict Checked-MIR replay remains unchanged and verifies the
@@ -11339,6 +11347,7 @@ fn duplicate_neutralize_before_relocation(block: &BasicBlock, index: usize) -> O
     reason = "each bounded ownership-spine shape is an independent local falsifier-backed canonicalization rule"
 )]
 fn deduplicate_ownership_spines(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("deduplicate_ownership_spines");
     canonicalize_pre_move_terminal_relocations(blocks);
     let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
     for block in blocks {
@@ -11575,6 +11584,7 @@ fn unique_published_authority<T: PartialEq>(values: Option<&[T]>) -> Option<&T> 
 
 fn canonicalize_release_owner_ids(blocks: &mut [BasicBlock]) {
     use crate::model::OwnershipEvent;
+    let _timing = crate::timing::stage("canonicalize_release_owner_ids");
 
     let mut owner_types = HashMap::<crate::model::OwnerId, Vec<ResolvedTy>>::new();
     let mut owner_recipes =
@@ -11825,6 +11835,7 @@ fn canonicalize_join_dominated_rearm_lineages(blocks: &mut [BasicBlock], builder
 /// predecessor carries one unambiguous owner for the binding at the declared
 /// place; ownerless, wrong-place, and co-live edges remain validator-visible.
 fn canonicalize_join_incoming_owner_ids(blocks: &mut [BasicBlock], builder: &Builder) {
+    let _timing = crate::timing::stage("canonicalize_join_incoming_owner_ids");
     let (_, _, maybe_exits, _) =
         ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
     let mut predecessors = HashMap::<u32, Vec<u32>>::new();
@@ -12500,6 +12511,7 @@ mod lexical_scope_join_tests {
     reason = "ownership SSA join construction validates predecessors, splits edges, and renames one generation atomically"
 )]
 fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_exact_owner_join_transfers");
     loop {
         let (entries, exits, maybe_exits, must_entries) =
             ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
@@ -13067,6 +13079,7 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
     reason = "neutralize sealing correlates the physical carrier and exact owner state at one program point"
 )]
 fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_neutralize_transfers");
     for block_index in 0..blocks.len() {
         let (entries, _) = drop_plan::exact_owner_states(blocks);
         let block_id = blocks[block_index].id;
@@ -13240,6 +13253,7 @@ fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder:
 /// point, so Checked MIR never has to recover projection ancestry from Builder
 /// tables or whole-function scans.
 fn canonicalize_ownership_transfer_places(blocks: &mut [BasicBlock]) {
+    let _timing = crate::timing::stage("canonicalize_ownership_transfer_places");
     for block in blocks {
         for index in 0..block.instructions.len().saturating_sub(1) {
             let Instr::NeutralizePayloadSlot {
@@ -13891,6 +13905,9 @@ pub(crate) fn lower_function(
     call_conv: crate::model::FunctionCallConv,
     task_entry_adapter_symbols: TaskEntryAdapterSymbols,
 ) -> LoweredFunction {
+    // Per-function lowering cost, reported under `HEW_MEASURE_TIMINGS` so a
+    // compile-time regression names the function it landed in.
+    let lowering_started = crate::timing::function_start();
     let mut builder = Builder {
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
@@ -14286,6 +14303,7 @@ pub(crate) fn lower_function(
         eprintln!("HEW_DEBUG_FINDINGS {findings:#?}");
     }
     diagnostics.extend(project_findings(&findings));
+    crate::timing::function_end(&checked.name, lowering_started);
     LoweredFunction {
         raw,
         checked,

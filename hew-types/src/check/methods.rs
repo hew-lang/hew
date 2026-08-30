@@ -2724,6 +2724,23 @@ impl Checker {
         self.current_module.as_deref()
     }
 
+    /// The identity a declaration written in the scope currently being checked
+    /// is published under: `{module}.{bare_name}` inside a module, the bare
+    /// name at the root program.
+    ///
+    /// This is the one formula for a declaration's own name. Registration mints
+    /// the `TypeDef` key and the declaration's `Ty::Named` with it, and every
+    /// later pass that has to name that same declaration - a machine's
+    /// transition bodies, for instance - must mint it the same way, because the
+    /// bare spelling is only a transient row on the import path and is retired
+    /// once the canonical owner is published (`retire_imported_type_keys`).
+    pub(super) fn declaration_identity(&self, bare_name: &str) -> String {
+        self.current_module_identity().map_or_else(
+            || bare_name.to_string(),
+            |module| format!("{module}.{bare_name}"),
+        )
+    }
+
     /// Resolve a bare actor reference to its registered checker identity.
     ///
     /// Resolution order (local-first, mirroring `per-module-type-identity`):

@@ -4313,9 +4313,7 @@ impl Checker {
                 args: vec![],
             })
             .collect();
-        let machine_identity = self
-            .current_module_identity()
-            .map_or_else(|| md.name.clone(), |module| format!("{module}.{}", md.name));
+        let machine_identity = self.declaration_identity(&md.name);
         let machine_ty = Ty::Named {
             builtin: None,
             name: machine_identity.clone(),
@@ -4323,10 +4321,7 @@ impl Checker {
         };
 
         let event_type_name = format!("{}Event", md.name);
-        let event_identity = self.current_module_identity().map_or_else(
-            || event_type_name.clone(),
-            |module| format!("{module}.{event_type_name}"),
-        );
+        let event_identity = self.declaration_identity(&event_type_name);
         let event_ty = Ty::Named {
             builtin: None,
             name: event_identity.clone(),
@@ -5259,9 +5254,14 @@ impl Checker {
                 // type, `synthesize` cannot seed the type-params for generic
                 // machines and bare state constructors like `Faulted { error: … }`
                 // fail to resolve when the state has a generic field.
+                // Name the machine by its declaration identity, not its bare
+                // spelling: inside an imported module the bare `type_defs` row
+                // is retired once the canonical owner is published, so a bare
+                // expected type left the contextual `.Variant` arm with no
+                // reachable enum-or-machine definition.
                 let expected_machine_ty = Ty::Named {
                     builtin: None,
-                    name: md.name.clone(),
+                    name: self.declaration_identity(&md.name),
                     args: md
                         .type_params
                         .iter()

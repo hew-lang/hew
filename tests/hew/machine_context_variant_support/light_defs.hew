@@ -1,0 +1,40 @@
+//! Support module for the cross-module contextual-variant coverage (#3149).
+//!
+//! Every transition body here returns the contextual dotted spelling (`.Off`,
+//! `.Named { … }`) rather than the fully-qualified `Light.Off`. Checking this
+//! file on its own always resolved those; the point of the fixture is that the
+//! bodies are checked while the file is an imported dependency of another entry
+//! point, which is when the machine's expected-type context used to be minted
+//! under a bare name the imported `type_defs` row no longer carried.
+//!
+//! `Named` gives one transition a struct-payload state, so the expected type
+//! also has to seed a struct-variant construction, not only a unit variant.
+
+pub machine Light {
+    events {
+        Toggle;
+        Label;
+    }
+
+    state On;
+    state Off;
+    state Named { label: string; }
+
+    on Toggle: On => Off {
+        .Off
+    }
+    on Toggle: Off => On {
+        .On
+    }
+    on Label: On => Named {
+        .Named { label: "lit".to_upper() }
+    }
+
+    default { state }
+}
+
+/// Factory returning the contextual spelling from a plain fn tail, so the
+/// module covers both body shapes it owns.
+pub fn initial() -> Light {
+    .On
+}

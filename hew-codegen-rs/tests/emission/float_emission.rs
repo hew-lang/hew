@@ -67,7 +67,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// Slice the emitted module to the `@main` function body.
+/// Slice the emitted module to the program entry body (`@__hew_main_body`).
 ///
 /// Negative assertions ("no `with.overflow`", "no `@llvm.trap`") concern the
 /// float operation under test, not the whole module: every module now carries
@@ -77,9 +77,9 @@ fn emit_ll(source: &str, module_name: &str) -> String {
 fn main_body(ll: &str) -> String {
     let start = ll
         .find("define")
-        .and_then(|defs| ll[defs..].find("@main").map(|m| defs + m))
+        .and_then(|defs| ll[defs..].find("@__hew_main_body").map(|m| defs + m))
         .map(|m| ll[..m].rfind("define").unwrap_or(m))
-        .expect("emitted module must define @main");
+        .expect("emitted module must define @__hew_main_body");
     let rest = &ll[start..];
     let end = rest[1..]
         .find("\ndefine")

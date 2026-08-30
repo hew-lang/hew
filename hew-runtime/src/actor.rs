@@ -7181,27 +7181,34 @@ pub extern "C-unwind" fn hew_panic() {
 /// obligations discharge exactly as they do inside an actor. The process still
 /// ends with the panic's status and its message already on stderr.
 ///
-/// `body` is the internal `__hew_main_body` symbol; it is `extern "C-unwind"`
-/// because a Hew panic crosses it as a foreign exception.
+/// `body` is the generated `__hew_main_entry` adapter and `frame` the caller's
+/// argument-and-result frame for it. Everything shaped by the source travels in
+/// that frame so this stays one function with one signature. `body` is
+/// `extern "C-unwind"` because a Hew panic crosses it as a foreign exception.
 ///
 /// # Safety
 ///
-/// `body` must be the generated entry function for this module.
+/// `body` must be the generated entry adapter for this module and `frame` the
+/// matching caller-allocated frame.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_main_unwind_boundary(
-    body: unsafe extern "C-unwind" fn() -> i64,
-) -> i64 {
+    body: unsafe extern "C-unwind" fn(*mut std::ffi::c_void),
+    frame: *mut std::ffi::c_void,
+) {
     // A program that never starts the scheduler still needs the typed-unwind
     // filter, or Rust's default hook prints `panicked at ...` for a panic this
     // very frame is about to catch.
     install_hew_panic_hook();
     crate::execution_context::enter_process_entry_unwind_boundary();
-    // SAFETY: the caller guarantees `body` is the generated entry function.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { body() }));
+    // SAFETY: the caller guarantees `body` is the generated entry adapter and
+    // `frame` its matching frame.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        body(frame);
+    }));
     crate::execution_context::leave_process_entry_unwind_boundary();
     match result {
-        Ok(status) => status,
+        Ok(()) => (),
         Err(payload) => {
             // Same disposition as the scheduler's dispatch boundary: the typed
             // payload carries the status, anything else is an unclassified
@@ -8558,27 +8565,35 @@ mod tests {
         );
     }
 
-    unsafe extern "C-unwind" fn main_boundary_status_body() -> i64 {
+    unsafe extern "C-unwind" fn main_boundary_status_body(frame: *mut c_void) {
         assert!(
             crate::execution_context::current_context_can_unwind(),
             "the generated entry body runs inside the runtime's catch boundary"
         );
-        7
+        // SAFETY: this probe's frame is a live `i64` result slot.
+        unsafe { frame.cast::<i64>().write(7) };
     }
 
-    /// The main boundary is transparent on the normal leg: it returns the
+    /// The main boundary is transparent on the normal leg: it deposits the
     /// body's status and retracts the unwind permission afterwards.
     ///
-    /// The panic leg ends the process, so it is proven end to end by the
-    /// `panic_main_unwind_runs_resource_close` vertical-slice fixture instead.
+    /// The panic leg ends the process, so it is proven end to end by
+    /// `hew-cli/tests/panic_main_unwind_e2e.rs` instead.
     #[test]
     fn main_unwind_boundary_returns_the_body_status_and_retracts_permission() {
         let _runtime_guard = crate::runtime_test_guard();
+        let mut status: i64 = 0;
 
-        // SAFETY: the probe body has the generated entry ABI and never unwinds.
-        let status = unsafe { hew_main_unwind_boundary(main_boundary_status_body) };
+        // SAFETY: the probe body has the generated entry ABI, never unwinds,
+        // and writes exactly the `i64` this slot holds.
+        unsafe {
+            hew_main_unwind_boundary(
+                main_boundary_status_body,
+                (&raw mut status).cast::<c_void>(),
+            );
+        }
 
-        assert_eq!(status, 7, "the boundary must return the body's status");
+        assert_eq!(status, 7, "the boundary must deposit the body's status");
         assert!(
             !crate::execution_context::current_context_can_unwind(),
             "the boundary must retract the unwind permission when the body returns"

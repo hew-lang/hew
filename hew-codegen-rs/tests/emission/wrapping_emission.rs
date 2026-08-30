@@ -60,20 +60,20 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// Slice the emitted module down to the body of the `@main` function.
+/// Slice the emitted module down to the program entry body (`@__hew_main_body`).
 ///
 /// The negative assertions below (no `with.overflow`, no `@llvm.trap`) are
 /// about the WRAPPING OPERATION under test, not the whole module: every module
 /// now carries the always-spliced stdlib builtin impls, including the
 /// `duration::from_*` constructors whose `n * 1<unit>` bodies legitimately use
 /// `smul.with.overflow` + `@llvm.trap` (default trap-on-overflow arithmetic).
-/// Scoping to `@main` keeps the assertion about `&+`/`&-`/`&*` precise.
+/// Scoping to the entry body keeps the assertion about `&+`/`&-`/`&*` precise.
 fn main_body(ll: &str) -> String {
     let start = ll
         .find("define")
-        .and_then(|defs| ll[defs..].find("@main").map(|m| defs + m))
+        .and_then(|defs| ll[defs..].find("@__hew_main_body").map(|m| defs + m))
         .map(|m| ll[..m].rfind("define").unwrap_or(m))
-        .expect("emitted module must define @main");
+        .expect("emitted module must define @__hew_main_body");
     let rest = &ll[start..];
     let end = rest[1..]
         .find("\ndefine")

@@ -52,6 +52,12 @@ fn emit_ir(source: &str, name: &str) -> String {
     std::fs::read_to_string(artifacts.ll_path.expect("LLVM IR path")).expect("read LLVM IR")
 }
 
+/// The program entry body symbol.
+///
+/// The exported `main` is a wrapper that runs this beneath the runtime's
+/// unwind boundary (hew-lang/hew#3074), so the entry's own releases are here.
+const ENTRY_BODY: &str = "__hew_main_body";
+
 fn function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
     let needle = format!("@{symbol}(");
     let mut offset = 0;
@@ -333,10 +339,10 @@ fn exact_count_rejects_mutations(observed: usize, expected: usize) -> bool {
 
 fn d65_shape_exact_count(name: &str) -> (usize, usize) {
     let (source, symbol, expected, owner_slots) = match name {
-        "local_flat_full" => (LOCAL_FLAT_FULL.to_string(), "main", 1, true),
-        "local_flat_partial" => (LOCAL_FLAT_PARTIAL.to_string(), "main", 1, true),
-        "local_nested_full" => (LOCAL_NESTED_FULL.to_string(), "main", 3, true),
-        "local_nested_partial" => (LOCAL_NESTED_PARTIAL.to_string(), "main", 2, true),
+        "local_flat_full" => (LOCAL_FLAT_FULL.to_string(), ENTRY_BODY, 1, true),
+        "local_flat_partial" => (LOCAL_FLAT_PARTIAL.to_string(), ENTRY_BODY, 1, true),
+        "local_nested_full" => (LOCAL_NESTED_FULL.to_string(), ENTRY_BODY, 3, true),
+        "local_nested_partial" => (LOCAL_NESTED_PARTIAL.to_string(), ENTRY_BODY, 2, true),
         "state_flat_full" => (
             state_source(
                 "Vec<i64>",
@@ -523,7 +529,7 @@ fn d65_cursor_recursion_truth_table_has_one_owner_release_per_shape() {
         ("local_nested_partial", LOCAL_NESTED_PARTIAL, 2),
     ] {
         let ir = emit_ir(source, name);
-        let main = function_body(&ir, "main");
+        let main = function_body(&ir, ENTRY_BODY);
         let owner_slots = vec_release_owner_slots(main);
         assert_exact_owner_slot_count(name, &owner_slots, expected_owner_slots);
     }
@@ -662,7 +668,7 @@ fn d65_released_yield_is_always_a_cloned_yield() {
         ("local_nested_partial", LOCAL_NESTED_PARTIAL, 2),
     ] {
         let ir = emit_ir(source, name);
-        let main = function_body(&ir, "main");
+        let main = function_body(&ir, ENTRY_BODY);
         assert_yield_release_paired_with_clone_out(name, main, source_vec_bindings);
     }
 
@@ -671,7 +677,7 @@ fn d65_released_yield_is_always_a_cloned_yield() {
     // must fail — otherwise it would accept the aliased-yield double-free the
     // retired `vec_iter_yield_is_fresh_owner` gate used to reject.
     let ir = emit_ir(LOCAL_NESTED_FULL, "local_nested_full_counterfactual");
-    let main = function_body(&ir, "main");
+    let main = function_body(&ir, ENTRY_BODY);
     assert!(
         main.contains("@hew_vec_get_clone("),
         "local_nested_full must yield through the clone-out for the counterfactual to be \

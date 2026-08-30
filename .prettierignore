@@ -38,3 +38,11 @@ docs/wasm-capability-matrix.md
 # Root-level engineering logs, hand-wrapped (same rationale as above).
 LESSONS.md
 JOURNEY.md
+
+# Generated artefacts with their own writer. `scripts/generate-cabi-surface.py
+# --write` owns this file's shape; prettier collapsing its arrays turns any
+# staged regeneration into a whole-file reflow that buries the real change.
+#
+# WHY: the generator and prettier disagree about array formatting.
+# WHEN: remove once the generator emits prettier-shaped output itself.
+scripts/cabi-surface.json

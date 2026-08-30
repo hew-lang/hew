@@ -149,7 +149,13 @@ fn assert_owned_release_symbol(source: &str, fixture: &str, function: &str) {
 
 #[test]
 fn affected_release_sites_emit_owned_symbol() {
-    assert_owned_release_symbol(&generator_yield_source(3), "generator_symbol", "main");
+    // The exported `main` is a wrapper around the entry body, which is where
+    // the entry's own releases are emitted (hew-lang/hew#3074).
+    assert_owned_release_symbol(
+        &generator_yield_source(3),
+        "generator_symbol",
+        "__hew_main_body",
+    );
     assert_owned_release_symbol(
         &field_reassignment_source(3),
         "field_symbol",

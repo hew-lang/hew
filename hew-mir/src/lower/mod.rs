@@ -2074,6 +2074,9 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         }
     }
 
+    // Whole-module lowering cost, reported under `HEW_MEASURE_TIMINGS`. Placed
+    // after the nested helper items so the body has no item after a statement.
+    let module_started = crate::timing::function_start();
     let mut raw_mir = Vec::new();
     let mut checked_mir = Vec::new();
     let mut elaborated_mir = Vec::new();
@@ -4058,6 +4061,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         lifecycle_registry,
     };
     // Whole-module report: the stage table and the slowest function bodies.
+    crate::timing::record_stage("lower_hir_module", module_started);
     crate::timing::report(20);
     pipeline
 }
@@ -4995,6 +4999,7 @@ fn cfg_reachable_over(
 /// free. Tracked as #3160; the discarded attempt is preserved at
 /// `.tmp/ownership-seams/f3-inflight.patch`.
 fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("append_owned_carrier_param_drops");
     if builder.owned_carrier_params.is_empty() {
         return;
     }
@@ -5098,6 +5103,7 @@ fn resolve_outbound_actor_modes(
     builder: &mut Builder,
     projection_tainted: &HashSet<u32>,
 ) -> HashMap<u32, Vec<ResolvedOutboundSite>> {
+    let _timing = crate::timing::stage("resolve_outbound_actor_modes");
     let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
     let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_outbound_actor_args);
@@ -5304,6 +5310,7 @@ fn prepare_outbound_actor_payloads(
     resolved: &HashMap<u32, Vec<ResolvedOutboundSite>>,
     projection_tainted: &HashSet<u32>,
 ) {
+    let _timing = crate::timing::stage("prepare_outbound_actor_payloads");
     let record_layouts = outbound_record_layouts(builder);
     let (owner_entries, _) = drop_plan::exact_owner_states(blocks);
     for block in blocks.iter_mut() {
@@ -5780,6 +5787,7 @@ fn neutralize_divergent_selection_sources(
     builder: &mut Builder,
     projection_tainted: &HashSet<u32>,
 ) {
+    let _timing = crate::timing::stage("neutralize_divergent_selection_sources");
     let mut candidate_locals = frame_owned_heap_locals(builder);
     // A slot holding an INTERIOR ALIAS of a still-live parent — a match-arm
     // payload binder over an enum/machine carrier, a record/tuple field load,
@@ -6243,6 +6251,7 @@ fn materialize_one_divergent_selection_arm_closure(
 }
 
 fn materialize_divergent_selection_arm_closures(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_divergent_selection_arm_closures");
     while materialize_one_divergent_selection_arm_closure(blocks, builder) {}
 }
 
@@ -6324,6 +6333,7 @@ fn local_read_after_site(
     reason = "one proof pass keeps clone provenance, use classification, and release insertion together"
 )]
 fn release_cloned_collection_result_temps(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("release_cloned_collection_result_temps");
     let cloned_locals: HashMap<u32, HashSet<u32>> = blocks
         .iter()
         .filter_map(|block| match &block.terminator {
@@ -6536,6 +6546,7 @@ fn block_executes_at_most_once_per_owner_mint(
     reason = "one proof pass keeps owner eligibility, postdominance, and release insertion together"
 )]
 fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("release_last_borrowed_typed_owners");
     // An unretained handle placed into an aggregate remains owned by its
     // standalone source binding until an exact extraction consumer takes over.
     // The aggregate is only a byte-copy carrier in that no-consume state. Do
@@ -7155,6 +7166,7 @@ fn returned_aggregate_value_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
 }
 
 fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("neutralize_returned_aggregate_member_sources");
     let candidates = builder.owned_locals_owner_generations();
     let returned_members =
         derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
@@ -7334,6 +7346,7 @@ fn splice_body_ownership_releases(
     builder: &mut Builder,
     nested_fresh_temp_releases: bool,
 ) {
+    let _timing = crate::timing::stage("splice_body_ownership_releases");
     if nested_fresh_temp_releases {
         // Inline string/bytes releases this body's own lowering already
         // emitted. The retirement below pairs with releases added by every
@@ -7402,6 +7415,7 @@ fn splice_body_ownership_releases(
 /// receive no event and keep the caller owner; unknown locals and types remain
 /// fail-closed rather than acquiring an inferred handoff.
 fn splice_opaque_extern_string_argument_handoffs(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_opaque_extern_string_argument_handoffs");
     for block in blocks {
         let Terminator::Call { callee, args, .. } = &block.terminator else {
             continue;
@@ -7553,6 +7567,7 @@ fn linear_predecessor_chain(blocks: &[BasicBlock], target: u32) -> Vec<u32> {
     reason = "normal-success call commits split CFG edges while preserving call-site owner and guard authority"
 )]
 fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_normal_call_ownership_commits");
     let mut commits = Vec::new();
     for block in blocks.iter() {
         let Terminator::Call {
@@ -7820,6 +7835,7 @@ struct AffineCallConsumeCommit {
 /// different: its consuming parameter owns the value from function entry, so
 /// ordinary binding lowering transfers the caller owner before the invoke.
 fn splice_affine_call_argument_consumes(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_affine_call_argument_consumes");
     let pending = std::mem::take(&mut builder.pending_affine_call_consumes);
     if pending.is_empty() {
         return;
@@ -8074,6 +8090,7 @@ fn apply_affine_call_consume_commits(
 /// by `neutralize_aggregate_member_sources`; carrying the logical event here
 /// preserves predecessor-unwind cleanup.
 fn splice_retained_field_aggregate_commits(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_retained_field_aggregate_commits");
     let retained_field_seeds: Vec<u32> = blocks
         .iter()
         .flat_map(|block| &block.instructions)
@@ -8158,6 +8175,7 @@ fn splice_retained_field_aggregate_commits(blocks: &mut [BasicBlock], builder: &
     reason = "one proof pass keeps transfer reachability, dominance, and exit splicing together"
 )]
 fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_pretransfer_record_exit_drops");
     let candidates: HashMap<u32, (BindingId, ResolvedTy)> = builder
         .owned_locals_owner_generations()
         .into_iter()
@@ -8270,6 +8288,7 @@ fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut
 /// flow proves the escape's root, field, and last-use position, splice one
 /// `FieldDropInPlace` per dischargeable sibling right after the escape.
 fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_escaped_record_sibling_field_drops");
     // #2212 — an owned record whose field escapes through a binder loses its
     // composite scope-exit drop (the sole-owner prover excludes it); the
     // record's NON-escaped owned sibling fields still need their release.
@@ -8504,6 +8523,7 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
 /// later lexical destructor for the same payload. Domestic Hew bodies and
 /// audited runtime calls keep their ordinary borrowing behavior.
 fn materialize_opaque_projected_payload_handoffs(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_opaque_projected_payload_handoffs");
     let candidates: HashMap<u32, BindingId> = builder
         .projected_payload_provenance
         .keys()
@@ -9414,6 +9434,7 @@ mod stale_owner_canonicalization_tests;
 /// pass positions its releases at the carry; that earlier publication is
 /// re-derived by the final run.
 fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_goto_edge_carries");
     let (_, exits) = drop_plan::exact_owner_states(blocks);
     for block in blocks {
         let Terminator::Goto { target } = block.terminator else {
@@ -9628,6 +9649,7 @@ fn materialize_conditional_scope_exit_releases(
     blocks: &mut Vec<BasicBlock>,
     builder: &mut Builder,
 ) {
+    let _timing = crate::timing::stage("materialize_conditional_scope_exit_releases");
     loop {
         let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
         let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
@@ -10064,6 +10086,7 @@ fn unowned_scope_exit_cleanup_pair(
 /// records the same owner in `ScopeExit.owners`; any non-adjacent release or a
 /// release at another program point remains visible to ownership validation.
 fn prune_unowned_scope_exit_cleanup(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("prune_unowned_scope_exit_cleanup");
     for block in blocks {
         let mut index = 0;
         while index < block.instructions.len() {
@@ -10094,6 +10117,7 @@ fn prune_unowned_scope_exit_cleanup(blocks: &mut [BasicBlock], builder: &mut Bui
 /// live and therefore fail closed at a receiver invalidation until edge-local
 /// kills have been emitted by their lowering surface.
 fn materialize_explicit_alias_ends(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_alias_ends");
     let mut aliases = HashSet::new();
     for block in blocks.iter() {
         for instruction in &block.instructions {
@@ -10225,6 +10249,7 @@ fn relocate_nested_owner_place(
     reason = "whole-value move sealing handles exact, maybe, nested, and predecessor owner authority in one pass"
 )]
 fn materialize_explicit_move_relocations(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_move_relocations");
     let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
     let (exact_entries, exact_exits) = drop_plan::exact_owner_states(blocks);
     let mut predecessors: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -10471,6 +10496,7 @@ fn materialize_explicit_move_relocations(blocks: &mut [BasicBlock], builder: &mu
 /// at a later aggregate return while preserving genuinely live machine/enum
 /// payload owners across local-to-local moves.
 fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_nested_move_relocations");
     for block_index in 0..blocks.len() {
         let (entries, _) = drop_plan::exact_owner_states(blocks);
         let block_id = blocks[block_index].id;
@@ -10570,6 +10596,7 @@ fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], build
 /// at the projection root plus the adjacent destination Mint is the complete
 /// split proof.  Builder binding/projection ledgers do not participate.
 fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_projection_adoptions");
     let (entries, _) = drop_plan::maybe_owner_states(blocks);
     // Contextual resource binders already carry a typed, path-specific
     // neutralization. In a guarded match arm that handoff deliberately lives
@@ -10663,6 +10690,7 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
     reason = "preminted adoption rewrites the physical move and both owner generations as one local program-point transform"
 )]
 fn canonicalize_preminted_move_adoptions(blocks: &mut [BasicBlock]) {
+    let _timing = crate::timing::stage("canonicalize_preminted_move_adoptions");
     let (entries, _) = drop_plan::exact_owner_states(blocks);
     for block in blocks {
         let mut live = entries.get(&block.id).cloned().unwrap_or_default();
@@ -12229,6 +12257,7 @@ fn ownership_join_states(
     HashMap<u32, drop_plan::MaybeOwnerState>,
     HashMap<u32, drop_plan::MustBindingOwnerState>,
 ) {
+    let _timing = crate::timing::stage("ownership_join_states");
     let mut exact_entries = HashMap::from([(ENTRY_BLOCK_ID, drop_plan::ExactOwnerState::new())]);
     let mut exact_exits = HashMap::new();
     let mut maybe_entries = HashMap::from([(ENTRY_BLOCK_ID, drop_plan::MaybeOwnerState::new())]);
@@ -13321,6 +13350,7 @@ fn canonicalize_ownership_transfer_places(blocks: &mut [BasicBlock]) {
               closure over the same move graph"
 )]
 fn neutralize_typed_produced_value_handoffs(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("neutralize_typed_produced_value_handoffs");
     let owner_by_place: HashMap<Place, crate::model::OwnerId> = builder
         .binding_locals
         .iter()
@@ -13635,6 +13665,7 @@ fn release_partially_transferred_return_carrier(
 }
 
 fn release_partially_transferred_return_carriers(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("release_partially_transferred_return_carriers");
     let record_layouts = outbound_record_layouts(builder);
     let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
     let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
@@ -13830,6 +13861,7 @@ pub(in crate::lower) fn finalize_body(
     seal: BodySeal,
     spec: BodyFinalizeSpec,
 ) -> FinalizedBody {
+    let _timing = crate::timing::stage("finalize_body");
     let mut blocks = match seal {
         BodySeal::Cursor(terminator) => builder.seal_body_blocks(terminator),
         BodySeal::AlreadyTerminated => {
@@ -13936,6 +13968,7 @@ pub(crate) fn lower_function(
     // Per-function lowering cost, reported under `HEW_MEASURE_TIMINGS` so a
     // compile-time regression names the function it landed in.
     let lowering_started = crate::timing::function_start();
+    let builder_started = crate::timing::function_start();
     let mut builder = Builder {
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
@@ -13988,6 +14021,7 @@ pub(crate) fn lower_function(
         task_entry_adapter_symbols,
         ..Builder::default()
     };
+    crate::timing::record_stage("build_lowering_builder", builder_started);
     // Allocate parameter locals BEFORE lowering the function body so
     // that `BindingRef` expressions that reference parameters resolve
     // to real `Place::Local(i)` slots instead of hitting `UnresolvedPlace`.
@@ -14033,7 +14067,10 @@ pub(crate) fn lower_function(
             &call_scrutinee_provenance.extern_table,
             &call_scrutinee_provenance.may_mutate,
         );
-    builder.function_body(func);
+    {
+        let _timing = crate::timing::stage("lower_function_body_expressions");
+        builder.function_body(func);
+    }
 
     // Effective return type after type-parameter substitution.
     let return_ty = builder.subst_ty(&func.return_ty);

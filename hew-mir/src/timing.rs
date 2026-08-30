@@ -66,6 +66,27 @@ pub fn stage(stage: &'static str) -> Option<StageTimer> {
     })
 }
 
+/// Attribute the time since `started` to a named stage.
+///
+/// The RAII [`stage`] guard cannot measure a scope that ends by calling
+/// [`report`] — the guard would still be alive — so whole-module accounting
+/// records its own elapsed time.
+pub fn record_stage(stage: &'static str, started: Option<Instant>) {
+    let Some(started) = started else {
+        return;
+    };
+    let elapsed = started.elapsed();
+    ACCUMULATOR.with(|accumulator| {
+        let mut accumulator = accumulator.borrow_mut();
+        let slot = accumulator
+            .stages
+            .entry(stage)
+            .or_insert((Duration::ZERO, 0));
+        slot.0 += elapsed;
+        slot.1 += 1;
+    });
+}
+
 /// Mark the start of one function's lowering, or `None` when measurement is off.
 ///
 /// The symbol is not known until the body is sealed, so the start and the

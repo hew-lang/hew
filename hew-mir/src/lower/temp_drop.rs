@@ -451,6 +451,7 @@ pub(super) fn finalize_string_local_share_intents(
     blocks: &mut [BasicBlock],
     builder: &mut Builder,
 ) {
+    let _timing = crate::timing::stage("finalize_string_local_share_intents");
     let candidates: Vec<(SiteId, BindingId, BindingId)> = builder
         .string_local_share_sites
         .iter()
@@ -725,6 +726,7 @@ pub(super) fn aggregate_borrowed_ingress_clone_sites(
     blocks: &[BasicBlock],
     builder: &Builder,
 ) -> HashSet<(u32, usize, Place)> {
+    let _timing = crate::timing::stage("aggregate_borrowed_ingress_clone_sites");
     let owned_locals = builder.owned_locals_snapshot();
     let borrowed_string_locals = builder
         .borrowed_string_param_locals
@@ -6269,6 +6271,7 @@ pub(super) fn apply_nested_fresh_string_temp_drops(
     extern_contracts: &crate::return_provenance::ExternContractTable,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
+    let _timing = crate::timing::stage("apply_nested_fresh_string_temp_drops");
     let insertions = collect_nested_fresh_string_temp_drops(
         blocks,
         suspend_kinds,
@@ -7793,6 +7796,7 @@ pub(super) fn apply_nested_fresh_bytes_temp_drops(
     binding_locals: &HashMap<BindingId, Place>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
+    let _timing = crate::timing::stage("apply_nested_fresh_bytes_temp_drops");
     let insertions =
         collect_nested_fresh_bytes_temp_drops(blocks, suspend_kinds, locals, binding_locals);
     if insertions.is_empty() {

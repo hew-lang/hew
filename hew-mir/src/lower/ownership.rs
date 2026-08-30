@@ -3727,6 +3727,7 @@ impl Builder {
     /// not a single field step, is dropped — the emitter keeps its fail-closed
     /// leak-as-before for it (leak, never a double-free).
     pub(crate) fn alias_projection_chain(&self) -> Vec<(u32, u32, u32)> {
+        let _timing = crate::timing::stage("alias_projection_chain");
         let mut chain = Vec::new();
         for entry in &self.owned_locals {
             let Some(provenance) = entry.provenance.as_ref() else {
@@ -3771,6 +3772,7 @@ impl Builder {
     /// from Checked-MIR event replay and delete this ledger reader; nothing
     /// downstream of `seal_checked` may read it.
     pub(crate) fn owned_locals_snapshot(&self) -> Vec<(BindingId, String, ResolvedTy)> {
+        let _timing = crate::timing::stage("owned_locals_snapshot");
         self.owned_locals
             .iter()
             .filter(|entry| entry.disposition == Disposition::ScopeExit)

@@ -141,6 +141,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     leaf_field_drop: &dyn Fn(Place, u32, &ResolvedTy) -> Option<Instr>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
+    let _timing = crate::timing::stage("apply_escaped_record_sibling_field_drops");
     let owned_binding_bases: HashSet<u32> = owned_locals
         .iter()
         .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))

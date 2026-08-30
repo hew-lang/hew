@@ -1285,6 +1285,7 @@ pub(super) fn seal_checked(
 /// for code generation, so reaching this function without a frozen plan is an
 /// internal compiler invariant violation.
 pub(super) fn elaborate(checked: &CheckedMirFunction) -> ElaboratedMirFunction {
+    let _timing = crate::timing::stage("elaborate");
     checked
         .ownership_elaboration
         .as_deref()
@@ -5989,6 +5990,7 @@ pub(super) fn exit_path_user_label(exit: &ExitPath) -> String {
 /// LESSONS: boundary-fail-closed, cleanup-all-exits.
 #[must_use]
 pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
+    let _timing = crate::timing::stage("validate_drop_plan");
     let mut findings = Vec::new();
     for (exit, plan) in &elab.drop_plans {
         let block = exit_block_id(exit);
@@ -6043,6 +6045,7 @@ pub(super) fn validate_unwind_cleanup_coverage(
     elab: &ElaboratedMirFunction,
     raw: &RawMirFunction,
 ) -> Vec<MirCheck> {
+    let _timing = crate::timing::stage("validate_unwind_cleanup_coverage");
     validate_unwind_cleanup_coverage_over(elab, &raw.blocks)
 }
 
@@ -6419,6 +6422,7 @@ pub(super) fn validate_discharge_authority(
     elab: &ElaboratedMirFunction,
     raw: &RawMirFunction,
 ) -> Vec<MirCheck> {
+    let _timing = crate::timing::stage("validate_discharge_authority");
     validate_discharge_authority_over(&elab.name, &raw.blocks)
 }
 

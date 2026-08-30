@@ -12592,6 +12592,16 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
     loop {
         let (entries, exits, maybe_exits, must_entries) =
             ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
+        // Position of every block by id. The phi derivation resolves a
+        // predecessor, a target, and a generation's definition block by id
+        // inside per-binding loops; scanning `blocks` for each made the pass
+        // quadratic in block count. Kept current below when an edge block is
+        // appended, so a lookup never misses a block the pass itself created.
+        let mut block_positions: HashMap<u32, usize> = blocks
+            .iter()
+            .enumerate()
+            .map(|(position, block)| (block.id, position))
+            .collect();
         let owner_types: HashMap<crate::model::OwnerId, ResolvedTy> = blocks
             .iter()
             .flat_map(|block| &block.instructions)
@@ -12669,7 +12679,10 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
             let Some(must_live) = must_entries.get(&target) else {
                 continue;
             };
-            let Some(target_block) = blocks.iter().find(|block| block.id == target) else {
+            let Some(target_block) = block_positions
+                .get(&target)
+                .map(|position| &blocks[*position])
+            else {
                 continue;
             };
             let mut bindings = must_live.iter().collect::<Vec<_>>();
@@ -12828,9 +12841,11 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                 // overwrite name whichever duplicate happened to be visited
                 // last.  The Join interpreter canonicalizes every incoming
                 // generation of the binding to its one replacement.
-                if blocks.iter().any(|block| {
-                    block.id == target
-                        && block.instructions.iter().any(|instruction| {
+                if block_positions
+                    .get(&target)
+                    .map(|position| &blocks[*position])
+                    .is_some_and(|block| {
+                        block.instructions.iter().any(|instruction| {
                             matches!(
                                 instruction,
                                 Instr::OwnershipEvent(
@@ -12838,7 +12853,8 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                                 ) if replacement.binding == binding
                             )
                         })
-                }) {
+                    })
+                {
                     continue;
                 }
                 let mut owners = Vec::with_capacity(incoming.len());
@@ -12943,8 +12959,9 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                         let is_prior_join_phi = definitions.len() >= 2
                             && blocks.iter().any(|join| {
                                 definitions.iter().all(|(definition_block, index)| {
-                                    let Some(definition) =
-                                        blocks.iter().find(|block| block.id == *definition_block)
+                                    let Some(definition) = block_positions
+                                        .get(definition_block)
+                                        .map(|position| &blocks[*position])
                                     else {
                                         return false;
                                     };
@@ -12981,8 +12998,9 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                         {
                             return false;
                         }
-                        let Some(definition) =
-                            blocks.iter().find(|block| block.id == *definition_block)
+                        let Some(definition) = block_positions
+                            .get(definition_block)
+                            .map(|position| &blocks[*position])
                         else {
                             return false;
                         };
@@ -13038,8 +13056,7 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                 to_owner: Some(replacement),
                 to_ty: Some(ty.clone()),
             });
-            let Some(predecessor_index) = blocks.iter().position(|block| block.id == *predecessor)
-            else {
+            let Some(predecessor_index) = block_positions.get(predecessor).copied() else {
                 continue;
             };
             if blocks[predecessor_index].successors() == vec![target] {
@@ -13073,6 +13090,7 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
             if *else_target == target {
                 *else_target = edge_id;
             }
+            block_positions.insert(edge_id, blocks.len());
             blocks.push(BasicBlock {
                 id: edge_id,
                 statements: Vec::new(),

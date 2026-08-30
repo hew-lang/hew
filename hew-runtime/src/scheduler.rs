@@ -6511,7 +6511,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn production_round_trip_pending_then_resume_to_ready_destroys_once() {
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
         // SAFETY: fresh mailbox with one message to drive the first dispatch.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
         assert!(!mailbox.is_null());
@@ -6550,6 +6550,9 @@ mod tests {
             HewActorState::Runnable as i32,
             "the wake CASes Suspended -> Runnable"
         );
+        // A worker dequeues before it activates; the dequeue is what releases
+        // the queue entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -6561,6 +6564,7 @@ mod tests {
         // settle to Idle (empty mailbox).
         // SAFETY: actor live; same parked handle.
         unsafe { enqueue_resume_pinned(actor_ptr, parked_handle) };
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -6596,7 +6600,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn p1b_multi_await_parks_and_completes_twice_on_one_actor() {
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
         // SAFETY: fresh mailbox; two messages drive two dispatches.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
         assert!(!mailbox.is_null());
@@ -6636,6 +6640,9 @@ mod tests {
         // (not Idle) and is re-enqueued.
         // SAFETY: actor live; handle1 is the executor-owned frame.
         unsafe { enqueue_resume_pinned(actor_ptr, handle1) };
+        // A worker dequeues before it activates; the dequeue releases the queue
+        // entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert!(
             actor.suspended_cont.load(Ordering::Acquire).is_null(),
@@ -6645,6 +6652,15 @@ mod tests {
             actor.cont_tag.load(Ordering::Acquire),
             crate::internal::types::ContTag::Empty as i32,
             "P1-B: tag re-armed to Empty after the first completion"
+        );
+
+        // The completed resume left a message in the mailbox, so the activation
+        // re-enqueued the actor. Dequeue that entry too - it holds its own pin
+        // lease on the allocation.
+        assert_eq!(
+            sched.pop_global(),
+            Some(actor_ptr),
+            "a completed resume with a non-empty mailbox re-enqueues the actor"
         );
 
         // ── Second await cycle (the one a one-shot tag would leak). ──
@@ -6668,6 +6684,7 @@ mod tests {
         // Wake → resume(Ready) → destroy once → re-arm. Mailbox now empty → Idle.
         // SAFETY: actor live; handle2 is the executor-owned frame.
         unsafe { enqueue_resume_pinned(actor_ptr, handle2) };
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert!(
             actor.suspended_cont.load(Ordering::Acquire).is_null(),

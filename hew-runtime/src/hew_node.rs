@@ -6268,7 +6268,8 @@ pub unsafe extern "C" fn hew_node_api_ask_finish(
 /// (the `coro.destroy` cleanup edge). Consumes the handle returned by
 /// [`hew_node_api_ask_async`] and removes any still-pending entry so a late
 /// reply finds nothing and is dropped. The parked-caller wake is independently
-/// fail-safe: `enqueue_resume` drops a wake to an already-freed caller.
+/// fail-safe: `enqueue_resume_by_incarnation` drops a wake whose recorded
+/// caller incarnation is no longer live.
 ///
 /// # Safety
 ///

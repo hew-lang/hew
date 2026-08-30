@@ -846,9 +846,11 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     // (a) removes the registration before we re-read it under the lock — so we
     // see it gone and abort — or (b) observes `DELIVERING_ACTOR == actor_key`
     // and spin-waits until we clear it. Either way no send/wake reaches a freed
-    // actor. The resume-mode wake (`enqueue_resume`) is ALSO independently
-    // fail-safe (its own liveness check + `Suspended → Runnable` CAS), so the
-    // guard + the waker are belt-and-braces for the abandon edge.
+    // actor. The resume-mode wake (`enqueue_resume_by_incarnation`) is ALSO
+    // independently fail-safe: it resolves the recorded incarnation against the
+    // live-actor registry and refuses a wake whose registrant is gone or whose
+    // address belongs to a later incarnation, so the guard + the waker are
+    // belt-and-braces for the abandon edge.
     DELIVERING_ACTOR.store(actor_key, Ordering::SeqCst);
 
     // Re-validate under the lock AFTER publishing the guard: if the actor was
@@ -1318,9 +1320,10 @@ fn deliver_orphan_close(reg: &Registration) {
 
 /// Deposit a terminal status into a resume-mode read slot and wake the parked
 /// continuation. The deposit is dropped (no wake) if the slot was cancelled by
-/// an abandon edge. Runs on the reactor thread; the `enqueue_resume` waker
-/// performs its own liveness check + atomic `Suspended → Runnable` CAS, so an
-/// actor freed concurrently drops the wake.
+/// an abandon edge. Runs on the reactor thread; the waker resolves the recorded
+/// incarnation against the live-actor registry, so a wake is dropped rather
+/// than delivered when its registrant died or when a later incarnation now
+/// occupies that address.
 ///
 /// Does NOT release the reactor's slot ref — the caller drops the owning
 /// `Registration`, whose `Drop` impl is the single authority for that release.

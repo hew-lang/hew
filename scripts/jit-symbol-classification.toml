@@ -1414,6 +1414,10 @@ codegen-stable = [
   "hew_machine_emit_step_enter",
   "hew_machine_emit_step_exit_keep",
   "hew_machine_emit_take",
+  # The process-entry catch boundary the compiler emits into `main` on targets
+  # whose unwind lands in LLVM cleanup pads. Not user-callable: it exists only
+  # to give a main-context panic a handler so phase-2 cleanup runs.
+  "hew_main_unwind_boundary",
   "hew_node_api_ask_async_location",
   "hew_node_api_ask_location",
   "hew_node_api_id",
@@ -1987,6 +1991,16 @@ discharge-depth = "none"
 symbol = "hew_dist_monitor_remote_watcher_registered_total"
 result = "none"
 params = []
+release-symbol = ""
+discharge-depth = "none"
+
+# The process-entry catch boundary. Both parameters are caller-owned for the
+# duration of the call - `body` is the generated entry adapter's code pointer
+# and `frame` the wrapper's stack allocation - and the boundary returns nothing.
+[[ownership.contracts]]
+symbol = "hew_main_unwind_boundary"
+result = "none"
+params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

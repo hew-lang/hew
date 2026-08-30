@@ -3162,8 +3162,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1487] = {
     {"hew_main_unwind_boundary",
      "{\"native\": \"fn hew_main_unwind_boundary( unsafe extern "
      "\\\"C-unwind\\\" fn(*mut c_void), *mut c_void, )\"}",
-     "native", "unclassified-stdlib", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+     "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_markdown_to_html",
      "{\"native\": \"fn hew_markdown_to_html( *const c_char) -> *mut c_char\"}",
      "native", "stable-stdlib", "nul-terminated", "no-in-signature-extent",

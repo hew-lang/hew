@@ -15,10 +15,3 @@
 # the ratchet: a known compiler refusal cannot silently become a hung,
 # unstartable, or crashing binary under the same test identity.
 #
-# #3105: one imported payload-machine record lacks normal/unwind cleanup. Hew
-# test compiles the whole source for each selected test, so the file-level
-# failure blocks all four exact identities until the ownership plan is fixed.
-tests/hew/imported_machine_ownership_test.hew::imported_private_machine_crosses_an_owned_call_boundary compile
-tests/hew/imported_machine_ownership_test.hew::imported_payload_machine_covers_construction_calls_returns_and_record_storage compile
-tests/hew/imported_machine_ownership_test.hew::imported_machine_transitions_and_supports_dotted_unit_construction compile
-tests/hew/imported_machine_ownership_test.hew::module_qualified_variant_pattern_selects_the_matching_arm_for_both_states compile

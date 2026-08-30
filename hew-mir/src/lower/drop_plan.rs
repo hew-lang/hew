@@ -2177,7 +2177,10 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         }),
                     [owner] => findings.push(MirCheck::ObligationOverReleased {
                         function: checked.name.clone(),
-                        block: block_id,
+                        blocks: vec![block_id],
+                        site: binding_metadata
+                            .get(&owner.binding)
+                            .map_or(SiteId(0), |(_, site)| *site),
                         name: binding_metadata
                             .get(&owner.binding)
                             .map_or_else(|| format!("{owner}"), |(name, _)| name.clone()),
@@ -2188,7 +2191,8 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     }),
                     [] => findings.push(MirCheck::ObligationOverReleased {
                         function: checked.name.clone(),
-                        block: block_id,
+                        blocks: vec![block_id],
+                        site: SiteId(0),
                         name: "checked-ownership-plan".to_owned(),
                         reason: format!(
                             "the exit plan for {} releases a `{}` that is no longer held there",

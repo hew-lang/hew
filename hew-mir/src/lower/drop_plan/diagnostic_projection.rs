@@ -122,13 +122,15 @@ pub(in crate::lower) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagn
         }),
         MirCheck::ObligationOverReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
             reason,
         } => Some(MirDiagnostic {
             kind: MirDiagnosticKind::ObligationOverReleased {
                 function: function.clone(),
-                block: *block,
+                blocks: blocks.clone(),
+                site: *site,
                 name: name.clone(),
                 reason: reason.clone(),
             },
@@ -245,16 +247,82 @@ pub(in crate::lower) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagn
     }
 }
 
+/// Which way an owner's obligation balance failed. A leak and a double-free
+/// over one owner are opposite claims, so they are never folded together even
+/// when they share a mint site.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Imbalance {
+    Leak,
+    DoubleFree,
+}
+
+/// The owner identity an obligation finding is about, or `None` when the
+/// finding is not an obligation imbalance.
+fn unbalanced_owner_key(check: &MirCheck) -> Option<(Imbalance, &str, hew_hir::SiteId, &str)> {
+    match check {
+        MirCheck::ObligationUnderReleased {
+            function,
+            site,
+            name,
+            ..
+        } => Some((Imbalance::Leak, function, *site, name)),
+        MirCheck::ObligationOverReleased {
+            function,
+            site,
+            name,
+            ..
+        } => Some((Imbalance::DoubleFree, function, *site, name)),
+        _ => None,
+    }
+}
+
+/// Fold `source` into `target`: both name the same owner failing the same way,
+/// so the user sees one finding carrying every exit block, and — for a leak —
+/// the join of the mint provenances that reached those exits.
+fn merge_unbalanced_owner(target: &mut MirCheck, source: &MirCheck) {
+    let (target_blocks, target_provenance) = match target {
+        MirCheck::ObligationUnderReleased {
+            blocks,
+            mint_provenance,
+            ..
+        } => (blocks, Some(mint_provenance)),
+        MirCheck::ObligationOverReleased { blocks, .. } => (blocks, None),
+        _ => return,
+    };
+    let (source_blocks, source_provenance) = match source {
+        MirCheck::ObligationUnderReleased {
+            blocks,
+            mint_provenance,
+            ..
+        } => (blocks, Some(*mint_provenance)),
+        MirCheck::ObligationOverReleased { blocks, .. } => (blocks, None),
+        _ => return,
+    };
+    for block in source_blocks {
+        if !target_blocks.contains(block) {
+            target_blocks.push(*block);
+        }
+    }
+    target_blocks.sort_unstable();
+    if let (Some(target_provenance), Some(source_provenance)) =
+        (target_provenance, source_provenance)
+    {
+        *target_provenance = target_provenance.join(source_provenance);
+    }
+}
+
 /// Project one function's verifier findings to the diagnostics a user sees.
 ///
 /// Two consolidation rules apply before `check_to_diagnostic`:
 ///
 /// 1. **One finding per unbalanced owner.** Every validator reports an
-///    under-released owner per exit it fails on; the user sees the owner
-///    once, anchored at its mint `SiteId`, with every unbalanced exit block
-///    listed and the mint provenances joined. The key is `(function, site,
-///    name)`: `name` disambiguates owners whose mint site could not be
-///    recovered (`SiteId(0)` fallback), where the name is the owner identity.
+///    unbalanced owner per exit it fails on; the user sees the owner once,
+///    anchored at its mint `SiteId`, with every unbalanced exit block listed
+///    and (for a leak) the mint provenances joined. The key is
+///    `(direction, function, site, name)`: `name` disambiguates owners whose
+///    mint site could not be recovered (`SiteId(0)` fallback), where the name
+///    is the owner identity, and the leak/double-free direction never merges
+///    because the two say opposite things about the same value.
 /// 2. **At most one internal-compiler-error per function.** A finding whose
 ///    cause is a lowering invariant (not the user's program) is projected to
 ///    `MirDiagnosticKind::LoweringInvariant`; the first one per function is
@@ -265,41 +333,15 @@ pub(in crate::lower) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagn
 pub(in crate::lower) fn project_findings(findings: Vec<MirCheck>) -> Vec<MirDiagnostic> {
     let mut coalesced: Vec<MirCheck> = Vec::with_capacity(findings.len());
     for finding in findings {
-        let MirCheck::ObligationUnderReleased {
-            function,
-            blocks,
-            site,
-            name,
-            mint_provenance,
-            ..
-        } = &finding
-        else {
+        let Some(key) = unbalanced_owner_key(&finding) else {
             coalesced.push(finding);
             continue;
         };
-        let existing = coalesced.iter_mut().find_map(|prior| match prior {
-            MirCheck::ObligationUnderReleased {
-                function: prior_function,
-                site: prior_site,
-                name: prior_name,
-                blocks: prior_blocks,
-                mint_provenance: prior_provenance,
-                ..
-            } if prior_function == function && prior_site == site && prior_name == name => {
-                Some((prior_blocks, prior_provenance))
-            }
-            _ => None,
-        });
-        match existing {
-            Some((prior_blocks, prior_provenance)) => {
-                for block in blocks {
-                    if !prior_blocks.contains(block) {
-                        prior_blocks.push(*block);
-                    }
-                }
-                prior_blocks.sort_unstable();
-                *prior_provenance = prior_provenance.join(*mint_provenance);
-            }
+        let prior = coalesced
+            .iter()
+            .position(|prior| unbalanced_owner_key(prior).as_ref() == Some(&key));
+        match prior {
+            Some(index) => merge_unbalanced_owner(&mut coalesced[index], &finding),
             None => coalesced.push(finding),
         }
     }
@@ -346,6 +388,43 @@ mod tests {
             name: rule.to_owned(),
             reason: format!("{rule} failed in bb{block}"),
         }
+    }
+
+    fn over_released(block: u32, site: u32) -> MirCheck {
+        MirCheck::ObligationOverReleased {
+            function: "f".to_owned(),
+            blocks: vec![block],
+            site: SiteId(site),
+            name: "s".to_owned(),
+            reason: format!("exit bb{block} releases it twice"),
+        }
+    }
+
+    #[test]
+    fn one_owner_double_freed_on_two_exits_yields_one_diagnostic() {
+        let diagnostics = project_findings(vec![over_released(4, 3), over_released(1, 3)]);
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("expected one diagnostic for one owner, got {diagnostics:#?}");
+        };
+        let MirDiagnosticKind::ObligationOverReleased { blocks, site, .. } = &diagnostic.kind
+        else {
+            panic!("expected ObligationOverReleased, got {diagnostic:#?}");
+        };
+        assert_eq!(*site, SiteId(3));
+        assert_eq!(blocks, &[1, 4]);
+    }
+
+    #[test]
+    fn a_leak_and_a_double_free_over_one_owner_stay_separate_diagnostics() {
+        let diagnostics = project_findings(vec![
+            under_released(7, 3, ObligationMintProvenance::Ordinary),
+            over_released(7, 3),
+        ]);
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "opposite imbalances over one owner must not fold: {diagnostics:#?}"
+        );
     }
 
     #[test]

@@ -1711,10 +1711,13 @@ fn render_mir_check(check: &MirCheck) -> String {
         ),
         MirCheck::ObligationOverReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
             reason,
-        } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
+        } => format!(
+            "ObligationOverReleased {function} blocks={blocks:?} site={site:?} {name} {reason:?}"
+        ),
         MirCheck::ObligationBalanceUnverified { function, reason } => {
             format!("ObligationBalanceUnverified {function} {reason:?}")
         }
@@ -1940,10 +1943,13 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         ),
         MirDiagnosticKind::ObligationOverReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
             reason,
-        } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
+        } => format!(
+            "ObligationOverReleased {function} blocks={blocks:?} site={site:?} {name} {reason:?}"
+        ),
         MirDiagnosticKind::LoweringInvariant {
             function,
             rule,

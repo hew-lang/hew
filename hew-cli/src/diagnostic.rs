@@ -676,6 +676,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         }
         hew_mir::MirDiagnosticKind::MustConsume { bind_site, .. } => Some(*bind_site),
         hew_mir::MirDiagnosticKind::ObligationUnderReleased { site, .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { site, .. }
         | hew_mir::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing { site, .. }
         | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
@@ -698,7 +699,6 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
-        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
         | hew_mir::MirDiagnosticKind::LoweringInvariant { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
@@ -824,12 +824,14 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         hew_mir::MirDiagnosticKind::ObligationOverReleased {
             function,
             name,
+            blocks,
             reason,
             ..
         } => {
             format!(
                 "obligation balance in `{function}`: owned value `{name}` is \
-                 released more than once on an exit path (double-free): {reason}"
+                 released more than once on {} exit path(s) (double-free): {reason}",
+                blocks.len(),
             )
         }
         hew_mir::MirDiagnosticKind::LoweringInvariant {
@@ -1089,7 +1091,6 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             notes.push(format!("site: {site}"));
         }
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, .. }
-        | hew_mir::MirDiagnosticKind::ObligationOverReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { block, .. } => {
             notes.push(format!("block: {block}"));
@@ -1099,6 +1100,9 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         }
         hew_mir::MirDiagnosticKind::ObligationUnderReleased { blocks, .. } => {
             notes.push(format!("unreleased exits: {}", mir_block_list(blocks)));
+        }
+        hew_mir::MirDiagnosticKind::ObligationOverReleased { blocks, .. } => {
+            notes.push(format!("double-released exits: {}", mir_block_list(blocks)));
         }
         hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { field_index, .. } => {
             notes.push(format!("field index: {field_index}"));

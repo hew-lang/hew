@@ -6900,8 +6900,13 @@ pub enum MirCheck {
     /// double-free. Memory-unsafe; unconditional hard error with NO allowlist
     /// escape.
     ObligationOverReleased {
+        /// Function symbol (`ElaboratedMirFunction::name`).
         function: String,
-        block: u32,
+        /// Every exit block that over-releases this owner.
+        blocks: Vec<u32>,
+        /// The mint's source site, used as the diagnostic caret anchor.
+        site: SiteId,
+        /// Source-level name or expression label of the doubly-released local.
         name: String,
         reason: String,
     },
@@ -8012,7 +8017,8 @@ pub enum MirDiagnosticKind {
     /// allowlist escape.
     ObligationOverReleased {
         function: String,
-        block: u32,
+        blocks: Vec<u32>,
+        site: SiteId,
         name: String,
         reason: String,
     },

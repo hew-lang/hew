@@ -13,6 +13,7 @@ The sandbox VM is deterministic by design. It admits programs whose observable b
 - [Page stdout/stderr/stdin vs OS streams](#page-stdoutstderrstdin-vs-os-streams)
 - [In-memory streams only (no file/network backing)](#in-memory-streams-only-no-filenetwork-backing)
 - [Web Worker single-threaded execution](#web-worker-single-threaded-execution)
+- [Address-keyed wakes in the wasm runtime twin](#address-keyed-wakes-in-the-wasm-runtime-twin)
 - [Regex engine differences](#regex-engine-differences)
 - [Windows parity enforcement](#windows-parity-enforcement)
 - [Profile admission diagnostics](#profile-admission-diagnostics)
@@ -55,6 +56,16 @@ Sandbox streams are in-memory values. They do not open host files, sockets, pipe
 ## Web Worker single-threaded execution
 
 The browser sandbox runs inside a Web Worker and executes VM work on a single JavaScript worker thread. This isolates execution from the page UI thread and avoids shared-memory data races, but it does not expose native threads or host parallelism.
+
+## Address-keyed wakes in the wasm runtime twin
+
+Native readiness sources wake a parked actor by *incarnation* - an actor id plus a never-reissued spawn serial, resolved against the live-actor registry - so a wake recorded before the registrant died is dropped rather than delivered to whatever actor later occupies the same allocation (issue #3069). The wasm runtime twin (`scheduler_wasm::enqueue_resume`, `reply_channel_wasm`) still wakes by raw actor address.
+
+This is an accepted divergence, not an unfixed hazard, and two things hold it up together. The twin runs on a single worker thread, so no other thread can free the registrant while a wake is in flight - the native hazard needs a wake recorded on one thread and fired on another. And the twin's only address-keyed wake, `reply_channel_wasm::hew_reply`, sits behind the E10 actor-decl admission gate: no admitted wasm program declares an actor, so `caller_actor` is null in every reply the VM can reach and the parked branch never runs. That branch is kept for native parity, not because anything exercises it.
+
+Single-threadedness alone would not be enough once the parked branch became reachable. The reply fires from the callee's activation, which is not the activation where the caller parked, so an address recorded at park time is separated from its wake by everything the callee did in between.
+
+Both halves are load-bearing, so the divergence has to be rechecked when either gives way: when E10 lifts and admitted programs can declare actors, or when wasm gains preemption, real threads, or a readiness source firing outside the activation that registered it. `wasm_parity_tests` covers the shared mailbox and scheduler surface; it does not and cannot prove this property, which is about the execution model rather than the ABI.
 
 ## Regex engine differences
 

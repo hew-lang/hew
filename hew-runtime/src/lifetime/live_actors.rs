@@ -497,14 +497,18 @@ pub(crate) fn pin_actor_by_id(actor_id: u64) -> Option<ActorPin> {
 /// Because `LIVE_ACTORS` is not held across `f`, blocking mailbox operations
 /// (the `Block` overflow condvar wait) and eviction retire paths
 /// (`DropOld` → `hew_msg_node_free` → `retire_orphaned_ask_sender_ref` →
-/// `scheduler::enqueue_resume` → `with_live_actor`) are both safe to call
-/// from `f` without deadlocking.
+/// `scheduler::enqueue_resume_by_incarnation` → `with_live_incarnation`) are
+/// both safe to call from `f` without deadlocking.
 ///
 /// # Lock ordering (unchanged from the module invariant)
 ///
 /// `f` is free to acquire any lock that does not transitively re-acquire
-/// `LIVE_ACTORS`.  `LIVE_ACTORS` is fully released before `f` runs, so
-/// `enqueue_resume` → `with_live_actor` does not self-deadlock.
+/// `LIVE_ACTORS`.  `LIVE_ACTORS` is fully released before `f` runs, and the
+/// wake path re-takes it twice without ever holding it across a call:
+/// `with_live_incarnation` takes the lock to resolve the incarnation and pin
+/// it, releases it, and only then does `enqueue_resume_pinned` →
+/// `with_live_actor` take it again for the wake itself.  So neither step
+/// self-deadlocks against this function.
 ///
 /// Returns `Some(f(ptr))` if the actor is live, `None` if not found.
 // live on not(wasm32) — hew_actor_send_by_id / hew_actor_ask_by_id; dead on wasm32
@@ -578,8 +582,11 @@ pub(crate) struct ActorIncarnation {
 impl ActorIncarnation {
     /// No wake target.
     ///
-    /// Actor id `0` is the runtime's invalid-actor sentinel (`hew_pid_make`
-    /// refuses to mint it), so it can never name a real incarnation. Sources
+    /// Actor id `0` is the runtime's invalid-actor sentinel. Minting refuses
+    /// it: [`crate::pid::next_actor_id`] rejects any slot that fails
+    /// `actor_slot_fits_internal_alias`, slot `0` included, before it can reach
+    /// the packing primitive - which masks rather than refuses. So `0` can never
+    /// name a real incarnation. Sources
     /// that park without an actor — a foreign thread, or an await registered
     /// before the caller is known — record this.
     pub(crate) const NONE: Self = Self {

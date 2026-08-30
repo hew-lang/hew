@@ -72,8 +72,23 @@ pub(crate) fn stub_actor() -> HewActor {
 }
 
 /// Distinct ids for stub actors so tests sharing a registry cannot collide.
+///
+/// The live-actor registry is keyed by actor id, and `track_actor` REFUSES a
+/// duplicate. A test that installs a stub alongside really-spawned actors (a
+/// supervisor tree, say) therefore has to keep the two id spaces apart: the
+/// spawn allocator counts up from 1, so a stub counter that also starts at 1
+/// collides as soon as both appear in one test.
+///
+/// SHORTCUT: the separation is a disjoint high base rather than a shared
+/// allocator. WHY: the production allocator needs an installed runtime, and
+/// stubs are built before one exists in several tests. WHEN OBSOLETE: if stub
+/// construction ever runs only under an installed runtime, take ids from
+/// `crate::pid::next_actor_id` and delete the base. WHAT THE REAL FIX IS: one
+/// id allocator for every tracked actor, stub or spawned.
+const STUB_ACTOR_ID_BASE: u64 = 1 << 40;
+
 fn next_stub_actor_id() -> u64 {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    static NEXT_ID: AtomicU64 = AtomicU64::new(STUB_ACTOR_ID_BASE);
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -160,6 +175,34 @@ impl TrackedTestActor {
         // SAFETY: the guard owns this allocation exclusively for its lifetime.
         unsafe { reincarnate_parked_in_place(self.ptr) }
     }
+
+    /// As [`Self::reincarnate_parked`], but the replacement keeps the dead
+    /// incarnation's actor ID and differs only in `spawn_serial`.
+    ///
+    /// A fresh-identity replacement is refused at the ID lookup, so it never
+    /// reaches the serial comparison in `with_actor_send_by_identity`. This
+    /// shape is the one that does: the resolver finds a live actor under the
+    /// recorded ID and only the serial says it is a stranger. It models the
+    /// masked-ID collision the serial half of `ActorIncarnation` exists to
+    /// refuse - `hew_pid_make` masks the serial portion of a packed ID to 48
+    /// bits, so two incarnations can share an ID while their full serials
+    /// differ.
+    pub(crate) fn reincarnate_parked_reusing_id(&self) -> ActorIncarnation {
+        // SAFETY: the guard owns this allocation exclusively for its lifetime.
+        unsafe { reincarnate_parked_in_place_as(self.ptr, ReplacementIdentity::SameIdNewSerial) }
+    }
+}
+
+/// Which identity a reincarnated stub takes, and therefore which half of
+/// [`ActorIncarnation`] refuses the stale wake.
+#[derive(Clone, Copy)]
+pub(crate) enum ReplacementIdentity {
+    /// A wholly new ID and serial: the ordinary spawn-after-free shape, refused
+    /// at the ID lookup.
+    Fresh,
+    /// The dead incarnation's ID with a new serial: refused only by the serial
+    /// comparison.
+    SameIdNewSerial,
 }
 
 /// Destroy the tracked incarnation at `actor` and construct a fresh, parked one
@@ -171,13 +214,34 @@ impl TrackedTestActor {
 /// `actor` must be a tracked, fully initialised actor allocation the caller
 /// owns exclusively (no other thread may be inside a pin on it).
 pub(crate) unsafe fn reincarnate_parked_in_place(actor: *mut HewActor) -> ActorIncarnation {
+    // SAFETY: the caller's contract is passed straight through.
+    unsafe { reincarnate_parked_in_place_as(actor, ReplacementIdentity::Fresh) }
+}
+
+/// [`reincarnate_parked_in_place`] with the replacement's identity chosen by
+/// the caller.
+///
+/// # Safety
+///
+/// `actor` must be a tracked, fully initialised actor allocation the caller
+/// owns exclusively (no other thread may be inside a pin on it).
+pub(crate) unsafe fn reincarnate_parked_in_place_as(
+    actor: *mut HewActor,
+    identity: ReplacementIdentity,
+) -> ActorIncarnation {
+    // SAFETY: the actor is tracked and live until the untrack below; reading its
+    // ID before the in-place destroy is the only way to reuse it.
+    let dead_id = unsafe { (*actor).id };
     assert!(
         live_actors::untrack_actor(actor),
         "the incarnation being replaced must still be tracked"
     );
 
     let mut replacement = stub_actor();
-    replacement.id = next_stub_actor_id();
+    replacement.id = match identity {
+        ReplacementIdentity::Fresh => next_stub_actor_id(),
+        ReplacementIdentity::SameIdNewSerial => dead_id,
+    };
     replacement.spawn_serial = next_stub_spawn_serial();
     replacement
         .actor_state
@@ -197,8 +261,9 @@ pub(crate) unsafe fn reincarnate_parked_in_place(actor: *mut HewActor) -> ActorI
         actor.drop_in_place();
         actor.write(replacement);
     }
-    // SAFETY: the replacement is fully initialised at `actor` and has a fresh
-    // identity distinct from the destroyed incarnation.
+    // SAFETY: the replacement is fully initialised at `actor`, and its identity
+    // differs from the destroyed incarnation's in at least the serial - so the
+    // registry, which the destroyed incarnation has just left, accepts it.
     assert!(unsafe { live_actors::track_actor(actor) });
     // SAFETY: as above — the replacement is live and tracked.
     unsafe { ActorIncarnation::of(actor) }
@@ -214,6 +279,23 @@ impl std::ops::Deref for TrackedTestActor {
 
 impl Drop for TrackedTestActor {
     fn drop(&mut self) {
+        // Allocation-lease tripwire. A wake that wins the `Suspended -> Runnable`
+        // CAS raises `send_pin_count` and pushes the raw pointer onto the global
+        // queue; the lease is released only when something pops it. Freeing the
+        // box under a held lease leaves a dangling pointer in the queue - the
+        // exact invariant the incarnation-keyed wake depends on - so a test that
+        // fires a wake must consume it (`pop_global` / `activate_one_global`).
+        // Skipped while unwinding so a failing assertion is not masked by a
+        // double panic in Drop.
+        if !std::thread::panicking() {
+            assert_eq!(
+                self.send_pin_count.load(Ordering::Acquire),
+                0,
+                "a tracked stub actor was freed while a scheduler queue entry \
+                 still held a pin lease on it: the test fired a wake it never \
+                 consumed"
+            );
+        }
         // Idempotent: `untrack_actor` only removes a matching entry, so a
         // double-untrack (the test already called `untrack`) is a no-op.
         live_actors::untrack_actor(self.ptr);

@@ -846,9 +846,11 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     // (a) removes the registration before we re-read it under the lock — so we
     // see it gone and abort — or (b) observes `DELIVERING_ACTOR == actor_key`
     // and spin-waits until we clear it. Either way no send/wake reaches a freed
-    // actor. The resume-mode wake (`enqueue_resume`) is ALSO independently
-    // fail-safe (its own liveness check + `Suspended → Runnable` CAS), so the
-    // guard + the waker are belt-and-braces for the abandon edge.
+    // actor. The resume-mode wake (`enqueue_resume_by_incarnation`) is ALSO
+    // independently fail-safe: it resolves the recorded incarnation against the
+    // live-actor registry and refuses a wake whose registrant is gone or whose
+    // address belongs to a later incarnation, so the guard + the waker are
+    // belt-and-braces for the abandon edge.
     DELIVERING_ACTOR.store(actor_key, Ordering::SeqCst);
 
     // Re-validate under the lock AFTER publishing the guard: if the actor was
@@ -1318,9 +1320,10 @@ fn deliver_orphan_close(reg: &Registration) {
 
 /// Deposit a terminal status into a resume-mode read slot and wake the parked
 /// continuation. The deposit is dropped (no wake) if the slot was cancelled by
-/// an abandon edge. Runs on the reactor thread; the `enqueue_resume` waker
-/// performs its own liveness check + atomic `Suspended → Runnable` CAS, so an
-/// actor freed concurrently drops the wake.
+/// an abandon edge. Runs on the reactor thread; the waker resolves the recorded
+/// incarnation against the live-actor registry, so a wake is dropped rather
+/// than delivered when its registrant died or when a later incarnation now
+/// occupies that address.
 ///
 /// Does NOT release the reactor's slot ref — the caller drops the owning
 /// `Registration`, whose `Drop` impl is the single authority for that release.
@@ -4326,5 +4329,301 @@ mod tests {
         // surrender it.
         unsafe { hew_io_poller_stop(poller) };
         reset_reactor();
+    }
+
+    // ── #3069: wake by incarnation, not by address ───────────────────────────
+    //
+    // The reactor is the cross-thread family: a worker registers the wait and
+    // the reactor thread fires it, so the registering actor can be dead by the
+    // time readiness lands. `actor_snapshot_alive` cannot separate "still the
+    // registrant" from "somebody else now occupies that box" — after a
+    // reincarnation the address is genuinely live — so the incarnation captured
+    // in `Registration::new` is the only thing standing between a stale wake and
+    // a stranger being moved `Suspended -> Runnable` with no readiness behind
+    // it. The sibling families live in `crate::wake_incarnation_tests`.
+
+    /// Block until `fd` is readable, so the incarnation arms observe readiness
+    /// instead of guessing at it. Without this the socket can still be empty
+    /// when `handle_ready_fd` runs: the read takes the `WouldBlock` branch,
+    /// deposits nothing, and wakes nobody for a reason that has nothing to do
+    /// with incarnation resolution.
+    ///
+    /// The timeout is a failure bound, not a correctness guess: the wait itself
+    /// is on real readiness, and the bound only turns a socket that never
+    /// becomes readable into a failed run rather than a hung one. It can go
+    /// away when the harness gains a general deadline for a blocking test call;
+    /// the real shape then is an unbounded `poll` under that deadline.
+    #[cfg(unix)]
+    fn wait_readable_for_test(fd: c_int) {
+        const READINESS_TIMEOUT_MS: c_int = 10_000;
+        loop {
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `pfd` is a live single-element `pollfd` array owned here.
+            let rc = unsafe { libc::poll(&raw mut pfd, 1, READINESS_TIMEOUT_MS) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                panic!("poll for readiness failed: {err}");
+            }
+            assert!(rc > 0, "the socket never became readable");
+            assert_ne!(
+                pfd.revents & libc::POLLIN,
+                0,
+                "poll reported readiness without POLLIN: revents {}",
+                pfd.revents
+            );
+            return;
+        }
+    }
+
+    /// Drive a real resume-mode readiness through `handle_ready_fd`, optionally
+    /// reincarnating the registrant at the same address first.
+    #[cfg(unix)]
+    fn run_reactor_resume_incarnation(reincarnate: bool) {
+        use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
+        use std::io::Write;
+        const KEY: usize = 0x0300_6900;
+
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: every pointer here is a fresh test-owned poller, socket, slot,
+        // or stub actor, released before this function returns.
+        unsafe {
+            let poller = hew_io_poller_new();
+            assert!(!poller.is_null());
+            let (conn, mut client) = crate::transport::tcp_socketpair_conn_for_test();
+            let fd = crate::transport::tcp_conn_raw_fd(conn).expect("conn fd");
+            assert!(crate::transport::tcp_conn_set_nonblocking(conn, true));
+            assert_eq!(
+                hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ),
+                0
+            );
+
+            let victim = TrackedTestActor::install_parked();
+            let actor_ref = crate::transport::hew_actor_ref_local(victim.ptr());
+            let slot = crate::read_slot::hew_read_slot_new();
+            // The registration-owned slot ref (`reactor_await_read`'s retain).
+            crate::read_slot::read_slot_retain(slot);
+            inject_resume_registration_for_test(fd, conn, actor_ref, KEY, slot);
+
+            client.write_all(b"readiness").expect("client write");
+            client.flush().ok();
+            wait_readable_for_test(fd);
+
+            if reincarnate {
+                victim.reincarnate_parked();
+            }
+
+            handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+
+            // Readiness reached the slot in BOTH arms: the only difference
+            // between them is whether incarnation resolution let the wake
+            // through. Without this the refusal arm would also pass on a read
+            // that found nothing to deposit.
+            assert_eq!(
+                crate::read_slot::hew_read_slot_status(slot),
+                crate::read_slot::ReadStatus::Data as i32,
+                "the readiness the test wrote must have been deposited"
+            );
+
+            if reincarnate {
+                assert_not_woken(&sched, &victim, "reactor-resume");
+            } else {
+                assert_woken(&sched, &victim, "reactor-resume");
+            }
+
+            // The one-shot registration is gone (and with it its slot ref), so
+            // this releases the last reference.
+            assert_eq!(registration_count_for_test(), 0);
+            crate::read_slot::hew_read_slot_free(slot);
+
+            drop(client);
+            crate::transport::tcp_close_raw_for_test(conn);
+            hew_io_poller_stop(poller);
+        }
+        reset_reactor();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reactor_read_wake_does_not_resume_a_reused_address() {
+        run_reactor_resume_incarnation(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reactor_read_wake_resumes_the_registering_incarnation() {
+        run_reactor_resume_incarnation(false);
+    }
+
+    /// The accept-readiness arm. It has its OWN `enqueue_resume_by_incarnation`
+    /// call site, reached only when a real `accept()` deposits a handle, so the
+    /// read-readiness pair above does not cover it.
+    #[cfg(unix)]
+    fn run_reactor_accept_incarnation(reincarnate: bool) {
+        use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
+        const KEY: usize = 0x0300_6902;
+
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: every pointer here is a fresh test-owned poller, listener,
+        // slot, or stub actor, released before this function returns.
+        unsafe {
+            let poller = hew_io_poller_new();
+            assert!(!poller.is_null());
+            let (listener, client) = crate::transport::tcp_listener_with_pending_conn_for_test();
+            let fd = crate::transport::tcp_listener_raw_fd(listener).expect("listener fd");
+            assert_eq!(
+                hew_io_poller_register(poller, fd, std::ptr::null_mut(), 0, HEW_IO_READ),
+                0
+            );
+
+            let victim = TrackedTestActor::install_parked();
+            let actor_ref = crate::transport::hew_actor_ref_local(victim.ptr());
+            let slot = crate::read_slot::hew_read_slot_new();
+            // The registration-owned slot ref (`reactor_await_accept`'s retain).
+            crate::read_slot::read_slot_retain(slot);
+            inject_accept_registration_for_test(fd, listener, actor_ref, KEY, slot);
+
+            // The pending connection is queued in the kernel before the accept
+            // runs, for the same reason the read arm waits on real readiness: a
+            // `WouldBlock` accept deposits nothing and wakes nobody, which
+            // would let the refusal arm pass without exercising the resolver.
+            wait_readable_for_test(fd);
+
+            if reincarnate {
+                victim.reincarnate_parked();
+            }
+
+            handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
+
+            assert_eq!(
+                crate::read_slot::hew_read_slot_status(slot),
+                crate::read_slot::ReadStatus::Data as i32,
+                "the accepted connection handle must have been deposited"
+            );
+
+            if reincarnate {
+                assert_not_woken(&sched, &victim, "reactor-accept");
+            } else {
+                assert_woken(&sched, &victim, "reactor-accept");
+            }
+
+            crate::read_slot::hew_read_slot_free(slot);
+            drop(client);
+            crate::transport::tcp_close_raw_for_test(listener);
+            hew_io_poller_stop(poller);
+        }
+        reset_reactor();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reactor_accept_wake_does_not_resume_a_reused_address() {
+        run_reactor_accept_incarnation(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reactor_accept_wake_resumes_the_registering_incarnation() {
+        run_reactor_accept_incarnation(false);
+    }
+
+    /// The orphan-close arm: a registration that never reached the poller still
+    /// wakes its registrant so the handler fails closed instead of hanging. It
+    /// wakes from `Registration.actor` on a thread that never saw the
+    /// registrant, so it carries the same staleness hazard as the readiness arm.
+    fn run_reactor_orphan_close_incarnation(reincarnate: bool) {
+        run_reactor_orphan_close_arm(reincarnate, OrphanArm::Resume);
+    }
+
+    /// Which orphan-close arm to drive. Both read the same `Registration.actor`,
+    /// but through different call sites, so each carries its own control.
+    #[derive(Clone, Copy)]
+    enum OrphanArm {
+        /// `resume_with_status` - the read-suspension arm.
+        Resume,
+        /// The accept-suspension arm's own `enqueue_resume_by_incarnation`.
+        Accept,
+    }
+
+    fn run_reactor_orphan_close_arm(reincarnate: bool, arm: OrphanArm) {
+        use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
+        const KEY: usize = 0x0300_6901;
+
+        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: the registration, slot, and stub actor are all test-owned and
+        // released before this function returns.
+        unsafe {
+            let victim = TrackedTestActor::install_parked();
+            let actor_ref = crate::transport::hew_actor_ref_local(victim.ptr());
+            let slot = crate::read_slot::hew_read_slot_new();
+            // The registration-owned slot ref, released by `Drop for Registration`.
+            crate::read_slot::read_slot_retain(slot);
+            let mode = match arm {
+                OrphanArm::Resume => RegMode::Resume { read_slot: slot },
+                OrphanArm::Accept => RegMode::Accept { read_slot: slot },
+            };
+            let reg = Registration::new(/* conn */ -1, actor_ref, KEY, mode);
+
+            if reincarnate {
+                victim.reincarnate_parked();
+            }
+
+            deliver_orphan_close(&reg);
+
+            let family = match arm {
+                OrphanArm::Resume => "reactor-orphan-close-resume",
+                OrphanArm::Accept => "reactor-orphan-close-accept",
+            };
+            if reincarnate {
+                assert_not_woken(&sched, &victim, family);
+            } else {
+                assert_woken(&sched, &victim, family);
+            }
+
+            drop(reg);
+            crate::read_slot::hew_read_slot_free(slot);
+        }
+        reset_reactor();
+    }
+
+    #[test]
+    fn reactor_orphan_close_wake_does_not_resume_a_reused_address() {
+        run_reactor_orphan_close_incarnation(true);
+    }
+
+    #[test]
+    fn reactor_orphan_close_wake_resumes_the_registering_incarnation() {
+        run_reactor_orphan_close_incarnation(false);
+    }
+
+    #[test]
+    fn reactor_accept_orphan_close_wake_does_not_resume_a_reused_address() {
+        run_reactor_orphan_close_arm(true, OrphanArm::Accept);
+    }
+
+    #[test]
+    fn reactor_accept_orphan_close_wake_resumes_the_registering_incarnation() {
+        run_reactor_orphan_close_arm(false, OrphanArm::Accept);
     }
 }

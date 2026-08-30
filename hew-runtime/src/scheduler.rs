@@ -1504,25 +1504,33 @@ fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::Run
 /// scheduler's own unit tests call it directly to exercise the CAS and
 /// pending-wake discipline in isolation.
 ///
+/// That is enforced by visibility, not by this comment: the function is private
+/// to this module, so the only callers it can ever have are
+/// `enqueue_resume_by_incarnation` and the tests below. A readiness source in
+/// another module cannot name it, and so cannot reintroduce the address-keyed
+/// wake this change removed.
+///
 /// # Safety
 ///
 /// `actor`, if non-null, must be pinned live by the caller for the duration of
 /// this call. `cont`, if non-null, must be the continuation parked on `actor`
 /// (a `coro.begin` frame). The caller (a readiness source) owns the wake edge;
 /// the executor owns teardown.
-pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_void) {
+unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_void) {
     if actor.is_null() {
         return;
     }
 
-    // W6.010 caller-actor UAF guard (S1). `enqueue_resume` is reached not only by
+    // W6.010 caller-actor UAF guard (S1). This entry point is reached not only by
     // a live reply but also by the orphan-retire teardown
     // (`hew_reply_channel_retire_orphaned_ask_sender_ref`), which the CALLEE
-    // mailbox runs during its own teardown. The reply channel stores a raw
-    // `caller_actor` pointer that nothing nulls when the CALLER is freed, and
-    // `cleanup_all_actors` frees actors in nondeterministic `HashMap` order — so
-    // the caller box can already be freed when the callee teardown fires this
-    // wake. Dereferencing `actor` directly would be a heap-use-after-free.
+    // mailbox runs during its own teardown. `cleanup_all_actors` frees actors in
+    // nondeterministic `HashMap` order, so the caller box can already be freed
+    // when the callee teardown fires this wake. Dereferencing `actor` directly
+    // would be a heap-use-after-free. (Production callers arrive through
+    // `enqueue_resume_by_incarnation`, which has already refused a wake whose
+    // incarnation is gone; this guard is what makes the raw-pointer entry point
+    // safe for the scheduler's own tests and for a pin held across the call.)
     //
     // `with_live_actor` makes the liveness check and the wake one atomic action:
     // it holds the `LIVE_ACTORS` registry lock across the closure, and EVERY free
@@ -5106,6 +5114,73 @@ mod tests {
         );
     }
 
+    /// The positive control for the block-send admission wake: a producer that
+    /// parked on a full bounded mailbox is resumed when the consumer frees a
+    /// slot. Its refusal sibling below reincarnates before the wake, so only
+    /// this test shows the wake edge firing at all.
+    #[test]
+    fn blocked_sender_wake_resumes_the_registering_incarnation() {
+        let _guard = crate::runtime_test_guard();
+        let sched = NoWorkerSchedulerForTest::install();
+        let sender = crate::test_actor::TrackedTestActor::install_parked();
+
+        // SAFETY: this test exclusively owns the bounded mailbox and slot.
+        let mailbox = unsafe {
+            crate::mailbox::hew_mailbox_new_with_policy(
+                1,
+                crate::internal::types::HewOverflowPolicy::Block,
+            )
+        };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox and payload are valid for the complete copying call.
+            unsafe { crate::mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+        let slot = crate::read_slot::hew_read_slot_new();
+        assert_eq!(
+            // SAFETY: sender, mailbox, and slot remain live until the waiter is resolved.
+            unsafe {
+                crate::mailbox::mailbox_await_send(
+                    mailbox,
+                    2,
+                    ptr::null_mut(),
+                    0,
+                    sender.ptr(),
+                    slot,
+                )
+            },
+            crate::mailbox::MAILBOX_AWAIT_SEND_SUSPEND,
+            "a full bounded Block mailbox must park the producer"
+        );
+
+        // Freeing the queue slot admits the waiter and resolves its wake.
+        // SAFETY: this test is the mailbox's sole consumer.
+        let first = unsafe { crate::mailbox::hew_mailbox_try_recv(mailbox) };
+        assert!(!first.is_null());
+        // SAFETY: dequeue transferred ownership of the first node.
+        unsafe { crate::mailbox::hew_msg_node_free(first) };
+
+        assert_eq!(
+            // SAFETY: the test holds the creator ref on the slot.
+            unsafe { crate::read_slot::hew_read_slot_status(slot) },
+            crate::read_slot::ReadStatus::Data as i32,
+            "admission must deposit capacity readiness before waking"
+        );
+        crate::test_actor::assert_woken(&sched, &sender, "blocked-sender");
+
+        // SAFETY: this test is still the mailbox's sole consumer.
+        let second = unsafe { crate::mailbox::hew_mailbox_try_recv(mailbox) };
+        assert!(!second.is_null(), "the parked send must have been admitted");
+        // SAFETY: this test owns the admitted node, slot, and mailbox.
+        unsafe {
+            crate::mailbox::hew_msg_node_free(second);
+            crate::read_slot::hew_read_slot_free(slot);
+            crate::mailbox::mailbox_close(mailbox);
+            crate::mailbox::hew_mailbox_free(mailbox);
+        }
+    }
+
     /// A blocked sender wake carries the incarnation that registered, not the
     /// allocation address. The hook destroys that sender after readiness is
     /// deposited, then deterministically placement-allocates a fresh suspended
@@ -6514,7 +6589,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn production_round_trip_pending_then_resume_to_ready_destroys_once() {
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
         // SAFETY: fresh mailbox with one message to drive the first dispatch.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
         assert!(!mailbox.is_null());
@@ -6553,6 +6628,9 @@ mod tests {
             HewActorState::Runnable as i32,
             "the wake CASes Suspended -> Runnable"
         );
+        // A worker dequeues before it activates; the dequeue is what releases
+        // the queue entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -6564,6 +6642,7 @@ mod tests {
         // settle to Idle (empty mailbox).
         // SAFETY: actor live; same parked handle.
         unsafe { enqueue_resume_pinned(actor_ptr, parked_handle) };
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -6599,7 +6678,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn p1b_multi_await_parks_and_completes_twice_on_one_actor() {
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
         // SAFETY: fresh mailbox; two messages drive two dispatches.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
         assert!(!mailbox.is_null());
@@ -6639,6 +6718,9 @@ mod tests {
         // (not Idle) and is re-enqueued.
         // SAFETY: actor live; handle1 is the executor-owned frame.
         unsafe { enqueue_resume_pinned(actor_ptr, handle1) };
+        // A worker dequeues before it activates; the dequeue releases the queue
+        // entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert!(
             actor.suspended_cont.load(Ordering::Acquire).is_null(),
@@ -6648,6 +6730,15 @@ mod tests {
             actor.cont_tag.load(Ordering::Acquire),
             crate::internal::types::ContTag::Empty as i32,
             "P1-B: tag re-armed to Empty after the first completion"
+        );
+
+        // The completed resume left a message in the mailbox, so the activation
+        // re-enqueued the actor. Dequeue that entry too - it holds its own pin
+        // lease on the allocation.
+        assert_eq!(
+            sched.pop_global(),
+            Some(actor_ptr),
+            "a completed resume with a non-empty mailbox re-enqueues the actor"
         );
 
         // ── Second await cycle (the one a one-shot tag would leak). ──
@@ -6671,6 +6762,7 @@ mod tests {
         // Wake → resume(Ready) → destroy once → re-arm. Mailbox now empty → Idle.
         // SAFETY: actor live; handle2 is the executor-owned frame.
         unsafe { enqueue_resume_pinned(actor_ptr, handle2) };
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert!(
             actor.suspended_cont.load(Ordering::Acquire).is_null(),
@@ -6741,7 +6833,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn stop_latched_during_resume_terminates_a_reparking_continuation() {
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
         STOP_ON_RESUME_TERMINATED.store(0, Ordering::Release);
 
         // SAFETY: fresh mailbox owned by this test.
@@ -6780,6 +6872,9 @@ mod tests {
         // path; the outline latches the stop; the poll reports `Pending`.
         // SAFETY: the actor is live (tracked) and `handle` is its parked frame.
         unsafe { enqueue_resume_pinned(actor_ptr, handle) };
+        // A worker dequeues before it activates; the dequeue releases the
+        // queue entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
 
         assert_eq!(
@@ -6844,7 +6939,7 @@ mod tests {
         // tracked in `LIVE_ACTORS` for the whole of it.
         unsafe impl Send for AskTarget {}
 
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
         let baseline = crate::reply_channel::active_channel_count();
 
         // SAFETY: fresh mailbox owned by this test.
@@ -6909,6 +7004,9 @@ mod tests {
         // SAFETY: the actor is live and owned by this test.
         unsafe { crate::actor::hew_actor_stop(actor_ptr) };
         // Drive the activation the stop queued (no workers under this guard).
+        // A worker dequeues before it activates; the dequeue releases the
+        // queue entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
@@ -6982,7 +7080,7 @@ mod tests {
             Value,
         }
 
-        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = NoWorkerSchedulerForTest::install();
 
         // SAFETY: fresh mailbox owned by this test, with one message to drive
         // the single dispatch that parks the pump.
@@ -7063,6 +7161,9 @@ mod tests {
         // SAFETY: the actor is live and owned by this test.
         unsafe { crate::actor::hew_actor_stop(actor_ptr) };
         // Drive the activation the stop queued (no workers under this guard).
+        // A worker dequeues before it activates; the dequeue releases the
+        // queue entry's pin lease on this allocation.
+        assert_eq!(sched.pop_global(), Some(actor_ptr));
         activate_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),

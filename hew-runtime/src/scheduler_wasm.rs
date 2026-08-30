@@ -1143,8 +1143,26 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 }
 
 /// Wake a `Suspended` actor whose parked continuation became resumable (wasm
-/// cooperative half). The single resume edge every wasm readiness source feeds,
-/// mirroring the native `scheduler::enqueue_resume` over the same ABI. Publishes
+/// cooperative half). The single resume edge every wasm readiness source feeds.
+///
+/// # Divergence from native: this twin wakes by ADDRESS
+///
+/// Native wakes resolve an `ActorIncarnation` against the live-actor registry
+/// (`scheduler::enqueue_resume_by_incarnation`, #3069) because a wake recorded
+/// on one thread can fire after the registrant died and its allocation was
+/// reused. Two things keep the twin out of that window. It runs on a single
+/// worker thread, so no other thread frees the registrant mid-wake. And its
+/// only address-keyed caller, `reply_channel_wasm::hew_reply`, takes the
+/// parked branch only when `caller_actor` is non-null, which the E10
+/// actor-decl admission gate prevents in every admitted program; the branch
+/// exists for native parity, not because the VM reaches it.
+///
+/// Single-threadedness alone would not carry it: that reply fires from the
+/// callee's activation, not the one where the caller parked. Recorded in
+/// `docs/sandbox-vm-divergences.md`; revisit when E10 lifts, or when wasm
+/// gains preemption, threads, or an out-of-activation readiness source.
+///
+/// Publishes
 /// to the run queue before storing `Suspended -> Runnable`; if shutdown already
 /// took the queue, leaves the parked frame untouched for cleanup. Records a
 /// pending wake when the park has not yet published a handle (FG3 window).

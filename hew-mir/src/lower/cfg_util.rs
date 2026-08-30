@@ -294,11 +294,18 @@ pub(super) fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u3
             if block == entry {
                 continue;
             }
-            // A block whose predecessors have all been removed loses its own
-            // entry, and that removal can strand a further block. Recording it
-            // as a change keeps the loop running until the cascade is complete,
-            // so the answer does not depend on where in `order` the removed
-            // block happened to sit.
+            // Neither removal below is reachable from this function's own
+            // construction: `reachable` is grown from successor lists, so every
+            // non-entry member has a reachable predecessor recorded above, and
+            // every reachable block is seeded with a dominator set. A probe that
+            // panicked in both branches survived the whole `hew-mir` suite, both
+            // compile-measure fixtures, and a 2 200-line real module. They stay
+            // because the doc comment above promises them - a block with no
+            // resolvable predecessor is dropped rather than reported with a
+            // partial answer - and because a future caller may hand this a CFG
+            // mid-rewrite. Recording the removal as a change keeps the loop
+            // running until the cascade completes, so the answer would not
+            // depend on where in `order` the removed block happened to sit.
             let Some(preds) = predecessors.get(&block) else {
                 changed |= dominators.remove(&block).is_some();
                 continue;
@@ -322,4 +329,156 @@ pub(super) fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u3
         }
     }
     dominators
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{block_dominators, blocks_on_a_cycle, blocks_reachable_from};
+    use crate::model::{BasicBlock, Place, Terminator};
+    use std::collections::HashSet;
+
+    fn goto(id: u32, target: u32) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Goto { target },
+        }
+    }
+
+    fn branch(id: u32, then_target: u32, else_target: u32) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Branch {
+                cond: Place::Local(0),
+                then_target,
+                else_target,
+            },
+        }
+    }
+
+    fn ret(id: u32) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Return,
+        }
+    }
+
+    fn dominators_of(blocks: &[BasicBlock], id: u32) -> Vec<u32> {
+        let mut found: Vec<u32> = block_dominators(blocks)
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        found.sort_unstable();
+        found
+    }
+
+    /// The join of two arms is dominated by the branch and by itself, and by
+    /// neither arm. An intersection replaced by a union, or a fixpoint that
+    /// stops after one predecessor, both put an arm in this answer.
+    #[test]
+    fn diamond_join_is_dominated_by_the_branch_and_neither_arm() {
+        let blocks = vec![branch(0, 1, 2), goto(1, 3), goto(2, 3), ret(3)];
+
+        assert_eq!(dominators_of(&blocks, 3), vec![0, 3]);
+        assert_eq!(dominators_of(&blocks, 1), vec![0, 1]);
+    }
+
+    /// A loop header dominates its body; the body does not dominate the header,
+    /// even though the header is reachable from it. Seeding the fixpoint with
+    /// the empty set instead of the full reachable set inverts this.
+    #[test]
+    fn loop_header_dominates_its_body_and_the_body_does_not_dominate_the_header() {
+        // 0 -> 1 (header) -> 2 (body) -> 1, and 1 -> 3 (exit).
+        let blocks = vec![goto(0, 1), branch(1, 2, 3), goto(2, 1), ret(3)];
+
+        assert_eq!(dominators_of(&blocks, 2), vec![0, 1, 2]);
+        assert_eq!(dominators_of(&blocks, 1), vec![0, 1]);
+    }
+
+    /// Every path to the exit of a loop runs the header, so the header dominates
+    /// the exit even though the exit is not inside the loop.
+    #[test]
+    fn loop_exit_is_dominated_by_the_header() {
+        let blocks = vec![goto(0, 1), branch(1, 2, 3), goto(2, 1), ret(3)];
+
+        assert_eq!(dominators_of(&blocks, 3), vec![0, 1, 3]);
+    }
+
+    /// A block no path from the entry reaches carries no dominator entry at all,
+    /// which every consumer reads as "does not dominate" — the fail-closed
+    /// direction.
+    #[test]
+    fn unreachable_block_carries_no_dominator_entry() {
+        let blocks = vec![goto(0, 1), ret(1), goto(7, 1)];
+
+        assert!(!block_dominators(&blocks).contains_key(&7));
+    }
+
+    /// Duplicate ids make "the block with id N" meaningless, so the whole answer
+    /// is withheld rather than computed from whichever copy the map kept.
+    #[test]
+    fn duplicate_block_ids_yield_no_dominance_claim() {
+        let blocks = vec![goto(0, 1), ret(1), ret(1)];
+
+        assert!(block_dominators(&blocks).is_empty());
+    }
+
+    /// A successor id that names no block is reachable but never walked. Real
+    /// blocks must keep the dominators they would have had without it, so a
+    /// malformed or mid-rewrite CFG cannot silently weaken a dominance claim
+    /// that a consumer reads as proof.
+    #[test]
+    fn a_successor_id_that_names_no_block_leaves_real_dominators_alone() {
+        let with_phantom = vec![branch(0, 1, 900), goto(1, 2), ret(2)];
+        let without = vec![branch(0, 1, 2), goto(1, 2), ret(2)];
+
+        assert_eq!(dominators_of(&with_phantom, 1), vec![0, 1]);
+        assert_eq!(dominators_of(&with_phantom, 2), vec![0, 1, 2]);
+        assert_eq!(dominators_of(&without, 2), vec![0, 2]);
+    }
+
+    /// A block on a back edge re-executes; a block on a straight line does not.
+    /// Reporting the whole loop's reachable set, rather than the blocks that
+    /// reach themselves, would put the loop's exit in this answer.
+    #[test]
+    fn only_blocks_that_reach_themselves_are_on_a_cycle() {
+        let blocks = vec![goto(0, 1), branch(1, 2, 3), goto(2, 1), ret(3)];
+
+        assert_eq!(blocks_on_a_cycle(&blocks), HashSet::from([1, 2]));
+    }
+
+    #[test]
+    fn a_straight_line_function_has_no_block_on_a_cycle() {
+        let blocks = vec![goto(0, 1), goto(1, 2), ret(2)];
+
+        assert!(blocks_on_a_cycle(&blocks).is_empty());
+    }
+
+    /// A self-loop is the smallest cycle there is, and the only one where the
+    /// block is its own successor.
+    #[test]
+    fn a_self_looping_block_is_on_a_cycle() {
+        let blocks = vec![goto(0, 1), branch(1, 1, 2), ret(2)];
+
+        assert!(blocks_on_a_cycle(&blocks).contains(&1));
+    }
+
+    /// The documented contract: the start block appears in its own reachable set
+    /// only when something branches back to it. Callers use that to tell "runs
+    /// again" from "runs once".
+    #[test]
+    fn reachability_excludes_the_start_unless_a_cycle_re_enters_it() {
+        let acyclic = vec![goto(0, 1), goto(1, 2), ret(2)];
+        let cyclic = vec![goto(0, 1), branch(1, 2, 0), ret(2)];
+
+        assert_eq!(blocks_reachable_from(&acyclic, 0), HashSet::from([1, 2]));
+        assert_eq!(blocks_reachable_from(&cyclic, 0), HashSet::from([0, 1, 2]));
+    }
 }

@@ -123,7 +123,6 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
         | hew_mir::MirDiagnosticKind::OutboundModeUnresolved { .. }
         | hew_mir::MirDiagnosticKind::MustConsume { .. }
-        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "E_MIR_CHECK",
@@ -135,7 +134,12 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         hew_mir::MirDiagnosticKind::LoweringInvariant { .. }
         | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. } => "E_MIR_ICE",
+        // A refusal, not a defect and not the user's error: the elaborator
+        // proved nothing wrong, it failed to prove a shape safe and declined
+        // to emit a partial plan. Same family as the aggregate-extraction
+        // refusal beside it.
         hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
+        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
             "E_NOT_YET_IMPLEMENTED"
         }
@@ -801,9 +805,11 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             "remote dispatch to multi-parameter receive fn `{handler}` on actor `{actor}` \
              is not supported: the cross-node codec carries single-value payloads only"
         ),
-        hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, reason } => {
-            format!("drop plan for MIR block {block} could not be determined: {reason}")
-        }
+        hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, reason } => format!(
+            "the compiler cannot yet prove a safe cleanup for every exit of MIR \
+             block {block}, so it refuses to emit a partial one (this is a \
+             current Hew limitation, not your code): {reason}"
+        ),
         hew_mir::MirDiagnosticKind::ObligationUnderReleased {
             function,
             name,
@@ -1704,6 +1710,30 @@ mod tests {
         );
         assert_eq!(mir_diagnostic_prefix(&use_after_consume), "E_MIR_CHECK");
         assert_eq!(use_after_consume.internal_compiler_error_function(), None);
+    }
+
+    /// The elaborator refusing a shape it cannot prove is a compiler
+    /// limitation, not a fault in the program and not a self-inconsistency:
+    /// it reads on the not-yet-implemented family, like the aggregate
+    /// extraction refusal beside it.
+    #[test]
+    fn an_undetermined_drop_plan_reads_as_a_limitation_not_the_users_error() {
+        let kind = hew_mir::MirDiagnosticKind::DropPlanUndetermined {
+            block: 20,
+            reason: "the composite walk would re-free the field's leaves".to_owned(),
+        };
+        let diagnostic = hew_mir::MirDiagnostic {
+            kind,
+            note: "the elaborator aborts rather than emit a partial drop plan".to_owned(),
+        };
+
+        assert_eq!(
+            mir_diagnostic_prefix(&diagnostic.kind),
+            "E_NOT_YET_IMPLEMENTED"
+        );
+        assert_eq!(diagnostic.kind.internal_compiler_error_function(), None);
+        let message = mir_diagnostic_message(&diagnostic);
+        assert!(message.contains("not your code"), "{message}");
     }
 
     fn sample_type_error() -> hew_types::TypeError {

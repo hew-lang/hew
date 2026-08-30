@@ -611,6 +611,23 @@ pub(super) fn finalize_string_local_share_intents(
 /// A proven function-wide last use (unique move in the entry block with no
 /// later read) is a genuine handoff and mints nothing: the existing bytes
 /// handoff machinery in `finalize_bytes_ownership` remains its only authority.
+///
+/// Two halves of the string spine are deliberately NOT mirrored yet.
+/// WHY: each would change bytes behaviour beyond the shape this fixes, and the
+/// bytes handoff path already has its own proven authority.
+/// * The checker `Use` intent flip to `Consume` on a proven handoff. Bytes
+///   handoffs keep `Read` (`facts.rs`), which
+///   `prove_retained_bytes_local_share` and `finalize_bytes_ownership` already
+///   depend on.
+/// * Excluding the retained move from whole-value alias propagation in
+///   `derive_local_bytes_drop_allowed`. Without it a share group shares one
+///   alias root, so an escape by either end excludes both - the leak
+///   direction, never a double free.
+///
+/// WHEN obsolete: when the bytes handoff decision moves into this pass too, so
+/// one site decides share-vs-handoff for bytes the way the string spine does.
+/// WHAT the real fix is: fold `finalize_bytes_ownership`'s local-share arm into
+/// this pass and give bytes the same retained-move exclusion set string uses.
 pub(super) fn finalize_bytes_local_share_intents(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let candidates: Vec<(BindingId, BindingId)> =
         builder.bytes_local_share_sites.values().copied().collect();

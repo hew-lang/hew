@@ -7,7 +7,7 @@
       "required_by": ["sym:core.stdout.println"]
     }
   ],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc2",
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc3",
   "functions": [
     {
       "blocks": [
@@ -653,7 +653,7 @@
       "span": "span:182-232"
     }
   ],
-  "hew_version": "0.6.0-rc2",
+  "hew_version": "0.6.0-rc3",
   "layouts": {
     "actors": [],
     "enums": [

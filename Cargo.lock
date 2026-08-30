@@ -1737,7 +1737,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hew-analysis"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1748,14 +1748,14 @@ dependencies = [
 
 [[package]]
 name = "hew-cabi"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hew-capability-gen"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1765,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "hew-cli"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1800,7 +1800,7 @@ dependencies = [
 
 [[package]]
 name = "hew-codegen-rs"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "cc",
  "hew-cabi",
@@ -1818,7 +1818,7 @@ dependencies = [
 
 [[package]]
 name = "hew-compile"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-codegen-rs",
  "hew-hir",
@@ -1834,7 +1834,7 @@ dependencies = [
 
 [[package]]
 name = "hew-hir"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-parser",
  "hew-types",
@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lexer"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "logos",
  "serde_json",
@@ -1851,7 +1851,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lib"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-runtime",
  "hew-std",
@@ -1859,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lsp"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "dashmap",
  "hew-analysis",
@@ -1879,7 +1879,7 @@ dependencies = [
 
 [[package]]
 name = "hew-mir"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-hir",
  "hew-mir",
@@ -1895,7 +1895,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "clap",
  "crossterm",
@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "hew-parser"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "finl_unicode",
  "hew-lexer",
@@ -1922,7 +1922,7 @@ dependencies = [
 
 [[package]]
 name = "hew-pkg"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "base64",
  "clap",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "bytes",
  "cddl",
@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime-testkit"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-runtime",
  "libc",
@@ -1995,7 +1995,7 @@ dependencies = [
 
 [[package]]
 name = "hew-sandbox-wasm"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "assert_cmd",
  "hew-parser",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "hew-sir"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-hir",
  "hew-parser",
@@ -2020,7 +2020,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "argon2",
  "base64",
@@ -2057,15 +2057,15 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-binary"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 
 [[package]]
 name = "hew-std-text-template"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 
 [[package]]
 name = "hew-testutil"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "fd-lock",
  "libc",
@@ -2074,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "hew-types"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-cabi",
  "hew-parser",
@@ -2089,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "hew-wasm"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-analysis",
  "hew-compile",
@@ -6047,7 +6047,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.6.0-rc2"
+version = "0.6.0-rc3"
 dependencies = [
  "hew-sandbox-wasm",
  "quick-xml",

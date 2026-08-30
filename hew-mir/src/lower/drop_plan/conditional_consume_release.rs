@@ -492,6 +492,7 @@ mod tests {
             crate::lower::drop_plan::derive_drop_plans_from_replay(&blocks, &[], exits);
         CheckedMirFunction {
             name: "edge_release".to_owned(),
+            key: crate::model::MirCallableKey::for_test("edge_release"),
             return_ty: ResolvedTy::Unit,
             blocks,
             decisions: vec![],
@@ -499,6 +500,7 @@ mod tests {
             cooperate_sites: vec![],
             ownership_elaboration: Some(Box::new(crate::ElaboratedMirFunction {
                 name: "edge_release".to_owned(),
+                key: crate::model::MirCallableKey::for_test("edge_release"),
                 return_ty: ResolvedTy::Unit,
                 statements: vec![],
                 decisions: vec![],

@@ -61,8 +61,15 @@ pub(super) use diagnostic_projection::project_findings;
 ///   - All other classes -> no drop emitted (`BitCopy`, `CowValue`, `View`,
 ///     `PersistentShare`, `Unknown` — `Unknown` is itself an upstream
 ///     rejection).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the derivation threads the sealed Checked-MIR inputs plus the \
+              callable's presentation name and its resolver-anchored identity \
+              key, which the elaborated function carries side by side"
+)]
 pub(super) fn derive_elaboration(
     name: &str,
+    key: &crate::model::MirCallableKey,
     return_ty: &ResolvedTy,
     blocks: &[BasicBlock],
     cooperate_sites: &[CooperateSite],
@@ -148,6 +155,7 @@ pub(super) fn derive_elaboration(
     (
         ElaboratedMirFunction {
             name: name.to_owned(),
+            key: key.clone(),
             return_ty: return_ty.clone(),
             statements: elaborated_statements,
             decisions: builder.decisions.clone(),
@@ -1212,6 +1220,7 @@ pub(super) fn materialize_exact_overwrite_releases(
 )]
 pub(super) fn seal_checked(
     name: String,
+    key: crate::model::MirCallableKey,
     return_ty: ResolvedTy,
     blocks: Vec<BasicBlock>,
     _raw: &RawMirFunction,
@@ -1223,6 +1232,7 @@ pub(super) fn seal_checked(
 ) -> (CheckedMirFunction, Vec<MirDiagnostic>) {
     let (mut ownership_elaboration, mut diagnostics) = derive_elaboration(
         &name,
+        &key,
         &return_ty,
         &blocks,
         &cooperate_sites,
@@ -1243,6 +1253,7 @@ pub(super) fn seal_checked(
     }
     let checked = CheckedMirFunction {
         name,
+        key,
         return_ty,
         blocks,
         decisions,
@@ -2587,6 +2598,7 @@ fn distinct_places_with_one_owner_each_are_not_shared() {
 fn checked_with_ownership_events(events: Vec<Instr>) -> CheckedMirFunction {
     CheckedMirFunction {
         name: "ownership_event_falsifier".to_owned(),
+        key: crate::model::MirCallableKey::for_test("ownership_event_falsifier"),
         return_ty: ResolvedTy::Unit,
         blocks: vec![BasicBlock {
             id: ENTRY_BLOCK_ID,
@@ -2633,6 +2645,7 @@ fn checked_recipe_fixture(
     }));
     CheckedMirFunction {
         name: "recipe_invariant".to_owned(),
+        key: crate::model::MirCallableKey::for_test("recipe_invariant"),
         return_ty: ResolvedTy::Unit,
         blocks: vec![BasicBlock {
             id: ENTRY_BLOCK_ID,
@@ -2652,6 +2665,7 @@ fn checked_recipe_fixture(
         cooperate_sites: vec![],
         ownership_elaboration: Some(Box::new(ElaboratedMirFunction {
             name: "recipe_invariant".to_owned(),
+            key: crate::model::MirCallableKey::for_test("recipe_invariant"),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
@@ -3688,6 +3702,7 @@ fn cleanup_block_projection_is_rebuilt_from_exact_panic_plan() {
     };
     let mut elaboration = ElaboratedMirFunction {
         name: "cleanup_projection".to_owned(),
+        key: crate::model::MirCallableKey::for_test("cleanup_projection"),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
         decisions: vec![],
@@ -3730,6 +3745,7 @@ fn checked_ownership_plan_replays_without_builder_state() {
     ]);
     checked.ownership_elaboration = Some(Box::new(ElaboratedMirFunction {
         name: checked.name.clone(),
+        key: crate::model::MirCallableKey::for_test(&checked.name),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
         decisions: vec![],
@@ -3792,6 +3808,7 @@ fn checked_ownership_plan_requires_explicit_guard_event() {
         let mut checked = checked_with_ownership_events(events);
         checked.ownership_elaboration = Some(Box::new(ElaboratedMirFunction {
             name: checked.name.clone(),
+            key: crate::model::MirCallableKey::for_test(&checked.name),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
@@ -3902,6 +3919,7 @@ fn checked_ownership_plan_rejects_stale_generation_guard() {
     ]);
     checked.ownership_elaboration = Some(Box::new(ElaboratedMirFunction {
         name: checked.name.clone(),
+        key: crate::model::MirCallableKey::for_test(&checked.name),
         return_ty: ResolvedTy::Unit,
         statements: vec![],
         decisions: vec![],
@@ -3935,6 +3953,7 @@ fn checked_ownership_plan_rejects_stale_generation_guard() {
 fn goto_edge_fixture(source_instructions: Vec<Instr>) -> CheckedMirFunction {
     CheckedMirFunction {
         name: "goto_edge".to_owned(),
+        key: crate::model::MirCallableKey::for_test("goto_edge"),
         return_ty: ResolvedTy::Unit,
         blocks: vec![
             BasicBlock {
@@ -5355,6 +5374,7 @@ fn missing_recipe_diagnostics_follow_source_binding_order() {
     }];
     let checked = CheckedMirFunction {
         name: "source_order".to_owned(),
+        key: crate::model::MirCallableKey::for_test("source_order"),
         return_ty: ResolvedTy::Unit,
         blocks,
         decisions: vec![],
@@ -5362,6 +5382,7 @@ fn missing_recipe_diagnostics_follow_source_binding_order() {
         cooperate_sites: vec![],
         ownership_elaboration: Some(Box::new(ElaboratedMirFunction {
             name: "source_order".to_owned(),
+            key: crate::model::MirCallableKey::for_test("source_order"),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],
@@ -9129,6 +9150,7 @@ mod field_drop_in_place_verifier {
     fn elab_with_drops(drops: Vec<ElabDrop>) -> ElaboratedMirFunction {
         ElaboratedMirFunction {
             name: "synthetic".to_string(),
+            key: crate::model::MirCallableKey::for_test("synthetic"),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],

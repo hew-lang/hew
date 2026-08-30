@@ -13,14 +13,14 @@ use super::{
     mangle_layout_key, mangle_machine_step, monomorphic_user_record_key, numeric_method_op,
     numeric_method_signedness, option_payload_ty, runtime_symbol_for_call_expr, signed_min_value,
     ty_is_closure_pair, ty_is_generator_handle, ty_is_indirect_enum, ty_is_stream_handle,
-    unary_op_label, unresolved_fn_sig_reason, user_record_layout_key, ActorStateLoadMode,
-    AffineCallConsumeCandidate, BinaryOp, BindingId, Builder, BuiltinType, ChildKind,
-    ClosurePairRhs, CmpPred, Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap,
-    HashSet, HirExpr, HirExprKind, HirLiteral, HirStmtKind, HirVarSelfMethodTarget, Instr,
-    IntArithOp, IntSignedness, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    NumericMethodFamily, PendingAffineCallConsumeArg, PendingAffineCallConsumeSite, Place,
-    ProjectedPayloadOrigin, ProjectedPayloadRejectReason, ReleaseSymbolVerdict, ResolvedRef,
-    ResolvedTy, RuntimeCallContext, SiteId, SuspendKind, Terminator, TrapKind, UnaryOp, ValueClass,
+    unary_op_label, unresolved_fn_sig_reason, user_record_layout_key, ActorStateLoadMode, BinaryOp,
+    BindingId, Builder, BuiltinType, ChildKind, ClosurePairRhs, CmpPred, Disposition,
+    FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind, HirLiteral,
+    HirStmtKind, HirVarSelfMethodTarget, Instr, IntArithOp, IntSignedness, IntentKind,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, NumericMethodFamily,
+    PendingAffineCallConsumeArg, PendingAffineCallConsumeSite, Place, ProjectedPayloadOrigin,
+    ProjectedPayloadRejectReason, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy,
+    RuntimeCallContext, SiteId, SuspendKind, Terminator, TrapKind, UnaryOp, ValueClass,
     VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX, SENTINEL_RECV_GEN_COMPANION_BINDING,
 };
 #[cfg(test)]
@@ -8992,74 +8992,6 @@ impl Builder {
                 .map(crate::CallAuthority::Runtime)
                 .unwrap_or_default(),
         )
-    }
-
-    /// Resolve affine arguments whose declared extern contract adopts the value
-    /// only on normal return. Direct Hew consuming parameters own their values
-    /// from function entry and therefore use ordinary pre-invoke binding
-    /// transfer instead of this deferred protocol.
-    fn affine_call_consume_candidates(
-        &mut self,
-        callee_symbol: &str,
-        callee_item: Option<hew_hir::ItemId>,
-        hir_args: &[hew_hir::HirExpr],
-    ) -> Vec<AffineCallConsumeCandidate> {
-        let mut candidates = Vec::new();
-        for (index, arg) in hir_args.iter().enumerate() {
-            let HirExprKind::BindingRef {
-                resolved: ResolvedRef::Binding(binding),
-                ..
-            } = &arg.kind
-            else {
-                continue;
-            };
-            let use_intent = self.binding_ref_use_intent(arg);
-            if use_intent == IntentKind::Discharge {
-                continue;
-            }
-            let Some(guard) = self.affine_release_flags.get(binding).copied() else {
-                continue;
-            };
-            if callee_item.is_some()
-                || !self
-                    .call_scrutinee_provenance
-                    .extern_table
-                    .extern_param_is_consume(callee_symbol, index)
-            {
-                continue;
-            }
-            if use_intent != IntentKind::Consume {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "typed affine call consume without checker Consume intent"
-                            .to_string(),
-                        site: arg.site,
-                    },
-                    note: "the checker use and physical normal-edge handoff must share one consume authority"
-                        .to_string(),
-                });
-                continue;
-            }
-            candidates.push(AffineCallConsumeCandidate {
-                index,
-                binding: *binding,
-                guard,
-                site: arg.site,
-            });
-        }
-        candidates
-    }
-
-    fn activate_affine_call_consume_sites(&mut self, candidates: &[AffineCallConsumeCandidate]) {
-        self.deferred_affine_call_consume_sites
-            .extend(candidates.iter().map(|candidate| candidate.site));
-    }
-
-    fn deactivate_affine_call_consume_sites(&mut self, candidates: &[AffineCallConsumeCandidate]) {
-        for candidate in candidates {
-            self.deferred_affine_call_consume_sites
-                .remove(&candidate.site);
-        }
     }
 
     /// Lower a direct call using the checker/HIR-projected authority. The

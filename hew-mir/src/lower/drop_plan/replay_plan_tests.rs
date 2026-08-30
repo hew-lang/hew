@@ -90,6 +90,7 @@ fn plan<'a>(plans: &'a [(ExitPath, DropPlan)], exit: &ExitPath) -> &'a DropPlan 
 fn checked(blocks: Vec<BasicBlock>, drop_plans: Vec<(ExitPath, DropPlan)>) -> CheckedMirFunction {
     CheckedMirFunction {
         name: "replay_plan".to_owned(),
+        key: crate::model::MirCallableKey::for_test("replay_plan"),
         return_ty: ResolvedTy::Unit,
         blocks,
         decisions: vec![],
@@ -97,6 +98,7 @@ fn checked(blocks: Vec<BasicBlock>, drop_plans: Vec<(ExitPath, DropPlan)>) -> Ch
         cooperate_sites: vec![],
         ownership_elaboration: Some(Box::new(ElaboratedMirFunction {
             name: "replay_plan".to_owned(),
+            key: crate::model::MirCallableKey::for_test("replay_plan"),
             return_ty: ResolvedTy::Unit,
             statements: vec![],
             decisions: vec![],

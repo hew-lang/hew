@@ -5940,6 +5940,10 @@ run_accept_expect_stdout "value_receiver_reused_after_method"
 # transfers, never about the binding: a sibling branch that only reads the
 # same record must still release it at its own exit.
 run_accept_expect_stdout "carrier_transfer_sibling_path_release"
+# An indirect call borrows its arguments like a direct one: handing a
+# summary-owned parameter to a reading closure must not take the carrier
+# authority its own callee still owes a release for.
+run_accept_expect_stdout "closure_arg_borrows_carrier_param"
 
 # The index-assignment move is decided by the argument's own use: an earlier
 # consume of the same binding elsewhere in the loop body neither hides nor

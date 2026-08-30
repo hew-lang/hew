@@ -3647,7 +3647,18 @@ impl Builder {
                             }
                             arg_places.push(place);
                         } else {
-                            arg_places.push(self.lower_value_for_move(arg)?);
+                            // An indirect call is a call: it BORROWS every
+                            // non-resource argument, exactly like the direct
+                            // path (`lower_direct_call_args`). A closure's
+                            // parameter list carries no `consume` marker and
+                            // no callee item to consult, so there is no
+                            // argument here a call may take. Routing these
+                            // through the move funnel neutralized any carrier
+                            // authority the argument held — a summary-owned
+                            // parameter handed to a borrowing closure lost the
+                            // release its own callee still owed, and the next
+                            // owning use of that slot faulted.
+                            arg_places.push(self.lower_method_arg_value(arg, false)?);
                         }
                     }
                     let dest = if matches!(ret_ty, ResolvedTy::Unit) {

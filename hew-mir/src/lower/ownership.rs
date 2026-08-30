@@ -1453,6 +1453,7 @@ impl Builder {
             })
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect();
+        let has_one_typed_source_owner = owners.len() == 1;
         for (binding, name, ty) in owners {
             self.set_owned_local_consumed(binding, Some(cursor), DischargeSite::BindingMoved);
             self.statements.push(MirStatement::Use {
@@ -1461,6 +1462,60 @@ impl Builder {
                 site: source.site,
                 ty,
                 intent: IntentKind::Consume,
+            });
+        }
+        if has_one_typed_source_owner {
+            self.typed_produced_value_handoffs
+                .insert((source_place, cursor));
+            return;
+        }
+
+        // `lower_value_for_move` has already consumed a direct named source,
+        // but the VecIter RecordInit has only just copied its bits. Publish the
+        // physical neutralisation here, after that copy, when the immutable
+        // event stream contains exactly the binding's current terminal owner.
+        // This keeps the crash-cleanup token live through construction without
+        // adding a second semantic Transfer or admitting a place-only match.
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(source_binding),
+            ..
+        } = &source.kind
+        else {
+            return;
+        };
+        if source.intent != IntentKind::Consume
+            || self.binding_locals.get(source_binding) != Some(&source_place)
+        {
+            return;
+        }
+        let Some(generation) = self.live_owner_generation(*source_binding) else {
+            return;
+        };
+        let source_owner = crate::model::OwnerId {
+            binding: *source_binding,
+            generation,
+        };
+        let terminal_source_transfers = self
+            .instructions
+            .iter()
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        from,
+                        to: None,
+                        to_owner: None,
+                        ..
+                    }) if *owner == source_owner && *from == source_place
+                )
+            })
+            .count();
+        if terminal_source_transfers == 1 {
+            self.push_instr(Instr::NeutralizePayloadSlot {
+                place: source_place,
+                transferee: Some(cursor),
+                authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
             });
         }
     }

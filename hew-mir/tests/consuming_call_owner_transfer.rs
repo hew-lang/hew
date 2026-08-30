@@ -216,6 +216,42 @@ fn main() {
 }
 "#;
 
+const VEC_ITER_FRESH_CALL_SOURCE: &str = r"
+fn make_vec() -> Vec<i64> {
+    let xs: Vec<i64> = Vec.new();
+    xs.push(1);
+    xs
+}
+
+fn take_cursor(it: VecIter<i64>) -> i64 { 1 }
+
+fn main() -> i64 {
+    take_cursor(make_vec().iter())
+}
+";
+
+const VEC_ITER_EXTERN_FACTORY_SOURCE: &str = r#"
+extern "C" {
+    fn foreign_vec() -> Vec<i64>;
+}
+
+fn take_cursor(it: VecIter<i64>) {}
+
+fn main() {
+    unsafe { take_cursor(foreign_vec().iter()) };
+}
+"#;
+
+const VEC_ITER_INDIRECT_FACTORY_SOURCE: &str = r"
+fn take_cursor(it: VecIter<i64>) {}
+
+fn invoke(make: fn() -> Vec<i64>) {
+    take_cursor(make().iter());
+}
+
+fn main() {}
+";
+
 const VEC_ITER_NAMED_FUNCTION_VALUE_SOURCE: &str = r"
 fn take_cursor(it: VecIter<i64>) {}
 
@@ -890,12 +926,6 @@ fn assert_temporary_cursor_commit_is_last(
         call_block.instructions.len(),
         "the cursor commit must be the literal final instruction pair before invoke"
     );
-    assert!(
-        call_block.instructions[..transfer_index]
-            .iter()
-            .any(|instruction| matches!(instruction, Instr::MakeClosure { .. })),
-        "the closure argument must be fully materialised before the cursor transfer"
-    );
 }
 
 fn assert_temporary_cursor_preinvoke_cleanup(
@@ -1032,6 +1062,18 @@ fn vec_iter_temporary_transfers_after_later_arguments_finish() {
     assert!(caller.checks.is_empty(), "{:#?}", caller.checks);
     let (owner, flag, source) = temporary_cursor_owner(caller);
     assert_temporary_cursor_commit_is_last(caller, owner, flag, source);
+    let (call_block, _, _) = direct_call(caller, "take_cursor");
+    let transfer_index = call_block
+        .instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instr::OwnershipEvent(OwnershipEvent::Transfer { owner: transferred, from, to: None, .. }) if *transferred == owner && *from == source))
+        .expect("the cursor transfer must reach the call block");
+    assert!(
+        call_block.instructions[..transfer_index]
+            .iter()
+            .any(|instruction| matches!(instruction, Instr::MakeClosure { .. })),
+        "the closure argument must be fully materialised before the cursor transfer"
+    );
     assert_temporary_cursor_preinvoke_cleanup(caller, owner, flag, source);
     assert_owned_cursor_callee_cleanup(&pipeline);
 }
@@ -1381,6 +1423,132 @@ fn extern_item_id_does_not_authorise_owned_cursor_transfer() {
         "an extern ItemId has no emitted OwnedCursor parameter boundary: {:#?}",
         pipeline.diagnostics
     );
+}
+
+#[test]
+fn fresh_direct_vec_factory_publishes_one_cursor_owner_before_handoff() {
+    let pipeline = lower_clean_to_checked_mir(VEC_ITER_FRESH_CALL_SOURCE);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "a typed domestic Vec factory must reach the OwnedCursor boundary: {:#?}",
+        pipeline.diagnostics
+    );
+    let caller = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("the fresh factory caller must reach Checked MIR");
+    assert!(caller.checks.is_empty(), "{:#?}", caller.checks);
+    assert_eq!(
+        caller
+            .blocks
+            .iter()
+            .filter(|block| matches!(&block.terminator, Terminator::Call { callee, .. } if callee.contains("make_vec")))
+            .count(),
+        1,
+        "the fresh Vec producer must be evaluated exactly once"
+    );
+
+    let (owner, flag, source) = temporary_cursor_owner(caller);
+    assert_eq!(
+        caller
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| matches!(instruction, Instr::OwnershipEvent(OwnershipEvent::Mint { owner: minted, place, .. }) if *minted == owner && *place == source))
+            .count(),
+        1,
+        "the materialised cursor must mint exactly one caller generation"
+    );
+    assert_eq!(
+        caller
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| matches!(instruction, Instr::OwnershipEvent(OwnershipEvent::Guard { owner: guarded, flag: guarded_flag, .. }) if *guarded == owner && *guarded_flag == flag))
+            .count(),
+        1,
+        "the materialised cursor must guard exactly that generation"
+    );
+    assert_temporary_cursor_commit_is_last(caller, owner, flag, source);
+    let cursor_entry = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "take_cursor")
+        .expect("the fresh cursor callee must reach Checked MIR");
+    assert_owned_cursor_boundary(cursor_entry, 0);
+    let param_place = Place::Local(0);
+    let (param_owner, param_flag) = guarded_owner_at_place(cursor_entry, param_place);
+    assert_eq!(
+        cursor_entry
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| matches!(instruction, Instr::RecordFieldDrop { record, .. } if *record == param_place))
+            .count(),
+        1,
+        "the entered callee must release the cursor's Vec field once"
+    );
+    assert_eq!(
+        cursor_entry
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| matches!(instruction, Instr::OwnershipEvent(OwnershipEvent::GuardedRelease { owner: released, place, flag: release_flag }) if *released == param_owner && *place == param_place && *release_flag == param_flag))
+            .count(),
+        1,
+        "the callee's normal cleanup must end its exact guarded owner"
+    );
+}
+
+#[test]
+fn opaque_vec_factories_cannot_mint_a_cursor_handoff_owner() {
+    for (source, producer, expected) in [
+        (
+            VEC_ITER_EXTERN_FACTORY_SOURCE,
+            "extern",
+            "ownership transfer of a proven-foreign value into a callee-owned parameter",
+        ),
+        (
+            VEC_ITER_INDIRECT_FACTORY_SOURCE,
+            "indirect",
+            "OwnedCursor argument without one caller owner",
+        ),
+    ] {
+        let pipeline = lower_clean_to_checked_mir(source);
+        assert!(
+            has_not_yet_implemented(&pipeline, expected),
+            "an {producer} Vec factory must remain owner-opaque: {:#?}",
+            pipeline.diagnostics
+        );
+        let caller_name = if producer == "extern" {
+            "main"
+        } else {
+            "invoke"
+        };
+        let caller = pipeline
+            .checked_mir
+            .iter()
+            .find(|function| function.name == caller_name)
+            .unwrap_or_else(|| panic!("{caller_name} must reach Checked MIR"));
+        let committed = caller.blocks.iter().any(|block| {
+            let Terminator::Call { callee, args, .. } = &block.terminator else {
+                return false;
+            };
+            if !callee.contains("take_cursor") {
+                return false;
+            }
+            args.first().is_some_and(|source| {
+                block.instructions.iter().any(|instruction| {
+                    matches!(instruction, Instr::OwnershipEvent(OwnershipEvent::Transfer { from, to: None, .. }) if from == source)
+                })
+            })
+        });
+        assert!(
+            !committed,
+            "the rejected {producer} factory must not commit an OwnedCursor transfer into the callee"
+        );
+    }
 }
 
 #[test]

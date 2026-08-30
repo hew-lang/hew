@@ -73,7 +73,7 @@
 //!   [`Builder::owner_warrant_for_owned_parameter`] for the argument and the
 //!   tripwire that pins it.
 
-use super::{BindingId, Builder, HirExpr, HirExprKind, ProducedValueOwnership, ResolvedTy};
+use super::{BindingId, Builder, HirExpr, HirExprKind, Place, ProducedValueOwnership, ResolvedTy};
 
 /// Which value the owner is being minted over, as the question was actually
 /// put. Recorded on the warrant so the withheld/granted decision names its own
@@ -341,6 +341,35 @@ impl Builder {
     /// gate that is ever loosened cannot silently take the mint with it.
     pub(crate) fn owner_warrant_for_admitted_temp(&self, producer: &HirExpr) -> OwnerMintWarrant {
         let foreign = !self.value_is_free_of_opaque_foreign_provenance(producer);
+        OwnerMintWarrant::new(OwnerMintOrigin::ForwardedFromAdmissionGate, foreign)
+    }
+
+    /// Forward the producer authority that constructed a temporary `VecIter`.
+    ///
+    /// A compiler-synthetic cursor moves its `vec` field before the enclosing
+    /// expression result is adopted. When that source was already a typed
+    /// produced-value owner, the ownership stream has transferred it to
+    /// `value`; reclassifying the enclosing record must not erase that proof.
+    ///
+    /// If no exact typed handoff exists, the ordinary opaque-foreign authority
+    /// remains the fail-closed fallback. This does not reconstruct freshness
+    /// from call syntax or grant an owner to an unanalysed producer.
+    pub(crate) fn owner_warrant_for_admitted_vec_iter_temp(
+        &self,
+        producer: &HirExpr,
+        value: Place,
+    ) -> OwnerMintWarrant {
+        debug_assert!(self.ty_is_exact_vec_iter(&self.subst_ty(&producer.ty)));
+        debug_assert!(self.vec_iter_value_is_owned(producer));
+        let source = super::vec_iter_init_vec_source_expr(producer);
+        let has_typed_source_handoff = source
+            .and_then(|source| self.published_value_places.get(&source.site).copied())
+            .is_some_and(|source_place| {
+                self.typed_produced_value_handoffs
+                    .contains(&(source_place, value))
+            });
+        let foreign =
+            !has_typed_source_handoff && !self.value_is_free_of_opaque_foreign_provenance(producer);
         OwnerMintWarrant::new(OwnerMintOrigin::ForwardedFromAdmissionGate, foreign)
     }
 

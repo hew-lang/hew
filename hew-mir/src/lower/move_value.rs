@@ -796,7 +796,7 @@ impl Builder {
             return;
         };
         let ty = self.subst_ty(&expr.ty);
-        let warrant = self.owner_warrant_for_admitted_temp(expr);
+        let warrant = self.owner_warrant_for_admitted_vec_iter_temp(expr, value);
         let binding = self.adopt_synthetic_owned_local(
             super::SYNTHETIC_VEC_ITER_VALUE_NAME,
             expr.site,

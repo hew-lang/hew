@@ -2113,8 +2113,8 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                     local_ty,
                     mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
                     reason: format!(
-                        "conditionally live guarded owner has ambiguous generations/places {} on {exit:?}; no frozen cleanup can be admitted",
-                        owner_place_list(candidates.iter())
+                        "no cleanup can be admitted on {}: the value is only conditionally live there",
+                        exit_path_user_label(exit)
                     ),
                 });
             }
@@ -2182,8 +2182,8 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                             .get(&owner.binding)
                             .map_or_else(|| format!("{owner}"), |(name, _)| name.clone()),
                         reason: format!(
-                            "frozen exit plan contains more than one cleanup for exact owner {owner} at {:?}",
-                            drop.place,
+                            "the exit plan for {} releases it more than once",
+                            exit_path_user_label(exit)
                         ),
                     }),
                     [] => findings.push(MirCheck::ObligationOverReleased {
@@ -2191,8 +2191,9 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         block: block_id,
                         name: "checked-ownership-plan".to_owned(),
                         reason: format!(
-                            "frozen exit plan drops {:?} as {}, but Checked MIR has no exact live owner requiring that cleanup on {exit:?}",
-                            drop.place, drop.ty,
+                            "the exit plan for {} releases a `{}` that is no longer held there",
+                            exit_path_user_label(exit),
+                            drop.ty
                         ),
                     }),
                     _ => findings.push(MirCheck::DischargeAuthorityDrift {
@@ -2224,7 +2225,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 })
                 .collect::<Vec<_>>();
             omitted.sort_by_key(|(owner, _)| (owner.binding.0, owner.generation));
-            for (owner, place) in omitted {
+            for (owner, _place) in omitted {
                 let (name, site) = binding_metadata
                     .get(&owner.binding)
                     .cloned()
@@ -2239,7 +2240,8 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         .map_or_else(|| "<unknown>".to_owned(), ToString::to_string),
                     mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
                     reason: format!(
-                        "frozen exit plan omits the cleanup for live exact owner {owner} at {place:?} on {exit:?}"
+                        "the exit plan for {} omits its cleanup",
+                        exit_path_user_label(exit)
                     ),
                 });
             }
@@ -3210,6 +3212,62 @@ fn checked_exit_rejects_cleanup_ritual_that_differs_from_recipe() {
     }));
 }
 
+/// Every string a user-facing obligation finding carries must be readable
+/// without a compiler debugger: it names the kind of exit that leaks (ladder
+/// §3.6 vocabulary) and never a `Place`, an `ExitPath` `Debug` payload, or an
+/// owner generation. The engineer's view of the same fact is the
+/// `HEW_DEBUG_CHECKED_FUNCTION` event dump.
+#[cfg(test)]
+fn assert_user_register(reason: &str) {
+    for internal in ["Local(", "Return {", "Unwind {", "EnumVariant", "b177#"] {
+        assert!(
+            !reason.contains(internal),
+            "user-facing reason leaks `{internal}`: {reason}"
+        );
+    }
+}
+
+#[test]
+fn an_omitted_cleanup_names_the_exit_in_the_user_register() {
+    let checked = checked_recipe_fixture(vec![checked_test_string_recipe()], vec![]);
+    let findings = validate_ownership_events(&checked);
+    let [MirCheck::ObligationUnderReleased { reason, .. }] = findings.as_slice() else {
+        panic!("expected one under-released obligation, got {findings:#?}");
+    };
+    assert!(
+        reason.contains("the return path"),
+        "the leaking exit is named: {reason}"
+    );
+    assert_user_register(reason);
+}
+
+#[test]
+fn a_duplicated_cleanup_names_the_exit_in_the_user_register() {
+    let drop = ElabDrop {
+        place: Place::Local(7),
+        ty: ResolvedTy::String,
+        drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+        kind: DropKind::CowHeap {
+            release: crate::ownership::CowHeapRelease::String,
+        },
+        guard: None,
+    };
+    let checked =
+        checked_recipe_fixture(vec![checked_test_string_recipe()], vec![drop.clone(), drop]);
+    let findings = validate_ownership_events(&checked);
+    let Some(MirCheck::ObligationOverReleased { reason, .. }) = findings
+        .iter()
+        .find(|finding| matches!(finding, MirCheck::ObligationOverReleased { .. }))
+    else {
+        panic!("expected an over-released obligation, got {findings:#?}");
+    };
+    assert!(
+        reason.contains("the return path"),
+        "the double-releasing exit is named: {reason}"
+    );
+    assert_user_register(reason);
+}
+
 #[test]
 fn generic_vec_definition_publishes_outer_buffer_recipe() {
     let owner = crate::model::OwnerId {
@@ -3557,7 +3615,7 @@ fn checked_ownership_plan_replays_without_builder_state() {
     }));
     assert!(validate_ownership_events(&checked).iter().any(|finding| {
         matches!(finding, MirCheck::ObligationOverReleased { reason, .. }
-            if reason.contains("no exact live owner"))
+            if reason.contains("releases a `string` that is no longer held there"))
     }));
 }
 
@@ -5689,6 +5747,30 @@ pub(super) fn exit_kind_label(exit: &ExitPath) -> &'static str {
         ExitPath::Suspend { .. } => "Suspend",
     }
 }
+
+/// Name an exit in the user-facing register (ladder §3.6): which kind of
+/// path out of the function leaks, never the internal edge identity. The
+/// exact block and owner generations stay in the engineer channel — the
+/// `HEW_DEBUG_CHECKED_FUNCTION` dump prints the whole event stream and owner
+/// state — so a user diagnostic never carries a `Place` or `OwnerId`.
+#[must_use]
+pub(super) fn exit_path_user_label(exit: &ExitPath) -> String {
+    match exit {
+        ExitPath::Return { .. } => "the return path".to_owned(),
+        ExitPath::Goto { .. } | ExitPath::Branch { .. } => "a branch out of this scope".to_owned(),
+        ExitPath::Call { callee, .. } => format!("the call to `{callee}`"),
+        ExitPath::Unwind { callee, .. } => format!("the unwind path out of `{callee}`"),
+        ExitPath::Panic { .. } => "the panic path".to_owned(),
+        ExitPath::Cancel { .. } => "the cancellation path".to_owned(),
+        ExitPath::Yield { .. } => "a yield".to_owned(),
+        ExitPath::Send { actor, .. } => format!("the send to `{actor}`"),
+        ExitPath::Ask { .. } => "an ask".to_owned(),
+        ExitPath::Select { .. } => "a `select` arm".to_owned(),
+        ExitPath::Join { .. } => "a `join` branch".to_owned(),
+        ExitPath::Suspend { .. } => "a suspension point".to_owned(),
+    }
+}
+
 /// Structural validation of an elaborated drop plan. Walks every
 /// `(ExitPath, DropPlan)` entry and every `ElabBlock.drops` cleanup
 /// list, verifying that each drop's `kind` matches what the drop's
@@ -9667,7 +9749,7 @@ mod replay_plan_tests {
             findings.iter().any(|finding| matches!(
                 finding,
                 MirCheck::ObligationOverReleased { reason, .. }
-                    if reason.contains("no exact live owner requiring that cleanup")
+                    if reason.contains("releases a `string` that is no longer held there")
             )),
             "a destructor after the owner's Release must be rejected: {findings:?}"
         );
@@ -9699,8 +9781,7 @@ mod replay_plan_tests {
                 matches!(
                     finding,
                     MirCheck::ObligationUnderReleased { reason, .. }
-                        if reason.contains("omits the cleanup for live exact owner")
-                            && reason.contains("Local(4)")
+                        if reason.contains("the exit plan for the return path omits its cleanup")
                 )
             })
             .count();

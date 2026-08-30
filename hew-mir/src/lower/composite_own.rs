@@ -825,6 +825,10 @@ fn explicit_projection_transfer_sibling_drops(
 
     let mut insertions = Vec::new();
     let mut proven_roots = HashSet::new();
+    // One successor map and one reachability answer per transfer block; the
+    // per-candidate query rebuilt the map each time.
+    let successors = super::cfg_util::successors_by_id(blocks);
+    let mut reach_by_transfer: HashMap<u32, HashSet<u32>> = HashMap::new();
     for (root, transfers) in candidates {
         let [(block_id, transfer_index, escaped_field, record_local)] = transfers.as_slice() else {
             continue;
@@ -834,7 +838,9 @@ fn explicit_projection_transfer_sibling_drops(
             .filter_map(|(local, candidate_root)| (*candidate_root == root).then_some(*local))
             .chain(std::iter::once(root))
             .collect::<HashSet<_>>();
-        let reachable = blocks_reachable_from(blocks, *block_id);
+        let reachable = reach_by_transfer
+            .entry(*block_id)
+            .or_insert_with(|| super::cfg_util::reachable_from(&successors, *block_id));
         if reachable.contains(block_id) {
             continue;
         }

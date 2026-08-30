@@ -12820,6 +12820,15 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
             continue;
         }
 
+        // The join-parameter phase above `continue`s the fixpoint whenever it
+        // changes anything, so `blocks` is frozen from here to the mutation at
+        // the end of this iteration. Dominance is therefore derived at most
+        // once here and read by both the back-edge admission below and the
+        // rename that follows a selection. Deriving it inside the per-binding
+        // admission recomputed the whole dominator fixpoint per candidate;
+        // deriving it unconditionally paid for the fixpoint on the many
+        // iterations that select nothing needing it.
+        let mut join_dominators: Option<HashMap<u32, HashSet<u32>>> = None;
         let mut targets = predecessors.keys().copied().collect::<Vec<_>>();
         targets.sort_unstable();
         let mut selected = None;
@@ -12827,9 +12836,9 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
             let incoming = &predecessors[&target];
             if incoming.len() < 2
                 || incoming.iter().any(|predecessor| {
-                    blocks
-                        .iter()
-                        .find(|block| block.id == *predecessor)
+                    block_positions
+                        .get(predecessor)
+                        .map(|position| &blocks[*position])
                         .is_none_or(|block| {
                             let successors = block.successors();
                             successors != vec![target]
@@ -12930,7 +12939,7 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                 // when its unique definition dominates the backedge and the
                 // exact state immediately before that definition contains no
                 // live generation of the same binding.
-                let dominators = block_dominators(blocks);
+                let dominators = join_dominators.get_or_insert_with(|| block_dominators(blocks));
                 let backedge_owner_is_exact_successor =
                     owners.iter().all(|(predecessor, owner, _)| {
                         let is_back_edge = dominators
@@ -13060,7 +13069,7 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
         if std::env::var_os("HEW_DEBUG_OWNER_JOIN").is_some() {
             eprintln!("HEW_DEBUG_OWNER_JOIN {owners:?} -> {replacement:?} {ty:?}");
         }
-        let dominators = block_dominators(blocks);
+        let dominators = join_dominators.get_or_insert_with(|| block_dominators(blocks));
         let rewrite_after_join = owners
             .iter()
             .filter_map(|(predecessor, owner, _)| {

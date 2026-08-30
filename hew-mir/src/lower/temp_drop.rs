@@ -4,10 +4,10 @@ mod handoff;
 use super::*;
 #[cfg(not(test))]
 use super::{
-    base_local, block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
-    cow_value_leaf_drop_symbol, dataflow, derive_local_bytes_drop_allowed,
-    generator_yield_instr_escapes, generator_yield_terminator_escapes, instr_source_places,
-    local_is_used_after, place_is_interior_projection, place_refs_local,
+    base_local, block_by_id, block_dominators, call_terminator_next, cow_value_leaf_drop_symbol,
+    dataflow, derive_local_bytes_drop_allowed, generator_yield_instr_escapes,
+    generator_yield_terminator_escapes, instr_source_places, local_is_used_after,
+    place_is_interior_projection, place_refs_local,
     propagate_whole_value_alias_roots_excluding_moves, prove_retained_bytes_local_share,
     shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_init_vec_source,
     vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder,
@@ -204,14 +204,21 @@ pub(super) fn local_generation_survives_to_site(
     {
         return false;
     }
-    let reachable_from_definition = blocks_reachable_from(blocks, definition_block);
+    // One successor map for the definition's forward set and for the
+    // per-block "can this block still reach the target" question below.
+    // `blocks_reachable_from` rebuilt that map for every block, which made one
+    // call quadratic in block count.
+    let successors = crate::lower::cfg_util::successors_by_id(blocks);
+    let reachable_from_definition =
+        crate::lower::cfg_util::reachable_from(&successors, definition_block);
     if definition_block != target_block && !reachable_from_definition.contains(&target_block) {
         return false;
     }
 
     for block in blocks {
         let reaches_target = block.id == target_block
-            || blocks_reachable_from(blocks, block.id).contains(&target_block);
+            || crate::lower::cfg_util::reachable_from(&successors, block.id)
+                .contains(&target_block);
         let reached_from_definition =
             block.id == definition_block || reachable_from_definition.contains(&block.id);
         if !reaches_target || !reached_from_definition {

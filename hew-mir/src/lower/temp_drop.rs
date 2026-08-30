@@ -3711,6 +3711,7 @@ fn compute_projection_alias_taint_impl(
     locals: &[ResolvedTy],
     include_owned_actor_state_loads: bool,
 ) -> HashSet<u32> {
+    let _timing = crate::timing::stage("compute_projection_alias_taint");
     // #2523 — projection slots whose heap ownership was TRANSFERRED to a new
     // owner by a projected-payload move-out. The `Move` that copies such a slot
     // into the new owner's local is followed by an `Instr::NeutralizePayloadSlot`
@@ -3773,25 +3774,41 @@ fn compute_projection_alias_taint_impl(
             }
         }
     }
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for (instr_index, instr) in block.instructions.iter().enumerate() {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if !retained_string_moves.contains(&(block.id, instr_index))
-                            && !retained_bytes_moves.contains(&(block.id, instr_index))
-                            && tainted.contains(&sl)
-                            && tainted.insert(dl)
-                        {
-                            changed = true;
-                        }
-                    }
-                }
+    // Taint propagates along whole-value moves that are not a retained share.
+    // The admissible edges do not depend on the taint set, so they are
+    // collected once and the closure is taken with a worklist. Re-scanning
+    // every block until nothing changed computed the same least fixed point,
+    // but paid a whole-function scan for each step of the longest move chain.
+    let mut moves_by_source: HashMap<u32, Vec<u32>> = HashMap::new();
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Instr::Move { dest, src } = instr else {
+                continue;
+            };
+            let (Some(source_local), Some(dest_local)) = (base_local(*src), base_local(*dest))
+            else {
+                continue;
+            };
+            if retained_string_moves.contains(&(block.id, instr_index))
+                || retained_bytes_moves.contains(&(block.id, instr_index))
+            {
+                continue;
             }
+            moves_by_source
+                .entry(source_local)
+                .or_default()
+                .push(dest_local);
         }
-        if !changed {
-            break;
+    }
+    let mut work: Vec<u32> = tainted.iter().copied().collect();
+    while let Some(source_local) = work.pop() {
+        let Some(dests) = moves_by_source.get(&source_local) else {
+            continue;
+        };
+        for dest_local in dests {
+            if tainted.insert(*dest_local) {
+                work.push(*dest_local);
+            }
         }
     }
     tainted

@@ -3299,6 +3299,7 @@ expect_check_fail_error_count_no_cascade \
 # the caller's original remains live after generator teardown.
 run_accept_expect_stdout "gen_fn_capture_owned_value"
 run_accept_expect_stdout "gen_closure_env_owned_capture"
+run_accept_expect_stdout "gen_capture_whole_value_fn_arg"
 
 # Raw aggregate loads from a generator env remain aliases. Whole-value escapes
 # must clone explicitly or fail closed rather than create a second owner.
@@ -3310,9 +3311,13 @@ expect_check_fail_error_count_no_cascade \
 
 # Every whole-value capture load is tagged and every MIR Move is checked before
 # emission and again before block sealing. Rebinding, aggregate/container
-# storage, explicit/implicit return, block tails, control-flow joins, by-value
-# function arguments, and tuple construction therefore all reject aliases
-# loaded from the capture environment.
+# storage, explicit/implicit return, block tails, control-flow joins, and tuple
+# construction therefore all reject aliases loaded from the capture environment.
+# A by-value function argument is the one route that does NOT reject: the call
+# boundary snapshot-clones the env load, so the callee owns an independent copy
+# and no alias escapes. That route is pinned on the accept side by
+# gen_capture_whole_value_fn_arg, which proves the clone is independent of both
+# the environment's view and the caller's original.
 # shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_let_move.hew" \
@@ -3363,11 +3368,6 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_if_else.hew" \
     'captured owned value `items` cannot be moved out of the generator/closure environment' \
     "gen_capture_whole_value_if_else"
-# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_fn_arg.hew" \
-    'captured owned value `items` cannot be moved out of the generator/closure environment' \
-    "gen_capture_whole_value_fn_arg"
 # shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_tuple.hew" \

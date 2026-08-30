@@ -319,17 +319,19 @@ fn merge_unbalanced_owner(target: &mut MirCheck, source: &MirCheck) {
 ///    unbalanced owner per exit it fails on; the user sees the owner once,
 ///    anchored at its mint `SiteId`, with every unbalanced exit block listed
 ///    and (for a leak) the mint provenances joined. The key is
-///    `(direction, function, site, name)`: `name` disambiguates owners whose
-///    mint site could not be recovered (`SiteId(0)` fallback), where the name
-///    is the owner identity, and the leak/double-free direction never merges
-///    because the two say opposite things about the same value.
+///    `(direction, function, site, name)`: an obligation finding is raised
+///    only for an owner with a definition-site `Bind`, so the site is the
+///    mint and the name is what the source calls the value; two owners that
+///    share both are the same value. The leak/double-free direction never
+///    merges, because the two say opposite things about the same value.
 /// 2. **At most one internal-compiler-error per function.** A finding whose
 ///    cause is a lowering invariant (not the user's program) is projected to
 ///    `MirDiagnosticKind::LoweringInvariant`; the first one per function is
 ///    kept and the rest are dropped, because every later one is a
 ///    consequence of the same inconsistent MIR and repeating them buries the
-///    user's own errors. `HEW_DEBUG_CHECKED_FUNCTION` still dumps the full
-///    finding list for compiler engineers.
+///    user's own errors. `HEW_DEBUG_CHECKED_FUNCTION` dumps the unprojected
+///    finding list beforehand, so a compiler engineer still sees the ones
+///    this rule drops.
 pub(in crate::lower) fn project_findings(findings: Vec<MirCheck>) -> Vec<MirDiagnostic> {
     let mut coalesced: Vec<MirCheck> = Vec::with_capacity(findings.len());
     for finding in findings {

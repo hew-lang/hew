@@ -4504,7 +4504,7 @@ pub(super) fn interior_alias_receiver_violations(blocks: &[BasicBlock]) -> Vec<S
                     for (alias, (_, receiver_owner, _)) in &active {
                         if *receiver_owner == Some(owner) {
                             violations.push(format!(
-                                "collection owner {owner:?} ends while interior alias {alias:?} is still live"
+                                "collection owner {owner} ends while interior alias {alias:?} is still live"
                             ));
                         }
                     }

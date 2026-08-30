@@ -7907,8 +7907,13 @@ fn resolve_affine_call_consume_arg(
             arg.site,
             "affine call consume without one exact live owner",
             format!(
-                "binding {:?} must retain one owner at {argument:?} through the unwind edge; found {owners:?}",
-                arg.binding
+                "binding {} must retain one owner at {argument:?} through the unwind edge; found [{}]",
+                arg.binding,
+                owners
+                    .iter()
+                    .map(|(owner, place)| format!("{owner}@{place:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         );
         return None;
@@ -7919,7 +7924,7 @@ fn resolve_affine_call_consume_arg(
             arg.site,
             "affine call consume without its exact live guard",
             format!(
-                "owner {owner:?} must retain guard {:?} through the unwind edge; found {:?}",
+                "owner {owner} must retain guard {:?} through the unwind edge; found {:?}",
                 arg.guard,
                 guards.get(owner)
             ),
@@ -14191,6 +14196,14 @@ pub(crate) fn lower_function(
     // neutralize operation must name its destination. Exact OwnerId state and
     // cleanup admission are validated from the Checked-MIR event stream above.
     findings.extend(validate_discharge_authority(&elaborated, &raw));
+    // `project_findings` folds an unbalanced owner's exits into one diagnostic
+    // and keeps only the first lowering invariant per function, so the
+    // unprojected list is only recoverable here.
+    if std::env::var("HEW_DEBUG_CHECKED_FUNCTION")
+        .is_ok_and(|filter| checked.name.contains(&filter))
+    {
+        eprintln!("HEW_DEBUG_FINDINGS {findings:#?}");
+    }
     diagnostics.extend(project_findings(findings));
     LoweredFunction {
         raw,

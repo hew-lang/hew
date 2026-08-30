@@ -580,6 +580,31 @@ fn conditionally_consumed_vec_release(raw: &RawMirFunction) -> (u32, Place) {
     (release_block, release_place)
 }
 
+/// Walk the CFG forward from the entry block. A block that holds the only
+/// release of an owner but is unreachable would leak at run time while still
+/// satisfying a "the release exists" count, so reachability is asserted
+/// rather than membership in `raw.blocks`.
+fn blocks_reachable_from_entry(raw: &RawMirFunction) -> std::collections::HashSet<u32> {
+    let entry = raw
+        .blocks
+        .first()
+        .expect("a function has an entry block")
+        .id;
+    let mut seen = std::collections::HashSet::from([entry]);
+    let mut queue = vec![entry];
+    while let Some(id) = queue.pop() {
+        let Some(block) = raw.blocks.iter().find(|block| block.id == id) else {
+            continue;
+        };
+        for successor in block.successors() {
+            if seen.insert(successor) {
+                queue.push(successor);
+            }
+        }
+    }
+    seen
+}
+
 #[test]
 fn vec_iter_yield_conditionally_consumed_is_released_on_its_owning_edge() {
     // The yield binder is moved on the `then` path and still owned on the
@@ -614,8 +639,8 @@ fn vec_iter_yield_conditionally_consumed_is_released_on_its_owning_edge() {
         .expect("missing raw MIR for `branch_selective`");
     let (release_block, _) = conditionally_consumed_vec_release(raw);
     assert!(
-        raw.blocks.iter().any(|block| block.id == release_block),
-        "the release lands in a reachable block"
+        blocks_reachable_from_entry(raw).contains(&release_block),
+        "the release lands in a block reachable from the entry block, not an orphan: bb{release_block}"
     );
 
     let function = pipeline

@@ -108,8 +108,13 @@ impl Builder {
                     site: value.site,
                 },
                 note: format!(
-                    "typed {} has type {owned_ty:?}, but its provisional owners are {owners:?}",
-                    role.label()
+                    "typed {} has type {owned_ty:?}, but its provisional owners are [{}]",
+                    role.label(),
+                    owners
+                        .iter()
+                        .map(|(owner, published_ty)| format!("{owner}: {published_ty:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             });
             return;

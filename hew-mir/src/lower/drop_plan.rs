@@ -2097,14 +2097,22 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 if required.keys().any(|owner| owner.binding == binding) {
                     continue;
                 }
-                let (name, site) = binding_metadata
-                    .get(&binding)
-                    .cloned()
-                    .unwrap_or_else(|| (binding.to_string(), SiteId(0)));
                 let local_ty = candidates
                     .first()
                     .and_then(|(owner, _)| definition_types.get(owner))
                     .map_or_else(|| "<unknown>".to_owned(), ToString::to_string);
+                let Some((name, site)) = binding_metadata.get(&binding).cloned() else {
+                    findings.push(unnameable_obligation_subject(
+                        &checked.name,
+                        block_id,
+                        format!(
+                            "conditionally live owner {binding} has no definition-site binding on \
+                             {}",
+                            exit_path_user_label(exit)
+                        ),
+                    ));
+                    continue;
+                };
                 findings.push(MirCheck::ObligationUnderReleased {
                     function: checked.name.clone(),
                     blocks: vec![block_id],
@@ -2175,31 +2183,37 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                                 drop.place
                             ),
                         }),
-                    [owner] => findings.push(MirCheck::ObligationOverReleased {
-                        function: checked.name.clone(),
-                        blocks: vec![block_id],
-                        site: binding_metadata
-                            .get(&owner.binding)
-                            .map_or(SiteId(0), |(_, site)| *site),
-                        name: binding_metadata
-                            .get(&owner.binding)
-                            .map_or_else(|| format!("{owner}"), |(name, _)| name.clone()),
-                        reason: format!(
-                            "the exit plan for {} releases it more than once",
-                            exit_path_user_label(exit)
+                    [owner] => findings.push(match binding_metadata.get(&owner.binding) {
+                        Some((name, site)) => MirCheck::ObligationOverReleased {
+                            function: checked.name.clone(),
+                            blocks: vec![block_id],
+                            site: *site,
+                            name: name.clone(),
+                            reason: format!(
+                                "the exit plan for {} releases it more than once",
+                                exit_path_user_label(exit)
+                            ),
+                        },
+                        None => unnameable_obligation_subject(
+                            &checked.name,
+                            block_id,
+                            format!(
+                                "the exit plan for {} releases owner {owner} twice, and that \
+                                 owner has no definition-site binding",
+                                exit_path_user_label(exit)
+                            ),
                         ),
                     }),
-                    [] => findings.push(MirCheck::ObligationOverReleased {
-                        function: checked.name.clone(),
-                        blocks: vec![block_id],
-                        site: SiteId(0),
-                        name: "checked-ownership-plan".to_owned(),
-                        reason: format!(
-                            "the exit plan for {} releases a `{}` that is no longer held there",
+                    [] => findings.push(unnameable_obligation_subject(
+                        &checked.name,
+                        block_id,
+                        format!(
+                            "the exit plan for {} releases a `{}` that the replayed event stream \
+                             no longer holds there",
                             exit_path_user_label(exit),
                             drop.ty
                         ),
-                    }),
+                    )),
                     _ => findings.push(MirCheck::DischargeAuthorityDrift {
                         function: checked.name.clone(),
                         block: block_id,
@@ -2230,10 +2244,18 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 .collect::<Vec<_>>();
             omitted.sort_by_key(|(owner, _)| (owner.binding.0, owner.generation));
             for (owner, _place) in omitted {
-                let (name, site) = binding_metadata
-                    .get(&owner.binding)
-                    .cloned()
-                    .unwrap_or_else(|| (format!("{owner}"), SiteId(0)));
+                let Some((name, site)) = binding_metadata.get(&owner.binding).cloned() else {
+                    findings.push(unnameable_obligation_subject(
+                        &checked.name,
+                        block_id,
+                        format!(
+                            "the exit plan for {} omits cleanup for owner {owner}, and that owner \
+                             has no definition-site binding",
+                            exit_path_user_label(exit)
+                        ),
+                    ));
+                    continue;
+                };
                 findings.push(MirCheck::ObligationUnderReleased {
                     function: checked.name.clone(),
                     blocks: vec![block_id],
@@ -2252,6 +2274,23 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
         }
     }
     findings
+}
+
+/// An obligation imbalance whose subject the user cannot name is a lowering
+/// defect, not a user error. Two cases reach here: the owner's binding has no
+/// `Bind` statement anywhere in the function (a lowering-synthesized temp, so
+/// there is no source value to report), and a frozen plan entry that matches
+/// no required owner at all (the plan and the replayed event stream disagree).
+/// Both go to the internal-error channel rather than inventing a value name
+/// out of the `OwnerId` and anchoring it at `SiteId(0)`, which renders a caret
+/// on the module's first construct.
+fn unnameable_obligation_subject(function: &str, block: u32, reason: String) -> MirCheck {
+    MirCheck::DischargeAuthorityDrift {
+        function: function.to_owned(),
+        block,
+        name: "ownership-obligation-subject".to_owned(),
+        reason,
+    }
 }
 
 /// Render owner generations for a verifier finding as `[b3#0, b3#1]`.
@@ -2610,7 +2649,14 @@ fn checked_recipe_fixture(
         return_ty: ResolvedTy::Unit,
         blocks: vec![BasicBlock {
             id: ENTRY_BLOCK_ID,
-            statements: vec![],
+            // The owner has a source-level `let`, so an imbalance over it is
+            // the user's error and names the value the way the source does.
+            statements: vec![MirStatement::Bind {
+                binding: owner.binding,
+                name: "greeting".to_owned(),
+                site: SiteId(12),
+                ty: ResolvedTy::String,
+            }],
             instructions,
             terminator: Terminator::Return,
         }],
@@ -3223,12 +3269,115 @@ fn checked_exit_rejects_cleanup_ritual_that_differs_from_recipe() {
 /// `HEW_DEBUG_CHECKED_FUNCTION` event dump.
 #[cfg(test)]
 fn assert_user_register(reason: &str) {
-    for internal in ["Local(", "Return {", "Unwind {", "EnumVariant", "b177#"] {
+    for internal in ["Local(", "Return {", "Unwind {", "EnumVariant"] {
         assert!(
             !reason.contains(internal),
             "user-facing reason leaks `{internal}`: {reason}"
         );
     }
+    assert!(
+        !contains_owner_generation(reason),
+        "user-facing reason leaks an owner generation: {reason}"
+    );
+}
+
+/// The `OwnerId` `Display` form is `b<binding>#<generation>`. Match its shape
+/// rather than any one fixture's binding id, so the negative control keeps
+/// biting when a fixture renumbers.
+#[cfg(test)]
+fn contains_owner_generation(reason: &str) -> bool {
+    let bytes = reason.as_bytes();
+    bytes.iter().enumerate().any(|(start, byte)| {
+        if *byte != b'b' {
+            return false;
+        }
+        let mut index = start + 1;
+        let digits_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == digits_start || bytes.get(index) != Some(&b'#') {
+            return false;
+        }
+        bytes.get(index + 1).is_some_and(u8::is_ascii_digit)
+    })
+}
+
+#[test]
+fn an_owner_generation_is_recognised_but_a_plain_word_is_not() {
+    assert!(contains_owner_generation("owner b42#3 leaks"));
+    assert!(!contains_owner_generation(
+        "the return path omits its cleanup"
+    ));
+    assert!(!contains_owner_generation("bucket#3"));
+    assert!(!contains_owner_generation("b42#x"));
+}
+
+/// Strip the definition-site `Bind`, leaving an owner the source cannot name.
+/// Lowering-synthesized temps reach the verifier this way.
+#[cfg(test)]
+fn checked_recipe_fixture_without_binding(
+    recipes: Vec<crate::model::OwnerDropRecipe>,
+    drops: Vec<ElabDrop>,
+) -> CheckedMirFunction {
+    let mut checked = checked_recipe_fixture(recipes, drops);
+    for block in &mut checked.blocks {
+        block.statements.clear();
+    }
+    checked
+}
+
+#[test]
+fn an_omitted_cleanup_over_an_unnamed_owner_is_an_internal_error() {
+    let checked =
+        checked_recipe_fixture_without_binding(vec![checked_test_string_recipe()], vec![]);
+    let findings = validate_ownership_events(&checked);
+    let [MirCheck::DischargeAuthorityDrift { name, reason, .. }] = findings.as_slice() else {
+        panic!("expected the imbalance to route to the internal channel, got {findings:#?}");
+    };
+    assert_eq!(name, "ownership-obligation-subject");
+    assert!(
+        reason.contains("has no definition-site binding"),
+        "the internal reason says why the subject is unnameable: {reason}"
+    );
+    assert!(
+        !findings.iter().any(|finding| matches!(
+            finding,
+            MirCheck::ObligationUnderReleased { .. } | MirCheck::ObligationOverReleased { .. }
+        )),
+        "no user-register obligation names an owner the source never bound: {findings:#?}"
+    );
+}
+
+#[test]
+fn a_plan_entry_matching_no_live_owner_is_an_internal_error() {
+    // A release of `Local(9)`, which the replayed event stream never mints.
+    let checked = checked_recipe_fixture(
+        vec![checked_test_string_recipe()],
+        vec![ElabDrop {
+            place: Place::Local(9),
+            ty: ResolvedTy::String,
+            drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+            kind: DropKind::Resource,
+            guard: None,
+        }],
+    );
+    let findings = validate_ownership_events(&checked);
+    assert!(
+        findings.iter().any(|finding| matches!(
+            finding,
+            MirCheck::DischargeAuthorityDrift { name, reason, .. }
+                if name == "ownership-obligation-subject"
+                    && reason.contains("no longer holds there")
+        )),
+        "a plan/replay disagreement is a compiler defect, not a double free: {findings:#?}"
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|finding| matches!(finding, MirCheck::ObligationOverReleased { .. })),
+        "the stale plan entry must not be reported as the user's double free: {findings:#?}"
+    );
 }
 
 #[test]
@@ -3618,8 +3767,10 @@ fn checked_ownership_plan_replays_without_builder_state() {
         lambda_captures: vec![],
     }));
     assert!(validate_ownership_events(&checked).iter().any(|finding| {
-        matches!(finding, MirCheck::ObligationOverReleased { reason, .. }
-            if reason.contains("releases a `string` that is no longer held there"))
+        matches!(finding, MirCheck::DischargeAuthorityDrift { reason, .. }
+        if reason.contains(
+            "releases a `string` that the replayed event stream no longer holds there"
+        ))
     }));
 }
 
@@ -9483,10 +9634,29 @@ mod replay_plan_tests {
         Instr::OwnershipEvent(OwnershipEvent::Release { owner, place })
     }
 
+    /// Every owner minted here also gets a source-level `Bind`, the way a real
+    /// function's `let` does. Without one the verifier has no value name to
+    /// report and routes the imbalance to the internal-error channel instead,
+    /// which is a different rule (see
+    /// `an_omitted_cleanup_over_an_unnamed_owner_is_an_internal_error`).
     fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
+        let statements = instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instr::OwnershipEvent(OwnershipEvent::Mint { owner, .. }) => {
+                    Some(MirStatement::Bind {
+                        binding: owner.binding,
+                        name: format!("value{}", owner.binding.0),
+                        site: SiteId(owner.binding.0),
+                        ty: ResolvedTy::String,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
         BasicBlock {
             id,
-            statements: vec![],
+            statements,
             instructions,
             terminator,
         }
@@ -9749,11 +9919,15 @@ mod replay_plan_tests {
             },
         )];
         let findings = validate_ownership_events(&checked(blocks.clone(), stale_plan));
+        // The plan and the replayed stream disagree about what the exit holds,
+        // so the defect is the compiler's, not the program's.
         assert!(
             findings.iter().any(|finding| matches!(
                 finding,
-                MirCheck::ObligationOverReleased { reason, .. }
-                    if reason.contains("releases a `string` that is no longer held there")
+                MirCheck::DischargeAuthorityDrift { reason, .. }
+                    if reason.contains(
+                        "releases a `string` that the replayed event stream no longer holds there"
+                    )
             )),
             "a destructor after the owner's Release must be rejected: {findings:?}"
         );

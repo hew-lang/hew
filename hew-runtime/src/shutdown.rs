@@ -34,7 +34,7 @@ pub(crate) const PHASE_RUNNING: i32 = 0;
 /// Phase 1: No new spawns or messages accepted.
 const PHASE_QUIESCE: i32 = 1;
 /// Phase 2: Draining remaining messages with deadline.
-const PHASE_DRAIN: i32 = 2;
+pub(crate) const PHASE_DRAIN: i32 = 2;
 /// Phase 3: Force-terminating all actors.
 const PHASE_TERMINATE: i32 = 3;
 /// Shutdown complete.

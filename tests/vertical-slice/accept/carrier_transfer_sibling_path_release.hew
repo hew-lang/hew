@@ -7,10 +7,14 @@
 // reads `h`, so it must still release `h`'s two heap strings at its own exit:
 // the transfer publishes a path fact, not a whole-binding one.
 //
-// The counterfactual is the `else=` line: if the transfer's consume were read
-// as a fact about the binding rather than about the then-path, the else exit
-// would lose its release (a leak the ownership verifier does not see) or drop
-// a value it does not own (a double free that aborts here).
+// The counterfactual is what stdout can observe: if the transfer's consume
+// were read as a fact about the binding rather than about the then-path, the
+// else exit would drop a value it does not own and this program aborts instead
+// of printing, and a lost or misdirected handoff changes the printed totals.
+// This oracle does NOT observe release. The then path's carrier transfer leaks
+// its record here (88 direct + 32 indirect bytes under valgrind, identical
+// when built with the compiler on `main`); that under-release is #3159 and
+// needs a leak oracle, not this fixture.
 type Holder { items: Vec<string>, label: string }
 
 fn keep(h: Holder) -> i64 {

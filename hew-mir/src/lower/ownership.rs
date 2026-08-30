@@ -3404,10 +3404,51 @@ impl Builder {
     /// owner; the root's remaining owned fields are discharged by the escaped-
     /// sibling field splice, so the handoff does not leak them.
     pub(crate) fn publish_consuming_match_projection(&mut self, value: &HirExpr) {
+        // A PROJECTION only. `projection_root_binding` also resolves a bare
+        // `BindingRef`, so without this the transfer would fire for
+        // `match r { .. }` over a whole local and end the generation of a
+        // scrutinee that was never projected out of - the call-carrier and
+        // let-bound scrutinee releases depend on that generation surviving.
+        if !matches!(
+            value.kind,
+            HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
+        ) {
+            return;
+        }
         if self.classify_field_load(&value.ty) != Some(FieldLoadClass::ByteCopyAlias) {
             return;
         }
+        if !self.projected_enum_payload_is_handle_transfer(&value.ty) {
+            return;
+        }
         self.publish_projection_source_transfer(value);
+    }
+
+    /// True when the inline enum type `ty` carries a payload the destructure
+    /// hands over as a bare heap handle - a `Vec` / `HashMap` / `HashSet` /
+    /// generator / indirect-enum node leaf.
+    ///
+    /// This is what separates the handoff from the retain. A `string` or
+    /// `bytes` payload is copy-on-write: the binder takes a balanced `+1` of its own
+    /// (`FieldLoadClass::Retained`), so the parent aggregate keeps its cleanup
+    /// and suppressing it would leak the parent's other fields. A handle
+    /// payload has no retain, so the binder and the parent would otherwise
+    /// both release it.
+    fn projected_enum_payload_is_handle_transfer(&self, ty: &ResolvedTy) -> bool {
+        let subst = self.subst_ty(ty);
+        let ResolvedTy::Named { name, args, .. } = &subst else {
+            return false;
+        };
+        let Some(layout) = crate::model::find_enum_layout(name, args, &self.enum_layouts) else {
+            return false;
+        };
+        layout
+            .variants
+            .iter()
+            .flat_map(|variant| variant.field_tys.iter())
+            .any(|field_ty| {
+                self.classify_field_load(field_ty) == Some(FieldLoadClass::HandleTransfer)
+            })
     }
 
     fn publish_projection_source_transfer(&mut self, value: &HirExpr) {

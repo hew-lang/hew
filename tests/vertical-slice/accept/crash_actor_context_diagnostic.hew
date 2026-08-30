@@ -2,14 +2,15 @@
 // diagnostic, not emit an opaque msg_type integer.
 //
 // The Crasher actor traps in its `on_trigger` handler via an out-of-bounds Vec
-// index (hardware fault — SIGILL on x86_64, SIGTRAP on aarch64/macOS). The
-// signal handler longjmps back to the scheduler, which calls
-// handle_crash_recovery_impl. The diagnostic must include the actor type name
-// "Crasher" (resolved from the dispatch-fn registry populated by codegen at
-// startup), not the opaque "msg_type=-N" format.
+// index. `hew_trap_with_code` stamps the trap code on the actor and unwinds a
+// typed `HewPanic` through the generated LLVM cleanup pads; the scheduler
+// catches it and funnels it into `crash::record_logical_crash`, which writes
+// the one diagnostic line. The context must be resolved from the dispatch-fn
+// registry codegen populates at startup ("Crasher::on_trigger", or at minimum
+// the actor type name "Crasher"), never the opaque "msg_type=-N" format.
 //
 // A sleep after the send gives the scheduler time to deliver the message and
-// run the crash recovery path before the process exits.
+// run the crash path before the process exits.
 //
 // run.sh asserts:
 //   1. Exit is 1 after the unsupervised actor crash settles.

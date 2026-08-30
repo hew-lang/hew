@@ -2463,7 +2463,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
                 .downcast_ref::<crate::actor::HewPanic>()
                 .map_or(101, |panic| panic.code);
             crate::util::quarantine_panic_payload(payload);
-            crate::crash::record_logical_crash(a.id, code, 0);
+            crate::crash::record_logical_crash(a.id, code, 0, a.dispatch.map_or(0, |f| f as usize));
             // SAFETY: catch_unwind proves the resumed stack is dead; this
             // activation still exclusively owns actor and resume_context.
             unsafe { resume_crash_recovery(actor, &raw mut resume_context, code) };
@@ -3625,7 +3625,12 @@ fn activate_queued_actor(actor: *mut HewActor) {
                             .map_or(101, |panic| panic.code);
                         set_last_error("actor dispatch panicked");
                         crate::util::quarantine_panic_payload(panic_payload);
-                        crate::crash::record_logical_crash(a.id, code, msg_ref.msg_type);
+                        crate::crash::record_logical_crash(
+                            a.id,
+                            code,
+                            msg_ref.msg_type,
+                            a.dispatch.map_or(0, |f| f as usize),
+                        );
                         // SAFETY: this scheduler frame exclusively owns the
                         // active actor and has completed stack cleanup.
                         unsafe {

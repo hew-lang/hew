@@ -2158,7 +2158,12 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                         a.actor_state
                             .store(HewActorState::Crashed as i32, Ordering::Release);
                     }
-                    crate::crash::record_logical_crash(a.id, code, msg_ref.msg_type);
+                    crate::crash::record_logical_crash(
+                        a.id,
+                        code,
+                        msg_ref.msg_type,
+                        a.dispatch.map_or(0, |f| f as usize),
+                    );
                     crate::util::quarantine_panic_payload(panic_payload);
                 // SAFETY: normal dispatch return matches the scope opened
                 // immediately before handler entry.

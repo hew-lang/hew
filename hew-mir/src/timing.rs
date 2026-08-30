@@ -28,11 +28,13 @@ struct Accumulator {
     stages: HashMap<&'static str, (Duration, u64)>,
     /// Total lowering time per function symbol.
     functions: HashMap<String, Duration>,
-    /// How many whole-function derivations each call site asked for.
+    /// How many whole-function derivations each named analysis made.
     ///
     /// A stage total says a pass is expensive; it does not say whether the
-    /// expense is one derivation per body or one per block. The call site is
-    /// the actionable half, so the report names it.
+    /// expense is one derivation per body or one per block. This total does,
+    /// and `make bench-mir` compares it across two sizes of one program.
+    totals: HashMap<&'static str, u64>,
+    /// The same count broken down by call site, when the build knows it.
     derivations: HashMap<(&'static str, String), u64>,
     /// Function bodies whose lowering has been attributed.
     bodies: u64,
@@ -95,22 +97,24 @@ pub fn record_stage(stage: &'static str, started: Option<Instant>) {
     });
 }
 
-/// Count one whole-function analysis derivation against the site that asked.
+/// Count one whole-function analysis derivation.
 ///
-/// `#[track_caller]` on the derivation itself makes `Location::caller()` the
-/// line that requested it, so the report distinguishes a pass that derives
-/// once per body from one that derives once per block.
-pub fn derivation(analysis: &'static str, caller: &'static std::panic::Location<'static>) {
+/// The total is what says whether lowering cost tracks the pass sequence or the
+/// block count, and `make bench-mir` gates on it. `caller` names the line that
+/// asked, which is what says WHICH pass to look at; only a build that can pay
+/// for `#[track_caller]` supplies it, so the site table is a debug-build
+/// facility and the totals are always reported.
+pub fn derivation(analysis: &'static str, caller: Option<&'static std::panic::Location<'static>>) {
     if !enabled() {
         return;
     }
-    let site = format!("{}:{}", caller.file(), caller.line());
     ACCUMULATOR.with(|accumulator| {
-        *accumulator
-            .borrow_mut()
-            .derivations
-            .entry((analysis, site))
-            .or_insert(0) += 1;
+        let mut accumulator = accumulator.borrow_mut();
+        *accumulator.totals.entry(analysis).or_insert(0) += 1;
+        if let Some(caller) = caller {
+            let site = format!("{}:{}", caller.file(), caller.line());
+            *accumulator.derivations.entry((analysis, site)).or_insert(0) += 1;
+        }
     });
 }
 
@@ -147,13 +151,14 @@ pub fn report(limit: usize) {
     if !enabled() {
         return;
     }
-    let (stages, functions, derivations, bodies) = ACCUMULATOR.with(|accumulator| {
+    let (stages, functions, derivations, totals, bodies) = ACCUMULATOR.with(|accumulator| {
         let mut accumulator = accumulator.borrow_mut();
         let bodies = std::mem::take(&mut accumulator.bodies);
         (
             std::mem::take(&mut accumulator.stages),
             std::mem::take(&mut accumulator.functions),
             std::mem::take(&mut accumulator.derivations),
+            std::mem::take(&mut accumulator.totals),
             bodies,
         )
     });
@@ -169,9 +174,7 @@ pub fn report(limit: usize) {
 
     let mut derivations: Vec<_> = derivations.into_iter().collect();
     derivations.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
-    let mut totals: HashMap<&'static str, u64> = HashMap::new();
     for ((analysis, site), count) in &derivations {
-        *totals.entry(analysis).or_insert(0) += count;
         eprintln!("hew measure: mir derivation {analysis} {site} {count}");
     }
     let mut totals: Vec<_> = totals.into_iter().collect();

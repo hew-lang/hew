@@ -8469,6 +8469,53 @@ pub(super) fn apply_maybe_owner_ops(instructions: &[Instr], live: &mut MaybeOwne
     }
 }
 
+/// Debug-only: check that a cached exact-owner replay still describes `blocks`.
+///
+/// Four passes hold the replay across a per-block loop and re-derive it only
+/// when a flag they set at their own mutation sites says the blocks changed.
+/// A missed mutation site is silent in release - a later block simply reads
+/// owner state describing the pre-rewrite program, and the damage surfaces as
+/// an obligation imbalance or a runtime leak somewhere else entirely. That is
+/// the defect `prepare_owned_call_carriers` shipped with, found by reading
+/// rather than by anything in the tree. Every debug build and every unit test
+/// now re-derives and compares, so the flag discipline has a checker.
+///
+/// Compiled out of release entirely: `cfg!` is a compile-time constant, so the
+/// whole body folds away and the call costs nothing on the shipping path.
+pub(super) fn debug_assert_exact_entries_current(
+    blocks: &[BasicBlock],
+    cached: &HashMap<u32, ExactOwnerState>,
+    pass: &'static str,
+) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let (fresh, _) = exact_owner_states_unattributed(blocks);
+    assert!(
+        *cached == fresh,
+        "{pass} is reading a stale exact-owner replay: it rewrote `blocks` at a \
+         site that does not mark the cache dirty"
+    );
+}
+
+/// Debug-only twin of [`debug_assert_exact_entries_current`] for the
+/// possibly-live lattice.
+pub(super) fn debug_assert_maybe_entries_current(
+    blocks: &[BasicBlock],
+    cached: &HashMap<u32, MaybeOwnerState>,
+    pass: &'static str,
+) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let (fresh, _) = maybe_owner_states_unattributed(blocks);
+    assert!(
+        *cached == fresh,
+        "{pass} is reading a stale maybe-owner replay: it rewrote `blocks` at a \
+         site that does not mark the cache dirty"
+    );
+}
+
 /// Position of every block in `blocks`, keyed by its id.
 ///
 /// The owner-state replays pop block ids off a worklist and revisit a block
@@ -8483,12 +8530,47 @@ fn block_index_by_id(blocks: &[BasicBlock]) -> HashMap<u32, usize> {
         .collect()
 }
 
-#[track_caller]
+/// The call site of a whole-function derivation, in builds that can name it.
+///
+/// `#[track_caller]` is not free on the shipping path: it puts a hidden
+/// location argument on every call of an analysis the lowering runs tens of
+/// thousands of times per module, and on a 1 444-function module that measured
+/// about 0.6 s of a 29 s check. `make bench-mir` only needs the totals, so the
+/// release compiler counts totals and a debug build carries the per-site table
+/// that says WHICH pass grew.
+#[cfg_attr(debug_assertions, track_caller)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "clippy sees only the debug_assertions arm; the release arm returns None"
+)]
+fn derivation_site() -> Option<&'static std::panic::Location<'static>> {
+    #[cfg(debug_assertions)]
+    {
+        Some(std::panic::Location::caller())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
+
+#[cfg_attr(debug_assertions, track_caller)]
 pub(super) fn exact_owner_states(
     blocks: &[BasicBlock],
 ) -> (HashMap<u32, ExactOwnerState>, HashMap<u32, ExactOwnerState>) {
     let _timing = crate::timing::stage("exact_owner_states");
-    crate::timing::derivation("exact_owner_states", std::panic::Location::caller());
+    crate::timing::derivation("exact_owner_states", derivation_site());
+    exact_owner_states_unattributed(blocks)
+}
+
+/// The replay itself, without the timing and call-site accounting.
+///
+/// [`debug_assert_exact_entries_current`] re-derives on every visit of a
+/// caching pass's per-block loop, which would otherwise dominate the derivation
+/// table it exists to keep honest.
+fn exact_owner_states_unattributed(
+    blocks: &[BasicBlock],
+) -> (HashMap<u32, ExactOwnerState>, HashMap<u32, ExactOwnerState>) {
     let index = block_index_by_id(blocks);
     let mut entries = HashMap::from([(ENTRY_BLOCK_ID, ExactOwnerState::new())]);
     let mut exits = HashMap::new();
@@ -8526,12 +8608,20 @@ pub(super) fn exact_owner_states(
     (entries, exits)
 }
 
-#[track_caller]
+#[cfg_attr(debug_assertions, track_caller)]
 pub(super) fn maybe_owner_states(
     blocks: &[BasicBlock],
 ) -> (HashMap<u32, MaybeOwnerState>, HashMap<u32, MaybeOwnerState>) {
     let _timing = crate::timing::stage("maybe_owner_states");
-    crate::timing::derivation("maybe_owner_states", std::panic::Location::caller());
+    crate::timing::derivation("maybe_owner_states", derivation_site());
+    maybe_owner_states_unattributed(blocks)
+}
+
+/// The replay itself, without the timing and call-site accounting. See
+/// [`exact_owner_states_unattributed`].
+fn maybe_owner_states_unattributed(
+    blocks: &[BasicBlock],
+) -> (HashMap<u32, MaybeOwnerState>, HashMap<u32, MaybeOwnerState>) {
     let index = block_index_by_id(blocks);
     let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MaybeOwnerState::new())]);
     let mut exits = HashMap::new();
@@ -9661,3 +9751,101 @@ mod replay_plan_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod replay_plan_proptests;
+
+#[cfg(test)]
+mod owner_state_cache_tests {
+    use super::{
+        debug_assert_exact_entries_current, debug_assert_maybe_entries_current, exact_owner_states,
+        maybe_owner_states, BasicBlock, BindingId, Instr, Place, ResolvedTy, Terminator,
+        ENTRY_BLOCK_ID,
+    };
+    use crate::model::{OwnerId, OwnershipEvent};
+
+    fn owner(binding: u32) -> OwnerId {
+        OwnerId {
+            binding: BindingId(binding),
+            generation: 0,
+        }
+    }
+
+    fn mint(binding: u32, local: u32) -> Instr {
+        Instr::OwnershipEvent(OwnershipEvent::Mint {
+            owner: owner(binding),
+            place: Place::Local(local),
+            ty: ResolvedTy::String,
+        })
+    }
+
+    /// Two blocks so a caching pass has a second visit to read a stale answer on.
+    fn two_blocks(entry: Vec<Instr>) -> Vec<BasicBlock> {
+        vec![
+            BasicBlock {
+                id: ENTRY_BLOCK_ID,
+                statements: Vec::new(),
+                instructions: entry,
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Return,
+            },
+        ]
+    }
+
+    /// The checker must accept the answer the passes actually hold: derived from
+    /// these blocks, with no rewrite since. A checker that rejects this fires on
+    /// every debug compile and gets deleted rather than fixed.
+    #[test]
+    fn a_replay_derived_from_the_current_blocks_is_accepted() {
+        let blocks = two_blocks(vec![mint(1, 0)]);
+        let (exact, _) = exact_owner_states(&blocks);
+        let (maybe, _) = maybe_owner_states(&blocks);
+
+        debug_assert_exact_entries_current(&blocks, &exact, "test");
+        debug_assert_maybe_entries_current(&blocks, &maybe, "test");
+    }
+
+    /// The defect the checker exists for: a pass rewrites `blocks` at a site that
+    /// does not mark its cache dirty, and a later block reads owner state
+    /// describing the program before the rewrite.
+    #[test]
+    #[should_panic(expected = "stale exact-owner replay")]
+    fn a_replay_from_before_an_unmarked_rewrite_is_rejected() {
+        let mut blocks = two_blocks(vec![mint(1, 0)]);
+        let (exact, _) = exact_owner_states(&blocks);
+
+        blocks[0].instructions.push(mint(2, 1));
+
+        debug_assert_exact_entries_current(&blocks, &exact, "test");
+    }
+
+    #[test]
+    #[should_panic(expected = "stale maybe-owner replay")]
+    fn a_possibly_live_replay_from_before_an_unmarked_rewrite_is_rejected() {
+        let mut blocks = two_blocks(vec![mint(1, 0)]);
+        let (maybe, _) = maybe_owner_states(&blocks);
+
+        blocks[0].instructions.push(mint(2, 1));
+
+        debug_assert_maybe_entries_current(&blocks, &maybe, "test");
+    }
+
+    /// A rewrite that does not change what the replay computes must not fire the
+    /// checker; the invariant is "the cached ANSWER is current", not "nothing was
+    /// touched". A checker keyed on an edit counter instead of the answer would
+    /// fail here and make the four caching passes unfixable.
+    #[test]
+    fn a_rewrite_the_replay_cannot_see_is_accepted() {
+        let mut blocks = two_blocks(vec![mint(1, 0)]);
+        let (exact, _) = exact_owner_states(&blocks);
+
+        blocks[0].instructions.push(Instr::ConstI64 {
+            dest: Place::Local(9),
+            value: 7,
+        });
+
+        debug_assert_exact_entries_current(&blocks, &exact, "test");
+    }
+}

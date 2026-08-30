@@ -9337,6 +9337,11 @@ fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
     // handful of instructions in a whole body.
     let mut entries = drop_plan::exact_owner_states(blocks).0;
     for block_index in 0..blocks.len() {
+        drop_plan::debug_assert_exact_entries_current(
+            blocks,
+            &entries,
+            "canonicalize_terminal_transfer_owner_ids",
+        );
         let block_id = blocks[block_index].id;
         let mut live = entries.get(&block_id).cloned().unwrap_or_default();
         let mut rekeyed = false;
@@ -9388,6 +9393,16 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
     let (mut exact_entries, _) = drop_plan::exact_owner_states(blocks);
     let (mut maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
     for block_index in 0..blocks.len() {
+        drop_plan::debug_assert_exact_entries_current(
+            blocks,
+            &exact_entries,
+            "canonicalize_stale_relocation_and_reset_owner_ids",
+        );
+        drop_plan::debug_assert_maybe_entries_current(
+            blocks,
+            &maybe_entries,
+            "canonicalize_stale_relocation_and_reset_owner_ids",
+        );
         let block_id = blocks[block_index].id;
         let mut exact = exact_entries.get(&block_id).cloned().unwrap_or_default();
         let mut maybe = maybe_entries.get(&block_id).cloned().unwrap_or_default();
@@ -10542,6 +10557,11 @@ fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], build
             entries = drop_plan::exact_owner_states(blocks).0;
             inserted_event = false;
         }
+        drop_plan::debug_assert_exact_entries_current(
+            blocks,
+            &entries,
+            "materialize_explicit_nested_move_relocations",
+        );
         let block_id = blocks[block_index].id;
         let mut live = entries.get(&block_id).cloned().unwrap_or_default();
         let mut index = 0;
@@ -13209,6 +13229,11 @@ fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder:
             entries = drop_plan::exact_owner_states(blocks).0;
             inserted = false;
         }
+        drop_plan::debug_assert_exact_entries_current(
+            blocks,
+            &entries,
+            "materialize_explicit_neutralize_transfers",
+        );
         let block_id = blocks[block_index].id;
         let mut live = entries.get(&block_id).cloned().unwrap_or_default();
         let mut last_relocation: HashMap<Place, (Place, Vec<crate::model::OwnerId>)> =

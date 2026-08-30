@@ -128,9 +128,12 @@ echo "bench-mir: owner-state derivations: $large_derivations on the large body,"
     "$small_derivations on the small one (growth $growth, ceiling $growth_ceiling)"
 if ((growth > growth_ceiling)); then
     echo "bench-mir: the derivation count grew with body size: $growth > $growth_ceiling" >&2
-    echo "  A pass is deriving owner state inside a per-block loop. Find it with:" >&2
-    echo "    HEW_STD=$ROOT/std HEW_MEASURE_TIMINGS=1 $HEW_BIN check $FIXTURE 2>&1 | grep 'mir derivation '" >&2
-    echo "  and compare the per-site counts against the same run on $SMALL." >&2
+    echo "  A pass is deriving owner state inside a per-block loop. The per-site" >&2
+    echo "  table that names it is a debug-build facility (\`#[track_caller]\` costs" >&2
+    echo "  measurable time on the shipping path), so build one and read it:" >&2
+    echo "    make hew-native" >&2
+    echo "    HEW_STD=$ROOT/std HEW_MEASURE_TIMINGS=1 target/debug/hew check $SMALL 2>&1 | grep 'mir derivation '" >&2
+    echo "  and compare the per-site counts against the same run on $FIXTURE." >&2
     exit 1
 fi
 

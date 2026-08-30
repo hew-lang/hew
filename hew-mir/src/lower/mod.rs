@@ -4483,14 +4483,10 @@ fn prepare_owned_call_carriers(
     // immutable MIR state must be re-read before inspecting a later site
     // rather than carried as one pre-rewrite snapshot (which made every
     // historical generation appear live later). The replay is a pure function
-    // of `blocks`, so it is derived on the first carrier site and re-derived
-    // only after this pass appended an operation — blocks with no pending
-    // carrier never needed it at all.
-    let mut owner_states: Option<(
-        HashMap<u32, drop_plan::ExactOwnerState>,
-        HashMap<u32, drop_plan::ExactOwnerState>,
-    )> = None;
-    let mut appended = false;
+    // of `blocks`, and this pass only ever rewrites `blocks` while handling a
+    // carrier site, so deriving it once per carrier site sees exactly what
+    // deriving it once per block index would have seen. Blocks with no pending
+    // carrier never needed it at all, which is where the cost went.
     for block_index in 0..blocks.len() {
         let block_id = blocks[block_index].id;
         let Some(sites) = pending.get(&block_id) else {
@@ -4518,17 +4514,7 @@ fn prepare_owned_call_carriers(
             cursor_blocked.insert(block_id);
             continue;
         };
-        if appended {
-            owner_states = None;
-            appended = false;
-        }
-        if owner_states.is_none() {
-            owner_states = Some(drop_plan::exact_owner_states(blocks));
-        }
-        let states = owner_states
-            .as_ref()
-            .expect("owner states are derived above for every carrier site");
-        let (owner_entries, owner_exits) = (&states.0, &states.1);
+        let (owner_entries, owner_exits) = drop_plan::exact_owner_states(blocks);
         let block = &mut blocks[block_index];
         let diagnostics_before = builder.diagnostics.len();
         let Terminator::Call { args, next, .. } = &mut block.terminator else {
@@ -4702,7 +4688,6 @@ fn prepare_owned_call_carriers(
                     transferee: Some(dest),
                     authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
                 });
-                appended = true;
                 drop_plan::apply_exact_owner_ops(
                     &block.instructions[block.instructions.len().saturating_sub(2)..],
                     &mut exact_owners,
@@ -4719,7 +4704,6 @@ fn prepare_owned_call_carriers(
                             to: dest,
                         },
                     ));
-                    appended = true;
                     normal_owner_commits.push((*next, *owner, arg.source, dest));
                     builder.set_owned_local_consumed_post_lowering(
                         owner.binding,
@@ -4778,7 +4762,6 @@ fn prepare_owned_call_carriers(
                         plan,
                         boundary: crate::model::PreparedCarrierBoundary::LocalCall,
                     });
-                    appended = true;
                     if let Some(slot) = args.get_mut(arg.index) {
                         *slot = dest;
                     }

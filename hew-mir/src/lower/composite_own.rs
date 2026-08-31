@@ -141,6 +141,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     leaf_field_drop: &dyn Fn(Place, u32, &ResolvedTy) -> Option<Instr>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
+    let _timing = crate::timing::stage("apply_escaped_record_sibling_field_drops");
     let owned_binding_bases: HashSet<u32> = owned_locals
         .iter()
         .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
@@ -630,6 +631,12 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
 
     let mut roots: Vec<u32> = scans.keys().copied().collect();
     roots.sort_unstable();
+    // One successor map and one reachability answer per escape block, shared by
+    // every root that escapes there. Recomputing reachability per root rebuilt
+    // the whole successor map each time and made the pass quadratic in block
+    // count on bodies with many owned records.
+    let successors = super::cfg_util::successors_by_id(blocks);
+    let mut reach_by_escape: HashMap<u32, HashSet<u32>> = HashMap::new();
     for root in roots {
         if explicit_projection_roots.contains(&root) {
             continue;
@@ -647,7 +654,9 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         {
             continue;
         }
-        let reach = blocks_reachable_from(blocks, esc_block);
+        let reach = reach_by_escape
+            .entry(esc_block)
+            .or_insert_with(|| super::cfg_util::reachable_from(&successors, esc_block));
         if reach.contains(&esc_block) {
             continue;
         }
@@ -816,6 +825,10 @@ fn explicit_projection_transfer_sibling_drops(
 
     let mut insertions = Vec::new();
     let mut proven_roots = HashSet::new();
+    // One successor map and one reachability answer per transfer block; the
+    // per-candidate query rebuilt the map each time.
+    let successors = super::cfg_util::successors_by_id(blocks);
+    let mut reach_by_transfer: HashMap<u32, HashSet<u32>> = HashMap::new();
     for (root, transfers) in candidates {
         let [(block_id, transfer_index, escaped_field, record_local)] = transfers.as_slice() else {
             continue;
@@ -825,7 +838,9 @@ fn explicit_projection_transfer_sibling_drops(
             .filter_map(|(local, candidate_root)| (*candidate_root == root).then_some(*local))
             .chain(std::iter::once(root))
             .collect::<HashSet<_>>();
-        let reachable = blocks_reachable_from(blocks, *block_id);
+        let reachable = reach_by_transfer
+            .entry(*block_id)
+            .or_insert_with(|| super::cfg_util::reachable_from(&successors, *block_id));
         if reachable.contains(block_id) {
             continue;
         }

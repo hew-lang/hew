@@ -338,6 +338,7 @@ fn merge_unbalanced_owner(target: &mut MirCheck, source: &MirCheck) {
 ///    finding list beforehand, so a compiler engineer still sees the ones
 ///    this rule drops.
 pub(in crate::lower) fn project_findings(findings: &[MirCheck]) -> Vec<MirDiagnostic> {
+    let _timing = crate::timing::stage("project_findings");
     let mut coalesced: Vec<MirCheck> = Vec::with_capacity(findings.len());
     for finding in findings {
         let Some(key) = unbalanced_owner_key(finding) else {

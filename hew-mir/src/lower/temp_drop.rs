@@ -4,10 +4,10 @@ mod handoff;
 use super::*;
 #[cfg(not(test))]
 use super::{
-    base_local, block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
-    cow_value_leaf_drop_symbol, dataflow, derive_local_bytes_drop_allowed,
-    generator_yield_instr_escapes, generator_yield_terminator_escapes, instr_source_places,
-    local_is_used_after, place_is_interior_projection, place_refs_local,
+    base_local, block_by_id, block_dominators, call_terminator_next, cow_value_leaf_drop_symbol,
+    dataflow, derive_local_bytes_drop_allowed, generator_yield_instr_escapes,
+    generator_yield_terminator_escapes, instr_source_places, local_is_used_after,
+    place_is_interior_projection, place_refs_local,
     propagate_whole_value_alias_roots_excluding_moves, prove_retained_bytes_local_share,
     shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_init_vec_source,
     vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder,
@@ -204,14 +204,21 @@ pub(super) fn local_generation_survives_to_site(
     {
         return false;
     }
-    let reachable_from_definition = blocks_reachable_from(blocks, definition_block);
+    // One successor map for the definition's forward set and for the
+    // per-block "can this block still reach the target" question below.
+    // `blocks_reachable_from` rebuilt that map for every block, which made one
+    // call quadratic in block count.
+    let successors = crate::lower::cfg_util::successors_by_id(blocks);
+    let reachable_from_definition =
+        crate::lower::cfg_util::reachable_from(&successors, definition_block);
     if definition_block != target_block && !reachable_from_definition.contains(&target_block) {
         return false;
     }
 
     for block in blocks {
         let reaches_target = block.id == target_block
-            || blocks_reachable_from(blocks, block.id).contains(&target_block);
+            || crate::lower::cfg_util::reachable_from(&successors, block.id)
+                .contains(&target_block);
         let reached_from_definition =
             block.id == definition_block || reachable_from_definition.contains(&block.id);
         if !reaches_target || !reached_from_definition {
@@ -451,6 +458,7 @@ pub(super) fn finalize_string_local_share_intents(
     blocks: &mut [BasicBlock],
     builder: &mut Builder,
 ) {
+    let _timing = crate::timing::stage("finalize_string_local_share_intents");
     let candidates: Vec<(SiteId, BindingId, BindingId)> = builder
         .string_local_share_sites
         .iter()
@@ -725,6 +733,7 @@ pub(super) fn aggregate_borrowed_ingress_clone_sites(
     blocks: &[BasicBlock],
     builder: &Builder,
 ) -> HashSet<(u32, usize, Place)> {
+    let _timing = crate::timing::stage("aggregate_borrowed_ingress_clone_sites");
     let owned_locals = builder.owned_locals_snapshot();
     let borrowed_string_locals = builder
         .borrowed_string_param_locals
@@ -937,28 +946,49 @@ pub(super) fn corroborated_retained_string_move_sites(
     blocks: &[BasicBlock],
     local_tys: &[ResolvedTy],
 ) -> HashSet<(u32, usize)> {
+    let _timing = crate::timing::stage("corroborated_retained_string_move_sites");
+    // The `FreshShare` arm below reads neither the write census nor the cycle
+    // set; only the `Always` arm does. Both describe the whole function and
+    // this runs fifteen times per body, so skip them outright when no `Always`
+    // retain sits immediately before a move.
+    let has_always_share = blocks.iter().any(|block| {
+        block.instructions.windows(2).any(|pair| {
+            matches!(
+                pair,
+                [
+                    Instr::StringRetain {
+                        condition: StringRetainCondition::Always,
+                        ..
+                    },
+                    Instr::Move { .. }
+                ]
+            )
+        })
+    });
     let mut write_counts: HashMap<u32, usize> = HashMap::new();
-    for block in blocks {
-        for instr in &block.instructions {
-            let (_, writes, _) = dataflow::instr_reads_writes(instr);
-            for place in writes {
+    if has_always_share {
+        for block in blocks {
+            for instr in &block.instructions {
+                let (_, writes, _) = dataflow::instr_reads_writes(instr);
+                for place in writes {
+                    if let Some(local) = base_local(place) {
+                        *write_counts.entry(local).or_default() += 1;
+                    }
+                }
+            }
+            for place in dataflow::terminator_write_places(&block.terminator) {
                 if let Some(local) = base_local(place) {
                     *write_counts.entry(local).or_default() += 1;
                 }
             }
         }
-        for place in dataflow::terminator_write_places(&block.terminator) {
-            if let Some(local) = base_local(place) {
-                *write_counts.entry(local).or_default() += 1;
-            }
-        }
     }
 
-    let cyclic_blocks: HashSet<u32> = blocks
-        .iter()
-        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
-        .map(|block| block.id)
-        .collect();
+    let cyclic_blocks: HashSet<u32> = if has_always_share {
+        crate::lower::cfg_util::blocks_on_a_cycle(blocks)
+    } else {
+        HashSet::new()
+    };
     let mut sites = HashSet::new();
     for block in blocks {
         // A `FreshShare`-marked retain + move pair is admitted even on a
@@ -2154,6 +2184,7 @@ pub(super) fn derive_cow_sole_owner(
     extern_contracts: &crate::return_provenance::ExternContractTable,
     owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> StringDropDerivation {
+    let _timing = crate::timing::stage("derive_cow_sole_owner");
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
         if !matches!(ty, ResolvedTy::String) {
@@ -3708,6 +3739,7 @@ fn compute_projection_alias_taint_impl(
     locals: &[ResolvedTy],
     include_owned_actor_state_loads: bool,
 ) -> HashSet<u32> {
+    let _timing = crate::timing::stage("compute_projection_alias_taint");
     // #2523 — projection slots whose heap ownership was TRANSFERRED to a new
     // owner by a projected-payload move-out. The `Move` that copies such a slot
     // into the new owner's local is followed by an `Instr::NeutralizePayloadSlot`
@@ -3770,25 +3802,41 @@ fn compute_projection_alias_taint_impl(
             }
         }
     }
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for (instr_index, instr) in block.instructions.iter().enumerate() {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if !retained_string_moves.contains(&(block.id, instr_index))
-                            && !retained_bytes_moves.contains(&(block.id, instr_index))
-                            && tainted.contains(&sl)
-                            && tainted.insert(dl)
-                        {
-                            changed = true;
-                        }
-                    }
-                }
+    // Taint propagates along whole-value moves that are not a retained share.
+    // The admissible edges do not depend on the taint set, so they are
+    // collected once and the closure is taken with a worklist. Re-scanning
+    // every block until nothing changed computed the same least fixed point,
+    // but paid a whole-function scan for each step of the longest move chain.
+    let mut moves_by_source: HashMap<u32, Vec<u32>> = HashMap::new();
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Instr::Move { dest, src } = instr else {
+                continue;
+            };
+            let (Some(source_local), Some(dest_local)) = (base_local(*src), base_local(*dest))
+            else {
+                continue;
+            };
+            if retained_string_moves.contains(&(block.id, instr_index))
+                || retained_bytes_moves.contains(&(block.id, instr_index))
+            {
+                continue;
             }
+            moves_by_source
+                .entry(source_local)
+                .or_default()
+                .push(dest_local);
         }
-        if !changed {
-            break;
+    }
+    let mut work: Vec<u32> = tainted.iter().copied().collect();
+    while let Some(source_local) = work.pop() {
+        let Some(dests) = moves_by_source.get(&source_local) else {
+            continue;
+        };
+        for dest_local in dests {
+            if tainted.insert(*dest_local) {
+                work.push(*dest_local);
+            }
         }
     }
     tainted
@@ -3798,6 +3846,7 @@ fn compute_projection_alias_taint_impl(
 /// load. The destination is then the sole owner of those bits, not an interior
 /// alias of the aggregate root.
 pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let _timing = crate::timing::stage("aggregate_projection_transfer_dests");
     // Projection paths are nested, not sibling field sets. Build the inverse
     // edge map produced by the actual Record/TupleFieldLoad chain so each
     // neutralize authority can be corroborated backwards from its recorded
@@ -5459,6 +5508,7 @@ pub(super) fn finalize_string_ownership(
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) {
+    let _timing = crate::timing::stage("finalize_string_ownership");
     // Retain/mint classification must see only canonical user-facing owners.
     // Synthetic produced-value slots mint their owners once their physical
     // handoff has been made explicit; including them here makes two bindings
@@ -6269,6 +6319,7 @@ pub(super) fn apply_nested_fresh_string_temp_drops(
     extern_contracts: &crate::return_provenance::ExternContractTable,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
+    let _timing = crate::timing::stage("apply_nested_fresh_string_temp_drops");
     let insertions = collect_nested_fresh_string_temp_drops(
         blocks,
         suspend_kinds,
@@ -7793,6 +7844,7 @@ pub(super) fn apply_nested_fresh_bytes_temp_drops(
     binding_locals: &HashMap<BindingId, Place>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
+    let _timing = crate::timing::stage("apply_nested_fresh_bytes_temp_drops");
     let insertions =
         collect_nested_fresh_bytes_temp_drops(blocks, suspend_kinds, locals, binding_locals);
     if insertions.is_empty() {
@@ -8433,6 +8485,19 @@ pub(super) fn corroborated_retained_bytes_move_sites(
     blocks: &[BasicBlock],
     local_tys: &[ResolvedTy],
 ) -> HashSet<(u32, usize)> {
+    let _timing = crate::timing::stage("corroborated_retained_bytes_move_sites");
+    // Both derivations below describe the whole function and are read only
+    // where a retain sits immediately before a move. Most bodies have no such
+    // pair, and this runs ten times per body, so establish that the question
+    // can have an answer before paying for the write census and the cycle set.
+    if !blocks.iter().any(|block| {
+        block
+            .instructions
+            .windows(2)
+            .any(|pair| matches!(pair, [Instr::BytesRetain { .. }, Instr::Move { .. }]))
+    }) {
+        return HashSet::new();
+    }
     let mut write_counts: HashMap<u32, usize> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
@@ -8449,11 +8514,7 @@ pub(super) fn corroborated_retained_bytes_move_sites(
         }
     }
 
-    let cyclic_blocks: HashSet<u32> = blocks
-        .iter()
-        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
-        .map(|block| block.id)
-        .collect();
+    let cyclic_blocks: HashSet<u32> = crate::lower::cfg_util::blocks_on_a_cycle(blocks);
     let mut sites = HashSet::new();
     for block in blocks {
         if cyclic_blocks.contains(&block.id) {

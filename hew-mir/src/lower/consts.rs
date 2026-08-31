@@ -1092,6 +1092,7 @@ pub(super) fn check_function(
     blocks: &[BasicBlock],
     func: &HirFn,
 ) -> dataflow::DataflowResult {
+    let _timing = crate::timing::stage("check_function");
     // Collect the BindingId of each parameter so the dataflow checker can
     // pre-seed them as `Live` at function entry.  Parameters are initialised
     // by the calling convention (LLVM function argument + parameter prologue

@@ -1853,6 +1853,7 @@ fn compute_structural_cooperate_sites_with_loop_back_edges(
 /// whose block allocation order is not a scheduling invariant.
 #[must_use]
 pub fn compute_cooperate_sites(blocks: &[BasicBlock]) -> Vec<CooperateSite> {
+    let _timing = crate::timing::stage("compute_cooperate_sites");
     if blocks.is_empty() || is_leaf_function(blocks) {
         return Vec::new();
     }

@@ -18,9 +18,15 @@ use hew_hir::ResourceMarker;
 
 mod conditional_consume_release;
 mod diagnostic_projection;
+mod owner_state;
 
 pub(super) use conditional_consume_release::materialize_conditional_consume_releases;
 pub(super) use diagnostic_projection::project_findings;
+pub(super) use owner_state::{
+    apply_exact_owner_ops, apply_maybe_owner_ops, debug_assert_exact_entries_current,
+    debug_assert_maybe_entries_current, exact_owner_states, maybe_ended_owner_states,
+    maybe_owner_states, ExactOwnerState, MaybeOwnerState, MustBindingOwnerState,
+};
 
 /// Drop-elaboration pass over a `CheckedMirFunction`.
 ///
@@ -77,6 +83,7 @@ pub(super) fn derive_elaboration(
     builder: &Builder,
     flat_statements: &[MirStatement],
 ) -> (ElaboratedMirFunction, Vec<MirDiagnostic>) {
+    let _timing = crate::timing::stage("derive_elaboration");
     let mut elaboration_diagnostics = Vec::new();
     // Statements stream: retained for snapshot/compat continuity with the
     // pre-Cluster-3 elaborator. Every owner binding gets a checker-stream
@@ -369,6 +376,7 @@ pub(super) fn owner_definition_drop_recipe(
 /// consulted.
 pub(super) fn materialize_successor_guard_authority(blocks: &mut [BasicBlock]) {
     use crate::model::OwnershipEvent;
+    let _timing = crate::timing::stage("materialize_successor_guard_authority");
 
     loop {
         let mut guards = HashMap::new();
@@ -673,6 +681,7 @@ pub(super) fn materialize_definition_site_drop_recipes(
     builder: &Builder,
 ) {
     use crate::model::OwnershipEvent;
+    let _timing = crate::timing::stage("materialize_definition_site_drop_recipes");
 
     let mut binding_order = HashMap::<BindingId, u32>::new();
     let mut next_order = 0_u32;
@@ -783,8 +792,12 @@ pub(super) fn derive_drop_plans_from_replay(
         })
         .collect::<HashMap<_, _>>();
     let guarded_owners = guards.keys().copied().collect::<HashSet<_>>();
-    let (entries, exit_states) = exact_owner_states(blocks);
-    let (maybe_entries, maybe_exits) = maybe_owner_states(blocks);
+    let exact_states = exact_owner_states(blocks);
+    let entries = &exact_states.0;
+    let exit_states = &exact_states.1;
+    let maybe_states = maybe_owner_states(blocks);
+    let maybe_entries = &maybe_states.0;
+    let maybe_exits = &maybe_states.1;
     let entry_parameter_owners = entry_cancel_parameter_owners(blocks, decisions);
     exits
         .into_iter()
@@ -797,10 +810,10 @@ pub(super) fn derive_drop_plans_from_replay(
                 guarded_required_owners_for_exit(
                     &exit,
                     blocks,
-                    &entries,
-                    &exit_states,
-                    &maybe_entries,
-                    &maybe_exits,
+                    entries,
+                    exit_states,
+                    maybe_entries,
+                    maybe_exits,
                     &guarded_owners,
                 )
             };
@@ -1033,6 +1046,7 @@ pub(super) fn materialize_exact_overwrite_releases(
     builder: Option<&Builder>,
 ) {
     use crate::model::OwnershipEvent;
+    let _timing = crate::timing::stage("materialize_exact_overwrite_releases");
 
     let mut recipes = blocks
         .iter()
@@ -1103,7 +1117,8 @@ pub(super) fn materialize_exact_overwrite_releases(
         })
         .collect::<HashSet<_>>();
     loop {
-        let (entries, _) = exact_owner_states(blocks);
+        let exact_states = exact_owner_states(blocks);
+        let entries = &exact_states.0;
         let mut inserted_any = false;
         for block in blocks.iter_mut() {
             let mut live = entries.get(&block.id).cloned().unwrap_or_default();
@@ -1236,6 +1251,7 @@ pub(super) fn seal_checked(
     builder: &Builder,
     flat_statements: &[MirStatement],
 ) -> (CheckedMirFunction, Vec<MirDiagnostic>) {
+    let _timing = crate::timing::stage("seal_checked");
     let (mut ownership_elaboration, mut diagnostics) = derive_elaboration(
         &name,
         &key,
@@ -1280,6 +1296,7 @@ pub(super) fn seal_checked(
 /// for code generation, so reaching this function without a frozen plan is an
 /// internal compiler invariant violation.
 pub(super) fn elaborate(checked: &CheckedMirFunction) -> ElaboratedMirFunction {
+    let _timing = crate::timing::stage("elaborate");
     checked
         .ownership_elaboration
         .as_deref()
@@ -1519,10 +1536,15 @@ fn goto_edge_carry_checks(
 )]
 pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<MirCheck> {
     use crate::model::{OwnerId, OwnershipEvent};
+    let _timing = crate::timing::stage("validate_ownership_events");
 
-    let (entries, exits) = exact_owner_states(&checked.blocks);
-    let (maybe_entries, maybe_exits) = maybe_owner_states(&checked.blocks);
-    let (must_binding_entries, _) = must_binding_owner_states(&checked.blocks);
+    let exact_states = exact_owner_states(&checked.blocks);
+    let entries = &exact_states.0;
+    let exits = &exact_states.1;
+    let maybe_states = maybe_owner_states(&checked.blocks);
+    let maybe_entries = &maybe_states.0;
+    let maybe_exits = &maybe_states.1;
+    let (must_binding_entries, _) = owner_state::must_binding_owner_states(&checked.blocks);
     let entry_parameter_owners = entry_cancel_parameter_owners(&checked.blocks, &checked.decisions);
 
     let mut findings = Vec::new();
@@ -1669,7 +1691,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
     }
     findings.extend(relocated_binding_use_checks(
         checked,
-        &entries,
+        entries,
         &definition_places,
     ));
     let guarded_owners = published_guards.keys().copied().collect::<HashSet<_>>();
@@ -2076,7 +2098,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
             let Some(_block) = checked.blocks.iter().find(|block| block.id == block_id) else {
                 continue;
             };
-            let live = exact_owner_state_for_exit(exit, &checked.blocks, &entries, &exits);
+            let live = exact_owner_state_for_exit(exit, &checked.blocks, entries, exits);
             let required = if matches!(exit, ExitPath::Cancel { block } if *block == ENTRY_BLOCK_ID)
             {
                 entry_parameter_owners.clone()
@@ -2084,18 +2106,18 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                 guarded_required_owners_for_exit(
                     exit,
                     &checked.blocks,
-                    &entries,
-                    &exits,
-                    &maybe_entries,
-                    &maybe_exits,
+                    entries,
+                    exits,
+                    maybe_entries,
+                    maybe_exits,
                     &guarded_owners,
                 )
             };
             for (binding, candidates) in ambiguous_guarded_owners_for_exit(
                 exit,
                 &checked.blocks,
-                &maybe_entries,
-                &maybe_exits,
+                maybe_entries,
+                maybe_exits,
                 &guarded_owners,
             ) {
                 if required.keys().any(|owner| owner.binding == binding) {
@@ -3685,7 +3707,8 @@ fn physical_move_does_not_relocate_owner_without_explicit_event() {
             src: Place::Local(1),
         },
     ]);
-    let (_, exits) = exact_owner_states(&checked.blocks);
+    let exact_states = exact_owner_states(&checked.blocks);
+    let exits = &exact_states.1;
     assert_eq!(
         exits
             .get(&ENTRY_BLOCK_ID)
@@ -4020,15 +4043,17 @@ fn goto_plan_never_discharges_a_carried_owner() {
             target: 1,
         }),
     ]);
-    let (entries, exits) = exact_owner_states(&checked.blocks);
+    let exact_states = exact_owner_states(&checked.blocks);
+    let entries = &exact_states.0;
+    let exits = &exact_states.1;
     let required = exact_required_owners_for_exit(
         &ExitPath::Goto {
             block: ENTRY_BLOCK_ID,
             target: 1,
         },
         &checked.blocks,
-        &entries,
-        &exits,
+        entries,
+        exits,
     );
 
     assert!(
@@ -4063,15 +4088,17 @@ fn goto_with_live_owner_and_no_edge_carry_is_rejected_not_dropped() {
             recipe: checked_test_string_recipe(),
         }),
     ]);
-    let (entries, exits) = exact_owner_states(&checked.blocks);
+    let exact_states = exact_owner_states(&checked.blocks);
+    let entries = &exact_states.0;
+    let exits = &exact_states.1;
     let required = exact_required_owners_for_exit(
         &ExitPath::Goto {
             block: ENTRY_BLOCK_ID,
             target: 1,
         },
         &checked.blocks,
-        &entries,
-        &exits,
+        entries,
+        exits,
     );
 
     assert!(
@@ -4204,7 +4231,8 @@ fn terminal_transfer_uses_the_live_adopted_generation() {
         Some(Instr::OwnershipEvent(OwnershipEvent::Transfer { owner, .. }))
             if *owner == named
     ));
-    let (_, exits) = exact_owner_states(&blocks);
+    let exact_states = exact_owner_states(&blocks);
+    let exits = &exact_states.1;
     assert!(
         exits.get(&ENTRY_BLOCK_ID).is_some_and(HashMap::is_empty),
         "the terminal carrier consume must end the adopted generation"
@@ -4247,7 +4275,8 @@ fn terminal_transfer_preserves_an_already_correct_named_generation() {
         Some(Instr::OwnershipEvent(OwnershipEvent::Transfer { owner, .. }))
             if *owner == named
     ));
-    let (_, exits) = exact_owner_states(&blocks);
+    let exact_states = exact_owner_states(&blocks);
+    let exits = &exact_states.1;
     assert!(exits.get(&ENTRY_BLOCK_ID).is_some_and(HashMap::is_empty));
 }
 
@@ -4426,7 +4455,8 @@ fn adopted_successor_replaces_same_point_legacy_relocation_only() {
         instruction,
         Instr::OwnershipEvent(OwnershipEvent::Relocate { owner, .. }) if *owner == predecessor
     )));
-    let (_, exits) = exact_owner_states(&blocks);
+    let exact_states = exact_owner_states(&blocks);
+    let exits = &exact_states.1;
     assert_eq!(exits[&ENTRY_BLOCK_ID].get(&successor), Some(&destination));
 
     let mut separated = BasicBlock {
@@ -4829,7 +4859,8 @@ fn pre_call_relocation_suppresses_same_point_terminal_consume() {
         blocks[0].instructions.last(),
         Some(Instr::OwnershipEvent(OwnershipEvent::Relocate { .. }))
     ));
-    let (_, exits) = exact_owner_states(&blocks);
+    let exact_states = exact_owner_states(&blocks);
+    let exits = &exact_states.1;
     assert_eq!(exits[&ENTRY_BLOCK_ID].get(&owner), Some(&carrier));
 }
 
@@ -4952,7 +4983,8 @@ fn occupied_place_mint_is_an_explicit_owner_adoption() {
             && *destination == place
             && *successor == provisional
     ));
-    let (_, exits) = exact_owner_states(&blocks);
+    let exact_states = exact_owner_states(&blocks);
+    let exits = &exact_states.1;
     assert_eq!(
         exits[&ENTRY_BLOCK_ID],
         HashMap::from([(provisional, place)]),
@@ -5219,7 +5251,8 @@ fn conditional_scope_exit_materializes_guarded_physical_and_logical_release() {
             ]
         )
     }));
-    let (maybe_entries, _) = maybe_owner_states(&blocks);
+    let maybe_states = maybe_owner_states(&blocks);
+    let maybe_entries = &maybe_states.0;
     assert!(
         !maybe_entries
             .get(&4)
@@ -5284,7 +5317,8 @@ fn conditional_scope_exit_without_published_guard_remains_fail_closed() {
         binding: BindingId(63),
         generation: 0,
     };
-    let (maybe_entries, _) = maybe_owner_states(&blocks);
+    let maybe_states = maybe_owner_states(&blocks);
+    let maybe_entries = &maybe_states.0;
     assert!(
         maybe_entries
             .get(&4)
@@ -5597,7 +5631,8 @@ fn exact_overwrite_releases_old_generation_before_store() {
         Some(Instr::OwnershipEvent(OwnershipEvent::Release { owner, place }))
             if *owner == old && *place == destination
     ));
-    let (_, exits) = exact_owner_states(&blocks);
+    let exact_states = exact_owner_states(&blocks);
+    let exits = &exact_states.1;
     assert_eq!(
         exits[&ENTRY_BLOCK_ID]
             .iter()
@@ -5676,7 +5711,9 @@ fn nested_join_phi_is_one_exact_generation_at_outer_loop_header() {
 
     super::materialize_exact_owner_join_transfers(&mut blocks, &mut Builder::default());
 
-    let (entries, exits) = exact_owner_states(&blocks);
+    let exact_states = exact_owner_states(&blocks);
+    let entries = &exact_states.0;
+    let exits = &exact_states.1;
     let mut header = entries
         .get(&1)
         .expect("outer loop header is reachable")
@@ -5790,7 +5827,8 @@ fn cyclic_conditional_reassignment_uses_must_owned_join_parameter() {
                 }) if replacement.binding == binding && *joined_place == place
             )
         })));
-    let (_, exits) = exact_owner_states(&blocks);
+    let exact_states = exact_owner_states(&blocks);
+    let exits = &exact_states.1;
     assert!(exits.get(&1).is_some_and(|state| {
         state
             .iter()
@@ -5861,7 +5899,8 @@ fn join_canonicalizes_common_and_edge_local_generations() {
                 if incoming.contains(&common) && incoming.contains(&edge_local)
         )
     }));
-    let (entries, _) = exact_owner_states(&blocks);
+    let exact_states = exact_owner_states(&blocks);
+    let entries = &exact_states.0;
     let mut at_target = entries[&3].clone();
     apply_exact_owner_ops(&target.instructions, &mut at_target);
     assert_eq!(
@@ -5983,6 +6022,7 @@ pub(super) fn exit_path_user_label(exit: &ExitPath) -> String {
 /// LESSONS: boundary-fail-closed, cleanup-all-exits.
 #[must_use]
 pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
+    let _timing = crate::timing::stage("validate_drop_plan");
     let mut findings = Vec::new();
     for (exit, plan) in &elab.drop_plans {
         let block = exit_block_id(exit);
@@ -6037,6 +6077,7 @@ pub(super) fn validate_unwind_cleanup_coverage(
     elab: &ElaboratedMirFunction,
     raw: &RawMirFunction,
 ) -> Vec<MirCheck> {
+    let _timing = crate::timing::stage("validate_unwind_cleanup_coverage");
     validate_unwind_cleanup_coverage_over(elab, &raw.blocks)
 }
 
@@ -6413,6 +6454,7 @@ pub(super) fn validate_discharge_authority(
     elab: &ElaboratedMirFunction,
     raw: &RawMirFunction,
 ) -> Vec<MirCheck> {
+    let _timing = crate::timing::stage("validate_discharge_authority");
     validate_discharge_authority_over(&elab.name, &raw.blocks)
 }
 
@@ -8248,348 +8290,6 @@ pub(super) fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bo
     }
     false
 }
-/// Exact owner generations live at a program point, keyed to the place each
-/// one currently owns.
-pub(super) type ExactOwnerState = HashMap<crate::model::OwnerId, Place>;
-pub(super) type MaybeOwnerState = HashSet<(crate::model::OwnerId, Place)>;
-pub(super) type MustBindingOwnerState = HashMap<BindingId, Place>;
-
-#[derive(Clone)]
-enum OwnerStateOperation {
-    Mint {
-        owner: crate::model::OwnerId,
-        place: Place,
-    },
-    Transfer {
-        owner: crate::model::OwnerId,
-        successor: Option<(crate::model::OwnerId, Place)>,
-    },
-    RelocateOwner {
-        owner: crate::model::OwnerId,
-        to: Place,
-    },
-    End {
-        owner: crate::model::OwnerId,
-    },
-    Reset {
-        previous: crate::model::OwnerId,
-        replacement: crate::model::OwnerId,
-        place: Place,
-    },
-    Rearm {
-        previous: crate::model::OwnerId,
-        replacement: crate::model::OwnerId,
-        place: Place,
-    },
-    Join {
-        incoming: Vec<crate::model::OwnerId>,
-        replacement: crate::model::OwnerId,
-        place: Place,
-    },
-    None,
-}
-
-#[allow(
-    clippy::match_same_arms,
-    reason = "explicit physical-copy and unclassified-operation arms document distinct ownership semantics"
-)]
-fn owner_state_operation(instruction: &Instr) -> OwnerStateOperation {
-    use crate::model::OwnershipEvent;
-
-    match instruction {
-        // Physical copies are backend mechanics. They never mutate ownership
-        // state implicitly: lowering must publish an exact `Relocate` or
-        // `Transfer` event at the same program point. This distinction also
-        // permits borrowed ABI copies without accidentally moving the owner.
-        Instr::Move { .. } | Instr::WitnessMove { .. } => OwnerStateOperation::None,
-        Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, .. }) => {
-            OwnerStateOperation::Mint {
-                owner: *owner,
-                place: *place,
-            }
-        }
-        Instr::OwnershipEvent(OwnershipEvent::Transfer {
-            owner,
-            to,
-            to_owner,
-            ..
-        }) => OwnerStateOperation::Transfer {
-            owner: *owner,
-            successor: to_owner.zip(*to),
-        },
-        Instr::OwnershipEvent(OwnershipEvent::Relocate { owner, to, .. }) => {
-            OwnerStateOperation::RelocateOwner {
-                owner: *owner,
-                to: *to,
-            }
-        }
-        Instr::OwnershipEvent(
-            OwnershipEvent::Release { owner, .. }
-            | OwnershipEvent::GuardedRelease { owner, .. }
-            | OwnershipEvent::DemoteToAlias { owner, .. },
-        ) => OwnerStateOperation::End { owner: *owner },
-        Instr::OwnershipEvent(OwnershipEvent::Reset {
-            previous,
-            replacement,
-            place,
-            ..
-        }) => OwnerStateOperation::Reset {
-            previous: *previous,
-            replacement: *replacement,
-            place: *place,
-        },
-        Instr::OwnershipEvent(OwnershipEvent::Rearm {
-            previous,
-            replacement,
-            place,
-            ..
-        }) => OwnerStateOperation::Rearm {
-            previous: *previous,
-            replacement: *replacement,
-            place: *place,
-        },
-        Instr::OwnershipEvent(OwnershipEvent::Join {
-            incoming,
-            replacement,
-            place,
-            ..
-        }) => OwnerStateOperation::Join {
-            incoming: incoming.clone(),
-            replacement: *replacement,
-            place: *place,
-        },
-        _ => OwnerStateOperation::None,
-    }
-}
-
-pub(super) fn apply_exact_owner_ops(instructions: &[Instr], live: &mut ExactOwnerState) {
-    for instruction in instructions {
-        match owner_state_operation(instruction) {
-            OwnerStateOperation::Mint { owner, place } => {
-                live.insert(owner, place);
-            }
-            OwnerStateOperation::Transfer { owner, successor } => {
-                live.remove(&owner);
-                if let Some((next, destination)) = successor {
-                    live.insert(next, destination);
-                }
-            }
-            OwnerStateOperation::RelocateOwner { owner, to } => {
-                if let Some(place) = live.get_mut(&owner) {
-                    *place = to;
-                }
-            }
-            OwnerStateOperation::End { owner } => {
-                live.remove(&owner);
-            }
-            OwnerStateOperation::Reset {
-                previous,
-                replacement,
-                place,
-            }
-            | OwnerStateOperation::Rearm {
-                previous,
-                replacement,
-                place,
-            } => {
-                live.remove(&previous);
-                live.insert(replacement, place);
-            }
-            OwnerStateOperation::Join {
-                incoming: _,
-                replacement,
-                place,
-            } => {
-                live.retain(|owner, _| owner.binding != replacement.binding);
-                live.insert(replacement, place);
-            }
-            OwnerStateOperation::None => {}
-        }
-    }
-}
-
-pub(super) fn apply_maybe_owner_ops(instructions: &[Instr], live: &mut MaybeOwnerState) {
-    for instruction in instructions {
-        match owner_state_operation(instruction) {
-            OwnerStateOperation::Mint { owner, place } => {
-                live.insert((owner, place));
-            }
-            OwnerStateOperation::Transfer { owner, successor } => {
-                live.retain(|(candidate, _)| *candidate != owner);
-                if let Some(next) = successor {
-                    live.insert(next);
-                }
-            }
-            OwnerStateOperation::RelocateOwner { owner, to } => {
-                let was_live = live.iter().any(|(candidate, _)| *candidate == owner);
-                live.retain(|(candidate, _)| *candidate != owner);
-                if was_live {
-                    live.insert((owner, to));
-                }
-            }
-            OwnerStateOperation::End { owner } => {
-                live.retain(|(candidate, _)| *candidate != owner);
-            }
-            OwnerStateOperation::Reset {
-                previous,
-                replacement,
-                place,
-            } => {
-                live.retain(|(candidate, _)| *candidate != previous);
-                live.insert((replacement, place));
-            }
-            OwnerStateOperation::Rearm {
-                previous,
-                replacement,
-                place,
-            } => {
-                live.retain(|(candidate, _)| *candidate != previous);
-                live.insert((replacement, place));
-            }
-            OwnerStateOperation::Join {
-                incoming: _,
-                replacement,
-                place,
-            } => {
-                live.retain(|(owner, _)| owner.binding != replacement.binding);
-                live.insert((replacement, place));
-            }
-            OwnerStateOperation::None => {}
-        }
-    }
-}
-
-pub(super) fn exact_owner_states(
-    blocks: &[BasicBlock],
-) -> (HashMap<u32, ExactOwnerState>, HashMap<u32, ExactOwnerState>) {
-    let mut entries = HashMap::from([(ENTRY_BLOCK_ID, ExactOwnerState::new())]);
-    let mut exits = HashMap::new();
-    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
-    while let Some(block_id) = queue.pop_front() {
-        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
-            continue;
-        };
-        let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();
-        apply_exact_owner_ops(&block.instructions, &mut outgoing);
-        exits.insert(block_id, outgoing.clone());
-        for successor in block.successors() {
-            let changed = if let Some(existing) = entries.get_mut(&successor) {
-                let joined: ExactOwnerState = existing
-                    .iter()
-                    .filter_map(|(owner, place)| {
-                        (outgoing.get(owner) == Some(place)).then_some((*owner, *place))
-                    })
-                    .collect();
-                if *existing == joined {
-                    false
-                } else {
-                    *existing = joined;
-                    true
-                }
-            } else {
-                entries.insert(successor, outgoing.clone());
-                true
-            };
-            if changed {
-                queue.push_back(successor);
-            }
-        }
-    }
-    (entries, exits)
-}
-
-pub(super) fn maybe_owner_states(
-    blocks: &[BasicBlock],
-) -> (HashMap<u32, MaybeOwnerState>, HashMap<u32, MaybeOwnerState>) {
-    let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MaybeOwnerState::new())]);
-    let mut exits = HashMap::new();
-    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
-    while let Some(block_id) = queue.pop_front() {
-        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
-            continue;
-        };
-        let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();
-        apply_maybe_owner_ops(&block.instructions, &mut outgoing);
-        exits.insert(block_id, outgoing.clone());
-        for successor in block.successors() {
-            let changed = if let Some(existing) = entries.get_mut(&successor) {
-                let before = existing.len();
-                existing.extend(outgoing.iter().copied());
-                existing.len() != before
-            } else {
-                entries.insert(successor, outgoing.clone());
-                true
-            };
-            if changed {
-                queue.push_back(successor);
-            }
-        }
-    }
-    (entries, exits)
-}
-
-/// Generations whose ownership was consumed (transferred, released, or
-/// demoted) on at least one path. Paired with [`maybe_owner_states`] this
-/// separates an owner that is *conditionally consumed* — live on one incoming
-/// path and ended on another, so no static cleanup is admissible — from one
-/// that is merely conditionally minted, whose absent generation owes nothing
-/// on the paths that never created it. A `Reset`/`Rearm` predecessor or a
-/// `Join` input is renamed into its successor generation, not consumed: the
-/// generation-lineage rules own those, so they are not recorded here.
-pub(super) type MaybeEndedOwnerState = HashSet<crate::model::OwnerId>;
-
-pub(super) fn apply_maybe_ended_owner_ops(
-    instructions: &[Instr],
-    ended: &mut MaybeEndedOwnerState,
-) {
-    for instruction in instructions {
-        match owner_state_operation(instruction) {
-            OwnerStateOperation::Transfer { owner, .. } | OwnerStateOperation::End { owner } => {
-                ended.insert(owner);
-            }
-            OwnerStateOperation::Reset { .. }
-            | OwnerStateOperation::Rearm { .. }
-            | OwnerStateOperation::Join { .. }
-            | OwnerStateOperation::Mint { .. }
-            | OwnerStateOperation::RelocateOwner { .. }
-            | OwnerStateOperation::None => {}
-        }
-    }
-}
-
-pub(super) fn maybe_ended_owner_states(
-    blocks: &[BasicBlock],
-) -> (
-    HashMap<u32, MaybeEndedOwnerState>,
-    HashMap<u32, MaybeEndedOwnerState>,
-) {
-    let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MaybeEndedOwnerState::new())]);
-    let mut exits = HashMap::new();
-    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
-    while let Some(block_id) = queue.pop_front() {
-        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
-            continue;
-        };
-        let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();
-        apply_maybe_ended_owner_ops(&block.instructions, &mut outgoing);
-        exits.insert(block_id, outgoing.clone());
-        for successor in block.successors() {
-            let changed = if let Some(existing) = entries.get_mut(&successor) {
-                let before = existing.len();
-                existing.extend(outgoing.iter().copied());
-                existing.len() != before
-            } else {
-                entries.insert(successor, outgoing.clone());
-                true
-            };
-            if changed {
-                queue.push_back(successor);
-            }
-        }
-    }
-    (entries, exits)
-}
-
 /// The block and instruction index of the indirect closure call whose unwind
 /// edge `callee` names, when the block calls one inline.
 fn closure_call_prefix<'a>(
@@ -8613,100 +8313,6 @@ fn closure_call_prefix<'a>(
                 })
                 .map(|position| (block, position))
         })
-}
-
-fn apply_must_binding_owner_ops(instructions: &[Instr], live: &mut MustBindingOwnerState) {
-    for instruction in instructions {
-        match owner_state_operation(instruction) {
-            OwnerStateOperation::Mint { owner, place } => {
-                live.insert(owner.binding, place);
-            }
-            OwnerStateOperation::Transfer { owner, successor } => {
-                live.remove(&owner.binding);
-                if let Some((next, destination)) = successor {
-                    live.insert(next.binding, destination);
-                }
-            }
-            OwnerStateOperation::RelocateOwner { owner, to } => {
-                if let Some(place) = live.get_mut(&owner.binding) {
-                    *place = to;
-                }
-            }
-            OwnerStateOperation::End { owner } => {
-                live.remove(&owner.binding);
-            }
-            OwnerStateOperation::Reset {
-                previous,
-                replacement,
-                place,
-            }
-            | OwnerStateOperation::Rearm {
-                previous,
-                replacement,
-                place,
-            } => {
-                live.remove(&previous.binding);
-                live.insert(replacement.binding, place);
-            }
-            OwnerStateOperation::Join {
-                incoming,
-                replacement,
-                place,
-            } => {
-                for owner in incoming {
-                    live.remove(&owner.binding);
-                }
-                live.insert(replacement.binding, place);
-            }
-            OwnerStateOperation::None => {}
-        }
-    }
-}
-
-/// Generation-erased must-own state used only to justify an ownership-SSA
-/// Join. Unlike exact `OwnerId` intersection, this lattice preserves a binding
-/// when every predecessor owns it in the same physical place even if their
-/// generations differ. It is derived solely from explicit ownership events.
-pub(super) fn must_binding_owner_states(
-    blocks: &[BasicBlock],
-) -> (
-    HashMap<u32, MustBindingOwnerState>,
-    HashMap<u32, MustBindingOwnerState>,
-) {
-    let mut entries = HashMap::from([(ENTRY_BLOCK_ID, MustBindingOwnerState::new())]);
-    let mut exits = HashMap::new();
-    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
-    while let Some(block_id) = queue.pop_front() {
-        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
-            continue;
-        };
-        let mut outgoing = entries.get(&block_id).cloned().unwrap_or_default();
-        apply_must_binding_owner_ops(&block.instructions, &mut outgoing);
-        exits.insert(block_id, outgoing.clone());
-        for successor in block.successors() {
-            let changed = if let Some(existing) = entries.get_mut(&successor) {
-                let joined = existing
-                    .iter()
-                    .filter_map(|(binding, place)| {
-                        (outgoing.get(binding) == Some(place)).then_some((*binding, *place))
-                    })
-                    .collect::<MustBindingOwnerState>();
-                if *existing == joined {
-                    false
-                } else {
-                    *existing = joined;
-                    true
-                }
-            } else {
-                entries.insert(successor, outgoing.clone());
-                true
-            };
-            if changed {
-                queue.push_back(successor);
-            }
-        }
-    }
-    (entries, exits)
 }
 
 /// Reproduce the owner set visible at one exit program point. Terminator exits

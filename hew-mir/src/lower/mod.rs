@@ -2074,6 +2074,9 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         }
     }
 
+    // Whole-module lowering cost, reported under `HEW_MEASURE_TIMINGS`. Placed
+    // after the nested helper items so the body has no item after a statement.
+    let module_started = crate::timing::function_start();
     let mut raw_mir = Vec::new();
     let mut checked_mir = Vec::new();
     let mut elaborated_mir = Vec::new();
@@ -4008,7 +4011,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // Reject here rather than emitting a module with a duplicated identity.
     diagnostics.extend(crate::identity::validate_unique_callable_keys(&raw_mir));
 
-    IrPipeline {
+    let pipeline = IrPipeline {
         raw_mir,
         checked_mir,
         elaborated_mir,
@@ -4056,7 +4059,11 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         user_clone_record_seeds: Vec::new(),
         lint_warnings,
         lifecycle_registry,
-    }
+    };
+    // Whole-module report: the stage table and the slowest function bodies.
+    crate::timing::record_stage("lower_hir_module", module_started);
+    crate::timing::report(20);
+    pipeline
 }
 
 /// Module-global RAII-2 (#1295) param-ownership facts. See
@@ -4465,20 +4472,23 @@ fn prepare_owned_call_carriers(
     builder: &mut Builder,
     projection_tainted: &HashSet<u32>,
 ) -> Vec<CommittedOwnedCursorCall> {
+    let _timing = crate::timing::stage("prepare_owned_call_carriers");
     let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
     let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_owned_call_args);
     let mut normal_owner_commits = Vec::new();
     let mut cursor_blocked = HashSet::new();
 
+    // Earlier call sites may have just committed ownership transfers, so the
+    // immutable MIR state must be re-read before inspecting a later site
+    // rather than carried as one pre-rewrite snapshot (which made every
+    // historical generation appear live later). The replay is a pure function
+    // of `blocks`, and this pass only ever rewrites `blocks` while handling a
+    // carrier site, so deriving it once per carrier site sees exactly what
+    // deriving it once per block index would have seen. Blocks with no pending
+    // carrier never needed it at all, which is where the cost went.
     for block_index in 0..blocks.len() {
-        // Earlier call sites may have just committed ownership transfers.
-        // Recompute the immutable MIR state before inspecting this site rather
-        // than carrying one pre-rewrite whole-function snapshot through every
-        // block (which made every historical generation appear live later).
-        let (owner_entries, owner_exits) = drop_plan::exact_owner_states(blocks);
         let block_id = blocks[block_index].id;
-        let block = &mut blocks[block_index];
         let Some(sites) = pending.get(&block_id) else {
             continue;
         };
@@ -4504,6 +4514,10 @@ fn prepare_owned_call_carriers(
             cursor_blocked.insert(block_id);
             continue;
         };
+        let exact_states = drop_plan::exact_owner_states(blocks);
+        let owner_entries = &exact_states.0;
+        let owner_exits = &exact_states.1;
+        let block = &mut blocks[block_index];
         let diagnostics_before = builder.diagnostics.len();
         let Terminator::Call { args, next, .. } = &mut block.terminator else {
             builder.diagnostics.push(MirDiagnostic {
@@ -4991,6 +5005,7 @@ fn cfg_reachable_over(
 /// free. Tracked as #3160; the discarded attempt is preserved at
 /// `.tmp/ownership-seams/f3-inflight.patch`.
 fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("append_owned_carrier_param_drops");
     if builder.owned_carrier_params.is_empty() {
         return;
     }
@@ -5094,6 +5109,7 @@ fn resolve_outbound_actor_modes(
     builder: &mut Builder,
     projection_tainted: &HashSet<u32>,
 ) -> HashMap<u32, Vec<ResolvedOutboundSite>> {
+    let _timing = crate::timing::stage("resolve_outbound_actor_modes");
     let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
     let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_outbound_actor_args);
@@ -5300,8 +5316,10 @@ fn prepare_outbound_actor_payloads(
     resolved: &HashMap<u32, Vec<ResolvedOutboundSite>>,
     projection_tainted: &HashSet<u32>,
 ) {
+    let _timing = crate::timing::stage("prepare_outbound_actor_payloads");
     let record_layouts = outbound_record_layouts(builder);
-    let (owner_entries, _) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let owner_entries = &exact_states.0;
     for block in blocks.iter_mut() {
         let Some(sites) = resolved.get(&block.id) else {
             continue;
@@ -5776,6 +5794,7 @@ fn neutralize_divergent_selection_sources(
     builder: &mut Builder,
     projection_tainted: &HashSet<u32>,
 ) {
+    let _timing = crate::timing::stage("neutralize_divergent_selection_sources");
     let mut candidate_locals = frame_owned_heap_locals(builder);
     // A slot holding an INTERIOR ALIAS of a still-live parent — a match-arm
     // payload binder over an enum/machine carrier, a record/tuple field load,
@@ -5791,6 +5810,11 @@ fn neutralize_divergent_selection_sources(
     if candidate_locals.is_empty() {
         return;
     }
+    // One successor map and one reachability answer per selection site. The
+    // read-after-site proof runs for every candidate move, and rebuilding the
+    // successor map per proof made the pass quadratic in block count.
+    let successors = cfg_util::successors_by_id(blocks);
+    let mut reach_by_site: HashMap<u32, HashSet<u32>> = HashMap::new();
 
     // A transfer is CONDITIONAL when its block does not dominate every return
     // exit: some path reaches an exit WITHOUT executing the move, and on that
@@ -5813,6 +5837,18 @@ fn neutralize_divergent_selection_sources(
 
     let mut inserts: Vec<(u32, usize, u32, u32)> = Vec::new();
     for block in blocks.iter() {
+        // Whether a transfer in this block is conditional is a property of the
+        // BLOCK, not of the instruction: it asks whether some return exit is
+        // not dominated by this block. Asking it once per move re-scanned every
+        // exit for every move in the body.
+        let conditional = return_exits.iter().any(|exit| {
+            dominators
+                .get(exit)
+                .is_some_and(|doms| !doms.contains(&block.id))
+        });
+        if !conditional {
+            continue;
+        }
         for (instr_index, instr) in block.instructions.iter().enumerate() {
             let Instr::Move {
                 dest: Place::Local(dest_local),
@@ -5822,14 +5858,6 @@ fn neutralize_divergent_selection_sources(
                 continue;
             };
             if dest_local == src_local {
-                continue;
-            }
-            let conditional = return_exits.iter().any(|exit| {
-                dominators
-                    .get(exit)
-                    .is_some_and(|doms| !doms.contains(&block.id))
-            });
-            if !conditional {
                 continue;
             }
             // `if`/`else` value lowering copies each arm's value through a
@@ -5848,12 +5876,16 @@ fn neutralize_divergent_selection_sources(
             ) else {
                 continue;
             };
+            let reachable = reach_by_site
+                .entry(site_block)
+                .or_insert_with(|| cfg_util::reachable_from(&successors, site_block));
             let read_after = local_read_after_site(
                 blocks,
                 &builder.suspend_kinds,
                 owned_local,
                 site_block,
                 site_index,
+                reachable,
             );
             let already =
                 source_slot_already_neutralized(blocks, site_block, site_index, owned_local);
@@ -5943,7 +5975,8 @@ fn materialize_one_divergent_selection_arm_closure(
 ) -> bool {
     use crate::model::OwnershipEvent;
 
-    let (_, exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exits = &exact_states.1;
     let mut predecessors = HashMap::<u32, Vec<u32>>::new();
     for block in blocks.iter() {
         for successor in block.successors() {
@@ -6239,6 +6272,7 @@ fn materialize_one_divergent_selection_arm_closure(
 }
 
 fn materialize_divergent_selection_arm_closures(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_divergent_selection_arm_closures");
     while materialize_one_divergent_selection_arm_closure(blocks, builder) {}
 }
 
@@ -6277,8 +6311,8 @@ fn local_read_after_site(
     local: u32,
     site_block: u32,
     site_index: usize,
+    reachable: &HashSet<u32>,
 ) -> bool {
-    let reachable = cfg_util::blocks_reachable_from(blocks, site_block);
     let site_on_cycle = reachable.contains(&site_block);
     let reads = |place: Place| base_local(place) == Some(local);
     for block in blocks {
@@ -6320,6 +6354,7 @@ fn local_read_after_site(
     reason = "one proof pass keeps clone provenance, use classification, and release insertion together"
 )]
 fn release_cloned_collection_result_temps(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("release_cloned_collection_result_temps");
     let cloned_locals: HashMap<u32, HashSet<u32>> = blocks
         .iter()
         .filter_map(|block| match &block.terminator {
@@ -6532,6 +6567,7 @@ fn block_executes_at_most_once_per_owner_mint(
     reason = "one proof pass keeps owner eligibility, postdominance, and release insertion together"
 )]
 fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("release_last_borrowed_typed_owners");
     // An unretained handle placed into an aggregate remains owned by its
     // standalone source binding until an exact extraction consumer takes over.
     // The aggregate is only a byte-copy carrier in that no-consume state. Do
@@ -7151,6 +7187,7 @@ fn returned_aggregate_value_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
 }
 
 fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("neutralize_returned_aggregate_member_sources");
     let candidates = builder.owned_locals_owner_generations();
     let returned_members =
         derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
@@ -7330,6 +7367,7 @@ fn splice_body_ownership_releases(
     builder: &mut Builder,
     nested_fresh_temp_releases: bool,
 ) {
+    let _timing = crate::timing::stage("splice_body_ownership_releases");
     if nested_fresh_temp_releases {
         // Inline string/bytes releases this body's own lowering already
         // emitted. The retirement below pairs with releases added by every
@@ -7398,6 +7436,7 @@ fn splice_body_ownership_releases(
 /// receive no event and keep the caller owner; unknown locals and types remain
 /// fail-closed rather than acquiring an inferred handoff.
 fn splice_opaque_extern_string_argument_handoffs(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_opaque_extern_string_argument_handoffs");
     for block in blocks {
         let Terminator::Call { callee, args, .. } = &block.terminator else {
             continue;
@@ -7549,6 +7588,7 @@ fn linear_predecessor_chain(blocks: &[BasicBlock], target: u32) -> Vec<u32> {
     reason = "normal-success call commits split CFG edges while preserving call-site owner and guard authority"
 )]
 fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_normal_call_ownership_commits");
     let mut commits = Vec::new();
     for block in blocks.iter() {
         let Terminator::Call {
@@ -7708,7 +7748,8 @@ fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut
     // still destroy it. Resolve the exact live generation from MIR state at
     // the call, then commit the close in its normal successor. This is the
     // receiver sibling of the ProvenConsume argument protocol above.
-    let (_, owner_exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let owner_exits = &exact_states.1;
     let guards = blocks
         .iter()
         .flat_map(|block| &block.instructions)
@@ -7816,6 +7857,7 @@ struct AffineCallConsumeCommit {
 /// different: its consuming parameter owns the value from function entry, so
 /// ordinary binding lowering transfers the caller owner before the invoke.
 fn splice_affine_call_argument_consumes(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_affine_call_argument_consumes");
     let pending = std::mem::take(&mut builder.pending_affine_call_consumes);
     if pending.is_empty() {
         return;
@@ -7851,7 +7893,8 @@ fn collect_affine_call_consume_commits(
     builder: &mut Builder,
     pending: HashMap<u32, PendingAffineCallConsumeSite>,
 ) -> Vec<AffineCallConsumeCommit> {
-    let (_, owner_exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let owner_exits = &exact_states.1;
     let mut predecessors = HashMap::<u32, Vec<u32>>::new();
     for block in blocks {
         for successor in block.successors() {
@@ -7870,7 +7913,7 @@ fn collect_affine_call_consume_commits(
         .collect::<HashMap<_, _>>();
     let resolution = AffineCallConsumeResolution {
         blocks,
-        owner_exits: &owner_exits,
+        owner_exits,
         predecessors: &predecessors,
         guards: &guards,
     };
@@ -8070,6 +8113,7 @@ fn apply_affine_call_consume_commits(
 /// by `neutralize_aggregate_member_sources`; carrying the logical event here
 /// preserves predecessor-unwind cleanup.
 fn splice_retained_field_aggregate_commits(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_retained_field_aggregate_commits");
     let retained_field_seeds: Vec<u32> = blocks
         .iter()
         .flat_map(|block| &block.instructions)
@@ -8154,6 +8198,7 @@ fn splice_retained_field_aggregate_commits(blocks: &mut [BasicBlock], builder: &
     reason = "one proof pass keeps transfer reachability, dominance, and exit splicing together"
 )]
 fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_pretransfer_record_exit_drops");
     let candidates: HashMap<u32, (BindingId, ResolvedTy)> = builder
         .owned_locals_owner_generations()
         .into_iter()
@@ -8199,7 +8244,24 @@ fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut
             }
         }
     }
+    // Every candidate below needs a `FieldDropInPlace` naming it, so a body
+    // with none owes nothing here — and both derivations that follow describe
+    // the whole function.
+    if transfer_blocks.is_empty() || mint_blocks.is_empty() {
+        return;
+    }
     let dominators = block_dominators(blocks);
+    // One successor map and one reachability answer per transfer block, shared
+    // by every exit and candidate that asks about it. Recomputing reachability
+    // inside the exit-by-candidate-by-transfer loop rebuilt the successor map
+    // for each question.
+    let successors = cfg_util::successors_by_id(blocks);
+    let mut reach_by_transfer: HashMap<u32, HashSet<u32>> = HashMap::new();
+    for transfer in transfer_blocks.values().flatten().copied() {
+        reach_by_transfer
+            .entry(transfer)
+            .or_insert_with(|| cfg_util::reachable_from(&successors, transfer));
+    }
     let mut inserts = Vec::new();
     for block in blocks
         .iter()
@@ -8221,7 +8283,9 @@ fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut
             }
             let transfer_can_reach_exit = transfers.iter().any(|transfer| {
                 *transfer == block.id
-                    || cfg_util::blocks_reachable_from(blocks, *transfer).contains(&block.id)
+                    || reach_by_transfer
+                        .get(transfer)
+                        .is_some_and(|reach| reach.contains(&block.id))
             });
             if transfer_can_reach_exit {
                 continue;
@@ -8266,6 +8330,7 @@ fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut
 /// flow proves the escape's root, field, and last-use position, splice one
 /// `FieldDropInPlace` per dischargeable sibling right after the escape.
 fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
+    let _timing = crate::timing::stage("splice_escaped_record_sibling_field_drops");
     // #2212 — an owned record whose field escapes through a binder loses its
     // composite scope-exit drop (the sole-owner prover excludes it); the
     // record's NON-escaped owned sibling fields still need their release.
@@ -8321,6 +8386,7 @@ fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, build
 /// These run after the checker statement snapshot because they rewrite operands
 /// rather than discharge values.
 fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
+    let _timing = crate::timing::stage("prepare_body_transfers");
     builder.resolve_local_names_from_binds(&*blocks);
     // P0 #2432 — classify every `ActorStateFieldLoad`'s own/borrow `mode`
     // over the fully finalised blocks (every splice pass above has already
@@ -8499,6 +8565,7 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
 /// later lexical destructor for the same payload. Domestic Hew bodies and
 /// audited runtime calls keep their ordinary borrowing behavior.
 fn materialize_opaque_projected_payload_handoffs(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_opaque_projected_payload_handoffs");
     let candidates: HashMap<u32, BindingId> = builder
         .projected_payload_provenance
         .keys()
@@ -8516,7 +8583,8 @@ fn materialize_opaque_projected_payload_handoffs(blocks: &mut [BasicBlock], buil
     if candidates.is_empty() {
         return;
     }
-    let (_, exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exits = &exact_states.1;
     for block in blocks {
         let Terminator::Call { args, .. } = &block.terminator else {
             continue;
@@ -8610,7 +8678,9 @@ fn materialize_edge_local_retained_join_releases(blocks: &mut [BasicBlock], buil
         edges: Vec<EdgePlan>,
     }
 
-    let (exact_entries, exact_exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exact_entries = &exact_states.0;
+    let exact_exits = &exact_states.1;
     let predecessors = blocks
         .iter()
         .flat_map(|block| {
@@ -9269,10 +9339,21 @@ pub(super) fn prove_retained_bytes_local_share(
 /// identity is dead and exactly one live owner carries `from`. Zero or multiple
 /// candidates remain untouched so validation fails closed.
 fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
+    let _timing = crate::timing::stage("canonicalize_terminal_transfer_owner_ids");
+    // The replay is a pure function of `blocks`, so it is re-derived only after
+    // a re-key actually changed them. Re-deriving it per block instead made the
+    // pass quadratic in block count for the sake of a rewrite that fires on a
+    // handful of instructions in a whole body.
+    let mut entries = drop_plan::exact_owner_states(blocks).0.clone();
     for block_index in 0..blocks.len() {
-        let (entries, _) = drop_plan::exact_owner_states(blocks);
+        drop_plan::debug_assert_exact_entries_current(
+            blocks,
+            &entries,
+            "canonicalize_terminal_transfer_owner_ids",
+        );
         let block_id = blocks[block_index].id;
         let mut live = entries.get(&block_id).cloned().unwrap_or_default();
+        let mut rekeyed = false;
         for instruction_index in 0..blocks[block_index].instructions.len() {
             let instruction = &mut blocks[block_index].instructions[instruction_index];
             if let Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
@@ -9289,11 +9370,15 @@ fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
                         .collect::<Vec<_>>();
                     if let [replacement] = candidates.as_slice() {
                         *owner = *replacement;
+                        rekeyed = true;
                     }
                 }
             }
             let instruction = instruction.clone();
             drop_plan::apply_exact_owner_ops(std::slice::from_ref(&instruction), &mut live);
+        }
+        if rekeyed {
+            entries.clone_from(&drop_plan::exact_owner_states(blocks).0);
         }
     }
 }
@@ -9310,12 +9395,27 @@ fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
 /// any generation of that binding. Ambiguous states stay untouched so the
 /// Checked-MIR validator still fails closed.
 fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) {
+    let _timing = crate::timing::stage("canonicalize_stale_relocation_and_reset_owner_ids");
+    // Both replays are pure functions of `blocks`; they are re-derived only
+    // after a re-key or a reset-to-mint rewrite changed them, not once per
+    // block. See `canonicalize_terminal_transfer_owner_ids`.
+    let mut exact_entries = drop_plan::exact_owner_states(blocks).0.clone();
+    let mut maybe_entries = drop_plan::maybe_owner_states(blocks).0.clone();
     for block_index in 0..blocks.len() {
-        let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
-        let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+        drop_plan::debug_assert_exact_entries_current(
+            blocks,
+            &exact_entries,
+            "canonicalize_stale_relocation_and_reset_owner_ids",
+        );
+        drop_plan::debug_assert_maybe_entries_current(
+            blocks,
+            &maybe_entries,
+            "canonicalize_stale_relocation_and_reset_owner_ids",
+        );
         let block_id = blocks[block_index].id;
         let mut exact = exact_entries.get(&block_id).cloned().unwrap_or_default();
         let mut maybe = maybe_entries.get(&block_id).cloned().unwrap_or_default();
+        let mut rewrote = false;
 
         for instruction_index in 0..blocks[block_index].instructions.len() {
             let instruction = &mut blocks[block_index].instructions[instruction_index];
@@ -9336,6 +9436,7 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
                     if let [replacement] = exact_candidates.as_slice() {
                         if maybe_candidates.len() == 1 && maybe_candidates.contains(replacement) {
                             *owner = *replacement;
+                            rewrote = true;
                         }
                     }
                 }
@@ -9358,6 +9459,7 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
                             place: *place,
                             ty: ty.clone(),
                         });
+                        rewrote = true;
                     }
                 }
                 _ => {}
@@ -9365,6 +9467,10 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
             let operation = instruction.clone();
             drop_plan::apply_exact_owner_ops(std::slice::from_ref(&operation), &mut exact);
             drop_plan::apply_maybe_owner_ops(std::slice::from_ref(&operation), &mut maybe);
+        }
+        if rewrote {
+            exact_entries.clone_from(&drop_plan::exact_owner_states(blocks).0);
+            maybe_entries.clone_from(&drop_plan::maybe_owner_states(blocks).0);
         }
     }
 }
@@ -9388,7 +9494,9 @@ mod stale_owner_canonicalization_tests;
 /// pass positions its releases at the carry; that earlier publication is
 /// re-derived by the final run.
 fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let (_, exits) = drop_plan::exact_owner_states(blocks);
+    let _timing = crate::timing::stage("materialize_explicit_goto_edge_carries");
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exits = &exact_states.1;
     for block in blocks {
         let Terminator::Goto { target } = block.terminator else {
             continue;
@@ -9602,9 +9710,12 @@ fn materialize_conditional_scope_exit_releases(
     blocks: &mut Vec<BasicBlock>,
     builder: &mut Builder,
 ) {
+    let _timing = crate::timing::stage("materialize_conditional_scope_exit_releases");
     loop {
-        let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
-        let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+        let exact_states = drop_plan::exact_owner_states(blocks);
+        let exact_entries = &exact_states.0;
+        let maybe_states = drop_plan::maybe_owner_states(blocks);
+        let maybe_entries = &maybe_states.0;
         let recipes = blocks
             .iter()
             .flat_map(|block| &block.instructions)
@@ -9830,6 +9941,7 @@ fn materialize_conditional_scope_exit_releases(
     reason = "scope-exit publication derives exact releases and rewrites each affected program point atomically"
 )]
 fn materialize_explicit_scope_exits(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_scope_exits");
     // Join sealing must reason about the lexical boundary before its physical
     // drops exist; use that same scope-aware state here to materialize those
     // drops. Strict Checked-MIR replay remains unchanged and verifies the
@@ -10037,6 +10149,7 @@ fn unowned_scope_exit_cleanup_pair(
 /// records the same owner in `ScopeExit.owners`; any non-adjacent release or a
 /// release at another program point remains visible to ownership validation.
 fn prune_unowned_scope_exit_cleanup(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("prune_unowned_scope_exit_cleanup");
     for block in blocks {
         let mut index = 0;
         while index < block.instructions.len() {
@@ -10067,6 +10180,7 @@ fn prune_unowned_scope_exit_cleanup(blocks: &mut [BasicBlock], builder: &mut Bui
 /// live and therefore fail closed at a receiver invalidation until edge-local
 /// kills have been emitted by their lowering surface.
 fn materialize_explicit_alias_ends(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_alias_ends");
     let mut aliases = HashSet::new();
     for block in blocks.iter() {
         for instruction in &block.instructions {
@@ -10198,8 +10312,12 @@ fn relocate_nested_owner_place(
     reason = "whole-value move sealing handles exact, maybe, nested, and predecessor owner authority in one pass"
 )]
 fn materialize_explicit_move_relocations(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
-    let (exact_entries, exact_exits) = drop_plan::exact_owner_states(blocks);
+    let _timing = crate::timing::stage("materialize_explicit_move_relocations");
+    let maybe_states = drop_plan::maybe_owner_states(blocks);
+    let maybe_entries = &maybe_states.0;
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exact_entries = &exact_states.0;
+    let exact_exits = &exact_states.1;
     let mut predecessors: HashMap<u32, Vec<u32>> = HashMap::new();
     for block in blocks.iter() {
         for successor in block.successors() {
@@ -10444,8 +10562,21 @@ fn materialize_explicit_move_relocations(blocks: &mut [BasicBlock], builder: &mu
 /// at a later aggregate return while preserving genuinely live machine/enum
 /// payload owners across local-to-local moves.
 fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_nested_move_relocations");
+    // The replay is a pure function of `blocks`; only this pass's own event
+    // insertions invalidate it. See `canonicalize_terminal_transfer_owner_ids`.
+    let mut entries = drop_plan::exact_owner_states(blocks).0.clone();
+    let mut inserted_event = false;
     for block_index in 0..blocks.len() {
-        let (entries, _) = drop_plan::exact_owner_states(blocks);
+        if inserted_event {
+            entries.clone_from(&drop_plan::exact_owner_states(blocks).0);
+            inserted_event = false;
+        }
+        drop_plan::debug_assert_exact_entries_current(
+            blocks,
+            &entries,
+            "materialize_explicit_nested_move_relocations",
+        );
         let block_id = blocks[block_index].id;
         let mut live = entries.get(&block_id).cloned().unwrap_or_default();
         let mut index = 0;
@@ -10523,6 +10654,7 @@ fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], build
                 blocks[block_index]
                     .instructions
                     .insert(insert_at, inserted.clone());
+                inserted_event = true;
                 drop_plan::apply_exact_owner_ops(std::slice::from_ref(&inserted), &mut live);
                 insert_at += 1;
             }
@@ -10543,7 +10675,9 @@ fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], build
 /// at the projection root plus the adjacent destination Mint is the complete
 /// split proof.  Builder binding/projection ledgers do not participate.
 fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let (entries, _) = drop_plan::maybe_owner_states(blocks);
+    let _timing = crate::timing::stage("materialize_explicit_projection_adoptions");
+    let maybe_states = drop_plan::maybe_owner_states(blocks);
+    let entries = &maybe_states.0;
     // Contextual resource binders already carry a typed, path-specific
     // neutralization. In a guarded match arm that handoff deliberately lives
     // in the guard's true successor; materializing the generic Move/Mint
@@ -10636,7 +10770,9 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
     reason = "preminted adoption rewrites the physical move and both owner generations as one local program-point transform"
 )]
 fn canonicalize_preminted_move_adoptions(blocks: &mut [BasicBlock]) {
-    let (entries, _) = drop_plan::exact_owner_states(blocks);
+    let _timing = crate::timing::stage("canonicalize_preminted_move_adoptions");
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let entries = &exact_states.0;
     for block in blocks {
         let mut live = entries.get(&block.id).cloned().unwrap_or_default();
         let mut index = 0;
@@ -11119,7 +11255,8 @@ fn terminal_transfer_precedes_actor_state_store_commit(block: &BasicBlock, index
 /// transfer. Any mismatch in source, destination, or exact owner state remains
 /// validator-visible.
 fn canonicalize_pre_move_terminal_relocations(blocks: &mut [BasicBlock]) {
-    let (entries, _) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let entries = &exact_states.0;
     for block in blocks {
         let mut live = entries.get(&block.id).cloned().unwrap_or_default();
         for index in 0..block.instructions.len() {
@@ -11339,8 +11476,10 @@ fn duplicate_neutralize_before_relocation(block: &BasicBlock, index: usize) -> O
     reason = "each bounded ownership-spine shape is an independent local falsifier-backed canonicalization rule"
 )]
 fn deduplicate_ownership_spines(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("deduplicate_ownership_spines");
     canonicalize_pre_move_terminal_relocations(blocks);
-    let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exact_entries = &exact_states.0;
     for block in blocks {
         let exact_entry = exact_entries.get(&block.id).cloned().unwrap_or_default();
         let mut seen = Vec::<Instr>::new();
@@ -11575,6 +11714,7 @@ fn unique_published_authority<T: PartialEq>(values: Option<&[T]>) -> Option<&T> 
 
 fn canonicalize_release_owner_ids(blocks: &mut [BasicBlock]) {
     use crate::model::OwnershipEvent;
+    let _timing = crate::timing::stage("canonicalize_release_owner_ids");
 
     let mut owner_types = HashMap::<crate::model::OwnerId, Vec<ResolvedTy>>::new();
     let mut owner_recipes =
@@ -11634,9 +11774,9 @@ fn canonicalize_release_owner_ids(blocks: &mut [BasicBlock]) {
                 .is_some_and(|(published_flag, _)| *published_flag == flag)
     };
 
-    let (entries, _) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
     for block in blocks {
-        let mut live = entries.get(&block.id).cloned().unwrap_or_default();
+        let mut live = exact_states.0.get(&block.id).cloned().unwrap_or_default();
         for instruction in &mut block.instructions {
             match instruction {
                 Instr::OwnershipEvent(OwnershipEvent::Release { owner, place })
@@ -11693,8 +11833,10 @@ fn canonicalize_release_owner_ids(blocks: &mut [BasicBlock]) {
 )]
 fn canonicalize_join_dominated_rearm_lineages(blocks: &mut [BasicBlock], builder: &mut Builder) {
     loop {
-        let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
-        let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+        let exact_states = drop_plan::exact_owner_states(blocks);
+        let exact_entries = &exact_states.0;
+        let maybe_states = drop_plan::maybe_owner_states(blocks);
+        let maybe_entries = &maybe_states.0;
         let mut selected = None;
         'blocks: for (block_index, block) in blocks.iter().enumerate() {
             let mut exact = exact_entries.get(&block.id).cloned().unwrap_or_default();
@@ -11825,6 +11967,7 @@ fn canonicalize_join_dominated_rearm_lineages(blocks: &mut [BasicBlock], builder
 /// predecessor carries one unambiguous owner for the binding at the declared
 /// place; ownerless, wrong-place, and co-live edges remain validator-visible.
 fn canonicalize_join_incoming_owner_ids(blocks: &mut [BasicBlock], builder: &Builder) {
+    let _timing = crate::timing::stage("canonicalize_join_incoming_owner_ids");
     let (_, _, maybe_exits, _) =
         ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
     let mut predecessors = HashMap::<u32, Vec<u32>>::new();
@@ -12199,6 +12342,7 @@ fn ownership_join_states(
     HashMap<u32, drop_plan::MaybeOwnerState>,
     HashMap<u32, drop_plan::MustBindingOwnerState>,
 ) {
+    let _timing = crate::timing::stage("ownership_join_states");
     let mut exact_entries = HashMap::from([(ENTRY_BLOCK_ID, drop_plan::ExactOwnerState::new())]);
     let mut exact_exits = HashMap::new();
     let mut maybe_entries = HashMap::from([(ENTRY_BLOCK_ID, drop_plan::MaybeOwnerState::new())]);
@@ -12430,7 +12574,8 @@ mod lexical_scope_join_tests {
                 Instr::OwnershipEvent(OwnershipEvent::ScopeExit { owners, .. }),
             ] if *released == owner(0) && owners == &[owner(0)]
         ));
-        let (_, exits) = drop_plan::exact_owner_states(&blocks);
+        let exact_states = drop_plan::exact_owner_states(&blocks);
+        let exits = &exact_states.1;
         assert!(exits.get(&2).is_some_and(HashMap::is_empty));
     }
 
@@ -12444,7 +12589,8 @@ mod lexical_scope_join_tests {
         materialize_explicit_scope_exits(&mut blocks, &mut builder);
 
         assert_eq!(blocks[2].instructions.len(), 1);
-        let (_, exits) = drop_plan::exact_owner_states(&blocks);
+        let exact_states = drop_plan::exact_owner_states(&blocks);
+        let exits = &exact_states.1;
         assert_eq!(
             exits.get(&2).and_then(|state| state.get(&owner(0))),
             Some(&Place::Local(0))
@@ -12500,9 +12646,20 @@ mod lexical_scope_join_tests {
     reason = "ownership SSA join construction validates predecessors, splits edges, and renames one generation atomically"
 )]
 fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_exact_owner_join_transfers");
     loop {
         let (entries, exits, maybe_exits, must_entries) =
             ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
+        // Position of every block by id. The phi derivation resolves a
+        // predecessor, a target, and a generation's definition block by id
+        // inside per-binding loops; scanning `blocks` for each made the pass
+        // quadratic in block count. Kept current below when an edge block is
+        // appended, so a lookup never misses a block the pass itself created.
+        let mut block_positions: HashMap<u32, usize> = blocks
+            .iter()
+            .enumerate()
+            .map(|(position, block)| (block.id, position))
+            .collect();
         let owner_types: HashMap<crate::model::OwnerId, ResolvedTy> = blocks
             .iter()
             .flat_map(|block| &block.instructions)
@@ -12580,7 +12737,10 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
             let Some(must_live) = must_entries.get(&target) else {
                 continue;
             };
-            let Some(target_block) = blocks.iter().find(|block| block.id == target) else {
+            let Some(target_block) = block_positions
+                .get(&target)
+                .map(|position| &blocks[*position])
+            else {
                 continue;
             };
             let mut bindings = must_live.iter().collect::<Vec<_>>();
@@ -12696,6 +12856,15 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
             continue;
         }
 
+        // The join-parameter phase above `continue`s the fixpoint whenever it
+        // changes anything, so `blocks` is frozen from here to the mutation at
+        // the end of this iteration. Dominance is therefore derived at most
+        // once here and read by both the back-edge admission below and the
+        // rename that follows a selection. Deriving it inside the per-binding
+        // admission recomputed the whole dominator fixpoint per candidate;
+        // deriving it unconditionally paid for the fixpoint on the many
+        // iterations that select nothing needing it.
+        let mut join_dominators: Option<HashMap<u32, HashSet<u32>>> = None;
         let mut targets = predecessors.keys().copied().collect::<Vec<_>>();
         targets.sort_unstable();
         let mut selected = None;
@@ -12703,9 +12872,9 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
             let incoming = &predecessors[&target];
             if incoming.len() < 2
                 || incoming.iter().any(|predecessor| {
-                    blocks
-                        .iter()
-                        .find(|block| block.id == *predecessor)
+                    block_positions
+                        .get(predecessor)
+                        .map(|position| &blocks[*position])
                         .is_none_or(|block| {
                             let successors = block.successors();
                             successors != vec![target]
@@ -12739,9 +12908,11 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                 // overwrite name whichever duplicate happened to be visited
                 // last.  The Join interpreter canonicalizes every incoming
                 // generation of the binding to its one replacement.
-                if blocks.iter().any(|block| {
-                    block.id == target
-                        && block.instructions.iter().any(|instruction| {
+                if block_positions
+                    .get(&target)
+                    .map(|position| &blocks[*position])
+                    .is_some_and(|block| {
+                        block.instructions.iter().any(|instruction| {
                             matches!(
                                 instruction,
                                 Instr::OwnershipEvent(
@@ -12749,7 +12920,8 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                                 ) if replacement.binding == binding
                             )
                         })
-                }) {
+                    })
+                {
                     continue;
                 }
                 let mut owners = Vec::with_capacity(incoming.len());
@@ -12803,7 +12975,7 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                 // when its unique definition dominates the backedge and the
                 // exact state immediately before that definition contains no
                 // live generation of the same binding.
-                let dominators = block_dominators(blocks);
+                let dominators = join_dominators.get_or_insert_with(|| block_dominators(blocks));
                 let backedge_owner_is_exact_successor =
                     owners.iter().all(|(predecessor, owner, _)| {
                         let is_back_edge = dominators
@@ -12854,8 +13026,9 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                         let is_prior_join_phi = definitions.len() >= 2
                             && blocks.iter().any(|join| {
                                 definitions.iter().all(|(definition_block, index)| {
-                                    let Some(definition) =
-                                        blocks.iter().find(|block| block.id == *definition_block)
+                                    let Some(definition) = block_positions
+                                        .get(definition_block)
+                                        .map(|position| &blocks[*position])
                                     else {
                                         return false;
                                     };
@@ -12892,8 +13065,9 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                         {
                             return false;
                         }
-                        let Some(definition) =
-                            blocks.iter().find(|block| block.id == *definition_block)
+                        let Some(definition) = block_positions
+                            .get(definition_block)
+                            .map(|position| &blocks[*position])
                         else {
                             return false;
                         };
@@ -12931,7 +13105,7 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
         if std::env::var_os("HEW_DEBUG_OWNER_JOIN").is_some() {
             eprintln!("HEW_DEBUG_OWNER_JOIN {owners:?} -> {replacement:?} {ty:?}");
         }
-        let dominators = block_dominators(blocks);
+        let dominators = join_dominators.get_or_insert_with(|| block_dominators(blocks));
         let rewrite_after_join = owners
             .iter()
             .filter_map(|(predecessor, owner, _)| {
@@ -12949,8 +13123,7 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
                 to_owner: Some(replacement),
                 to_ty: Some(ty.clone()),
             });
-            let Some(predecessor_index) = blocks.iter().position(|block| block.id == *predecessor)
-            else {
+            let Some(predecessor_index) = block_positions.get(predecessor).copied() else {
                 continue;
             };
             if blocks[predecessor_index].successors() == vec![target] {
@@ -12984,6 +13157,7 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
             if *else_target == target {
                 *else_target = edge_id;
             }
+            block_positions.insert(edge_id, blocks.len());
             blocks.push(BasicBlock {
                 id: edge_id,
                 statements: Vec::new(),
@@ -13067,8 +13241,22 @@ fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder:
     reason = "neutralize sealing correlates the physical carrier and exact owner state at one program point"
 )]
 fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("materialize_explicit_neutralize_transfers");
+    // The replay is a pure function of `blocks`, so it is re-derived only after
+    // an event was actually inserted, not once per block. See
+    // `canonicalize_terminal_transfer_owner_ids`.
+    let mut entries = drop_plan::exact_owner_states(blocks).0.clone();
+    let mut inserted = false;
     for block_index in 0..blocks.len() {
-        let (entries, _) = drop_plan::exact_owner_states(blocks);
+        if inserted {
+            entries.clone_from(&drop_plan::exact_owner_states(blocks).0);
+            inserted = false;
+        }
+        drop_plan::debug_assert_exact_entries_current(
+            blocks,
+            &entries,
+            "materialize_explicit_neutralize_transfers",
+        );
         let block_id = blocks[block_index].id;
         let mut live = entries.get(&block_id).cloned().unwrap_or_default();
         let mut last_relocation: HashMap<Place, (Place, Vec<crate::model::OwnerId>)> =
@@ -13223,6 +13411,7 @@ fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder:
                 blocks[block_index]
                     .instructions
                     .insert(index + 1, event.clone());
+                inserted = true;
                 drop_plan::apply_exact_owner_ops(std::slice::from_ref(&event), &mut live);
             }
             index += 1;
@@ -13240,6 +13429,7 @@ fn materialize_explicit_neutralize_transfers(blocks: &mut [BasicBlock], builder:
 /// point, so Checked MIR never has to recover projection ancestry from Builder
 /// tables or whole-function scans.
 fn canonicalize_ownership_transfer_places(blocks: &mut [BasicBlock]) {
+    let _timing = crate::timing::stage("canonicalize_ownership_transfer_places");
     for block in blocks {
         for index in 0..block.instructions.len().saturating_sub(1) {
             let Instr::NeutralizePayloadSlot {
@@ -13279,6 +13469,7 @@ fn canonicalize_ownership_transfer_places(blocks: &mut [BasicBlock]) {
               closure over the same move graph"
 )]
 fn neutralize_typed_produced_value_handoffs(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("neutralize_typed_produced_value_handoffs");
     let owner_by_place: HashMap<Place, crate::model::OwnerId> = builder
         .binding_locals
         .iter()
@@ -13593,9 +13784,12 @@ fn release_partially_transferred_return_carrier(
 }
 
 fn release_partially_transferred_return_carriers(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let _timing = crate::timing::stage("release_partially_transferred_return_carriers");
     let record_layouts = outbound_record_layouts(builder);
-    let (exact_entries, _) = drop_plan::exact_owner_states(blocks);
-    let (maybe_entries, _) = drop_plan::maybe_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let exact_entries = &exact_states.0;
+    let maybe_states = drop_plan::maybe_owner_states(blocks);
+    let maybe_entries = &maybe_states.0;
     for block in blocks {
         if !matches!(block.terminator, Terminator::Return) {
             continue;
@@ -13788,6 +13982,7 @@ pub(in crate::lower) fn finalize_body(
     seal: BodySeal,
     spec: BodyFinalizeSpec,
 ) -> FinalizedBody {
+    let _timing = crate::timing::stage("finalize_body");
     let mut blocks = match seal {
         BodySeal::Cursor(terminator) => builder.seal_body_blocks(terminator),
         BodySeal::AlreadyTerminated => {
@@ -13891,6 +14086,10 @@ pub(crate) fn lower_function(
     call_conv: crate::model::FunctionCallConv,
     task_entry_adapter_symbols: TaskEntryAdapterSymbols,
 ) -> LoweredFunction {
+    // Per-function lowering cost, reported under `HEW_MEASURE_TIMINGS` so a
+    // compile-time regression names the function it landed in.
+    let lowering_started = crate::timing::function_start();
+    let builder_started = crate::timing::function_start();
     let mut builder = Builder {
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
@@ -13943,6 +14142,7 @@ pub(crate) fn lower_function(
         task_entry_adapter_symbols,
         ..Builder::default()
     };
+    crate::timing::record_stage("build_lowering_builder", builder_started);
     // Allocate parameter locals BEFORE lowering the function body so
     // that `BindingRef` expressions that reference parameters resolve
     // to real `Place::Local(i)` slots instead of hitting `UnresolvedPlace`.
@@ -13988,7 +14188,10 @@ pub(crate) fn lower_function(
             &call_scrutinee_provenance.extern_table,
             &call_scrutinee_provenance.may_mutate,
         );
-    builder.function_body(func);
+    {
+        let _timing = crate::timing::stage("lower_function_body_expressions");
+        builder.function_body(func);
+    }
 
     // Effective return type after type-parameter substitution.
     let return_ty = builder.subst_ty(&func.return_ty);
@@ -14242,7 +14445,9 @@ pub(crate) fn lower_function(
         .is_ok_and(|filter| checked.name.contains(&filter))
     {
         eprintln!("HEW_DEBUG_CHECKED {checked:#?}");
-        let (entries, exits) = drop_plan::exact_owner_states(&checked.blocks);
+        let exact_states = drop_plan::exact_owner_states(&checked.blocks);
+        let entries = &exact_states.0;
+        let exits = &exact_states.1;
         eprintln!("HEW_DEBUG_OWNER_STATES entries={entries:#?} exits={exits:#?}");
     }
     findings.extend(validate_ownership_events(&checked));
@@ -14286,6 +14491,7 @@ pub(crate) fn lower_function(
         eprintln!("HEW_DEBUG_FINDINGS {findings:#?}");
     }
     diagnostics.extend(project_findings(&findings));
+    crate::timing::function_end(&checked.name, lowering_started);
     LoweredFunction {
         raw,
         checked,

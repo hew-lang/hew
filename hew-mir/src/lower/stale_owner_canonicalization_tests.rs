@@ -1106,7 +1106,8 @@ fn fresh_share_move_keeps_both_owner_places() {
             ..
         })
     )));
-    let (_, exits) = drop_plan::exact_owner_states(&blocks);
+    let exact_states = drop_plan::exact_owner_states(&blocks);
+    let exits = &exact_states.1;
     let exit = &exits[&0];
     assert_eq!(exit.get(&source_owner), Some(&Place::Local(0)));
     assert_eq!(exit.get(&destination_owner), Some(&Place::Local(1)));
@@ -1190,7 +1191,8 @@ fn typed_nonowning_vec_iter_copy_keeps_source_owner_place() {
         Instr::OwnershipEvent(OwnershipEvent::Relocate { from, to, .. })
             if *from == source && *to == destination
     )));
-    let (_, exits) = drop_plan::exact_owner_states(&blocks);
+    let exact_states = drop_plan::exact_owner_states(&blocks);
+    let exits = &exact_states.1;
     assert_eq!(exits[&0].get(&source_owner), Some(&source));
 }
 

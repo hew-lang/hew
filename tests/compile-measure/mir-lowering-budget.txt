@@ -1,0 +1,80 @@
+# Budgets for `make bench-mir` (scripts/bench-mir.sh). Two numbers, because the
+# gate checks two different things about MIR lowering cost.
+#
+# derivation_growth_ceiling
+#   How many more whole-function owner-state QUERIES `hew check` may make on
+#   tests/compile-measure/mir-lowering-shape.hew than on its small twin
+#   mir-lowering-shape-small.hew. The two files differ in exactly one body:
+#   `emit_document` lowers to 338 basic blocks in the large fixture and 85 in
+#   the small one. A pass that derives owner state once per invocation adds the
+#   same count to both, so the difference stays near zero however large the body
+#   grows; a pass that derives inside a per-block loop adds one derivation per
+#   block, so a single once-per-body pass regressing that way moves the
+#   difference by about 253 and a pass that runs several times per body moves it
+#   by a multiple of that.
+#
+#   Measured here: 224 (5046 queries on the large fixture, 4822 on the
+#   small). The falsifier: putting the derivation in `prepare_owned_call_carriers`
+#   back inside its per-block loop — the smallest such regression there is, one
+#   pass running once per body — moves the difference to 439 while leaving the
+#   wall time at 673 ms, comfortably inside the clock ceiling below. The count
+#   gate fires on it and the clock gate does not, which is the whole reason this
+#   number exists. The ceiling sits between the two readings with room for the
+#   pass sequence to gain a few per-invocation derivations without a false red.
+#
+#   This is the behavioural assertion the wall-clock budget below used to stand
+#   in for. It has no clock in it, so it reads the same on a fast laptop and a
+#   loaded CI runner, and its failure message names the defect (a derivation
+#   inside a per-block loop) rather than the symptom (a slow compile).
+#
+# replays_per_100_bodies_ceiling
+#   How many of those queries may actually recompute, per hundred function
+#   bodies. Owner state is memoized on the exact projection the replays read
+#   (`drop_plan::owner_state`), so a query only costs a replay when a pass
+#   between it and the previous one changed the ownership operations.
+#
+#   The growth ceiling above cannot see a large FIXED cost: fifty passes each
+#   replaying the whole function once per body contribute the same count to
+#   both fixtures, so the difference stays near zero while every body pays for
+#   fifty whole-CFG replays. That is exactly the cost F5 exists to remove, so
+#   this second number is absolute rather than differential.
+#
+#   Measured here: 531 (452 replays over 85 bodies on the large fixture, about
+#   five per body, against 5 046 queries). The falsifier: dropping the memo
+#   from `maybe_owner_states` alone - one lattice, no change in what any pass
+#   computes - takes the reading to 1 544 and fires this gate while leaving
+#   both the growth gate and the clock gate green (`growth 224`, 480 ms). The
+#   ceiling leaves 69 replays of slack, which is less than one extra whole-
+#   function replay per body: a pass sequence that gains one is meant to fire
+#   this gate and have the conversation, because on this fixture one more per
+#   body is 85 more whole-CFG replays.
+#
+# check_wall_ms_ceiling
+#   Wall-clock ceiling for `hew check` on mir-lowering-shape.hew, scored as the
+#   fastest of three runs.
+#
+#   Where the number comes from: on the machine this was set on, the fixture
+#   took 4383 ms before the redundant whole-function derivations were removed
+#   and settles near 480 ms after, drifting to about 900 ms with a dozen other
+#   builds running. This gate runs in the `lint` job on a 4-vCPU hosted runner
+#   whose single-thread throughput is roughly half this machine's, so the
+#   ceiling is set at about four times the settled local figure. It is loose on
+#   purpose: the two counting gates above carry the behavioural assertion, and
+#   a clock that false-reds the lint job on unrelated changes costs more than
+#   it catches.
+#
+#   SHORTCUT. WHY: wall time still catches costs that are not owner-state
+#   derivations at all — the reachability and dominance rebuilds, the projection
+#   alias fixpoint, HIR-to-Raw value lowering — and no counter in the tree
+#   covers those. WHEN obsolete: when each of those derivations is counted
+#   against its call site the way the owner-state replays now are, so the growth
+#   gate covers them too. WHAT the real fix is: extend
+#   `crate::timing::derivation` to the remaining whole-function analyses and
+#   fold them into derivation_growth_ceiling, then delete this number.
+#
+# Ratchet: lower either number manually after a measured, reviewed improvement.
+# Never raise one to make a red gate pass; a regression here is the gate
+# working.
+derivation_growth_ceiling=300
+replays_per_100_bodies_ceiling=600
+check_wall_ms_ceiling=2000

@@ -146,7 +146,8 @@ fn collect_owned_cursor_commits(
     call_args: &[Place],
     site: &PendingOwnedCallSite,
 ) -> Vec<CursorCommit> {
-    let (_, owner_exits) = drop_plan::exact_owner_states(blocks);
+    let exact_states = drop_plan::exact_owner_states(blocks);
+    let owner_exits = &exact_states.1;
     let exit = owner_exits.get(&block_id).cloned().unwrap_or_default();
     site.cursor_args
         .iter()

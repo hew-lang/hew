@@ -24,6 +24,7 @@ pub mod runtime_symbols;
 pub mod sir;
 pub mod state_clone;
 pub mod thunk_requirements;
+pub mod timing;
 
 pub use dataflow::local_is_written_in_body;
 pub use lower::{

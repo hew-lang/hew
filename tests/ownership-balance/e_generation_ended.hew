@@ -1,0 +1,22 @@
+// E: a string var grown in a loop and returned from inside it.
+import std.string;
+fn is_marked(p: string) -> bool { p.len() > 12 }
+
+pub fn first_marked(root: string, rel_path: string) -> string {
+    if is_marked(root) {
+        return root;
+    }
+    let parts = string.split(rel_path, "/");
+    var prefix = root;
+    for part in parts {
+        if part != "" {
+            prefix = prefix + "/" + part;
+            if is_marked(prefix) {
+                return prefix;
+            }
+        }
+    }
+    return "";
+}
+
+pub fn main() { println(first_marked("/a", "b/c/d")); }

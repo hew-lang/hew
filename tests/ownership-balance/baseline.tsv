@@ -28,7 +28,10 @@
 # fixture	under_release	other_blocking_mir	exit_code	runtime
 cross_module_result/main.hew	0	0	0	check
 direct_call_terminal_carriers.hew	0	0	0	clean
+e_generation_ended.hew	0	0	0	check
 escaping_direct_call_binding.hew	0	0	0	check
+g_rearm_no_predecessor.hew	0	0	0	check
+j_join_successor.hew	0	0	0	check
 many_return_blocks.hew	0	0	0	check
 pF.hew	0	0	0	check
 pG.hew	0	0	0	check

@@ -1141,28 +1141,6 @@ impl Builder {
                 binding,
                 generation,
             });
-            let previous_ended = previous_owner.is_some_and(|owner| {
-                self.instructions.iter().rev().any(|instruction| {
-                    matches!(
-                        instruction,
-                        Instr::OwnershipEvent(
-                            crate::model::OwnershipEvent::Release { owner: ended, .. }
-                                | crate::model::OwnershipEvent::GuardedRelease {
-                                    owner: ended,
-                                    ..
-                                }
-                                | crate::model::OwnershipEvent::Transfer {
-                                    owner: ended,
-                                    ..
-                                }
-                                | crate::model::OwnershipEvent::DemoteToAlias {
-                                    owner: ended,
-                                    ..
-                                }
-                        ) if *ended == owner
-                    )
-                })
-            });
             let replacement = crate::model::OwnerId {
                 binding,
                 generation: previous_generation
@@ -1170,23 +1148,18 @@ impl Builder {
             };
             self.owner_generations
                 .insert(binding, replacement.generation);
-            let event = if let Some(previous) = previous_owner.filter(|_| !previous_ended) {
-                if self.affine_release_flags.contains_key(&binding)
-                    || self.overwrite_guard_flags.contains_key(&binding)
-                {
-                    crate::model::OwnershipEvent::Rearm {
-                        previous,
-                        replacement,
-                        place: dest,
-                        ty: target_ty,
-                    }
-                } else {
-                    crate::model::OwnershipEvent::Reset {
-                        previous,
-                        replacement,
-                        place: dest,
-                        ty: target_ty,
-                    }
+            // This cursor reserves an unused `OwnerId`; it cannot decide the
+            // lifecycle transition.  A prior generation may already have
+            // ended on a consuming CFG edge that is not present in this
+            // construction block.  Emit the neutral rebind reservation and
+            // let `materialize_edge_lifecycle_owner_transitions` replay the
+            // completed edge facts into Mint, Reset, or Rearm.
+            let event = if let Some(previous) = previous_owner {
+                crate::model::OwnershipEvent::Reset {
+                    previous,
+                    replacement,
+                    place: dest,
+                    ty: target_ty,
                 }
             } else {
                 crate::model::OwnershipEvent::Mint {

@@ -1,0 +1,30 @@
+// J: two string vars reassigned in a loop that also has a continue edge.
+import std.string;
+type Row { path: string; branch: string; }
+
+pub fn rows(listing: string) -> Vec<Row> {
+    let out: Vec<Row> = Vec.new();
+    let worktree_prefix = "worktree ";
+    let branch_prefix = "branch refs/heads/";
+    var path = "";
+    var branch = "";
+    for line in string.split(listing, "\n") {
+        if string.starts_with(line.clone(), worktree_prefix.clone()) {
+            if path != "" {
+                out.push(Row { path: path.clone(), branch: branch.clone() });
+            }
+            path = line.slice(worktree_prefix.len(), line.len());
+            branch = "";
+            continue;
+        }
+        if string.starts_with(line.clone(), branch_prefix.clone()) {
+            branch = line.slice(branch_prefix.len(), line.len());
+        }
+    }
+    if path != "" {
+        out.push(Row { path: path, branch: branch });
+    }
+    out
+}
+
+pub fn main() { println(rows("worktree /a\nbranch refs/heads/main\n").len()); }

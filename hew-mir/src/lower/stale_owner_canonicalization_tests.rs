@@ -52,7 +52,7 @@ fn stale_relocation_after_adoption_rekeys_to_the_unique_live_successor() {
         }),
     ]);
 
-    canonicalize_stale_relocation_and_reset_owner_ids(&mut blocks);
+    canonicalize_stale_relocation_owner_ids(&mut blocks);
 
     assert!(matches!(
         blocks[0].instructions[2],
@@ -83,7 +83,7 @@ fn ambiguous_relocation_source_stays_stale_for_the_validator() {
         }),
     ]);
 
-    canonicalize_stale_relocation_and_reset_owner_ids(&mut blocks);
+    canonicalize_stale_relocation_owner_ids(&mut blocks);
 
     assert!(matches!(
         blocks[0].instructions[2],
@@ -92,7 +92,7 @@ fn ambiguous_relocation_source_stays_stale_for_the_validator() {
 }
 
 #[test]
-fn reset_after_terminal_consumption_becomes_a_fresh_definition() {
+fn replayed_lifecycle_turns_a_dead_rearm_reservation_into_a_fresh_definition() {
     let joined = owner(7, 2);
     let historical = owner(7, 0);
     let replacement = owner(7, 1);
@@ -109,7 +109,7 @@ fn reset_after_terminal_consumption_becomes_a_fresh_definition() {
             to_owner: None,
             to_ty: None,
         }),
-        Instr::OwnershipEvent(OwnershipEvent::Reset {
+        Instr::OwnershipEvent(OwnershipEvent::Rearm {
             previous: historical,
             replacement,
             place: Place::Local(0),
@@ -117,7 +117,7 @@ fn reset_after_terminal_consumption_becomes_a_fresh_definition() {
         }),
     ]);
 
-    canonicalize_stale_relocation_and_reset_owner_ids(&mut blocks);
+    materialize_edge_lifecycle_owner_transitions(&mut blocks, &mut Builder::default());
 
     assert!(matches!(
         blocks[0].instructions[2],
@@ -143,12 +143,68 @@ fn live_predecessor_keeps_reset_semantics() {
         }),
     ]);
 
-    canonicalize_stale_relocation_and_reset_owner_ids(&mut blocks);
+    materialize_edge_lifecycle_owner_transitions(&mut blocks, &mut Builder::default());
 
     assert!(matches!(
         blocks[0].instructions[1],
         Instr::OwnershipEvent(OwnershipEvent::Reset { previous: owner, .. }) if owner == previous
     ));
+}
+
+#[test]
+fn replayed_join_inputs_keep_one_exact_owner_per_predecessor_edge() {
+    let binding = BindingId(17);
+    let preheader_owner = OwnerId {
+        binding,
+        generation: 0,
+    };
+    let latch_owner = OwnerId {
+        binding,
+        generation: 1,
+    };
+    let place = Place::Local(4);
+    let exact_exits = HashMap::from([
+        (10, HashMap::from([(preheader_owner, place)])),
+        (11, HashMap::from([(latch_owner, place)])),
+    ]);
+    let maybe_exits = HashMap::from([
+        (10, HashSet::from([(preheader_owner, place)])),
+        (11, HashSet::from([(latch_owner, place)])),
+    ]);
+
+    let inputs = replayed_edge_owner_inputs(
+        &[10, 11],
+        binding,
+        place,
+        &exact_exits,
+        &maybe_exits,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("one exact owner at the expected place on each edge");
+    assert_eq!(
+        inputs,
+        BTreeMap::from([(10, preheader_owner), (11, latch_owner)])
+    );
+
+    let mut wrong_place_maybe = maybe_exits;
+    wrong_place_maybe
+        .get_mut(&11)
+        .expect("latch edge exists")
+        .insert((latch_owner, Place::Local(5)));
+    assert!(
+        replayed_edge_owner_inputs(
+            &[10, 11],
+            binding,
+            place,
+            &exact_exits,
+            &wrong_place_maybe,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .is_none(),
+        "the producer refuses ambiguous or wrong-place edge facts"
+    );
 }
 
 #[test]

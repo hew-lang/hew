@@ -75,7 +75,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
-.PHONY: test test-strict macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -238,6 +238,8 @@ endif
 NEXTEST_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/junit.xml
 NEXTEST_RATCHET_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/ratchet.xml
 NEXTEST_FAILURE_LEDGER := scripts/nextest-expected-failures.tsv
+RATCHET_STRICT_RECOVERIES ?= 0
+RATCHET_STRICT_RECOVERIES_ARG := $(if $(filter 1 true yes,$(RATCHET_STRICT_RECOVERIES)),--strict-recoveries,)
 
 ifndef NEXTEST_PLATFORM
 ifeq ($(OS),Windows_NT)
@@ -698,9 +700,9 @@ fuzz-corpus:
 FUZZ_ORACLE_FULL ?=
 fuzz-oracle: hew-native
 	@if [ -n "$(FUZZ_ORACLE_FULL)" ]; then \
-		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --full --timeout 30; \
+		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --full --timeout 30 $(RATCHET_STRICT_RECOVERIES_ARG); \
 	else \
-		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --timeout 30; \
+		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --timeout 30 $(RATCHET_STRICT_RECOVERIES_ARG); \
 	fi
 
 # Oracle self-tests: five independently-failable checks that prove the
@@ -978,11 +980,24 @@ test: test-artifacts ## Test: run the ratcheted Rust workspace test suite
 			--ledger "$(NEXTEST_FAILURE_LEDGER)" \
 			--output "$(NEXTEST_RATCHET_JUNIT)" \
 			--platform "$(NEXTEST_PLATFORM)" \
-			--runner-exit "$$status" $(NEXTEST_RATCHET_INVENTORY_ARGS)
+			--runner-exit "$$status" $(NEXTEST_RATCHET_INVENTORY_ARGS) $(RATCHET_STRICT_RECOVERIES_ARG)
 
 test-strict: test-artifacts ## Test: run the Rust workspace test suite with no known failures
 	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)" "$(NEXTEST_FULL_INVENTORY)" "$(NEXTEST_SELECTED_INVENTORY)"
 	$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS)
+
+# Scheduled ledger authority. Each family runs independently so a red first
+# family cannot suppress reports from the later ledgers.
+ratchet-accounting: ## Check: strict expected-failure ledger accounting
+	RATCHET_STRICT_RECOVERIES=1 RATCHET_ACCOUNTING_MAKE="$(MAKE)" scripts/ratchet-accounting.sh
+
+# Platform-scoped nextest ledger entries receive their own scheduled jobs.
+# This target owns strict mode rather than relying on workflow environment.
+ratchet-accounting-nextest: ## Check: strict nextest expected-failure accounting
+	RATCHET_STRICT_RECOVERIES=1 $(MAKE) test
+
+test-ratchet-accounting-runner: ## Test: accounting runner executes all families after failures
+	TMPDIR="$${TMPDIR:-/tmp}" scripts/tests/test_ratchet_accounting_runner.sh
 
 # Canonical local macOS memory authority. This is deliberately named as a local
 # authority, not a CI `test-*` gate: hosted macOS processes cannot grant
@@ -1158,10 +1173,10 @@ test-runtime-unit:
 #
 # These targets run the suites through scripts/corpus-ratchet.sh, which
 # compares the set of failing tests against an exhaustive tracked-failures
-# list.  Any unexpected failure or unexpected
-# pass causes the gate to exit 1.  When the converging lanes land and the
-# tracked failures drop to zero, delete the list entries; the ratchets then
-# pass with no tracking overhead.
+# list. Unexpected failures fail every gate; recovered tracked failures are
+# reported in PRs and fail only when RATCHET_STRICT_RECOVERIES=1. When the
+# converging lanes land and tracked failures drop to zero, delete the list
+# entries; the ratchets then pass with no tracking overhead.
 #
 # HEW_O0_OUTCOMES_FILE, when set, wires the ratchet's O0 outcome capture into
 # test-o2-differential's O0 baseline so the differential gate does not re-run
@@ -1175,7 +1190,7 @@ test-hew-ratchet:
 	$(PYTHON) scripts/compiled-hew-shards.py aggregate --mode ratchet \
 		--reports-dir "$(HEW_SHARD_REPORT_DIR)" \
 		--full-inventory "$(HEW_FULL_INVENTORY)" \
-		--shard-count "$(HEW_SHARD_COUNT)"
+		--shard-count "$(HEW_SHARD_COUNT)" $(RATCHET_STRICT_RECOVERIES_ARG)
 
 # The shard-aggregate form reads reports; it builds nothing.
 else
@@ -1205,7 +1220,7 @@ test-core-matrix: hew-native
 	$(PYTHON) scripts/core-matrix-gen.py --out "$(CURDIR)/.tmp/core-matrix-regen"
 	diff -r tests/core-matrix/cells "$(CURDIR)/.tmp/core-matrix-regen"
 	@echo "==> Running the core matrix (primitive x operation)"
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/core-matrix.py
+	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/core-matrix.py $(RATCHET_STRICT_RECOVERIES_ARG)
 
 # Regen seam: driven only by an explicit
 # `make core-matrix-record`.

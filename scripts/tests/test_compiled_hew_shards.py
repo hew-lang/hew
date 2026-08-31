@@ -28,14 +28,16 @@ def write_junit(
     path: Path,
     identities: list[str],
     failed: set[str] | None = None,
+    skipped: set[str] | None = None,
     failure_kind: str = "runtime",
 ) -> None:
     failed = failed or set()
+    skipped = skipped or set()
     root = ET.Element(
         "testsuites",
         tests=str(len(identities)),
         failures=str(len(failed)),
-        skipped="0",
+        skipped=str(len(skipped)),
     )
     suite = ET.SubElement(
         root,
@@ -43,7 +45,7 @@ def write_junit(
         name="generated",
         tests=str(len(identities)),
         failures=str(len(failed)),
-        skipped="0",
+        skipped=str(len(skipped)),
     )
     for value in identities:
         classname, name = value.rsplit("::", 1)
@@ -58,6 +60,8 @@ def write_junit(
             failure.text = "forced diagnostic text"
             system_out = ET.SubElement(testcase, "system-out")
             system_out.text = "forced fixture output"
+        elif value in skipped:
+            ET.SubElement(testcase, "skipped")
     ET.ElementTree(root).write(path, encoding="unicode", xml_declaration=True)
 
 
@@ -83,23 +87,28 @@ class CompiledHewShardTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def aggregate(self, mode: str, expect: int = 0) -> subprocess.CompletedProcess[str]:
+    def aggregate(
+        self, mode: str, expect: int = 0, strict_recoveries: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        command = [
+            sys.executable,
+            str(SCRIPT),
+            "aggregate",
+            "--mode",
+            mode,
+            "--reports-dir",
+            str(self.reports),
+            "--full-inventory",
+            str(self.full_path),
+            "--shard-count",
+            str(SHARDS),
+            "--expected-failures",
+            str(self.expected),
+        ]
+        if strict_recoveries:
+            command.append("--strict-recoveries")
         result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                "aggregate",
-                "--mode",
-                mode,
-                "--reports-dir",
-                str(self.reports),
-                "--full-inventory",
-                str(self.full_path),
-                "--shard-count",
-                str(SHARDS),
-                "--expected-failures",
-                str(self.expected),
-            ],
+            command,
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
@@ -239,19 +248,36 @@ class CompiledHewShardTests(unittest.TestCase):
             ET.parse(published / "compiled-hew-finalization.xml").find(".//failure")
         )
 
-    def test_finalization_publishes_a_failure_when_expected_failure_is_missing(
+    def test_recovery_is_nonblocking_and_strict_accounting_rejects_it(
         self,
     ) -> None:
         tracked = self.full[0]
         self.expected.write_text(f"{tracked} runtime\n", encoding="utf-8")
 
+        result = self.aggregate("ratchet")
+        self.assertIn("recovery accounting", result.stderr)
+
+        strict = self.aggregate("ratchet", expect=1, strict_recoveries=True)
+        self.assertIn("recoveries under strict accounting", strict.stderr)
+
         result, published = self.finalize(True)
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("failure set differs", result.stderr)
-        self.assertIsNotNone(
-            ET.parse(published / "compiled-hew-finalization.xml").find(".//failure")
-        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((published / "compiled-hew-finalization.xml").exists())
+
+    def test_skipped_expected_failure_is_not_a_recovery(self) -> None:
+        values = self.full[0::SHARDS]
+        tracked = values[0]
+        self.expected.write_text(f"{tracked} runtime\n", encoding="utf-8")
+        for label in ("o0", "o2"):
+            write_junit(
+                self.reports / f"hew-{label}-shard-1.xml",
+                values,
+                skipped={tracked},
+            )
+
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("did not PASS in both O0 and O2", result.stderr)
 
     def test_unexpected_pass_prerequisite_failure_keeps_raw_and_adds_red_verdict(
         self,
@@ -363,7 +389,7 @@ class CompiledHewShardTests(unittest.TestCase):
         values = self.full[0::SHARDS]
         write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={values[0]})
         result = self.aggregate("ratchet", expect=1)
-        self.assertIn("failure set differs", result.stderr)
+        self.assertIn("untracked failures", result.stderr)
 
     def test_expected_failure_is_an_exact_path_qualified_identity(self) -> None:
         values = self.full[0::SHARDS]

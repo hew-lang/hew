@@ -2,13 +2,13 @@
 #
 # Known failing tests in tests/hew/.
 # The ratchet (scripts/corpus-ratchet.sh hew-suite) enforces:
-#   - Every test listed here MUST fail (unexpected pass = gate failure).
+#   - Every test listed here that now passes is reported for ledger cleanup.
 #   - Every test NOT listed here MUST pass (unexpected failure = gate failure).
 #
 # This is a tracked-failure list, not a waiver. An entry earns its place by
 # naming the defect class that keeps it red; nothing lands here to make the
-# gate green. Remove an entry the moment its class is fixed — the ratchet
-# fails on an unexpected pass precisely so a fix cannot go unnoticed.
+# gate green. Remove an entry the moment its class is fixed — PR gates report
+# that recovery and scheduled strict accounting fails until it is recorded.
 #
 # Format: <source-path>::<test_function_name> <failure-kind>  # root cause
 # Failure kinds are compile, runtime, timeout, and launch. The kind is part of

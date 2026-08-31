@@ -5,9 +5,9 @@
 #
 # Ratchet rules:
 #   - Any NEW failure not listed here causes the gate to exit 1.
-#   - Any listed failure that NOW PASSES causes the gate to exit 1.
+#   - A listed failure that now passes is reported in PR gates and fails
+#     scheduled strict accounting until its entry is removed.
 #   - Delete an entry when the underlying issue is fixed.
 #   - Never add an entry to hide a regression; fix the code instead.
 #
 # Captured: 2026-06-10 on release/v0.5.0-pre-history-polish (575e022d)
-

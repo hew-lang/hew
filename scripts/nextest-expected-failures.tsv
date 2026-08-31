@@ -1,9 +1,13 @@
 # platform<TAB>outcome<TAB>suite<TAB>test<TAB>reason
 #
 # Ordinary CI may carry a narrowly identified compiler defect while its fix is
-# developed. Entries compare in both directions: a pass, disappearance, changed
-# outcome, or unlisted failure makes the ratchet fail. Signals and setup errors
-# cannot be accepted. Release gates do not read this file.
+# developed. PR gates report an entry that now passes; scheduled strict
+# accounting requires its removal. Changed outcomes, unlisted failures,
+# disappearance, signals, and setup errors remain blocking. Release gates do
+# not read this file. If a multi-platform entry recovers on only a subset,
+# replace its selector with the exact remaining failing platforms (or split it
+# into platform-specific rows); never delete the row wholesale until every
+# selected platform has recovered.
 freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
 linux,macos,freebsd	failure	hew-cli::measured_os_io_string_retention_canary	shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases	#3079 derives unwind cleanup from exact live owner states
 *	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges

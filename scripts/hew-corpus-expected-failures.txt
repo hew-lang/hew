@@ -6,9 +6,10 @@
 #
 #   <path> [E_DIAGNOSTIC_CODE]  # classification and issue
 #
-# The gate exits 1 on any UNEXPECTED failure (not in this list), UNEXPECTED
-# PASS (listed here but now compiles — delete the entry), or changed diagnostic
-# for an entry that records one. Pin codes, not diagnostic prose.
+# The gate exits 1 on any UNEXPECTED failure (not in this list), changed
+# diagnostic for an entry that records one, or inventory/outcome drift. A
+# listed entry that now compiles is reported in PR gates and fails scheduled
+# strict accounting until removed. Pin codes, not diagnostic prose.
 #
 # Classification categories:
 #   deferred-nyi    — Feature not yet implemented in the compiler (select/channel,

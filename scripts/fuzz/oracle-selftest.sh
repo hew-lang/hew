@@ -8,9 +8,10 @@
 #   classifies the crash as clean, this test goes red.
 #
 # Test 2 (oracle-honours-expected-failure):
-#   The same crashing program, listed in expected-failures.txt, must be
-#   tolerated (exit 0).  Then, with the file removed while still listed, the
-#   oracle must exit 1 with "expected-failing entry not found".
+#   The same crashing program, listed with its exact runtime-crash class, must
+#   be tolerated. A mismatched class and a missing file must fail closed. A
+#   listed fixture that becomes clean reports recovery in PR mode and fails
+#   under strict accounting.
 #
 # Test 3 (oracle-passes-clean-program):
 #   A program with // EXPECT: 7 must exit 0 with verdict clean.  Mutating
@@ -24,7 +25,7 @@
 # Test 5 (oracle-ratchets-positive-rejections):
 #   An unlisted positive rejection must fail, the exact listed rejection must
 #   pass, and replacing that fixture with a clean program while it remains
-#   listed must fail as an unexpected pass.
+#   listed reports recovery in normal mode and fails strict accounting.
 #
 # All five must pass for the self-test to succeed.
 
@@ -37,7 +38,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/scripts/lib/cargo-output-dir.sh"
 HEW="${HEW_BIN:-$(cargo_debug_dir "${ROOT}")/hew}"
 ORACLE="${ROOT}/scripts/fuzz/run-oracle.py"
-TMPDIR_BASE="$(mktemp -d /tmp/hew-oracle-selftest.XXXXXX)"
+TMPDIR_BASE="$(mktemp -d "${TMPDIR:-/tmp}/hew-oracle-selftest.XXXXXX")"
 trap 'rm -rf "${TMPDIR_BASE}"' EXIT
 
 # Empty directory passed as --vertical-slice-dir so the self-tests only run
@@ -157,9 +158,9 @@ T2_DIR="${TMPDIR_BASE}/t2_regressions"
 mkdir -p "${T2_DIR}"
 printf '%s' "${CRASH_SOURCE}" >"${T2_DIR}/crash_fixture.hew"
 
-# 2a: crash_fixture.hew IS listed — oracle must exit 0 (known gap tolerated).
+# 2a: crash_fixture.hew is listed with its observed class — tolerate it.
 T2_EF="${TMPDIR_BASE}/t2_expected_failures.txt"
-printf 'crash_fixture.hew  # known crash; issue: #test\n' >"${T2_EF}"
+printf 'crash_fixture.hew runtime-crash  # known crash; issue: #test\n' >"${T2_EF}"
 
 rc=0
 run_counterfactual "t2a-listed-crash" python3 "${ORACLE}" \
@@ -175,10 +176,8 @@ if [[ "${rc}" -ne 0 ]]; then
         "expected oracle exit 0, got ${rc}"
 fi
 
-# 2b: Remove crash_fixture.hew from disk while leaving it in expected-failures.
-# Oracle must exit 1 with "expected-failing entry not found".
-rm "${T2_DIR}/crash_fixture.hew"
-
+# 2b: Pinning a different failure class is drift, not a tolerated failure.
+printf 'crash_fixture.hew timeout  # deliberately wrong class\n' >"${T2_EF}"
 rc=0
 output=""
 output="$(python3 "${ORACLE}" \
@@ -188,14 +187,68 @@ output="$(python3 "${ORACLE}" \
     --expected-failures "${T2_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
     --min-candidates 1 \
+    --report "${TMPDIR_BASE}/t2_drift_report.json" \
     2>&1)" || rc=$?
-if [[ "${rc}" -ne 1 ]]; then
-    fail "oracle-honours-expected-failure (2b: missing-but-listed fails gate)" \
-        "expected oracle exit 1, got ${rc}; output: ${output}"
+if [[ "${rc}" -ne 1 || "${output}" != *"EXPECTED FAILURE CLASS DRIFT"* ]]; then
+    fail "oracle-honours-expected-failure (2b: class drift fails gate)" \
+        "expected class-drift failure; output: ${output}"
 fi
-if ! echo "${output}" | grep -q "expected-failing entry not found"; then
-    fail "oracle-honours-expected-failure (2b: missing-but-listed fails gate)" \
-        "expected 'expected-failing entry not found' in output; got: ${output}"
+if ! python3 -c "
+import json, sys
+r = json.load(open('${TMPDIR_BASE}/t2_drift_report.json'))
+d = r['expected_failure_class_drifts']
+sys.exit(0 if len(d) == 1 and d[0]['expected_classification'] == 'timeout' and d[0]['observed_classification'] == 'runtime-crash' else 1)
+"; then
+    fail "oracle-honours-expected-failure (2b: class drift fails gate)" \
+        "JSON report did not preserve expected and observed classes"
+fi
+
+# 2c: A listed fixture absent from selection is an inventory error, not recovery.
+printf 'crash_fixture.hew runtime-crash  # known crash; issue: #test\n' >"${T2_EF}"
+rm "${T2_DIR}/crash_fixture.hew"
+rc=0
+output="$(python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T2_DIR}" \
+    --expected-failures "${T2_EF}" \
+    --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
+    2>&1)" || rc=$?
+if [[ "${rc}" -ne 1 || "${output}" != *"expected failure absent from corpus"* ]]; then
+    fail "oracle-honours-expected-failure (2c: missing-but-listed fails gate)" \
+        "expected missing-entry failure; output: ${output}"
+fi
+
+# 2d/2e: Only a genuinely clean fixture recovers. PR mode reports it; strict
+# accounting rejects the stale ledger entry.
+printf '// EXPECT: 7\nfn main() { println(7); }\n' >"${T2_DIR}/crash_fixture.hew"
+rc=0
+output="$(python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T2_DIR}" \
+    --expected-failures "${T2_EF}" \
+    --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
+    2>&1)" || rc=$?
+if [[ "${rc}" -ne 0 || "${output}" != *"NOW-PASSES: crash_fixture.hew"* ]]; then
+    fail "oracle-honours-expected-failure (2d: clean recovery reports)" \
+        "expected nonblocking clean recovery; output: ${output}"
+fi
+rc=0
+output="$(python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T2_DIR}" \
+    --expected-failures "${T2_EF}" \
+    --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
+    --strict-recoveries \
+    2>&1)" || rc=$?
+if [[ "${rc}" -ne 1 || "${output}" != *"NOW-PASSES: crash_fixture.hew"* ]]; then
+    fail "oracle-honours-expected-failure (2e: strict clean recovery fails)" \
+        "expected strict clean recovery failure; output: ${output}"
 fi
 
 pass "oracle-honours-expected-failure"
@@ -362,8 +415,8 @@ if [[ "${rc}" -ne 0 ]]; then
         "expected oracle exit 0, got ${rc}"
 fi
 
-# 5c (negative control): make the listed fixture clean. The stale entry must
-# fail in the opposite direction so the manifest can only shrink.
+# 5c: make the listed fixture clean. Normal PR mode reports the stale entry
+# without blocking; scheduled strict accounting rejects it.
 printf '// EXPECT: 7\nfn main() { println(7); }\n' \
     >"${T5_VERTICAL}/reject_fixture.hew"
 rc=0
@@ -377,13 +430,17 @@ output="$(python3 "${ORACLE}" \
     --min-candidates 1 \
     --report "${T5_REPORT}" \
     2>&1)" || rc=$?
-if [[ "${rc}" -ne 1 ]]; then
-    fail "oracle-ratchets-positive-rejections (5c: stale reject fails)" \
-        "expected oracle exit 1, got ${rc}; output: ${output}"
+if [[ "${rc}" -ne 0 ]]; then
+    fail "oracle-ratchets-positive-rejections (5c: recovery reports in PR mode)" \
+        "expected oracle exit 0, got ${rc}; output: ${output}"
 fi
 if [[ "${output}" != *"UNEXPECTED PASSES (listed in expected-reject.txt but passed)"* ]]; then
-    fail "oracle-ratchets-positive-rejections (5c: stale reject fails)" \
+    fail "oracle-ratchets-positive-rejections (5c: recovery reports in PR mode)" \
         "unexpected-pass list was not printed; output: ${output}"
+fi
+if [[ "${output}" != *"NOW-PASSES: tests/vertical-slice/accept/reject_fixture.hew"* ]]; then
+    fail "oracle-ratchets-positive-rejections (5c: recovery reports in PR mode)" \
+        "exact recovery identity was not printed; output: ${output}"
 fi
 if ! python3 -c "
 import json, sys
@@ -391,8 +448,29 @@ r = json.load(open('${T5_REPORT}'))
 paths = [entry['path'] for entry in r['unexpected_reject_passes']]
 sys.exit(0 if paths == ['tests/vertical-slice/accept/reject_fixture.hew'] else 1)
 "; then
-    fail "oracle-ratchets-positive-rejections (5c: stale reject fails)" \
+    fail "oracle-ratchets-positive-rejections (5c: recovery reports in PR mode)" \
         "report did not identify the exact unexpected pass; output: ${output}"
+fi
+
+rc=0
+output="$(python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T5_REGRESSIONS}" \
+    --expected-failures "${T5_EF}" \
+    --expected-rejects "${T5_ER}" \
+    --vertical-slice-dir "${T5_VERTICAL}" \
+    --min-candidates 1 \
+    --strict-recoveries \
+    --report "${T5_REPORT}" \
+    2>&1)" || rc=$?
+if [[ "${rc}" -ne 1 ]]; then
+    fail "oracle-ratchets-positive-rejections (5c: strict recovery fails)" \
+        "expected oracle exit 1, got ${rc}; output: ${output}"
+fi
+if [[ "${output}" != *"NOW-PASSES: tests/vertical-slice/accept/reject_fixture.hew"* ]]; then
+    fail "oracle-ratchets-positive-rejections (5c: strict recovery fails)" \
+        "strict output did not preserve the exact recovery identity; output: ${output}"
 fi
 
 pass "oracle-ratchets-positive-rejections"

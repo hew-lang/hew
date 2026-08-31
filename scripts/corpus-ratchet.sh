@@ -3,9 +3,10 @@
 #
 # A corpus ratchet answers one question: does the set of things that FAIL right
 # now exactly equal the set recorded in an expected-failures file? A new failure
-# is a regression; a listed failure that now passes is an accepted fix nobody
-# recorded. Both are hard errors, so the tracked-failure list stays an honest
-# record of the system's failure models instead of decaying into an allowlist.
+# is a regression; a listed failure that now passes is a recovery that needs
+# its ledger row removed. Regressions are hard errors in every invocation.
+# Recoveries are reported but non-blocking in PR gates, and become hard errors
+# only when RATCHET_STRICT_RECOVERIES=1 (the scheduled ledger-accounting run).
 #
 # Four gates asked that question in four separate scripts:
 #
@@ -84,9 +85,10 @@ usage() {
     cat <<'EOF'
 Usage: scripts/corpus-ratchet.sh <corpus> [options]
 
-Run a corpus and assert its failing set exactly matches the tracked
-expected-failures list.  Exits 0 on an exact match, 1 on any deviation:
-an unexpected failure (regression) or an unexpected pass (unrecorded fix).
+Run a corpus and assert it has no failures outside the tracked
+expected-failures list. Exits 1 for a regression, infrastructure drift, or
+when a scheduled strict run finds a recovered entry still in the ledger.
+Ordinary PR runs report recovered entries and exit 0.
 
 Corpora:
   hew-suite    `hew test tests/hew/`               (make test-hew-ratchet)
@@ -204,6 +206,14 @@ done
 # Makefile with an explicit HEW_BIN, so the resolved default is the correct one
 # for every corpus and the literal is not preserved.
 HEW_BIN="${HEW_BIN_ARG:-${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}}"
+RATCHET_STRICT_RECOVERIES="${RATCHET_STRICT_RECOVERIES:-0}"
+case "$RATCHET_STRICT_RECOVERIES" in
+0 | 1) ;;
+*)
+    echo "error: RATCHET_STRICT_RECOVERIES must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
 
 require_hew_bin() {
     if [[ ! -f "$HEW_BIN" ]]; then
@@ -222,6 +232,13 @@ require_hew_bin() {
 # remains the ratchet identity; the second field is corpus-specific metadata.
 EXPECTED_STR=""
 ACTUAL_STR=""
+# The complete selected corpus, populated by each runner before outcome
+# comparison. An expected row absent here is an inventory/configuration error,
+# not evidence that a test recovered.
+RATCHET_INVENTORY_STR=""
+# Only an observed ordinary PASS may discharge an expected-failure row. An
+# ignored test or skipped doc fence remains a hard ledger/inventory defect.
+RATCHET_PASSED_STR=""
 EXPECTED_DIAGNOSTICS_STR=""
 EXPECTED_DIAGNOSTIC_CODE=""
 EXPECTED_FAILURE_KINDS_STR=""
@@ -337,6 +354,20 @@ set_difference() {
     printf '%s' "$out"
 }
 
+set_intersection() {
+    local present="$1"
+    local against="$2"
+    local entry
+    local out=""
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        if line_set_contains "$against" "$entry"; then
+            out="${out}${entry}"$'\n'
+        fi
+    done <<<"$present"
+    printf '%s' "$out"
+}
+
 count_set() {
     local set="$1"
     [[ -z "$set" ]] && {
@@ -377,15 +408,20 @@ record_expected_refusal_status() {
 
 # Compare EXPECTED_STR against ACTUAL_STR and exit with the gate's verdict.
 ratchet_verdict() {
-    local unexpected_failures unexpected_passes
-    local count_actual count_unexpected_fail count_unexpected_pass count_refusal_drift
+    local unexpected_failures recovered missing_expected nonpassing_expected
+    local count_actual count_unexpected_fail count_recovered count_missing_expected count_nonpassing_expected count_refusal_drift
     local entry status sorted_actual
 
     unexpected_failures="$(set_difference "$ACTUAL_STR" "$EXPECTED_STR")"
-    unexpected_passes="$(set_difference "$EXPECTED_STR" "$ACTUAL_STR")"
+    recovered="$(set_intersection "$EXPECTED_STR" "$RATCHET_PASSED_STR")"
+    missing_expected="$(set_difference "$EXPECTED_STR" "$RATCHET_INVENTORY_STR")"
+    nonpassing_expected="$(set_difference "$(set_difference "$EXPECTED_STR" "$ACTUAL_STR")" "$RATCHET_PASSED_STR")"
+    nonpassing_expected="$(set_difference "$nonpassing_expected" "$missing_expected")"
     count_actual="$(count_set "$ACTUAL_STR")"
     count_unexpected_fail="$(count_set "$unexpected_failures")"
-    count_unexpected_pass="$(count_set "$unexpected_passes")"
+    count_recovered="$(count_set "$recovered")"
+    count_missing_expected="$(count_set "$missing_expected")"
+    count_nonpassing_expected="$(count_set "$nonpassing_expected")"
     count_refusal_drift="$(count_set "$RATCHET_REFUSAL_DRIFT_STR")"
 
     RATCHET_EXTRA_FAIL_COUNT=0
@@ -393,8 +429,25 @@ ratchet_verdict() {
         "$RATCHET_EXTRA_FAIL_FN" detect
     fi
 
-    if ((count_unexpected_fail == 0 && count_unexpected_pass == 0 && \
+    if ((count_unexpected_fail == 0 && count_missing_expected == 0 && \
+        count_nonpassing_expected == 0 && \
         count_refusal_drift == 0 && RATCHET_EXTRA_FAIL_COUNT == 0)); then
+        if ((count_recovered > 0)); then
+            echo "${RATCHET_VERDICT_LABEL}: $count_recovered tracked failure(s) now PASS — ledger cleanup required:"
+            while IFS= read -r entry; do
+                [[ -z "$entry" ]] && continue
+                echo "  NOW-PASSES: $entry"
+            done <<<"$recovered"
+            echo ""
+            printf '%s\n' "$RATCHET_NOWPASS_HELP"
+            echo ""
+            if ((RATCHET_STRICT_RECOVERIES == 1)); then
+                echo "==> ${RATCHET_VERDICT_LABEL}: FAILED (strict recovery accounting)"
+                exit 1
+            fi
+            echo "==> ${RATCHET_VERDICT_LABEL}: PASSED (recoveries reported)"
+            exit 0
+        fi
         if ((count_actual == 0)); then
             ((RATCHET_ALL_PASS_LEADING_BLANK == 1)) && echo ""
             echo "${RATCHET_INDENT}${RATCHET_ALL_PASS_TEXT}"
@@ -430,14 +483,36 @@ ratchet_verdict() {
         echo ""
     fi
 
-    if ((count_unexpected_pass > 0)); then
-        echo "$RATCHET_FAIL_PREFIX: $count_unexpected_pass listed failure(s) now PASS — remove from list:"
+    if ((count_missing_expected > 0)); then
+        echo "$RATCHET_FAIL_PREFIX: $count_missing_expected expected entry/entries absent from the selected corpus:"
+        while IFS= read -r entry; do
+            [[ -z "$entry" ]] && continue
+            echo "  MISSING-EXPECTED: $entry"
+        done <<<"$missing_expected"
+        echo ""
+        echo "  This is an inventory or fixture-removal error, not a recovered test."
+        echo ""
+    fi
+
+    if ((count_recovered > 0)); then
+        echo "${RATCHET_VERDICT_LABEL}: $count_recovered tracked failure(s) now PASS — ledger cleanup required:"
         while IFS= read -r entry; do
             [[ -z "$entry" ]] && continue
             echo "  NOW-PASSES: $entry"
-        done <<<"$unexpected_passes"
+        done <<<"$recovered"
         echo ""
         printf '%s\n' "$RATCHET_NOWPASS_HELP"
+        echo ""
+    fi
+
+    if ((count_nonpassing_expected > 0)); then
+        echo "$RATCHET_FAIL_PREFIX: $count_nonpassing_expected expected entry/entries did not produce PASS or the pinned failure:"
+        while IFS= read -r entry; do
+            [[ -z "$entry" ]] && continue
+            echo "  NONPASS-EXPECTED: $entry"
+        done <<<"$nonpassing_expected"
+        echo ""
+        echo "  Skipped or otherwise nonterminal entries cannot be treated as recoveries."
         echo ""
     fi
 
@@ -494,7 +569,7 @@ run_hew_suite() {
     read_expected_failures
 
     mkdir -p "$(dirname "$junit_output")"
-    STDERR_FILE="$(mktemp /tmp/hew-suite-ratchet-stderr.XXXXXX)"
+    STDERR_FILE="$(mktemp "${TMPDIR:-/tmp}/hew-suite-ratchet-stderr.XXXXXX")"
     fresh_report="${junit_output}.new.$$"
     trap 'rm -f "$STDERR_FILE" "${fresh_report:-}"' EXIT
     rc=0
@@ -550,8 +625,10 @@ run_hew_suite() {
     fi
 
     while IFS=$'\t' read -r status identity failure_kind; do
-        [[ "$status" == "FAILED" ]] || continue
         [[ -n "$identity" ]] || continue
+        RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${identity}"$'\n'
+        [[ "$status" == "ok" ]] && RATCHET_PASSED_STR="${RATCHET_PASSED_STR}${identity}"$'\n'
+        [[ "$status" == "FAILED" ]] || continue
         ACTUAL_STR="${ACTUAL_STR}${identity}"$'\n'
         if line_set_contains "$EXPECTED_STR" "$identity"; then
             if ! find_expected_failure_kind "$identity"; then
@@ -632,12 +709,15 @@ run_stdlib() {
     while IFS= read -r -d $'\0' f; do
         total=$((total + 1))
         relpath="${f#"$REPO_ROOT"/}"
+        RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${relpath}"$'\n'
         check_output=""
         check_status=0
         check_output="$("$HEW_BIN" check "$f" 2>&1)" || check_status=$?
         if ((check_status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${relpath}"$'\n'
             record_expected_refusal_status "$relpath" "$check_status"
+        else
+            RATCHET_PASSED_STR="${RATCHET_PASSED_STR}${relpath}"$'\n'
         fi
         bare_variants=""
         if bare_variants="$(
@@ -781,6 +861,7 @@ run_hew_corpus() {
     corpus_nonempty_assert "hew-corpus-check-files" "$total" || exit 1
 
     for f in "${swept[@]}"; do
+        RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${f}"$'\n'
         check_index=$((check_index + 1))
         check_log="$HEW_CORPUS_TMPDIR/check-$check_index.log"
         status=0
@@ -807,6 +888,8 @@ run_hew_corpus() {
                     HEW_CORPUS_DIAGNOSTIC_DRIFT="${HEW_CORPUS_DIAGNOSTIC_DRIFT}${f}"$'\t'"${status}"$'\t'"${expected_code}"$'\t'"${actual_codes}"$'\n'
                 fi
             fi
+        else
+            RATCHET_PASSED_STR="${RATCHET_PASSED_STR}${f}"$'\n'
         fi
     done
 
@@ -1047,6 +1130,7 @@ run_doc_fences() {
 
     for ((idx = 0; idx < total_fences; idx++)); do
         fence_id="${DOC_FENCE_IDS[$idx]}"
+        RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${fence_id}"$'\n'
         is_skip="${DOC_FENCE_SKIPPED[$idx]}"
         outfile="$DOC_FENCE_OUTDIR/${fence_id}.hew"
 
@@ -1067,6 +1151,7 @@ run_doc_fences() {
 
         if [[ "$check_rc" == "0" ]]; then
             pass=$((pass + 1))
+            RATCHET_PASSED_STR="${RATCHET_PASSED_STR}${fence_id}"$'\n'
         else
             fail=$((fail + 1))
             ACTUAL_STR="${ACTUAL_STR}${fence_id}"$'\n'

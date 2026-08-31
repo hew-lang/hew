@@ -176,6 +176,7 @@ def finalize_reports(
     full_inventory: Path,
     expected_failures_path: Path,
     prerequisites_succeeded: bool,
+    strict_recoveries: bool,
 ) -> int:
     """Prepare the JUnit input for GitHub after raw aggregate gates finish."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -194,22 +195,54 @@ def finalize_reports(
         full = set(read_inventory(full_inventory))
         expected = expected_failures(expected_failures_path, full)
         actual: dict[str, str] = {}
+        o0_outcomes: dict[str, str] = {}
+        o2_outcomes: dict[str, str] = {}
         parsed_reports: list[tuple[Path, JUnitReport]] = []
         for report in reports:
             parsed = parse_hew_junit(report, REPO_ROOT)
             parsed_reports.append((report, parsed))
-            if "hew-o0-" not in report.name:
-                continue
             for testcase in parsed.testcases:
                 identity = normalized_identity(testcase.classname, testcase.name)
-                if identity in actual:
-                    die(f"finalization report has duplicate identity: {identity}")
-                if testcase.failure_kind is not None:
-                    actual[identity] = testcase.failure_kind
-        if set(actual) != set(expected):
-            die("finalization failure set differs from the ratchet")
-        for identity, expected_kind in expected.items():
-            if actual[identity] != expected_kind:
+                outcome = testcase.failure_kind or testcase.outcome
+                if "hew-o0-" in report.name:
+                    if identity in o0_outcomes:
+                        die(
+                            f"finalization report has duplicate O0 identity: {identity}"
+                        )
+                    o0_outcomes[identity] = outcome
+                    if testcase.failure_kind is not None:
+                        actual[identity] = testcase.failure_kind
+                elif "hew-o2-" in report.name:
+                    if identity in o2_outcomes:
+                        die(
+                            f"finalization report has duplicate O2 identity: {identity}"
+                        )
+                    o2_outcomes[identity] = outcome
+        unexpected = set(actual) - set(expected)
+        recovered = {
+            identity
+            for identity in expected
+            if o0_outcomes.get(identity) == "ok" and o2_outcomes.get(identity) == "ok"
+        }
+        nonpassing = set(expected) - set(actual) - recovered
+        if unexpected:
+            die(f"finalization has untracked failures: {sorted(unexpected)[:5]}")
+        if recovered:
+            print(
+                "compiled-Hew recovery accounting: tracked failures now pass: "
+                + ", ".join(sorted(recovered)[:5]),
+                file=sys.stderr,
+            )
+            if strict_recoveries:
+                die("finalization found recoveries under strict accounting")
+        if nonpassing:
+            die(
+                "finalization expected entries did not PASS in both O0 and O2: "
+                f"{sorted(nonpassing)[:5]}"
+            )
+        for identity, actual_kind in actual.items():
+            expected_kind = expected[identity]
+            if actual_kind != expected_kind:
                 die(f"finalization failure kind differs from the ratchet: {identity}")
 
         for source, parsed in parsed_reports:
@@ -218,7 +251,7 @@ def finalize_reports(
                 identity = normalized_identity(
                     testcase.get("classname", ""), testcase.get("name", "")
                 )
-                if identity not in expected:
+                if identity not in actual:
                     continue
                 failure = testcase.find("failure")
                 if failure is None or failure.get("type") != expected[identity]:
@@ -392,6 +425,7 @@ def aggregate(
     full_inventory: Path,
     shard_count: int,
     expected_failures_path: Path,
+    strict_recoveries: bool,
 ) -> None:
     if shard_count < 2:
         die("shard count must be at least two")
@@ -406,15 +440,31 @@ def aggregate(
             for identity, outcome in o0.items()
             if outcome in FAILURE_KINDS
         }
-        if set(actual) != set(expected):
+        unexpected = set(actual) - set(expected)
+        recovered = {
+            identity
+            for identity in expected
+            if o0.get(identity) == "ok" and o2.get(identity) == "ok"
+        }
+        nonpassing = set(expected) - set(actual) - recovered
+        if unexpected:
+            die(f"O0 shard has untracked failures: unexpected={sorted(unexpected)[:5]}")
+        if recovered:
+            print(
+                "compiled-Hew recovery accounting: tracked failures now pass: "
+                + ", ".join(sorted(recovered)[:5]),
+                file=sys.stderr,
+            )
+            if strict_recoveries:
+                die("O0 shard found recoveries under strict accounting")
+        if nonpassing:
             die(
-                "O0 shard failure set differs from the ratchet: "
-                f"unexpected={sorted(set(actual) - set(expected))[:5]} "
-                f"now_passing={sorted(set(expected) - set(actual))[:5]}"
+                "O0 shard expected entries did not PASS in both O0 and O2: "
+                f"{sorted(nonpassing)[:5]}"
             )
         kind_differences = [
             f"{identity}: expected={expected[identity]} actual={actual[identity]}"
-            for identity in sorted(expected)
+            for identity in sorted(actual)
             if actual[identity] != expected[identity]
         ]
         if kind_differences:
@@ -454,6 +504,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     aggregate_parser.add_argument(
         "--mode", choices=("ratchet", "differential"), required=True
     )
+    aggregate_parser.add_argument("--strict-recoveries", action="store_true")
     aggregate_parser.add_argument("--reports-dir", type=Path, required=True)
     aggregate_parser.add_argument("--full-inventory", type=Path, required=True)
     aggregate_parser.add_argument("--shard-count", type=int, required=True)
@@ -474,6 +525,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=REPO_ROOT / "scripts" / "hew-suite-expected-failures.txt",
     )
+    finalize_parser.add_argument("--strict-recoveries", action="store_true")
     finalize_parser.add_argument(
         "--prerequisites-succeeded",
         choices=("true", "false"),
@@ -493,6 +545,7 @@ def main(argv: list[str]) -> int:
             args.full_inventory,
             args.shard_count,
             args.expected_failures,
+            args.strict_recoveries,
         )
     elif args.action == "finalize":
         return finalize_reports(
@@ -501,6 +554,7 @@ def main(argv: list[str]) -> int:
             args.full_inventory,
             args.expected_failures,
             args.prerequisites_succeeded == "true",
+            args.strict_recoveries,
         )
     else:
         report_failures(args.reports_dir, args.shard_count)

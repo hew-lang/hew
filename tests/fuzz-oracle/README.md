@@ -34,14 +34,17 @@ visible for fail-closed classification.
 
 ## Ratchet: expected-failures.txt
 
-`expected-failures.txt` lists candidate filenames that are **known to fail**,
-each annotated with a tracking issue. Candidates may come from the
+`expected-failures.txt` pins each candidate filename to its exact known failure
+classification, with a tracking issue. Candidates may come from the
 vertical-slice or regression corpus.
 
 **Gate behaviour:**
 
-- A listed candidate that **passes** → `unexpected-pass` → gate failure.
-  This forces the entry to be removed and a positive guard to be added.
+- A listed candidate that fails with a **different class** → class drift → gate
+  failure. A tracked runtime crash cannot silently become a timeout, frontend
+  rejection, abort, or compiler failure.
+- A listed candidate observed **clean** → recovery report in PRs and strict
+  accounting failure until its entry is removed.
 - An unlisted candidate that **fails** → `unexpected-fail` → gate failure.
   This forces the failure to be registered (or fixed).
 
@@ -57,8 +60,8 @@ nested helper fixtures and same-named files cannot collide.
 
 - An unlisted positive fixture that is rejected is an `unexpected-reject` and
   fails the gate.
-- A listed fixture that stops being rejected is an `unexpected-pass` and fails
-  the gate until its entry is removed.
+- A listed fixture that stops being rejected is reported as recovery in normal
+  PR runs. Scheduled strict accounting fails until its entry is removed.
 
 Remove an entry as soon as its fixture passes. Nothing replaces it: intentional
 negative and known-bug inputs belong in the reject and repro corpora instead.
@@ -68,14 +71,15 @@ negative and known-bug inputs belong in the reject and repro corpora instead.
 1. Minimise the failing program (manually, or with a future `a3-fuzz-minimize`
    tool) until it is the smallest program that reproduces the failure.
 2. Add it to `regressions/` with a descriptive filename.
-3. Add an entry to `expected-failures.txt` with a tracking issue.
-4. Run `make fuzz-oracle` to confirm the oracle classifies it as expected-fail.
+3. Add an entry to `expected-failures.txt` with the observed failure class and
+   a tracking issue.
+4. Run `make fuzz-oracle` to confirm the oracle classifies it exactly as pinned.
 5. Commit both files together.
 
 When the underlying fix lands:
 
-1. Leave the entry in place and run `make fuzz-oracle`; it must report the
-   clean execution as an unexpected pass.
+1. Leave the entry in place and run `make fuzz-oracle`; it reports the clean
+   execution as recovery. Scheduled strict accounting fails until cleanup.
 2. Remove the entry from `expected-failures.txt`.
 3. Add, update, or restore the vertical-slice invocation that guards the fixed
    behaviour.

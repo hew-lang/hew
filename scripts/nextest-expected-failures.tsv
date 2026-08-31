@@ -40,7 +40,6 @@ linux,macos	failure	hew-codegen-rs::exec	generator_exec::generator_in_local_tupl
 linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_nested_aggregate_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
 linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_reaggregated_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
 linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_reaggregated_record_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
-linux,macos,freebsd	failure	hew-codegen-rs::exec	for_in_vec_string_exec::for_in_continue_skips_empty_runs_correct	#3120 makes owned Vec iteration joins path-sensitive
 linux,macos,freebsd	failure	hew-codegen-rs::exec	for_in_vec_string_exec::vec_iter_cursor_transfers_are_path_sensitive_and_overwrite_safe	#3120 gives each Vec iterator generation one cleanup guard
 linux,macos,freebsd	failure	hew-codegen-rs::exec	vec_owned_element_routing_exec::vec_array_literal_owned_tuple_runs	#3120 ends consumed loop bindings before cleanup
 linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::contextual_file_sink_binders_close_once_per_exit	#3114 closes each contextual Sink binder on its selected exits

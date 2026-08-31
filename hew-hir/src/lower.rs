@@ -2967,6 +2967,8 @@ pub fn lower_program_with_mono_cap(
             .filter_map(|(_, (item, _))| match item {
                 Item::TypeDecl(decl) => Some(decl.name.clone()),
                 Item::Record(decl) => Some(decl.name.clone()),
+                Item::Actor(decl) => Some(decl.name.clone()),
+                Item::Supervisor(decl) => Some(decl.name.clone()),
                 _ => None,
             }),
     );
@@ -3003,6 +3005,12 @@ pub fn lower_program_with_mono_cap(
                 let event = machine_event_surface_type(&decl.name);
                 ctx.file_import_root_type_aliases
                     .insert(event.clone(), format!("{module_full_path}.{event}"));
+            }
+            Item::Actor(decl) => {
+                ctx.file_import_root_type_aliases.insert(
+                    decl.name.clone(),
+                    format!("{module_full_path}.{}", decl.name),
+                );
             }
             _ => {}
         }
@@ -13391,15 +13399,6 @@ impl LowerCtx {
     ) -> HirActorDecl {
         let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
         let mut lowered = self.lower_actor(decl, span, Some(module_full_path));
-        lowered.defining_module = Some(module_full_path.to_string());
-        // `lower_actor` attached checker side-tables under the bare name
-        // (the root-actor identity). A module actor's checker identity is
-        // the dotted `qualified_name()`; re-attach the descriptor and the
-        // cycle-capability flag from the qualified keys so two same-named
-        // actors carry their own protocol (distinct msg_ids) and cycle flag.
-        let qualified = lowered.qualified_name();
-        lowered.protocol_descriptor = self.actor_protocol_descriptors.get(&qualified).cloned();
-        lowered.cycle_capable = self.cycle_capable_actors.contains(&qualified);
         // Owner-qualify each receive handler's return type to the declaring
         // module (`testffi.Result`) ONLY when the returned record's bare name
         // genuinely collides across modules — the same collision the MIR
@@ -14257,9 +14256,27 @@ impl LowerCtx {
                     static_slot += 1;
                     idx
                 };
+                let child_ty = self
+                    .canonical_supervisor_child_ty(&child.actor_type)
+                    .unwrap_or_else(|| {
+                        self.diagnostics.push(
+                            HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: child.actor_type.clone(),
+                                    reason: "supervisor child has no lexical actor authority"
+                                        .to_string(),
+                                },
+                                child.span.clone(),
+                                "a dotted supervisor child must resolve through the checker's \
+                                 exact module binding",
+                            )
+                            .with_source_module(self.current_module_name.clone()),
+                        );
+                        format!("<invalid-supervisor-child:{}>", child.actor_type)
+                    });
                 HirSupervisorChild {
                     name: child.name.clone(),
-                    ty: self.canonical_supervisor_child_ty(&child.actor_type),
+                    ty: child_ty,
                     restart_policy: child.restart.map(|r| match r {
                         RestartPolicy::Permanent => HirRestartPolicy::Permanent,
                         RestartPolicy::Transient => HirRestartPolicy::Transient,
@@ -15147,41 +15164,20 @@ impl LowerCtx {
 
         let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods, &state_fields);
 
-        // Checker side-tables key a module actor under its module-short
-        // identity (`"{module_leaf}.{Actor}"`, matching the checker's
-        // `current_module_short()` fn_sigs prefix); only genuine root actors
-        // are keyed bare. A FILE-imported actor lowers through this root path
-        // — `flatten_file_import_items` (hew-compile) splices it into
-        // `program.items` AFTER type-checking, so its HIR identity stays
-        // root/bare — but the checker validated it as a module-graph item and
-        // published its protocol descriptor under the module-short key. The
-        // third pass sets `current_module_name` to the originating module's
-        // dotted path for spliced items (root items lower with it unset), so
-        // resolve the descriptor and the cycle-capability flag under the
-        // module-short key first and fall back to the bare root key. Without
-        // the module-scoped lookup every spliced multi-handler actor lost its
-        // descriptor and MIR collapsed all message-kind discriminants onto one
-        // fabricated tag — LLVM rejected the dispatch switch with "Duplicate
-        // integer as switch case". MIR no longer fabricates a discriminant, so
-        // that regression now surfaces as a hard
-        // `ActorProtocolDescriptorMissing` instead; this lookup is still what
-        // keeps a correct program from tripping it. Package-module actors overwrite
-        // both fields in `lower_imported_actor` with the same qualified keys,
-        // so this lookup is identity-preserving for them.
-        let module_scoped_key = self
-            .current_module_name
-            .as_deref()
-            .map(hew_types::short_name)
-            .map(|leaf| format!("{leaf}.{}", decl.name));
-        let protocol_descriptor = module_scoped_key
-            .as_deref()
-            .and_then(|key| self.actor_protocol_descriptors.get(key))
-            .or_else(|| self.actor_protocol_descriptors.get(&decl.name))
+        // Checker actor side-tables and every downstream layout registry share
+        // the declaration's complete nominal identity. File-import flattening
+        // supplies `decl_module` from the original module graph; root actors
+        // use the bare name. Never retry a module actor by leaf name because
+        // two nested modules may legitimately export the same actor leaf.
+        let actor_identity = decl_module.map_or_else(
+            || decl.name.clone(),
+            |module| format!("{module}.{}", decl.name),
+        );
+        let protocol_descriptor = self
+            .actor_protocol_descriptors
+            .get(&actor_identity)
             .cloned();
-        let cycle_capable = module_scoped_key
-            .as_deref()
-            .is_some_and(|key| self.cycle_capable_actors.contains(key))
-            || self.cycle_capable_actors.contains(&decl.name);
+        let cycle_capable = self.cycle_capable_actors.contains(&actor_identity);
 
         HirActorDecl {
             id: self.ids.item(),
@@ -24371,15 +24367,67 @@ impl LowerCtx {
     /// `NotYetImplemented`. Resolve the `alias.Type` prefix through
     /// `module_import_bindings` — the same table the checker's spawn resolution
     /// uses — so a supervisor-child handle carries the same identity a spawn
-    /// handle does. A bare root-actor spelling has no module prefix and is
-    /// returned unchanged.
-    fn canonical_supervisor_child_ty(&self, raw: &str) -> String {
-        match raw.split_once('.') {
-            Some((module_binding, member)) => {
-                self.imported_module_member_key(module_binding, member)
-            }
-            None => raw.to_string(),
+    /// handle does. Bare spellings follow lexical authority: a current-scope
+    /// declaration wins, then the checker's exact named/aliased import binding,
+    /// then a flattened file-import identity. No globally loaded leaf-name
+    /// fallback participates.
+    fn canonical_supervisor_child_ty(&self, raw: &str) -> Option<String> {
+        if let Some((module_binding, member)) = raw.split_once('.') {
+            let owner = self.module_import_bindings.get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                module_binding.to_string(),
+            ))?;
+            let canonical = format!("{owner}.{member}");
+            return self
+                .actor_type_names
+                .contains(&canonical)
+                .then_some(canonical);
         }
+        // A flattened file import is syntactically present in the root item
+        // stream, so it also appears root-visible. Its explicit source-owner
+        // alias must therefore be checked before the ordinary current-scope
+        // declaration rung.
+        if self.current_module_name.is_none() {
+            if let Some(canonical) = self.file_import_root_type_aliases.get(raw) {
+                return self
+                    .actor_type_names
+                    .contains(canonical)
+                    .then(|| canonical.clone());
+            }
+        }
+        // A supervisor inside an imported module may name an actor declared in
+        // that same file by its local spelling. The checker supplies the exact
+        // set of actor identities, so qualify only an exact owner/name member;
+        // do not infer an owner by scanning globally loaded leaf names.
+        if let Some(module_full_path) = self.current_module_name.as_deref() {
+            let local_actor = format!("{module_full_path}.{raw}");
+            if self.actor_type_names.contains(&local_actor) {
+                return Some(local_actor);
+            }
+        }
+        let current_module_is_file_import = self
+            .current_module_name
+            .as_deref()
+            .is_some_and(|module| self.file_import_module_names.contains(module));
+        if self.current_scope_declares_source_type(raw, current_module_is_file_import) {
+            return Some(self.canonical_current_module_record_name(raw));
+        }
+        if let Some(canonical) = self
+            .import_type_name_aliases
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                raw.to_string(),
+            ))
+            .cloned()
+        {
+            return self
+                .actor_type_names
+                .contains(&canonical)
+                .then_some(canonical);
+        }
+        Some(raw.to_string())
     }
 
     /// Whether bare `name` is authored by the scope currently being lowered.
@@ -37324,6 +37372,63 @@ impl Widget {
         assert_eq!(
             ctx.imported_module_member_key("codec", "MAX_READS"),
             "std.net.http.codec.MAX_READS"
+        );
+    }
+
+    #[test]
+    fn supervisor_child_identity_uses_exact_import_owner_and_keeps_root_bare() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.module_import_bindings.insert(
+            (None, 0, "left_worker".to_string()),
+            "services.left.worker".to_string(),
+        );
+        ctx.module_import_bindings.insert(
+            (None, 0, "right_worker".to_string()),
+            "services.right.worker".to_string(),
+        );
+        ctx.file_import_root_type_aliases.insert(
+            "FlatWorker".to_string(),
+            "support.nested.worker.FlatWorker".to_string(),
+        );
+        ctx.actor_type_names.extend([
+            "services.left.worker.Worker".to_string(),
+            "services.right.worker.Worker".to_string(),
+            "support.nested.worker.FlatWorker".to_string(),
+        ]);
+
+        assert_eq!(
+            ctx.canonical_supervisor_child_ty("left_worker.Worker"),
+            Some("services.left.worker.Worker".to_string()),
+            "a qualified module import must retain the complete checker owner"
+        );
+        assert_eq!(
+            ctx.canonical_supervisor_child_ty("right_worker.Worker"),
+            Some("services.right.worker.Worker".to_string()),
+            "same-leaf actors in nested modules must remain distinct"
+        );
+        assert_ne!(
+            ctx.canonical_supervisor_child_ty("left_worker.Worker"),
+            ctx.canonical_supervisor_child_ty("right_worker.Worker"),
+            "canonicalization must never retry a nested actor by leaf name"
+        );
+        assert_eq!(
+            ctx.canonical_supervisor_child_ty("FlatWorker"),
+            Some("support.nested.worker.FlatWorker".to_string()),
+            "a flattened actor's bare surface must project to its declaration owner"
+        );
+        assert_eq!(
+            ctx.canonical_supervisor_child_ty("RootWorker"),
+            Some("RootWorker".to_string()),
+            "a genuine root actor must keep its bare identity"
+        );
+        assert_eq!(
+            ctx.canonical_supervisor_child_ty("services.left.worker.Worker"),
+            None,
+            "a raw canonical path without a lexical module root must fail closed"
         );
     }
 

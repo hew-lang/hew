@@ -788,12 +788,11 @@ pub struct ActorLayout {
     /// Actor type name.
     pub name: String,
     /// Defining-module identity carried verbatim from
-    /// `HirActorDecl::defining_module`. `None` for root-program actors
-    /// (including file-import spliced ones); `Some(module_short)` for actors
-    /// exported by a package module. This is the discriminator that makes
-    /// qualified layout keys and qualified symbol mangling possible — layout
-    /// keys and all `mangle_actor_*` symbols still derive from the bare
-    /// `name` until the qualified re-key lands on top of this carrier.
+    /// `HirActorDecl::defining_module`. `None` for root-program actors;
+    /// `Some(module)` for imported actors, including file-import items spliced
+    /// into the root program after checking. `name` already carries the actor's
+    /// qualified registry key; this field preserves its declaration owner
+    /// separately without recovering identity from that presentation string.
     pub defining_module: Option<String>,
     /// Actor state field names in declaration order.
     pub state_field_names: Vec<String>,

@@ -1,0 +1,25 @@
+//! A file import exposes its actor in the root surface while preserving the
+//! complete declaration identity used by actor and supervisor MIR layouts.
+
+import "imported_supervisor_child_identity_support/worker.hew";
+
+supervisor ImportedWorkerPool {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child worker: ImportedWorker(id: 17);
+}
+
+fn main() -> i64 {
+    let sup = spawn ImportedWorkerPool;
+    match await sup.worker.identify() {
+        .Ok(id) => {
+            supervisor_stop(sup);
+            id
+        },
+        .Err(_) => {
+            supervisor_stop(sup);
+            1
+        },
+    }
+}

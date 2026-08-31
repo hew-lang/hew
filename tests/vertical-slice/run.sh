@@ -1746,6 +1746,11 @@ grep -qF 'select arm source must be actor.method(args)' "${reject_output}"
 # main returns 42 after bootstrap completes successfully.
 run_accept_expect_status "supervisor_basic" 42
 
+# A file-imported actor keeps its complete declaration identity through HIR,
+# actor-layout construction, and the supervisor child table. Exit 17 proves
+# handler dispatch resolves against that same layout key at runtime.
+run_accept_expect_status "imported_supervisor_child_identity" 17
+
 # Supervisor normal-return cleanup: main returns 42 with a live top-level
 # supervisor and three registered child specs. The native cleanup tail must not
 # use the supervisor-incompatible idle drain or overwrite the return value.

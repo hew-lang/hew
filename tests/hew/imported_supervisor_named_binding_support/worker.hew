@@ -1,0 +1,7 @@
+pub actor Worker {
+    let id: i64;
+
+    receive fn identify() -> i64 {
+        id
+    }
+}

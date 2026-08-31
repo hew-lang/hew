@@ -1,0 +1,31 @@
+//! Named and aliased actor imports must retain their declaration identity when
+//! used as supervised children.
+
+import tests.hew.imported_supervisor_named_binding_support.worker.{Worker};
+import tests.hew.imported_supervisor_named_binding_support.worker.{Worker as Renamed};
+import std.testing;
+
+supervisor DirectPool {
+    child worker: Worker(id: 31) restart: temporary;
+}
+
+supervisor AliasedPool {
+    child worker: Renamed(id: 47) restart: temporary;
+}
+
+#[test]
+fn named_and_aliased_actors_run_as_supervised_children() {
+    let direct = spawn DirectPool;
+    match await direct.worker.identify() {
+        .Ok(id) => testing.assert_eq(id, 31),
+        .Err(_) => testing.assert_true(false),
+    }
+    supervisor_stop(direct);
+
+    let aliased = spawn AliasedPool;
+    match await aliased.worker.identify() {
+        .Ok(id) => testing.assert_eq(id, 47),
+        .Err(_) => testing.assert_true(false),
+    }
+    supervisor_stop(aliased);
+}

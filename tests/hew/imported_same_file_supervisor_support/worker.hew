@@ -1,0 +1,14 @@
+//! A file-owned supervisor must resolve a bare child against an actor declared
+//! in that same file module before the declarations are flattened at HIR.
+
+pub actor Worker {
+    let id: i64;
+
+    receive fn identify() -> i64 {
+        id
+    }
+}
+
+pub supervisor Inner {
+    child worker: Worker(id: 23) restart: temporary;
+}

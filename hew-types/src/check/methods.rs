@@ -2682,23 +2682,75 @@ impl Checker {
     /// finds no `receive fn` and every wall keyed on the actor identity silently
     /// skips.
     ///
-    /// Resolve the dotted `alias.Type` spelling through `module_import_bindings`
-    /// (via `resolve_module_type`) to the exact source owner — mirroring the
-    /// `spawn module.Actor(...)` path in `resolve_spawn_target`, so a
-    /// supervisor-child handle carries the same identity a spawn handle does. A
-    /// bare root-actor spelling (`Account`) and any spelling that does not
-    /// resolve to a module-exported actor are returned unchanged, so root/flat
-    /// programs are a no-op by construction.
-    pub(super) fn canonical_supervisor_child_type(&self, raw: &str) -> String {
+    /// Resolve dotted module bindings and bare named/aliased import bindings
+    /// through the same lexical facts ordinary type resolution consumes. A
+    /// declaration authored in the current scope wins before an import, and a
+    /// bare import resolves only when that exact binding published one source
+    /// identity. There is deliberately no scan over globally loaded exports.
+    pub(super) fn resolve_supervisor_child_type(&self, raw: &str) -> Option<String> {
         if let Some((module_short, type_name)) = raw.split_once('.') {
-            if let Some(td) = self
+            return self
                 .resolve_module_type(module_short, type_name)
-                .filter(|td| td.kind == TypeDefKind::Actor)
+                .map(|td| td.name);
+        }
+
+        if self.supervisor_children.contains_key(raw) {
+            return Some(raw.to_string());
+        }
+
+        // A supervisor declared inside a non-root module shares that module's
+        // nominal scope with its actors. Resolve only the exact owner-qualified
+        // actor declaration; never search another loaded module by leaf name.
+        // This rung precedes selected imports so a same-file actor retains
+        // lexical authority over an imported binding with the same spelling.
+        if let Some(owner) = self.current_module_identity() {
+            let local_actor = format!("{owner}.{raw}");
+            if self
+                .type_defs
+                .get(&local_actor)
+                .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor)
             {
-                return td.name;
+                return Some(local_actor);
             }
         }
-        raw.to_string()
+
+        if self.local_type_defs.contains(raw) || self.source_type_defs.contains(raw) {
+            let local = self.declaration_identity(raw);
+            if self.type_defs.contains_key(&local) {
+                return Some(local);
+            }
+            if self.type_defs.contains_key(raw) {
+                return Some(raw.to_string());
+            }
+            // A flattened file import is root-visible in the source sets but
+            // its compatibility leaf key is retired after registration. Fall
+            // through to the exact published bare binding below; a genuine
+            // current-scope declaration returned from one of the two keys.
+        }
+
+        // Root actors and flattened file-import actors both publish an exact
+        // root-surface key. This is not a leaf search: the key exists only
+        // because that spelling was registered into the current root scope.
+        if self.current_module_identity().is_none() && self.type_defs.contains_key(raw) {
+            return Some(raw.to_string());
+        }
+
+        if let Some(identity) = self.published_bare_type_qualified(raw) {
+            if let Some(owner) = self.unqualified_to_module.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                raw.to_string(),
+            )) {
+                self.mark_module_owner_bindings_used(owner);
+            }
+            return Some(identity);
+        }
+        None
+    }
+
+    pub(super) fn canonical_supervisor_child_type(&self, raw: &str) -> String {
+        self.resolve_supervisor_child_type(raw)
+            .unwrap_or_else(|| raw.to_string())
     }
 
     /// Resolve a `(module, type, variant)` triple to its `VariantDef`, gated on

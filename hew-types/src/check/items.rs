@@ -71,6 +71,9 @@ impl Checker {
     /// Validate a `supervisor` declaration at the structural level.
     ///
     /// Checks:
+    /// - Every child type resolves lexically to an actor
+    ///   (`E_SUPERVISOR_UNKNOWN_CHILD_ACTOR` /
+    ///   `E_SUPERVISOR_CHILD_NOT_SUPERVISABLE`).
     /// - Duplicate child names (`E_SUPERVISOR_DUPLICATE_CHILD`).
     /// - `wired_to` keys each reference a declared sibling (`E_SUPERVISOR_WIRED_TO_UNKNOWN_SIBLING`).
     /// - `wired_to` sibling ref type matches the dependent actor's init param type
@@ -96,30 +99,33 @@ impl Checker {
             }
         }
 
-        // ── 1. Duplicate child names ─────────────────────────────────────────
+        // ── 1. Child actor identity ──────────────────────────────────────────
+        self.check_supervisor_child_actor_types(sd, span);
+
+        // ── 2. Duplicate child names ─────────────────────────────────────────
         self.check_supervisor_duplicate_children(sd, span);
 
-        // ── 2. Strategy / pool consistency ──────────────────────────────────
+        // ── 3. Strategy / pool consistency ──────────────────────────────────
         self.check_supervisor_strategy_pool(sd, span);
 
-        // ── 3. wired_to key resolution + type compatibility ──────────────────
+        // ── 4. wired_to key resolution + type compatibility ──────────────────
         self.check_supervisor_wired_to(sd, span);
 
-        // ── 4. Dependency cycle detection ────────────────────────────────────
+        // ── 5. Dependency cycle detection ────────────────────────────────────
         self.check_supervisor_wired_to_cycles(sd, span);
 
-        // ── 5. Permanent children must not have owned-heap state fields ──────
+        // ── 6. Permanent children must not have owned-heap state fields ──────
         self.check_supervisor_permanent_owned_heap(sd, span);
 
-        // ── 6. Intensity restart-budget sanity ──────────────────────────────
+        // ── 7. Intensity restart-budget sanity ──────────────────────────────
         self.check_supervisor_intensity(sd, span);
 
-        // ── 7. Children must not declare #[every] periodic handlers ──────────
+        // ── 8. Children must not declare #[every] periodic handlers ──────────
         self.check_supervisor_periodic_children(sd, span);
 
-        // ── 8. Type-check child init-arg expressions against the config
+        // ── 9. Type-check child init-arg expressions against the config
         //       params, then validate the resolved arg types (byte-copy wall).
-        //       Step 8 binds `sd.params` (the construction-time config params,
+        //       Step 9 binds `sd.params` (the construction-time config params,
         //       `supervisor App(config: T)`) in a fresh scope and synthesises
         //       the type of each child init-arg EXPRESSION so a `config.field`
         //       read resolves through the config struct's record layout and
@@ -131,6 +137,66 @@ impl Checker {
         //       BitCopy wall now validates (a scalar `config.field` passes; an
         //       owned one is still walled until the owned init thunk lands).
         self.check_supervisor_init_args(sd, span);
+    }
+
+    /// Resolve every child through lexical actor authority before HIR/MIR.
+    ///
+    /// This is the fail-closed boundary for unsupported spellings: package
+    /// actors must arrive through a whole-module qualifier or an exact
+    /// named/aliased binding. Merely loading another module that exports the
+    /// same leaf never grants authority, and a local non-actor declaration
+    /// shadows an import instead of silently selecting the foreign actor.
+    fn check_supervisor_child_actor_types(&mut self, sd: &SupervisorDecl, span: &Span) {
+        for child in &sd.children {
+            let child_span = if child.span.is_empty() {
+                span.clone()
+            } else {
+                child.span.clone()
+            };
+            let Some(identity) = self.resolve_supervisor_child_type(&child.actor_type) else {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::UnknownChildActor,
+                    },
+                    child_span,
+                    format!(
+                        "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references \
+                         unknown actor `{}`; import a public actor into this scope or qualify it \
+                         through a module binding",
+                        sd.name, child.name, child.actor_type
+                    ),
+                ));
+                continue;
+            };
+            match self.type_defs.get(&identity) {
+                Some(type_def) if type_def.kind == TypeDefKind::Actor => {}
+                None if self.supervisor_children.contains_key(&identity) => {}
+                Some(_) => self.errors.push(TypeError::new(
+                    TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::ChildNotSupervisable,
+                    },
+                    child_span,
+                    format!(
+                        "E_SUPERVISOR_CHILD_NOT_SUPERVISABLE: supervisor `{}` child `{}` names \
+                         `{}`; the selected declaration `{identity}` is neither an actor nor a \
+                         supervisor",
+                        sd.name, child.name, child.actor_type
+                    ),
+                )),
+                None => self.errors.push(TypeError::new(
+                    TypeErrorKind::SupervisorError {
+                        subkind: SupervisorErrorKind::UnknownChildActor,
+                    },
+                    child_span,
+                    format!(
+                        "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references \
+                         unknown actor `{}`; import a public actor into this scope or qualify it \
+                         through a module binding",
+                        sd.name, child.name, child.actor_type
+                    ),
+                )),
+            }
+        }
     }
 
     /// Bind the supervisor's construction-time config params in scope, type-

@@ -1,0 +1,21 @@
+//! An indirect call that returns an owned Result preserves its payload when
+//! used as a match scrutinee.
+
+import std.testing;
+
+fn make(value: string) -> Result<string, string> {
+    Ok(value)
+}
+
+fn inspect() -> i64 {
+    let f = make;
+    match f("payload") {
+        .Ok(value) => value.len(),
+        .Err(_) => 0,
+    }
+}
+
+#[test]
+fn indirect_owned_result_call_scrutinee_preserves_payload() {
+    testing.assert_eq(inspect(), 7);
+}

@@ -1,0 +1,21 @@
+//! A resource-backed JSON array can be reassigned from its consuming builder
+//! result on every loop iteration.
+
+import std.encoding.json;
+
+import std.testing;
+
+fn rendered_count() -> string {
+    var values = json.array();
+    for n in 0 .. 3 {
+        values = values.push_int(n);
+    }
+    let rendered = values.stringify();
+    values.close();
+    rendered
+}
+
+#[test]
+fn reassigns_json_resource_builder_in_loop() {
+    testing.assert_eq_str(rendered_count(), "[0,1,2]");
+}

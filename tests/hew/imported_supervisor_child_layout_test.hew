@@ -1,0 +1,23 @@
+//! A supervisor must lower an actor child whose declaration arrived through a
+//! file import, including its concrete layout and message dispatch.
+
+import "imported_supervisor_child_support/worker.hew";
+
+import std.testing;
+
+supervisor ImportedWorkerPool {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child worker: ImportedWorker(id: 17);
+}
+
+#[test]
+fn imported_actor_is_a_supervised_child() {
+    let sup = spawn ImportedWorkerPool;
+    match await sup.worker.identify() {
+        .Ok(id) => testing.assert_eq(id, 17),
+        .Err(_) => testing.assert_true(false),
+    }
+    supervisor_stop(sup);
+}

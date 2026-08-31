@@ -1,0 +1,49 @@
+// G: a record var passed through a consuming call in a loop and returned early.
+import std.string;
+
+type Run { checkpoint_seq: i64; stale: bool; run_id: string; }
+type Model { error: string; source_seq: i64; applied_seq: i64; run: Run; stages: Vec<string>; claims: Vec<string>; }
+
+fn empty() -> Model {
+    Model { error: "", source_seq: 0, applied_seq: 0, run: Run { checkpoint_seq: -1, stale: false, run_id: "" }, stages: Vec.new(), claims: Vec.new() }
+}
+
+fn apply_line(model0: Model, line: string, source_seq: i64) -> Model {
+    var model = model0;
+    if line == "" {
+        model.error = "empty at " + string.from_int(source_seq);
+        return model;
+    }
+    model.source_seq = source_seq;
+    model.stages.push(line.clone());
+    if line == "gate" {
+        var run = model.run;
+        run.run_id = line;
+        model.run = run;
+    }
+    model
+}
+
+pub fn replay(events: Vec<string>) -> Model {
+    var model = empty();
+    for i in 0 .. events.len() {
+        model = apply_line(model, events[i], i as i64);
+        if model.error != "" {
+            return model;
+        }
+        model.source_seq = i as i64 + 1;
+        model.applied_seq = model.source_seq;
+    }
+    if model.run.checkpoint_seq >= 0 && model.run.checkpoint_seq < model.source_seq - 1 {
+        var run = model.run;
+        run.stale = true;
+        model.run = run;
+    }
+    model
+}
+
+pub fn main() {
+    let ev: Vec<string> = Vec.new();
+    ev.push("a");
+    println(replay(ev).source_seq);
+}

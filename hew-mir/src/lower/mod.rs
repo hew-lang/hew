@@ -64,6 +64,7 @@ mod composite_own;
 mod consts;
 mod control_flow;
 mod drop_plan;
+mod edge_owner_replay;
 mod expr;
 mod facts;
 mod machine_synth;
@@ -80,7 +81,14 @@ mod task;
 mod temp_drop;
 mod vec_index;
 
+use self::edge_owner_replay::{
+    lexical_scope_is_closed, materialize_edge_lifecycle_owner_transitions,
+    materialize_exact_owner_join_transfers, ownership_join_states,
+};
 use self::pattern::{project_match_ownership_mode, ProjectMatchOwnershipMode};
+
+#[cfg(test)]
+use self::edge_owner_replay::replayed_edge_owner_inputs;
 
 /// The owner-mint warrant. Re-exported here so every lowering submodule reaches
 /// it through `super::`, exactly as it reaches [`Builder`] — while the type's
@@ -8446,6 +8454,8 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     drop_plan::materialize_successor_guard_authority(&mut *blocks);
     drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     materialize_explicit_neutralize_transfers(&mut *blocks, builder);
+    materialize_edge_lifecycle_owner_transitions(&mut *blocks, builder);
+    drop_plan::materialize_successor_guard_authority(&mut *blocks);
     // Consumers below query exact OwnerId state. Seal the ownership phis that
     // are already present before those queries; otherwise the intersection at
     // a loop header intentionally erases differing predecessor generations
@@ -8499,23 +8509,27 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // handoff has published its exact operation.  Inserting the phi earlier
     // lets a downstream pass append a Relocate/Transfer that still names a
     // predecessor generation, making the otherwise-valid SSA rename stale.
-    // The final pass sees and rewrites the complete immutable event stream.
+    // The final pass sees the complete immutable event stream.  Rebind
+    // transitions are derived from the same replay immediately before it, so
+    // its edge facts are one-owner-per-predecessor rather than Builder cursor
+    // history.
+    materialize_edge_lifecycle_owner_transitions(&mut *blocks, builder);
+    drop_plan::materialize_successor_guard_authority(&mut *blocks);
     materialize_exact_owner_join_transfers(&mut *blocks, builder);
-    canonicalize_join_incoming_owner_ids(&mut *blocks, builder);
     canonicalize_terminal_transfer_owner_ids(&mut *blocks);
-    canonicalize_stale_relocation_and_reset_owner_ids(&mut *blocks);
+    canonicalize_stale_relocation_owner_ids(&mut *blocks);
     deduplicate_ownership_spines(&mut *blocks, builder);
     canonicalize_release_owner_ids(&mut *blocks);
     materialize_opaque_projected_payload_handoffs(&mut *blocks, builder);
-    // Publish definition-site destructor recipes and materialize assignment
-    // overwrite retirement before any call-carrier query. These are ordinary
-    // Raw/Checked-MIR operations, not sealing-time side effects: a later call
-    // must see the replacement generation as the sole owner at its argument
-    // source, and codegen must receive the same physical overwrite drop that
-    // ownership validation sees.
+    // Materialize late assignment overwrite retirement before any call-carrier
+    // query. Ending the replaced generation can make a previously ambiguous
+    // branch merge into an exact owner Join, so seal that Join before recipes
+    // are published. The one recipe pass then covers both lowering-time owners
+    // and the newly derived Join generation.
     drop_plan::materialize_successor_guard_authority(&mut *blocks);
-    drop_plan::materialize_definition_site_drop_recipes(&mut *blocks, builder);
     drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
+    materialize_exact_owner_join_transfers(&mut *blocks, builder);
+    drop_plan::materialize_definition_site_drop_recipes(&mut *blocks, builder);
     // Call-carrier ownership is authored only after overwrite adoption, typed
     // handoffs, and ownership-phi generations are final. Querying the earlier
     // construction state could see both the retired and replacement
@@ -8525,7 +8539,7 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     let committed_owned_cursor_calls =
         prepare_owned_call_carriers(&mut *blocks, builder, &projection_tainted);
     canonicalize_terminal_transfer_owner_ids(&mut *blocks);
-    canonicalize_stale_relocation_and_reset_owner_ids(&mut *blocks);
+    canonicalize_stale_relocation_owner_ids(&mut *blocks);
     canonicalize_release_owner_ids(&mut *blocks);
     deduplicate_ownership_spines(&mut *blocks, builder);
     materialize_conditional_scope_exit_releases(blocks, builder);
@@ -8540,21 +8554,27 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // loop generations have been renamed. Normalize that now-complete event
     // spine once more; this is the last mutation before Raw/Checked MIR is
     // frozen.
+    materialize_edge_lifecycle_owner_transitions(&mut *blocks, builder);
+    drop_plan::materialize_successor_guard_authority(&mut *blocks);
     canonicalize_terminal_transfer_owner_ids(&mut *blocks);
-    canonicalize_stale_relocation_and_reset_owner_ids(&mut *blocks);
+    canonicalize_stale_relocation_owner_ids(&mut *blocks);
     canonicalize_release_owner_ids(&mut *blocks);
     deduplicate_ownership_spines(&mut *blocks, builder);
-    // The preceding late scope/call canonicalizers can re-key owner epochs on
-    // CFG predecessors after the first Join refresh. Recompute each Join's
-    // declared incoming set from the now-final edge states so Checked MIR sees
-    // the same generations its immutable replay derives. Ambiguous, ownerless,
-    // and wrong-place edges remain untouched for validation to reject.
-    canonicalize_join_incoming_owner_ids(&mut *blocks, builder);
     owned_cursor_call::reanchor_owned_cursor_call_handoffs(
         &mut *blocks,
         builder,
         &committed_owned_cursor_calls,
     );
+    // Reanchoring can append a terminal carrier handoff after the earlier
+    // finalization pass.  One last replay is therefore the actual producer
+    // boundary: it keeps a proved terminal transfer as the sole authority and
+    // derives any remaining rebind transition from the completed edge facts.
+    materialize_edge_lifecycle_owner_transitions(&mut *blocks, builder);
+    canonicalize_terminal_transfer_owner_ids(&mut *blocks);
+    canonicalize_stale_relocation_owner_ids(&mut *blocks);
+    canonicalize_release_owner_ids(&mut *blocks);
+    deduplicate_ownership_spines(&mut *blocks, builder);
+    materialize_explicit_goto_edge_carries(&mut *blocks, builder);
 }
 
 /// End an extracted string payload's owner before passing its exact handle to
@@ -9383,34 +9403,33 @@ fn canonicalize_terminal_transfer_owner_ids(blocks: &mut [BasicBlock]) {
     }
 }
 
-/// Re-key stale physical relocations after typed adoption, and turn a reset
-/// whose predecessor was already terminally consumed into an ordinary mint.
+/// Re-key stale physical relocations after typed adoption.
 ///
-/// Both shapes are introduced before ownership-SSA joins are sealed. A join
-/// can replace the construction-time owner identity while leaving a later
-/// relocation or assignment publication keyed to that historical identity.
-/// Replay only the immutable exact/maybe owner streams at the operation: a
-/// relocation is re-keyed only when both lattices identify the same unique
-/// owner at its source, and a reset becomes a mint only when no path retains
-/// any generation of that binding. Ambiguous states stay untouched so the
-/// Checked-MIR validator still fails closed.
-fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) {
-    let _timing = crate::timing::stage("canonicalize_stale_relocation_and_reset_owner_ids");
+/// A join can replace the construction-time owner identity while leaving a
+/// later physical relocation keyed to that historical identity.  Replay only
+/// the immutable exact/maybe owner streams at the operation; a relocation is
+/// re-keyed only when both lattices identify the same unique owner at its
+/// source. Assignment/reset transition selection belongs to
+/// `materialize_edge_lifecycle_owner_transitions`, which runs before joins are
+/// constructed. Ambiguous states stay untouched so the Checked-MIR validator
+/// still fails closed.
+fn canonicalize_stale_relocation_owner_ids(blocks: &mut [BasicBlock]) {
+    let _timing = crate::timing::stage("canonicalize_stale_relocation_owner_ids");
     // Both replays are pure functions of `blocks`; they are re-derived only
-    // after a re-key or a reset-to-mint rewrite changed them, not once per
-    // block. See `canonicalize_terminal_transfer_owner_ids`.
+    // after a relocation re-key changed them, not once per block. See
+    // `canonicalize_terminal_transfer_owner_ids`.
     let mut exact_entries = drop_plan::exact_owner_states(blocks).0.clone();
     let mut maybe_entries = drop_plan::maybe_owner_states(blocks).0.clone();
     for block_index in 0..blocks.len() {
         drop_plan::debug_assert_exact_entries_current(
             blocks,
             &exact_entries,
-            "canonicalize_stale_relocation_and_reset_owner_ids",
+            "canonicalize_stale_relocation_owner_ids",
         );
         drop_plan::debug_assert_maybe_entries_current(
             blocks,
             &maybe_entries,
-            "canonicalize_stale_relocation_and_reset_owner_ids",
+            "canonicalize_stale_relocation_owner_ids",
         );
         let block_id = blocks[block_index].id;
         let mut exact = exact_entries.get(&block_id).cloned().unwrap_or_default();
@@ -9438,28 +9457,6 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
                             *owner = *replacement;
                             rewrote = true;
                         }
-                    }
-                }
-                Instr::OwnershipEvent(crate::model::OwnershipEvent::Reset {
-                    previous,
-                    replacement,
-                    place,
-                    ty,
-                }) => {
-                    let previous_maybe_live =
-                        maybe.iter().any(|(candidate, _)| candidate == previous);
-                    let same_binding_maybe_live = maybe
-                        .iter()
-                        .any(|(candidate, _)| candidate.binding == previous.binding);
-                    let replacement_maybe_live =
-                        maybe.iter().any(|(candidate, _)| candidate == replacement);
-                    if !previous_maybe_live && !same_binding_maybe_live && !replacement_maybe_live {
-                        *instruction = Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
-                            owner: *replacement,
-                            place: *place,
-                            ty: ty.clone(),
-                        });
-                        rewrote = true;
                     }
                 }
                 _ => {}
@@ -11817,619 +11814,6 @@ fn canonicalize_release_owner_ids(blocks: &mut [BasicBlock]) {
     }
 }
 
-/// Repair a sequential `Rearm` whose construction-time predecessor was
-/// superseded by an ownership-SSA `Join` at a dominating loop header.
-///
-/// The repair is deliberately exact and fail-closed: immutable exact and
-/// maybe-state must agree on one same-binding owner at the Rearm place, the
-/// stale successor must have this Rearm as its sole definition, and no other
-/// generation of the binding may be live. The successor receives a fresh
-/// generation and every reference to that uniquely-defined epoch (including
-/// the loop Join's incoming list) is renamed together. Ambiguous/co-live
-/// shapes remain stale so Checked-MIR validation rejects them.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the exact/maybe selection and whole-event-stream rewrite are one atomic canonicalization"
-)]
-fn canonicalize_join_dominated_rearm_lineages(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    loop {
-        let exact_states = drop_plan::exact_owner_states(blocks);
-        let exact_entries = &exact_states.0;
-        let maybe_states = drop_plan::maybe_owner_states(blocks);
-        let maybe_entries = &maybe_states.0;
-        let mut selected = None;
-        'blocks: for (block_index, block) in blocks.iter().enumerate() {
-            let mut exact = exact_entries.get(&block.id).cloned().unwrap_or_default();
-            let mut maybe = maybe_entries.get(&block.id).cloned().unwrap_or_default();
-            for (instruction_index, instruction) in block.instructions.iter().enumerate() {
-                if let Instr::OwnershipEvent(crate::model::OwnershipEvent::Rearm {
-                    previous,
-                    replacement,
-                    place,
-                    ..
-                }) = instruction
-                {
-                    let exact_candidates = exact
-                        .iter()
-                        .filter_map(|(owner, current)| {
-                            (owner.binding == previous.binding).then_some((*owner, *current))
-                        })
-                        .collect::<Vec<_>>();
-                    let maybe_candidates = maybe
-                        .iter()
-                        .filter(|(owner, _)| owner.binding == previous.binding)
-                        .copied()
-                        .collect::<HashSet<_>>();
-                    let unique_definition = blocks
-                        .iter()
-                        .flat_map(|candidate_block| &candidate_block.instructions)
-                        .filter(|candidate| {
-                            matches!(
-                                candidate,
-                                Instr::OwnershipEvent(
-                                    crate::model::OwnershipEvent::Mint { owner, .. }
-                                        | crate::model::OwnershipEvent::Reset {
-                                            replacement: owner,
-                                            ..
-                                        }
-                                        | crate::model::OwnershipEvent::Rearm {
-                                            replacement: owner,
-                                            ..
-                                        }
-                                        | crate::model::OwnershipEvent::Join {
-                                            replacement: owner,
-                                            ..
-                                        }
-                                        | crate::model::OwnershipEvent::Transfer {
-                                            to_owner: Some(owner),
-                                            ..
-                                        }
-                                ) if owner == replacement
-                            )
-                        })
-                        .count()
-                        == 1;
-                    let [(predecessor, candidate_place)] = exact_candidates.as_slice() else {
-                        drop_plan::apply_exact_owner_ops(
-                            std::slice::from_ref(instruction),
-                            &mut exact,
-                        );
-                        drop_plan::apply_maybe_owner_ops(
-                            std::slice::from_ref(instruction),
-                            &mut maybe,
-                        );
-                        continue;
-                    };
-                    let Some(successor_generation) = predecessor.generation.checked_add(1) else {
-                        continue;
-                    };
-                    let successor = crate::model::OwnerId {
-                        binding: replacement.binding,
-                        generation: successor_generation,
-                    };
-                    let successor_available = successor == *replacement
-                        || blocks
-                            .iter()
-                            .flat_map(|candidate_block| &candidate_block.instructions)
-                            .filter_map(|candidate| match candidate {
-                                Instr::OwnershipEvent(event) => Some(event),
-                                _ => None,
-                            })
-                            .flat_map(ownership_event_owner_ids)
-                            .all(|owner| owner != successor);
-                    if *previous != *predecessor
-                        && *candidate_place == *place
-                        && maybe_candidates == HashSet::from([(*predecessor, *candidate_place)])
-                        && unique_definition
-                        && successor_available
-                    {
-                        selected = Some((
-                            block_index,
-                            instruction_index,
-                            *predecessor,
-                            *replacement,
-                            successor,
-                        ));
-                        break 'blocks;
-                    }
-                }
-                drop_plan::apply_exact_owner_ops(std::slice::from_ref(instruction), &mut exact);
-                drop_plan::apply_maybe_owner_ops(std::slice::from_ref(instruction), &mut maybe);
-            }
-        }
-        let Some((block_index, instruction_index, predecessor, stale, successor)) = selected else {
-            break;
-        };
-        for block in blocks.iter_mut() {
-            for instruction in &mut block.instructions {
-                let Instr::OwnershipEvent(event) = instruction else {
-                    continue;
-                };
-                rewrite_ownership_event_owner(event, stale, successor);
-            }
-        }
-        let Instr::OwnershipEvent(crate::model::OwnershipEvent::Rearm { previous, .. }) =
-            &mut blocks[block_index].instructions[instruction_index]
-        else {
-            unreachable!("selected instruction remains a Rearm")
-        };
-        *previous = predecessor;
-        builder
-            .owner_generations
-            .entry(successor.binding)
-            .and_modify(|generation| *generation = (*generation).max(successor.generation))
-            .or_insert(successor.generation);
-    }
-}
-
-/// Refresh Join incoming identities after nested joins and repaired Rearm
-/// epochs have reached their final generations. Rewrite only when every CFG
-/// predecessor carries one unambiguous owner for the binding at the declared
-/// place; ownerless, wrong-place, and co-live edges remain validator-visible.
-fn canonicalize_join_incoming_owner_ids(blocks: &mut [BasicBlock], builder: &Builder) {
-    let _timing = crate::timing::stage("canonicalize_join_incoming_owner_ids");
-    let (_, _, maybe_exits, _) =
-        ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
-    let mut predecessors = HashMap::<u32, Vec<u32>>::new();
-    for block in blocks.iter() {
-        for successor in block.successors() {
-            predecessors.entry(successor).or_default().push(block.id);
-        }
-    }
-    for incoming_blocks in predecessors.values_mut() {
-        incoming_blocks.sort_unstable();
-        incoming_blocks.dedup();
-    }
-    for block in blocks {
-        let Some(incoming_blocks) = predecessors.get(&block.id) else {
-            continue;
-        };
-        for instruction in &mut block.instructions {
-            let Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
-                incoming,
-                replacement,
-                place,
-                ..
-            }) = instruction
-            else {
-                continue;
-            };
-            let mut refreshed = Vec::with_capacity(incoming_blocks.len());
-            let mut unambiguous = true;
-            for predecessor in incoming_blocks {
-                let candidates = maybe_exits
-                    .get(predecessor)
-                    .into_iter()
-                    .flat_map(|state| state.iter())
-                    .filter_map(|(owner, current)| {
-                        (owner.binding == replacement.binding).then_some((*owner, *current))
-                    })
-                    .collect::<Vec<_>>();
-                let [(owner, current)] = candidates.as_slice() else {
-                    unambiguous = false;
-                    break;
-                };
-                if current != place {
-                    unambiguous = false;
-                    break;
-                }
-                refreshed.push(*owner);
-            }
-            if unambiguous {
-                refreshed.sort_by_key(|owner| owner.generation);
-                refreshed.dedup();
-                *incoming = refreshed;
-            }
-        }
-    }
-}
-
-fn ownership_event_owner_ids(event: &crate::model::OwnershipEvent) -> Vec<crate::model::OwnerId> {
-    use crate::model::OwnershipEvent;
-
-    match event {
-        OwnershipEvent::Mint { owner, .. }
-        | OwnershipEvent::DropRecipe { owner, .. }
-        | OwnershipEvent::Relocate { owner, .. }
-        | OwnershipEvent::Release { owner, .. }
-        | OwnershipEvent::GuardedRelease { owner, .. }
-        | OwnershipEvent::DemoteToAlias { owner, .. }
-        | OwnershipEvent::Guard { owner, .. }
-        | OwnershipEvent::EdgeCarry { owner, .. } => vec![*owner],
-        OwnershipEvent::Transfer {
-            owner, to_owner, ..
-        } => std::iter::once(*owner)
-            .chain(to_owner.iter().copied())
-            .collect(),
-        OwnershipEvent::Reset {
-            previous,
-            replacement,
-            ..
-        }
-        | OwnershipEvent::Rearm {
-            previous,
-            replacement,
-            ..
-        } => vec![*previous, *replacement],
-        OwnershipEvent::InteriorAlias { receiver_owner, .. } => {
-            receiver_owner.iter().copied().collect()
-        }
-        OwnershipEvent::Join {
-            incoming,
-            replacement,
-            ..
-        } => incoming
-            .iter()
-            .copied()
-            .chain(std::iter::once(*replacement))
-            .collect(),
-        OwnershipEvent::ScopeExit {
-            owners, carried, ..
-        } => owners.iter().chain(carried).copied().collect(),
-        OwnershipEvent::AliasRelocate { .. } | OwnershipEvent::AliasEnd { .. } => Vec::new(),
-    }
-}
-
-fn rewrite_ownership_event_owner(
-    event: &mut crate::model::OwnershipEvent,
-    stale: crate::model::OwnerId,
-    replacement: crate::model::OwnerId,
-) {
-    use crate::model::OwnershipEvent;
-
-    for owner in ownership_event_owner_ids(event) {
-        if owner != stale {
-            continue;
-        }
-        match event {
-            OwnershipEvent::Mint { owner, .. }
-            | OwnershipEvent::DropRecipe { owner, .. }
-            | OwnershipEvent::Relocate { owner, .. }
-            | OwnershipEvent::Release { owner, .. }
-            | OwnershipEvent::GuardedRelease { owner, .. }
-            | OwnershipEvent::DemoteToAlias { owner, .. }
-            | OwnershipEvent::Guard { owner, .. }
-            | OwnershipEvent::EdgeCarry { owner, .. }
-                if *owner == stale =>
-            {
-                *owner = replacement;
-            }
-            OwnershipEvent::Transfer {
-                owner, to_owner, ..
-            } => {
-                if *owner == stale {
-                    *owner = replacement;
-                }
-                if *to_owner == Some(stale) {
-                    *to_owner = Some(replacement);
-                }
-            }
-            OwnershipEvent::Reset {
-                previous,
-                replacement: successor,
-                ..
-            }
-            | OwnershipEvent::Rearm {
-                previous,
-                replacement: successor,
-                ..
-            } => {
-                if *previous == stale {
-                    *previous = replacement;
-                }
-                if *successor == stale {
-                    *successor = replacement;
-                }
-            }
-            OwnershipEvent::InteriorAlias { receiver_owner, .. } => {
-                if *receiver_owner == Some(stale) {
-                    *receiver_owner = Some(replacement);
-                }
-            }
-            OwnershipEvent::Join {
-                incoming,
-                replacement: successor,
-                ..
-            } => {
-                for owner in incoming {
-                    if *owner == stale {
-                        *owner = replacement;
-                    }
-                }
-                if *successor == stale {
-                    *successor = replacement;
-                }
-            }
-            OwnershipEvent::ScopeExit {
-                owners, carried, ..
-            } => {
-                for owner in owners.iter_mut().chain(carried) {
-                    if *owner == stale {
-                        *owner = replacement;
-                    }
-                }
-            }
-            OwnershipEvent::AliasRelocate { .. }
-            | OwnershipEvent::AliasEnd { .. }
-            | OwnershipEvent::Mint { .. }
-            | OwnershipEvent::DropRecipe { .. }
-            | OwnershipEvent::Relocate { .. }
-            | OwnershipEvent::Release { .. }
-            | OwnershipEvent::GuardedRelease { .. }
-            | OwnershipEvent::DemoteToAlias { .. }
-            | OwnershipEvent::Guard { .. }
-            | OwnershipEvent::EdgeCarry { .. } => {}
-        }
-    }
-}
-
-/// Scope ids are opaque identities. A parent scope marker closes owners in
-/// its descendant scopes only when the explicit parent graph proves that
-/// ancestry; missing/cyclic links fail closed.
-fn lexical_scope_is_closed(
-    binding_scope: ScopeId,
-    exited_scopes: &HashSet<ScopeId>,
-    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
-) -> bool {
-    let mut current = binding_scope;
-    let mut visited = HashSet::new();
-    loop {
-        if !visited.insert(current) {
-            return false;
-        }
-        if exited_scopes.contains(&current) {
-            return true;
-        }
-        let Some(entry) = scope_info.get(&current) else {
-            return false;
-        };
-        let Some(parent) = entry.parent else {
-            return false;
-        };
-        current = parent;
-    }
-}
-
-fn apply_lexical_scope_exit_to_exact_state(
-    instruction: &Instr,
-    binding_scopes: &HashMap<BindingId, ScopeId>,
-    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
-    live: &mut drop_plan::ExactOwnerState,
-) {
-    drop_plan::apply_exact_owner_ops(std::slice::from_ref(instruction), live);
-    let Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
-        scopes,
-        carry_places,
-        ..
-    }) = instruction
-    else {
-        return;
-    };
-    let exited_scopes = scopes.iter().copied().collect::<HashSet<_>>();
-    live.retain(|owner, place| {
-        carry_places.contains(place)
-            || binding_scopes
-                .get(&owner.binding)
-                .is_none_or(|scope| !lexical_scope_is_closed(*scope, &exited_scopes, scope_info))
-    });
-}
-
-fn apply_lexical_scope_exit_to_maybe_state(
-    instruction: &Instr,
-    binding_scopes: &HashMap<BindingId, ScopeId>,
-    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
-    live: &mut drop_plan::MaybeOwnerState,
-) {
-    drop_plan::apply_maybe_owner_ops(std::slice::from_ref(instruction), live);
-    let Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
-        scopes,
-        carry_places,
-        ..
-    }) = instruction
-    else {
-        return;
-    };
-    let exited_scopes = scopes.iter().copied().collect::<HashSet<_>>();
-    live.retain(|(owner, place)| {
-        carry_places.contains(place)
-            || binding_scopes
-                .get(&owner.binding)
-                .is_none_or(|scope| !lexical_scope_is_closed(*scope, &exited_scopes, scope_info))
-    });
-}
-
-fn apply_lexical_scope_exit_to_must_state(
-    instructions: &[Instr],
-    binding_scopes: &HashMap<BindingId, ScopeId>,
-    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
-    live: &mut drop_plan::MustBindingOwnerState,
-) {
-    for instruction in instructions {
-        match instruction {
-            Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint { owner, place, .. }) => {
-                live.insert(owner.binding, *place);
-            }
-            Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
-                owner,
-                to,
-                to_owner,
-                ..
-            }) => {
-                live.remove(&owner.binding);
-                if let Some((next, destination)) = to_owner.zip(*to) {
-                    live.insert(next.binding, destination);
-                }
-            }
-            Instr::OwnershipEvent(crate::model::OwnershipEvent::Relocate { owner, to, .. }) => {
-                if let Some(place) = live.get_mut(&owner.binding) {
-                    *place = *to;
-                }
-            }
-            Instr::OwnershipEvent(
-                crate::model::OwnershipEvent::Release { owner, .. }
-                | crate::model::OwnershipEvent::GuardedRelease { owner, .. }
-                | crate::model::OwnershipEvent::DemoteToAlias { owner, .. },
-            ) => {
-                live.remove(&owner.binding);
-            }
-            Instr::OwnershipEvent(
-                crate::model::OwnershipEvent::Reset {
-                    previous,
-                    replacement,
-                    place,
-                    ..
-                }
-                | crate::model::OwnershipEvent::Rearm {
-                    previous,
-                    replacement,
-                    place,
-                    ..
-                },
-            ) => {
-                live.remove(&previous.binding);
-                live.insert(replacement.binding, *place);
-            }
-            Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
-                incoming,
-                replacement,
-                place,
-                ..
-            }) => {
-                for owner in incoming {
-                    live.remove(&owner.binding);
-                }
-                live.insert(replacement.binding, *place);
-            }
-            Instr::OwnershipEvent(crate::model::OwnershipEvent::ScopeExit {
-                scopes,
-                carry_places,
-                ..
-            }) => {
-                let exited_scopes = scopes.iter().copied().collect::<HashSet<_>>();
-                live.retain(|binding, place| {
-                    carry_places.contains(place)
-                        || binding_scopes.get(binding).is_none_or(|scope| {
-                            !lexical_scope_is_closed(*scope, &exited_scopes, scope_info)
-                        })
-                });
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Publish one exact owner generation at a CFG join whose incoming edges carry
-/// different generations of the same binding in the same physical slot.
-///
-/// Mutable loop-carried values are the canonical shape: the preheader carries
-/// the initial generation while the back edge carries the reassignment
-/// generation. Intersecting those IDs would erase ownership at the loop header;
-/// reusing either predecessor ID would make the other edge stale. Each
-/// single-successor edge therefore transfers its incoming `OwnerId` to one shared
-/// successor `OwnerId`. Checked-MIR dataflow then meets the identical generation
-/// at the header without consulting Builder generation ledgers.
-#[allow(
-    clippy::type_complexity,
-    reason = "the four returned maps are the exact/maybe/must lattices consumed together by join sealing"
-)]
-fn ownership_join_states(
-    blocks: &[BasicBlock],
-    binding_scopes: &HashMap<BindingId, ScopeId>,
-    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
-) -> (
-    HashMap<u32, drop_plan::ExactOwnerState>,
-    HashMap<u32, drop_plan::ExactOwnerState>,
-    HashMap<u32, drop_plan::MaybeOwnerState>,
-    HashMap<u32, drop_plan::MustBindingOwnerState>,
-) {
-    let _timing = crate::timing::stage("ownership_join_states");
-    let mut exact_entries = HashMap::from([(ENTRY_BLOCK_ID, drop_plan::ExactOwnerState::new())]);
-    let mut exact_exits = HashMap::new();
-    let mut maybe_entries = HashMap::from([(ENTRY_BLOCK_ID, drop_plan::MaybeOwnerState::new())]);
-    let mut maybe_exits = HashMap::new();
-    let mut must_entries =
-        HashMap::from([(ENTRY_BLOCK_ID, drop_plan::MustBindingOwnerState::new())]);
-    let mut queue = std::collections::VecDeque::from([ENTRY_BLOCK_ID]);
-    while let Some(block_id) = queue.pop_front() {
-        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
-            continue;
-        };
-        let mut exact = exact_entries.get(&block_id).cloned().unwrap_or_default();
-        let mut maybe = maybe_entries.get(&block_id).cloned().unwrap_or_default();
-        let mut must = must_entries.get(&block_id).cloned().unwrap_or_default();
-        for instruction in &block.instructions {
-            apply_lexical_scope_exit_to_exact_state(
-                instruction,
-                binding_scopes,
-                scope_info,
-                &mut exact,
-            );
-            apply_lexical_scope_exit_to_maybe_state(
-                instruction,
-                binding_scopes,
-                scope_info,
-                &mut maybe,
-            );
-        }
-        apply_lexical_scope_exit_to_must_state(
-            &block.instructions,
-            binding_scopes,
-            scope_info,
-            &mut must,
-        );
-        exact_exits.insert(block_id, exact.clone());
-        maybe_exits.insert(block_id, maybe.clone());
-        for successor in block.successors() {
-            let exact_changed = if let Some(existing) = exact_entries.get_mut(&successor) {
-                let joined = existing
-                    .iter()
-                    .filter_map(|(owner, place)| {
-                        (exact.get(owner) == Some(place)).then_some((*owner, *place))
-                    })
-                    .collect();
-                if *existing == joined {
-                    false
-                } else {
-                    *existing = joined;
-                    true
-                }
-            } else {
-                exact_entries.insert(successor, exact.clone());
-                true
-            };
-            let maybe_changed = if let Some(existing) = maybe_entries.get_mut(&successor) {
-                let before = existing.len();
-                existing.extend(maybe.iter().copied());
-                existing.len() != before
-            } else {
-                maybe_entries.insert(successor, maybe.clone());
-                true
-            };
-            let must_changed = if let Some(existing) = must_entries.get_mut(&successor) {
-                let joined = existing
-                    .iter()
-                    .filter_map(|(binding, place)| {
-                        (must.get(binding) == Some(place)).then_some((*binding, *place))
-                    })
-                    .collect();
-                if *existing == joined {
-                    false
-                } else {
-                    *existing = joined;
-                    true
-                }
-            } else {
-                must_entries.insert(successor, must.clone());
-                true
-            };
-            if exact_changed || maybe_changed || must_changed {
-                queue.push_back(successor);
-            }
-        }
-    }
-    (exact_entries, exact_exits, maybe_exits, must_entries)
-}
-
 #[cfg(test)]
 mod synthesized_identity_tests {
     use super::*;
@@ -12637,593 +12021,6 @@ mod lexical_scope_join_tests {
             state.contains(&(owner(0), Place::Local(0)))
                 && state.contains(&(owner(1), Place::Local(0)))
         }));
-    }
-}
-
-#[allow(
-    clippy::match_same_arms,
-    clippy::too_many_lines,
-    reason = "ownership SSA join construction validates predecessors, splits edges, and renames one generation atomically"
-)]
-fn materialize_exact_owner_join_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
-    let _timing = crate::timing::stage("materialize_exact_owner_join_transfers");
-    loop {
-        let (entries, exits, maybe_exits, must_entries) =
-            ownership_join_states(blocks, &builder.binding_scope, &builder.scope_info);
-        // Position of every block by id. The phi derivation resolves a
-        // predecessor, a target, and a generation's definition block by id
-        // inside per-binding loops; scanning `blocks` for each made the pass
-        // quadratic in block count. Kept current below when an edge block is
-        // appended, so a lookup never misses a block the pass itself created.
-        let mut block_positions: HashMap<u32, usize> = blocks
-            .iter()
-            .enumerate()
-            .map(|(position, block)| (block.id, position))
-            .collect();
-        let owner_types: HashMap<crate::model::OwnerId, ResolvedTy> = blocks
-            .iter()
-            .flat_map(|block| &block.instructions)
-            .filter_map(|instruction| match instruction {
-                Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint { owner, ty, .. }) => {
-                    Some((*owner, ty.clone()))
-                }
-                Instr::OwnershipEvent(
-                    crate::model::OwnershipEvent::Reset {
-                        replacement, ty, ..
-                    }
-                    | crate::model::OwnershipEvent::Rearm {
-                        replacement, ty, ..
-                    },
-                ) => Some((*replacement, ty.clone())),
-                Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
-                    to_owner: Some(owner),
-                    to_ty: Some(ty),
-                    ..
-                }) => Some((*owner, ty.clone())),
-                Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
-                    replacement,
-                    ty,
-                    ..
-                }) => Some((*replacement, ty.clone())),
-                _ => None,
-            })
-            .collect();
-        let mut predecessors: HashMap<u32, Vec<u32>> = HashMap::new();
-        for block in blocks.iter() {
-            for successor in block.successors() {
-                predecessors.entry(successor).or_default().push(block.id);
-            }
-        }
-        for incoming in predecessors.values_mut() {
-            incoming.sort_unstable();
-            incoming.dedup();
-        }
-        if std::env::var_os("HEW_DEBUG_OWNER_JOIN").is_some() {
-            for (target, incoming) in &predecessors {
-                if incoming.len() >= 2 {
-                    eprintln!(
-                        "HEW_DEBUG_OWNER_JOIN target={target} incoming={incoming:?} states={:?}",
-                        incoming
-                            .iter()
-                            .map(|block| (*block, exits.get(block)))
-                            .collect::<Vec<_>>()
-                    );
-                }
-            }
-        }
-        let mut max_generation = HashMap::<BindingId, u32>::new();
-        for owner in owner_types.keys() {
-            max_generation
-                .entry(owner.binding)
-                .and_modify(|generation| *generation = (*generation).max(owner.generation))
-                .or_insert(owner.generation);
-        }
-
-        // Exact OwnerId intersection intentionally erases a binding when a
-        // cyclic join receives different generations. Generation-erased
-        // must-own replay distinguishes that valid ownership SSA shape from a
-        // path where the owner is genuinely absent. Publish a first-class Join
-        // block parameter only when every predecessor must own the same
-        // binding/place; its incoming set is the explicit set of generations
-        // that may reach those edges.
-        let mut join_parameter = None;
-        let mut join_targets = predecessors.keys().copied().collect::<Vec<_>>();
-        join_targets.sort_unstable();
-        'join_targets: for target in join_targets {
-            let incoming_blocks = &predecessors[&target];
-            if incoming_blocks.len() < 2 {
-                continue;
-            }
-            let Some(must_live) = must_entries.get(&target) else {
-                continue;
-            };
-            let Some(target_block) = block_positions
-                .get(&target)
-                .map(|position| &blocks[*position])
-            else {
-                continue;
-            };
-            let mut bindings = must_live.iter().collect::<Vec<_>>();
-            bindings.sort_by_key(|(binding, _)| binding.0);
-            for (binding, place) in bindings {
-                if target_block.instructions.iter().any(|instruction| {
-                    matches!(
-                        instruction,
-                        Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
-                            replacement,
-                            ..
-                        }) if replacement.binding == *binding
-                    )
-                }) {
-                    continue;
-                }
-                let mut incoming_owners = HashSet::new();
-                for predecessor in incoming_blocks {
-                    let Some(state) = maybe_exits.get(predecessor) else {
-                        continue 'join_targets;
-                    };
-                    let on_edge = state
-                        .iter()
-                        .filter_map(|(owner, owner_place)| {
-                            (owner.binding == *binding && *owner_place == *place).then_some(*owner)
-                        })
-                        .collect::<Vec<_>>();
-                    if on_edge.is_empty() {
-                        continue 'join_targets;
-                    }
-                    incoming_owners.extend(on_edge);
-                }
-                let mut incoming = incoming_owners.into_iter().collect::<Vec<_>>();
-                incoming.sort_by_key(|owner| owner.generation);
-                if incoming.len() == 1
-                    && entries.get(&target).is_some_and(|state| {
-                        state
-                            .iter()
-                            .filter(|(owner, owner_place)| {
-                                owner.binding == *binding && **owner_place == *place
-                            })
-                            .count()
-                            == 1
-                            && state.contains_key(&incoming[0])
-                    })
-                {
-                    // Every edge already presents the same one exact
-                    // generation. A Join would merely rename a valid SSA
-                    // value and could cause non-termination in this sealing
-                    // loop. The important distinction is the complete
-                    // per-edge union: a common generation plus an edge-local
-                    // stale generation still requires canonicalization.
-                    continue;
-                }
-                let Some(ty) = incoming
-                    .first()
-                    .and_then(|owner| owner_types.get(owner))
-                    .cloned()
-                else {
-                    continue;
-                };
-                if incoming
-                    .iter()
-                    .any(|owner| owner_types.get(owner) != Some(&ty))
-                {
-                    continue;
-                }
-                let replacement = crate::model::OwnerId {
-                    binding: *binding,
-                    generation: max_generation
-                        .get(binding)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(1),
-                };
-                join_parameter = Some((target, incoming, replacement, *place, ty));
-                break 'join_targets;
-            }
-        }
-        if let Some((target, incoming, replacement, place, ty)) = join_parameter {
-            let Some(block) = blocks.iter_mut().find(|block| block.id == target) else {
-                continue;
-            };
-            block.instructions.insert(
-                0,
-                Instr::OwnershipEvent(crate::model::OwnershipEvent::Join {
-                    incoming,
-                    replacement,
-                    place,
-                    ty,
-                }),
-            );
-            // Freeze the Join's inherited physical guard before renaming a
-            // dominated construction-time Rearm successor. The historical
-            // incoming generation is about to become the repaired backedge
-            // epoch; retaining the already-proved Join guard keeps both
-            // sequential generations on one exact flag without consulting
-            // Builder metadata.
-            drop_plan::materialize_successor_guard_authority(blocks);
-            // A static assignment generation in this Join's dominated loop
-            // body was authored before the phi existed. Repair that exact
-            // sequential lineage now, before the next join-search iteration
-            // can mistake its stale successor for a second co-live epoch.
-            canonicalize_join_dominated_rearm_lineages(blocks, builder);
-            // Introducing a block parameter changes the exact generation
-            // seen by static overwrite/consume operations in its dominated
-            // region. Re-key those terminal operations immediately, before
-            // another join-search iteration can mistake the stale identity
-            // for a second live generation.
-            deduplicate_ownership_spines(blocks, builder);
-            canonicalize_terminal_transfer_owner_ids(blocks);
-            canonicalize_release_owner_ids(blocks);
-            continue;
-        }
-
-        // The join-parameter phase above `continue`s the fixpoint whenever it
-        // changes anything, so `blocks` is frozen from here to the mutation at
-        // the end of this iteration. Dominance is therefore derived at most
-        // once here and read by both the back-edge admission below and the
-        // rename that follows a selection. Deriving it inside the per-binding
-        // admission recomputed the whole dominator fixpoint per candidate;
-        // deriving it unconditionally paid for the fixpoint on the many
-        // iterations that select nothing needing it.
-        let mut join_dominators: Option<HashMap<u32, HashSet<u32>>> = None;
-        let mut targets = predecessors.keys().copied().collect::<Vec<_>>();
-        targets.sort_unstable();
-        let mut selected = None;
-        'targets: for target in targets {
-            let incoming = &predecessors[&target];
-            if incoming.len() < 2
-                || incoming.iter().any(|predecessor| {
-                    block_positions
-                        .get(predecessor)
-                        .map(|position| &blocks[*position])
-                        .is_none_or(|block| {
-                            let successors = block.successors();
-                            successors != vec![target]
-                                && !matches!(
-                                    block.terminator,
-                                    Terminator::Branch {
-                                        then_target,
-                                        else_target,
-                                        ..
-                                    } if then_target == target || else_target == target
-                                )
-                        })
-                })
-            {
-                continue;
-            }
-            let Some(first_state) = exits.get(&incoming[0]) else {
-                continue;
-            };
-            let mut bindings = first_state
-                .keys()
-                .map(|owner| owner.binding)
-                .collect::<Vec<_>>();
-            bindings.sort_by_key(|binding| binding.0);
-            bindings.dedup();
-            for binding in bindings {
-                // A first-class block Join already is the ownership-SSA
-                // parameter for this binding.  Do not stack the older
-                // edge-transfer phi on top of it: doing so creates two live
-                // generations at the block entry and makes the later static
-                // overwrite name whichever duplicate happened to be visited
-                // last.  The Join interpreter canonicalizes every incoming
-                // generation of the binding to its one replacement.
-                if block_positions
-                    .get(&target)
-                    .map(|position| &blocks[*position])
-                    .is_some_and(|block| {
-                        block.instructions.iter().any(|instruction| {
-                            matches!(
-                                instruction,
-                                Instr::OwnershipEvent(
-                                    crate::model::OwnershipEvent::Join { replacement, .. }
-                                ) if replacement.binding == binding
-                            )
-                        })
-                    })
-                {
-                    continue;
-                }
-                let mut owners = Vec::with_capacity(incoming.len());
-                for predecessor in incoming {
-                    let Some(state) = exits.get(predecessor) else {
-                        continue 'targets;
-                    };
-                    let mut matching = state
-                        .iter()
-                        .filter_map(|(owner, place)| {
-                            (owner.binding == binding).then_some((*owner, *place))
-                        })
-                        .collect::<Vec<_>>();
-                    matching.sort_by_key(|(owner, _)| owner.generation);
-                    let Some((owner, place)) = matching.last().copied() else {
-                        owners.clear();
-                        break;
-                    };
-                    if matching
-                        .iter()
-                        .any(|(_, candidate_place)| *candidate_place != place)
-                    {
-                        owners.clear();
-                        break;
-                    }
-                    owners.push((*predecessor, owner, place));
-                }
-                if owners.len() != incoming.len()
-                    || owners.windows(2).all(|pair| pair[0].1 == pair[1].1)
-                    || owners.windows(2).any(|pair| pair[0].2 != pair[1].2)
-                {
-                    continue;
-                }
-                let Some(ty) = owners
-                    .first()
-                    .and_then(|(_, owner, _)| owner_types.get(owner))
-                    .cloned()
-                else {
-                    continue;
-                };
-                if owners
-                    .iter()
-                    .any(|(_, owner, _)| owner_types.get(owner) != Some(&ty))
-                {
-                    continue;
-                }
-                // A backedge may carry either an edge-local definition or a
-                // successor generation minted earlier in the loop after the
-                // header generation was terminally consumed. The latter is
-                // the ordinary `iter = iter.next().1` shape. Admit it only
-                // when its unique definition dominates the backedge and the
-                // exact state immediately before that definition contains no
-                // live generation of the same binding.
-                let dominators = join_dominators.get_or_insert_with(|| block_dominators(blocks));
-                let backedge_owner_is_exact_successor =
-                    owners.iter().all(|(predecessor, owner, _)| {
-                        let is_back_edge = dominators
-                            .get(predecessor)
-                            .is_some_and(|set| set.contains(&target));
-                        if !is_back_edge {
-                            return true;
-                        }
-                        let definitions = blocks
-                            .iter()
-                            .flat_map(|block| {
-                                block.instructions.iter().enumerate().filter_map(
-                                    move |(instruction_index, instruction)| {
-                                        matches!(
-                                            instruction,
-                                            Instr::OwnershipEvent(
-                                                crate::model::OwnershipEvent::Mint {
-                                                    owner: definition,
-                                                    ..
-                                                }
-                                                    | crate::model::OwnershipEvent::Reset {
-                                                        replacement: definition,
-                                                        ..
-                                                    }
-                                                    | crate::model::OwnershipEvent::Rearm {
-                                                        replacement: definition,
-                                                        ..
-                                                    }
-                                                    | crate::model::OwnershipEvent::Transfer {
-                                                        to_owner: Some(definition),
-                                                        ..
-                                                    }
-                                            ) if definition == owner
-                                        )
-                                        .then_some((block.id, instruction_index))
-                                    },
-                                )
-                            })
-                            .collect::<Vec<_>>();
-                        // A generation produced by an earlier CFG phi has one
-                        // explicit Transfer definition on every incoming edge,
-                        // not one global definition. Treat those edge-local
-                        // writes as one definition when they all converge on a
-                        // common join that dominates this backedge. This keeps
-                        // nested branch/join ownership composable: the inner
-                        // phi is an ordinary exact generation at the outer loop
-                        // header, without falling back to Builder ancestry.
-                        let is_prior_join_phi = definitions.len() >= 2
-                            && blocks.iter().any(|join| {
-                                definitions.iter().all(|(definition_block, index)| {
-                                    let Some(definition) = block_positions
-                                        .get(definition_block)
-                                        .map(|position| &blocks[*position])
-                                    else {
-                                        return false;
-                                    };
-                                    definition.successors().contains(&join.id)
-                                        && matches!(
-                                            definition.instructions.get(*index),
-                                            Some(Instr::OwnershipEvent(
-                                                crate::model::OwnershipEvent::Transfer {
-                                                    to_owner: Some(next),
-                                                    to: Some(_),
-                                                    ..
-                                                }
-                                            )) if *next == *owner
-                                        )
-                                }) && dominators
-                                    .get(&join.id)
-                                    .is_some_and(|set| set.contains(&target))
-                                    && dominators
-                                        .get(predecessor)
-                                        .is_some_and(|set| set.contains(&join.id))
-                            });
-                        if is_prior_join_phi {
-                            return true;
-                        }
-                        let [(definition_block, instruction_index)] = definitions.as_slice() else {
-                            return false;
-                        };
-                        if !dominators
-                            .get(definition_block)
-                            .is_some_and(|set| set.contains(&target))
-                            || !dominators
-                                .get(predecessor)
-                                .is_some_and(|set| set.contains(definition_block))
-                        {
-                            return false;
-                        }
-                        let Some(definition) = block_positions
-                            .get(definition_block)
-                            .map(|position| &blocks[*position])
-                        else {
-                            return false;
-                        };
-                        let Some(mut live_before_definition) =
-                            entries.get(definition_block).cloned()
-                        else {
-                            return false;
-                        };
-                        drop_plan::apply_exact_owner_ops(
-                            &definition.instructions[..*instruction_index],
-                            &mut live_before_definition,
-                        );
-                        !live_before_definition
-                            .keys()
-                            .any(|candidate| candidate.binding == binding)
-                    });
-                if !backedge_owner_is_exact_successor {
-                    continue;
-                }
-                let replacement = crate::model::OwnerId {
-                    binding,
-                    generation: max_generation
-                        .get(&binding)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(1),
-                };
-                selected = Some((target, owners, replacement, ty));
-                break 'targets;
-            }
-        }
-        let Some((target, owners, replacement, ty)) = selected else {
-            break;
-        };
-        if std::env::var_os("HEW_DEBUG_OWNER_JOIN").is_some() {
-            eprintln!("HEW_DEBUG_OWNER_JOIN {owners:?} -> {replacement:?} {ty:?}");
-        }
-        let dominators = join_dominators.get_or_insert_with(|| block_dominators(blocks));
-        let rewrite_after_join = owners
-            .iter()
-            .filter_map(|(predecessor, owner, _)| {
-                let is_back_edge = dominators
-                    .get(predecessor)
-                    .is_some_and(|set| set.contains(&target));
-                (!is_back_edge).then_some((*owner, replacement))
-            })
-            .collect::<HashMap<_, _>>();
-        for (predecessor, owner, place) in &owners {
-            let transfer = Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
-                owner: *owner,
-                from: *place,
-                to: Some(*place),
-                to_owner: Some(replacement),
-                to_ty: Some(ty.clone()),
-            });
-            let Some(predecessor_index) = block_positions.get(predecessor).copied() else {
-                continue;
-            };
-            if blocks[predecessor_index].successors() == vec![target] {
-                blocks[predecessor_index].instructions.push(transfer);
-                continue;
-            }
-
-            // Checked arithmetic and other trapping operations commonly make
-            // a loop latch a two-way Branch: one edge returns to the header,
-            // while the other traps.  The ownership phi belongs only to the
-            // header edge.  Split that edge instead of either dropping the
-            // transfer or publishing it before the Branch (which would rename
-            // ownership on the unrelated exit as well).
-            let edge_id = blocks
-                .iter()
-                .map(|block| block.id)
-                .max()
-                .unwrap_or(ENTRY_BLOCK_ID)
-                .saturating_add(1);
-            let Terminator::Branch {
-                then_target,
-                else_target,
-                ..
-            } = &mut blocks[predecessor_index].terminator
-            else {
-                continue;
-            };
-            if *then_target == target {
-                *then_target = edge_id;
-            }
-            if *else_target == target {
-                *else_target = edge_id;
-            }
-            block_positions.insert(edge_id, blocks.len());
-            blocks.push(BasicBlock {
-                id: edge_id,
-                statements: Vec::new(),
-                instructions: vec![transfer],
-                terminator: Terminator::Goto { target },
-            });
-        }
-        // Static instructions in a loop body are shared by the first and every
-        // subsequent iteration.  Rewrite references to the non-backedge
-        // incoming identity to the phi identity throughout the join-dominated
-        // region; backedge definitions remain branch-local until their edge
-        // transfer above.  This is ordinary SSA renaming over explicit MIR
-        // owner operations, not retrospective move ancestry.
-        for block in blocks.iter_mut().filter(|block| {
-            dominators
-                .get(&block.id)
-                .is_some_and(|set| set.contains(&target))
-        }) {
-            for instruction in &mut block.instructions {
-                let Instr::OwnershipEvent(event) = instruction else {
-                    continue;
-                };
-                match event {
-                    crate::model::OwnershipEvent::Transfer {
-                        owner, to_owner, ..
-                    } => {
-                        if *to_owner != Some(replacement) {
-                            if let Some(next) = rewrite_after_join.get(owner) {
-                                *owner = *next;
-                            }
-                        }
-                    }
-                    crate::model::OwnershipEvent::Relocate { owner, .. }
-                    | crate::model::OwnershipEvent::Release { owner, .. }
-                    | crate::model::OwnershipEvent::GuardedRelease { owner, .. }
-                    | crate::model::OwnershipEvent::DemoteToAlias { owner, .. }
-                    | crate::model::OwnershipEvent::Guard { owner, .. } => {
-                        if let Some(next) = rewrite_after_join.get(owner) {
-                            *owner = *next;
-                        }
-                    }
-                    crate::model::OwnershipEvent::Reset { previous, .. }
-                    | crate::model::OwnershipEvent::Rearm { previous, .. } => {
-                        if let Some(next) = rewrite_after_join.get(previous) {
-                            *previous = *next;
-                        }
-                    }
-                    crate::model::OwnershipEvent::Mint { .. }
-                    | crate::model::OwnershipEvent::DropRecipe { .. }
-                    | crate::model::OwnershipEvent::Join { .. }
-                    | crate::model::OwnershipEvent::InteriorAlias { .. }
-                    | crate::model::OwnershipEvent::AliasRelocate { .. }
-                    | crate::model::OwnershipEvent::AliasEnd { .. }
-                    | crate::model::OwnershipEvent::EdgeCarry { .. }
-                    | crate::model::OwnershipEvent::ScopeExit { .. } => {}
-                }
-            }
-        }
-        // Installing this phi can make an overwrite's formerly provisional
-        // Release name resolvable at its exact entry state. Normalize that
-        // physical release before searching for another phi; otherwise the
-        // stale identity fails to end the incoming generation and the next
-        // iteration invents a second, spurious join generation from it.
-        deduplicate_ownership_spines(blocks, builder);
-        canonicalize_terminal_transfer_owner_ids(blocks);
-        canonicalize_release_owner_ids(blocks);
     }
 }
 

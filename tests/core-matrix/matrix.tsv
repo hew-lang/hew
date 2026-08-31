@@ -228,7 +228,7 @@ opaque__index	PASS
 opaque__iterate	NYI-CLEAN	tests/core-matrix/cells/opaque__iterate.hew:30:14: error: `VecIter<Dq>` is not supported: `VecIter.next()` clones each element into an independent owner, but resource/linear value `Dq` has no semantic clone/retain operat
 opaque__map_key	NYI-CLEAN	tests/core-matrix/cells/opaque__map_key.hew:27:5: error: layout-managed HashMap keys require Copy; `Dq` is an indirect (managed) record and is not yet supported as a layout HashMap key
 opaque__move	PASS
-opaque__mutate	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: ordinary helper crash snapshot for Local(4) has conflicting typed drop descriptors across exit plans: registered ElabDrop { place: Local(4), ty: Named { name: "Dq", args: [], builtin:
+opaque__mutate	PASS
 opaque__pass_fn	PASS
 opaque__read_back	NYI-INTERNAL	tests/core-matrix/cells/opaque__read_back.hew:28:11: error: E_NOT_YET_IMPLEMENTED: MIR lowering for drop-only `Vec` element operation `get` is not implemented yet
 opaque__return_fn	PASS
@@ -335,7 +335,7 @@ traitobj__format	NYI-CLEAN	tests/core-matrix/cells/traitobj__format.hew:32:18: e
 traitobj__iterate	NYI-CLEAN	tests/core-matrix/cells/traitobj__iterate.hew:36:14: error: direct `for` over `Vec<dyn Trait>` would require a cloneable borrowed snapshot; use `for value in values.into_iter()` to consume and move each trait object inst
 traitobj__map_key	NYI-CLEAN	tests/core-matrix/cells/traitobj__map_key.hew:32:12: error: `dyn Named` does not satisfy the required bounds for `Map` (K: Hash, K: Eq)
 traitobj__move	NYI-INTERNAL	error: E_MIR_ICE: internal compiler error: the ownership lowering of `main` violates its `ownership-generation` invariant (owner b4#0 is transferred after its generation ended at instruction 16)
-traitobj__mutate	NYI-INTERNAL	error: E_MIR_ICE: internal compiler error: the ownership lowering of `main` violates its `ownership-place` invariant (place _3 has more than one live exact owner generation [b4#0, b4#1] after instruction 24)
+traitobj__mutate	PASS
 traitobj__pass_fn	PASS
 traitobj__read_back	NYI-CLEAN	tests/core-matrix/cells/traitobj__read_back.hew:34:11: error: `Vec<dyn Trait>.get()` is not supported because returning an owned element would require a semantic trait-object clone; use pop/remove or consuming iteration
 traitobj__return_fn	PASS

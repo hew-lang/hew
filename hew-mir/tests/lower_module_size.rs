@@ -24,7 +24,7 @@ const _: () = assert!(CEILING <= 10_000);
 /// trips the ratchet, and every unlisted module remains capped at [`CEILING`].
 /// A module that comes back under [`CEILING`] loses its exception here rather
 /// than keeping a cap no longer binding on it.
-const HARD_CUTOVER_CEILINGS: &[(&str, usize)] = &[("mod.rs", 16_268), ("temp_drop.rs", 10_851)];
+const HARD_CUTOVER_CEILINGS: &[(&str, usize)] = &[("mod.rs", 14_865), ("temp_drop.rs", 10_851)];
 
 fn ceiling_for(relative: &Path) -> usize {
     HARD_CUTOVER_CEILINGS

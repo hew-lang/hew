@@ -2381,7 +2381,7 @@ fn one_owner_per_place_findings(checked: &CheckedMirFunction) -> Vec<String> {
 }
 
 #[test]
-fn second_mint_over_a_live_place_is_rejected() {
+fn raw_duplicate_mint_into_live_place_is_rejected_by_checked_mir_verification() {
     use crate::model::{OwnerId, OwnershipEvent};
 
     let payload = OwnerId {
@@ -2397,7 +2397,7 @@ fn second_mint_over_a_live_place_is_rejected() {
     // The pre-fix `quote(when()?)` stream: the `__try_ok` payload owner is
     // relocated into the call-argument slot and the join then mints the
     // argument temp over the same slot.
-    let checked = checked_with_ownership_events(vec![
+    let raw_duplicate_mint_stream = vec![
         Instr::OwnershipEvent(OwnershipEvent::Mint {
             owner: payload,
             place: Place::Local(13),
@@ -2421,8 +2421,17 @@ fn second_mint_over_a_live_place_is_rejected() {
             owner: temp,
             recipe,
         }),
-    ]);
-    let findings = one_owner_per_place_findings(&checked);
+    ];
+    let checked = checked_with_ownership_events(raw_duplicate_mint_stream);
+    let findings = validate_ownership_events(&checked)
+        .into_iter()
+        .filter_map(|finding| match finding {
+            MirCheck::DischargeAuthorityDrift { name, reason, .. } if name == "ownership-place" => {
+                Some(reason)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
         findings.len(),
         1,
@@ -3161,47 +3170,28 @@ fn join_lineage_rejects_missing_incoming_and_ambiguous_owner() {
 }
 
 #[test]
-fn final_join_refresh_leaves_ambiguous_stale_event_for_validation() {
-    use crate::model::{OwnerId, OwnershipEvent};
-
+fn join_lineage_rejects_its_successor_as_an_incoming_owner() {
+    use crate::model::OwnershipEvent;
     let mut checked = checked_join_rearm_fixture();
-    let extra = OwnerId {
-        binding: BindingId(180),
-        generation: 4,
-    };
-    checked.blocks[1]
+    let (incoming, replacement) = checked.blocks[3]
         .instructions
-        .push(Instr::OwnershipEvent(OwnershipEvent::Mint {
-            owner: extra,
-            place: Place::Local(15),
-            ty: ResolvedTy::String,
-        }));
-    let declared_before = checked.blocks[3]
-        .instructions
-        .iter()
+        .iter_mut()
         .find_map(|instruction| match instruction {
-            Instr::OwnershipEvent(OwnershipEvent::Join { incoming, .. }) => Some(incoming.clone()),
+            Instr::OwnershipEvent(OwnershipEvent::Join {
+                incoming,
+                replacement,
+                ..
+            }) => Some((incoming, *replacement)),
             _ => None,
         })
         .expect("fixture contains a Join");
-
-    super::canonicalize_join_incoming_owner_ids(&mut checked.blocks, &Builder::default());
-
-    let declared_after = checked.blocks[3]
-        .instructions
-        .iter()
-        .find_map(|instruction| match instruction {
-            Instr::OwnershipEvent(OwnershipEvent::Join { incoming, .. }) => Some(incoming),
-            _ => None,
-        })
-        .expect("fixture contains a Join");
-    assert_eq!(declared_after, &declared_before);
+    incoming.push(replacement);
     assert!(validate_ownership_events(&checked)
         .iter()
         .any(|finding| matches!(
             finding,
             MirCheck::DischargeAuthorityDrift { reason, .. }
-                if reason.contains("does not enumerate its exact possible incoming owners")
+                if reason.contains("not a non-empty set of distinct same-binding predecessors and successor")
         )));
 }
 
@@ -5874,8 +5864,9 @@ fn join_canonicalizes_common_and_edge_local_generations() {
         BasicBlock {
             id: 2,
             statements: vec![],
-            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Mint {
-                owner: edge_local,
+            instructions: vec![Instr::OwnershipEvent(OwnershipEvent::Reset {
+                previous: common,
+                replacement: edge_local,
                 place,
                 ty: ResolvedTy::String,
             })],

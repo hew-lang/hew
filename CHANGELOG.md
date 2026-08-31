@@ -2,20 +2,89 @@
 
 ## [Unreleased]
 
-### Changed
+## [0.6.0-rc3] - 2026-08-31
 
-- **`panic()` in main context unwinds with cleanup.** A panic outside an actor
-  now runs the same drop obligations and `#[resource]` closes as a panic inside
-  one, instead of ending the process with them skipped. The panic status and the
-  message on stderr are unchanged.
+Hew v0.6.0-rc3 is the third release candidate for v0.6. Checked-MIR exit
+cleanup now derives from ownership replay, and the candidate settles several
+actor, wire, machine, and tooling contracts. It intentionally precedes
+remaining post-rc3 edge-owner, generator-ownership, and known-NYI work; an
+accepted-set change after this candidate requires rc4.
 
 ### Changed (breaking)
 
-- **Supervised actors use `ChildRef<T>` handles.** Named child and static-pool
-  accessors no longer return `LocalPid<T>`. A `ChildRef<T>` carries its
-  supervisor identity and child slot, so asks and tells re-resolve the current
-  incarnation after restarts and fail closed while the role is unavailable or
-  permanently stopped.
+- **Record declarations use `type`.** The `record` keyword is removed. Rewrite
+  `record Name { ... }` as `type Name { ... }`, and
+  `record Name(T, U);` as `type Name(T, U);`. (#3064)
+- **Bare variant expressions are errors.** Replace `Variant` with contextual
+  `.Variant` or `Type.Variant`; `hew fmt --migrate --root .` performs the
+  mechanical migration. (#3136)
+- **Supervised actors use `ChildRef<T>` handles.** Named supervised actor-child
+  and static actor-pool member accessors no longer return `LocalPid<T>`: they
+  return `ChildRef<T>`. Nested-supervisor accessors remain `LocalPid<Sub>`. A
+  `ChildRef<T>` carries its supervisor identity and child slot, so asks and
+  tells re-resolve the current incarnation after restarts and fail closed while
+  the role is unavailable or permanently stopped. (#3062)
+- **Optional wire fields must be `Option<T>`.** Change
+  `field: T @N optional` to `field: Option<T> @N optional`; the marker no
+  longer supplies an implicit default. (#3178)
+- **Some fire-and-forget actor calls are result-bearing.** Calls to an actor
+  with `drop_new`, `drop_old`, `fail`, or `coalesce` mailbox policy return
+  `Result<(), SendError>`; handle `MessageLost` when policy discarded,
+  replaced, or coalesced work, and `Full` for `fail`. Unbounded and bounded
+  `block` mailboxes retain the unit-typed cooperative send surface. A
+  `coalesce` fallback cannot be `block`; choose `drop_new`, `drop_old`, or
+  `fail`, or make `block` the top-level overflow policy.
+- **Record values have structural equality, not identity.** `is` is rejected
+  for a record value; use `==`. Ownership markers on tuple-form product
+  declarations are likewise rejected because that form cannot preserve the
+  marker. Use a named `type` or enum for a resource or linear declaration.
+  (#3103, #3133)
+
+### Changed — ownership and compiler correctness
+
+- **Checked-MIR exit cleanup derives from ownership replay.** Direct
+  consuming calls hand their cleanup obligation to the callee on both normal
+  and unwind paths, composite-result joins end the arm owner before publishing
+  the result owner, and checked MIR rejects overlapping exact owners for one
+  place. The retired builder-ledger and per-exit admission paths can no longer
+  disagree with the replay that validates the plan. (#3173)
+- **Ownership-state replay work is bounded and checked.** A memo keyed by the
+  replay inputs avoids repeated whole-function derivations, debug and test
+  builds validate cached answers against fresh replay, and MIR cost gates hold
+  both per-body work and growth with program size. (#3177)
+
+### Changed — wire format
+
+- **Optional wire fields must resolve to `Option<T>`.** The optional marker is
+  an admission rule after aliases and imports resolve; it does not introduce an
+  implicit default. Update a marked field whose type is not `Option<T>`. (#3178)
+- **Wire key presence is distinct from an `Option` value.** CBOR and text
+  codecs carry required or optional field presence independently from a null
+  `Option` encoding, reject presence-compatibility flips, and fail closed when
+  required metadata or keys are absent. (#3182, fixes #3179)
+
+### Fixed — runtime, machine, and tooling correctness
+
+- **Native main-context panics unwind with cleanup.** Native targets run the
+  same drop obligations and `#[resource]` closes as actor panics before exit.
+  `wasm32` main-context panic cleanup remains divergent while portable WASM
+  exception handling is unavailable (#3155; wasm32 follow-up #3150).
+- **Crash and wake paths retain their live incarnation.** Crash reclamation is
+  the sole owner of an abandoned coroutine frame, crash reports identify the
+  actor and handler, and readiness wakes resolve an actor incarnation instead
+  of a reused address. A channel send whose drain cannot complete fails closed.
+- **Imported machines resolve as declared.** Contextual variants in an imported
+  machine body work, package imports export both a machine and its event
+  companion, and event payload types participate in derived-marker checks.
+- **Every compiler host uses one session.** CLI, LSP, WASM, and fuzzing agree on
+  lowering and backend-front checks; LSP paths round-trip through file URIs,
+  and `hew run`/`hew debug` use a sweepable temporary home. (#3166)
+
+### Validation
+
+- **Multi-module compiler regressions are covered.** The regression corpus
+  exercises indirect ownership, imported supervised-child layouts, first-path
+  symlink ownership, collection reassignment, and wire JSON behaviour. (#3180)
 
 ## [0.6.0-rc2] - 2026-08-24
 

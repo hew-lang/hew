@@ -76,7 +76,8 @@ The body shapes (the `wire-body` rule and its parts):
   uses the explicit `@N` from the wire layout, or a 1-based positional
   fallback for layout-less records. Keys are emitted in canonical
   (ascending) order. Forward-compatible: a decoder tolerates unknown keys
-  and treats absent keys as optional/default.
+  but tolerates an absent known key only when checked field metadata marks it
+  `optional`. Required fields use the failing selector.
 - A **`#[wire]` enum** encodes as either a **bare unsigned tag `N`** (a unit
   variant) or a **single-entry map `{ N => [field0, field1, …] }`** (a
   payload variant, the "map-of-one"). The variant tag is the declaration
@@ -90,6 +91,19 @@ The body shapes (the `wire-body` rule and its parts):
   `#[wire]` types/enums (nested maps / unit-tag / map-of-one). A value
   type outside this floor fails closed at codegen ("unsupported value type …
   outside the supported wire-body floor") and never reaches the wire.
+
+Field presence and value shape are orthogonal. A required `Option<T>` always
+emits its key (`None` is CBOR null) and rejects an absent key. An
+`optional Option<T>` omits its key for `None`, reconstructs `None` from either
+absence or a present null, and emits the key for `Some`. A required bare `T`
+always emits its key and rejects both absence and null. Unknown tags remain
+tolerated. The compiler carries this choice as `WireFieldPresence`; text
+descriptors repeat it explicitly and the runtime rejects descriptors where it
+is missing. Edition-2026 plain Serializable records are the only compatibility
+bridge: because they have no `optional` field surface, codegen records every
+field as explicitly required rather than guessing from its type. The bridge is
+obsolete when plain records carry checked presence metadata; at that point a
+missing entry becomes a compiler error.
 
 ### Tag-stability asymmetry — explicit `@N` vs ordinal
 
@@ -183,6 +197,9 @@ The round-trip and version-rejection tests live in
 - Decoders must reject unknown `version` values rather than degrading.
   Best-effort parsing of an unrecognised version is a silent
   compatibility hazard.
+- A required/optional presence flip is a wire-shape change. Compatibility
+  tooling rejects both directions until directional interoperability is
+  separately proven and specified.
 - The transport container (QUIC stream or TCP length-prefix) is
   responsible for framing on the wire. Do **not** re-encode payload
   length inside the CBOR envelope — the schema deliberately omits a

@@ -14077,6 +14077,15 @@ impl LowerCtx {
             }
         }
 
+        // Register concrete generic-enum layouts from stored field types even
+        // when no expression constructs the enclosing value. Codegen emits a
+        // declared type's layout unconditionally, so expression-only discovery
+        // otherwise leaves declaration-only `Option<T>` fields without a layout.
+        // This can go away when monomorphization owns layout discovery globally.
+        for field in &fields {
+            self.try_register_enum_instantiation_ty(&field.ty, &field.span);
+        }
+
         // Reuse the stable ItemId pre-allocated during the record/
         // type-decl pre-pass. Falling back to a fresh id keeps
         // the path safe if the pre-pass ever skips a decl.

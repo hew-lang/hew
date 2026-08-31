@@ -5648,6 +5648,10 @@ run_accept_expect_status "wire_cbor_scalars" 0
 run_accept_expect_status "wire_cbor_bytes" 0
 run_accept_expect_status "wire_cbor_option_some" 42
 run_accept_expect_status "wire_cbor_option_none" 42
+run_accept_expect_status "wire_presence_matrix" 42
+run_accept_expect_trap "wire_cbor_missing_required_value_traps"
+run_accept_expect_trap "wire_cbor_missing_required_option_traps"
+run_accept_expect_trap "wire_cbor_null_required_value_traps"
 run_accept_expect_status "wire_cbor_vec_int" 42
 run_accept_expect_status "wire_cbor_vec_struct" 42
 run_accept_expect_status "wire_cbor_vec_string" 42
@@ -5694,6 +5698,10 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_option_option_rejected.hew" \
     "Option<Option<_>> is ambiguous under the null encoding" \
     "wire_cbor_option_option_rejected"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/wire_cbor_optional_option_option_rejected.hew" \
+    "Option<Option<_>> is ambiguous under the null encoding" \
+    "wire_cbor_optional_option_option_rejected"
 # `Vec<Option<string>>` now fails closed at the earlier owned-element Vec
 # admission (a heap-owning `Option` payload has no synthesised clone/drop thunk
 # path), before the wire-body floor is reached — a stricter, clearer rejection

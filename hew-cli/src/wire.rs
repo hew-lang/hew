@@ -334,9 +334,20 @@ fn compare_wire_struct(
                     describe_field_type(current_field)
                 ));
             }
-            if baseline_field.is_optional && !current_field.is_optional {
-                report.warnings.push(format!(
-                    "new required field `{wire_name}.{} @{number}` has no default",
+            if baseline_field.is_optional != current_field.is_optional {
+                let baseline_presence = if baseline_field.is_optional {
+                    "optional"
+                } else {
+                    "required"
+                };
+                let current_presence = if current_field.is_optional {
+                    "optional"
+                } else {
+                    "required"
+                };
+                report.errors.push(format!(
+                    "changed field presence for `{wire_name}.{} @{number}`: \
+                     `{baseline_presence}` -> `{current_presence}`",
                     current_field.name
                 ));
             }

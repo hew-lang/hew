@@ -23,7 +23,12 @@
 //! Every field carries a `@N` tag — a stable wire identifier assigned once
 //! and never reused, even after the field is removed; reusing a tag number
 //! for a different field is a schema-compatibility break, not just a style
-//! issue. `e.to_json()` and `TypeName.from_json(text)` (a call on the type
+//! issue. A required `Option<T>` always emits its key and encodes `None` as
+//! null; only `Option<T> @N optional` may omit the key for `None`. Missing
+//! required keys fail decoding, while missing or explicitly-null optional keys
+//! reconstruct `None`. Presence is explicit schema metadata, not inferred from
+//! the value type, and changing it is a rejected compatibility change.
+//! `e.to_json()` and `TypeName.from_json(text)` (a call on the type
 //! name itself, not `::`) round-trip a `#[wire]` type through JSON today.
 //! `HashMap` and `HashSet` may be fields of that wire type: string-keyed maps
 //! become JSON objects, other supported primitive-key maps become arrays of

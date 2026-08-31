@@ -31,10 +31,12 @@
 //! ## Decoder: a consuming tree cursor
 //! `hew_cbor_de_new` parses the whole payload up front (rejecting trailing bytes)
 //! and stages the root value. `enter_map` converts a staged map into a
-//! by-integer-key lookup; `select_key` removes and stages the value for one tag;
-//! the typed reads (`hew_cbor_de_i64`, ...) consume the staged value. The reader
-//! OWNS the parsed value tree, so `hew_cbor_de_free` drops every parsed-but-
-//! unconsumed sub-value — no leak of a list/map the walk never reached.
+//! by-integer-key lookup; `select_key` removes and stages a required value,
+//! while `select_optional_key` stages null without latching failure when checked
+//! presence metadata permits absence. The typed reads (`hew_cbor_de_i64`, ...)
+//! consume the staged value. The reader OWNS the parsed value tree, so
+//! `hew_cbor_de_free` drops every parsed-but-unconsumed sub-value — no leak of a
+//! list/map the walk never reached.
 //!
 //! ## Fail-closed (CLAUDE.md §2)
 //! Every malformed / truncated / type-mismatched / missing-required-key / unknown
@@ -690,6 +692,32 @@ pub unsafe extern "C" fn hew_cbor_de_select_key(reader: *mut c_void, key: u64) {
         Some(value) => r.staged = Some(value),
         None => r.failed = true,
     }
+}
+
+/// Select an optional integer-keyed map value without latching failure when
+/// the key is absent. Absence is staged as CBOR null so the ordinary
+/// `Option<T>` value decoder reconstructs `None`; an explicitly-present null
+/// follows the same value path. Structural misuse (no open map) still fails
+/// closed.
+///
+/// WHY this is separate from [`hew_cbor_de_select_key`]: key presence is wire
+/// schema metadata, independent of whether the field value type is `Option<T>`.
+/// Required `Option<T>` fields must keep rejecting absence while accepting a
+/// present null.
+///
+/// # Safety
+/// `reader` must be a live handle from [`hew_cbor_de_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_de_select_optional_key(reader: *mut c_void, key: u64) {
+    // SAFETY: reader is a live handle per this fn's contract.
+    let Some(r) = (unsafe { as_de_reader(reader) }) else {
+        return;
+    };
+    let Some(DeFrame::Map(map)) = r.stack.last_mut() else {
+        r.failed = true;
+        return;
+    };
+    r.staged = Some(map.remove(&i128::from(key)).unwrap_or(Value::Null));
 }
 
 /// Enter a staged collection map for sequential key/value decoding.
@@ -1478,6 +1506,68 @@ mod tests {
         }
     }
 
+    /// Optional selection distinguishes schema-permitted absence from a missing
+    /// required key without weakening structural failures. The absent value is
+    /// staged as null for the ordinary `Option<T>` decoder; a present value is
+    /// still consumed normally.
+    #[test]
+    fn missing_optional_key_stages_none_without_latching_failure() {
+        // SAFETY: test-controlled handles.
+        unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_begin_map(buf);
+            hew_cbor_ser_key_u64(buf, 1);
+            hew_cbor_ser_i64(buf, 7);
+            hew_cbor_ser_end_map(buf);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            hew_cbor_de_enter_map(r);
+            hew_cbor_de_select_optional_key(r, 2);
+            assert_eq!(hew_cbor_de_failed(r), 0, "absence must not latch failure");
+            assert_eq!(hew_cbor_de_is_null(r), 1, "absence reconstructs None");
+            hew_cbor_de_skip(r);
+            hew_cbor_de_select_optional_key(r, 1);
+            assert_eq!(hew_cbor_de_i64(r), 7, "present values remain readable");
+            hew_cbor_de_exit_map(r);
+            assert_eq!(hew_cbor_de_failed(r), 0);
+            hew_cbor_de_free(r);
+        }
+    }
+
+    #[test]
+    fn unknown_map_keys_remain_forward_compatible() {
+        // SAFETY: test-controlled handles.
+        unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_begin_map(buf);
+            hew_cbor_ser_key_u64(buf, 1);
+            hew_cbor_ser_i64(buf, 42);
+            hew_cbor_ser_key_u64(buf, 99);
+            hew_cbor_ser_i64(buf, 7);
+            hew_cbor_ser_end_map(buf);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            hew_cbor_de_enter_map(r);
+            hew_cbor_de_select_key(r, 1);
+            assert_eq!(hew_cbor_de_i64(r), 42);
+            hew_cbor_de_exit_map(r);
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                0,
+                "unselected future tags must remain tolerated"
+            );
+            hew_cbor_de_free(r);
+        }
+    }
+
     /// A list field round-trips through `{1: [10, 20, 30]}` (array under a key).
     #[test]
     fn round_trip_array_field() {
@@ -1516,8 +1606,8 @@ mod tests {
         }
     }
 
-    /// An optional `None` rides as a present CBOR null distinguishable by
-    /// `hew_cbor_de_is_null`, and a `bytes` field round-trips its payload.
+    /// A required `Option<T>::None` rides as a present CBOR null distinguishable
+    /// by `hew_cbor_de_is_null`, and a `bytes` field round-trips its payload.
     #[test]
     fn round_trip_null_and_bytes() {
         let payload = [0xde_u8, 0xad, 0xbe, 0xef];

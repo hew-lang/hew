@@ -1,0 +1,215 @@
+// Validation: field presence is independent of Option's null/value shape for
+// direct CBOR, JSON, and YAML. Required keys are emitted even for None;
+// optional None omits its key; absent and explicit null both reconstruct None
+// only where the field's presence contract permits absence.
+
+#[wire]
+type RequiredValue {
+    value: i64 @1,
+}
+
+#[wire]
+type RequiredOption {
+    value: Option<i64> @1,
+}
+
+#[wire]
+type OptionalOption {
+    value: Option<i64> @1 optional,
+}
+
+#[wire]
+type TextMatrix {
+    required_value: i64 @1,
+    required_option: Option<i64> @2,
+    optional_option: Option<i64> @3 optional,
+}
+
+#[wire]
+type NewerMessage {
+    value: i64 @1,
+    future: i64 @99,
+}
+
+#[wire]
+type OlderMessage {
+    value: i64 @1,
+}
+
+fn is_none(value: Option<i64>) -> bool {
+    match value {
+        .Some(_) => false,
+        .None => true,
+    }
+}
+
+fn main() -> i64 {
+    let required_value = RequiredValue { value: 7 };
+    let required_value_cbor = required_value.encode();
+    if required_value_cbor.len() != 3
+        || required_value_cbor[0] != 161
+        || required_value_cbor[1] != 1
+        || required_value_cbor[2] != 7 {
+        return 1;
+    }
+
+    let required_none = RequiredOption { value: None };
+    let required_none_cbor = required_none.encode();
+    if required_none_cbor.len() != 3
+        || required_none_cbor[0] != 161
+        || required_none_cbor[1] != 1
+        || required_none_cbor[2] != 246 {
+        return 2;
+    }
+    if !is_none(RequiredOption.decode(required_none_cbor).value) {
+        return 3;
+    }
+
+    let required_some_cbor = RequiredOption { value: Some(42) }.encode();
+    if required_some_cbor.len() != 4
+        || required_some_cbor[0] != 161
+        || required_some_cbor[1] != 1
+        || required_some_cbor[2] != 24
+        || required_some_cbor[3] != 42 {
+        return 26;
+    }
+    match RequiredOption.decode(required_some_cbor).value {
+        .Some(decoded) => {
+            if decoded != 42 {
+                return 27;
+            }
+        }
+        _ => return 27,
+    }
+
+    let absent = OptionalOption { value: None };
+    let absent_cbor = absent.encode();
+    if absent_cbor.len() != 1 || absent_cbor[0] != 160 {
+        return 4;
+    }
+    if !is_none(OptionalOption.decode(absent_cbor).value) {
+        return 5;
+    }
+
+    let explicit_null = RequiredOption { value: None }.encode();
+    if !is_none(OptionalOption.decode(explicit_null).value) {
+        return 6;
+    }
+
+    let present = OptionalOption { value: Some(42) };
+    let present_cbor = present.encode();
+    if present_cbor.len() != 4
+        || present_cbor[0] != 161
+        || present_cbor[1] != 1
+        || present_cbor[2] != 24
+        || present_cbor[3] != 42 {
+        return 28;
+    }
+    match OptionalOption.decode(present_cbor).value {
+        .Some(decoded) => {
+            if decoded != 42 {
+                return 7;
+            }
+        }
+        _ => return 7,
+    }
+
+    let text_none = TextMatrix {
+        required_value: 7,
+        required_option: None,
+        optional_option: None,
+    };
+    if text_none.to_json() != "{\"required_option\":null,\"required_value\":7}" {
+        return 8;
+    }
+    let yaml_none = TextMatrix {
+        required_value: 7,
+        required_option: None,
+        optional_option: None,
+    };
+    if yaml_none.to_yaml() != "required_option: null\nrequired_value: 7\n" {
+        return 29;
+    }
+    match TextMatrix.from_json("{\"required_value\":7,\"required_option\":null}") {
+        .Ok(value) => {
+            if !is_none(value.required_option) || !is_none(value.optional_option) {
+                return 9;
+            }
+        },
+        .Err(_) => return 10,
+    }
+    match TextMatrix.from_json(
+        "{\"required_value\":7,\"required_option\":null,\"optional_option\":null}",
+    ) {
+        .Ok(value) => {
+            if !is_none(value.optional_option) {
+                return 11;
+            }
+        },
+        .Err(_) => return 12,
+    }
+    match TextMatrix.from_json("{\"required_value\":7,\"required_option\":5,\"optional_option\":30}") {
+        .Ok(value) => match value.optional_option {
+            .Some(decoded) => {
+                if decoded != 30 {
+                    return 13;
+                }
+            }
+            _ => return 13,
+        },
+        .Err(_) => return 14,
+    }
+    match TextMatrix.from_json("{\"required_option\":null}") {
+        .Ok(_) => return 15,
+        .Err(_) => {}
+    }
+    match TextMatrix.from_json("{\"required_value\":null,\"required_option\":null}") {
+        .Ok(_) => return 16,
+        .Err(_) => {}
+    }
+
+    match TextMatrix.from_yaml("required_value: 7\nrequired_option: null\n") {
+        .Ok(value) => {
+            if !is_none(value.required_option) || !is_none(value.optional_option) {
+                return 17;
+            }
+        },
+        .Err(_) => return 18,
+    }
+    match TextMatrix.from_yaml(
+        "required_value: 7\nrequired_option: null\noptional_option: null\n",
+    ) {
+        .Ok(value) => {
+            if !is_none(value.optional_option) {
+                return 19;
+            }
+        },
+        .Err(_) => return 20,
+    }
+    match TextMatrix.from_yaml("required_value: 7\nrequired_option: 5\noptional_option: 30\n") {
+        .Ok(value) => match value.optional_option {
+            .Some(decoded) => {
+                if decoded != 30 {
+                    return 21;
+                }
+            }
+            _ => return 21,
+        },
+        .Err(_) => return 22,
+    }
+    match TextMatrix.from_yaml("required_option: null\n") {
+        .Ok(_) => return 23,
+        .Err(_) => {}
+    }
+    match TextMatrix.from_yaml("required_value: null\nrequired_option: null\n") {
+        .Ok(_) => return 24,
+        .Err(_) => {}
+    }
+
+    let future_cbor = NewerMessage { value: 42, future: 7 }.encode();
+    if OlderMessage.decode(future_cbor).value != 42 {
+        return 25;
+    }
+
+    42
+}

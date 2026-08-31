@@ -251,6 +251,11 @@ wireAttr
     | reservedDecl
     ;
 
+// Semantic constraint (checker-enforced): `optional` requires a resolved
+// Option<T>. The marker independently permits the map key to be absent;
+// Option<T> without the marker remains a required key whose None value is null.
+// Option<Option<T>> is rejected by the wire-body floor.
+
 reservedDecl
     : 'reserved' '(' INT_LIT ( ',' INT_LIT )* ')'
     ;
@@ -1080,7 +1085,7 @@ wireType
     | 'i8'  | 'i16' | 'i32' | 'i64'
     | 'f32' | 'f64'
     | 'bool' | 'bytes' | 'string'
-    | ident
+    | ident ( '<' wireType ( ',' wireType )* '>' )?
     ;
 
 // ----------------------------------------------------------------

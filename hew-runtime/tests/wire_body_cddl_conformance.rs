@@ -31,7 +31,7 @@ use hew_runtime::cbor_serial::{
     hew_cbor_de_enum_begin, hew_cbor_de_failed, hew_cbor_de_free, hew_cbor_de_new,
     hew_cbor_ser_begin_array, hew_cbor_ser_begin_map, hew_cbor_ser_end_array, hew_cbor_ser_end_map,
     hew_cbor_ser_finish, hew_cbor_ser_i64, hew_cbor_ser_key_u64, hew_cbor_ser_new,
-    hew_cbor_ser_string, hew_cbor_ser_u64,
+    hew_cbor_ser_null, hew_cbor_ser_string, hew_cbor_ser_u64,
 };
 use hew_runtime::xnode_serial::hew_ser_free_bytes;
 
@@ -105,6 +105,32 @@ fn wire_struct_body_conforms_to_cddl() {
     // And the top-level body rule.
     validate_against_rule("wire-body", &bytes)
         .expect("WirePoint body must validate against wire-body");
+}
+
+/// The refined presence schema admits required Option null with an omitted
+/// optional key, and separately admits a present optional Some value.
+#[test]
+fn wire_struct_presence_matrix_conforms_to_cddl() {
+    for optional_some in [false, true] {
+        let buf = hew_cbor_ser_new();
+        // SAFETY: test-controlled serializer with balanced map framing.
+        unsafe {
+            hew_cbor_ser_begin_map(buf);
+            hew_cbor_ser_key_u64(buf, 1);
+            hew_cbor_ser_i64(buf, 7);
+            hew_cbor_ser_key_u64(buf, 2);
+            hew_cbor_ser_null(buf);
+            if optional_some {
+                hew_cbor_ser_key_u64(buf, 3);
+                hew_cbor_ser_i64(buf, 42);
+            }
+            hew_cbor_ser_end_map(buf);
+        }
+        // SAFETY: `buf` is live and consumed exactly once here.
+        let bytes = unsafe { finish_to_vec(buf) };
+        validate_against_rule("wire-presence-body", &bytes)
+            .expect("required/null/optional presence body must conform");
+    }
 }
 
 /// `#[wire] enum WireCmd { Ping; Move(WirePoint); }` unit variant `Ping`

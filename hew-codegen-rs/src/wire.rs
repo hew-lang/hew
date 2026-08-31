@@ -21,7 +21,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use hew_mir::{EnumLayout, RecordLayout};
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
-use hew_types::{BuiltinType, ResolvedTy, WireLayoutTable, WireTextFormat};
+use hew_types::{BuiltinType, ResolvedTy, WireFieldPresence, WireLayoutTable, WireTextFormat};
 
 #[allow(unused_imports)]
 use crate::llvm::*;
@@ -333,9 +333,11 @@ fn emit_de_drop_owned<'ctx>(
 // existing `lower_wire_codec_instr` call shape is reused verbatim; only the
 // runtime primitives differ. A wire struct encodes as a CBOR map keyed by each
 // field's `@N` wire tag (the compatibility authority); the decoder selects
-// fields by the same key, tolerates absent/extra keys per forward-compat, and
-// fails closed on any type mismatch or truncation. The map framing is the one
-// structural difference from the flat positional walk above.
+// fields by the same key, tolerates extra keys for forward compatibility, and
+// tolerates absence only for fields with explicit optional presence metadata.
+// It fails closed on a missing required key, type mismatch, or truncation. The
+// map framing is the one structural difference from the flat positional walk
+// above.
 
 /// The CBOR map key for field `field_name` (declaration index `field_idx`) of
 /// record `record_key`. A `#[wire]` struct keys by its `@N` tag (the
@@ -359,6 +361,105 @@ fn cbor_field_key(
         return tag;
     }
     field_idx as u64 + 1
+}
+
+/// Resolve the independently-declared map-key presence for a record field.
+/// Layout-less records predate the `#[wire]` presence surface and therefore
+/// remain required; only explicit checked metadata may relax key presence.
+fn cbor_field_presence(
+    wire_layouts: &WireLayoutTable,
+    record_key: &str,
+    field_name: &str,
+) -> CodegenResult<WireFieldPresence> {
+    let Some(entry) = wire_layouts.get(record_key) else {
+        // WHY: the edition-2026 generic `std.encoding.wire` facade admits plain
+        // Serializable records, which have no `#[wire]` metadata and cannot
+        // spell an optional field, so every field is provably required. The
+        // compiler still emits that fact explicitly into text descriptors; the
+        // runtime never guesses from `Option<T>`.
+        // WHEN obsolete: plain record declarations carry checked presence for
+        // every field, even outside `#[wire]`.
+        // WHAT replaces it: require that metadata here and reject a missing
+        // entry exactly like a partial `#[wire]` layout below.
+        return Ok(WireFieldPresence::Required);
+    };
+    entry
+        .fields
+        .iter()
+        .find(|field| field.name == field_name)
+        .map(|field| field.presence)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "wire field presence: `{record_key}.{field_name}` is missing checked metadata"
+            ))
+        })
+}
+
+/// Read whether an `Option<T>` record field currently contains `Some`.
+/// This helper is used only after independently checked field-presence metadata
+/// says the map key is optional; inspecting the value decides whether to omit
+/// that key, never whether omission is allowed.
+fn emit_option_is_some_for_presence<'ctx>(
+    ctx: &'ctx Context,
+    builder: &inkwell::builder::Builder<'ctx>,
+    ty: &ResolvedTy,
+    value_ptr: PointerValue<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<inkwell::values::IntValue<'ctx>> {
+    let ResolvedTy::Named {
+        name,
+        args,
+        builtin: Some(BuiltinType::Option),
+        ..
+    } = ty
+    else {
+        return Err(CodegenError::FailClosed(
+            "wire optional field reached codegen without an Option<T> value type".into(),
+        ));
+    };
+    let key = xnode_registry_key(name, args);
+    let Some((_enum_key, layout, enum_layout)) =
+        resolve_machine_enum_key(name, args, machine_layouts, enum_layouts)
+    else {
+        return Err(CodegenError::FailClosed(format!(
+            "wire optional field: Option `{key}` has no enum layout"
+        )));
+    };
+    let some_idx = enum_layout
+        .variants
+        .iter()
+        .position(|variant| !variant.field_tys.is_empty())
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!("wire optional field: Option `{key}` has no Some"))
+        })?;
+    let base = if enum_layout.is_indirect {
+        builder
+            .build_load(
+                ctx.ptr_type(AddressSpace::default()),
+                value_ptr,
+                "cbor_ser_optional_indirect",
+            )
+            .llvm_ctx("cbor ser optional indirect load")?
+            .into_pointer_value()
+    } else {
+        value_ptr
+    };
+    let tag_ptr = builder
+        .build_struct_gep(layout.outer_struct, base, 0, "cbor_ser_optional_tag_ptr")
+        .llvm_ctx("cbor ser optional tag gep")?;
+    let tag = builder
+        .build_load(layout.tag_int_ty, tag_ptr, "cbor_ser_optional_tag")
+        .llvm_ctx("cbor ser optional tag load")?
+        .into_int_value();
+    builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            tag,
+            layout.tag_int_ty.const_int(some_idx as u64, false),
+            "cbor_ser_optional_is_some",
+        )
+        .llvm_ctx("cbor ser optional is_some")
 }
 
 /// Declare-or-fetch the CBOR serialize thunk:
@@ -774,13 +875,6 @@ fn emit_ser_named_cbor<'ctx>(
             let field_name = rl.field_names.get(idx).map_or("", String::as_str);
             let tag = cbor_field_key(wire_layouts, &key, field_name, idx);
             let tag_const = i64_ty.const_int(tag, false);
-            builder
-                .build_call(
-                    key_prim,
-                    &[buf.into(), tag_const.into()],
-                    &format!("cbor_ser_key_{idx}"),
-                )
-                .llvm_ctx("cbor ser key")?;
             let field_ptr = builder
                 .build_struct_gep(
                     struct_ty,
@@ -789,6 +883,35 @@ fn emit_ser_named_cbor<'ctx>(
                     &format!("cbor_ser_field_{idx}"),
                 )
                 .llvm_ctx("cbor ser field gep")?;
+            let presence = cbor_field_presence(wire_layouts, &key, field_name)?;
+            let continuation = if presence == WireFieldPresence::Optional {
+                let is_some = emit_option_is_some_for_presence(
+                    ctx,
+                    builder,
+                    fty,
+                    field_ptr,
+                    machine_layouts,
+                    enum_layouts,
+                )?;
+                let present =
+                    ctx.append_basic_block(func, &format!("cbor_ser_field_{idx}_present"));
+                let continuation =
+                    ctx.append_basic_block(func, &format!("cbor_ser_field_{idx}_continue"));
+                builder
+                    .build_conditional_branch(is_some, present, continuation)
+                    .llvm_ctx("cbor ser optional field branch")?;
+                builder.position_at_end(present);
+                Some(continuation)
+            } else {
+                None
+            };
+            builder
+                .build_call(
+                    key_prim,
+                    &[buf.into(), tag_const.into()],
+                    &format!("cbor_ser_key_{idx}"),
+                )
+                .llvm_ctx("cbor ser key")?;
             emit_ser_value_cbor(
                 ctx,
                 llvm_mod,
@@ -805,6 +928,12 @@ fn emit_ser_named_cbor<'ctx>(
                 lifecycle_registry,
                 target_data,
             )?;
+            if let Some(continuation) = continuation {
+                builder
+                    .build_unconditional_branch(continuation)
+                    .llvm_ctx("cbor ser optional field continue")?;
+                builder.position_at_end(continuation);
+            }
         }
         let end = declare_codec_prim(
             ctx,
@@ -1234,16 +1363,21 @@ fn emit_de_named_cbor<'ctx>(
         builder
             .build_call(enter, &[reader.into()], "cbor_de_enter_map")
             .llvm_ctx("cbor de enter_map")?;
-        let select = declare_codec_prim(
-            ctx,
-            llvm_mod,
-            "hew_cbor_de_select_key",
-            void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        );
         for (idx, fty) in rl.field_tys.iter().enumerate() {
             let field_name = rl.field_names.get(idx).map_or("", String::as_str);
             let tag = cbor_field_key(wire_layouts, &key, field_name, idx);
             let tag_const = i64_ty.const_int(tag, false);
+            let presence = cbor_field_presence(wire_layouts, &key, field_name)?;
+            let select_name = match presence {
+                WireFieldPresence::Required => "hew_cbor_de_select_key",
+                WireFieldPresence::Optional => "hew_cbor_de_select_optional_key",
+            };
+            let select = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                select_name,
+                void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+            );
             builder
                 .build_call(
                     select,
@@ -1607,22 +1741,32 @@ fn build_text_descriptor_named(
             .collect();
         format!(r#"{{"k":"enum","v":[{}]}}"#, variants.join(","))
     } else if let Some(rl) = pipeline_records.iter().find(|r| r.name == key) {
-        // Struct: list each field's tag, JSON/YAML key name, and field descriptor.
-        let fields: Vec<String> = rl
+        // Struct: list each field's tag, JSON/YAML key name, independently
+        // checked presence, and value descriptor. WHY: an edition-2026 plain
+        // Serializable record has no wire layout and is safely bridged as
+        // all-required because it cannot spell the `optional` field marker.
+        // WHEN obsolete: plain records carry checked presence metadata. WHAT
+        // replaces it: require a complete layout here. A partial wire layout is
+        // already a compiler bug and makes the descriptor opaque/fail-closed.
+        let fields: Option<Vec<String>> = rl
             .field_tys
             .iter()
             .enumerate()
             .map(|(idx, fty)| {
                 let field_name = rl.field_names.get(idx).map_or("", String::as_str);
                 let tag = cbor_field_key(wire_layouts, &key, field_name, idx);
-                // Resolve the text key name from the wire layout (override + case).
-                let text_name = wire_layouts
-                    .get(&key)
-                    .and_then(|e| e.fields.iter().find(|f| f.name == field_name))
-                    .map_or_else(
-                        || field_name.to_string(),
-                        |f| wire_text_field_name(f, case, format),
-                    );
+                let layout_field = match wire_layouts.get(&key) {
+                    Some(entry) => {
+                        Some(entry.fields.iter().find(|field| field.name == field_name)?)
+                    }
+                    None => None,
+                };
+                let presence =
+                    layout_field.map_or(WireFieldPresence::Required, |field| field.presence);
+                let text_name = layout_field.map_or_else(
+                    || field_name.to_string(),
+                    |f| wire_text_field_name(f, case, format),
+                );
                 let desc = build_text_descriptor_node(
                     fty,
                     format,
@@ -1631,13 +1775,20 @@ fn build_text_descriptor_named(
                     enum_layouts,
                     visiting,
                 );
-                format!(
-                    r#"{{"t":{tag},"n":{name},"d":{desc}}}"#,
-                    name = json_string_literal(&text_name)
-                )
+                Some(format!(
+                    r#"{{"t":{tag},"n":{name},"p":{presence},"d":{desc}}}"#,
+                    name = json_string_literal(&text_name),
+                    presence = json_string_literal(match presence {
+                        WireFieldPresence::Required => "required",
+                        WireFieldPresence::Optional => "optional",
+                    }),
+                ))
             })
             .collect();
-        format!(r#"{{"k":"struct","f":[{}]}}"#, fields.join(","))
+        fields.map_or_else(
+            || r#"{"k":"opaque"}"#.to_string(),
+            |fields| format!(r#"{{"k":"struct","f":[{}]}}"#, fields.join(",")),
+        )
     } else {
         // Not a registered record or enum: outside the text floor.
         r#"{"k":"opaque"}"#.to_string()
@@ -4327,7 +4478,7 @@ mod tests {
                 tag: field_tag,
                 json_name: None,
                 yaml_name: None,
-                optional: false,
+                presence: WireFieldPresence::Required,
                 repeated: false,
             }],
             variants: vec![("Ready".to_string(), variant_tag)],
@@ -4353,6 +4504,27 @@ mod tests {
             cbor_field_key(&layouts, "Packet", "payload", 0),
             1,
             "unqualified same-leaf lookup must not borrow either owner's tag"
+        );
+    }
+
+    #[test]
+    fn wire_record_presence_requires_checked_field_metadata() {
+        let mut entry = wire_entry(11, 101);
+        entry.fields[0].presence = WireFieldPresence::Optional;
+        let layouts: WireLayoutTable = HashMap::from([("left.render.Packet".to_string(), entry)]);
+
+        assert_eq!(
+            cbor_field_presence(&layouts, "left.render.Packet", "payload").unwrap(),
+            WireFieldPresence::Optional
+        );
+        assert!(
+            cbor_field_presence(&layouts, "left.render.Packet", "missing").is_err(),
+            "a partial wire layout must fail closed instead of guessing presence"
+        );
+        assert_eq!(
+            cbor_field_presence(&layouts, "plain.Record", "payload").unwrap(),
+            WireFieldPresence::Required,
+            "layout-less Serializable records have no optional marker"
         );
     }
 

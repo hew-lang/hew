@@ -723,9 +723,19 @@ pub struct TypeCheckOutput {
     pub module_import_bindings: HashMap<ImportBindingKey, String>,
 }
 
+/// Whether a wire struct field's enclosing map key may be absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireFieldPresence {
+    /// The map key must be emitted and must be present while decoding.
+    Required,
+    /// `None` omits the map key and an absent key reconstructs `None`.
+    Optional,
+}
+
 /// Wire layout metadata for a single field, carried from AST through the
-/// compilation pipeline so lowering passes never recover metadata from source
-/// strings.
+/// compilation pipeline so lowering passes never infer presence from the value
+/// type. `Option<T>` describes the value's null shape; [`WireFieldPresence`]
+/// independently describes whether the enclosing map key may be absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireFieldLayout {
     /// Source-level field name.
@@ -736,8 +746,8 @@ pub struct WireFieldLayout {
     pub json_name: Option<String>,
     /// Explicit YAML key override, if provided (`yaml_name = "..."`).
     pub yaml_name: Option<String>,
-    /// Whether this field is optional (maps to `Option<T>` absence semantics).
-    pub optional: bool,
+    /// Whether the enclosing map key is required or optional.
+    pub presence: WireFieldPresence,
     /// Whether this field is repeated (maps to `Vec<T>`).
     pub repeated: bool,
 }

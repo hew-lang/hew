@@ -1,0 +1,17 @@
+// Validation (FAIL CLOSED): an optional None encodes as an empty map. Decoding
+// those exact bytes as a required scalar must latch missing-key failure, clean
+// the partial destination, and trap at the decode call site.
+#[wire]
+type OptionalSource {
+    value: Option<i64> @1 optional,
+}
+
+#[wire]
+type RequiredValue {
+    value: i64 @1,
+}
+
+fn main() -> i64 {
+    let raw = OptionalSource { value: None }.encode();
+    RequiredValue.decode(raw).value
+}

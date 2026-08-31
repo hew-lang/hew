@@ -69,7 +69,8 @@ const FORMAT_YAML: c_int = 1;
 //
 // Grammar (every node is a JSON object with a `"k"` kind tag):
 //   scalar : {"k":"i64"|"u64"|"f64"|"bool"|"str"|"bytes"|"char"}
-//   struct : {"k":"struct","f":[{"t":<tag>,"n":"<name>","d":<node>}, ...]}
+//   struct : {"k":"struct","f":[{"t":<tag>,"n":"<name>",
+//             "p":"required"|"optional","d":<node>}, ...]}
 //   enum   : {"k":"enum","v":[{"t":<tag>,"n":"<name>","p":[<node>, ...]}, ...]}
 //   vec    : {"k":"vec","e":<node>}
 //   set    : {"k":"set","e":<node>}
@@ -93,7 +94,7 @@ enum Desc {
     Str,
     /// A `bytes` value: CBOR byte string ↔ JSON array of byte integers.
     Bytes,
-    /// A wire struct: an ordered list of `(tag, name, field_descriptor)`.
+    /// A wire struct: ordered tag, name, presence, and value descriptors.
     Struct(Vec<StructField>),
     /// A wire enum: a list of `(tag, name, payload_descriptors)`.
     Enum(Vec<EnumVariant>),
@@ -115,7 +116,15 @@ enum Desc {
 struct StructField {
     tag: u64,
     name: String,
+    /// Map-key presence, deliberately independent of `desc == Desc::Opt`.
+    presence: FieldPresence,
     desc: Desc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldPresence {
+    Required,
+    Optional,
 }
 
 #[derive(Debug, Clone)]
@@ -335,8 +344,18 @@ impl Desc {
                     let fo = f.as_object()?;
                     let tag = fo.get("t")?.as_u64()?;
                     let name = fo.get("n")?.as_str()?.to_string();
+                    let presence = match fo.get("p")?.as_str()? {
+                        "required" => FieldPresence::Required,
+                        "optional" => FieldPresence::Optional,
+                        _ => return None,
+                    };
                     let desc = Self::parse(fo.get("d")?, depth + 1)?;
-                    fields.push(StructField { tag, name, desc });
+                    fields.push(StructField {
+                        tag,
+                        name,
+                        presence,
+                        desc,
+                    });
                 }
                 Some(Self::Struct(fields))
             }
@@ -496,17 +515,21 @@ fn cbor_to_json(value: &CborValue, desc: &Desc, depth: usize) -> Result<serde_js
                 let CborValue::Integer(tag) = k else {
                     return Err("struct map key is not an integer tag".to_string());
                 };
-                by_tag.insert(i128::from(*tag), v);
+                let tag = i128::from(*tag);
+                // WHY: choosing either duplicate would make the decoded text
+                // depend on map order. Reject the ambiguous body exactly like
+                // duplicate text keys instead of silently applying last-wins.
+                if by_tag.insert(tag, v).is_some() {
+                    return Err(format!("duplicate struct tag {tag}"));
+                }
             }
             let mut obj = serde_json::Map::new();
             for field in fields {
                 let Some(v) = by_tag.get(&i128::from(field.tag)) else {
-                    // A field absent from the CBOR tree is only legal for an
-                    // optional field (the encode walk emits CBOR null for None,
-                    // so a truly-present optional still appears as a key). Mirror
-                    // CBOR forward-compat: an absent field is simply omitted from
-                    // the text output rather than fabricated.
-                    continue;
+                    if field.presence == FieldPresence::Optional {
+                        continue;
+                    }
+                    return Err(format!("missing required field `{}`", field.name));
                 };
                 obj.insert(field.name.clone(), cbor_to_json(v, &field.desc, depth + 1)?);
             }
@@ -726,15 +749,10 @@ fn text_value_to_cbor(value: &TextValue, desc: &Desc, depth: usize) -> Result<Cb
                         entries.push((CborValue::Integer(Integer::from(field.tag)), cv));
                     }
                     None => {
-                        // A missing optional field becomes CBOR null (its absence
-                        // is well-defined as None). A missing required field is a
-                        // decode failure here, mirroring CBOR's missing-key reject.
-                        if matches!(field.desc, Desc::Opt(_)) {
-                            entries.push((
-                                CborValue::Integer(Integer::from(field.tag)),
-                                CborValue::Null,
-                            ));
-                        } else {
+                        // Presence comes from the field contract, never from the
+                        // value descriptor. Omit an absent optional key so text
+                        // and direct CBOR produce the same map shape.
+                        if field.presence == FieldPresence::Required {
                             return Err(format!("missing required field `{}`", field.name));
                         }
                     }
@@ -1100,11 +1118,13 @@ mod tests {
             StructField {
                 tag: 1,
                 name: "x".to_string(),
+                presence: FieldPresence::Required,
                 desc: Desc::Int,
             },
             StructField {
                 tag: 2,
                 name: "y".to_string(),
+                presence: FieldPresence::Required,
                 desc: Desc::Int,
             },
         ])
@@ -1118,6 +1138,19 @@ mod tests {
         ]);
         let json = cbor_to_json(&cbor, &point_desc(), 0).unwrap();
         assert_eq!(serde_json::to_string(&json).unwrap(), r#"{"x":3,"y":4}"#);
+    }
+
+    #[test]
+    fn struct_cbor_to_json_rejects_duplicate_tags() {
+        let cbor = CborValue::Map(vec![
+            (CborValue::Integer(1.into()), CborValue::Integer(3.into())),
+            (CborValue::Integer(1.into()), CborValue::Integer(4.into())),
+            (CborValue::Integer(2.into()), CborValue::Integer(5.into())),
+        ]);
+        assert_eq!(
+            cbor_to_json(&cbor, &point_desc(), 0).unwrap_err(),
+            "duplicate struct tag 1"
+        );
     }
 
     #[test]
@@ -1146,12 +1179,11 @@ mod tests {
         assert_eq!(original, back);
     }
 
-    const POINT_DESC_JSON: &str =
-        r#"{"k":"struct","f":[{"t":1,"n":"x","d":{"k":"i64"}},{"t":2,"n":"y","d":{"k":"i64"}}]}"#;
+    const POINT_DESC_JSON: &str = r#"{"k":"struct","f":[{"t":1,"n":"x","p":"required","d":{"k":"i64"}},{"t":2,"n":"y","p":"required","d":{"k":"i64"}}]}"#;
 
     #[test]
     fn malformed_json_is_error_not_panic() {
-        let desc = r#"{"k":"struct","f":[{"t":1,"n":"x","d":{"k":"i64"}}]}"#;
+        let desc = r#"{"k":"struct","f":[{"t":1,"n":"x","p":"required","d":{"k":"i64"}}]}"#;
         match text_to_cbor("{not json", desc, FORMAT_JSON) {
             TextToCbor::Err(msg) => assert!(msg.contains("invalid JSON"), "got: {msg}"),
             TextToCbor::Ok(_) => panic!("malformed JSON must fail closed"),
@@ -1161,7 +1193,7 @@ mod tests {
     #[test]
     fn wrong_shape_is_error() {
         // Descriptor says struct {x:i64}; input is an array — must reject.
-        let desc = r#"{"k":"struct","f":[{"t":1,"n":"x","d":{"k":"i64"}}]}"#;
+        let desc = r#"{"k":"struct","f":[{"t":1,"n":"x","p":"required","d":{"k":"i64"}}]}"#;
         match text_to_cbor("[1,2,3]", desc, FORMAT_JSON) {
             TextToCbor::Err(msg) => assert!(msg.contains("expected an object"), "got: {msg}"),
             TextToCbor::Ok(_) => panic!("wrong-shape input must fail closed"),
@@ -1176,18 +1208,121 @@ mod tests {
     }
 
     #[test]
-    fn optional_field_absent_becomes_null() {
+    fn optional_field_absent_omits_cbor_key() {
         let desc = Desc::Struct(vec![StructField {
             tag: 1,
             name: "v".to_string(),
+            presence: FieldPresence::Optional,
             desc: Desc::Opt(Box::new(Desc::Int)),
         }]);
         let json: serde_json::Value = serde_json::from_str("{}").unwrap();
         let cbor = json_to_cbor(&json, &desc, 0).unwrap();
-        assert_eq!(
-            cbor,
-            CborValue::Map(vec![(CborValue::Integer(1.into()), CborValue::Null)])
-        );
+        assert_eq!(cbor, CborValue::Map(vec![]));
+    }
+
+    #[test]
+    fn required_option_field_absence_is_an_error() {
+        let desc = Desc::Struct(vec![StructField {
+            tag: 1,
+            name: "v".to_string(),
+            presence: FieldPresence::Required,
+            desc: Desc::Opt(Box::new(Desc::Int)),
+        }]);
+        let json: serde_json::Value = serde_json::from_str("{}").unwrap();
+        let err = json_to_cbor(&json, &desc, 0).unwrap_err();
+        assert!(err.contains("missing required field `v`"), "got: {err}");
+    }
+
+    #[test]
+    fn explicit_null_is_none_for_required_and_optional_option_fields() {
+        for presence in [FieldPresence::Required, FieldPresence::Optional] {
+            let desc = Desc::Struct(vec![StructField {
+                tag: 1,
+                name: "v".to_string(),
+                presence,
+                desc: Desc::Opt(Box::new(Desc::Int)),
+            }]);
+            let json: serde_json::Value = serde_json::from_str(r#"{"v":null}"#).unwrap();
+            assert_eq!(
+                json_to_cbor(&json, &desc, 0).unwrap(),
+                CborValue::Map(vec![(CborValue::Integer(1.into()), CborValue::Null)])
+            );
+        }
+    }
+
+    #[test]
+    fn descriptor_without_presence_fails_closed() {
+        let legacy = r#"{"k":"struct","f":[{"t":1,"n":"v","d":{"k":"opt","e":{"k":"i64"}}}]}"#;
+        match text_to_cbor(r#"{"v":null}"#, legacy, FORMAT_JSON) {
+            TextToCbor::Err(message) => {
+                assert!(
+                    message.contains("malformed wire descriptor"),
+                    "got: {message}"
+                );
+            }
+            TextToCbor::Ok(_) => panic!("missing presence metadata must fail closed"),
+        }
+    }
+
+    #[test]
+    fn json_and_yaml_share_the_exact_presence_matrix() {
+        const DESC: &str = r#"{"k":"struct","f":[{"t":1,"n":"required","p":"required","d":{"k":"opt","e":{"k":"i64"}}},{"t":2,"n":"optional","p":"optional","d":{"k":"opt","e":{"k":"i64"}}}]}"#;
+        let cases = [
+            (
+                r#"{"required":null}"#,
+                "required: null\n",
+                CborValue::Map(vec![(CborValue::Integer(1.into()), CborValue::Null)]),
+            ),
+            (
+                r#"{"required":null,"optional":null}"#,
+                "required: null\noptional: null\n",
+                CborValue::Map(vec![
+                    (CborValue::Integer(1.into()), CborValue::Null),
+                    (CborValue::Integer(2.into()), CborValue::Null),
+                ]),
+            ),
+            (
+                r#"{"required":5,"optional":7}"#,
+                "required: 5\noptional: 7\n",
+                CborValue::Map(vec![
+                    (CborValue::Integer(1.into()), CborValue::Integer(5.into())),
+                    (CborValue::Integer(2.into()), CborValue::Integer(7.into())),
+                ]),
+            ),
+        ];
+        for (json, yaml, expected) in cases {
+            for (text, format) in [(json, FORMAT_JSON), (yaml, FORMAT_YAML)] {
+                let TextToCbor::Ok(bytes) = text_to_cbor(text, DESC, format) else {
+                    panic!("presence case must transcode: {text}");
+                };
+                let actual: CborValue = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+                assert_eq!(actual, expected, "presence mismatch for {text}");
+            }
+        }
+
+        for (text, format) in [("{}", FORMAT_JSON), ("{}\n", FORMAT_YAML)] {
+            match text_to_cbor(text, DESC, format) {
+                TextToCbor::Err(message) => {
+                    assert!(message.contains("missing required field `required`"));
+                }
+                TextToCbor::Ok(_) => panic!("required Option key must not be inferred optional"),
+            }
+        }
+
+        let required_value_desc =
+            r#"{"k":"struct","f":[{"t":1,"n":"value","p":"required","d":{"k":"i64"}}]}"#;
+        for (text, format) in [
+            (r#"{"value":null}"#, FORMAT_JSON),
+            ("value: null\n", FORMAT_YAML),
+        ] {
+            assert!(
+                matches!(
+                    text_to_cbor(text, required_value_desc, format),
+                    TextToCbor::Err(_)
+                ),
+                "null for required bare T must fail: {text}"
+            );
+        }
     }
 
     #[test]

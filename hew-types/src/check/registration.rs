@@ -4088,7 +4088,11 @@ impl Checker {
                     tag: field.field_number,
                     json_name: field.json_name.clone(),
                     yaml_name: field.yaml_name.clone(),
-                    optional: field.is_optional,
+                    presence: if field.is_optional {
+                        WireFieldPresence::Optional
+                    } else {
+                        WireFieldPresence::Required
+                    },
                     repeated: field.is_repeated,
                 })
                 .collect()

@@ -1349,6 +1349,7 @@ codegen-stable = [
   "hew_cbor_de_map_value",
   "hew_cbor_de_new",
   "hew_cbor_de_select_key",
+  "hew_cbor_de_select_optional_key",
   "hew_cbor_de_skip",
   "hew_cbor_de_string",
   "hew_cbor_de_u64",
@@ -2314,6 +2315,16 @@ discharge-depth = "none"
 symbol = "hew_cbor_de_map_value"
 result = "none"
 params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/cbor_serial.rs: the optional selector mutates the borrowed
+# reader cursor and inspects a scalar key; it neither transfers the reader nor
+# creates, retains, or consumes an allocation across the ABI boundary.
+[[ownership.contracts]]
+symbol = "hew_cbor_de_select_optional_key"
+result = "none"
+params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

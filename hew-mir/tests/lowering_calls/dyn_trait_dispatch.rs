@@ -820,14 +820,15 @@ fn structural_impl_lowers_through_to_3_identically_to_nominal() {
 }
 
 /// W3.031 Stage 1 regression: an owned `dyn Trait` local introduced by
-/// a `CoerceToDynTrait` site is elaborated through `build_lifo_drops`
+/// a `CoerceToDynTrait` site is elaborated into the exit drop plans
 /// with `DropKind::TraitObject { storage: HeapBoxed }`.
 ///
 /// Pre-Stage-1, `dyn Trait` locals were classified as
-/// `ValueClass::PersistentShare` and silently skipped by
-/// `build_lifo_drops` — every owned trait-object binding leaked its
-/// `drop_in_place` ritual. The new dyn-trait arm in `build_lifo_drops`
-/// emits the drop with the storage discriminator sourced from the
+/// `ValueClass::PersistentShare` and silently skipped by the drop
+/// elaborator — every owned trait-object binding leaked its
+/// `drop_in_place` ritual. The dyn-trait recipe arm (now in
+/// `owner_definition_drop_recipe`) emits the drop with the storage
+/// discriminator sourced from the
 /// per-binding `dyn_trait_storage` side table populated at the
 /// introducing `let` statement.
 ///

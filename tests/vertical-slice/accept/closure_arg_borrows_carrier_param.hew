@@ -1,0 +1,39 @@
+// An indirect call borrows its arguments exactly like a direct one.
+//
+// `keep`'s own parameter is summary-owned: the body pushes it into a Vec, so
+// the callee owns the slot and still owes its release. Inside that body the
+// parameter is also handed to a CLOSURE whose body only reads it. The closure
+// call must not take the parameter's carrier authority away.
+//
+// The counterfactual is the `kept=` line: routing the indirect call's argument
+// through the move funnel neutralized the carrier slot, and the following
+// `bag.push(h)` then cloned a cleared record and aborted with "Vec owned
+// element clone failed" before anything printed. The `direct=` line is the
+// control - the same body with an ordinary direct call in place of the
+// closure, which must produce the same number.
+type Holder { items: Vec<string> }
+
+fn read_len(x: Holder) -> i64 {
+    x.items.len()
+}
+
+fn keep_via_closure(h: Holder) -> i64 {
+    let probe: fn(Holder) -> i64 = |x: Holder| -> i64 { x.items.len() };
+    let seen = probe(h);
+    let bag: Vec<Holder> = [];
+    bag.push(h);
+    seen + bag.len()
+}
+
+fn keep_via_direct(h: Holder) -> i64 {
+    let seen = read_len(h);
+    let bag: Vec<Holder> = [];
+    bag.push(h);
+    seen + bag.len()
+}
+
+fn main() -> i64 {
+    println(f"kept={keep_via_closure(Holder { items: ["a" + "b", "c" + "d"] })}");
+    println(f"direct={keep_via_direct(Holder { items: ["a" + "b", "c" + "d"] })}");
+    0
+}

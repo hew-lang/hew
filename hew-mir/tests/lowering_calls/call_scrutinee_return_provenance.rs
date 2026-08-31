@@ -269,6 +269,26 @@ fn captured_move_count(p: &IrPipeline) -> usize {
     diagnostic_count(p, "whole-value move of captured generator/closure value")
 }
 
+/// A call never consumes a non-resource argument: a captured value forwarded
+/// to a callee that owns its parameter is snapshot-cloned for the callee and
+/// the closure environment keeps its own copy. Counts those clones.
+fn snapshot_clone_count(p: &IrPipeline) -> usize {
+    p.raw_mir
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| matches!(instruction, hew_mir::Instr::ValueSnapshotClone { .. }))
+        .count()
+}
+
+/// The captured-forwarder contract: no capture-move rejection, no other
+/// diagnostic, and exactly one clone handed to the owning callee.
+fn assert_capture_cloned_for_owning_callee(p: &IrPipeline) {
+    assert_eq!(captured_move_count(p), 0, "{:#?}", p.diagnostics);
+    assert!(p.diagnostics.is_empty(), "{:#?}", p.diagnostics);
+    assert_eq!(snapshot_clone_count(p), 1);
+}
+
 fn foreign_transfer_count(p: &IrPipeline) -> usize {
     diagnostic_count(
         p,
@@ -917,7 +937,7 @@ fn method_call_forwarder_move_out_uses_borrowed_authority() {
 }
 
 #[test]
-fn closure_match_forwarder_over_capture_hits_capture_move_gate() {
+fn closure_match_forwarder_over_capture_clones_the_capture_for_the_owning_callee() {
     let src = r"
         fn wrap(s: Vec<i64>) -> Result<Vec<i64>, Vec<i64>> { Ok(s) }
         fn runner(s: Vec<i64>) {
@@ -933,8 +953,7 @@ fn closure_match_forwarder_over_capture_hits_capture_move_gate() {
     ";
     let p = pipeline(src);
     assert_owned(&p, "wrap(s)", Acquisition::Fresh);
-    assert_eq!(captured_move_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    assert_capture_cloned_for_owning_callee(&p);
 }
 
 #[test]
@@ -971,7 +990,7 @@ fn closure_local_arg_publishes_fresh_fact() {
 }
 
 #[test]
-fn closure_while_let_forwarder_hits_capture_move_gate() {
+fn closure_while_let_forwarder_clones_the_capture_for_the_owning_callee() {
     let src = format!(
         "{FORWARDER}
          fn use_it(r: Result<string, string>) {{
@@ -983,12 +1002,11 @@ fn closure_while_let_forwarder_hits_capture_move_gate() {
     );
     let p = pipeline(&src);
     assert_resolved_capture_call(&p, "passthru(r)");
-    assert_eq!(captured_move_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    assert_capture_cloned_for_owning_callee(&p);
 }
 
 #[test]
-fn closure_let_else_forwarder_hits_capture_move_gate() {
+fn closure_let_else_forwarder_clones_the_capture_for_the_owning_callee() {
     let src = format!(
         "{FORWARDER}
          fn use_it(r: Result<string, string>) -> i64 {{
@@ -1001,12 +1019,11 @@ fn closure_let_else_forwarder_hits_capture_move_gate() {
     );
     let p = pipeline(&src);
     assert_resolved_capture_call(&p, "passthru(r)");
-    assert_eq!(captured_move_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    assert_capture_cloned_for_owning_callee(&p);
 }
 
 #[test]
-fn closure_if_let_forwarder_hits_capture_move_gate() {
+fn closure_if_let_forwarder_clones_the_capture_for_the_owning_callee() {
     let src = format!(
         "{FORWARDER}
          fn use_it(r: Result<string, string>) -> i64 {{
@@ -1018,12 +1035,11 @@ fn closure_if_let_forwarder_hits_capture_move_gate() {
     );
     let p = pipeline(&src);
     assert_resolved_capture_call(&p, "passthru(r)");
-    assert_eq!(captured_move_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    assert_capture_cloned_for_owning_callee(&p);
 }
 
 #[test]
-fn closure_discarded_forwarder_hits_capture_move_gate() {
+fn closure_discarded_forwarder_clones_the_capture_for_the_owning_callee() {
     let src = format!(
         "{FORWARDER}
          fn use_it(r: Result<string, string>) {{
@@ -1035,8 +1051,7 @@ fn closure_discarded_forwarder_hits_capture_move_gate() {
     );
     let p = pipeline(&src);
     assert_resolved_capture_call(&p, "passthru(r)");
-    assert_eq!(captured_move_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    assert_capture_cloned_for_owning_callee(&p);
 }
 
 #[test]

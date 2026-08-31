@@ -1,0 +1,26 @@
+// A whole-value capture passed to a by-value function argument is snapshot-
+// cloned at the call boundary, so the callee owns an independent copy and the
+// environment's storage stays the sole owner of the captured value. The callee
+// mutates its copy; neither the environment's view nor the caller's original
+// observes that mutation, and nothing is released twice at teardown.
+fn take(value: Vec<i64>) -> Vec<i64> {
+    let v = value;
+    v.push(99);
+    v
+}
+
+fn main() {
+    let items: Vec<i64> = Vec.new();
+    items.push(10);
+    items.push(20);
+    let g = gen {
+        let stolen = take(items);
+        yield stolen.len();
+        yield items.len();
+    };
+    for v in g {
+        println(v);
+    }
+    println(items.len());
+    println(items.get(0).unwrap_or(-1));
+}

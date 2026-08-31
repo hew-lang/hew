@@ -1,26 +1,8 @@
 use super::{
-    base_local, block_dominators, instr_site_dominates, propagate_whole_value_alias_roots,
-    single_dominating_local_generation, string_field_load_producer_dest, BasicBlock, HashMap,
-    HashSet, Instr, InstrSite, Place, ResolvedTy,
+    base_local, block_dominators, instr_site_dominates, single_dominating_local_generation,
+    string_field_load_producer_dest, BasicBlock, HashMap, HashSet, Instr, InstrSite, Place,
+    ResolvedTy,
 };
-
-/// String field loads are emitted with an independent `+1` retain. Follow
-/// their Move aliases so the aggregate sole-owner provers do not mistake that
-/// independently owned share for an extraction of the source aggregate's
-/// original field ownership.
-pub(super) fn retained_string_field_load_aliases(
-    blocks: &[BasicBlock],
-    local_tys: &[ResolvedTy],
-) -> HashSet<u32> {
-    let seeds = blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
-        .filter_map(base_local);
-    propagate_whole_value_alias_roots(blocks, seeds)
-        .into_keys()
-        .collect()
-}
 
 /// The generation-safe subset of retained string field-load aliases.
 ///

@@ -108,8 +108,13 @@ impl Builder {
                     site: value.site,
                 },
                 note: format!(
-                    "typed {} has type {owned_ty:?}, but its provisional owners are {owners:?}",
-                    role.label()
+                    "typed {} has type {owned_ty:?}, but its provisional owners are [{}]",
+                    role.label(),
+                    owners
+                        .iter()
+                        .map(|(owner, published_ty)| format!("{owner}: {published_ty:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             });
             return;
@@ -151,6 +156,14 @@ impl Builder {
     ) {
         for (index, arg) in hir_args.iter().enumerate() {
             let owned_ty = self.subst_ty(&arg.ty);
+            // An ordinary direct VecIter parameter is OwnedCursor regardless
+            // of the generic borrow summary. Its synthetic/named cursor owner
+            // remains live for the late exact pre-invoke handoff; admitting it
+            // through the provisional borrowing-owner funnel would compete
+            // with that single typed boundary.
+            if self.ty_is_exact_vec_iter(&owned_ty) {
+                continue;
+            }
             if ValueClass::of_ty(&owned_ty, &self.type_classes) == ValueClass::Linear
                 || (!matches!(owned_ty, ResolvedTy::TraitObject { .. })
                     && !crate::model::ty_owns_heap_mir(

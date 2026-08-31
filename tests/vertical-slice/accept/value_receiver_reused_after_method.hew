@@ -1,0 +1,48 @@
+// A by-value `self` receiver is borrowed by the call: the callee never
+// releases the receiver's payload, so the caller can call the method again
+// and still match the receiver afterwards.
+type Task {
+    name: string;
+    tags: Vec<string>;
+}
+
+enum Item {
+    Full(Task);
+    Bare(string);
+}
+
+impl Item {
+    fn label(self) -> string {
+        match self {
+            Item.Full(t) => t.name,
+            Item.Bare(s) => s,
+        }
+    }
+    fn tag_count(self) -> i64 {
+        match self {
+            Item.Full(t) => t.tags.len() as i64,
+            Item.Bare(s) => s.len(),
+        }
+    }
+}
+
+fn main() {
+    let tags: Vec<string> = Vec.new();
+    tags.push("t" + "1");
+    let it = Item.Full(Task { name: "n" + "m", tags: tags });
+    println(it.label());
+    println(it.label());
+    println(f"{it.tag_count()}");
+    let b = Item.Bare("b" + "are");
+    println(b.label());
+    println(b.label());
+    println(f"{b.tag_count()}");
+    match it {
+        Item.Full(t) => println(f"{t.tags.len()}"),
+        Item.Bare(s) => println(s),
+    }
+    match b {
+        Item.Full(t) => println(f"{t.tags.len()}"),
+        Item.Bare(s) => println(s),
+    }
+}

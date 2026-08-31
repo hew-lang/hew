@@ -2,7 +2,7 @@
 //!
 //! `match f() { Ok(b) => …, Err(e) => {} }` consumes the called function's
 //! `Result`/`Option` return through an anonymous MIR temp. Before this fix the
-//! temp had no `BindingId`, so `build_lifo_drops` / `enumerate_exits` never saw
+//! temp had no `BindingId`, so the drop elaborator never minted an owner for
 //! it and the arm-destructured payload was released on NO edge — not the loop
 //! back-edge, not the return plan. Each iteration of a
 //! `while … { match f() { … } }` loop leaked one payload allocation (n at O0),

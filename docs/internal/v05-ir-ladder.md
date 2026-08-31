@@ -553,6 +553,54 @@ frame, layout, and materialized place where representation requires one;
 Elaborated MIR adds lifetime and cleanup obligations over those already chosen
 places. It does not select storage classes or coroutine representation.
 
+Every exit `DropPlan` is _derived_ from the Checked-MIR `OwnershipEvent`
+stream (`derive_drop_plans_from_replay`): `required(exit)` is the exact set of
+owner generations still live at that exit whose inline release does not
+dominate it, and each becomes one `ElabDrop` through the owner's
+definition-site `DropRecipe` and `Guard`. There is no function-wide LIFO
+template, no allow-set prover, and no per-exit re-admission pass: a value the
+lowering cannot safely drop must not `Mint` an owner (it is neutralized or
+aliased explicitly at the mint site), and a value that mints is dropped on
+every exit where it is still owned.
+
+Two edge kinds are fixed by that rule rather than by a plan. A `Goto` never
+discharges: replay carries the source block's whole exit state into the
+target, and the Checked-MIR verifier requires a source-side `EdgeCarry` for
+every generation live on that edge (and rejects a carry naming a generation
+that is not live), so a body-local generation cannot cross a join without an
+explicit `Release` in the event stream. Function-entry cancellation is the one
+exit that runs before MIR's leading parameter `Mint`s execute; its cleanup is
+the set of those parameter owners whose `ParamBoundary` decision fact (part of
+Checked MIR, not a lowering ledger) says the ABI argument arrives owned. The
+event stream alone cannot name that set: an owned parameter's guarded `Mint`
+must be dropped unguarded there (its sidecar is not initialised yet), while a
+guarded `Mint` over a `BorrowReadOnly` parameter (`VecIter::next`'s `var
+self` cursor) must not be — the same event shape, distinguished only by the
+boundary mode.
+
+An owner's `DropRecipe` is published only when its release is fully known. A
+`Vec` element the layout registries cannot see (`Unsupported(UnknownValueClass)`)
+or whose per-element release is unwired (`Unsupported(NoReleaseProtocol)`)
+publishes no recipe and is rejected at compile; no consumer maps an
+`Unsupported` classification back to a buffer-only release symbol.
+
+A generation that is moved on one path into a join and still owned on
+another has no admissible plan entry at any later exit (a drop would
+double-free the moved path; omitting it leaks the owning one). Raw MIR
+resolves this before sealing, from the same replay
+(`materialize_conditional_consume_releases`): the release is placed on the
+predecessor edge where the generation is still exactly live, provided the
+owning storage is physically dead on entry to the join (no read reaches it
+before a whole-local redefinition). Guarded generations keep their runtime
+flag and lineage `Join` inputs keep the join rules. A release replay proves
+necessary but the pass cannot express — the owner's destructor has no inline
+release ritual, or the owner sits in a projected place — refuses the function
+(`DropPlanUndetermined`) rather than leaving the owning path to leak. The one
+shape that is neither placed nor refused is a value still read after the join:
+a producer that hands it onward there without publishing its `Transfer`.
+Releasing that would be a use-after-free, so the leak stays with the producer
+until the mint-site fix lands.
+
 The `DecisionMap` is a deterministic table of
 `DecisionFact { site_id, kind, chosen_strategy, why, cost_class }` keyed by
 stable `SiteId`. It is attached as top-level function metadata on each

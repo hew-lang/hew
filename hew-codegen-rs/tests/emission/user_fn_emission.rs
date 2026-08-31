@@ -18,7 +18,8 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 use crate::ir_assertions::{
-    assert_consumed_string_result_cleanup, assert_target_call, cleanup_strategy, read_llvm_ir,
+    assert_consumed_string_result_cleanup, assert_target_call, cleanup_strategy, entry_body_symbol,
+    read_llvm_ir,
 };
 
 /// Run the full HIR + checker + MIR + codegen pipeline on `source` and
@@ -134,6 +135,87 @@ fn call_i64_user_fn_emits_call_instruction() {
         "i64 @add(",
         "the direct user-function call site",
     );
+}
+
+#[test]
+fn owned_cursor_direct_call_disarms_caller_cleanup_before_callee_entry() {
+    let source = r#"
+        fn take_cursor(cursor: VecIter<i64>) {}
+
+        fn main() {
+            let values: Vec<i64> = Vec.new();
+            values.push(1);
+            take_cursor(values.into_iter());
+        }
+    "#;
+    for target in [None, Some("x86_64-pc-windows-msvc")] {
+        let ll = emit_ll_for_target(source, "owned_cursor_direct_call", target);
+        let caller = function_ir(&ll, entry_body_symbol(&ll));
+        let callee = function_ir(&ll, "take_cursor");
+        let invoke = caller
+            .find("@take_cursor(")
+            .unwrap_or_else(|| panic!("main must invoke the exact cursor callee:\n{caller}"));
+        let disarm = caller[..invoke]
+            .rfind("store i64 1, ptr %local_")
+            .unwrap_or_else(|| {
+                panic!("the caller must disarm its cursor guard before invoke:\n{caller}")
+            });
+        assert!(
+            disarm < invoke,
+            "OwnedCursor guard disarm must precede the exact direct invoke:\n{caller}"
+        );
+
+        match cleanup_strategy(&ll) {
+            hew_codegen_rs::CleanupUnwindStrategy::StructuredLlvm => {
+                let invoke_tail = &caller[invoke..];
+                let unwind_prefix = "unwind label %";
+                let unwind_start = invoke_tail
+                    .find(unwind_prefix)
+                    .map(|offset| offset + unwind_prefix.len())
+                    .unwrap_or_else(|| {
+                        panic!("the direct cursor invoke must name its unwind edge:\n{caller}")
+                    });
+                let unwind_label = invoke_tail[unwind_start..]
+                    .split_whitespace()
+                    .next()
+                    .expect("the invoke unwind label must not be empty");
+                let caller_unwind = block_ir(caller, unwind_label);
+                assert!(
+                    !caller_unwind.contains("@hew_vec_free("),
+                    "the caller must not retain cursor release authority on callee unwind:\n{caller_unwind}"
+                );
+            }
+            hew_codegen_rs::CleanupUnwindStrategy::CrashOwnerRegistry => {
+                let arm_count = caller
+                    .matches("call i64 @hew_cont_crash_cleanup_arm")
+                    .count();
+                let deactivate_count = caller
+                    .matches("call i1 @hew_cont_crash_cleanup_deactivate")
+                    .count();
+                assert_eq!(
+                    deactivate_count,
+                    arm_count + 1,
+                    "the cursor handoff must add one terminal deactivation with no subsequent registry rearm:\n{caller}"
+                );
+                let cursor_copy = caller
+                    .find("%field_0_init_src")
+                    .expect("the VecIter constructor must copy the source Vec bits");
+                let deactivated = caller[..invoke]
+                    .rfind("call i1 @hew_cont_crash_cleanup_deactivate")
+                    .unwrap_or_else(|| {
+                        panic!("the cursor handoff must deactivate its source Vec token:\n{caller}")
+                    });
+                assert!(
+                    cursor_copy < deactivated && deactivated < invoke,
+                    "the source token must stay live through the cursor bit copy, then deactivate before invoke:\n{caller}"
+                );
+            }
+        }
+        assert!(
+            callee.contains("@hew_vec_free("),
+            "the entered callee must own and release the cursor snapshot:\n{callee}"
+        );
+    }
 }
 
 /// `add` itself must have a `define` with two i64 parameters and use them

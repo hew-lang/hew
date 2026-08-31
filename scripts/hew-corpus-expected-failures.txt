@@ -77,7 +77,6 @@ examples/v05/checked-mir/actor_link_monitor.hew
 
 # repro-wip (#3095): Vec owned-move index assignment emits a duplicate ownership
 # handoff across its bounds-check CFG, then checked MIR rejects the second event
-examples/v05/checked-mir/vec_index_assign_consumed_move.hew E_MIR_CHECK
 
 # deferred-nyi: f64 hashmap expected-fail test fixture (is_empty NYI)
 examples/v05/hashmap_f64_key_is_empty_fails.hew
@@ -165,13 +164,9 @@ repros/p0c_method_value_failclosed.hew
 
 # repro-wip (#3094): fluent consumed-resource transfer ends the child's owner
 # generation before the carried handoff
-repros/3094_consume_param_transfer_builder.hew E_MIR_CHECK
 
 # repro-wip (#3104): receive-generator suspension cleanup retains a stale drop
 # after transferring an owned record/enum yield
-repros/3104_receive_gen_fn_owned_enum_yield.hew E_MIR_CHECK
-repros/3104_receive_gen_fn_owned_record_yield.hew E_MIR_CHECK
-repros/3104_receive_gen_fn_record_stream_break.hew E_MIR_CHECK
 
 # ── tests/ownership-balance/ ───────────────────────────────────────────────
 
@@ -278,6 +273,11 @@ tests/pkg-import/package_module_type_alias.hew
 tests/pkg-import/private_generic_record_option_element.hew
 tests/pkg-import/private_generic_record_vec_element.hew
 
+# requires-package-resolver: positive package-machine fixture. Standalone
+# `hew check` cannot resolve `hew.qmach`; test-pkg-import installs that package
+# and executes both qualified machine and synthesized event identities.
+tests/pkg-import/qualified_machine_event_access.hew
+
 # requires-package-resolver: sub-packages (each depends on sibling packages)
 tests/pkg-import/pkgs/aliasmember/aliasmember.hew
 tests/pkg-import/pkgs/assocemptyuse/assocemptyuse.hew
@@ -289,6 +289,11 @@ tests/pkg-import/pkgs/reexchaina/reexchaina.hew
 tests/pkg-import/pkgs/reexmid/reexmid.hew
 tests/pkg-import/pkgs/reexsub/reexsub.hew
 tests/pkg-import/pkgs/reexsubalias/reexsubalias.hew
+
+# corpus-intentional-refusal: qmachbad deliberately names undeclared state
+# `.Nope`; test-pkg-import owns the negative oracle and requires the
+# owner-qualified `hew.qmachbad.Gate` diagnostic.
+tests/pkg-import/pkgs/qmachbad/qmachbad.hew
 
 # requires-package-resolver: self-qualified package source. selfqualtype.hew
 # references its own type both bare (`Meter`) and through its own module

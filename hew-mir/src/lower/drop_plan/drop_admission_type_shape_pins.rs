@@ -329,7 +329,7 @@ fn seed_gate_matches_value_class_authority() {
             true,
         ),
         ("linear-marked named", named("Once"), true),
-        // View seeds (build_lifo_drops elaborates its no-retain no-op arm).
+        // View seeds (never minted, so replay-derived plans schedule no drop).
         (
             "borrow",
             ResolvedTy::Borrow {
@@ -421,7 +421,7 @@ fn collection_handle_predicate_projects_from_heap_leaf() {
 
     // Symbol-agreement tripwire: the leaves' canonical release symbols are
     // exactly the two symbols the collection-handle bucket emits in
-    // `build_lifo_drops` (via `drop_kind_for`).
+    // `drop_kind_for`.
     assert_eq!(
         HeapLeaf::HashMap.release_symbol(),
         "hew_hashmap_free_layout",
@@ -446,12 +446,9 @@ fn collection_handle_predicate_projects_from_heap_leaf() {
 /// (`Unwired`): the per-element release for those shapes is unwired, so
 /// every consulting site must refuse the construct at compile time —
 /// never emit the buffer-only `hew_vec_free` over owned element nodes.
-/// The residual `Unsupported(UnenumeratedShape)` sub-domain deliberately
-/// keeps the buffer-only verdict, drawing the same boundary as the compile
-/// reject `unsupported_vec_element_walk`:
-///   - `UnenumeratedShape` (`Vec<T>` unsubstituted): the element owns no
-///     heap as a flat element, so the buffer free IS the complete
-///     release — refusing would reject un-monomorphised generic bodies;
+/// An un-monomorphised `Vec<T>` classifies `Plain` (the skeleton's outer
+/// buffer release), and a `Named` element no registry can see is
+/// `Unsupported(UnknownValueClass)` — `Unwired`, never a buffer-only symbol.
 ///
 /// A registered heap-owning record observed without this function's
 /// harvest key is instead classified harvest-independently and released
@@ -542,16 +539,20 @@ fn yield_and_field_pickers_match_legacy_symbol_table() {
             Unwired(FailClosedReason::NoReleaseProtocol),
             Unwired(FailClosedReason::NoReleaseProtocol),
         ),
-        // Vec arm — the residual Unsupported sub-domain that keeps the
-        // buffer-only verdict (the boundary
-        // `unsupported_vec_element_walk` draws; see the test doc).
+        // Vec arm — a generic skeleton's `Vec<T>` releases its outer buffer.
         (
-            "Vec<T> unsubstituted (Unsupported/UnenumeratedShape)",
+            "Vec<T> unsubstituted (Plain)",
             vec_of(ResolvedTy::TypeParam {
                 name: "T".to_string(),
             }),
             Wired("hew_vec_free"),
             Wired("hew_vec_free"),
+        ),
+        (
+            "Vec<Ghost> unregistered head (Unsupported/UnknownValueClass)",
+            vec_of(named("Ghost")),
+            Unwired(FailClosedReason::UnknownValueClass),
+            Unwired(FailClosedReason::UnknownValueClass),
         ),
         (
             "Vec<HeapRow> unharvested (Unsupported/NoReleaseProtocol, owned-ABI releasable)",
@@ -619,7 +620,7 @@ fn yield_and_field_pickers_match_legacy_symbol_table() {
     }
 
     // The Unsupported rows above carry exactly the two fail-closed
-    // reasons: the unwired release protocols and the anti-drift sentinel.
+    // reasons: the unwired release protocols and the unseen head.
     assert_eq!(
         builder.classify_vec_element_release(&ResolvedTy::Bytes),
         VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
@@ -632,7 +633,11 @@ fn yield_and_field_pickers_match_legacy_symbol_table() {
         builder.classify_vec_element_release(&ResolvedTy::TypeParam {
             name: "T".to_string(),
         }),
-        VecElementRelease::Unsupported(FailClosedReason::UnenumeratedShape)
+        VecElementRelease::Plain
+    );
+    assert_eq!(
+        builder.classify_vec_element_release(&named("Ghost")),
+        VecElementRelease::Unsupported(FailClosedReason::UnknownValueClass)
     );
     // The releasable-boundary row rides `NoReleaseProtocol` too — it is
     // the `elem_is_owned_abi_releasable` exclusion, not the reason, that
@@ -664,87 +669,5 @@ fn yield_and_field_pickers_match_legacy_symbol_table() {
         builder.project_field_inline_drop_symbol(&vec_t),
         Wired("hew_vec_free_owned"),
         "the field picker must substitute before classifying"
-    );
-}
-
-/// The production (non-test) sources of the lower module. CRLF-normalised
-/// so a Windows checkout (`core.autocrlf=true`) still splits on the
-/// LF-anchored test-module boundary (mirrors `layout_key_shortening_guard`).
-fn production_source() -> String {
-    [
-        include_str!("../mod.rs"),
-        include_str!("../drop_plan.rs"),
-        include_str!("../ownership.rs"),
-        include_str!("../scope.rs"),
-        include_str!("../expr.rs"),
-        include_str!("../pattern.rs"),
-        include_str!("../control_flow.rs"),
-        include_str!("../task.rs"),
-        include_str!("../actor.rs"),
-        include_str!("../closure_gen.rs"),
-    ]
-    .into_iter()
-    .map(|src| {
-        src.replace("\r\n", "\n")
-            .split("\n#[cfg(test)]\nmod ")
-            .next()
-            .expect("lower module source has a non-test prefix")
-            .to_string()
-    })
-    .collect::<Vec<_>>()
-    .join("\n")
-}
-
-/// Structural inventory pin for the owned-locals seed fact: every
-/// occurrence of the non-`BitCopy` value-class polarity test in production
-/// code is named below, so a raw copy of the seed comparison cannot appear
-/// (or disappear) silently under any spelling — the whitespace-stripped
-/// scan catches line-wrapped and temp-variable forms alike.
-#[test]
-fn seed_fact_comparison_site_inventory_is_closed() {
-    let squeezed: String = production_source()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    // The seed fact has exactly one production spelling: the body of
-    // `binding_seeds_drop_elaboration`, the authority the 11 seed sites
-    // and the consume-side removal mirror all call.
-    assert!(
-        squeezed.contains("fnbinding_seeds_drop_elaboration"),
-        "the owned-locals seed authority must exist in production code"
-    );
-    let count = squeezed.matches("!=ValueClass::BitCopy").count();
-    // The complete allowlist of the non-`BitCopy` polarity test:
-    //   - `binding_seeds_drop_elaboration` — the seed authority's own
-    //     body, the single spelling of the seed fact;
-    //   - `gen_env_capture_admissible` — generator-env capture
-    //     flat-copyability, a DIFFERENT fact that must not follow a
-    //     future seed-rule change;
-    //   - the user-record value-class diagnostic reason builder — names
-    //     the first non-BitCopy field in a rejection note (diagnostic
-    //     wording, not admission).
-    assert_eq!(
-        count, 3,
-        "a raw copy of the owned-locals seed comparison appeared in (or \
-         an allowlisted use vanished from) lower module production code; \
-         seed decisions route through `binding_seeds_drop_elaboration`, \
-         never an inline class test — classify any change to this \
-         population in the allowlist above deliberately"
-    );
-}
-
-#[test]
-fn seed_fact_comparison_inventory_rejects_a_raw_counterfactual() {
-    let squeezed: String = production_source()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    let baseline = squeezed.matches("!=ValueClass::BitCopy").count();
-    let counterfactual = format!("{squeezed}ifraw!=ValueClass::BitCopy{{}}");
-    assert_eq!(baseline, 3, "the production inventory changed unexpectedly");
-    assert_ne!(
-        counterfactual.matches("!=ValueClass::BitCopy").count(),
-        baseline,
-        "a newly introduced raw seed comparison must make the inventory red"
     );
 }

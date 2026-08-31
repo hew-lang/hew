@@ -557,7 +557,7 @@ fn assert_reassigned_capture_is_released_once(output: &std::process::Output) {
 /// Leaks are deliberately not asserted. The escaping closure pair is bound by a
 /// `for` binder and a `var`, neither of which
 /// `derive_closure_pair_drop_allowed` clears as a sole owner, so its env box is
-/// never freed — the documented fail-closed conservatism in `build_lifo_drops`
+/// never freed — the drop elaborator's documented fail-closed conservatism
 /// ("A binding the prover did not clear leaks; it never double-frees"),
 /// reproducible on `main` with a closure that never touches a generator.
 /// Widening that prover is its own lane; this oracle pins the memory-safety

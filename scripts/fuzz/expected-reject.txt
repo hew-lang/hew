@@ -23,6 +23,7 @@ tests/vertical-slice/accept/dir_module_peer_span_identity/zoo/num.hew
 tests/vertical-slice/accept/dir_module_peer_span_identity/zoo/zoo.hew
 tests/vertical-slice/accept/dir_module_trait_default/greeting/dog.hew
 tests/vertical-slice/accept/dir_module_trait_default/greeting/greeting.hew
+tests/vertical-slice/accept/file_import_fn_value_and_call_lib.hew
 tests/vertical-slice/accept/file_import_trait_default_local_type_lib.hew
 tests/vertical-slice/accept/file_import_trait_default_method_lib.hew
 tests/vertical-slice/accept/file_import_trait_impl_lib.hew

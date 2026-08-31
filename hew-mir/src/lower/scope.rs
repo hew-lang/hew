@@ -2,11 +2,91 @@ use super::{
     base_local, stream_handle_drop_descriptor, vec_iter_init_vec_source_expr,
     vec_iter_let_cursor_owns_handle, BindingId, Builder, BuiltinType, Disposition, HashSet,
     HirExpr, HirExprKind, Instr, LoopFrame, MirDiagnostic, MirDiagnosticKind, Place, ResolvedRef,
-    ResolvedTy, ScopeId, ScopeInfoEntry, VecElementRelease,
+    ResolvedTy, ScopeId, ScopeInfoEntry, SiteId, VecElementRelease,
 };
 use crate::ownership::CowHeapRelease;
 
 impl Builder {
+    /// Whether `ty` is the exact compiler builtin `VecIter<T>` identity.
+    ///
+    /// This predicate is deliberately independent of whether `T` has a wired
+    /// cursor-field release protocol.  Conflating those questions made an
+    /// exact but unsupported cursor, such as `VecIter<bytes>`, look like an
+    /// ordinary record at call and collection boundaries.  Callers substitute
+    /// generic arguments before asking this question.
+    #[expect(
+        clippy::unused_self,
+        reason = "keeps exact cursor identity beside the Builder-owned release protocol"
+    )]
+    pub(crate) fn ty_is_exact_vec_iter(&self, ty: &ResolvedTy) -> bool {
+        matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::VecIter),
+                ..
+            }
+        )
+    }
+
+    /// Refuse an exact `VecIter<T>` whose owned snapshot cannot be released.
+    ///
+    /// Every producer calls this before lowering operands at an ownership
+    /// boundary.  `false` means either a non-cursor type or a cursor with the
+    /// existing complete release protocol; `true` means a fatal diagnostic was
+    /// published and the producer must stop without emitting partial MIR.
+    pub(crate) fn reject_unsupported_vec_iter_boundary(
+        &mut self,
+        ty: &ResolvedTy,
+        site: SiteId,
+        boundary: &'static str,
+    ) -> bool {
+        if !self.ty_is_exact_vec_iter(ty) || self.vec_iter_cursor_release_protocol(ty).is_some() {
+            return false;
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "VecIter element without an owned cursor release protocol".to_string(),
+                site,
+            },
+            note: format!(
+                "{boundary} has exact cursor type `{}`; its vector snapshot owns elements for which MIR has no complete release protocol, so the boundary is rejected before any operand is materialised",
+                ty.user_facing(),
+            ),
+        });
+        true
+    }
+
+    /// Refuse storing an exact cursor in a runtime collection.
+    ///
+    /// Even a cursor whose standalone field release is wired cannot be
+    /// byte-copied into a collection: no collection layout currently carries
+    /// the `OwnedCursor` handoff, guard, and abandonment protocol. Unsupported
+    /// element releases retain the more specific diagnostic above.
+    pub(crate) fn reject_vec_iter_collection_storage_boundary(
+        &mut self,
+        ty: &ResolvedTy,
+        site: SiteId,
+        boundary: &'static str,
+    ) -> bool {
+        if self.reject_unsupported_vec_iter_boundary(ty, site, boundary) {
+            return true;
+        }
+        if !self.ty_is_exact_vec_iter(ty) {
+            return false;
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "VecIter value at a runtime collection storage boundary".to_string(),
+                site,
+            },
+            note: format!(
+                "{boundary} would byte-copy `{}` into collection-owned storage without an OwnedCursor transfer, guard, or abandonment contract, so the boundary is rejected before any operand is materialised",
+                ty.user_facing(),
+            ),
+        });
+        true
+    }
+
     /// Whether a non-binding `VecIter<T>` value arrives as an independent
     /// snapshot owner. Synthetic `.iter()` / `.into_iter()` struct initialisers
     /// use the topology-specific authority; other expressions must satisfy the
@@ -130,7 +210,7 @@ impl Builder {
     /// released every iteration instead of accumulating until function exit.
     ///
     /// Each released binding is removed from `owned_locals` and
-    /// `scope_generator_bindings` so the function-exit LIFO drop never fires a
+    /// `scope_generator_bindings` so no scope-exit owner ever fires a
     /// second `hew_gen_coro_destroy` on the same slot — and the inline
     /// `Instr::Drop` null-stores the slot afterwards, so even a
     /// structurally-reachable second drop observes null
@@ -190,6 +270,28 @@ impl Builder {
             .map(CowHeapRelease::release_symbol)
     }
 
+    /// Classify the one typed `VecIter` parameter boundary shared by caller and
+    /// callee lowering after generic substitution.
+    ///
+    /// Ordinary direct by-value calls own the cursor. `ClosureInvoke` and the
+    /// exact compiler-expanded `Iterator::next` never enters its ordinary
+    /// caller funnel, but its emitted Default-convention body keeps the same
+    /// honest owner-minting parameter mode. `ClosureInvoke` and every other call
+    /// convention remain borrowing in raw MIR; unsupported ingress producers
+    /// diagnose rather than minting half of an ownership protocol.
+    pub(crate) fn vec_iter_param_boundary_mode(
+        &self,
+        cursor_ty: &ResolvedTy,
+        call_conv: crate::model::FunctionCallConv,
+    ) -> Option<crate::model::ParamBoundaryMode> {
+        self.vec_iter_cursor_release_symbol(cursor_ty)?;
+        Some(if call_conv == crate::model::FunctionCallConv::Default {
+            crate::model::ParamBoundaryMode::OwnedCursor
+        } else {
+            crate::model::ParamBoundaryMode::BorrowReadOnly
+        })
+    }
+
     /// Typed release protocol for the owned `vec` field of a `VecIter<T>`.
     ///
     /// This is shared by the normal inline `RecordFieldDrop` and the
@@ -211,7 +313,19 @@ impl Builder {
             return None;
         }
         let elem = args.first()?;
-        match self.classify_vec_element_release(elem) {
+        // A cursor's by-value ABI must classify identically in its caller and
+        // callee. Ordinary Vec lowering may consult `vec_owned_element_keys`,
+        // which is harvested per function, but a registered heap-owning
+        // record/enum has the owned-element release protocol everywhere its
+        // type is visible. Project that harvest-independent authority first;
+        // retain the ordinary classifier for closure pairs, plain elements,
+        // and genuinely unsupported shapes such as bytes and indirect enums.
+        let release = if self.elem_is_owned_abi_releasable(elem) {
+            VecElementRelease::OwnedElement
+        } else {
+            self.classify_vec_element_release(elem)
+        };
+        match release {
             VecElementRelease::Plain => Some(CowHeapRelease::VecPlain),
             VecElementRelease::OwnedElement => Some(CowHeapRelease::VecOwnedElement),
             VecElementRelease::ClosurePair => Some(CowHeapRelease::VecClosurePairs),
@@ -367,9 +481,9 @@ impl Builder {
     ///
     /// This is the LEXICAL (fall-through) release only. An early
     /// `break @outer` / `continue @outer` / `return` jumps past this point, and
-    /// the `ScopeReleased` disposition set here also removes the cursor from the
-    /// function-exit LIFO the terminator drop plans are built from — so those
-    /// edges carry their own inline release via
+    /// the `ScopeReleased` disposition set here also keeps the cursor from
+    /// minting a scope-exit owner the terminator drop plans would replay — so
+    /// those edges carry their own inline release via
     /// [`Self::emit_vec_iter_drops_for_exit_edge`], whose scope window makes the
     /// two mutually exclusive.
     pub(crate) fn emit_scope_vec_iter_drops(&mut self, scope_id: ScopeId) {
@@ -399,8 +513,8 @@ impl Builder {
     /// #58 (B2 leak-3, round 3) — [`Self::emit_scope_vec_iter_drops`] is a
     /// LEXICAL release: it only runs on the fall-through path out of the
     /// cursor's declaring block. An early exit that jumps past that block has
-    /// no lexical release, and `VecIter` deliberately has no function-exit LIFO
-    /// entry, so
+    /// no lexical release, and `VecIter` deliberately mints no scope-exit
+    /// owner, so
     /// `for w in make_vec() { …; return; }` leaked the whole snapshot tree once
     /// per call.
     ///
@@ -810,8 +924,8 @@ impl Builder {
     /// producer promptly.
     ///
     /// Mirrors [`Self::emit_scope_generator_drops`]: removes the binding from
-    /// `scope_stream_bindings`, dispositions it `ScopeReleased` so the
-    /// function-exit LIFO cannot fire a second close, and the inline
+    /// `scope_stream_bindings`, dispositions it `ScopeReleased` so no
+    /// scope-exit owner fires a second close, and the inline
     /// `Instr::Drop` (`RuntimeSymbol` close path) null-stores the slot after the
     /// close (`raii-null-after-move`; `hew_stream_close` /
     /// `hew_channel_receiver_close` also null-guard, so a moved-out or

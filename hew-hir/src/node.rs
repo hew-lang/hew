@@ -432,6 +432,10 @@ pub struct HirImplBlock {
     /// parallel to `method_names`. Direct `CallTarget::ImplMethod` calls use
     /// this identity to project to the emitted impl-method symbol.
     pub method_ids: Vec<Option<hew_types::DefId>>,
+    /// Exact HIR item identities of the emitted impl-method bodies, parallel
+    /// to `method_names`. Static trait dispatch uses this to enter the same
+    /// caller/callee ownership-summary protocol as an ordinary direct call.
+    pub method_item_ids: Vec<ItemId>,
     pub span: hew_parser::ast::Span,
 }
 

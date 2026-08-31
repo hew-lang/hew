@@ -4529,6 +4529,35 @@ pub enum Place {
     },
 }
 
+/// The one compact rendering of a `Place`. Diagnostics and dumps both use it,
+/// so no user-visible or engineer-visible surface ever prints the derived
+/// `Debug` form.
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(n) => write!(f, "_{n}"),
+            Self::ReturnSlot => write!(f, "ret"),
+            Self::DuplexHandle(n) => write!(f, "duplex{n}"),
+            Self::LambdaActorHandle(n) => write!(f, "lambda{n}"),
+            Self::ActorHandle(n) => write!(f, "actor{n}"),
+            Self::SendHalf(n) => write!(f, "send_half{n}"),
+            Self::RecvHalf(n) => write!(f, "recv_half{n}"),
+            Self::MachineTag(n) => write!(f, "mtag{n}"),
+            Self::MachineVariant {
+                local,
+                variant_idx,
+                field_idx,
+            } => write!(f, "mvar{local}.{variant_idx}.{field_idx}"),
+            Self::EnumTag(n) => write!(f, "etag{n}"),
+            Self::EnumVariant {
+                local,
+                variant_idx,
+                field_idx,
+            } => write!(f, "evar{local}.{variant_idx}.{field_idx}"),
+        }
+    }
+}
+
 /// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The
 /// signed-ness selector is intentional: Hew's spine treats `i64` as a
 /// signed 64-bit integer, so the default cmp lowerings are signed
@@ -4810,6 +4839,15 @@ impl NeutralizeAuthority {
 pub struct OwnerId {
     pub binding: BindingId,
     pub generation: u32,
+}
+
+impl std::fmt::Display for OwnerId {
+    /// Compact `b<binding>#<generation>` form for verifier findings. The
+    /// derived `Debug` shape (`OwnerId { binding: BindingId(..), .. }`) is
+    /// for dumps only and must never reach a user-facing diagnostic.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}#{}", self.binding, self.generation)
+    }
 }
 
 /// Immutable destructor authority for one ownership generation.
@@ -6050,7 +6088,7 @@ pub enum Instr {
     ///   helpers free the composite's leaves and store nothing.  Idempotence
     ///   rests on exactly-once execution (straight-line pre-body emission,
     ///   never inside a `DropPlan`) plus exactly-once parent suppression: the
-    ///   composite-drop provers exclude the base root directly (see below)
+    ///   base root's owner must be discharged before any exit (see below)
     ///   and the drop-plan verifier rejects an inline-composite `ty` whose
     ///   base still receives a composite in-place drop.
     ///
@@ -6058,13 +6096,10 @@ pub enum Instr {
     ///
     /// An interior field operation: it USES `base`, creates NO dest, and
     /// creates NO alias.  It is by construction BOTH the field extraction and
-    /// that field's release, so the record/tuple composite provers
-    /// (`derive_owned_record_drop_allowed` /
-    /// `derive_tuple_composite_drop_allowed` in `lower.rs`) exclude a
-    /// candidate root this op addresses — the combined role the safety-drop
-    /// temps' `field_binders ∩ release_owner_bases` intersection plays for
-    /// the load+drop leaf path — and the enum composite prover exempts it
-    /// from the owning-sink scan exactly like the interior `RecordFieldDrop`.
+    /// that field's release: the sibling-discharge scan in
+    /// `lower/composite_own.rs` treats it as an interior release of a root
+    /// that still owns its remaining fields, never as an owning-sink escape,
+    /// exactly like the interior `RecordFieldDrop`.
     ///
     /// ## Admission
     ///
@@ -6894,8 +6929,13 @@ pub enum MirCheck {
     /// double-free. Memory-unsafe; unconditional hard error with NO allowlist
     /// escape.
     ObligationOverReleased {
+        /// Function symbol (`ElaboratedMirFunction::name`).
         function: String,
-        block: u32,
+        /// Every exit block that over-releases this owner.
+        blocks: Vec<u32>,
+        /// The mint's source site, used as the diagnostic caret anchor.
+        site: SiteId,
+        /// Source-level name or expression label of the doubly-released local.
         name: String,
         reason: String,
     },
@@ -7531,12 +7571,12 @@ pub enum DropKind {
     /// reverse declaration order and frees no wrapper (the tuple is embedded).
     ///
     /// `ElabDrop::drop_fn` must be `None`; the helper symbol is derived from
-    /// `ElabDrop::ty`. The MIR elaborator emits this kind ONLY for a tuple the
-    /// fail-closed sole-owner derivation (`derive_tuple_composite_drop_allowed`)
-    /// proves still owns its members at scope exit: a tuple whose elements were
-    /// moved out (the `__tuple_N` destructure temp) or whose whole value escaped
-    /// (returned) is excluded so exactly one owner drops each member. A binding
-    /// the prover does not positively clear leaks; it never double-frees.
+    /// `ElabDrop::ty`. The MIR elaborator emits this kind for a tuple owner
+    /// whose `DropRecipe` names it and whose generation the ownership replay
+    /// finds live at the exit: a tuple whose elements were moved out (the
+    /// `__tuple_N` destructure temp) or whose whole value escaped (returned)
+    /// has its generation ended at that transfer, so exactly one owner drops
+    /// each member.
     TupleInPlace,
     /// Escaping-closure pair drop (the closure env heap-lifetime contract).
     /// The dropped value is the two-pointer closure pair `{ fn_ptr, env_ptr }`
@@ -7581,16 +7621,12 @@ pub enum DropKind {
     /// derived from the paired [`ElabDrop::ty`]'s registered enum layout),
     /// so the runtime-vs-user `resolve_drop_fn` dispatch is never consulted.
     ///
-    /// The MIR elaborator emits this kind ONLY for an indirect-enum local
-    /// the fail-closed sole-owner derivation
-    /// (`derive_indirect_enum_drop_allowed`) proves still solely owns its
-    /// heap node at scope exit: a binding that is a destructure/projection
-    /// alias of a still-live parent node, that escapes (returned, moved into
-    /// an aggregate, passed by value to a callee — a borrow that does NOT
-    /// transfer ownership), or that is consumed/maybe-consumed on a path is
-    /// excluded so the node is freed by exactly one owner. A binding the
-    /// prover does not positively clear leaks (as before this kind); it
-    /// never double-frees.
+    /// The MIR elaborator emits this kind for an indirect-enum owner whose
+    /// generation the ownership replay finds live at the exit: a binding that
+    /// is a destructure/projection alias of a still-live parent node never
+    /// mints an owner, and one that escapes (returned, moved into an
+    /// aggregate) or is consumed on a path has its generation ended or
+    /// guarded at that hand-off, so the node is freed by exactly one owner.
     IndirectEnum,
 }
 
@@ -7617,9 +7653,10 @@ pub enum DropKind {
 ///
 /// Populated by the MIR builder at each `dyn Trait` binding's
 /// introducing statement (W3.031 Stage 1) and threaded into the
-/// `DropKind::TraitObject` variant in `build_lifo_drops`. Codegen
-/// (W3.031 Stage 6) reads the discriminator to select the post-
-/// `drop_in_place` release ritual.
+/// `DropKind::TraitObject` variant of the owner's definition-site
+/// `OwnershipEvent::DropRecipe` (`drop_kind_for`), from which every exit
+/// plan is derived. Codegen (W3.031 Stage 6) reads the discriminator to
+/// select the post-`drop_in_place` release ritual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TraitObjectStorage {
     /// Caller-allocated alloca; no post-`drop_in_place` release.
@@ -7994,7 +8031,10 @@ pub enum MirDiagnosticKind {
     /// S1 obligation-balance under-release (leak): surfaced from
     /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has fewer
     /// discharges than owner mints on a CFG exit. Every instance is a blocking
-    /// compiler-invariant failure.
+    /// compiler-invariant failure, so it reports through the
+    /// internal-compiler-error channel
+    /// (`internal_compiler_error_function`, `E_MIR_ICE`) and not as a fault in
+    /// the user's program.
     ObligationUnderReleased {
         function: String,
         blocks: Vec<u32>,
@@ -8006,40 +8046,36 @@ pub enum MirDiagnosticKind {
     /// S1 obligation-balance over-release (double-free): surfaced from
     /// `MirCheck::ObligationOverReleased`. Two or more definite discharges
     /// on one CFG path. Unconditional hard error — memory-unsafe, no
-    /// allowlist escape.
+    /// allowlist escape — and, like under-release, a compiler-invariant
+    /// failure reported through the internal-compiler-error channel.
     ObligationOverReleased {
         function: String,
-        block: u32,
+        blocks: Vec<u32>,
+        site: SiteId,
         name: String,
         reason: String,
     },
-    /// S1 obligation-balance verdict unreached: surfaced from
-    /// `MirCheck::ObligationBalanceUnverified`. The discharge-interval fixpoint
-    /// exceeded its iteration cap before converging, so the function's balance
-    /// is undecided. Unconditional hard error — the gate fails closed rather
-    /// than certify an unverified function.
-    ObligationBalanceUnverified { function: String, reason: String },
+    /// A lowering/verifier invariant failed: the Checked or Elaborated MIR the
+    /// compiler built for `function` is inconsistent with itself. Surfaced
+    /// from `MirCheck::ObligationBalanceUnverified`,
+    /// `MirCheck::DischargeAuthorityMissing`, and
+    /// `MirCheck::DischargeAuthorityDrift` — every finding whose cause is a
+    /// compiler defect, never the user's program. Reported through the
+    /// internal-compiler-error channel (`E_MIR_ICE`), at most once per
+    /// function; `rule` names the verifier rule (`ownership-place`,
+    /// `edge-carry`, `obligation-balance-unverified`, ...) and `detail` is the
+    /// rule's own prose, rendered with `Display` identities only.
+    LoweringInvariant {
+        function: String,
+        rule: String,
+        block: Option<u32>,
+        detail: String,
+    },
     /// Execution-context carrier marker validation failed.
     ContextBoundaryViolation {
         function: String,
         block: u32,
         kind: &'static str,
-        reason: String,
-    },
-    /// Discharge-authority carriage: a `NeutralizePayloadSlot` whose authority
-    /// requires a transferee reached elaboration without one (fail-closed).
-    DischargeAuthorityMissing {
-        function: String,
-        block: u32,
-        authority: NeutralizeAuthority,
-        reason: String,
-    },
-    /// Discharge-authority corroboration drift: a carried discharge fact
-    /// disagrees with the independently re-derived discharge set.
-    DischargeAuthorityDrift {
-        function: String,
-        block: u32,
-        name: String,
         reason: String,
     },
     /// A context-derived place escaped past `ExitContext`.
@@ -8252,6 +8288,33 @@ pub enum MirDiagnosticKind {
     ClosureCapturesDuplexHandle { name: String, site: SiteId },
 }
 
+impl MirDiagnosticKind {
+    /// The function whose lowering is at fault, when this diagnostic reports a
+    /// compiler defect rather than a fault in the user's program.
+    ///
+    /// Three kinds are internal. `LoweringInvariant` says so by name. The two
+    /// obligation imbalances join it because the user never writes a release:
+    /// the compiler decides where every owned value is discharged, so a mint
+    /// that no exit discharges (leak), or one that two discharges reach
+    /// (double-free), is the compiler disagreeing with itself about a drop
+    /// plan it built. No source edit is the fix.
+    ///
+    /// This is the one authority for that classification. `hew-cli` renders
+    /// what it names through the internal-compiler-error channel (`E_MIR_ICE`,
+    /// bug-report note), and `project_findings` reports at most one of them
+    /// per function so a single inconsistent lowering cannot bury the user's
+    /// own errors.
+    #[must_use]
+    pub fn internal_compiler_error_function(&self) -> Option<&str> {
+        match self {
+            Self::LoweringInvariant { function, .. }
+            | Self::ObligationUnderReleased { function, .. }
+            | Self::ObligationOverReleased { function, .. } => Some(function),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionFact {
     pub site: SiteId,
@@ -8307,6 +8370,10 @@ pub enum ParamBoundaryMode {
     TransferResource,
     OwnedMessage,
     OwnedCarrier,
+    /// A by-value `VecIter<T>` cursor whose caller transfers the sole cursor
+    /// generation immediately before a direct Hew invoke. The callee owns
+    /// normal, unwind, and entry-cancel cleanup from ABI ingress.
+    OwnedCursor,
     /// A representation mutation reached a boundary whose alias/callee
     /// authority is not proven. Checked MIR keeps this refusal explicit.
     RejectUnprovenRepresentationMutation,

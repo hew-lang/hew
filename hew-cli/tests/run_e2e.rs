@@ -2299,7 +2299,7 @@ fn run_gen_fn_null_env_fn_values_exact_stdout() {
 /// never read. Until the per-binder taint-suppression landed, `y`'s
 /// `RecordFieldLoad` dest was tainted as a projection-alias of the parent,
 /// `derive_cow_sole_owner` excluded it from the leaf `CoW` allow-set, and
-/// `build_lifo_drops` silently emitted no drop for `y` — one allocation
+/// the drop elaborator silently emitted no drop for `y` — one allocation
 /// leaked per match. The fix pairs the scrutinee consume mark with a
 /// `match_project_consumed_binder_locals` exemption: when the scrutinee is
 /// a non-captured `BindingRef` (consume-marked at the destructure site),

@@ -111,12 +111,64 @@ impl Builder {
                 }
             }
         }
+        let collection_index_ingress = matches!(
+            &target.kind,
+            HirExprKind::Index { container, .. }
+                if matches!(
+                    self.subst_ty(&container.ty),
+                    ResolvedTy::Named {
+                        builtin: Some(BuiltinType::Vec | BuiltinType::HashMap),
+                        ..
+                    }
+                )
+        );
+        if collection_index_ingress {
+            let value_ty = self.subst_ty(&value.ty);
+            if self.reject_vec_iter_collection_storage_boundary(
+                &value_ty,
+                value.site,
+                "a collection index assignment",
+            ) {
+                return;
+            }
+        }
         let copy_in = self.assign_target_stays_copy_in(target, value);
+        // A Vec index assignment that MOVES a bound local (`v[i] = h`, routed
+        // to `hew_vec_set_owned_move` below) hands the value to the runtime
+        // only on the call's normal edge, after the bounds check lowered in
+        // between. Consuming `h` here would end its generation before the
+        // check and a second time at the call; defer it like every other
+        // catalogued consuming runtime argument.
+        //
+        // SHORTCUT. WHY: the deferral set is keyed by the argument's site and
+        // was named for affine extern consumes; the index-assignment value is
+        // not affine, but the consume hook reads only this set, so the site is
+        // toggled in around the single `lower_value_for_move` that reads it.
+        // WHEN: once every consuming runtime argument carries its deferral on
+        // the catalogued call verdict (`arg_consume_verdict`) instead of a
+        // Builder-side site set, the toggle and the set go together. WHAT:
+        // the real solution is one "consume at the normal edge" verdict per
+        // runtime call argument that `lower_value_for_move` consults directly.
+        let vec_set_moves_binding = !copy_in
+            && matches!(
+                &target.kind,
+                HirExprKind::ResolvedImplCall {
+                    target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Set),
+                    ..
+                }
+            )
+            && self.is_consumed_bound_local(value);
+        if vec_set_moves_binding {
+            self.deferred_affine_call_consume_sites.insert(value.site);
+        }
         let src = if copy_in {
             self.lower_value(value)
         } else {
             self.lower_value_for_move(value)
         };
+        if vec_set_moves_binding {
+            self.deferred_affine_call_consume_sites.remove(&value.site);
+        }
         let Some(src) = src else {
             return;
         };
@@ -386,9 +438,8 @@ impl Builder {
                     // double-free at the next release. When the RHS may alias,
                     // skip the release on BOTH the static and the flag-gated
                     // paths: fail-open (leak) is this seam's documented
-                    // posture, matching the scope-exit exclusion
-                    // (`derive_owned_record_drop_allowed`) for the identical
-                    // aliasing channel. WHEN-OBSOLETE: the COW retain-on-share
+                    // posture for this aliasing channel. WHEN-OBSOLETE: the
+                    // COW retain-on-share
                     // spine (every share retained => release always sound).
                     let rhs_may_alias_old = self.reassign_rhs_may_alias_binding(value, *binding);
                     // #53 / #2301: release the prior heap-owning value before
@@ -632,7 +683,7 @@ impl Builder {
                             name: name.clone(),
                             site: target.site,
                         },
-                        note: format!("assignment target binding {binding:?} has no MIR place"),
+                        note: format!("assignment target binding {binding} has no MIR place"),
                     });
                 }
             }

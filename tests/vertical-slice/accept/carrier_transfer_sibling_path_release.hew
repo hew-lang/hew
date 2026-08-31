@@ -1,0 +1,48 @@
+// A call never consumes a non-resource argument, and the cost strategy the
+// callee summary selects must not change what any OTHER path does.
+//
+// `keep` owns its `Holder` parameter (it pushes it into a Vec), so the callee
+// summary is OwnedCarrier and the caller may transfer the record on a proven
+// last use. `h` reaches `keep` only on the `then` path. The `else` path merely
+// reads `h`, so it must still release `h`'s two heap strings at its own exit:
+// the transfer publishes a path fact, not a whole-binding one.
+//
+// The counterfactual is what stdout can observe: if the transfer's consume
+// were read as a fact about the binding rather than about the then-path, the
+// else exit would drop a value it does not own and this program aborts instead
+// of printing, and a lost or misdirected handoff changes the printed totals.
+// This oracle does NOT observe release. The then path's carrier transfer leaks
+// its record here (88 direct + 32 indirect bytes under valgrind, identical
+// when built with the compiler on `main`); that under-release is #3159 and
+// needs a leak oracle, not this fixture.
+type Holder { items: Vec<string>, label: string }
+
+fn keep(h: Holder) -> i64 {
+    let v: Vec<Holder> = [];
+    v.push(h);
+    v.len()
+}
+
+fn borrowed(h: Holder) -> i64 {
+    h.label.len()
+}
+
+fn run(cond: bool) -> i64 {
+    let h = Holder { items: ["a" + "b"], label: "x" + "y" };
+    var total = 0;
+    if cond {
+        total = total + keep(h);
+    } else {
+        total = total + borrowed(h);
+    }
+    total
+}
+
+fn main() -> i64 {
+    println(f"then={run(true)}");
+    println(f"else={run(false)}");
+    // Take the else path twice more: a per-visit under-release on the sibling
+    // path would compound, and a per-visit over-release would abort.
+    println(f"again={run(false) + run(false)}");
+    0
+}

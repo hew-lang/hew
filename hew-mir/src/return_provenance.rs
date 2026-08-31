@@ -41,6 +41,7 @@ use std::collections::HashSet;
 use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirStmt, HirStmtKind, ResolvedRef,
 };
+use hew_types::runtime_call::{RuntimeCallFamily, RuntimeResultAuthority};
 use hew_types::ResolvedTy;
 
 // ---------------------------------------------------------------------------
@@ -269,6 +270,22 @@ pub enum CallClass {
     /// indirect/dynamic dispatch that can return a captured heap param through
     /// its environment) → contributes `{OPAQUE}` unconditionally. Fail-closed.
     Opaque,
+}
+
+/// Project the checker's typed runtime-call identity onto return provenance.
+///
+/// This is the closed authority for builtin result independence. A new runtime
+/// family defaults to [`RuntimeResultAuthority::FailClosed`] until its result
+/// contract is classified, so neither provenance policy can silently trust it.
+#[must_use]
+fn builtin_result_call_class(family: RuntimeCallFamily) -> CallClass {
+    match family.result_authority() {
+        RuntimeResultAuthority::IndependentOwned | RuntimeResultAuthority::IndependentBitCopy => {
+            CallClass::Fresh
+        }
+        RuntimeResultAuthority::InteriorAliasOfReceiver => CallClass::ParamSubst,
+        RuntimeResultAuthority::FailClosed => CallClass::Opaque,
+    }
 }
 
 /// The leaf/callee decisions that differ among consumers of the shared
@@ -867,14 +884,20 @@ pub struct OpaqueExternTaintPolicy<'a> {
 
 impl LeafPolicy for OpaqueExternTaintPolicy<'_> {
     fn classify_call(&self, callee: &HirExpr) -> CallClass {
-        // Clause 1 — an indirect/closure/dynamic callee can hand back anything.
-        let HirExprKind::BindingRef {
-            name,
-            resolved: ResolvedRef::Item(item_id),
-            ..
-        } = &callee.kind
-        else {
-            return CallClass::Opaque;
+        // Clause 1 — a checker-identified runtime builtin reads the closed
+        // result authority. Every other non-item callee (closure, fn pointer,
+        // dynamic dispatch) can hand back anything.
+        let (name, item_id) = match &callee.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Builtin(family),
+                ..
+            } => return builtin_result_call_class(*family),
+            HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Item(item_id),
+                ..
+            } => (name, item_id),
+            _ => return CallClass::Opaque,
         };
         // Clause 2 — the audited extern authority, ahead of every id lookup.
         if self.extern_table.is_extern_name(name) || self.extern_table.is_extern_id(*item_id) {
@@ -4707,14 +4730,19 @@ pub struct PrecisePolicy<'a> {
 
 impl LeafPolicy for PrecisePolicy<'_> {
     fn classify_call(&self, callee: &HirExpr) -> CallClass {
-        // A non-item callee (closure value, fn-pointer param, dynamic dispatch,
-        // const, builtin) can hand back a captured heap param → Opaque.
-        let HirExprKind::BindingRef {
-            name,
-            resolved: ResolvedRef::Item(id),
-        } = &callee.kind
-        else {
-            return CallClass::Opaque;
+        // A checker-identified runtime builtin reads the closed result
+        // authority. Every other non-item callee (closure value, fn-pointer
+        // param, dynamic dispatch, const) can hand back a captured heap param.
+        let (name, id) = match &callee.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Builtin(family),
+                ..
+            } => return builtin_result_call_class(*family),
+            HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Item(id),
+            } => (name, id),
+            _ => return CallClass::Opaque,
         };
         // Clause 0: an extern call dispatches by NAME — its call-site id is the
         // PLACEHOLDER `ItemId(0)`, so an id lookup would collide with a real
@@ -6158,6 +6186,69 @@ pub(crate) mod tests {
         let prov =
             compute_call_scrutinee_return_provenance(&origin_fns, &extern_table, &may_mutate);
         (module, prov)
+    }
+
+    #[test]
+    fn typed_builtin_result_authority_drives_strict_call_provenance() {
+        use hew_types::runtime_call::RuntimeCallFamily as F;
+
+        struct FixedCallPolicy(CallClass);
+        impl LeafPolicy for FixedCallPolicy {
+            fn classify_call(&self, _callee: &HirExpr) -> CallClass {
+                self.0
+            }
+
+            fn leaf_bits(&self, _expr: &HirExpr) -> AliasBits {
+                AliasBits::OPAQUE
+            }
+        }
+
+        assert_eq!(
+            builtin_result_call_class(F::VecNew),
+            CallClass::Fresh,
+            "VecNew publishes an independent owned result"
+        );
+        assert_eq!(
+            builtin_result_call_class(F::HashMapGetLayout),
+            CallClass::ParamSubst,
+            "an interior collection result must inherit receiver/argument provenance"
+        );
+        assert_eq!(
+            builtin_result_call_class(F::VecLen),
+            CallClass::Opaque,
+            "an unclassified runtime result must remain fail-closed"
+        );
+
+        let module = lower_source(
+            r"
+            fn invoke(make: fn(string) -> string, value: string) -> string {
+                make(value)
+            }
+            ",
+        );
+        let origin_fns = origin_fns_of(&module);
+        let invoke = origin_fns[&fn_id(&module, "invoke")];
+        let call = invoke
+            .body
+            .tail
+            .as_deref()
+            .expect("invoke must return its call");
+        assert!(
+            return_alias_bits(call, &FixedCallPolicy(CallClass::ParamSubst)).is_opaque(),
+            "ParamSubst must propagate the opaque receiver/argument into an interior alias"
+        );
+
+        let (module, provenance) = provenance_of_source(
+            r"
+            fn invoke(make: fn(string) -> string, value: string) -> string {
+                make(value)
+            }
+            ",
+        );
+        assert!(
+            provenance[&fn_id(&module, "invoke")].is_opaque(),
+            "a non-item indirect callee must remain opaque"
+        );
     }
 
     #[test]

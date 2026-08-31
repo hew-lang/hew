@@ -4,13 +4,13 @@
 )]
 
 use super::{
-    check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow, elaborate,
-    finalize_bytes_ownership, finalize_string_ownership, seal_checked, BasicBlock, BindingId,
-    Builder, BuiltinType, ClosureEnvFieldInit, ClosureEnvFieldOwnership, FieldOffset, HirBlock,
-    HirExpr, HirExprKind, HirFn, HirJoin, HirSelect, HirSelectArmKind, HirStmtKind, Instr,
-    IntentKind, JoinBranch, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership,
-    SuspendKind, Terminator, ValueClass,
+    check_function, collect_unknown_type_diagnostics, dataflow, elaborate,
+    finalize_bytes_ownership, finalize_string_ownership, project_findings, seal_checked,
+    BasicBlock, BindingId, Builder, BuiltinType, ClosureEnvFieldInit, ClosureEnvFieldOwnership,
+    FieldOffset, HirBlock, HirExpr, HirExprKind, HirFn, HirJoin, HirSelect, HirSelectArmKind,
+    HirStmtKind, Instr, IntentKind, JoinBranch, LoweredFunction, MirDiagnostic, MirDiagnosticKind,
+    MirStatement, Place, RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin,
+    SpawnEnvFieldOwnership, SuspendKind, Terminator, ValueClass,
 };
 
 fn select_stream_item_ty(ty: ResolvedTy) -> Option<ResolvedTy> {
@@ -448,13 +448,9 @@ impl Builder {
         dataflow_result
             .checks
             .extend(crate::model::validate_context_markers(&raw));
-        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
-        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        let mut diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
+        finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             adapter_symbol.to_string(),
@@ -467,9 +463,6 @@ impl Builder {
             cooperate_sites,
             &builder,
             &[],
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
@@ -1067,15 +1060,11 @@ impl Builder {
             span: 0..0,
         };
         let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
-        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
+        let mut diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
@@ -1088,9 +1077,6 @@ impl Builder {
             cooperate_sites,
             &builder,
             &body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
@@ -1551,9 +1537,9 @@ impl Builder {
     /// The select terminator emits a `Terminator::Select`; the
     /// elaboration pass (`enumerate_exits` at lower.rs:6450) wires
     /// `ExitPath::Select { block: originating_bb, next: join_bb }`
-    /// into `drop_plans` automatically — the function-wide LIFO drop
-    /// plan is empty for this exit (per-arm loser cleanup happens at
-    /// the codegen dispatch site, not at function exit).
+    /// into `drop_plans` automatically — the exit's replay-derived
+    /// drop plan is empty (per-arm loser cleanup happens at the
+    /// codegen dispatch site, not at function exit).
     #[allow(
         clippy::too_many_lines,
         reason = "lower_select threads four responsibilities — arm-kind rejection, \

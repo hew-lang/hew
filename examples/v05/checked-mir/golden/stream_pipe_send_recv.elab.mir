@@ -757,7 +757,7 @@ fn std$fs$try_read -> Result<string, std.fs.IoError>
     goto[bb13->bb12] ->
       (none)
     cancel[bb13] ->
-      drop _7 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     goto[bb14->bb15] ->
       (none)
     branch[bb15: bb16/bb5] ->
@@ -1010,7 +1010,7 @@ fn std$fs$try_read_bytes -> Result<bytes, std.fs.IoError>
     goto[bb8->bb6] ->
       (none)
     cancel[bb8] ->
-      drop _2 ty=bytes kind=cow_heap(hew_bytes_drop)
+      (none)
 
 fn std$fs$write_bytes -> i64
   statements:
@@ -1215,7 +1215,7 @@ fn std$fs$try_list_dir -> Result<Vec<string>, std.fs.IoError>
     goto[bb8->bb7] ->
       (none)
     cancel[bb8] ->
-      drop _2 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      (none)
 
 fn std$fs$rename -> i64
   statements:
@@ -1346,6 +1346,8 @@ fn std$stream$pipe -> (Sink<string>, Stream<string>)
   statements:
     use BindingId(72) capacity site=SiteId(544) ty=i64 intent=Read
     bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(543) ty=Result<(Sink<string>, Stream<string>), string>
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(542) ty=(Sink<string>, Stream<string>)
+    use BindingId(4294967230) __hew_produced_value site=SiteId(542) ty=(Sink<string>, Stream<string>) intent=Consume
     return site=Some(SiteId(542)) ty=(Sink<string>, Stream<string>)
     bind BindingId(73) pair site=SiteId(546) ty=(Sink<string>, Stream<string>)
     use BindingId(73) pair site=SiteId(546) ty=(Sink<string>, Stream<string>) intent=Read
@@ -1353,6 +1355,7 @@ fn std$stream$pipe -> (Sink<string>, Stream<string>)
     use BindingId(74) err site=SiteId(548) ty=string intent=Read
     drop BindingId(74) err ty=string
     drop BindingId(73) pair ty=(Sink<string>, Stream<string>)
+    drop BindingId(4294967230) __hew_produced_value ty=(Sink<string>, Stream<string>)
     drop BindingId(4294967231) __hew_call_scrutinee ty=Result<(Sink<string>, Stream<string>), string>
   drop_plans:
     call[bb0 std$stream$try_pipe -> bb1] ->
@@ -1368,7 +1371,6 @@ fn std$stream$pipe -> (Sink<string>, Stream<string>)
     goto[bb3->bb2] ->
       (none)
     cancel[bb3] ->
-      drop _1 ty=(Sink<string>, Stream<string>) kind=tuple_in_place
       drop _2 ty=Result<(Sink<string>, Stream<string>), string> kind=enum_in_place
     unwind[bb4 hew_panic_msg] ->
       drop _9 ty=string kind=cow_heap(hew_string_drop)
@@ -1523,6 +1525,8 @@ fn std$stream$bytes_pipe -> (Sink<bytes>, Stream<bytes>)
   statements:
     use BindingId(80) capacity site=SiteId(604) ty=i64 intent=Read
     bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(603) ty=Result<(Sink<bytes>, Stream<bytes>), string>
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(602) ty=(Sink<bytes>, Stream<bytes>)
+    use BindingId(4294967230) __hew_produced_value site=SiteId(602) ty=(Sink<bytes>, Stream<bytes>) intent=Consume
     return site=Some(SiteId(602)) ty=(Sink<bytes>, Stream<bytes>)
     bind BindingId(81) pair site=SiteId(606) ty=(Sink<bytes>, Stream<bytes>)
     use BindingId(81) pair site=SiteId(606) ty=(Sink<bytes>, Stream<bytes>) intent=Read
@@ -1530,6 +1534,7 @@ fn std$stream$bytes_pipe -> (Sink<bytes>, Stream<bytes>)
     use BindingId(82) err site=SiteId(608) ty=string intent=Read
     drop BindingId(82) err ty=string
     drop BindingId(81) pair ty=(Sink<bytes>, Stream<bytes>)
+    drop BindingId(4294967230) __hew_produced_value ty=(Sink<bytes>, Stream<bytes>)
     drop BindingId(4294967231) __hew_call_scrutinee ty=Result<(Sink<bytes>, Stream<bytes>), string>
   drop_plans:
     call[bb0 std$stream$try_bytes_pipe -> bb1] ->
@@ -1545,7 +1550,6 @@ fn std$stream$bytes_pipe -> (Sink<bytes>, Stream<bytes>)
     goto[bb3->bb2] ->
       (none)
     cancel[bb3] ->
-      drop _1 ty=(Sink<bytes>, Stream<bytes>) kind=tuple_in_place
       drop _2 ty=Result<(Sink<bytes>, Stream<bytes>), string> kind=enum_in_place
     unwind[bb4 hew_panic_msg] ->
       drop _9 ty=string kind=cow_heap(hew_string_drop)
@@ -1741,7 +1745,7 @@ fn std$stream$from_file -> Result<Stream<string>, string>
     goto[bb6->bb5] ->
       (none)
     cancel[bb6] ->
-      drop _2 ty=Stream<string> kind=resource fn=rt(StreamClose)
+      (none)
 
 fn std$stream$try_from_file -> Result<Stream<string>, std.fs.IoError>
   statements:
@@ -1804,7 +1808,7 @@ fn std$stream$try_from_file -> Result<Stream<string>, std.fs.IoError>
     goto[bb9->bb5] ->
       (none)
     cancel[bb9] ->
-      drop _2 ty=Stream<string> kind=resource fn=rt(StreamClose)
+      (none)
 
 fn std$stream$to_file -> Result<Sink<string>, string>
   statements:
@@ -1851,7 +1855,7 @@ fn std$stream$to_file -> Result<Sink<string>, string>
     goto[bb6->bb5] ->
       (none)
     cancel[bb6] ->
-      drop _2 ty=Sink<string> kind=resource fn=rt(SinkClose)
+      (none)
 
 fn std$stream$try_to_file -> Result<Sink<string>, std.fs.IoError>
   statements:
@@ -1914,7 +1918,7 @@ fn std$stream$try_to_file -> Result<Sink<string>, std.fs.IoError>
     goto[bb9->bb5] ->
       (none)
     cancel[bb9] ->
-      drop _2 ty=Sink<string> kind=resource fn=rt(SinkClose)
+      (none)
 
 fn std$stream$forward -> ()
   statements:

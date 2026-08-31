@@ -4,14 +4,15 @@
 )]
 
 use super::{
-    base_local, check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow,
-    elaborate, finalize_bytes_ownership, finalize_string_ownership, seal_checked,
-    terminator_is_suspend_carrier, ActorStateLoadMode, BindingId, Builder, BuiltinType,
-    CaptureEnvSource, ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership,
-    DropKind, ElabDrop, FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr,
-    IntentKind, LambdaCapture, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    Place, RawMirFunction, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin,
-    StreamProducerPumpCtx, SuspendKind, Terminator, ValueClass,
+    base_local, check_function, collect_unknown_type_diagnostics, dataflow, elaborate,
+    finalize_bytes_ownership, finalize_string_ownership, materialize_explicit_goto_edge_carries,
+    project_findings, seal_checked, terminator_is_suspend_carrier, ActorStateLoadMode, BindingId,
+    Builder, BuiltinType, CaptureEnvSource, ClosureEnvAllocation, ClosureEnvFieldInit,
+    ClosureEnvFieldOwnership, Disposition, FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind,
+    HirFn, Instr, IntentKind, LambdaCapture, LoweredFunction, MirDiagnostic, MirDiagnosticKind,
+    MirStatement, Place, RawMirFunction, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SiteId,
+    SourceOrigin, StreamProducerPumpCtx, SuspendKind, Terminator, ValueClass,
+    SENTINEL_STREAM_SEND_VALUE_BINDING,
 };
 use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
@@ -1011,15 +1012,13 @@ impl Builder {
             span: body.span.clone(),
         };
         let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
-        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
+        let mut diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut builder);
+        raw.instr_spans.clone_from(&builder.instr_spans);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
@@ -1032,9 +1031,6 @@ impl Builder {
             cooperate_sites,
             &builder,
             &body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
@@ -1197,15 +1193,13 @@ impl Builder {
             span: 0..0,
         };
         let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
-        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
+        let mut diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+        materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut builder);
+        raw.instr_spans.clone_from(&builder.instr_spans);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
             shim_name.to_string(),
@@ -1218,9 +1212,6 @@ impl Builder {
             cooperate_sites,
             &builder,
             &body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         diagnostics.extend(elaboration_diagnostics);
@@ -1352,7 +1343,7 @@ impl Builder {
         //     and returns i32 0.
         //
         // Drop safety (CLAUDE.md §1): the handle's release is scheduled at
-        // scope exit by the enclosing function's LIFO drop plan via
+        // scope exit by the enclosing function's replay-derived drop plan via
         // `place_aware_drop_fn` → `hew_lambda_actor_release`. The state-drop
         // no-op stub is invoked exactly once by the runtime at actor
         // shutdown, releasing nothing for the no-capture MVP.
@@ -1746,17 +1737,13 @@ impl Builder {
         };
 
         let dataflow_result = check_function(&body_builder, &raw.blocks, &synthetic_fn);
-        let mut body_diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
+        let mut body_diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
-        let string_derivation =
-            finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
-        let bytes_derivation =
-            finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut body_builder);
+        raw.instr_spans.clone_from(&body_builder.instr_spans);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
@@ -1770,9 +1757,6 @@ impl Builder {
             cooperate_sites,
             &body_builder,
             &nested_body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         body_diagnostics.extend(elaboration_diagnostics);
@@ -1988,8 +1972,8 @@ impl Builder {
             //     `Result::Err(error_dest)` into `dest`.
             // Marking the runtime call's `dest` as `Some(dest)` keeps
             // the dataflow ledger consistent (the dest binding becomes
-            // Live at the call), so the LIFO drop plan releases it on
-            // scope exit if it carries owned-handle resources.
+            // Live at the call), so the replay-derived exit plan releases
+            // it on scope exit if it carries owned-handle resources.
             let reply_ptr_slot = self.alloc_local(ResolvedTy::Pointer {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::Unit),
@@ -2591,17 +2575,13 @@ impl Builder {
         };
 
         let dataflow_result = check_function(&body_builder, &raw.blocks, &synthetic_fn);
-        let mut body_diagnostics: Vec<MirDiagnostic> = dataflow_result
-            .checks
-            .iter()
-            .filter_map(check_to_diagnostic)
-            .collect();
+        let mut body_diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
-        let string_derivation =
-            finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
-        let bytes_derivation =
-            finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut body_builder);
+        raw.instr_spans.clone_from(&body_builder.instr_spans);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let (checked, elaboration_diagnostics) = seal_checked(
@@ -2615,9 +2595,6 @@ impl Builder {
             cooperate_sites,
             &body_builder,
             &body_statements,
-            &dataflow_result,
-            Some(&string_derivation.allowed),
-            Some(&bytes_derivation.allowed),
         );
         let elaborated = elaborate(&checked);
         body_diagnostics.extend(elaboration_diagnostics);
@@ -2770,136 +2747,85 @@ impl Builder {
         (resume_bb, close_bb)
     }
 
-    /// #2395 decision 2 — record the abandon-edge drop for a `StreamSend`
-    /// in-flight yield value. The value is escape-poisoned (so the generic
-    /// `drops_for_exit` filter misses it) and its resume-edge release (the
-    /// pump's `after_send` inline `Instr::Drop`) never fires on
-    /// destroy-while-parked. Stash a congruent `CowHeap` drop keyed by
-    /// `suspend_block` (the block carrying the `Terminator::Suspend`); the
-    /// post-`enumerate_exits` pass appends it to that suspend's plan so codegen
-    /// fires it on the case-1 destroy edge only. Exactly-once holds: the abandon
-    /// and resume edges are mutually exclusive and this drop lives only on the
-    /// abandon plan. The release protocol is the SAME `generator_yield_drop_symbol`
-    /// verdict the resume drop uses, routed through the canonical
-    /// `CowHeapRelease::from_symbol` inverse (no picker drift); the resulting kind
-    /// passes `validate_drop_plan` (string/bytes via the Place-driven dispatcher,
-    /// `Vec*` via its dedicated owned/plain arms). A symbol outside the wired set
-    /// (`from_symbol` → `None`) skips the drop — leak-not-wrong-free.
-    fn record_stream_send_abandon_drop(
-        &mut self,
-        suspend_block: u32,
-        value: Place,
-        yield_ty: &ResolvedTy,
-        symbol: &'static str,
-    ) {
-        if let Some(release) = crate::ownership::CowHeapRelease::from_symbol(symbol) {
-            self.suspend_abandon_extra_drops
-                .entry(suspend_block)
-                .or_default()
-                .push(ElabDrop {
-                    place: value,
-                    ty: yield_ty.clone(),
-                    drop_fn: None,
-                    kind: DropKind::CowHeap { release },
-                    guard: None,
-                });
-        }
-    }
-
-    /// Composite twin of [`Builder::record_stream_send_abandon_drop`]: stash
-    /// the in-flight record/enum yield value's abandon-edge release as the
-    /// same `DropKind::RecordInPlace` / `DropKind::EnumInPlace` plan drop the
-    /// function-scope spine uses (`drop_fn = None`; the helper resolves from
-    /// `ElabDrop::ty`). Exactly-once holds identically: the abandon and
-    /// resume edges are mutually exclusive, and this drop lives only on the
-    /// abandon plan. `validate_drop_plan` accepts the dedicated kinds on a
-    /// `Place::Local` composite, so the congruence gate is unchanged.
-    fn record_stream_send_abandon_composite_drop(
-        &mut self,
-        suspend_block: u32,
-        value: Place,
-        yield_ty: &ResolvedTy,
-        kind: crate::ownership::InPlaceReleaseKind,
-    ) {
-        let drop_kind = match kind {
-            crate::ownership::InPlaceReleaseKind::Record => DropKind::RecordInPlace,
-            crate::ownership::InPlaceReleaseKind::Enum => DropKind::EnumInPlace,
-            crate::ownership::InPlaceReleaseKind::AggregateRecursive => {
-                DropKind::AggregateRecursive
-            }
-        };
-        self.suspend_abandon_extra_drops
-            .entry(suspend_block)
-            .or_default()
-            .push(ElabDrop {
-                place: value,
-                ty: yield_ty.clone(),
-                drop_fn: None,
-                kind: drop_kind,
-                guard: None,
-            });
-    }
-
-    /// Release the pump's per-yield value copy on the stream-send RESUME edge
-    /// (and register its abandon-edge twin on the suspend plan).
+    /// Publish the pump's per-yield copy as an exact Checked-MIR owner.
     ///
-    /// The stream send BORROWS the yielded value: `hew_stream_await_send`
-    /// and its layout sibling both copy the content out of the slot and
-    /// document the argument as borrowed, so the pump stays the sole owner
-    /// of the original and must release it exactly once per yield. Emit that
-    /// release on the resume edge, before the `Goto` loops back to
-    /// overwrite `value_local` on the next iteration. That edge is reached
-    /// ONLY when the send resumes (delivered/ready); the abandon-while-parked
-    /// path fires the suspend plan's twin drop on the destroy edge instead —
-    /// the two edges are mutually exclusive, so the value is never
-    /// double-released. `SuspendKind::StreamSend`'s value is escape-poisoned
-    /// (`terminator_escape_places`), so no scope-exit drop competes with this
-    /// one — it is the sole dropper. The release protocol comes from the same
-    /// authority the consumer-side yield-binding drop uses
-    /// (`generator_yield_drop_symbol`), so it stays congruent with the codegen
-    /// inline-drop validator. `string`/`bytes`/`Vec` release through their
-    /// wired symbol; a heap-owning record/enum composite releases through its
-    /// synthesised in-place thunk (`DropFnSpec::InPlace`) — the send deep-
-    /// cloned the envelope's copy (`encode_elem_envelope` `LayoutManaged`), so
-    /// the pump's copy is released without reaching the consumer's. `BitCopy`
-    /// scalars carry no inline release (`NoDropPath`); an `Unwired` element
-    /// is rejected upstream and never reaches the pump.
-    fn emit_pump_yield_value_release(
+    /// The stream send BORROWS the yielded value: `hew_stream_await_send` and
+    /// its layout sibling copy the content out of the slot, so the pump stays
+    /// the sole owner of its copy and must release it exactly once per yield.
+    /// Minting the copy under a sentinel binding makes every exit that can
+    /// observe it live — in particular the `Suspend` destroy-while-parked edge
+    /// of the send — derive its cleanup from ownership replay through the
+    /// owner's definition-site recipe. No abandon-only side table exists: the
+    /// resume edge's inline `Drop` + `Release` ends the generation, so the
+    /// two edges are mutually exclusive by replay, not by construction of a
+    /// second plan source. `BitCopy` yields publish no owner (the registrar
+    /// withholds a recipe-less mint).
+    fn mint_pump_yield_value_owner(
         &mut self,
-        send_bb: u32,
         value_local: Place,
         yield_ty: &ResolvedTy,
+        site: SiteId,
     ) {
-        match self.generator_yield_drop_symbol(yield_ty) {
-            ReleaseSymbolVerdict::Wired(symbol) => {
-                // Resume-edge release (delivered/ready): the pump is the sole
-                // owner of its copy and frees it here before the loop
-                // overwrites the slot.
-                self.push_instr(Instr::Drop {
+        let binding = SENTINEL_STREAM_SEND_VALUE_BINDING;
+        let name = "__hew_stream_send_value".to_string();
+        self.push_bind_statement(binding, name.clone(), site, yield_ty.clone());
+        // Wire `binding_locals` BEFORE `register_owned_local`: the registrar
+        // reads the slot to publish the Mint over the real destination.
+        self.binding_locals.insert(binding, value_local);
+        self.record_binding_scope(binding);
+        // `GeneratorNext` moved the payload out of the generator's `Option`
+        // slot into this frame: the copy is a domestic move-out with one
+        // caller-side release obligation.
+        self.register_owned_local(
+            binding,
+            name,
+            yield_ty.clone(),
+            Builder::owner_warrant_for_typed_produced_value(
+                hew_types::ProducedValueOwnership::owned(
+                    hew_types::ProducedValueAcquisition::MoveOut,
+                ),
+            ),
+        );
+    }
+
+    /// Release the pump's per-yield value copy on the stream-send RESUME edge.
+    ///
+    /// This edge is reached ONLY when the send resumes (delivered/ready); the
+    /// abandon-while-parked path runs the `Suspend` exit plan, which replay
+    /// derives from the owner minted by [`Self::mint_pump_yield_value_owner`].
+    /// Emit the inline release before the `Goto` loops back to overwrite
+    /// `value_local`, end the owner generation beside it, and disposition the
+    /// ledger entry off the scope-exit set so the function-scope release does
+    /// not fire a second time. The release protocol comes from the same
+    /// authority the consumer-side yield-binding drop uses
+    /// (`generator_yield_drop_symbol`): `string`/`bytes`/`Vec` release through
+    /// their wired symbol; a heap-owning record/enum composite releases through
+    /// its synthesised in-place thunk (`DropFnSpec::InPlace`). `BitCopy`
+    /// scalars carry no inline release (`NoDropPath`); an `Unwired` element is
+    /// rejected upstream and never reaches the pump.
+    fn emit_pump_yield_value_release(&mut self, value_local: Place, yield_ty: &ResolvedTy) {
+        let drop_fn = match self.generator_yield_drop_symbol(yield_ty) {
+            ReleaseSymbolVerdict::Wired(symbol) => crate::model::DropFnSpec::Release(symbol),
+            ReleaseSymbolVerdict::WiredInPlace(kind) => crate::model::DropFnSpec::InPlace(kind),
+            ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => return,
+        };
+        self.push_instr(Instr::Drop {
+            place: value_local,
+            ty: yield_ty.clone(),
+            drop_fn: Some(drop_fn),
+        });
+        let binding = SENTINEL_STREAM_SEND_VALUE_BINDING;
+        if let Some(generation) = self.owner_generations.get(&binding).copied() {
+            self.push_instr(Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::Release {
+                    owner: crate::model::OwnerId {
+                        binding,
+                        generation,
+                    },
                     place: value_local,
-                    ty: yield_ty.clone(),
-                    drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
-                });
-                // Abandon-edge release for the SAME in-flight value.
-                self.record_stream_send_abandon_drop(send_bb, value_local, yield_ty, symbol);
-            }
-            ReleaseSymbolVerdict::WiredInPlace(kind) => {
-                // Composite twin of the Wired arm: same resume-edge inline
-                // release, routed through the in-place thunk instead of a
-                // C-ABI symbol.
-                self.push_instr(Instr::Drop {
-                    place: value_local,
-                    ty: yield_ty.clone(),
-                    drop_fn: Some(crate::model::DropFnSpec::InPlace(kind)),
-                });
-                self.record_stream_send_abandon_composite_drop(
-                    send_bb,
-                    value_local,
-                    yield_ty,
-                    kind,
-                );
-            }
-            ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => {}
+                },
+            ));
+            self.set_owned_local_disposition(binding, Disposition::BodyEndReleased);
         }
     }
 
@@ -2907,6 +2833,7 @@ impl Builder {
         &mut self,
         gen_place: Place,
         pump: &StreamProducerPumpCtx,
+        site: SiteId,
     ) {
         use hew_types::runtime_call::RuntimeCallFamily;
 
@@ -2980,6 +2907,7 @@ impl Builder {
                 field_idx: 0,
             },
         });
+        self.mint_pump_yield_value_owner(value_local, &pump.yield_ty, site);
         let after_send = self.alloc_block();
         self.record_suspend_kind(SuspendKind::StreamSend {
             sink: pump.sink,
@@ -2991,7 +2919,7 @@ impl Builder {
             is_final: false,
         });
         self.start_block(after_send);
-        self.emit_pump_yield_value_release(send_bb, value_local, &pump.yield_ty);
+        self.emit_pump_yield_value_release(value_local, &pump.yield_ty);
         self.finish_current_block(Terminator::Goto { target: loop_head });
 
         // Shared close path: reached with the generator exhausted (`None`)

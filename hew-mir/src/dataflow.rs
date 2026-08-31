@@ -1230,10 +1230,11 @@ pub fn check_blocks(blocks: &[BasicBlock], type_classes: &TypeClassTable) -> Vec
 }
 
 /// Run the full dataflow pass and return both diagnostics and the
-/// per-block exit-state map. The elaborator uses `exit_states` to
-/// filter the function-wide LIFO drop sequence down to per-exit
-/// live sets (plan §5 Slice 4: "per-exit drop list with Place
-/// threading").
+/// per-block exit-state map. The string-CoW lowering
+/// (`temp_drop::remove_consumed_cow_bindings`) uses `exit_states` to
+/// withdraw inline drops for bindings a path may have consumed; exit
+/// drop plans themselves derive from the ownership-event replay
+/// (`lower/drop_plan.rs`), not from this map.
 ///
 /// `param_bindings` is the list of function parameter `BindingId`s that are
 /// implicitly `Live` at function entry (supplied by the calling convention;

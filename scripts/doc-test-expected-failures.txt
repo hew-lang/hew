@@ -74,7 +74,6 @@
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).
 
-guide-0101   4195702107   # OWNERSHIP-AUTHORITY: fluent `Stack<T>` chain — `s2` unreleased on the unwind exit path
 
 # ─── Spec failures (86) ──────────────────────────────────────────────────────────
 

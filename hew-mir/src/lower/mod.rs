@@ -23,7 +23,6 @@ use hew_hir::{
     HirVarSelfMethodTarget, IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
-use hew_types::runtime_call::ConsumeVerdict;
 use hew_types::{
     short_name, BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
     NumericMethodOp, NumericSignedness, ProducedValueOwnership, ResolvedTy,
@@ -67,10 +66,9 @@ mod control_flow;
 mod drop_plan;
 mod expr;
 mod facts;
-mod for_await_drop_plan;
-mod machine_own;
 mod machine_synth;
 mod move_value;
+mod owned_cursor_call;
 mod owner_mint;
 mod ownership;
 mod pattern;
@@ -108,14 +106,9 @@ use self::cfg_util::{
 };
 #[cfg(not(test))]
 use self::composite_own::{
-    apply_escaped_record_sibling_field_drops,
-    derive_borrowed_builtin_handle_projection_alias_bindings,
-    derive_consumed_local_aggregate_member_bindings, derive_enum_composite_drop_allowed,
-    derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
-    derive_owned_record_drop_allowed, derive_owned_tuple_handle_projection_bindings,
-    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
-    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
-    detect_builtin_handle_record_field_overwrite, detect_opaque_resource_field_misuse,
+    apply_escaped_record_sibling_field_drops, derive_local_bytes_drop_allowed,
+    derive_returned_aggregate_member_bindings, detect_builtin_handle_record_field_overwrite,
+    detect_opaque_resource_field_misuse,
 };
 #[cfg(not(test))]
 use self::consts::{
@@ -132,19 +125,17 @@ use self::consts::{
 pub use self::consts::{build_const_descriptors, is_string_const_ty};
 #[cfg(not(test))]
 use self::drop_plan::{
-    affine_release_needs_drop_flag, attribute_payload_binder_root,
-    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
-    builtin_method_arg_is_move_ingress, check_to_diagnostic, classify_closure_pair_rhs,
-    classify_dyn_trait_storage, cow_value_leaf_drop_symbol, describe_vec_element,
-    dyn_rebind_source_binding, elaborate, field_override_uses_record_field_drop,
-    note_payload_escape, propagate_payload_binder_root, render_owned_handle_ty, resource_drop_fn,
-    seal_checked, stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow,
-    ty_is_closure_pair, ty_is_generator_handle, ty_is_heap_owning_enum_composite,
-    ty_is_heap_owning_tuple, ty_is_indirect_enum, ty_is_local_collection_handle,
-    ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    affine_release_needs_drop_flag, binder_read_is_borrow_safe_instr,
+    binder_read_is_borrow_safe_terminator, builtin_method_arg_is_move_ingress,
+    classify_closure_pair_rhs, classify_dyn_trait_storage, cow_value_leaf_drop_symbol,
+    describe_vec_element, dyn_rebind_source_binding, elaborate,
+    field_override_uses_record_field_drop, project_findings, render_owned_handle_ty,
+    resource_drop_fn, seal_checked, stream_handle_drop_descriptor,
+    string_binder_read_is_user_fn_borrow, ty_is_closure_pair, ty_is_generator_handle,
+    ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
+    ty_is_local_collection_handle, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
     validate_drop_plan, validate_ownership_events, validate_unwind_cleanup_coverage,
     vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
-    vec_iter_yield_abandonment_diagnostics, PayloadBinderRoot,
 };
 pub use self::drop_plan::{crash_only_cleanup_drop, drop_kind_for_test_only};
 pub(crate) use self::facts::*;
@@ -160,11 +151,10 @@ use self::machine_synth::{
 #[cfg(not(test))]
 use self::split_consume::{
     alias_projection_chain_owner_seeds, attribute_field_binder_provenance, base_local,
-    binding_ref_target, check_duplex_split_state, close_alias_binders_forward,
-    collect_record_field_binders, descend_match_bound_hop_alias_chain,
-    descend_match_bound_hop_aliases, local_is_byte_copy_aggregate, place_is_interior_projection,
-    place_is_tag_read, propagate_seeded_whole_value_alias_roots_excluding_moves,
-    propagate_whole_value_alias_roots, propagate_whole_value_alias_roots_excluding_moves,
+    binding_ref_target, check_duplex_split_state, collect_record_field_binders,
+    descend_match_bound_hop_alias_chain, local_is_byte_copy_aggregate,
+    place_is_interior_projection, propagate_whole_value_alias_roots,
+    propagate_whole_value_alias_roots_excluding_moves,
 };
 pub use self::suspend_places::instr_source_places;
 pub use self::suspend_places::suspend_kind_source_places;
@@ -178,16 +168,13 @@ use self::suspend_places::{
 };
 #[cfg(not(test))]
 use self::temp_drop::{
-    aggregate_borrowed_ingress_clone_sites, aggregate_projection_transfer_dests,
-    apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops,
-    bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
-    bytes_share_sink_places, classify_actor_state_load_modes,
+    aggregate_borrowed_ingress_clone_sites, apply_nested_fresh_bytes_temp_drops,
+    apply_nested_fresh_string_temp_drops, bytes_interior_producer_dest, bytes_place_is_typed,
+    bytes_runtime_arg_is_borrow, bytes_share_sink_places, classify_actor_state_load_modes,
     close_obligated_borrow_alias_violations, collection_borrow_getter_alias_locals,
-    compute_collection_interior_alias_taint, compute_projection_alias_taint,
-    derive_bytes_actor_transfer_blocks, derive_cow_fresh_borrowed_owner, derive_cow_sole_owner,
+    compute_collection_interior_alias_taint, finalize_bytes_local_share_intents,
     finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
-    forward_move_closure, interior_alias_receiver_violations, readmit_retained_bytes_tuple_roots,
-    string_call_borrows, string_field_load_producer_dest,
+    interior_alias_receiver_violations, string_call_borrows, string_field_load_producer_dest,
 };
 
 /// Maps each original (unsanitized) callee symbol to the adapter symbol
@@ -300,6 +287,17 @@ const SENTINEL_DOWN_LOCATION_BINDING: BindingId = BindingId(u32::MAX - 8);
 const SENTINEL_DOWN_LOCAL_SLOT_BINDING: BindingId = BindingId(u32::MAX - 9);
 const SENTINEL_DOWN_CRASH_KIND_BINDING: BindingId = BindingId(u32::MAX - 10);
 
+/// Sentinel HIR binding ID for the `receive gen fn` stream-producer pump's
+/// per-yield value copy (`build_stream_producer_pump`). The pump moves each
+/// `Some(value)` out of the generator's result into a frame-local slot that has
+/// NO real HIR binding, sends it (the send borrows), and releases its copy on
+/// the resume edge. Minting that copy under this sentinel is what lets the
+/// send's destroy-while-parked `Suspend` plan derive from ownership replay
+/// instead of a side table. Lives in the pump function's `binding_locals`
+/// beside the sink param (`u32::MAX`) and the generator companion
+/// (`u32::MAX - 4`).
+const SENTINEL_STREAM_SEND_VALUE_BINDING: BindingId = BindingId(u32::MAX - 11);
+
 /// Base of the per-function synthetic binding-id range for anonymous
 /// caller-owned temps. From-call match/while-let scrutinees and discarded
 /// caller-owned `Option<T>` results all materialise into MIR locals without a
@@ -403,11 +401,43 @@ struct PendingOwnedCallArg {
     ty: ResolvedTy,
     site: SiteId,
     source_is_prepared_owner: bool,
+    /// See `Builder::call_arg_source_may_transfer`: false for an alias of
+    /// storage another owner still releases, which must be cloned.
+    source_may_transfer: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingOwnedCallAnchor {
+    DirectTerminator,
+}
+
+#[derive(Debug, Clone)]
+struct PendingOwnedCursorArg {
+    index: usize,
+    source: Place,
+    ty: ResolvedTy,
+    site: SiteId,
 }
 
 #[derive(Debug, Clone, Default)]
 struct PendingOwnedCallSite {
-    args: Vec<PendingOwnedCallArg>,
+    anchor: Option<PendingOwnedCallAnchor>,
+    carrier_args: Vec<PendingOwnedCallArg>,
+    cursor_args: Vec<PendingOwnedCursorArg>,
+}
+
+#[derive(Debug, Clone)]
+struct CommittedOwnedCursorArg {
+    source: Place,
+    flag: Place,
+    site: SiteId,
+}
+
+#[derive(Debug, Clone)]
+struct CommittedOwnedCursorCall {
+    block: u32,
+    anchor: PendingOwnedCallAnchor,
+    args: Vec<CommittedOwnedCursorArg>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -500,9 +530,9 @@ struct Builder {
     /// Total append-only declaration order for every binding introduced in
     /// this function, including parameters and bindings that deliberately do
     /// not enter `owned_locals` (for example tuple-derived channel handles and
-    /// their synthetic `for await` cursors). Drop-plan merges use this as the
-    /// LIFO rank authority; the ownership ledger is only an admission ledger
-    /// and therefore cannot supply a total lexical order.
+    /// their synthetic `for await` cursors). Owner publication uses this as
+    /// the declaration-rank authority; the ownership ledger is only an
+    /// admission ledger and therefore cannot supply a total lexical order.
     pub(crate) binding_declaration_order: Vec<BindingId>,
     /// Deduplication sidecar for `binding_declaration_order`. A binding may be
     /// observed through a specialised lowering path more than once, but its
@@ -520,16 +550,17 @@ struct Builder {
     /// Direct-call arguments whose callee body is proven to carry the value
     /// into an owning sink. Resolved after CFG construction so liveness and
     /// projection taint choose snapshot versus last-use transfer.
-    pending_owned_call_args: HashMap<u32, PendingOwnedCallSite>,
+    pending_owned_call_args: HashMap<u32, Vec<PendingOwnedCallSite>>,
     /// Affine whole-local arguments whose declared extern contract consumes the
     /// value only after the call returns normally. The HIR `Use { Consume }`
     /// remains in the call block for move checking, while these facts defer
     /// physical neutralization and the owner transfer to `next`, leaving the
     /// same owner live for caller-side unwind cleanup.
     pending_affine_call_consumes: HashMap<u32, PendingAffineCallConsumeSite>,
-    /// HIR argument sites whose affine consume commits on the normal call edge:
-    /// either a declared-extern site recorded in `pending_affine_call_consumes`
-    /// or a catalogued runtime `ProvenConsume` site finalized by
+    /// HIR argument sites whose consume commits on the normal call edge:
+    /// either a declared-extern affine site recorded in
+    /// `pending_affine_call_consumes` or a catalogued runtime `ProvenConsume`
+    /// site (a collection ingress, a Vec index-assignment move) finalized by
     /// `splice_normal_call_ownership_commits`. Binding-ref lowering consults
     /// this exact-site set so a nested expression cannot accidentally defer a
     /// different consume of the same binding.
@@ -802,10 +833,12 @@ struct Builder {
     pub(crate) typed_borrowed_string_publication_locals: HashSet<u32>,
     /// Bytes counterpart of `typed_borrowed_string_publication_locals`.
     pub(crate) typed_borrowed_bytes_publication_locals: HashSet<u32>,
-    /// Binding-reference sites used as the RHS of `let next = current` for
-    /// `bytes`. Stage S1 treats these as retained shares, so their checker use
-    /// intent is downgraded from `Consume` to `Read`.
-    pub(crate) bytes_local_share_sites: HashSet<SiteId>,
+    /// Candidate `let next = current` bytes copies, keyed by the RHS site and
+    /// carrying `(source, destination)` bindings. These are retained shares, so
+    /// their checker use intent is downgraded from `Consume` to `Read`, and
+    /// `finalize_bytes_local_share_intents` mints the destination's `+1` before
+    /// the adoption canonicalizer can fold the two owners into one.
+    pub(crate) bytes_local_share_sites: HashMap<SiteId, (BindingId, BindingId)>,
     /// Candidate `let next = current` string copies, keyed by the RHS site and
     /// carrying `(source, destination)` bindings. Finalized MIR decides whether
     /// the source is used after the copy (genuine co-owner) or handed off.
@@ -833,22 +866,26 @@ struct Builder {
     /// carrier/Terminator field) so the carriers collapse onto one
     /// `Terminator::Suspend` while the emitted IR stays byte-identical.
     pub(crate) suspend_kinds: HashMap<u32, SuspendKind>,
-    /// Abandon-edge drops for a suspend's escape-poisoned values that the
-    /// generic `drops_for_exit` `BindingState` filter cannot see. These include
-    /// a `SuspendKind::StreamSend` in-flight yield and fresh string arguments to
-    /// a suspending `SuspendKind::CallClosure`: neither has a competing
-    /// scope-exit drop, and each has an inline normal-completion drop. Keyed by
-    /// the id of the block carrying the `Terminator::Suspend` (the SAME key
-    /// `suspend_kinds` uses). Appended to the matching `ExitPath::Suspend` plan
-    /// AFTER `enumerate_exits`, so each value is freed exactly once on the
-    /// destroy-while-parked edge — mutually exclusive with its resume-edge drop
-    /// (abandon XOR resume).
-    pub(crate) suspend_abandon_extra_drops: HashMap<u32, Vec<ElabDrop>>,
+    /// The owner ledger. Entries are ADDED only by the three warranted
+    /// registrars in `ownership.rs` (`register_owned_local`,
+    /// `register_owned_local_alias`, `adopt_synthetic_owned_local`), each of
+    /// which demands an [`owner_mint::OwnerMintWarrant`] so no mint is decided
+    /// without asking the provenance authority.
+    ///
+    /// SHORTCUT — WHY: the field is `pub(crate)` and `OwnedLocalEntry` is a
+    /// private item of this module, so every child of `lower` can push an
+    /// entry directly and mint a scope-exit owner having asked nothing; the
+    /// discipline is a convention here, not a compile-time brace. WHEN
+    /// obsolete: when the ledger becomes a newtype whose inner `Vec` is
+    /// private to `owner_mint` and whose only adding method takes a warrant.
+    /// WHAT: that newtype — the read paths (`iter`, `iter_mut`, indexing) stay
+    /// open, only the add path narrows, which turns this comment into a type
+    /// error for anyone who bypasses it.
     pub(crate) owned_locals: Vec<OwnedLocalEntry>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
     /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`
     /// fires when that scope closes — INCLUDING when the scope is re-executed
-    /// by an enclosing loop. The function-exit LIFO drop only releases the
+    /// by an enclosing loop. The function-exit owner drop only releases the
     /// final content of each binding's slot, so a generator declared inside a
     /// loop body (e.g. the `__hew_for_iter_*` binding of a `for x in gen()`
     /// nested in a `while`) leaks one coro frame + heap companion per outer
@@ -978,22 +1015,16 @@ struct Builder {
     /// closes. The `Generator`/`VecIter` analogue of #1949 for the general
     /// `for await` consumption path: a `for await v in <stream>` desugars to a
     /// `__hew_for_iter_*` cursor whose close was otherwise deferred to the
-    /// ENCLOSING FUNCTION's exit-LIFO plan, so `break`/early `return`/exhaustion
+    /// ENCLOSING FUNCTION's exit plan, so `break`/early `return`/exhaustion
     /// left the stream open — deadlocking any function that abandons a live
     /// stream then does more work before returning (the producer stays parked
     /// on backpressure, its peer never observed as closed). Closing at each
     /// exit edge wakes the parked producer promptly. Mirrors
     /// `scope_generator_bindings`: entries are dispositioned `ScopeReleased`
-    /// once the inline close is emitted so the function-exit LIFO cannot fire a
+    /// once the inline close is emitted so the function-exit plan cannot fire a
     /// second close, and the inline `Instr::Drop` null-stores the slot
     /// (`raii-null-after-move`; the runtime close symbols also null-guard).
     pub(crate) scope_stream_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
-    /// Append-only provenance for a user-owned stream/receiver moved directly
-    /// into a synthetic `for await` cursor. The lexical cursor close is emitted
-    /// inline and may be unreachable when a coroutine is destroyed while
-    /// suspended, so elaboration uses this hand-off to select the live owner on
-    /// each terminal edge.
-    pub(crate) for_await_handle_handoffs: Vec<ForAwaitHandleHandoff>,
     /// Active per-iteration generator-yielded heap value bindings, recorded
     /// while lowering a `for v in gen()` (or `match g.next()`) consuming body so
     /// a `break`/`continue` inside that body frees the current iteration's
@@ -1042,17 +1073,12 @@ struct Builder {
         u32,
         usize,
     )>,
-    /// Fresh `Some(x)` payload owners produced by the synthetic `VecIter`
-    /// `next()` match. Their normal body/explicit-edge release is emitted
-    /// inline; this bounded ledger restores authority only for abandoning
-    /// exits reached while the consuming body still owns the payload.
-    pub(crate) vec_iter_yield_exit_drops: Vec<VecIterYieldExitDrop>,
     /// MIR locals of every fresh per-frame yield/recv payload binder
     /// (`for x in vec`, generator drive, receiver read — the `Some(x)` arms
     /// that schedule a body-end release and retract the binding to
     /// `Disposition::BodyEndReleased`). This is the binder class whose value
     /// IS frame-owned but whose release authority is the per-iteration
-    /// body-end drop, not the function-scope LIFO. The projection-alias taint
+    /// body-end drop, not the function-scope owner. The projection-alias taint
     /// seed exempts these dests: their `Move` out of the synthetic `Option`'s
     /// variant slot takes a fresh clone/frame the shell no longer releases,
     /// so a downstream retained share is a genuine co-owner, not an interior
@@ -1089,9 +1115,9 @@ struct Builder {
     /// overwrites the slot with the next iteration's value.
     ///
     /// This is the missing piece that distinguishes per-iteration drops from
-    /// function-exit drops. Without scope tracking, the elaborator's existing
-    /// `drops_for_exit` (currently called only on `Return`/`Cancel`/`Panic`)
-    /// would either fire ALL live bindings on a back-edge (double-freeing
+    /// function-exit drops. Without scope tracking, the replay-derived exit
+    /// plans (which cover `Return`/`Cancel`/`Panic`/unwind edges, never
+    /// back-edges) would either fire ALL live bindings on a back-edge (double-freeing
     /// outer-scope values like the receiver itself) or fire NONE (the current
     /// behaviour, which leaks the per-iteration heap-owning let-bindings).
     /// Before sealing, these lexical facts resolve `ScopeExit` into immutable
@@ -1126,13 +1152,13 @@ struct Builder {
     /// Goto-edge blocks that must release header-defined iteration owners.
     /// Each binding is also marked consumed in the source block's statement
     /// stream, so the target's later function exit cannot release it again.
-    /// Header snapshot owners whose drop template is valid only on a recorded
-    /// loop back-edge. Ordinary exit plans exclude these bindings because the
+    /// Header snapshot owners whose drop is valid only on a recorded loop
+    /// back-edge. Ordinary exit plans exclude these bindings because the
     /// source binding still owns the same value on tag-false and pre-reassign
     /// break/return edges.
     pub(crate) back_edge_only_iteration_owners: HashSet<BindingId>,
     /// Fresh string publications that remain live across a borrowing operation
-    /// spanning multiple blocks. They need the ordinary exit-plan template,
+    /// spanning multiple blocks. They mint an ordinary scope-exit owner,
     /// unlike synthetic publications already discharged inline or transferred
     /// into another owner.
     pub(crate) synthetic_borrowed_temp_drop_bindings: HashSet<BindingId>,
@@ -1415,8 +1441,8 @@ struct Builder {
     /// `TupleFieldLoad`, both of which `projection_alias_dest` seeds as
     /// tainted (interior alias of the parent aggregate). Tainted
     /// leaf-`string`/`Vec`/`bytes` locals are excluded from
-    /// `cow_drop_allowed`, so `build_lifo_drops` silently skips their drop
-    /// (the leaf-CoW arm tolerates a missing place rather than panicking).
+    /// `cow_drop_allowed`, so they never mint a scope-exit owner and no exit
+    /// plan releases them.
     /// The taint is correct when the parent aggregate's composite drop still
     /// fires (otherwise the same buffer frees twice), but a consume-marked
     /// scrutinee emits a follow-up `Use { intent: Consume }` for the
@@ -1570,7 +1596,7 @@ struct Builder {
     /// `classify_closure_pair_ingress` (`Borrowed` → `OwnedBinding`). It is
     /// deliberately DISJOINT from `closure_pair_owned`: it is NOT a drop
     /// ledger. Merging it into `closure_pair_owned` would feed
-    /// `derive_closure_pair_drop_allowed` a param that is read only by
+    /// the `Let`-binding closure-pair owner publication a param that is read only by
     /// `CallClosure` (the benign callee read), which the aliasing scan does not
     /// mark, so an UNSTORED-but-invoked param would gain an erroneous scope-exit
     /// drop — a double-free of an env the param never owned. Two sets, two
@@ -1641,8 +1667,8 @@ struct Builder {
     /// call-result RHS (`HirExprKind::Call`, `CallTraitMethodStatic`,
     /// `CallDynMethod`) returning `dyn Trait`. Binding rebinds inherit the
     /// source binding's recorded storage. The ledger is consumed by
-    /// `build_lifo_drops` to construct the
-    /// `DropKind::TraitObject { storage }` discriminator.
+    /// `drop_kind_for` when the owner's `DropRecipe` is minted, to construct
+    /// the `DropKind::TraitObject { storage }` discriminator.
     ///
     /// Keys are the `BindingId` of the owning `let`-binding (the same
     /// key used by `binding_locals` / `owned_locals`). A binding that
@@ -1662,8 +1688,8 @@ struct Builder {
     /// `affine_release_needs_drop_flag`: Rc/Weak owners and user resources
     /// whose ritual is a `DropFnSpec::UserClose`.
     /// A binding present here is KEPT in `owned_locals` across its consume
-    /// (we do NOT call `mark_binding_moved` for it), so the per-exit
-    /// `drops_for_exit` dataflow filter narrows the drop per control-flow
+    /// (we do NOT call `mark_binding_moved` for it), so its owner's `Guard`
+    /// narrows the drop per control-flow
     /// path and codegen gates the surviving close on `flag == 0` — exactly
     /// once on a `MaybeConsumed` join. A user resource absent here (no flag
     /// allocated) falls back to the path-insensitive
@@ -1731,11 +1757,11 @@ struct Builder {
     /// (mirroring the affine release-flag discipline): the flag is an
     /// `i64` local zero-initialised at the binding's `let` (dominating every
     /// consume, including loop back-edges) and set to 1 at each consume-use.
-    /// `build_lifo_drops` attaches it as the [`ElabDrop::guard`], so codegen
+    /// the owner's `Guard` event attaches it as the [`ElabDrop::guard`], so codegen
     /// gates the release on `flag == 0` — exactly once on a `MaybeConsumed`
     /// join: skipped where the value moved to a new owner, fired where it is
-    /// still owned. The per-exit `drops_for_exit` dataflow filter still
-    /// excludes exits where the binding is `Consumed` on every reaching path.
+    /// still owned. The ownership replay still omits exits where the owner's
+    /// generation ended on every reaching path.
     ///
     /// Mutually exclusive with `overwrite_guard_flags` (a mutable binding both
     /// consumed and reassigned keeps the #2301 overwrite path and today's
@@ -1752,7 +1778,7 @@ struct Builder {
     /// Admission is structural: leaf `string` values use
     /// `cow_value_leaf_drop_symbol`, while `bytes` uses its dedicated
     /// `BytesTriple` admission/drop authority. The consume hook and
-    /// `build_lifo_drops` consult this same map, so allocation, move marking,
+    /// the owner's `Guard` event consult this same map, so allocation, move marking,
     /// and guarded release cannot drift.
     pub(crate) actor_message_cow_drop_flags: HashMap<BindingId, Place>,
     /// Mailbox-owned `string` parameters remain lexical owners even when the
@@ -4066,23 +4092,6 @@ pub(crate) struct ParamOwnershipFacts {
     /// lets owned collection drop elaboration distinguish a genuine handoff from
     /// a call-boundary borrow such as `first<T>(v: Vec<T>) { v.get(0) }`.
     proven_borrow_arg_sites: HashSet<hew_hir::SiteId>,
-    /// `(origin fn ItemId, param index) -> true` iff that parameter (of ANY
-    /// type, not just resources) is CONSUMED by the callee body — returned,
-    /// stored, sent, captured, forwarded to a consuming param, or destructured
-    /// by a `match` scrutinee. The all-parameter body summary that seeds
-    /// `proven_borrow_arg_sites`; unlike `param_consume` it covers non-resource
-    /// composites (a by-value `Result<string, string>` / user enum), which
-    /// `lower_params` needs to decide whether a heap-owning enum-composite param
-    /// is the CALLEE's drop obligation (CONSUME) or the caller's (BORROW). A
-    /// A BORROW param is `ConsumeVerdict::ProvenBorrow`; a param absent from the
-    /// map is treated as BORROW (fail-safe: the caller keeps and drops it, no
-    /// callee double-free). The two consume flavours
-    /// (`ProvenConsume`/`ConservativeConsume`) both mean "callee owns/drops" and
-    /// are byte-identical at every consumer via `is_consume()` — the finer label
-    /// records WHY the param flipped (positive escape proof vs the fail-closed
-    /// forward-to-unproven disjunct) so a later pass can act on the proven-borrow
-    /// tail without re-deriving it.
-    call_param_consume: HashMap<(hew_hir::ItemId, usize), ConsumeVerdict>,
     /// A separate caller/callee contract for parameters whose body carries the
     /// value into an owning sink. Callers prepare an independent owner (or
     /// transfer a proven dead whole local); callees install the inverse
@@ -4124,16 +4133,6 @@ struct ScanCtx<'a> {
     /// root parameter. This is enabled only for the deep call-carrier summary,
     /// never for the legacy borrow/consume table.
     owned_projection_sinks: bool,
-    /// Whether a bare-ref argument forwarded to a free-function parameter is
-    /// treated OPTIMISTICALLY as a borrow, regardless of the target's verdict.
-    /// The normal scan flips such a forward to CONSUME when the target is
-    /// consuming or unproven (the fail-closed disjunct); this flag suppresses
-    /// exactly that disjunct so the scan reports ONLY the positively-proven
-    /// escapes (returned/stored/sent/captured). Used solely to split a converged
-    /// consume verdict into `ProvenConsume` vs `ConservativeConsume` (see
-    /// `refine_call_param_verdicts`); never enabled for the consume/borrow or
-    /// carrier tables that drive move intent.
-    assume_forward_borrows: bool,
     /// The subset of `methods` whose PARAM 0 is a by-value `self` receiver of a
     /// NON-resource type (`collect_borrow_receiver_methods`). Shape A of #2753:
     /// the borrow-site collector records such a receiver's `SiteId` so the
@@ -4465,11 +4464,12 @@ fn prepare_owned_call_carriers(
     blocks: &mut [BasicBlock],
     builder: &mut Builder,
     projection_tainted: &HashSet<u32>,
-) {
+) -> Vec<CommittedOwnedCursorCall> {
     let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
     let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_owned_call_args);
     let mut normal_owner_commits = Vec::new();
+    let mut cursor_blocked = HashSet::new();
 
     for block_index in 0..blocks.len() {
         // Earlier call sites may have just committed ownership transfers.
@@ -4477,15 +4477,44 @@ fn prepare_owned_call_carriers(
         // than carrying one pre-rewrite whole-function snapshot through every
         // block (which made every historical generation appear live later).
         let (owner_entries, owner_exits) = drop_plan::exact_owner_states(blocks);
+        let block_id = blocks[block_index].id;
         let block = &mut blocks[block_index];
-        let Some(site) = pending.get(&block.id) else {
+        let Some(sites) = pending.get(&block_id) else {
             continue;
         };
+        let [site] = sites.as_slice() else {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "multiple owned call-site anchors in one direct-call block"
+                        .to_string(),
+                    site: sites
+                        .iter()
+                        .flat_map(|site| {
+                            site.cursor_args
+                                .iter()
+                                .map(|arg| arg.site)
+                                .chain(site.carrier_args.iter().map(|arg| arg.site))
+                        })
+                        .next()
+                        .unwrap_or(SiteId(0)),
+                },
+                note: "a direct-call block has one terminator and must resolve exactly one typed ownership anchor"
+                    .to_string(),
+            });
+            cursor_blocked.insert(block_id);
+            continue;
+        };
+        let diagnostics_before = builder.diagnostics.len();
         let Terminator::Call { args, next, .. } = &mut block.terminator else {
             builder.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "owned call-carrier facts without call terminator".to_string(),
-                    site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                    site: site
+                        .cursor_args
+                        .first()
+                        .map(|arg| arg.site)
+                        .or_else(|| site.carrier_args.first().map(|arg| arg.site))
+                        .unwrap_or(SiteId(0)),
                 },
                 note: "raw call-carrier facts must be discharged before checked MIR".to_string(),
             });
@@ -4501,7 +4530,7 @@ fn prepare_owned_call_carriers(
             .get(&block.id)
             .cloned()
             .unwrap_or_else(|| owner_entries.get(&block.id).cloned().unwrap_or_default());
-        for arg in &site.args {
+        for arg in &site.carrier_args {
             let plan =
                 match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                     &arg.ty,
@@ -4599,6 +4628,7 @@ fn prepare_owned_call_carriers(
                 continue;
             }
             let transferable = matches!(arg.source, Place::Local(_))
+                && arg.source_may_transfer
                 && local.is_some_and(|local| {
                     !live_out
                         .get(&block.id)
@@ -4724,6 +4754,17 @@ fn prepare_owned_call_carriers(
                         *slot = dest;
                     }
                 }
+                // SHORTCUT. WHY: the callee owns this parameter (its body
+                // stores or returns it), the argument is still live in the
+                // caller, and the value has no total structural clone (a
+                // `dyn Trait` box, a resource composite), so neither cost
+                // strategy — transfer on last use, snapshot clone — can hand
+                // the callee its own copy. WHEN: once a `dyn Trait` clone
+                // ritual (vtable `clone` entry) or a refcounted box share
+                // exists, the clone strategy covers it and this arm goes.
+                // WHAT: the real solution is a third strategy that shares the
+                // box (retain) instead of refusing; the refusal is a cost
+                // limitation, not a legality rule of the call boundary.
                 Ok(false) => builder.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!(
@@ -4773,19 +4814,35 @@ fn prepare_owned_call_carriers(
                 successor.instructions.insert(0, instruction);
             }
         }
+        if builder.diagnostics.len() != diagnostics_before {
+            cursor_blocked.insert(block_id);
+        }
     }
 
-    for (block, site) in pending {
+    let committed =
+        owned_cursor_call::prepare_owned_cursor_calls(blocks, builder, &pending, &cursor_blocked);
+
+    for (&block, sites) in &pending {
         if !blocks.iter().any(|candidate| candidate.id == block) {
             builder.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("pending owned call-carrier block bb{block} is missing"),
-                    site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                    site: sites
+                        .iter()
+                        .flat_map(|site| {
+                            site.cursor_args
+                                .iter()
+                                .map(|arg| arg.site)
+                                .chain(site.carrier_args.iter().map(|arg| arg.site))
+                        })
+                        .next()
+                        .unwrap_or(SiteId(0)),
                 },
                 note: "raw call-carrier facts must be discharged before checked MIR".to_string(),
             });
         }
     }
+    committed
 }
 
 /// Remove the old-slot overwrite ritual when a proven owned-call carrier has
@@ -4913,6 +4970,26 @@ fn cfg_reachable_over(
 ///   leak at abort is safe where a possible double-free is not;
 /// * a consumption reachable from itself (a consuming match on a loop
 ///   path) would discharge once per iteration — fail closed.
+///
+/// SHORTCUT (the exit set is two terminators, not every exit edge).
+/// WHY: the loop below only visits `Return` and `Trap` blocks, so a callee
+/// that unwinds out of an INNER call while the carrier is still whole never
+/// releases the incoming copy. The obvious repair — mint the parameter as an
+/// owner with an `OwnedCarrier` guard so the replay-derived plans carry the
+/// release on the unwind edges too — does not compose today: the carrier
+/// transfer seams (`transfer_owned_carrier_place`, the consuming project-match
+/// in `pattern.rs`) END the carrier's generation at the handoff without
+/// publishing a successor, so the replay reads every later transfer as a
+/// transfer of an ended generation and the caller's reuse downgrades to a
+/// use-after-consume.
+/// WHEN: delete this pass once every carrier transfer seam publishes a
+/// successor generation; the release then falls out of the same event replay
+/// as every other owner and needs no per-terminator append.
+/// WHAT: the real solution is one guarded owner minted at parameter entry,
+/// released by the ordinary exit-plan derivation on every edge. The direction
+/// of the gap is under-release (a leak on the unwind edge), never a double
+/// free. Tracked as #3160; the discarded attempt is preserved at
+/// `.tmp/ownership-seams/f3-inflight.patch`.
 fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
     if builder.owned_carrier_params.is_empty() {
         return;
@@ -5600,8 +5677,11 @@ fn terminator_mint_writes_local(terminator: &Terminator, local: u32) -> bool {
 /// a selection transfer may null.
 ///
 /// The classes admitted here are the ones whose every share lowers as a bare
-/// pointer bitcopy with NO retain (the M-COW spine invariant documented on
-/// `derive_local_collection_drop_allowed`): plain and owned-element `Vec`,
+/// pointer bitcopy with NO retain — the M-COW spine invariant: exactly one
+/// live binding owns each handle because the move-checker consumes the
+/// source on every share; when retain-on-share lands, every consumer of this
+/// invariant must become refcount-aware in lockstep. Admitted: plain and
+/// owned-element `Vec`,
 /// `HashMap` / `HashSet` handles, and owned aggregate records. For those,
 /// exactly one live slot owns a given allocation, so nulling the source at a
 /// transfer leaves exactly one owner and the source's release becomes a
@@ -5619,7 +5699,7 @@ fn terminator_mint_writes_local(terminator: &Terminator, local: u32) -> bool {
 /// borrows and the caller owns their release (A278).
 fn frame_owned_heap_locals(builder: &Builder) -> HashSet<u32> {
     let mut candidate_locals: HashSet<u32> = HashSet::new();
-    for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
+    for (binding, _name, ty) in builder.owned_locals_owner_generations() {
         let move_semantics = builder.binding_ty_is_owned_element_vec(&ty)
             || builder.binding_ty_is_plain_vec(&ty)
             || drop_plan::ty_is_local_collection_handle(&ty)
@@ -5768,19 +5848,22 @@ fn neutralize_divergent_selection_sources(
             ) else {
                 continue;
             };
-            if local_read_after_site(
+            let read_after = local_read_after_site(
                 blocks,
                 &builder.suspend_kinds,
                 owned_local,
                 site_block,
                 site_index,
-            ) {
+            );
+            let already =
+                source_slot_already_neutralized(blocks, site_block, site_index, owned_local);
+            if read_after {
                 continue;
             }
             // Another authority already nulls this slot at this move (a
             // whole-carrier or send-transfer consume). Its neutralize is the
             // same store; a second one is dead weight in the emitted IR.
-            if source_slot_already_neutralized(blocks, site_block, site_index, owned_local) {
+            if already {
                 continue;
             }
             inserts.push((site_block, site_index, owned_local, transferee));
@@ -6463,7 +6546,7 @@ fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut B
         })
         .collect();
     let unretained_source_locals: HashSet<u32> = builder
-        .owned_locals_exit_candidates()
+        .owned_locals_owner_generations()
         .into_iter()
         .filter(|(binding, _, ty)| {
             aggregate_alias_bindings.contains(binding) && drop_plan::ty_is_owned_handle_leaf(ty)
@@ -6517,7 +6600,7 @@ fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut B
         propagate_whole_value_alias_roots(blocks, borrowed_aggregate_roots.iter().copied());
     let mut candidates = Vec::new();
     let mut candidate_locals = HashSet::new();
-    for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
+    for (binding, _name, ty) in builder.owned_locals_owner_generations() {
         if !builder
             .typed_produced_value_owner_bindings
             .contains(&binding)
@@ -7068,7 +7151,7 @@ fn returned_aggregate_value_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
 }
 
 fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let candidates = builder.owned_locals_exit_candidates();
+    let candidates = builder.owned_locals_owner_generations();
     let returned_members =
         derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
     if returned_members.is_empty() {
@@ -7281,7 +7364,6 @@ fn splice_body_ownership_releases(
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
-            &mut builder.suspend_abandon_extra_drops,
             &mut builder.instr_spans,
         );
         // #2542 — release nested fresh-owned `bytes` user-call-result temporaries
@@ -7301,6 +7383,7 @@ fn splice_body_ownership_releases(
     splice_affine_call_argument_consumes(blocks, builder);
     splice_retained_field_aggregate_commits(blocks, builder);
     finalize_string_local_share_intents(&mut *blocks, builder);
+    finalize_bytes_local_share_intents(&mut *blocks, builder);
     splice_escaped_record_sibling_field_drops(blocks, builder);
     splice_pretransfer_record_exit_drops(&mut *blocks, builder);
 }
@@ -7432,6 +7515,30 @@ fn discharged_declared_release_parent(
     Some(*parent)
 }
 
+/// `target` followed by its unique-predecessor chain: the blocks lowering
+/// split off the straight-line evaluation that ends at `target` (a bounds
+/// check or an intervening call between an argument and the call that adopts
+/// it). The walk stops at the first block with zero or several predecessors,
+/// so a loop header or a join never contributes its other paths.
+fn linear_predecessor_chain(blocks: &[BasicBlock], target: u32) -> Vec<u32> {
+    let mut predecessors: HashMap<u32, Vec<u32>> = HashMap::new();
+    for block in blocks {
+        for successor in block.successors() {
+            predecessors.entry(successor).or_default().push(block.id);
+        }
+    }
+    let mut chain = vec![target];
+    let mut current = target;
+    while let Some([predecessor]) = predecessors.get(&current).map(Vec::as_slice) {
+        if chain.contains(predecessor) {
+            break;
+        }
+        chain.push(*predecessor);
+        current = *predecessor;
+    }
+    chain
+}
+
 /// Materialize normal-edge ownership commits for runtime calls that adopt
 /// arguments. LLVM `invoke` gives the call two successors: before the call the
 /// caller owns every argument; only the normal successor transfers the proven
@@ -7483,16 +7590,26 @@ fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut
                 .get(&entry.binding)
                 .copied()
                 .unwrap_or(SiteId(0));
-            let source_already_consumes = block.statements.iter().any(|statement| {
-                matches!(
-                    statement,
+            // The argument's own `Use` is the LAST use of the binding on the
+            // straight-line path into the call: the source-level consume may
+            // sit in a predecessor of the call block (a Vec index assignment
+            // lowers its bounds check between the argument and the call), so
+            // walk the unique-predecessor chain backwards and let the nearest
+            // `Use` decide. An earlier consume of the same binding at an
+            // unrelated site (before a rebind, or elsewhere in a loop body) is
+            // never the argument's use and must not suppress this call's
+            // checker transition.
+            let source_already_consumes = linear_predecessor_chain(blocks, block.id)
+                .into_iter()
+                .filter_map(|id| blocks.iter().find(|candidate| candidate.id == id))
+                .flat_map(|candidate| candidate.statements.iter().rev())
+                .find_map(|statement| match statement {
                     MirStatement::Use {
-                        binding,
-                        intent: IntentKind::Consume,
-                        ..
-                    } if *binding == entry.binding
-                )
-            });
+                        binding, intent, ..
+                    } if *binding == entry.binding => Some(*intent == IntentKind::Consume),
+                    _ => None,
+                })
+                .unwrap_or(false);
             commits.push((
                 *next,
                 entry.binding,
@@ -7869,8 +7986,13 @@ fn resolve_affine_call_consume_arg(
             arg.site,
             "affine call consume without one exact live owner",
             format!(
-                "binding {:?} must retain one owner at {argument:?} through the unwind edge; found {owners:?}",
-                arg.binding
+                "binding {} must retain one owner at {argument:?} through the unwind edge; found [{}]",
+                arg.binding,
+                owners
+                    .iter()
+                    .map(|(owner, place)| format!("{owner}@{place:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         );
         return None;
@@ -7881,7 +8003,7 @@ fn resolve_affine_call_consume_arg(
             arg.site,
             "affine call consume without its exact live guard",
             format!(
-                "owner {owner:?} must retain guard {:?} through the unwind edge; found {:?}",
+                "owner {owner} must retain guard {:?} through the unwind edge; found {:?}",
                 arg.guard,
                 guards.get(owner)
             ),
@@ -8033,7 +8155,7 @@ fn splice_retained_field_aggregate_commits(blocks: &mut [BasicBlock], builder: &
 )]
 fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let candidates: HashMap<u32, (BindingId, ResolvedTy)> = builder
-        .owned_locals_exit_candidates()
+        .owned_locals_owner_generations()
         .into_iter()
         .filter(|(_binding, _name, ty)| {
             builder.is_owned_aggregate_record_ty(ty) && builder.field_drop_in_place_admissible(ty)
@@ -8157,8 +8279,7 @@ fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, build
         // The immediate-parent chain of every recorded byte-copy alias, so the
         // sibling-discharge emitter can walk a MULTI-HOP escape (`let mid = o.mid;
         // let leaf = mid.leaf; return leaf`) and compensate the non-escaped
-        // siblings at every level — the reach `close_alias_binders_forward` gave
-        // the composite-drop prover's exclusion.
+        // siblings at every level.
         let alias_chain = builder.alias_projection_chain();
         let aggregate_clone_sites = aggregate_borrowed_ingress_clone_sites(&*blocks, builder);
         let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
@@ -8233,6 +8354,31 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     materialize_explicit_move_relocations(&mut *blocks, builder);
     canonicalize_preminted_move_adoptions(&mut *blocks);
     materialize_explicit_projection_adoptions(&mut *blocks, builder);
+    // A reassignment publishes its replacement generation at lowering time
+    // but the replaced generation's end is derived from replay. End it before
+    // any pass replays exact state at a later hand-off: with both generations
+    // of one binding live at one slot, the neutralize-transfer pass ends the
+    // stale one (`var last = ..; last = match .. ; return Ok(last)`). The
+    // pass runs again after the ownership phis are sealed, because a loop
+    // header names the generation that is actually live at the slot only
+    // then, and once more at the end for the late carrier operations.
+    // The lowering-time overwrite release (when the assignment emitted one)
+    // names the generation the Builder cursor knew, which on a sibling branch
+    // is stale; it is re-keyed only after the phis are sealed, so the early
+    // runs leave any slot that already carries one alone.
+    //
+    // SHORTCUT. WHY: the overwrite-release derivation and the ownership phis
+    // each need the other's result (a release must name the phi generation;
+    // the phi must not see a replaced generation as live), and the pipeline
+    // has no fixpoint driver, so the pair is replayed by hand three times at
+    // the points where the intervening passes publish new facts. WHEN: once
+    // reassignment publishes the replaced generation's end as an explicit
+    // event at lowering time (the Raw MIR virtual-value seam, ladder §2.5),
+    // one run after phi sealing is sufficient and the earlier two go. WHAT:
+    // the real solution is a single replay after the event stream is
+    // complete, not a hand-unrolled convergence loop.
+    drop_plan::materialize_successor_guard_authority(&mut *blocks);
+    drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     materialize_explicit_neutralize_transfers(&mut *blocks, builder);
     // Consumers below query exact OwnerId state. Seal the ownership phis that
     // are already present before those queries; otherwise the intersection at
@@ -8266,6 +8412,13 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     release_last_borrowed_typed_owners(&mut *blocks, builder);
     canonicalize_ownership_transfer_places(&mut *blocks);
     deduplicate_ownership_spines(&mut *blocks, builder);
+    // Second overwrite-release run: the loop header phi now names the
+    // generation live at the slot, and the pre-minted adoptions above have
+    // been re-keyed to it, so the replay is consistent again (a reassigned
+    // `while let` scrutinee's iteration snapshot adopts the phi generation
+    // only here; releasing before that adoption ends a generation twice).
+    drop_plan::materialize_successor_guard_authority(&mut *blocks);
+    drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     materialize_explicit_neutralize_transfers(&mut *blocks, builder);
     deduplicate_ownership_spines(&mut *blocks, builder);
     canonicalize_ownership_transfer_places(&mut *blocks);
@@ -8296,14 +8449,15 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // ownership validation sees.
     drop_plan::materialize_successor_guard_authority(&mut *blocks);
     drop_plan::materialize_definition_site_drop_recipes(&mut *blocks, builder);
-    drop_plan::materialize_exact_overwrite_releases(&mut *blocks);
+    drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
     // Call-carrier ownership is authored only after overwrite adoption, typed
     // handoffs, and ownership-phi generations are final. Querying the earlier
     // construction state could see both the retired and replacement
     // generation at one argument slot and publish two cleanup authorities.
     // This boundary now emits one pre-call Relocate from exact predecessor
     // state and one normal-success Transfer for that same OwnerId.
-    prepare_owned_call_carriers(&mut *blocks, builder, &projection_tainted);
+    let committed_owned_cursor_calls =
+        prepare_owned_call_carriers(&mut *blocks, builder, &projection_tainted);
     canonicalize_terminal_transfer_owner_ids(&mut *blocks);
     canonicalize_stale_relocation_and_reset_owner_ids(&mut *blocks);
     canonicalize_release_owner_ids(&mut *blocks);
@@ -8311,6 +8465,9 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     materialize_conditional_scope_exit_releases(blocks, builder);
     materialize_explicit_scope_exits(&mut *blocks, builder);
     prune_unowned_scope_exit_cleanup(&mut *blocks, builder);
+    // First witness publication: `materialize_edge_local_retained_join_releases`
+    // uses the carry as its insertion point. The same pass runs once more as
+    // the final pre-seal mutation to prune and re-derive the witnesses.
     materialize_explicit_goto_edge_carries(&mut *blocks, builder);
     materialize_explicit_alias_ends(&mut *blocks, builder);
     // Scope/edge sealing can expose the final aggregate wrapper only after
@@ -8327,6 +8484,11 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // the same generations its immutable replay derives. Ambiguous, ownerless,
     // and wrong-place edges remain untouched for validation to reject.
     canonicalize_join_incoming_owner_ids(&mut *blocks, builder);
+    owned_cursor_call::reanchor_owned_cursor_call_handoffs(
+        &mut *blocks,
+        builder,
+        &committed_owned_cursor_calls,
+    );
 }
 
 /// End an extracted string payload's owner before passing its exact handle to
@@ -9211,10 +9373,20 @@ fn canonicalize_stale_relocation_and_reset_owner_ids(blocks: &mut [BasicBlock]) 
 mod stale_owner_canonicalization_tests;
 
 /// Publish the exact ownership state transported by every `Goto` on the
-/// source edge. Cleanup derivation must not inspect the target block for a
-/// later move or use target-entry intersection as retrospective evidence: a
-/// may-unwind instruction can precede that later operation, and a lexical
-/// `break` can otherwise launder a body-local generation across the join.
+/// source edge, and retire every carry that no longer agrees with it.
+///
+/// `EdgeCarry` is a witness, not a transport: replay carries the source
+/// block's whole exit state into the target, a `Goto` plan never discharges,
+/// and `validate_ownership_events` (`edge-carry`) rejects a live generation
+/// without a carry and a carry without a live generation. The witnesses must
+/// therefore be computed from the FINAL event stream: this runs once, as the
+/// last mutation before `seal_checked`, after every pass that can change exit
+/// state (call-carrier preparation, string/bytes ownership finalization, and
+/// the retained-join releases). A carry left over from an earlier CFG or
+/// generation naming is removed here rather than diagnosed. It also runs once
+/// earlier, inside `prepare_body_transfers`, because the retained-join release
+/// pass positions its releases at the carry; that earlier publication is
+/// re-derived by the final run.
 fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let (_, exits) = drop_plan::exact_owner_states(blocks);
     for block in blocks {
@@ -9224,6 +9396,27 @@ fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &m
         let Some(exit) = exits.get(&block.id) else {
             continue;
         };
+        let stale = block
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| match instruction {
+                Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
+                    owner,
+                    place,
+                    target: carried_target,
+                }) if *carried_target != target || exit.get(owner) != Some(place) => Some(index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for index in stale.into_iter().rev() {
+            block.instructions.remove(index);
+            shift_instr_spans_on_remove(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            );
+        }
         let existing = block
             .instructions
             .iter()
@@ -9231,8 +9424,8 @@ fn materialize_explicit_goto_edge_carries(blocks: &mut [BasicBlock], builder: &m
                 Instr::OwnershipEvent(crate::model::OwnershipEvent::EdgeCarry {
                     owner,
                     place,
-                    target: carried_target,
-                }) if *carried_target == target => Some((*owner, *place)),
+                    ..
+                }) => Some((*owner, *place)),
                 _ => None,
             })
             .collect::<HashSet<_>>();
@@ -13638,6 +13831,17 @@ pub(in crate::lower) fn finalize_body(
             releases_before_finalization,
         );
     }
+    // Debug aid: the construction-time event stream before any post-CFG
+    // ownership pass rewrites it (`HEW_DEBUG_CHECKED_FUNCTION` shows the
+    // sealed result; the difference between the two is what the passes did).
+    if std::env::var("HEW_DEBUG_RAW_FUNCTION")
+        .is_ok_and(|filter| builder.current_function_symbol.contains(&filter))
+    {
+        eprintln!(
+            "HEW_DEBUG_RAW {} blocks: {blocks:#?}",
+            builder.current_function_symbol
+        );
+    }
     // Name the `let`-bound locals from the emitted `Bind` stream before the
     // blocks are moved into the raw function — params were already named in
     // `lower_params`. Feeds the `-g` variable DIEs.
@@ -13909,11 +14113,7 @@ pub(crate) fn lower_function(
     dataflow_result
         .checks
         .extend(validate_outbound_actor_modes(&raw));
-    let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
-        .checks
-        .iter()
-        .filter_map(check_to_diagnostic)
-        .collect();
+    let mut diagnostics: Vec<MirDiagnostic> = project_findings(&dataflow_result.checks);
     diagnostics.extend(move_value::ordinary_projection_transfer_diagnostics(
         &raw.blocks,
         &builder.suspend_kinds,
@@ -13952,7 +14152,7 @@ pub(crate) fn lower_function(
         .iter()
         .filter_map(|binding| builder.binding_locals.get(binding).copied())
         .collect();
-    let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+    finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
     canonicalize_retained_copy_owner_transfers(&mut raw.blocks, &actor_message_string_sources);
     materialize_edge_local_retained_join_releases(&mut raw.blocks, &mut builder);
     // Edge-local retirement may allocate scratch storage after Raw MIR first
@@ -13968,8 +14168,16 @@ pub(crate) fn lower_function(
         .collect();
     raw.local_decl_bytes.clone_from(&builder.local_decl_bytes);
     raw.instr_spans.clone_from(&builder.instr_spans);
-    let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+    finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
     canonicalize_retained_copy_owner_transfers(&mut raw.blocks, &actor_message_string_sources);
+    // An owner moved on one path into a join and still owned on another is
+    // released on the owning edge, derived from replay; after this every
+    // unguarded generation is either exactly live or ended at each join.
+    drop_plan::materialize_conditional_consume_releases(&mut raw.blocks, &mut builder);
+    // The event stream is final: publish the Goto edge witnesses replay and
+    // the `edge-carry` verifier rule will be checked against.
+    materialize_explicit_goto_edge_carries(&mut raw.blocks, &mut builder);
+    raw.instr_spans.clone_from(&builder.instr_spans);
     let deferred_drop_binding_locals = std::mem::take(&mut builder.deferred_drop_binding_locals);
     builder.binding_locals.extend(deferred_drop_binding_locals);
 
@@ -13981,42 +14189,35 @@ pub(crate) fn lower_function(
         .opaque_resources()
         .map(|lifecycle| lifecycle.resource_declaration.full_path().to_string())
         .collect();
-    for check in detect_opaque_resource_field_misuse(
+    // Every verifier finding for this function is gathered here and projected
+    // once at the end (`project_findings`): one diagnostic per unbalanced
+    // owner, at most one internal-compiler-error per function.
+    let mut findings: Vec<MirCheck> = detect_opaque_resource_field_misuse(
         &raw.blocks,
         &builder.locals,
         &builder.binding_locals,
         &opaque_resource_names,
-    )
-    .into_iter()
-    .chain(detect_builtin_handle_record_field_overwrite(
+    );
+    findings.extend(detect_builtin_handle_record_field_overwrite(
         &raw.blocks,
         &builder.locals,
         &builder.binding_locals,
         &builder.record_field_orders,
-    )) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
+    ));
     if let Some(layout) = current_actor_name.and_then(|name| actor_layouts.get(name)) {
         if let Some(kinds) = layout.state_field_clone_kinds.as_deref() {
-            for check in detect_actor_state_resource_overwrite(
+            findings.extend(detect_actor_state_resource_overwrite(
                 &raw.blocks,
                 kinds,
                 &layout.state_field_names,
                 &layout.state_field_tys,
-            )
-            .into_iter()
-            .chain(detect_actor_state_handle_consume(
+            ));
+            findings.extend(detect_actor_state_handle_consume(
                 &raw.blocks,
                 kinds,
                 &layout.state_field_names,
                 &layout.state_field_tys,
-            )) {
-                if let Some(diag) = check_to_diagnostic(&check) {
-                    diagnostics.push(diag);
-                }
-            }
+            ));
         }
     }
 
@@ -14036,15 +14237,7 @@ pub(crate) fn lower_function(
         cooperate_sites,
         &builder,
         &body_statements,
-        &dataflow_result,
-        Some(&string_derivation.allowed),
-        Some(&bytes_derivation.allowed),
     );
-    diagnostics.extend(vec_iter_yield_abandonment_diagnostics(
-        &checked,
-        &builder.vec_iter_yield_exit_drops,
-        &dataflow_result,
-    ));
     if std::env::var("HEW_DEBUG_CHECKED_FUNCTION")
         .is_ok_and(|filter| checked.name.contains(&filter))
     {
@@ -14052,11 +14245,7 @@ pub(crate) fn lower_function(
         let (entries, exits) = drop_plan::exact_owner_states(&checked.blocks);
         eprintln!("HEW_DEBUG_OWNER_STATES entries={entries:#?} exits={exits:#?}");
     }
-    for check in validate_ownership_events(&checked) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
+    findings.extend(validate_ownership_events(&checked));
     // Drop-elaboration pass. Consumes the CheckedMirFunction we just
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
     // are the authoritative description of what fires on every exit.
@@ -14064,7 +14253,7 @@ pub(crate) fn lower_function(
     // Each owner definition in Checked MIR carries its immutable destructor
     // recipe beside the Mint/Reset/Transfer/Join that creates the generation.
     // The elaborator replays those events, their guards, and exact CFG state;
-    // Builder ownership ledgers and legacy LIFO templates cannot admit or
+    // Builder ownership ledgers cannot admit or
     // select a cleanup after sealing. This runs for every function body and is
     // exercised both by direct replay/falsifier tests and compiled leak/poison
     // oracles.
@@ -14078,28 +14267,25 @@ pub(crate) fn lower_function(
     // upgrades into a `MirDiagnostic` via `check_to_diagnostic`, and
     // the CLI rejects the program before codegen runs. LESSONS:
     // cleanup-all-exits, boundary-fail-closed.
-    for check in validate_drop_plan(&elaborated) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
+    findings.extend(validate_drop_plan(&elaborated));
     // Ownership-SSA exceptional-edge gate: every call must have one normal
     // successor and one cleanup successor before the backend may lower it to
     // LLVM `invoke`. Missing or duplicated cleanup is a compiler error.
-    for check in validate_unwind_cleanup_coverage(&elaborated, &raw) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
-    }
+    findings.extend(validate_unwind_cleanup_coverage(&elaborated, &raw));
     // Physical neutralization is codegen mechanics, not ownership authority.
     // Keep only the local fail-closed shape check: every ownership-moving
     // neutralize operation must name its destination. Exact OwnerId state and
     // cleanup admission are validated from the Checked-MIR event stream above.
-    for check in validate_discharge_authority(&elaborated, &raw) {
-        if let Some(diag) = check_to_diagnostic(&check) {
-            diagnostics.push(diag);
-        }
+    findings.extend(validate_discharge_authority(&elaborated, &raw));
+    // `project_findings` folds an unbalanced owner's exits into one diagnostic
+    // and keeps only the first lowering invariant per function, so the
+    // unprojected list is only recoverable here.
+    if std::env::var("HEW_DEBUG_CHECKED_FUNCTION")
+        .is_ok_and(|filter| checked.name.contains(&filter))
+    {
+        eprintln!("HEW_DEBUG_FINDINGS {findings:#?}");
     }
+    diagnostics.extend(project_findings(&findings));
     LoweredFunction {
         raw,
         checked,
@@ -14137,18 +14323,6 @@ struct ActiveIterationOwner {
     name: String,
     site: SiteId,
     ty: ResolvedTy,
-}
-
-#[derive(Debug, Clone)]
-struct VecIterYieldExitDrop {
-    binding: BindingId,
-    ty: ResolvedTy,
-    kind: DropKind,
-    body_start_block: u32,
-    /// The body-end block already receives the normal inline drop. It is a
-    /// region boundary, not part of the abandonment window.
-    body_end_block: u32,
-    site: SiteId,
 }
 
 /// Accumulated lexical-scope facts for one HIR `ScopeId`, built incrementally
@@ -14198,15 +14372,16 @@ enum DischargeSite {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Disposition {
-    /// Released by the function-exit LIFO drop pass, narrowed per exit edge —
-    /// the default for every entry the registration authority mints.
+    /// Released by the scope-exit owner the entry mints, on every exit edge
+    /// where its generation is still live — the default for every entry the
+    /// registration authority mints.
     ScopeExit,
     /// Released at the end of the consuming body on every exit edge rather than
     /// at function scope exit: a generator-yielded / channel-received `Some(x)`
     /// payload, or a `for x in vec` string cursor, whose per-iteration heap
     /// reference the body owns and releases each frame. Dispositioned off the
-    /// scope-exit set so the function-exit LIFO pass cannot fire a second
-    /// release on the same slot (double-free guard).
+    /// scope-exit set so no scope-exit owner fires a second release on the
+    /// same slot (double-free guard).
     BodyEndReleased,
     /// Consumed (moved out) before scope exit — the value's new owner drops it,
     /// so the scope-exit release is suppressed. A later overwrite on a different
@@ -14235,11 +14410,10 @@ enum Disposition {
     /// is an inline aggregate (record / tuple / inline-enum). Codegen byte-copies
     /// such a field with no retain, so the binder does not own the copied heap —
     /// the projected root's composite drop frees every original exactly once.
-    /// Dispositioned off the scope-exit-live set so (a) the function-exit LIFO
-    /// pass emits no composite drop for the alias (a re-walk of heap the root
-    /// still owns would double-free), and (b) the alias's base local is excluded
-    /// from the record/tuple provers' `release_owner_bases` derivation, so an
-    /// alias binder no longer trips their Defect-1 blanket every-root exclusion.
+    /// Dispositioned off the scope-exit-live set so (a) the alias mints no
+    /// owner and no exit plan carries a composite drop for it (a re-walk of
+    /// heap the root still owns would double-free), and (b) the alias's base
+    /// local never seeds a sibling-discharge root.
     /// The owner it aliases is named on the entry's `provenance`
     /// ([`OwnershipDecision::InteriorAlias`]-shaped). This is the recorded twin
     /// of the whole-local alias classifier
@@ -14276,25 +14450,12 @@ enum FieldLoadClass {
 /// authority) instead of pushed ad hoc at each lowering seam.
 ///
 /// The tracked unit is the whole binding. The `(binding, name, ty)` triple is
-/// the shape every downstream allow-set prover, `build_lifo_drops`, and the
-/// unwired-`Vec`-element diagnostic already consume (via
+/// the shape the ownership finalizers, the pre-seal neutralize passes, and the
+/// unwired-`Vec`-element diagnostic consume (via
 /// [`Builder::owned_locals_snapshot`]); the richer facts (`ownership`,
 /// `provenance`, `disposition`) are carried on the value so later drop stages
 /// read a written-down fact rather than re-deriving ownership from the
 /// instruction stream at each pass.
-#[derive(Debug, Clone)]
-pub(crate) struct ForAwaitHandleHandoff {
-    pub(crate) source_binding: BindingId,
-    pub(crate) cursor_binding: BindingId,
-    pub(crate) handoff_block: u32,
-    #[allow(
-        dead_code,
-        reason = "the ledger retains the source witness for diagnostics and future provenance validation"
-    )]
-    pub(crate) site: SiteId,
-    pub(crate) ty: ResolvedTy,
-}
-
 #[derive(Debug, Clone)]
 struct OwnedLocalEntry {
     /// The HIR binding this owned local backs.
@@ -14331,7 +14492,7 @@ struct OwnedLocalEntry {
     )]
     provenance: Option<ValueProvenance>,
     /// How this entry's release obligation is dispositioned. Minted `ScopeExit`
-    /// (the function-exit LIFO pass owns it) and retracted off that set by a
+    /// (a scope-exit owner releases it) and retracted off that set by a
     /// [`Builder::set_owned_local_disposition`] write when its release is handled
     /// mid-lowering (consumed, body-end-released, inner-scope-released).
     disposition: Disposition,
@@ -14592,8 +14753,8 @@ impl Builder {
             // parameter is OWNED by the callee (the caller moved it in and does
             // not drop it), so register it for the scope-exit drop — closing the
             // f9 leak where a by-value resource param the body did not forward
-            // was never freed. The per-exit `drops_for_exit` dataflow narrowing
-            // removes it on paths where the body already moved it out (returned,
+            // was never freed. The ownership replay omits it on paths where the
+            // body already moved it out (returned,
             // forwarded to another consume, or a `self`-consuming method), so it
             // is dropped exactly once and never double-freed. Keyed by the
             // ORIGIN `(ItemId, index)`; a BORROW param is absent and never
@@ -14605,6 +14766,23 @@ impl Builder {
                 .copied()
                 == Some(true);
             let owned_ty = self.subst_ty(&param.ty);
+            let param_site =
+                SiteId(u32::try_from(i).expect("function parameter count exceeds u32::MAX"));
+            // Exact cursor identity is authoritative even when the element's
+            // release protocol is unavailable. Refuse that parameter before
+            // any owner/carrier registry can reinterpret it as an ordinary
+            // record. The fatal diagnostic gates codegen; BorrowReadOnly is
+            // only the inert placeholder needed to keep the per-parameter
+            // fact vector structurally total for diagnostic Raw MIR.
+            if self.reject_unsupported_vec_iter_boundary(
+                &owned_ty,
+                param_site,
+                "a function parameter",
+            ) {
+                self.param_boundary_modes
+                    .push(ParamBoundaryMode::BorrowReadOnly);
+                continue;
+            }
             // The authored `#[resource] close(self)` receiver is a consuming
             // ABI boundary even though its body is the close ritual itself and
             // therefore must not register a recursive callee-side scope drop.
@@ -14623,13 +14801,38 @@ impl Builder {
             // synthetic cursor as a user record would later request an invalid
             // `RecordInPlace` drop.  It still crosses the call boundary by
             // value; only the callee-side cleanup representation is special.
-            let param_is_vec_iter_cursor = self.vec_iter_cursor_release_symbol(&owned_ty).is_some();
+            let param_is_vec_iter_cursor = self.ty_is_exact_vec_iter(&owned_ty);
+            // OwnedCursor is one total ABI mode for an ordinary direct Hew
+            // call. ClosureInvoke deliberately borrows its cursor parameters,
+            // while actor/task/message ingress has no cursor handoff contract
+            // and must fail closed. A non-intrinsic mutable-receiver call is
+            // rejected at its caller because normal return cannot yet rearm a
+            // fresh owner; the emitted Default-convention callee body still
+            // mints its honest entry/unwind authority.
+            let vec_iter_boundary_mode =
+                self.vec_iter_param_boundary_mode(&owned_ty, self.current_function_call_conv);
+            let param_is_owned_cursor =
+                vec_iter_boundary_mode == Some(ParamBoundaryMode::OwnedCursor);
+            if param_is_vec_iter_cursor
+                && self.current_function_call_conv != crate::model::FunctionCallConv::ClosureInvoke
+                && !param_is_owned_cursor
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "VecIter parameter at an unsupported call convention"
+                            .to_string(),
+                        site: param_site,
+                    },
+                    note: "OwnedCursor is defined only for ordinary direct Hew calls; closure invokes borrow cursor storage, while actor/task and message ingress require separate typed protocols"
+                        .to_string(),
+                });
+            }
             let param_is_owned_carrier = if param_is_vec_iter_cursor {
                 false
             } else {
                 self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed)
             };
-            if param_is_vec_iter_cursor && !self.vec_iter_drop_flags.contains_key(&param.id) {
+            if param_is_owned_cursor && !self.vec_iter_drop_flags.contains_key(&param.id) {
                 if !self.owner_generations.contains_key(&param.id) {
                     let warrant = self.owner_warrant_for_owned_parameter(param.id, &owned_ty);
                     self.register_owned_local(
@@ -14675,20 +14878,22 @@ impl Builder {
                     .insert(param.id, TraitObjectStorage::HeapBoxed);
             }
             // A summary-owned param is one whose CALLERS consult the same
-            // `call_param_owned_carrier` verdict and therefore move ownership
-            // in (transfer, clone, or fail closed) — the callee owns it even
-            // when registration declined (e.g. a non-clone-total plan keeps
-            // the legacy transfer path). Two caller populations do NOT move
-            // in despite a true summary: method callers of a stripped
-            // true-receiver slot (summary removed — absent here), and
-            // String/Bytes args, which the caller preparation skips onto the
-            // CoW borrow spine.
+            // `call_param_owned_carrier` verdict and therefore hand the callee
+            // its own copy: `prepare_owned_call_carriers` transfers a dead
+            // source, snapshot-clones a live clone-total source, and refuses
+            // (`NotYetImplemented`, live owned call-carrier) anything else.
+            // The callee owns the slot in every admitted case. Two caller
+            // populations do NOT hand a copy in despite a true summary:
+            // method callers of a stripped true-receiver slot (summary
+            // removed — absent here), and String/Bytes args, which the caller
+            // preparation skips onto the CoW borrow spine.
             let param_summary_owned = self
                 .param_ownership
                 .call_param_owned_carrier
                 .get(&(func.id, i))
                 .copied()
                 == Some(true)
+                && !param_is_vec_iter_cursor
                 && !matches!(
                     self.subst_ty(&param.ty),
                     ResolvedTy::String | ResolvedTy::Bytes
@@ -14697,6 +14902,7 @@ impl Builder {
             let mut callee_owns_param = param_is_consumed
                 || param_is_close_receiver
                 || param_is_owned_carrier
+                || param_is_owned_cursor
                 || param_summary_owned
                 || self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler;
             if matches!(self.subst_ty(&param.ty), ResolvedTy::Bytes)
@@ -14760,26 +14966,25 @@ impl Builder {
                 param_is_consumed,
                 param_is_owned_carrier,
             );
-            // #2732 — callee-side drop for a by-value heap-owning ENUM COMPOSITE
-            // param (`Result<T, string>`, `Option<string>`, a user enum with an
-            // owned-payload variant) the body-summary classifies CONSUME: a
-            // `match e { .. }` scrutinee destructures the param, so the caller
-            // moved it in and does NOT drop it. `param_consume` is resource-only,
-            // so such a param was never registered into `owned_locals` and its
-            // heap payload leaked on every consuming path — the enum twin of the
-            // record match-drain callee-drop.
+            // Callee-side drop for a by-value heap-owning ENUM COMPOSITE param
+            // whose callers hand it an owned copy (`param_summary_owned`) but
+            // whose snapshot plan the carrier protocol could not admit
+            // (`register_owned_call_carrier_param` returned false). Register
+            // it into `owned_locals` + the body scope, exactly like a
+            // `let`-bound local enum, so its owner mints the tag-aware
+            // `DropKind::EnumInPlace` shell drop on every path. A match arm
+            // that MOVES its payload out into an owning sink (return / store
+            // / send) neutralizes the moved payload slot, so a move-out arm
+            // never double-frees the payload the binder now owns.
             //
-            // Register it into `owned_locals` + the body scope, exactly like a
-            // `let`-bound local enum, so `derive_enum_composite_drop_allowed`
-            // picks it up and emits the tag-aware `DropKind::EnumInPlace` shell
-            // drop on every consuming path. That prover's escape scan already
-            // excludes the composite when a match arm MOVES its payload out into
-            // an owning sink (return / store / send / owning call), so a move-out
-            // arm never double-frees the payload the binder now owns — it
-            // fail-closed leaks the sibling remainder instead. Gated on
-            // `call_param_consume` = CONSUME: a BORROW enum param is absent and
-            // stays the caller's drop (#2735 named / #2743 temporary), mutually
-            // exclusive with this callee drop.
+            // The gate is the owned-carrier summary, never the body-escape
+            // bit the borrow-site collectors read: a call never consumes a
+            // non-resource argument, so a callee whose callers do not hand it
+            // a copy borrows the value and must not release it. A true method
+            // receiver is stripped from the carrier summary for exactly that
+            // reason (`Arena.insert(self, value)` mutates through borrowed
+            // `self`), and a callee drop keyed on the escape summary freed the
+            // caller's receiver payload under it.
             //
             // Records/tuples are deliberately NOT registered here — their owned
             // fields drain through per-field match binders that each own and drop
@@ -14791,11 +14996,7 @@ impl Builder {
             if !param_is_consumed
                 && !param_is_owned_carrier
                 && !actor_message_param
-                && self
-                    .param_ownership
-                    .call_param_consume
-                    .get(&(func.id, i))
-                    .is_some_and(|v| v.is_consume())
+                && param_summary_owned
                 && ty_is_heap_owning_enum_composite(
                     &owned_ty,
                     &self.record_field_orders,
@@ -14811,7 +15012,9 @@ impl Builder {
                     self.borrowed_value_param_locals.insert(local);
                 }
             }
-            let mode = if self.current_function_call_conv
+            let mode = if let Some(cursor_mode) = vec_iter_boundary_mode {
+                cursor_mode
+            } else if self.current_function_call_conv
                 == crate::model::FunctionCallConv::ActorHandler
                 && param.id != SENTINEL_CRASH_MESSAGE_BINDING
                 && !self
@@ -15232,68 +15435,10 @@ impl Builder {
     /// `finish_current_block(Terminator::Suspending*)`, mirroring the
     /// `await_deadline_ns.insert(self.current_block_id, ns)` precedent.
     ///
-    /// Active consuming-body values have a normal body-end release, but frame
-    /// destruction while parked bypasses that edge. Mirror each safe active
-    /// release into the abandon-only plan, deduplicated by storage place so a
-    /// carrier and its repeated registration retain one release authority.
+    /// The carrier's destroy-while-parked cleanup is not recorded here: every
+    /// value live across the suspend is an exact Checked-MIR owner, and the
+    /// `ExitPath::Suspend` plan derives from ownership replay.
     fn record_suspend_kind(&mut self, kind: SuspendKind) {
-        let mut recorded_places = self
-            .suspend_abandon_extra_drops
-            .get(&self.current_block_id)
-            .into_iter()
-            .flat_map(|drops| drops.iter().map(|drop| drop.place))
-            .collect::<HashSet<_>>();
-        let active_drops: Vec<ElabDrop> = self
-            .active_generator_yield_values
-            .iter()
-            .filter_map(|(_, place, ty, drop_fn, start_block_id, start_instr_len)| {
-                if recorded_places.contains(place) {
-                    return None;
-                }
-                let local = base_local(*place)?;
-                if !self.generator_yield_binding_drop_safe(*start_block_id, *start_instr_len, local)
-                {
-                    return None;
-                }
-                recorded_places.insert(*place);
-                let kind = match drop_fn {
-                    crate::model::DropFnSpec::Release("hew_rc_drop") => DropKind::RcRelease,
-                    crate::model::DropFnSpec::Release("hew_weak_drop_rc") => DropKind::WeakRelease,
-                    crate::model::DropFnSpec::Release(symbol) => DropKind::CowHeap {
-                        release: crate::ownership::CowHeapRelease::from_symbol(symbol)?,
-                    },
-                    crate::model::DropFnSpec::InPlace(
-                        crate::ownership::InPlaceReleaseKind::Record,
-                    ) => DropKind::RecordInPlace,
-                    crate::model::DropFnSpec::InPlace(
-                        crate::ownership::InPlaceReleaseKind::Enum,
-                    ) => DropKind::EnumInPlace,
-                    crate::model::DropFnSpec::InPlace(
-                        crate::ownership::InPlaceReleaseKind::AggregateRecursive,
-                    ) => DropKind::AggregateRecursive,
-                    crate::model::DropFnSpec::Runtime(_)
-                    | crate::model::DropFnSpec::UserClose(_) => DropKind::Resource,
-                };
-                Some(ElabDrop {
-                    place: *place,
-                    ty: ty.clone(),
-                    drop_fn: matches!(
-                        drop_fn,
-                        crate::model::DropFnSpec::Runtime(_)
-                            | crate::model::DropFnSpec::UserClose(_)
-                    )
-                    .then(|| drop_fn.clone()),
-                    kind,
-                    guard: None,
-                })
-            })
-            .collect();
-        if !active_drops.is_empty() {
-            self.suspend_abandon_extra_drops
-                .entry(self.current_block_id)
-                .or_default()
-                .extend(active_drops);
-        }
         self.suspend_kinds.insert(self.current_block_id, kind);
     }
 
@@ -15597,12 +15742,6 @@ enum ClosurePairIngress {
     AlreadyMoved,
     /// A borrow or unproven shape — refused (fail closed).
     Borrowed { name: Option<String> },
-}
-
-#[derive(Debug, Default)]
-struct MatchBoundHopAliasFacts {
-    owner_of: HashMap<u32, u32>,
-    chain: Vec<(u32, u32, u32)>,
 }
 
 /// Where a record field binder's value came from, as far as the

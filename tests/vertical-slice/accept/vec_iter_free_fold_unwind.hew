@@ -1,0 +1,23 @@
+import std.iter;
+
+fn values(seed: i64) -> Vec<i64> {
+    let xs: Vec<i64> = Vec.new();
+    xs.push(seed);
+    xs.push(seed + 1);
+    xs
+}
+
+fn main() -> i64 {
+    let normal_values = values(20);
+    let total = iter.fold(normal_values.into_iter(), 0, |acc: i64, x: i64| acc + x);
+    println(total);
+
+    let unwind_values = values(1);
+    let _ = iter.fold(unwind_values.into_iter(), 0, |acc: i64, x: i64| {
+        if x == 2 {
+            panic("free fold boom");
+        }
+        acc + x
+    });
+    0
+}

@@ -205,11 +205,13 @@ impl Builder {
             };
             self.push_instr(Instr::Move { dest, src: source });
             if keep_for_drop_elab {
-                self.register_owned_local(
+                self.register_owned_payload_binder(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
                     warrant,
+                    scrutinee_local,
+                    scrutinee_owner.as_ref(),
                 );
             }
             let transferred_sink = self.transfer_contextual_sink_payload(
@@ -219,6 +221,9 @@ impl Builder {
                 dest,
                 &binding_ty,
             );
+            if !transferred_sink {
+                self.note_carrier_payload_binder(scrutinee_local, source, dest, &binding_ty);
+            }
             // #2523 — record provenance for a heap-owning TOP-LEVEL let-else
             // payload binder so its move-out routes through default-deny.
             if !transferred_sink {
@@ -642,11 +647,13 @@ impl Builder {
             };
             self.push_instr(Instr::Move { dest, src: source });
             if keep_for_drop_elab {
-                self.register_owned_local(
+                self.register_owned_payload_binder(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
                     warrant,
+                    pattern_scrutinee_local,
+                    scrutinee_owner.as_ref(),
                 );
             }
             if let Some(local) = base_local(dest) {
@@ -664,6 +671,14 @@ impl Builder {
                 dest,
                 &binding_ty,
             );
+            if !transferred_sink {
+                self.note_carrier_payload_binder(
+                    pattern_scrutinee_local,
+                    source,
+                    dest,
+                    &binding_ty,
+                );
+            }
             // #2523 — record provenance for a heap-owning TOP-LEVEL while-let
             // payload binder so its move-out routes through default-deny.
             if !transferred_sink {
@@ -1516,11 +1531,13 @@ impl Builder {
             };
             self.push_instr(Instr::Move { dest, src: source });
             if keep_for_drop_elab {
-                self.register_owned_local(
+                self.register_owned_payload_binder(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
                     warrant,
+                    scrutinee_local,
+                    scrutinee_owner.as_ref(),
                 );
             }
             if keep_for_drop_elab {
@@ -1535,6 +1552,9 @@ impl Builder {
                 dest,
                 &binding_ty,
             );
+            if !transferred_sink {
+                self.note_carrier_payload_binder(scrutinee_local, source, dest, &binding_ty);
+            }
             // #2523 — record provenance for a heap-owning TOP-LEVEL if-let
             // payload binder so its move-out routes through default-deny.
             if !transferred_sink {

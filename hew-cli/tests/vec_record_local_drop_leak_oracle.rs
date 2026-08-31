@@ -13,7 +13,7 @@
 //! (`is_owned_vec_element`) only admits HEAP-OWNING aggregates (a
 //! string/bytes/nested-collection field). `BitCopy` record and all-`BitCopy` tuple
 //! elements fell into the gap between the two: NEITHER `owned_vec_drop_allowed`
-//! nor `plain_vec_drop_allowed` claimed the binding, so `build_lifo_drops`
+//! nor `plain_vec_drop_allowed` claimed the binding, so the drop elaborator
 //! emitted NO drop and the Vec's backing buffer LEAKED on every scope exit.
 //!
 //! The record fix extends `binding_ty_is_plain_vec` to admit a `Named` element
@@ -200,7 +200,7 @@ fn main() -> i64 {{
 // tuple arm, but that function ALWAYS returns `CowValue` for any tuple — making
 // the tuple arm permanently dead. A `Vec<(i64,i64)>` therefore fell into the same
 // gap as the earlier `Vec<Point>`: neither the plain nor the owned allow-set
-// claimed it, so `build_lifo_drops` emitted NO drop and the backing buffer LEAKED
+// claimed it, so the drop elaborator emitted NO drop and the backing buffer LEAKED
 // on every scope exit. The fix uses `tuple_is_all_bitcopy`, which recurses into
 // each element: a `BitCopy` scalar or a Named type proven `BitCopy` via
 // `ValueClass::of_ty` admits, anything else (string, Named record not proven

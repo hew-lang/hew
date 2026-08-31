@@ -1,0 +1,47 @@
+import std.iter;
+
+// Temporary `VecIter<T>` receiver: a terminal or adapter called straight on
+// `.into_iter()`, with no binding between the cursor and the call. The cursor
+// is callee-owned by the by-value parameter ABI, so the caller must relinquish
+// its temporary at the call; a caller that kept the obligation released a
+// cursor the callee had already freed, which the runtime oracle sees as a
+// double free rather than a leak. The let-bound form below is the control: it
+// reaches the same callees through a named receiver, whose relinquish the
+// checker's `Consume` intent already authored.
+fn terminal_on_temporary(k: i64) -> i64 {
+    let xs: Vec<i64> = Vec.new();
+    xs.push(k);
+    xs.push(k + 1);
+    xs.into_iter().fold(0, |acc: i64, x: i64| acc + x)
+}
+
+fn adapter_on_temporary(k: i64) -> i64 {
+    let xs: Vec<i64> = Vec.new();
+    xs.push(k);
+    xs.push(k + 1);
+    xs.push(k + 2);
+    let evens = xs.into_iter().filter(|x: i64| x % 2 == 0);
+    iter.count(evens)
+}
+
+fn terminal_on_let_bound(k: i64) -> i64 {
+    let xs: Vec<i64> = Vec.new();
+    xs.push(k);
+    xs.push(k + 1);
+    let cursor = xs.into_iter();
+    cursor.fold(0, |acc: i64, x: i64| acc + x)
+}
+
+fn main() {
+    // Driven 200k times so the leak oracle reads a slope, not one call: a
+    // per-call residue of one allocation is invisible at a single iteration.
+    var total = 0;
+    var k = 0;
+    while k < 200000 {
+        total = total + terminal_on_temporary(k);
+        total = total + adapter_on_temporary(k);
+        total = total + terminal_on_let_bound(k);
+        k = k + 1;
+    }
+    println(total);
+}

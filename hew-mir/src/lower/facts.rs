@@ -8,9 +8,9 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     named_type_names, project_match_ownership_mode, BindingId, Builder, BuiltinType,
-    CheckedMirFunction, ConsumeVerdict, DecisionFact, ElaboratedMirFunction, FunctionCallConv,
-    HashMap, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind, Instr,
-    IntentKind, LayoutReadiness, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamBoundaryFact,
+    CheckedMirFunction, DecisionFact, ElaboratedMirFunction, FunctionCallConv, HashMap, HashSet,
+    HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind, Instr, IntentKind,
+    LayoutReadiness, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamBoundaryFact,
     ParamBoundaryMode, ParamCrashCleanupKind, ParamLoanStorage, ParamOwnershipFacts,
     ParamRepresentationEffect, Place, ProjectMatchOwnershipMode, RawMirFunction, ResolvedRef,
     ResolvedTy, ResourceMarker, ScanCtx, SiteId, Strategy, SuspendKind, Terminator, ValueClass,
@@ -18,14 +18,23 @@ use super::{
 
 impl Builder {
     pub(super) fn binding_ref_use_intent(&self, expr: &HirExpr) -> IntentKind {
-        if self
+        if self.deferred_affine_call_consume_sites.contains(&expr.site)
+            && self.ty_is_exact_vec_iter(&self.subst_ty(&expr.ty))
+        {
+            // A direct OwnedCursor call consumes the named cursor only at the
+            // final invoke boundary. Keep the checker and runtime guard live
+            // while all later argument expressions are still evaluating; the
+            // post-CFG call-site pass authors the matching Consume once entry
+            // is inevitable.
+            IntentKind::Read
+        } else if self
             .projected_resource_direct_move_sites
             .last()
             .is_some_and(|site| *site == expr.site)
         {
             IntentKind::Consume
         } else if self.param_ownership.borrow_arg_sites.contains(&expr.site)
-            || self.bytes_local_share_sites.contains(&expr.site)
+            || self.bytes_local_share_sites.contains_key(&expr.site)
             || self.string_local_share_sites.contains_key(&expr.site)
         {
             IntentKind::Read
@@ -800,10 +809,9 @@ fn force_consume_method_nonreceiver_resource_params(
 ///     receivers, not method non-receiver args.
 ///
 /// Heap-ownership is intentionally NOT gated here: the recording only marks the
-/// receiver's `SiteId`, and the downstream per-type sole-owner prover
-/// (`derive_{record,tuple,enum}_composite_drop_allowed`) decides the actual drop
-/// exactly as for a free-fn positional borrow arg — a non-heap-owning receiver
-/// yields no drop.
+/// receiver's `SiteId`, and owner publication decides the actual drop exactly
+/// as for a free-fn positional borrow arg — a non-heap-owning receiver mints
+/// no owner and yields no drop.
 /// Consuming the layout-blind checker verdict here and deferring the structural
 /// question to the one heap-ownership authority avoids re-deriving it
 /// (`checker-authority`).
@@ -858,10 +866,24 @@ fn receiver_is_whole_owned_operand(receiver: &HirExpr) -> bool {
             | HirExprKind::RecordCloneCall { .. }
     )
 }
-/// Prove borrow-only direct-call parameters across every free function. This
-/// broader summary is consumed only by collection escape analysis; it does not
-/// change call-site move intent or register non-resource parameters for
-/// callee-side drops.
+/// Body-escape summary for every direct-call parameter across every free
+/// function: a parameter is CONSUME when the callee returns, stores, sends,
+/// captures, or forwards it to a consuming parameter, else BORROW.
+///
+/// Two consumers, neither of which is a legality decision at the call site:
+///
+/// * `owned_projection_sinks == false` → the borrow/consume bit read by the
+///   borrow-site collectors (`proven_borrow_arg_sites`), which decide the
+///   read-vs-consume intent stamped on each argument `Use`.
+/// * `owned_projection_sinks == true` → `call_param_owned_carrier`, which
+///   makes the CALLEE mint a scope-exit owner over the parameter
+///   (`ParamBoundaryMode::OwnedCarrier`) and tells the caller's post-CFG
+///   carrier pass to hand it an owned copy — a last-use transfer or a
+///   snapshot clone (`prepare_owned_call_carriers`).
+///
+/// It never changes call-site move intent: a non-resource argument is a
+/// borrow of the caller's binding regardless of this verdict
+/// (`lower_direct_call_args`), so no `UseAfterConsume` can arise from it.
 fn compute_call_param_consumption(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     methods: &HashSet<hew_hir::ItemId>,
@@ -901,7 +923,6 @@ fn compute_call_param_consumption(
                         true_receiver_methods,
                         receiver_methods,
                         owned_projection_sinks,
-                        assume_forward_borrows: false,
                     };
                     param_consumed_in_body(&f.body, param.id, &cx)
                 };
@@ -916,58 +937,6 @@ fn compute_call_param_consumption(
         }
     }
     consume
-}
-/// Refine the converged BOOL consume map into the three-valued
-/// [`ConsumeVerdict`] carried on `ParamOwnershipFacts::call_param_consume`.
-///
-/// The consume/borrow bit is authoritative and UNCHANGED — this only labels
-/// WHY each already-decided consume flipped, so `is_consume()` on the result is
-/// bit-identical to the input `bool`. The split is a single independent
-/// re-scan per consuming param with `assume_forward_borrows` set, which
-/// suppresses the fail-closed forward-to-unproven/consuming disjunct: a param
-/// that STILL scans consume under that optimism has a positive escape
-/// (returned/stored/sent/captured) → `ProvenConsume`; one that no longer does
-/// flipped solely on the forward disjunct → `ConservativeConsume`. A positive
-/// escape dominates a co-occurring forward (the optimistic scan finds the
-/// escape regardless), so the label is order-insensitive and deterministic.
-fn refine_call_param_verdicts(
-    fns: &HashMap<hew_hir::ItemId, &HirFn>,
-    methods: &HashSet<hew_hir::ItemId>,
-    extern_fn_names: &HashSet<String>,
-    true_receiver_methods: &HashSet<hew_hir::ItemId>,
-    receiver_methods: &HashSet<hew_hir::ItemId>,
-    consume_bool: &HashMap<(hew_hir::ItemId, usize), bool>,
-) -> HashMap<(hew_hir::ItemId, usize), ConsumeVerdict> {
-    let proven_cx = ScanCtx {
-        consume: consume_bool,
-        methods,
-        extern_fn_names,
-        true_receiver_methods,
-        receiver_methods,
-        owned_projection_sinks: false,
-        assume_forward_borrows: true,
-    };
-    consume_bool
-        .iter()
-        .map(|(&(id, i), &consumed)| {
-            if !consumed {
-                return ((id, i), ConsumeVerdict::ProvenBorrow);
-            }
-            // A param present in the bool map is always a real param of a
-            // known fn; the proven-only re-scan reads its body directly.
-            let proven = fns.get(&id).is_some_and(|f| {
-                f.params
-                    .get(i)
-                    .is_some_and(|param| param_consumed_in_body(&f.body, param.id, &proven_cx))
-            });
-            let verdict = if proven {
-                ConsumeVerdict::ProvenConsume
-            } else {
-                ConsumeVerdict::ConservativeConsume
-            };
-            ((id, i), verdict)
-        })
-        .collect()
 }
 /// Collect direct free-call argument sites whose target parameter is BORROW,
 /// across every user body in the module.
@@ -1088,7 +1057,6 @@ pub(super) fn compute_param_ownership(
                         true_receiver_methods: &true_receiver_methods,
                         receiver_methods: &receiver_methods,
                         owned_projection_sinks: false,
-                        assume_forward_borrows: false,
                     };
                     param_consumed_in_body(&f.body, param.id, &cx)
                 };
@@ -1153,7 +1121,6 @@ pub(super) fn compute_param_ownership(
             true_receiver_methods: &true_receiver_methods,
             receiver_methods: &receiver_methods,
             owned_projection_sinks: false,
-            assume_forward_borrows: false,
         },
     );
     let proven_borrow_arg_sites = collect_module_borrow_arg_sites(
@@ -1165,18 +1132,7 @@ pub(super) fn compute_param_ownership(
             true_receiver_methods: &true_receiver_methods,
             receiver_methods: &receiver_methods,
             owned_projection_sinks: false,
-            assume_forward_borrows: false,
         },
-    );
-    // Refine the converged BOOL consume verdict into the three-valued
-    // `ConsumeVerdict` (see `refine_call_param_verdicts`).
-    let call_param_consume = refine_call_param_verdicts(
-        fns,
-        &methods,
-        &extern_fn_names,
-        &true_receiver_methods,
-        &receiver_methods,
-        &call_param_consume_bool,
     );
     ParamOwnershipFacts {
         produced_value_facts: HashMap::new(),
@@ -1184,7 +1140,6 @@ pub(super) fn compute_param_ownership(
         true_receiver_methods,
         borrow_arg_sites,
         proven_borrow_arg_sites,
-        call_param_consume,
         call_param_owned_carrier,
         caller_visible_param_projections: caller_visible_param_projections.clone(),
         // Populated from `module.machine_layouts` by the caller once layout keys
@@ -2267,14 +2222,6 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
                         // or a stdlib wrapper such as Connection::write_string
                         // would incorrectly acquire and close its caller's
                         // receiver at wrapper return.
-                        true
-                    } else if pc.assume_forward_borrows {
-                        // Proven-only differential pass: treat every free-fn
-                        // forward as a borrow so the scan reports ONLY the
-                        // positively-proven escapes. Suppresses exactly the
-                        // fail-closed forward-to-unproven/consuming disjunct
-                        // that distinguishes `ConservativeConsume` from
-                        // `ProvenConsume`.
                         true
                     } else {
                         let target = callee_item.and_then(|id| pc.consume.get(&(id, j))).copied();
@@ -3733,10 +3680,10 @@ pub(super) fn vec_iter_record_layout_key(ty: &ResolvedTy) -> Option<String> {
 /// transfer. Either way the `record_init`'s `vec`-field read is NOT an
 /// ownership escape of the source handle the way a user `record_init` field
 /// store is — the cursor never frees what it borrows. Surfacing this field lets
-/// `derive_local_collection_drop_allowed` exempt it from the escape scan so a
-/// captured place source keeps its own scope-exit drop, and lets
-/// `derive_vec_iter_drop_allowed` decide whether the cursor (rvalue source) or
-/// the source binding (place source) is the sole owner that frees the handle.
+/// the sibling-discharge escape scan (`composite_own`) and the borrowed-cursor
+/// ingress classification (`temp_drop`) treat the read as a borrow, so a
+/// captured place source keeps its own owner and the cursor mints one only
+/// when it is the sole owner of an rvalue source's handle.
 pub(super) fn vec_iter_record_init_vec_source(instr: &Instr) -> Option<Place> {
     let Instr::RecordInit { ty, fields, .. } = instr else {
         return None;
@@ -4442,45 +4389,6 @@ mod runtime_callee_ownership_contract_parity {
     }
 }
 #[cfg(test)]
-mod layout_key_shortening_guard {
-    //! Structural guard: generic record field-store, field-read, and
-    //! `StructInit` consumers preserve the checker's full nominal owner when
-    //! forming their layout key. A leaf-name rewrite would collapse
-    //! `left.render.Box<T>` and `right.render.Box<T>` before the layout table.
-
-    /// The production (non-test) sources containing record layout-key consumers.
-    ///
-    /// Normalises CRLF→LF for deterministic source scanning. Test-only
-    /// helpers may appear before later production items in these large module
-    /// files, so truncating at the first `#[cfg(test)] mod` would silently omit
-    /// real consumers. Scan the complete files: the forbidden short-name call
-    /// is absent everywhere, while the positive full-owner calls are ordinary
-    /// Rust expressions rather than strings manufactured by this guard.
-    fn production_source() -> String {
-        [include_str!("mod.rs"), include_str!("expr.rs")]
-            .into_iter()
-            .map(|src| src.replace("\r\n", "\n"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// The field-store, field-read, and `StructInit` generic arms must pass the
-    /// full outer name to the shared key helper. No production layout consumer
-    /// may shorten a nominal owner before keying the layout registry.
-    #[test]
-    fn generic_record_layout_consumers_preserve_outer_owner() {
-        let prod = production_source();
-        assert!(
-            !prod.contains("mangle_layout_key(short_name"),
-            "layout keys must retain the full nominal owner, never `short_name(..)`"
-        );
-        assert!(
-            prod.matches("mangle_layout_key(name, args)").count() >= 3,
-            "field-store, field-read, and StructInit must pass their resolved outer name"
-        );
-    }
-}
-#[cfg(test)]
 mod enum_layout_tests {
     use std::collections::{HashMap, HashSet};
 
@@ -4906,126 +4814,6 @@ mod enum_layout_tests {
         assert_eq!(layout.variants[0].field_tys, vec![ResolvedTy::I64]);
         assert_eq!(layout.variants[1].name, "None");
         assert!(layout.variants[1].field_tys.is_empty());
-    }
-}
-
-/// White-box pins for the three-valued `call_param_consume` verdict. The
-/// consume/borrow bit is not observable in codegen (both consume flavours are
-/// byte-identical), so the proven-vs-conservative split can only be validated
-/// against the fixpoint directly.
-#[cfg(test)]
-mod call_param_verdict_tests {
-    use super::*;
-    use hew_hir::ItemId;
-
-    fn expr(kind: HirExprKind) -> HirExpr {
-        HirExpr {
-            node: HirNodeId(u32::MAX),
-            site: SiteId(u32::MAX),
-            ty: ResolvedTy::I64,
-            value_class: ValueClass::BitCopy,
-            intent: IntentKind::Read,
-            kind,
-            span: 0..0,
-        }
-    }
-
-    fn binding_ref(id: u32) -> HirExpr {
-        expr(HirExprKind::BindingRef {
-            name: format!("b{id}"),
-            resolved: ResolvedRef::Binding(BindingId(id)),
-        })
-    }
-
-    /// A one-param fn whose body `tail` is `body_tail`; param binding id is 1.
-    fn one_param_fn(id: u32, body_tail: HirExpr) -> HirFn {
-        HirFn {
-            id: ItemId(id),
-            node: HirNodeId(0),
-            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!("f{id}")),
-            name: format!("f{id}"),
-            type_params: Vec::new(),
-            params: vec![HirBinding {
-                id: BindingId(1),
-                name: "p".to_string(),
-                ty: ResolvedTy::I64,
-                mutable: false,
-                span: 0..0,
-                is_consume: false,
-            }],
-            return_ty: ResolvedTy::I64,
-            body: HirBlock {
-                node: HirNodeId(0),
-                scope: ScopeId(0),
-                statements: Vec::new(),
-                tail: Some(Box::new(body_tail)),
-                ty: ResolvedTy::I64,
-                span: 0..0,
-            },
-            span: 0..0,
-            is_generator: false,
-            intrinsic_id: None,
-        }
-    }
-
-    fn verdicts(fns: &HashMap<ItemId, &HirFn>) -> HashMap<(ItemId, usize), ConsumeVerdict> {
-        let empty = HashSet::new();
-        let empty_names = HashSet::new();
-        let consume_bool = compute_call_param_consumption(
-            fns,
-            &empty,
-            &empty_names,
-            &empty,
-            &empty,
-            &HashMap::new(),
-            false,
-        );
-        refine_call_param_verdicts(fns, &empty, &empty_names, &empty, &empty, &consume_bool)
-    }
-
-    #[test]
-    fn call_param_verdict_three_way() {
-        // Proven escape: `p` is the returned tail value.
-        let proven = one_param_fn(10, binding_ref(1));
-        // Conservative: `p` is forwarded as an argument to an unresolved callee
-        // (a bare binding ref, so `callee_item_id` is None → the fail-closed
-        // forward-to-unproven disjunct is the ONLY flip reason).
-        let conservative = one_param_fn(
-            20,
-            expr(HirExprKind::Call {
-                target: hew_types::CallTarget::IndirectFunctionValue,
-                callee: Box::new(binding_ref(99)),
-                args: vec![binding_ref(1)],
-            }),
-        );
-        // Proven borrow: `p` is never used in a consume position (the tail
-        // references a different binding).
-        let borrow = one_param_fn(30, binding_ref(2));
-
-        let fns: HashMap<ItemId, &HirFn> = [
-            (proven.id, &proven),
-            (conservative.id, &conservative),
-            (borrow.id, &borrow),
-        ]
-        .into_iter()
-        .collect();
-
-        let v = verdicts(&fns);
-        assert_eq!(
-            v.get(&(ItemId(10), 0)),
-            Some(&ConsumeVerdict::ProvenConsume)
-        );
-        assert_eq!(
-            v.get(&(ItemId(20), 0)),
-            Some(&ConsumeVerdict::ConservativeConsume),
-        );
-        assert_eq!(v.get(&(ItemId(30), 0)), Some(&ConsumeVerdict::ProvenBorrow));
-
-        // Safety projection: both consume flavours read as consume; the borrow
-        // does not. This is the bit every consumer keys on.
-        assert!(v[&(ItemId(10), 0)].is_consume());
-        assert!(v[&(ItemId(20), 0)].is_consume());
-        assert!(!v[&(ItemId(30), 0)].is_consume());
     }
 }
 

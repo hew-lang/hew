@@ -4,18 +4,16 @@ mod handoff;
 use super::*;
 #[cfg(not(test))]
 use super::{
-    base_local, binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
-    block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
+    base_local, block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
     cow_value_leaf_drop_symbol, dataflow, derive_local_bytes_drop_allowed,
     generator_yield_instr_escapes, generator_yield_terminator_escapes, instr_source_places,
     local_is_used_after, place_is_interior_projection, place_refs_local,
-    propagate_whole_value_alias_roots, propagate_whole_value_alias_roots_excluding_moves,
-    prove_retained_bytes_local_share, shift_instr_spans_on_insert, terminator_source_places,
-    vec_iter_record_init_vec_source, vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap,
-    BasicBlock, BindingId, Builder, BytesDropDerivation, BytesRetainPlacement, BytesRetainSite,
-    ClosureEnvFieldOwnership, DischargeSite, Disposition, DropKind, ElabDrop, FieldOffset, HashMap,
-    HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
-    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
+    propagate_whole_value_alias_roots_excluding_moves, prove_retained_bytes_local_share,
+    shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_init_vec_source,
+    vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder,
+    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, DischargeSite, Disposition,
+    FieldOffset, HashMap, HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite,
+    Place, RawMirFunction, ResolvedTy, SiteId, StringDropDerivation, StringRetainCondition,
     StringRetainSite, SuspendKind, Terminator,
 };
 use crate::{raw_virtual_operation_class, RawVirtualClass};
@@ -596,6 +594,129 @@ pub(super) fn finalize_string_local_share_intents(
     }
 }
 
+/// Mint the destination's `+1` for a `let next = current` **bytes** copy at the
+/// same phase the string spine uses.
+///
+/// A bytes let-share reaches this point as an adjacent `Mint(dest); Move(dest,
+/// source)` pair. `canonicalize_preminted_move_adoptions` reads that adjacency
+/// as an adoption and rewrites it into `Move; Transfer(source -> dest owner)`,
+/// which ends the SOURCE binding's generation: the replay then sees no owner
+/// for it at the lexical close, `materialize_explicit_scope_exits` publishes no
+/// release, and the source's reference is dropped on no normal path at all.
+/// The string spine avoids that by splicing its retain between the two
+/// instructions here, before the canonicalizer runs; this is the same
+/// operation for bytes, so every downstream scanner sees one authority on the
+/// same terms.
+///
+/// A proven function-wide last use (unique move in the entry block with no
+/// later read) is a genuine handoff and mints nothing: the existing bytes
+/// handoff machinery in `finalize_bytes_ownership` remains its only authority.
+///
+/// Two halves of the string spine are deliberately NOT mirrored yet.
+/// WHY: each would change bytes behaviour beyond the shape this fixes, and the
+/// bytes handoff path already has its own proven authority.
+/// * The checker `Use` intent flip to `Consume` on a proven handoff. Bytes
+///   handoffs keep `Read` (`facts.rs`), which
+///   `prove_retained_bytes_local_share` and `finalize_bytes_ownership` already
+///   depend on.
+/// * Excluding the retained move from whole-value alias propagation in
+///   `derive_local_bytes_drop_allowed`. Without it a share group shares one
+///   alias root, so an escape by either end excludes both - the leak
+///   direction, never a double free.
+///
+/// WHEN obsolete: when the bytes handoff decision moves into this pass too, so
+/// one site decides share-vs-handoff for bytes the way the string spine does.
+/// WHAT the real fix is: fold `finalize_bytes_ownership`'s local-share arm into
+/// this pass and give bytes the same retained-move exclusion set string uses.
+pub(super) fn finalize_bytes_local_share_intents(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidates: Vec<(BindingId, BindingId)> =
+        builder.bytes_local_share_sites.values().copied().collect();
+
+    let mut retained_moves = Vec::new();
+    for (source_binding, dest_binding) in candidates {
+        let Some(source_local) = builder
+            .binding_locals
+            .get(&source_binding)
+            .and_then(|place| base_local(*place))
+        else {
+            continue;
+        };
+        let Some(dest_local) = builder
+            .binding_locals
+            .get(&dest_binding)
+            .and_then(|place| base_local(*place))
+        else {
+            continue;
+        };
+        if source_local == dest_local {
+            continue;
+        }
+
+        let move_sites: Vec<(u32, usize)> = blocks
+            .iter()
+            .flat_map(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(index, instr)| {
+                        matches!(
+                            instr,
+                            Instr::Move {
+                                dest: Place::Local(dl),
+                                src: Place::Local(sl),
+                            } if *dl == dest_local && *sl == source_local
+                        )
+                        .then_some((block.id, index))
+                    })
+            })
+            .collect();
+        let [(move_block, move_index)] = move_sites.as_slice() else {
+            // Ambiguous lowering keeps the pre-existing derivation authority.
+            continue;
+        };
+        if blocks.first().map(|block| block.id) == Some(*move_block)
+            && !local_is_used_after(
+                blocks,
+                &builder.suspend_kinds,
+                source_local,
+                *move_block,
+                *move_index,
+            )
+        {
+            // Function-wide last use: a genuine handoff, not a co-own share.
+            continue;
+        }
+        retained_moves.push((*move_block, *move_index, Place::Local(source_local)));
+    }
+
+    // Insert in reverse program order so earlier recorded instruction indices
+    // remain stable.
+    retained_moves.sort_unstable_by_key(|(block, index, _)| (*block, *index));
+    retained_moves.dedup();
+    for (block_id, move_index, source) in retained_moves.into_iter().rev() {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        if move_index > 0
+            && matches!(
+                block.instructions.get(move_index - 1),
+                Some(Instr::BytesRetain { value }) if *value == source
+            )
+        {
+            continue;
+        }
+        block
+            .instructions
+            .insert(move_index, Instr::BytesRetain { value: source });
+        super::shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block_id,
+            u32::try_from(move_index).unwrap_or(u32::MAX),
+        );
+    }
+}
+
 /// Aggregate-ingress retain sites known before retain instructions are spliced
 /// into raw MIR. The escaped-projection sibling pass runs at this earlier
 /// phase, so it consumes this view instead of attempting to rediscover the
@@ -922,53 +1043,12 @@ fn corroborated_retained_string_move_dest(
 }
 /// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
 /// retained-return co-owner mint: the instruction immediately before it is an
-/// unconditional `StringRetain`/`BytesRetain` of the SAME `src`.
-///
-/// `retain v; ret = move v` hands the CALLER an independent `+1` on the buffer
-/// while `v`'s original reference stays owned by whatever produced it (there,
-/// an enum composite's variant payload slot). This is the `ReturnSlot`
-/// analogue of `corroborated_retained_string_move_sites`' `Move { dest: Local,
-/// src }` shape: there the destination local is the new owner and the source
-/// stays an alias released by its parent; at a return the caller is the new
-/// owner and the composite keeps release authority. Treating the read as an
-/// ESCAPE excludes the composite's `EnumInPlace` drop, so the retain's extra
-/// reference is never balanced — one leaked payload node per call (the enum
-/// twin of the returned-member retain leak,
-/// `enum_callee_consume_drop_leak_oracle` `move_out_arm`). Consumed by
-/// `derive_enum_composite_drop_allowed`; hosted here beside its retained-move
-/// corroboration siblings.
-pub(super) fn is_retained_return_move(
-    block: &BasicBlock,
-    instr_index: usize,
-    dest: Place,
-    src: Place,
-) -> bool {
-    if !matches!(dest, Place::ReturnSlot) {
-        return false;
-    }
-    let Some(prev) = instr_index
-        .checked_sub(1)
-        .and_then(|i| block.instructions.get(i))
-    else {
-        return false;
-    };
-    matches!(
-        prev,
-        Instr::StringRetain {
-            value,
-            condition: StringRetainCondition::Always,
-        } if *value == src,
-    ) || matches!(prev, Instr::BytesRetain { value } if *value == src)
-}
-/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
-/// retained-return co-owner mint: the instruction immediately before it is an
 /// unconditional `StringRetain` of the SAME `src`.
 ///
 /// `string.retain v; ret = move v` hands the CALLER an independent `+1` on the
 /// buffer while `v`'s producing reference stays owned inside the callee. This is
 /// the `ReturnSlot` twin of `corroborated_retained_string_move_sites`' local
-/// share shape; `derive_enum_composite_drop_allowed` already recognises it for
-/// the enum shell drop (`is_retained_return_move`).
+/// share shape.
 fn string_move_is_retained_return(block: &BasicBlock, instr_index: usize, src: Place) -> bool {
     instr_index
         .checked_sub(1)
@@ -3803,43 +3883,6 @@ fn uniquely_written_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
         .collect()
 }
 
-/// Close corroborated projection transfer destinations over unambiguous
-/// same-block whole-value `Move` edges. A transferred field may be rebound
-/// before its owning drop, but local reuse or a CFG edge makes a global
-/// exemption unprovable and therefore remains an escape binder.
-pub(super) fn forward_move_closure(blocks: &[BasicBlock], seeds: &HashSet<u32>) -> HashSet<u32> {
-    let uniquely_written_locals = uniquely_written_locals(blocks);
-    let mut closure: HashSet<u32> = seeds
-        .iter()
-        .copied()
-        .filter(|local| uniquely_written_locals.contains(local))
-        .collect();
-
-    for block in blocks {
-        let mut ready = HashSet::new();
-        for instr in &block.instructions {
-            if let Instr::AggregateProjectionNeutralize { transferee, .. } = instr {
-                if let Some(local) = base_local(*transferee) {
-                    if closure.contains(&local) {
-                        ready.insert(local);
-                    }
-                }
-            }
-            if let Instr::Move {
-                dest: Place::Local(dest),
-                src: Place::Local(src),
-            } = instr
-            {
-                if ready.contains(src) && uniquely_written_locals.contains(dest) {
-                    ready.insert(*dest);
-                    closure.insert(*dest);
-                }
-            }
-        }
-    }
-    closure
-}
-
 #[cfg(test)]
 mod aggregate_projection_transfer_dest_tests {
     use super::*;
@@ -4085,118 +4128,6 @@ mod aggregate_projection_transfer_dest_tests {
             "without explicit transfer authority, projection taint must propagate fail closed"
         );
     }
-
-    #[test]
-    fn corroborated_transfer_closes_over_forward_moves() {
-        let blocks = [BasicBlock {
-            id: 0,
-            statements: vec![],
-            instructions: vec![
-                Instr::TupleFieldLoad {
-                    tuple: Place::Local(1),
-                    field_index: 0,
-                    dest: Place::Local(10),
-                },
-                Instr::AggregateProjectionNeutralize {
-                    root: Place::Local(1),
-                    fields: vec![0],
-                    transferee: Place::Local(10),
-                    scope_exit_owner: None,
-                },
-                Instr::Move {
-                    dest: Place::Local(20),
-                    src: Place::Local(10),
-                },
-                Instr::Move {
-                    dest: Place::Local(30),
-                    src: Place::Local(20),
-                },
-            ],
-            terminator: Terminator::Return,
-        }];
-
-        assert_eq!(
-            forward_move_closure(&blocks, &aggregate_projection_transfer_dests(&blocks)),
-            HashSet::from([10, 20, 30]),
-            "every forward owner rebind must leave the escape-binder set"
-        );
-    }
-
-    #[test]
-    fn reused_or_cross_block_destinations_do_not_gain_transfer_authority() {
-        let reused_dest = [BasicBlock {
-            id: 0,
-            statements: vec![],
-            instructions: vec![
-                Instr::TupleFieldLoad {
-                    tuple: Place::Local(1),
-                    field_index: 0,
-                    dest: Place::Local(10),
-                },
-                Instr::AggregateProjectionNeutralize {
-                    root: Place::Local(1),
-                    fields: vec![0],
-                    transferee: Place::Local(10),
-                    scope_exit_owner: None,
-                },
-                Instr::Move {
-                    dest: Place::Local(20),
-                    src: Place::Local(10),
-                },
-                Instr::ConstI64 {
-                    dest: Place::Local(20),
-                    value: 0,
-                },
-            ],
-            terminator: Terminator::Return,
-        }];
-        let cross_block = [
-            BasicBlock {
-                id: 0,
-                statements: vec![],
-                instructions: vec![
-                    Instr::TupleFieldLoad {
-                        tuple: Place::Local(1),
-                        field_index: 0,
-                        dest: Place::Local(10),
-                    },
-                    Instr::AggregateProjectionNeutralize {
-                        root: Place::Local(1),
-                        fields: vec![0],
-                        transferee: Place::Local(10),
-                        scope_exit_owner: None,
-                    },
-                ],
-                terminator: Terminator::Goto { target: 1 },
-            },
-            BasicBlock {
-                id: 1,
-                statements: vec![],
-                instructions: vec![Instr::Move {
-                    dest: Place::Local(20),
-                    src: Place::Local(10),
-                }],
-                terminator: Terminator::Return,
-            },
-        ];
-
-        assert_eq!(
-            forward_move_closure(
-                &reused_dest,
-                &aggregate_projection_transfer_dests(&reused_dest)
-            ),
-            HashSet::from([10]),
-            "a reused destination cannot be globally exempted as a transfer owner"
-        );
-        assert_eq!(
-            forward_move_closure(
-                &cross_block,
-                &aggregate_projection_transfer_dests(&cross_block)
-            ),
-            HashSet::from([10]),
-            "a CFG edge lacks the path proof required for a global transfer exemption"
-        );
-    }
 }
 
 /// Interior-alias taint for the COLLECTION / owned-vector sole-owner provers:
@@ -4231,8 +4162,8 @@ mod aggregate_projection_transfer_dest_tests {
 /// / `hew_vec_get_ptr`), propagated through whole-value `Move`s to a fixpoint.
 ///
 /// Deliberately NARROWER than [`compute_collection_interior_alias_taint`]: no
-/// field-load / projection seeds, ONLY getter dests — so it can gate the LIFO
-/// drop of an `xs[i]` binding (`let e = v[0]` over a close-obligated element is
+/// field-load / projection seeds, ONLY getter dests — so it can gate the owner
+/// mint of an `xs[i]` binding (`let e = v[0]` over a close-obligated element is
 /// a borrow; the collection remains the sole close authority and this binding
 /// must not fire a second one) without touching match-binder drop semantics.
 #[must_use]
@@ -4270,7 +4201,7 @@ pub(super) fn collection_borrow_getter_alias_locals(blocks: &[BasicBlock]) -> Ha
 }
 
 /// Fail-closed use validation for close-obligated collection borrows: the
-/// LIFO-drop suppression of a borrowed `xs[i]` element binding is sound ONLY
+/// owner-mint suppression of a borrowed `xs[i]` element binding is sound ONLY
 /// when every use of the alias is a proven-safe read. This validator is the
 /// proof: any use that could carry the alias out of the frame, mint a second
 /// close authority, or redefine the binding returns a violation, and the
@@ -4696,7 +4627,7 @@ pub(super) fn interior_alias_receiver_violations(blocks: &[BasicBlock]) -> Vec<S
                     for (alias, (_, receiver_owner, _)) in &active {
                         if *receiver_owner == Some(owner) {
                             violations.push(format!(
-                                "collection owner {owner:?} ends while interior alias {alias:?} is still live"
+                                "collection owner {owner} ends while interior alias {alias:?} is still live"
                             ));
                         }
                     }
@@ -5421,9 +5352,9 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
 /// caller its OWN reference, so the co-owner's mint is never transferred out and
 /// leaks one node per call unless released inside the callee
 /// (`enum_callee_consume_drop_leak_oracle` `move_out_via_let_share`). This is the
-/// local-share twin of the enum-shell fix G2 landed in
-/// `derive_enum_composite_drop_allowed`: G2 keeps the shell drop that frees the
-/// still-owned original; this adds the share drop that frees the co-owner's
+/// local-share twin of the enum-shell fix G2: the shell drop is kept so it
+/// frees the still-owned original; this adds the share drop that frees the
+/// co-owner's
 /// mint. The two are mutually exclusive references, so together the buffer is
 /// released exactly once per outstanding reference.
 ///
@@ -5527,12 +5458,12 @@ pub(super) fn finalize_string_ownership(
     raw: &mut RawMirFunction,
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
-) -> StringDropDerivation {
+) {
     // Retain/mint classification must see only canonical user-facing owners.
-    // Synthetic produced-value slots are added to the later exceptional-drop
-    // template after their physical handoff has been made explicit; including
-    // them here makes two bindings compete for one local and destroys precise
-    // actor-state ingress provenance.
+    // Synthetic produced-value slots mint their owners once their physical
+    // handoff has been made explicit; including them here makes two bindings
+    // compete for one local and destroys precise actor-state ingress
+    // provenance.
     let mut owned_locals_snapshot = builder.owned_locals_snapshot();
     // Aggregate construction now publishes an exact hard-cutover Transfer and
     // marks its source `ConsumedAt` before this retain derivation runs. A
@@ -5541,13 +5472,13 @@ pub(super) fn finalize_string_ownership(
     // aggregate ingress needs a co-owner, and the actor-message flag is the
     // path-exact authority when a conditional handoff needs one. Restore only
     // those already-registered actor-message owners from
-    // the exit ledger. Ordinary consumed owners stay absent, and aliases are
-    // excluded by `owned_locals_exit_candidates` itself.
+    // the owner ledger. Ordinary consumed owners stay absent, and aliases are
+    // excluded by `owned_locals_owner_generations` itself.
     let mut candidate_bindings: HashSet<BindingId> = owned_locals_snapshot
         .iter()
         .map(|(binding, _, _)| *binding)
         .collect();
-    owned_locals_snapshot.extend(builder.owned_locals_exit_candidates().into_iter().filter(
+    owned_locals_snapshot.extend(builder.owned_locals_owner_generations().into_iter().filter(
         |(binding, _, ty)| {
             matches!(ty, ResolvedTy::String)
                 && builder
@@ -5836,7 +5767,6 @@ pub(super) fn finalize_string_ownership(
         &builder.call_scrutinee_provenance.extern_table,
         &mut raw.instr_spans,
     );
-    derivation
 }
 struct NestedTempDataflow {
     pred_count: HashMap<u32, usize>,
@@ -6143,46 +6073,6 @@ fn collect_nested_fresh_string_temp_drops(
         .collect()
 }
 
-/// The suspend block whose destroy-while-parked edge bypasses the normal
-/// continuation drop for `place`.
-///
-/// A suspending closure call borrows its string argument. Normal completion
-/// reaches the shared `resume == cleanup` MIR continuation, but LLVM coroutine
-/// case-1 abandonment runs the suspend block's [`crate::model::ExitPath::Suspend`]
-/// plan and branches directly to the coroutine cleanup outline. Find that
-/// suspend so [`apply_nested_fresh_string_temp_drops`] can register an
-/// abandon-only twin of the normal inline drop. Require one unambiguous match;
-/// anything else remains fail-closed.
-fn suspending_closure_argument_abandon_block(
-    blocks: &[BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
-    continuation: u32,
-    place: Place,
-) -> Option<u32> {
-    let local = base_local(place)?;
-    let mut matches = blocks.iter().filter_map(|block| {
-        let Terminator::Suspend {
-            resume,
-            cleanup,
-            is_final: false,
-        } = block.terminator
-        else {
-            return None;
-        };
-        if resume != continuation || cleanup != continuation {
-            return None;
-        }
-        matches!(
-            suspend_kinds.get(&block.id),
-            Some(SuspendKind::CallClosure { args, .. })
-                if args.iter().any(|arg| place_refs_local(*arg, local))
-        )
-        .then_some(block.id)
-    });
-    let suspend_block = matches.next()?;
-    matches.next().is_none().then_some(suspend_block)
-}
-
 /// Per-candidate admission for [`collect_nested_fresh_string_temp_drops`].
 /// Returns the inline-drop insertion `(block_id, insert_index, place, ty)` if
 /// the fresh-`string` temp `t` (defined at `def`) satisfies every fail-closed
@@ -6353,6 +6243,17 @@ fn nested_fresh_string_def_dominates(
 /// each drop as a read of its temp (no use-after-free flag) and so codegen emits
 /// the release. Per-block insertions are applied in descending index order so an
 /// earlier splice does not shift a later (lower-index) one.
+///
+/// SHORTCUT (ownerless nested temp). WHY: these temps publish no Checked-MIR
+/// owner, so a `Suspend` between the producer and this inline drop (a fresh
+/// string argument to a suspending `CallClosure`) has no replay owner to plan
+/// a destroy-while-parked release for — that edge leaks the temp. Today the
+/// shape is unreachable: closures with suspension frames are rejected before
+/// codegen (`suspending_closure_runtime_fixtures_are_rejected_before_codegen`).
+/// WHEN: the moment suspending closures are admitted. WHAT: mint the nested
+/// temp as an owner at its producer (the way `__hew_produced_value` temps and
+/// the stream-send yield copy are) and delete this splice; the inline release
+/// then becomes that owner's `Release` and every exit derives from replay.
 #[allow(
     clippy::too_many_arguments,
     reason = "the pre-seal splice mutates CFG/suspend/drop/span authorities atomically"
@@ -6366,7 +6267,6 @@ pub(super) fn apply_nested_fresh_string_temp_drops(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     extern_contracts: &crate::return_provenance::ExternContractTable,
-    suspend_abandon_extra_drops: &mut HashMap<u32, Vec<ElabDrop>>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
     let insertions = collect_nested_fresh_string_temp_drops(
@@ -6384,28 +6284,6 @@ pub(super) fn apply_nested_fresh_string_temp_drops(
     }
     let mut by_block: HashMap<u32, Vec<(usize, Place, ResolvedTy)>> = HashMap::new();
     for (bid, idx, place, ty) in insertions {
-        if let Some(suspend_block) =
-            suspending_closure_argument_abandon_block(blocks, suspend_kinds, bid, place)
-        {
-            // Coroutine abandonment never reaches `bid`: `emit_suspend_point`
-            // runs this suspend exit plan after the CallClosure driver's child
-            // and reply-channel teardown, then branches directly to
-            // `coro.cleanup`. Register the anonymous argument's congruent drop
-            // there. Normal completion instead reaches the inline drop below,
-            // so the two releases are mutually exclusive.
-            suspend_abandon_extra_drops
-                .entry(suspend_block)
-                .or_default()
-                .push(ElabDrop {
-                    place,
-                    ty: ty.clone(),
-                    drop_fn: None,
-                    kind: DropKind::CowHeap {
-                        release: crate::ownership::CowHeapRelease::String,
-                    },
-                    guard: None,
-                });
-        }
         by_block.entry(bid).or_default().push((idx, place, ty));
     }
     for block in blocks.iter_mut() {
@@ -6703,77 +6581,6 @@ mod nested_fresh_string_temp_drop_admission {
             "the shared resume/cleanup continuation balances the fresh argument \
              share after a suspending ClosureInvoke completes"
         );
-    }
-
-    #[test]
-    fn suspending_closure_fresh_argument_gets_resume_and_abandon_xor_drops() {
-        let mut blocks = vec![
-            block(
-                0,
-                vec![],
-                fresh_string_call("hew_string_to_uppercase", 2, 1),
-            ),
-            block(
-                1,
-                vec![],
-                Terminator::Suspend {
-                    resume: 2,
-                    cleanup: 2,
-                    is_final: false,
-                },
-            ),
-            ret_block(2),
-        ];
-        let mut suspend_kinds = HashMap::from([(
-            1,
-            SuspendKind::CallClosure {
-                callee: Place::Local(0),
-                args: vec![Place::Local(2)],
-                ret_ty: ResolvedTy::Unit,
-                result_dest: None,
-            },
-        )]);
-        let mut abandon_drops = HashMap::new();
-
-        apply_nested_fresh_string_temp_drops(
-            &mut blocks,
-            &mut suspend_kinds,
-            &locals_with(&[]),
-            &HashMap::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            &crate::return_provenance::ExternContractTable::default(),
-            &mut abandon_drops,
-            &mut BTreeMap::new(),
-        );
-
-        assert!(matches!(
-            blocks[2].instructions.as_slice(),
-            [Instr::Drop {
-                place: Place::Local(2),
-                ty: ResolvedTy::String,
-                ..
-            }]
-        ));
-        assert_eq!(
-            abandon_drops.get(&1),
-            Some(&vec![ElabDrop {
-                place: Place::Local(2),
-                ty: ResolvedTy::String,
-                drop_fn: None,
-                kind: DropKind::CowHeap {
-                    release: crate::ownership::CowHeapRelease::String,
-                },
-                guard: None,
-            }]),
-            "normal resume and destroy-while-parked are mutually exclusive, \
-             so each edge must carry one congruent release for the fresh arg"
-        );
-        assert!(matches!(
-            suspend_kinds.get(&1),
-            Some(SuspendKind::CallClosure { .. })
-        ));
     }
 
     #[test]
@@ -8724,85 +8531,6 @@ pub(super) fn bytes_share_sink_places(instr: &Instr) -> Vec<Place> {
         _ => Vec::new(),
     }
 }
-pub(super) fn readmit_retained_bytes_tuple_roots(
-    blocks: &[BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
-    alias_of: &HashMap<u32, u32>,
-    retained_roots: &HashSet<u32>,
-    excluded_roots: &mut HashSet<u32>,
-) {
-    for &retained_root in retained_roots {
-        let root_members: HashSet<u32> = alias_of
-            .iter()
-            .filter_map(|(&local, &root)| (root == retained_root).then_some(local))
-            .collect();
-        let mut escapes = false;
-        for block in blocks {
-            for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if base_local(*src).is_some_and(|local| root_members.contains(&local)) {
-                        let benign = base_local(*dest)
-                            .is_some_and(|local| root_members.contains(&local))
-                            && matches!(dest, Place::Local(_));
-                        if !benign {
-                            escapes = true;
-                            break;
-                        }
-                    }
-                    continue;
-                }
-                if matches!(
-                    instr,
-                    Instr::TupleFieldLoad { .. }
-                        | Instr::BytesRetain { .. }
-                        | Instr::StringRetain { .. }
-                        | Instr::Drop { .. }
-                        | Instr::FieldDropInPlace { .. }
-                ) {
-                    continue;
-                }
-                for place in instr_source_places(instr) {
-                    let Some(local) = base_local(place) else {
-                        continue;
-                    };
-                    if root_members.contains(&local)
-                        && !binder_read_is_borrow_safe_instr(instr, local)
-                    {
-                        escapes = true;
-                        break;
-                    }
-                }
-                if escapes {
-                    break;
-                }
-            }
-            if escapes {
-                break;
-            }
-            for place in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
-                let Some(local) = base_local(place) else {
-                    continue;
-                };
-                if root_members.contains(&local)
-                    && !binder_read_is_borrow_safe_terminator(
-                        &block.terminator,
-                        suspend_kinds.get(&block.id),
-                        local,
-                    )
-                {
-                    escapes = true;
-                    break;
-                }
-            }
-            if escapes {
-                break;
-            }
-        }
-        if !escapes {
-            excluded_roots.remove(&retained_root);
-        }
-    }
-}
 fn apply_bytes_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
@@ -8890,89 +8618,6 @@ fn apply_bytes_retain_sites(
     *instr_spans = new_spans;
 }
 
-/// Per-binding map from an owned local `bytes` candidate to the block(s)
-/// whose terminator hands its triple to an actor mailbox (`Send` / `Ask` /
-/// `RemoteAsk`, actor-ask arms in `Select` / `SuspendingSelect`, `Join`
-/// branches, and collapsed suspending Ask/RemoteAsk carriers recovered from
-/// `suspend_kinds`) — the forwarding transfer
-/// [`derive_local_bytes_drop_allowed`]'s escape scan already excludes from
-/// `allowed`, whole-function, the moment any block reads it there.
-///
-/// That exclusion is sound for every exit reachable from the transfer block,
-/// but not for a cancellation branch taken before the handler reaches the
-/// transfer. The elaborator uses this map to distinguish those regions.
-///
-/// Fail-closed: an unlocated transfer maps to nothing and stays under the
-/// path-insensitive exclusion. Over-recording only narrows re-admission;
-/// every actor-mailbox carrier and collapsed-suspend side-table entry is
-/// scanned to prevent under-recording.
-pub(super) fn derive_bytes_actor_transfer_blocks(
-    blocks: &[BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
-    owned_locals: &[(BindingId, String, ResolvedTy)],
-    binding_locals: &HashMap<BindingId, Place>,
-) -> HashMap<BindingId, HashSet<u32>> {
-    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
-    for (binding, _name, ty) in owned_locals {
-        if !matches!(ty, ResolvedTy::Bytes) {
-            continue;
-        }
-        let Some(place) = binding_locals.get(binding) else {
-            continue;
-        };
-        let Some(local) = base_local(*place) else {
-            continue;
-        };
-        candidate_local_to_binding.insert(local, *binding);
-    }
-    if candidate_local_to_binding.is_empty() {
-        return HashMap::new();
-    }
-    let alias_of =
-        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
-    let mut transfer_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
-    for block in blocks {
-        let values: Vec<Place> = match &block.terminator {
-            Terminator::Send { value, .. }
-            | Terminator::Ask { value, .. }
-            | Terminator::RemoteAsk { value, .. } => vec![*value],
-            Terminator::Suspend { .. } => match suspend_kinds.get(&block.id) {
-                Some(SuspendKind::Ask { value, .. } | SuspendKind::RemoteAsk { value, .. }) => {
-                    vec![*value]
-                }
-                _ => continue,
-            },
-            Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => arms
-                .iter()
-                .filter_map(|arm| match &arm.kind {
-                    SelectArmKind::ActorAsk { value, .. } => Some(*value),
-                    SelectArmKind::StreamNext { .. }
-                    | SelectArmKind::TaskAwait { .. }
-                    | SelectArmKind::ChannelRecv { .. }
-                    | SelectArmKind::AfterTimer { .. } => None,
-                })
-                .collect(),
-            Terminator::Join { branches, .. } => {
-                branches.iter().map(|branch| branch.value).collect()
-            }
-            _ => continue,
-        };
-        for value in values {
-            let Some(local) = base_local(value) else {
-                continue;
-            };
-            let Some(&root) = alias_of.get(&local) else {
-                continue;
-            };
-            let Some(&binding) = candidate_local_to_binding.get(&root) else {
-                continue;
-            };
-            transfer_blocks.entry(binding).or_default().insert(block.id);
-        }
-    }
-    transfer_blocks
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "the derivation, exact handoff proof, and retain splice form one ownership boundary"
@@ -8981,7 +8626,7 @@ pub(super) fn finalize_bytes_ownership(
     raw: &mut RawMirFunction,
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
-) -> BytesDropDerivation {
+) {
     // See the String pass above: produced-value cleanup candidates belong to
     // drop elaboration, not sole-owner mint classification.
     let owned_locals_snapshot = builder.owned_locals_snapshot();
@@ -9251,7 +8896,6 @@ pub(super) fn finalize_bytes_ownership(
         &derivation.retain_sites,
         &neutralize_after,
     );
-    derivation
 }
 
 fn bytes_retain_site_is_required(

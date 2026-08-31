@@ -17,6 +17,14 @@
 # a `VecIter` transfers its release obligation to the terminal local and is
 # released exactly once.
 #
+# vec_iter_temp_receiver.hew pins the caller half of the by-value cursor ABI: a
+# terminal or adapter called straight on `.into_iter()` relinquishes its
+# temporary at the call, so the callee's release is the only one.
+#
+# vec_iter_later_arg_exit.hew keeps that temporary caller-owned while a later
+# argument evaluates; early exit releases it in the caller, while the completed
+# call transfers it to the callee.
+#
 # fixture	under_release	other_blocking_mir	exit_code	runtime
 cross_module_result/main.hew	0	0	0	check
 direct_call_terminal_carriers.hew	0	0	0	clean
@@ -39,3 +47,5 @@ rJ_noerr.hew	0	0	0	clean
 rK_noloop.hew	0	0	0	clean
 retained_call_carriers/main.hew	0	0	0	check
 retained_hard_refusal.hew	0	1	1	refuse
+vec_iter_later_arg_exit.hew	0	0	0	clean
+vec_iter_temp_receiver.hew	0	0	0	clean

@@ -880,11 +880,8 @@ expect_check_fail_contains \
     "used after it was consumed" \
     "hashmap_owned_string_double_insert"
 # ...and a NON-CoW yield binder (Vec<i64> element) conditionally moved across
-# an abandonment point still hits the vec-iter abandonment wall.
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/vec_iter_yield_owned_conditional_move.hew" \
-    "conditionally moved VecIter yield across an abandonment point" \
-    "vec_iter_yield_owned_conditional_move"
+# an abandonment point is released exactly once on the still-owning edge.
+run_accept_expect_stdout "vec_iter_yield_owned_conditional_move"
 # Boundary: a record key with an owned Vec<T> field stays rejected fail-closed.
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/hashmap_key_owned_vec_field.hew" \
@@ -896,9 +893,14 @@ expect_check_fail_contains \
 run_accept_expect_status "hashmap_iter_user_shadow" 43
 
 # Ownership markers (#[resource], #[linear]) remain valid on nominal `type`
-# declarations and preserve their affine/linear behaviour, while aliases fail
-# at the source attribute before HIR.
+# declarations and preserve their affine/linear behaviour. Positive control on
+# `type`, plus both reject boundaries: an alias, which carries no resource
+# semantics, and a callable, which has no ResourceMarker slot at all.
 run_accept_expect_status "resource_marker_nominal_type" 0
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/resource_marker_on_fn_reject.hew" \
+    "#[resource] is only valid on \`type\` or \`enum\` declarations" \
+    "resource_marker_on_fn_reject"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/resource_marker_on_record_reject.hew" \
     "#[resource] is only valid on \`type\` or \`enum\` declarations" \
@@ -2330,6 +2332,8 @@ run_accept_expect_panic "panic" "panic fixture"
 # default hook output.
 run_accept_expect_panic "panic_main_unwind_runs_resource_close" "boom" \
     "${ROOT}/tests/vertical-slice/accept/panic_main_unwind_runs_resource_close.expected"
+run_accept_expect_panic "vec_iter_free_fold_unwind" "free fold boom" \
+    "${ROOT}/tests/vertical-slice/accept/vec_iter_free_fold_unwind.expected"
 
 run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_regex_new_invalid.hew" "std_panic_wrapper_regex_new_invalid" 101
 grep -q 'regex.new: invalid pattern' "${stderr_output}"
@@ -3297,6 +3301,7 @@ expect_check_fail_error_count_no_cascade \
 # the caller's original remains live after generator teardown.
 run_accept_expect_stdout "gen_fn_capture_owned_value"
 run_accept_expect_stdout "gen_closure_env_owned_capture"
+run_accept_expect_stdout "gen_capture_whole_value_fn_arg"
 
 # Raw aggregate loads from a generator env remain aliases. Whole-value escapes
 # must clone explicitly or fail closed rather than create a second owner.
@@ -3308,9 +3313,13 @@ expect_check_fail_error_count_no_cascade \
 
 # Every whole-value capture load is tagged and every MIR Move is checked before
 # emission and again before block sealing. Rebinding, aggregate/container
-# storage, explicit/implicit return, block tails, control-flow joins, by-value
-# function arguments, and tuple construction therefore all reject aliases
-# loaded from the capture environment.
+# storage, explicit/implicit return, block tails, control-flow joins, and tuple
+# construction therefore all reject aliases loaded from the capture environment.
+# A by-value function argument is the one route that does NOT reject: the call
+# boundary snapshot-clones the env load, so the callee owns an independent copy
+# and no alias escapes. That route is pinned on the accept side by
+# gen_capture_whole_value_fn_arg, which proves the clone is independent of both
+# the environment's view and the caller's original.
 # shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_let_move.hew" \
@@ -3361,11 +3370,6 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_if_else.hew" \
     'captured owned value `items` cannot be moved out of the generator/closure environment' \
     "gen_capture_whole_value_if_else"
-# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_fn_arg.hew" \
-    'captured owned value `items` cannot be moved out of the generator/closure environment' \
-    "gen_capture_whole_value_fn_arg"
 # shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_tuple.hew" \
@@ -5921,3 +5925,29 @@ expect_check_fail_contains \
 run_accept_expect_stdout "actor_arg_field_projection_sibling_use"
 run_accept_expect_stdout "actor_arg_value_field_projection"
 run_accept_expect_stdout "actor_state_field_reinit"
+
+# Ownership seams: a `var` record reassigned from a match inside a loop, a
+# payload binder reused after a callee-owned call (a call never consumes a
+# non-resource argument), a `#[returns_receiver]` consuming receiver whose
+# returned identity is the binding's next generation, and guarded `.Ok(sink)`
+# arms whose false guards fall through with the payload intact.
+run_accept_expect_stdout "var_record_reassigned_in_loop"
+run_accept_expect_stdout "payload_binder_reused_after_owned_call"
+run_accept_expect_stdout "returns_receiver_consuming_result"
+run_accept_expect_stdout "guarded_arms_sink_fallthrough"
+run_accept_expect_stdout "guarded_arms_over_carrier_param"
+run_accept_expect_stdout "if_let_over_carrier_param"
+run_accept_expect_stdout "value_receiver_reused_after_method"
+# The cost strategy a callee summary selects is a fact about the path that
+# transfers, never about the binding: a sibling branch that only reads the
+# same record must still release it at its own exit.
+run_accept_expect_stdout "carrier_transfer_sibling_path_release"
+# An indirect call borrows its arguments like a direct one: handing a
+# summary-owned parameter to a reading closure must not take the carrier
+# authority its own callee still owes a release for.
+run_accept_expect_stdout "closure_arg_borrows_carrier_param"
+
+# The index-assignment move is decided by the argument's own use: an earlier
+# consume of the same binding elsewhere in the loop body neither hides nor
+# duplicates it.
+reject_check_use_after_consume "vec_index_assign_reuse_after_rebind"

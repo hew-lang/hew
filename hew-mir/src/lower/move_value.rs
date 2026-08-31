@@ -3,8 +3,8 @@ use super::{
     ty_is_indirect_enum, BasicBlock, BindingId, Builder, CaptureEnvOwnedLoad, Disposition,
     FieldLoadClass, HashMap, HashSet, HirBinding, HirExpr, HirExprKind, Instr, MirDiagnostic,
     MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedCarrierParam,
-    PendingOwnedCallArg, PendingOwnedCallSite, Place, ProjectedPayloadOrigin, ResolvedRef,
-    ResolvedTy, SiteId, SnapshotFieldKind, SuspendKind,
+    PendingOwnedCallAnchor, PendingOwnedCallArg, PendingOwnedCallSite, PendingOwnedCursorArg,
+    Place, ProjectedPayloadOrigin, ResolvedRef, ResolvedTy, SiteId, SnapshotFieldKind, SuspendKind,
 };
 
 /// Whether a scope-exit tuple can safely have one of its projected ownership
@@ -156,6 +156,51 @@ impl Builder {
         );
     }
 
+    /// Register a top-level enum payload binder moved out of `scrutinee_local`.
+    ///
+    /// A binder destructured from an owned call carrier (a snapshot-dropped
+    /// parameter, or a projection of one) is a byte-copy alias of the
+    /// carrier's variant slot: the carrier's guarded terminal snapshot drop is
+    /// the single release authority for every slot it still holds, and
+    /// [`Self::note_carrier_payload_binder`] neutralizes the slot on exactly
+    /// the path where the binder escapes. Minting the binder as an owner too
+    /// releases the payload twice (binder scope exit plus the snapshot drop);
+    /// clearing the slot at destructure time instead would null the payload
+    /// before a guard on the arm has selected it. A fresh call scrutinee keeps
+    /// its own arm-release protocol.
+    pub(crate) fn register_owned_payload_binder(
+        &mut self,
+        binding: BindingId,
+        name: String,
+        ty: hew_types::ResolvedTy,
+        warrant: super::owner_mint::OwnerMintWarrant,
+        scrutinee_local: u32,
+        call_scrutinee_owner: Option<&(BindingId, hew_types::ResolvedTy)>,
+    ) {
+        self.register_owned_local(binding, name, ty, warrant);
+        // A borrowed by-value parameter is released by its caller; a binder
+        // over its payload is likewise a byte-copy alias and mints nothing.
+        let alias = call_scrutinee_owner.is_none()
+            && (self.scrutinee_is_owned_carrier(scrutinee_local)
+                || self.borrowed_value_param_locals.contains(&scrutinee_local));
+        if alias {
+            self.set_owned_local_disposition(binding, super::Disposition::AliasOf);
+        }
+    }
+
+    /// Whether a match scrutinee local is an owned call carrier (or projects
+    /// from one) whose terminal snapshot drop releases every payload slot the
+    /// match's binders alias. Such binders never mint an owner of their own;
+    /// [`Self::note_carrier_payload_binder`] gives them the escape authority.
+    pub(crate) fn scrutinee_is_owned_carrier(&self, scrutinee_local: u32) -> bool {
+        let scrutinee = Place::Local(scrutinee_local);
+        match self.owned_carrier_authority(scrutinee) {
+            Some(OwnedCarrierNeutralizeTarget::Whole(root)) => root == scrutinee,
+            Some(OwnedCarrierNeutralizeTarget::Projection { .. }) => true,
+            Some(OwnedCarrierNeutralizeTarget::ScopeExitTuple { .. }) | None => false,
+        }
+    }
+
     /// Propagate whole-carrier release authority into a match payload binder.
     ///
     /// The binder local holds a byte-copy ALIAS of the carrier scrutinee's
@@ -215,21 +260,26 @@ impl Builder {
         callee_item: Option<hew_hir::ItemId>,
         hir_args: &[HirExpr],
         arg_places: &[Place],
+        ordinary_owned_cursor_call: bool,
     ) {
         let Some(callee_item) = callee_item else {
             return;
         };
-        let args: Vec<PendingOwnedCallArg> = hir_args
+        let carrier_args: Vec<PendingOwnedCallArg> = hir_args
             .iter()
             .zip(arg_places.iter().copied())
             .enumerate()
             .filter_map(|(index, (arg, source))| {
                 let owned_ty = self.subst_ty(&arg.ty);
+                let is_vec_iter = self.ty_is_exact_vec_iter(&owned_ty);
                 // An indirect enum local is an owning pointer slot, not the
                 // inline tagged-union storage consumed by the structural
                 // snapshot protocol. Its existing match/move authority remains
                 // responsible until an allocating node-clone protocol exists.
-                (!ty_is_indirect_enum(&owned_ty, &self.enum_layouts)
+                // `VecIter<T>` has its own total by-value cursor ABI and must
+                // never enter the normal-success owned-carrier protocol.
+                (!is_vec_iter
+                    && !ty_is_indirect_enum(&owned_ty, &self.enum_layouts)
                     && !self.ty_is_machine(&owned_ty)
                     && self
                         .param_ownership
@@ -249,21 +299,89 @@ impl Builder {
                     ty: owned_ty,
                     site: arg.site,
                     source_is_prepared_owner: self.prepared_owned_call_sources.contains(&source),
+                    source_may_transfer: self.call_arg_source_may_transfer(source),
                 })
             })
             .collect();
-        if args.is_empty() {
+        let cursor_args: Vec<PendingOwnedCursorArg> = hir_args
+            .iter()
+            .zip(arg_places.iter().copied())
+            .enumerate()
+            .filter_map(|(index, (arg, source))| {
+                let ty = self.subst_ty(&arg.ty);
+                if !ordinary_owned_cursor_call || !self.ty_is_exact_vec_iter(&ty) {
+                    return None;
+                }
+                let boundary_mode = self.vec_iter_param_boundary_mode(
+                    &ty,
+                    crate::model::FunctionCallConv::Default,
+                );
+                if boundary_mode != Some(crate::model::ParamBoundaryMode::OwnedCursor)
+                    || arg.intent == hew_hir::IntentKind::Modify
+                {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "non-intrinsic VecIter var-self call".to_string(),
+                            site: arg.site,
+                        },
+                        note: "only the compiler's in-place VecIter.next expansion preserves a mutable cursor receiver; an ordinary direct call needs a proven normal-return owner rearm"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                Some(PendingOwnedCursorArg {
+                    index,
+                    source,
+                    ty,
+                    site: arg.site,
+                })
+            })
+            .collect();
+        if carrier_args.is_empty() && cursor_args.is_empty() {
             return;
         }
-        for arg in &args {
+        for arg in &carrier_args {
             if arg.source_is_prepared_owner {
                 self.prepared_owned_call_sources.remove(&arg.source);
             }
         }
-        let replaced = self
-            .pending_owned_call_args
-            .insert(self.current_block_id, PendingOwnedCallSite { args });
-        debug_assert!(replaced.is_none(), "one call terminator per basic block");
+        self.pending_owned_call_args
+            .entry(self.current_block_id)
+            .or_default()
+            .push(PendingOwnedCallSite {
+                anchor: Some(PendingOwnedCallAnchor::DirectTerminator),
+                carrier_args,
+                cursor_args,
+            });
+    }
+
+    /// Whether the post-CFG carrier pass may hand `source` to the callee by a
+    /// last-use MOVE (`Move` + `NeutralizePayloadSlot` of `source` itself).
+    ///
+    /// A move is only sound when `source` is the sole storage of the value:
+    /// a plain local, or a self-rooted whole carrier. A match payload binder
+    /// (authority `Whole(variant slot)`), a root-relative projection alias, or
+    /// a closure-environment load is a byte copy of storage that another owner
+    /// still releases, so neutralizing the copy leaves the original armed and
+    /// the callee's drop makes a second release. Those sources take the clone
+    /// strategy instead.
+    ///
+    /// SHORTCUT. WHY: the pass sees `Place`s only; the root-relative authority
+    /// that would let it neutralize the ORIGINAL slot on a proven last use is a
+    /// Builder-side map keyed at lowering time. WHEN: once every arm/field move
+    /// carries its own generation event (the ladder's virtual-value / `Place`
+    /// seam), the last-use transfer can be derived from replay for these
+    /// sources too. WHAT: the real solution neutralizes the authority's root
+    /// slot at the last use instead of cloning.
+    fn call_arg_source_may_transfer(&self, source: Place) -> bool {
+        if self.capture_env_owned_loads.contains_key(&source) {
+            return false;
+        }
+        match self.owned_carrier_authority(source) {
+            None | Some(OwnedCarrierNeutralizeTarget::ScopeExitTuple { .. }) => true,
+            Some(OwnedCarrierNeutralizeTarget::Whole(root)) => root == source,
+            Some(OwnedCarrierNeutralizeTarget::Projection { .. }) => false,
+        }
     }
 
     /// Register the callee half of an owned direct-call carrier contract.
@@ -280,6 +398,7 @@ impl Builder {
     ) -> bool {
         let owned_ty = self.subst_ty(&param.ty);
         let is_carrier = !param_is_consumed
+            && !self.ty_is_exact_vec_iter(&owned_ty)
             && self
                 .param_ownership
                 .call_param_owned_carrier
@@ -527,15 +646,21 @@ impl Builder {
         requested_transfer: bool,
         composite_result_handoff: bool,
     ) -> Option<Place> {
+        let expr_ty = self.subst_ty(&expr.ty);
+        if self.reject_unsupported_vec_iter_boundary(
+            &expr_ty,
+            expr.site,
+            "a whole-value cursor move",
+        ) {
+            return None;
+        }
         if requested_transfer && self.reject_vec_iter_borrowed_source_move(expr) {
             return None;
         }
         if self.reject_capture_env_whole_escape_expr(expr) {
             return None;
         }
-        let vec_iter_move = self
-            .vec_iter_cursor_release_symbol(&self.subst_ty(&expr.ty))
-            .is_some();
+        let vec_iter_move = self.ty_is_exact_vec_iter(&expr_ty);
         let mut pushed_result_flag = false;
         let mut result_flag = None;
         let mut owns_vec_iter_snapshot = false;
@@ -671,7 +796,7 @@ impl Builder {
             return;
         };
         let ty = self.subst_ty(&expr.ty);
-        let warrant = self.owner_warrant_for_admitted_temp(expr);
+        let warrant = self.owner_warrant_for_admitted_vec_iter_temp(expr, value);
         let binding = self.adopt_synthetic_owned_local(
             super::SYNTHETIC_VEC_ITER_VALUE_NAME,
             expr.site,
@@ -827,52 +952,12 @@ impl Builder {
         // this edge — the retained binding and the original each release
         // their own count.
         if self.string_local_share_sites.contains_key(&expr.site)
-            || self.bytes_local_share_sites.contains(&expr.site)
+            || self.bytes_local_share_sites.contains_key(&expr.site)
         {
             return value;
         }
         let ty = self.subst_ty(&expr.ty);
         self.transfer_owned_carrier_place(value, &ty)
-    }
-
-    /// Forward a carrier-projected payload into a callee parameter whose root
-    /// stays on the `CoW` borrow spine.
-    ///
-    /// The call-consumption summary still sends the alias through the carrier
-    /// funnel so the enclosing enum slot is neutralized, but String/Bytes roots
-    /// never register a callee terminal owner. The binder therefore remains
-    /// responsible for the original count after the call. Keep this promotion
-    /// at the direct-call boundary: HIR may label both a match-arm return and a
-    /// borrowing call argument `Read`, so expression intent alone cannot
-    /// distinguish a genuine ownership transfer from this borrowed forward.
-    fn transfer_borrow_spine_carrier_payload(&mut self, expr: &HirExpr, value: Place) -> Place {
-        let delayed_payload_release = if matches!(
-            self.owned_carrier_authority(value),
-            Some(OwnedCarrierNeutralizeTarget::Whole(source)) if source != value
-        ) {
-            match &expr.kind {
-                HirExprKind::BindingRef {
-                    resolved: ResolvedRef::Binding(binding),
-                    ..
-                } => self
-                    .projected_payload_overwrite_flags
-                    .get(binding)
-                    .copied()
-                    .map(|flag| (*binding, flag)),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let transferred = self.transfer_owned_carrier_value(expr, value);
-        if let Some((binding, flag)) = delayed_payload_release {
-            self.projected_payload_delayed_releases.insert(binding);
-            self.push_instr(Instr::ConstI64 {
-                dest: flag,
-                value: 0,
-            });
-        }
-        transferred
     }
 
     pub(crate) fn lower_let_value(&mut self, binding: BindingId, value: &HirExpr) -> Option<Place> {
@@ -892,12 +977,13 @@ impl Builder {
     }
 
     pub(crate) fn lower_method_arg_value(&mut self, arg: &HirExpr, is_move: bool) -> Option<Place> {
+        let arg_ty = self.subst_ty(&arg.ty);
+        if self.reject_unsupported_vec_iter_boundary(&arg_ty, arg.site, "a method-call argument") {
+            return None;
+        }
         if is_move {
             self.lower_value_for_move(arg)
-        } else if self
-            .vec_iter_cursor_release_symbol(&self.subst_ty(&arg.ty))
-            .is_some()
-        {
+        } else if self.ty_is_exact_vec_iter(&arg_ty) {
             self.lower_vec_iter_value_for_read(arg)
         } else {
             self.lower_value(arg)
@@ -936,32 +1022,15 @@ impl Builder {
                 if consumes_user_resource && self.reject_capture_env_whole_escape_expr(arg) {
                     return None;
                 }
-                let is_move = move_all_args
-                    || callee_item.is_some_and(|item| {
-                        self.param_ownership
-                            .call_param_consume
-                            .get(&(item, index))
-                            .is_some_and(|v| v.is_consume())
-                    });
-                let target_is_owned_carrier = callee_item.is_some_and(|item| {
-                    self.param_ownership
-                        .param_consume
-                        .get(&(item, index))
-                        .copied()
-                        != Some(true)
-                        && self
-                            .param_ownership
-                            .call_param_owned_carrier
-                            .get(&(item, index))
-                            .copied()
-                            == Some(true)
-                });
+                let arg_ty = self.subst_ty(&arg.ty);
+                let arg_is_vec_iter = self.ty_is_exact_vec_iter(&arg_ty);
                 let target_is_affine_consume = callee_item.is_some_and(|item| {
                     self.param_ownership
                         .param_consume
                         .get(&(item, index))
                         .copied()
                         == Some(true)
+                        && !arg_is_vec_iter
                         && !(index == 0
                             && self.param_ownership.true_receiver_methods.contains(&item))
                 });
@@ -983,64 +1052,34 @@ impl Builder {
                     self.consume_typed_produced_value_owner_at_terminal_boundary(arg.site, value);
                     return Some(value);
                 }
-                if is_move && target_is_owned_carrier {
+                if move_all_args {
+                    // Supervisor bootstrap: the synthesized callee owns the
+                    // spawned config snapshot and has no `ItemId` to consult.
                     if self.reject_capture_env_whole_escape_expr(arg) {
                         return None;
                     }
                     let value = self.lower_value(arg)?;
-                    // A whole carrier parameter can be read by more than one
-                    // freeing callee. Preserve its source until the post-CFG
-                    // carrier pass can use liveness to choose snapshot or
-                    // last-use transfer. Only a SELF-ROOTED whole (the carrier
-                    // slot itself) defers: a payload-binder authority points at
-                    // a variant slot inside a different root, and the post-CFG
-                    // pass would neutralize the binder copy instead of that
-                    // slot — it must transfer eagerly through the funnel.
-                    // Projection carriers still transfer eagerly so their
-                    // root-relative slot is neutralized once.
-                    if matches!(
-                        self.owned_carrier_authority(value),
-                        Some(OwnedCarrierNeutralizeTarget::Whole(root)) if root == value
-                    ) {
-                        return Some(value);
-                    }
-                    let record_layouts = outbound_record_layouts(self);
-                    let stays_on_borrow_spine =
-                        crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
-                            &self.subst_ty(&arg.ty),
-                            &record_layouts,
-                            &self.enum_layouts,
-                            &self.opaque_handle_names,
-                            &self.lifecycle_registry,
-                        )
-                        .is_ok_and(|plan| {
-                            super::snapshot_root_outside_carrier_protocol(plan.root())
-                        });
-                    if stays_on_borrow_spine {
-                        return Some(self.transfer_borrow_spine_carrier_payload(arg, value));
-                    }
                     return Some(self.transfer_owned_carrier_value(arg, value));
                 }
-                if !is_move || target_is_owned_carrier {
-                    return self.lower_method_arg_value(arg, is_move);
-                }
-
-                // The general call-consume table is deliberately fail-closed
-                // and can over-approximate borrow-only wrappers. A prepared
-                // carrier must transfer only to a matching callee carrier (or
-                // another explicit ownership boundary), otherwise a read such
-                // as `string.is_empty(path)` would neutralize `path` before its
-                // later use. Non-carrier arguments retain the historical move
-                // lowering unchanged.
-                if self.reject_capture_env_whole_escape_expr(arg) {
-                    return None;
-                }
-                let value = self.lower_value(arg)?;
-                if self.owned_carrier_authority(value).is_some() {
-                    Some(value)
-                } else {
-                    Some(self.transfer_owned_carrier_value(arg, value))
-                }
+                // Every other argument is a BORROW (`docs/v05/ownership.md`):
+                // the caller's binding is never consumed by a call, whatever
+                // the callee does with its parameter. When the callee's
+                // body-escape summary says it will own the parameter
+                // (`call_param_owned_carrier` → `ParamBoundaryMode::OwnedCarrier`),
+                // the post-CFG carrier pass (`prepare_owned_call_carriers`)
+                // picks the COST strategy from liveness — transfer on a proven
+                // last use, otherwise a snapshot clone — and never changes what
+                // this caller may do with the binding afterwards, nor which
+                // lowering funnel the argument takes here. A borrowing callee
+                // simply reads the caller-owned value.
+                let value = self.lower_method_arg_value(arg, false)?;
+                // A by-value `VecIter<T>` has no borrowed callee
+                // representation, but its caller-side transition cannot happen
+                // while arguments are still being evaluated: a later argument
+                // can exit before the callee is entered. The direct-call wrapper
+                // identifies the synthetic cursor after this loop and authors
+                // its transition in the final call block.
+                Some(value)
             })
             .collect()
     }

@@ -1,0 +1,65 @@
+// A `#[returns_receiver]` method with a `consuming self` receiver ends the
+// receiver generation at the call; the returned identity is the binding's
+// next generation and is released exactly once by whoever adopts it.
+#[opaque]
+type Handle {
+}
+
+#[resource]
+type Value {
+    handle: Handle;
+}
+
+trait ValueMethods {
+    #[returns_receiver]
+    fn push(consuming self, consume child: Value) -> Self;
+}
+
+impl ValueMethods for Value {
+    #[returns_receiver]
+    fn push(consuming self, consume child: Value) -> Value {
+        unsafe {
+            hew_json_array_push(self.handle, child.release())
+        };
+        self
+    }
+}
+
+impl Value {
+    fn close(consuming self) {
+        unsafe {
+            hew_json_free(self.handle)
+        };
+    }
+    fn release(consuming self) -> Handle {
+        self.handle
+    }
+}
+
+extern "C" {
+    fn hew_json_free(consume handle: Handle);
+    fn hew_json_array_push(handle: Handle, consume child: Handle);
+    fn hew_json_array_new() -> Handle;
+    fn hew_json_type(handle: Handle) -> i32;
+}
+
+fn try_build() -> Result<Value, string> {
+    let value = Value { handle: unsafe { hew_json_array_new() } };
+    if unsafe { hew_json_type(value.handle) } >= 0 {
+        let child = Value { handle: unsafe { hew_json_array_new() } };
+        Ok(value.push(child))
+    } else {
+        value.close();
+        Err("bad handle")
+    }
+}
+
+fn main() {
+    match try_build() {
+        .Ok(value) => {
+            println("built");
+            value.close();
+        },
+        .Err(e) => println(e),
+    }
+}

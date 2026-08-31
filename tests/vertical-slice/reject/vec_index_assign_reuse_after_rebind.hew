@@ -1,0 +1,26 @@
+// `v[0] = h` moves `h` into the slot on the call's normal edge. A read of
+// `h` after that move is refused even though the same binding was already
+// consumed at another site earlier in the loop body and rebound since: the
+// nearest use decides, not any consume reachable in the loop.
+type Holder {
+    items: Vec<string>;
+}
+
+fn mk(tag: string) -> Holder {
+    let xs: Vec<string> = Vec.new();
+    xs.push(tag);
+    return Holder { items: xs };
+}
+
+fn main() {
+    var v: Vec<Holder> = Vec.new();
+    v.push(mk("seed0"));
+    v.push(mk("seed1"));
+    for i in 0..3 {
+        var h = mk("first");
+        v[1] = h;
+        h = mk("second");
+        v[0] = h;
+        println(h.items.len());
+    }
+}

@@ -22,12 +22,14 @@
 
 use std::collections::HashMap;
 
-use crate::node::HirItem;
+use crate::{node::HirItem, ItemId};
 use hew_types::{DefId, NominalId, NominalInstance, ResolvedTy};
 
 /// One impl-method entry in the structured static-dispatch registry.
 #[derive(Debug, Clone)]
 pub struct TraitImplMethodEntry {
+    /// Exact HIR function item whose emitted body implements this method.
+    pub item: ItemId,
     /// Canonical identity of the emitted impl method.
     pub method: DefId,
     /// Canonical `<Self>::<method>` symbol that the corresponding
@@ -89,12 +91,14 @@ pub fn build_trait_impl_method_index(
         // `lower_impl_block` and MUST be parallel. Defensive zip: any
         // length mismatch indicates upstream HIR construction drift and
         // produces no entries for the extra slots.
-        for (((method_symbol, declaring_trait), trait_method_id), impl_method_id) in block
-            .method_symbols
-            .iter()
-            .zip(block.method_declaring_trait_ids.iter())
-            .zip(block.method_trait_method_ids.iter())
-            .zip(block.method_ids.iter())
+        for ((((method_symbol, declaring_trait), trait_method_id), impl_method_id), method_item) in
+            block
+                .method_symbols
+                .iter()
+                .zip(block.method_declaring_trait_ids.iter())
+                .zip(block.method_trait_method_ids.iter())
+                .zip(block.method_ids.iter())
+                .zip(block.method_item_ids.iter())
         {
             let (Some(declaring_trait), Some(trait_method_id), Some(impl_method_id)) =
                 (declaring_trait, trait_method_id, impl_method_id)
@@ -112,6 +116,7 @@ pub fn build_trait_impl_method_index(
             index.insert(
                 key,
                 TraitImplMethodEntry {
+                    item: *method_item,
                     method: impl_method_id.clone(),
                     method_symbol: method_symbol.clone(),
                     impl_type_params: block.type_params.clone(),
@@ -319,6 +324,7 @@ mod tests {
 
     fn entry(method: &DefId, symbol: &str) -> TraitImplMethodEntry {
         TraitImplMethodEntry {
+            item: crate::ItemId(0),
             method: method.clone(),
             method_symbol: symbol.to_string(),
             impl_type_params: Vec::new(),

@@ -7224,6 +7224,60 @@ fn borrow_tainted_crash_cleanup_arms_only_in_copy_mode() {
 }
 
 #[test]
+fn owned_cursor_boundary_deactivates_helper_crash_cleanup_token() {
+    let ctx = Context::create();
+    let module = ctx.create_module("owned_cursor_cleanup_deactivation");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    // Boundary-mode dispatch is independent of the descriptor payload. A
+    // String descriptor keeps this unit fixture small while exercising the
+    // same active token which a VecIterCursor descriptor registers.
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![frame_cleanup_string_descriptor(Place::Local(0)).into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("owned-cursor cleanup owner");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(0))
+        .expect("arm owned-cursor cleanup token");
+
+    emit_owned_param_helper_crash_cleanup_deactivations(
+        &fn_ctx,
+        &[Place::Local(0)],
+        &[Some(ParamBoundaryMode::OwnedCursor)],
+    )
+    .expect("deactivate transferred owned-cursor cleanup token");
+    finish_test_fn(&fn_ctx);
+    module
+        .verify()
+        .expect("owned-cursor cleanup deactivation module verify");
+    let ir = module
+        .get_function("driver")
+        .expect("owned-cursor deactivation driver")
+        .print_to_string()
+        .to_string();
+
+    assert_eq!(
+        ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
+        1,
+        "the caller must begin with one live cleanup token:\n{ir}"
+    );
+    assert_eq!(
+        ir.matches("call i1 @hew_cont_crash_cleanup_deactivate")
+            .count(),
+        1,
+        "OwnedCursor handoff must deactivate that exact token once before invoke:\n{ir}"
+    );
+    assert!(
+        ir.contains("helper_crash_cleanup_was_active")
+            && ir.contains("helper_crash_cleanup_deactivate_merge"),
+        "OwnedCursor deactivation must retain the active-gated helper protocol:\n{ir}"
+    );
+}
+
+#[test]
 fn return_sweep_skips_planned_owner_but_drops_unplanned_live_owner() {
     let ctx = Context::create();
     let module = ctx.create_module("mixed_return_cleanup_owners");

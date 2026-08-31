@@ -1,0 +1,31 @@
+// Accept fixture (conditionally consumed yield binder, exactly-once release):
+// a NON-CoW yield binder (`Vec<i64>` element of a `Vec<Vec<i64>>`) is moved
+// into a collection on one path and left owned on the other before an
+// abandonment point. There is no retain-backed share for an owned composite,
+// so the static consume stands; ownership replay then places the binder's
+// release on the still-owning edge into the join, and every later exit sees
+// the generation ended on both paths. The program must run clean under the
+// leak oracle: a regressed release leaks one row per iteration, a double
+// release aborts before the final line prints.
+
+fn keep_big(rows: Vec<i64>, keep: HashMap<string, Vec<i64>>) {
+    var all: Vec<Vec<i64>> = [];
+    all.push(rows);
+    for row in all {
+        if row.len() > 2 {
+            keep.insert("big", row);
+        }
+        let probe = keep.get("big");
+        match probe {
+            Some(found) => { println(f"n={found.len()}"); }
+            None => {}
+        }
+    }
+}
+
+fn main() {
+    let keep: HashMap<string, Vec<i64>> = HashMap.new();
+    keep_big([1, 2, 3], keep);
+    keep_big([4, 5], keep);
+    println("conditional-move-ok");
+}

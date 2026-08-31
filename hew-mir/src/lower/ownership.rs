@@ -8,9 +8,9 @@ use super::{
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, AffineCallConsumeCandidate, BasicBlock,
     BindingId, Builder, BuiltinType, ClosurePairIngress, CmpPred, DecisionFact, DischargeSite,
-    Disposition, FieldLoadClass, FieldOffset, HashMap, HashSet, HirBinding, HirBlock, HirExpr,
-    HirExprKind, HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedLocalEntry,
+    Disposition, FieldLoadClass, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
+    HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedLocalEntry,
     OwnerMintOrigin, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
     ProducedValueOwnership, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
     Terminator, ValueClass, ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
@@ -433,10 +433,15 @@ impl Builder {
         ) && self.locals.get(source_root as usize)
             == Some(owner_ty)
             && self.binding_locals.get(owner) == Some(&Place::Local(source_root))
+            // The ledger disposition is path-insensitive: a sibling arm lowered
+            // earlier already released the carrier at its body end, but on the
+            // path that reaches THIS destructure the carrier is still the live
+            // owner. The minted call-carrier fact is the path-independent proof.
+            && self.call_scrutinee_carrier_mint_locals.contains(&source_root)
             && self.owned_locals.iter().any(|entry| {
                 entry.binding == *owner
                     && entry.ty == *owner_ty
-                    && entry.disposition == Disposition::ScopeExit
+                    && entry.disposition != Disposition::AliasOf
             });
         let dest_is_proven_owner = self.binding_locals.get(&binding) == Some(&dest)
             && self.owned_locals.iter().any(|entry| {
@@ -1448,6 +1453,7 @@ impl Builder {
             })
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect();
+        let has_one_typed_source_owner = owners.len() == 1;
         for (binding, name, ty) in owners {
             self.set_owned_local_consumed(binding, Some(cursor), DischargeSite::BindingMoved);
             self.statements.push(MirStatement::Use {
@@ -1456,6 +1462,60 @@ impl Builder {
                 site: source.site,
                 ty,
                 intent: IntentKind::Consume,
+            });
+        }
+        if has_one_typed_source_owner {
+            self.typed_produced_value_handoffs
+                .insert((source_place, cursor));
+            return;
+        }
+
+        // `lower_value_for_move` has already consumed a direct named source,
+        // but the VecIter RecordInit has only just copied its bits. Publish the
+        // physical neutralisation here, after that copy, when the immutable
+        // event stream contains exactly the binding's current terminal owner.
+        // This keeps the crash-cleanup token live through construction without
+        // adding a second semantic Transfer or admitting a place-only match.
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(source_binding),
+            ..
+        } = &source.kind
+        else {
+            return;
+        };
+        if source.intent != IntentKind::Consume
+            || self.binding_locals.get(source_binding) != Some(&source_place)
+        {
+            return;
+        }
+        let Some(generation) = self.live_owner_generation(*source_binding) else {
+            return;
+        };
+        let source_owner = crate::model::OwnerId {
+            binding: *source_binding,
+            generation,
+        };
+        let terminal_source_transfers = self
+            .instructions
+            .iter()
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        from,
+                        to: None,
+                        to_owner: None,
+                        ..
+                    }) if *owner == source_owner && *from == source_place
+                )
+            })
+            .count();
+        if terminal_source_transfers == 1 {
+            self.push_instr(Instr::NeutralizePayloadSlot {
+                place: source_place,
+                transferee: Some(cursor),
+                authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
             });
         }
     }
@@ -1591,7 +1651,7 @@ impl Builder {
             }
             HirProducedValueRelation::Join(_) => {
                 if let HirProducedValueRelation::Join(sources) = &fact.relation {
-                    self.transfer_join_owners(expr.site, sources, place);
+                    self.transfer_join_owners(expr.site, sources, place, &expected_ty);
                 }
                 return;
             }
@@ -1911,6 +1971,22 @@ impl Builder {
                 return;
             }
         }
+        // A composite result (`match`/`if` value) is published at the head of
+        // its join block, after every arm has already moved its value into
+        // `place`. An arm whose source is a live exact owner (a consumed
+        // payload binding such as `__try_ok`) must end that generation at its
+        // own Move: the fresh join generation minted below is then the sole
+        // owner of the slot. Without this handoff the arm owner relocates into
+        // `place` and two live generations share one Place.
+        for owner in self.composite_join_relocated_owners(place, &ty, false) {
+            self.set_owned_local_consumed_post_lowering(
+                owner,
+                Some(place),
+                DischargeSite::BindingMoved,
+            );
+            let source = self.binding_locals[&owner];
+            self.typed_produced_value_handoffs.insert((source, place));
+        }
         let binding = self.adopt_synthetic_owned_local(
             "__hew_produced_value",
             expr.site,
@@ -2149,6 +2225,101 @@ impl Builder {
         }
     }
 
+    /// The unique scope-exit owners (of type `ty`) that a predecessor arm
+    /// physically moved into the join slot `place`, when the join owner is
+    /// about to be minted at the head of the join block. Each of these owners
+    /// must end its generation at its arm's Move (recorded as a typed handoff)
+    /// so the join owner is the sole generation at `place`; a named payload
+    /// binder used as a bare arm value (`.Ok(value) => value`) carries a
+    /// Borrowed produced-value fact and is otherwise invisible to the join.
+    ///
+    /// With `arm_local_only`, only owners bound in a scope that is no longer
+    /// active (the arm's own scope) qualify; owners of an enclosing scope are
+    /// still live on the sibling arms and belong to the divergent-selection
+    /// passes.
+    fn composite_join_relocated_owners(
+        &self,
+        place: Place,
+        ty: &ResolvedTy,
+        arm_local_only: bool,
+    ) -> Vec<BindingId> {
+        if !self.instructions.is_empty() {
+            return Vec::new();
+        }
+        self.composite_join_predecessor_move_sources(place)
+            .into_iter()
+            .filter_map(|source| {
+                let mut owners = self.owned_locals.iter().filter(|entry| {
+                    entry.ty == *ty
+                        && entry.disposition == Disposition::ScopeExit
+                        && self.binding_locals.get(&entry.binding) == Some(&source)
+                        && (!arm_local_only
+                            || self
+                                .binding_scope
+                                .get(&entry.binding)
+                                .is_some_and(|scope| !self.active_scopes.contains(scope)))
+                });
+                owners
+                    .next()
+                    .map(|entry| entry.binding)
+                    .filter(|_| owners.next().is_none())
+            })
+            .collect()
+    }
+
+    /// The source of each predecessor arm's final physical Move into `place`,
+    /// for every finished block that falls through into the current (join)
+    /// block. A Move immediately preceded by a retain of its source is an
+    /// independent `+1` share, not a relocation of the source generation, and
+    /// is skipped: the source owner stays live and the join owns the share.
+    ///
+    /// SHORTCUT (structural scan, not an ownership fact).
+    /// WHY: arm lowering does not record "this Move relocates a live owner
+    /// generation" as an event, so the join publication has to recover it by
+    /// re-reading the predecessor blocks; the retain exemption enumerates the
+    /// `+1` share instructions (`StringRetain`/`BytesRetain`) because those are
+    /// the only retains an arm emits directly before its result Move today.
+    /// WHEN: delete once every arm Move that relocates an owner emits its own
+    /// generation-ending event at the Move site (the ladder's virtual-value /
+    /// `Place` seam, `Materialize { reason }`), at which point the join derives
+    /// from replay and no predecessor scan is needed. Until then the retain
+    /// exemption is a closed list, and its failure mode is NOT fail-closed: a
+    /// new retain instruction that precedes an arm Move is not recognised as a
+    /// `+1` share, so the still-live source owner is treated as relocated and
+    /// its generation ended — the verifier then sees one owner per place (no
+    /// finding) while the source's retained `+1` is never released. That is a
+    /// silent under-release caught only by the leak oracles, so any new retain
+    /// variant must be added to the match below in the same change.
+    /// WHAT: the real solution is a per-arm "value relocated into the join
+    /// slot" event produced by the arm lowering itself.
+    fn composite_join_predecessor_move_sources(&self, place: Place) -> Vec<Place> {
+        self.pending_blocks
+            .iter()
+            .filter(|block| {
+                matches!(
+                    block.terminator,
+                    Terminator::Goto { target } if target == self.current_block_id
+                )
+            })
+            .filter_map(|block| {
+                let (index, source) = block.instructions.iter().enumerate().rev().find_map(
+                    |(index, instruction)| match instruction {
+                        Instr::Move { dest, src } if *dest == place => Some((index, *src)),
+                        _ => None,
+                    },
+                )?;
+                let retained_copy = index > 0
+                    && match &block.instructions[index - 1] {
+                        Instr::StringRetain { value, .. } | Instr::BytesRetain { value } => {
+                            *value == source
+                        }
+                        _ => false,
+                    };
+                (!retained_copy && matches!(source, Place::Local(_))).then_some(source)
+            })
+            .collect()
+    }
+
     /// Move (not clone) an existing receiver owner to a receiver-identity
     /// result. Both ends are SiteId/Place identities; no method spelling or
     /// display-name recovery participates in the transfer.
@@ -2178,7 +2349,7 @@ impl Builder {
                     construct: "receiver-identity receiver publication missing".to_string(),
                     site: result_site,
                 },
-                note: format!("receiver SiteId {receiver_site:?} has no published MIR place"),
+                note: format!("receiver site {receiver_site} has no published MIR place"),
             });
             return;
         };
@@ -2213,7 +2384,10 @@ impl Builder {
             });
             return;
         }
-        let call_predecessor = self.pending_blocks.iter().any(|block| {
+        // The owners the call block already ended with a terminal Transfer:
+        // a `consuming self` receiver hands its generation to the callee at
+        // the argument (the callee owns it, on unwind too).
+        let call_predecessor = self.pending_blocks.iter().find(|block| {
             matches!(
                 &block.terminator,
                 Terminator::Call {
@@ -2226,17 +2400,36 @@ impl Builder {
                     && args.contains(&receiver_place)
             )
         });
+        let ended_at_call: Option<HashSet<crate::model::OwnerId>> = call_predecessor.map(|block| {
+            block
+                .instructions
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    Instr::OwnershipEvent(crate::model::OwnershipEvent::Transfer {
+                        owner,
+                        to: None,
+                        ..
+                    }) => Some(*owner),
+                    _ => None,
+                })
+                .collect()
+        });
         for (binding, owner_ty) in owners {
             let generation = self.owner_generations.get(&binding).copied().unwrap_or(0);
             let owner = crate::model::OwnerId {
                 binding,
                 generation,
             };
-            if call_predecessor {
+            if let Some(ended_at_call) = &ended_at_call {
                 let replacement = crate::model::OwnerId {
                     binding,
                     generation: generation.saturating_add(1),
                 };
+                // The returned identity of an already-ended receiver is a
+                // fresh owner from the caller's side: publish it as the
+                // binding's next generation minted at the result slot, never
+                // as a transfer out of the generation the call block ended.
+                let receiver_ended_at_call = ended_at_call.contains(&owner);
                 self.owner_generations
                     .insert(binding, replacement.generation);
                 self.push_bind_statement(
@@ -2252,18 +2445,26 @@ impl Builder {
                 {
                     entry.disposition = Disposition::ScopeExit;
                 }
-                // The caller retains cleanup authority if the call unwinds.
-                // Only the normal successor commits receiver consumption and
-                // publishes the returned identity as the next generation.
-                self.push_instr(Instr::OwnershipEvent(
+                let event = if receiver_ended_at_call {
+                    crate::model::OwnershipEvent::Mint {
+                        owner: replacement,
+                        place: result_place,
+                        ty: owner_ty,
+                    }
+                } else {
+                    // A borrowed receiver keeps caller cleanup authority
+                    // through the call (and its unwind). Only the normal
+                    // successor commits the receiver and publishes the
+                    // returned identity as the next generation.
                     crate::model::OwnershipEvent::Transfer {
                         owner,
                         from: receiver_place,
                         to: Some(result_place),
                         to_owner: Some(replacement),
                         to_ty: Some(owner_ty),
-                    },
-                ));
+                    }
+                };
+                self.push_instr(Instr::OwnershipEvent(event));
             } else if receiver_place != result_place {
                 // `lower_value_for_move` conservatively records a consuming
                 // binding reference before the typed produced-value fact is
@@ -2351,8 +2552,19 @@ impl Builder {
         result_site: SiteId,
         source_sites: &[SiteId],
         result_place: Place,
+        result_ty: &ResolvedTy,
     ) {
-        let mut transferred = HashSet::new();
+        // An arm-local owner moved bare into the join slot (a payload binder
+        // returned as the arm value, `.Ok(value) => value`) has no Owned
+        // produced-value fact of its own and cannot be live after its arm;
+        // recover it from the predecessor's Move so its generation ends at the
+        // arm and the join owner is the sole generation here. Owners of an
+        // enclosing scope are left to the divergent-selection passes, which
+        // also release the unselected sibling on the other arms.
+        let mut transferred: HashSet<BindingId> = self
+            .composite_join_relocated_owners(result_place, result_ty, true)
+            .into_iter()
+            .collect();
         for source_site in source_sites {
             if !self
                 .param_ownership
@@ -2491,7 +2703,7 @@ impl Builder {
     /// carries its
     /// [`OwnershipDecision::InteriorAlias`]-shaped provenance and is minted
     /// [`Disposition::AliasOf`], so it drops out of the scope-exit-live view the
-    /// drop-elaboration provers and `build_lifo_drops` read: the alias emits no
+    /// ownership finalizers read and never mints an owner generation: the alias emits no
     /// composite drop of its own (the owner's composite frees the whole tree),
     /// and its base local never seeds the record/tuple provers'
     /// `release_owner_bases`, so it no longer trips their Defect-1 blanket
@@ -3030,7 +3242,7 @@ impl Builder {
     /// projection (`println(make_record().field)`) therefore needs both the
     /// leaf's inline release and the parent's recursive scope-exit drop. Merely
     /// observing the provisional parent owner is insufficient: unresolved
-    /// synthetic publications are intentionally withheld from the exit LIFO.
+    /// synthetic publications intentionally mint no owner.
     /// Finalizing that exact publication makes the original aggregate owner
     /// eligible without minting a second owner.
     pub(crate) fn finalize_typed_projection_parent_owner(&mut self, expr: &HirExpr) -> bool {
@@ -3498,67 +3710,6 @@ impl Builder {
         let idx = order.iter().position(|(f, _)| f == field)?;
         u32::try_from(idx).ok()
     }
-    /// The `(alias_local, owner_root_local)` pairs for every `AliasOf` ledger
-    /// entry: a `let mid = o.mid` / `let leaf = mid.leaf` byte-copy interior
-    /// alias mapped to the base local of the still-live OWNER root its recorded
-    /// provenance chains to, resolving intermediate aliases to the first
-    /// non-alias owner (a `leaf -> mid -> o` chain resolves both `leaf` and
-    /// `mid` to `o`).
-    ///
-    /// The record and tuple composite provers fold these into their field-
-    /// binder set. The whole-value alias map and the field-load scan they build
-    /// from the instruction stream only reach a ONE-hop alias (`mid` reads the
-    /// root directly, so it is collected); a DEEPER alias (`leaf` reads `mid`,
-    /// not the root) is invisible to them. Without the carried provenance a deep
-    /// alias that ESCAPES into an owning sink (returned, stored into an owning
-    /// record, sent) would leave the owner's composite admitted to free a
-    /// subtree the escapee already handed to the caller — a double-free. Folding
-    /// the recorded alias in, attributed to its owner, excludes exactly that
-    /// owner when the deep alias escapes, and leaves the owner admitted when the
-    /// alias is only read interiorly (the consumed-match path).
-    ///
-    /// An entry whose owner root is not a nameable local is dropped — the prover
-    /// keeps its fail-closed blanket for it (leak, never double-free).
-    pub(crate) fn alias_owner_field_binders(&self) -> Vec<(u32, u32)> {
-        // One hop: each alias's base local -> its recorded provenance root local.
-        // Keyed on the carried alias PROVENANCE, not the live disposition: a
-        // recorded byte-copy alias that is later consumed (moved into the return
-        // slot / a sink) is dispositioned off `AliasOf`, but consuming an alias
-        // moves no ownership — the owner still holds the heap. Its escape must
-        // still exclude the owner, so the provenance keeps it in scope here even
-        // after the disposition flips.
-        let mut one_hop: HashMap<u32, u32> = HashMap::new();
-        for entry in &self.owned_locals {
-            let Some(PlaceProvenance::Local(root_local)) =
-                entry.provenance.as_ref().map(|p| p.root)
-            else {
-                continue;
-            };
-            let Some(alias_local) = self
-                .binding_locals
-                .get(&entry.binding)
-                .and_then(|p| base_local(*p))
-            else {
-                continue;
-            };
-            one_hop.insert(alias_local, root_local);
-        }
-        // Resolve each alias to the ultimate owner by chasing intermediate
-        // aliases. The hop count is bounded by the alias count, so the walk
-        // terminates even if a (malformed) cycle ever appears.
-        let mut resolved = Vec::with_capacity(one_hop.len());
-        for (&alias_local, &first_root) in &one_hop {
-            let mut owner = first_root;
-            for _ in 0..one_hop.len() {
-                match one_hop.get(&owner) {
-                    Some(&next) => owner = next,
-                    None => break,
-                }
-            }
-            resolved.push((alias_local, owner));
-        }
-        resolved
-    }
     /// The `(alias_local, immediate_parent_local, field_ordinal)` triples for
     /// every recorded byte-copy interior alias ([`Disposition::AliasOf`]) whose
     /// provenance is a single record/tuple field projection of a nameable parent
@@ -3568,11 +3719,9 @@ impl Builder {
     /// to its ultimate owner, this preserves the intermediate structure so the
     /// escaped-record sibling-discharge emitter can walk the chain and compensate
     /// the non-escaped siblings at EVERY level (the outer `c` through the root,
-    /// the intermediate `mid.x` through the `mid` alias) — matching the multi-hop
-    /// reach `close_alias_binders_forward` gave the composite-drop prover's
-    /// exclusion. Without it the widened exclusion removes the owner's composite
-    /// drop while the one-hop sibling emitter (blind past a one-hop alias) leaves
-    /// every deeper sibling to leak unconditionally.
+    /// the intermediate `mid.x` through the `mid` alias). Without it the one-hop
+    /// sibling emitter (blind past a one-hop alias) leaves every deeper sibling
+    /// to leak unconditionally.
     ///
     /// An entry whose parent is not a named local, or whose provenance path is
     /// not a single field step, is dropped — the emitter keeps its fail-closed
@@ -3601,15 +3750,26 @@ impl Builder {
         chain
     }
     /// The scope-exit-live owned locals as `(binding, name, ty)` tuples — the
-    /// compat shape the twelve allow-set provers, `build_lifo_drops`, and the
-    /// double-free gate consume. The `Disposition::ScopeExit` filter narrows the
-    /// ledger to exactly the bindings the function-exit LIFO pass still owns:
+    /// compat shape the ownership finalizers and the double-free gate consume
+    /// (exit plans themselves derive from event replay, not from this list).
+    /// The `Disposition::ScopeExit` filter narrows the
+    /// ledger to exactly the bindings still owned at scope exit:
     /// entries retracted by a [`Builder::set_owned_local_disposition`] write
     /// (consumed, body-end-released, inner-scope-released) are excluded, which is
     /// the same set the former `owned_locals.retain(...)` physical removals left
     /// behind — so the drop-elaboration view is byte-identical to the pre-
     /// disposition ledger. The retracted entries survive in the whole ledger
     /// ([`Builder::owned_locals_ledger`]) for an end-of-pass scan to observe.
+    ///
+    /// SHORTCUT — WHY: the string and bytes finalizers classify a slot as a
+    /// mint or a retain while lowering is still emitting events, so they
+    /// cannot replay a finished stream and read this Builder ledger view of
+    /// scope-exit-live owners instead. WHEN obsolete: once every owner
+    /// generation publishes its mint and its end as events at lowering time
+    /// (the same condition as [`Builder::owned_locals_ledger`]'s marker), the
+    /// finalizers classify from replay. WHAT: derive the scope-exit-live set
+    /// from Checked-MIR event replay and delete this ledger reader; nothing
+    /// downstream of `seal_checked` may read it.
     pub(crate) fn owned_locals_snapshot(&self) -> Vec<(BindingId, String, ResolvedTy)> {
         self.owned_locals
             .iter()
@@ -3617,22 +3777,24 @@ impl Builder {
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
     }
-    /// The owned locals that may still own a value on a path to an exit —
-    /// either scope-exit-live (`ScopeExit`) or retracted only by a consume that
-    /// transfers the value out (`ConsumedAt`). A binding in this view is a
-    /// candidate for path-sensitive cleanup, including compiler-generated
-    /// produced-value bindings that are the source of a recorded typed handoff.
-    /// Such a synthetic result is a real owner from successful publication until
-    /// its later move into a source binding or aggregate; excluding it leaves the
-    /// producer-to-handoff interval uncovered on an unwind edge. A typed result
-    /// that is already the terminal/canonical owner is not added a second time.
-    /// CFG liveness suppresses the source drop after the handoff.
-    /// A normal-path `BodyEndReleased` / `ScopeReleased` disposition does not
-    /// erase the owner's earlier lifetime: a call before that release can still
-    /// unwind while the generation is live. Keep those entries in the template
-    /// and let the per-program-point MIR dataflow suppress them after their
-    /// explicit consume/release event. Only `AliasOf` is never an owner.
-    pub(crate) fn owned_locals_exit_candidates(&self) -> Vec<(BindingId, String, ResolvedTy)> {
+    /// Every ledger entry that is or was an owner generation — all dispositions
+    /// except `AliasOf`, deduplicated by binding in registration order. The
+    /// pre-seal neutralize/release passes read this view to find the slots a
+    /// physical transfer may null or a proven last read may release. It is not
+    /// a plan source: exit plans derive from the minted owners' event replay,
+    /// which is why a `BodyEndReleased` / `ScopeReleased` / `ConsumedAt`
+    /// disposition keeps its entry here (the generation was live before that
+    /// release, and a call before it can still unwind). Only `AliasOf` is
+    /// never an owner.
+    ///
+    /// SHORTCUT — WHY: the pre-seal passes run while lowering is still
+    /// emitting events, so they cannot replay the finished stream and read
+    /// this Builder ledger view instead. WHEN obsolete: once reassignment and
+    /// transfer publish their generation-end events at lowering time (the
+    /// same condition as the `prepare_body_transfers` replay marker). WHAT:
+    /// derive the slot view from Checked-MIR event replay and delete this
+    /// ledger reader.
+    pub(crate) fn owned_locals_owner_generations(&self) -> Vec<(BindingId, String, ResolvedTy)> {
         let mut seen = HashSet::new();
         self.owned_locals
             .iter()
@@ -3667,8 +3829,8 @@ impl Builder {
     /// The entry stays in the ledger (an end-of-pass whole-ledger scan can still
     /// observe it via [`Builder::owned_locals_ledger`]) but leaves the
     /// scope-exit view [`Builder::owned_locals_snapshot`] projects, so the
-    /// function-exit LIFO drop pass no longer fires on it — byte-identical to the
-    /// physical removal it replaces. Sets every entry matching `binding`,
+    /// ownership finalizers no longer treat it as a scope-exit owner. Sets
+    /// every entry matching `binding`,
     /// mirroring `retain`'s remove-all semantics (at most one exists in
     /// practice).
     pub(crate) fn set_owned_local_disposition(
@@ -3833,7 +3995,7 @@ impl Builder {
         }
         if let (Some(place), Some(generation)) = (
             self.binding_locals.get(&binding).copied(),
-            self.owner_generations.get(&binding).copied(),
+            self.live_owner_generation(binding),
         ) {
             self.push_instr(Instr::OwnershipEvent(
                 crate::model::OwnershipEvent::Transfer {
@@ -3849,6 +4011,20 @@ impl Builder {
             ));
         }
         self.set_owned_local_consumed_post_lowering(binding, transferee, site);
+    }
+
+    /// The binding's current owner generation, unless the ledger already
+    /// demoted it to a byte-copy alias: `DemoteToAlias` ended that generation,
+    /// so no later transfer may name it. `owner_generations` is a latest-mint
+    /// cursor, not a liveness view.
+    pub(crate) fn live_owner_generation(&self, binding: BindingId) -> Option<u32> {
+        let is_alias = self
+            .owned_locals
+            .iter()
+            .any(|entry| entry.binding == binding && entry.disposition == Disposition::AliasOf);
+        (!is_alias)
+            .then(|| self.owner_generations.get(&binding).copied())
+            .flatten()
     }
 
     /// Consume an owner from the explicit instruction-position place rather
@@ -3868,7 +4044,7 @@ impl Builder {
                 value: 1,
             });
         }
-        if let Some(generation) = self.owner_generations.get(&binding).copied() {
+        if let Some(generation) = self.live_owner_generation(binding) {
             self.push_instr(Instr::OwnershipEvent(
                 crate::model::OwnershipEvent::Transfer {
                     owner: crate::model::OwnerId {
@@ -4016,51 +4192,6 @@ impl Builder {
             .iter()
             .any(|k| !matches!(k, crate::state_clone::StateFieldCloneKind::BitCopy { .. }));
         Ok(has_owned_field.then_some(kinds))
-    }
-    /// Prove that one ordinary record-field overwrite preserves the enclosing
-    /// record's final ownership.
-    ///
-    /// Any droppable field whose overwrite-release is TOTAL and reaches no
-    /// forbidden boundary qualifies — a `string`, `Vec<string>`, owned record,
-    /// inline enum, or bit-copy field. `lower_record_field_store` frees the
-    /// abandoned value before storing the replacement, so the record keeps sole
-    /// ownership of the freshly-stored value and retains its scope-exit
-    /// `RecordInPlace` drop; excluding it here leaked the reassigned owner.
-    /// Every unsupported overwrite (affine `#[resource]`/IO/opaque/indirect-enum
-    /// payload) keeps the fail-closed owner exclusion in
-    /// `derive_owned_record_drop_allowed`, dropping the record by no path rather
-    /// than double-freeing a handle the store could not release.
-    pub(crate) fn record_field_store_preserves_record_owner(
-        &self,
-        record: Place,
-        field_offset: FieldOffset,
-    ) -> bool {
-        let Some(record_local) = base_local(record) else {
-            return false;
-        };
-        let Some(record_ty) = self.locals.get(record_local as usize) else {
-            return false;
-        };
-        let Some(record_key) = user_record_layout_key(record_ty) else {
-            return false;
-        };
-        let Some(fields) = self.lookup_record_field_order(&record_key) else {
-            return false;
-        };
-        let Some((_, field_ty)) = fields.get(field_offset.0 as usize) else {
-            return false;
-        };
-        let field_ty = self.normalize_machine_field_ty(field_ty);
-        let record_layouts = self.record_layouts_for_classification();
-        crate::state_clone::field_overwrite_release_preserves_owner(
-            &field_ty,
-            &record_layouts,
-            &self.enum_layouts,
-            &self.opaque_handle_names,
-            &self.lifecycle_registry,
-            &self.resource_record_names_for_drop_readiness(),
-        )
-        .unwrap_or(false)
     }
     /// Narrow correction for generic records whose inline generic-enum field
     /// owns heap even though the HIR value-class marker still says `BitCopy`.
@@ -5001,8 +5132,8 @@ impl Builder {
     /// path fires the release.
     ///
     /// Restricted to the collection classes whose releases are null-tolerant
-    /// runtime frees and whose allow-set provers ride the
-    /// `derive_local_collection_drop_allowed` escape scan; every other owned
+    /// runtime frees and whose mint-site admission rides the local-collection
+    /// escape scan; every other owned
     /// class keeps the legacy path-insensitive retraction (fail-closed: leak
     /// on the not-moved path, never a double-free). A mutable binding that is
     /// also reassigned takes the #2301 `overwrite_guard_flags` path instead —
@@ -5493,9 +5624,9 @@ impl Builder {
     /// `HashSet`, `bytes`, `CoW string` and owned records each gate their
     /// scope-exit release on a per-class escape-scan allow-set that removes a
     /// handle proven to have escaped into an aggregate. `Rc` / `Weak` have no
-    /// such allow-set — `build_lifo_drops`' `AffineResource` arm emits their
-    /// release unconditionally — so the transfer has to be recorded where it
-    /// happens.
+    /// such allow-set — their `AffineResource` recipe is replayed onto every
+    /// exit where the owner is still live — so the transfer has to be recorded
+    /// where it happens.
     ///
     /// The record is the SAME path-sensitive drop-flag store a by-value
     /// `Use { Consume }` already emits (`#1933` / `#1941`):
@@ -6318,9 +6449,10 @@ impl Builder {
     /// * `call_param_owned_carrier == Some(true)`, minus the two type classes
     ///   `register_owned_call_carrier_param` excludes up front (indirect enums
     ///   and machines, which carry their own move/drop authority);
-    /// * `call_param_consume.is_consume()` **conjoined with**
-    ///   `ty_is_heap_owning_enum_composite` — the #2732 enum-composite callee
-    ///   drop.
+    /// * `call_param_owned_carrier == Some(true)` **conjoined with**
+    ///   `ty_is_heap_owning_enum_composite` — the enum-composite callee drop
+    ///   for a summary-owned parameter the carrier protocol could not admit
+    ///   (already covered by the bullet above).
     ///
     /// The remaining three mints are `ActorHandler`-convention only, so their
     /// caller is the mailbox hand-off in `lower_actor_send`
@@ -6330,15 +6462,14 @@ impl Builder {
     /// refcount into the delivered `BytesTriple`, so `lower_params` registers
     /// a scope-exit owner for it exactly like the other two).
     ///
-    /// The conjunction in the third bullet is load-bearing and was measured:
-    /// `call_param_consume` is a body-escape summary, not a mint predicate. The
-    /// `string::fmt` display shim carries `ProvenConsume` on its `string`
-    /// parameter and mints nothing at all, because the enum-composite type gate
-    /// excludes it. Reading the summary alone refused
-    /// `println(f"…{h.label}…")` for every proven-foreign `h` — a program with
-    /// no double release in it. Refusing where the callee does not mint is not
-    /// "fail closed", it is a false rejection, so the caller-side question is
-    /// asked at precisely the callee-side mint conditions and nowhere else.
+    /// The body-escape bit is a summary, not a mint predicate:
+    /// the `string::fmt` display shim carries CONSUME on its `string`
+    /// parameter and mints nothing at all. Reading that summary here once
+    /// refused `println(f"…{h.label}…")` for every proven-foreign `h` — a
+    /// program with no double release in it. Refusing where the callee does
+    /// not mint is not "fail closed", it is a false rejection, so the
+    /// caller-side question is asked at precisely the callee-side mint
+    /// conditions and nowhere else.
     pub(crate) fn reject_opaque_foreign_call_arg_transfers(
         &mut self,
         callee_item: Option<hew_hir::ItemId>,
@@ -6376,6 +6507,15 @@ impl Builder {
             return true;
         }
         let ty = self.subst_ty(&arg.ty);
+        // OwnedCursor is a distinct direct-call boundary. Its callee mints a
+        // guarded cursor owner from entry regardless of the generic escape
+        // summary, so provenance admission must recognise it before the
+        // owned-carrier predicate and the carrier predicate must exclude it.
+        if let Some(mode) =
+            self.vec_iter_param_boundary_mode(&ty, crate::model::FunctionCallConv::Default)
+        {
+            return mode == crate::model::ParamBoundaryMode::OwnedCursor;
+        }
         // Arm 2 — the owned-call-carrier parameter, up to the two type classes
         // `register_owned_call_carrier_param` excludes before it even consults
         // the snapshot plan.
@@ -6385,24 +6525,12 @@ impl Builder {
             .get(&key)
             .copied()
             == Some(true)
+            && !self.ty_is_exact_vec_iter(&ty)
             && !crate::lower::drop_plan::ty_is_indirect_enum(&ty, &self.enum_layouts)
             && !self.ty_is_machine(&ty);
-        if carrier {
-            return true;
-        }
-        // Arm 3 — the #2732 heap-owning enum-composite callee drop. Both
-        // conjuncts are required: the summary alone is a body-escape fact, not
-        // a mint predicate.
-        self.param_ownership
-            .call_param_consume
-            .get(&key)
-            .is_some_and(|verdict| verdict.is_consume())
-            && crate::lower::ty_is_heap_owning_enum_composite(
-                &ty,
-                &self.record_field_orders,
-                &self.enum_layouts,
-                self.type_classes.lifecycle_registry(),
-            )
+        // The enum-composite callee drop is gated on the same carrier summary
+        // and adds no mint the carrier arm does not already report.
+        carrier
     }
 
     /// The ONE composite-provenance query every mint site in this builder asks.
@@ -6542,18 +6670,17 @@ impl Builder {
     /// from both an owned local and a borrowed parameter: the VALUE is
     /// frame-owned (a fresh per-iteration count from the clone-out / recv),
     /// but its release authority is the per-iteration BODY-END drop, not the
-    /// function-scope LIFO. A static `Consume` here suppresses no local
-    /// scope-exit drop; what it does instead is poison the dataflow —
-    /// `MaybeConsumed` at any abandonment exit inside the body region walls
-    /// the program off behind the `vec_iter_yield_abandonment` NYI, and the
-    /// body-end drop is separately suppressed by the escape scan, leaking the
-    /// binder's count on the not-taken path.
+    /// function-scope owner. A static `Consume` here suppresses no local
+    /// scope-exit drop; it ends the binder's generation on one path only, and
+    /// the body-end drop is separately suppressed by the escape scan, so the
+    /// replay-derived edge release is the only thing standing between the
+    /// not-taken path and a leaked count.
     ///
-    /// The retain pairing keeps every count balanced with no dataflow
+    /// The retain pairing keeps every count balanced with no path
     /// ambiguity: clone `+1` (binder), retain `+1` (collection's own count),
-    /// body-end drop `-1`, collection teardown `-1`. The binder stays `Live`
-    /// on every path, so the abandonment analysis has nothing conditional to
-    /// reject and the cancel/panic exit drops keep firing.
+    /// body-end drop `-1`, collection teardown `-1`. The binder stays live
+    /// on every path, so no edge release is needed and the cancel/panic exit
+    /// drops keep firing.
     pub(crate) fn retain_yield_binder_cow_collection_ingress(
         &mut self,
         operand: &HirExpr,
@@ -7118,7 +7245,7 @@ mod typed_produced_owner_tests {
             "the ledger must preserve both value generations for later provenance scans"
         );
         assert_eq!(
-            builder.owned_locals_exit_candidates(),
+            builder.owned_locals_owner_generations(),
             vec![(binding, "inner".to_string(), ResolvedTy::String)],
             "one mutable slot generation must have one scope-exit release authority"
         );
@@ -7294,7 +7421,12 @@ mod typed_produced_owner_tests {
             super::DischargeSite::BindingMoved,
         );
 
-        builder.transfer_join_owners(result_site, &[source_site], Place::Local(14));
+        builder.transfer_join_owners(
+            result_site,
+            &[source_site],
+            Place::Local(14),
+            &ResolvedTy::String,
+        );
 
         assert_eq!(builder.owned_locals_ledger().len(), 1);
         assert!(matches!(
@@ -7885,7 +8017,7 @@ mod typed_produced_owner_tests {
             .synthetic_owner_publication_sites
             .contains_key(&provisional));
         assert_eq!(
-            builder.owned_locals_exit_candidates(),
+            builder.owned_locals_owner_generations(),
             vec![
                 (
                     provisional,

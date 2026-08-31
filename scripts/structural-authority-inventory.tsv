@@ -56,10 +56,6 @@ lifecycle-identity-authority	lifecycle-conflict-use	hew-types/src/check/registra
 lifecycle-identity-authority	lifecycle-conflict-variant	hew-types/src/check/types.rs	5	stage-2	canonical checker lifecycle identity carrier
 mir-ownership-sink	ownership-classify-call	hew-mir/src/lower/ownership.rs	4	stage-4	reviewed cleanup-shape classification sites, including destination classification when an exact source OwnerId generation transfers into a newly bound local
 mir-ownership-sink	ownership-classify-call	hew-mir/src/ownership.rs	1	stage-4	RC1 syntax-node authority inventory
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/closure_gen.rs	2	stage-3	composed owner retirement path
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/drop_plan.rs	2	stage-3	composed owner retirement path
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/mod.rs	4	stage-3	composed owner retirement path
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/temp_drop.rs	2	stage-3	composed owner retirement path
 owner-retirement-path	crash-cleanup-owner-path	hew-codegen-rs/src/llvm.rs	2	stage-3	composed owner retirement path
 owner-retirement-path	crash-cleanup-owner-path	hew-mir/src/lower/machine_synth.rs	1	stage-3	composed owner retirement path
 owner-retirement-path	join-owner-consumer	hew-codegen-rs/src/llvm.rs	3	stage-3	composed owner retirement path
@@ -68,7 +64,6 @@ owner-retirement-path	join-owner-consumer	hew-mir/src/dump.rs	1	stage-3	composed
 owner-retirement-path	join-owner-consumer	hew-mir/src/lower/drop_plan.rs	2	stage-3	composed owner retirement path
 owner-retirement-path	join-owner-consumer	hew-mir/src/lower/mod.rs	1	stage-3	composed owner retirement path
 owner-retirement-path	join-owner-consumer	hew-mir/src/lower/suspend_places.rs	2	stage-3	production Join source/escape consumers; the removed third consumer belonged to the now test-only legacy escape dataflow
-owner-retirement-path	join-owner-consumer	hew-mir/src/lower/temp_drop.rs	1	stage-3	composed owner retirement path
 owner-retirement-path	join-owner-path	hew-mir/src/lower/task.rs	1	stage-3	composed owner retirement path
 runtime-call-authority	runtime-call-family-consumer	hew-hir/src/verify.rs	1	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-hir/src/lower.rs	7	stage-4	typed runtime-family dispatch carrier
@@ -174,7 +169,7 @@ suspend-authority	suspending-terminator-consumer	hew-mir/src/dump.rs	4	stage-3	c
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/drop_plan.rs	1	stage-3	one production exit-plan consumer remains; three secondary obligation-successor consumers are test-only and the retired closure-pair escape consumer was removed
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/mod.rs	7	stage-3	canonical CFG successor redirection now handles Suspend, scope-deadline, and suspending-select edges directly, adding three explicit production consumers
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/suspend_places.rs	4	stage-3	production source/yield consumers remain; two legacy terminator-escape consumers moved behind cfg(test) with the retired secondary dataflow
-suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/temp_drop.rs	5	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/temp_drop.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-consumer	hew-mir/src/model.rs	5	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/actor.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier

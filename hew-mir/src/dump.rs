@@ -270,6 +270,7 @@ fn render_param_boundary_mode(fact: ParamBoundaryFact) -> &'static str {
         ParamBoundaryMode::TransferResource => "transfer-resource",
         ParamBoundaryMode::OwnedMessage => "owned-message",
         ParamBoundaryMode::OwnedCarrier => "owned-carrier",
+        ParamBoundaryMode::OwnedCursor => "owned-cursor",
         ParamBoundaryMode::RejectUnprovenRepresentationMutation => {
             "reject-unproven-representation-mutation"
         }
@@ -334,27 +335,9 @@ fn dump_basic_block(
 // ---------------------------------------------------------------------------
 
 fn render_place(place: &Place) -> String {
-    match place {
-        Place::Local(n) => format!("_{n}"),
-        Place::ReturnSlot => "ret".to_string(),
-        Place::DuplexHandle(n) => format!("duplex{n}"),
-        Place::LambdaActorHandle(n) => format!("lambda{n}"),
-        Place::ActorHandle(n) => format!("actor{n}"),
-        Place::SendHalf(n) => format!("send_half{n}"),
-        Place::RecvHalf(n) => format!("recv_half{n}"),
-        Place::MachineTag(n) => format!("mtag{n}"),
-        Place::MachineVariant {
-            local,
-            variant_idx,
-            field_idx,
-        } => format!("mvar{local}.{variant_idx}.{field_idx}"),
-        Place::EnumTag(n) => format!("etag{n}"),
-        Place::EnumVariant {
-            local,
-            variant_idx,
-            field_idx,
-        } => format!("evar{local}.{variant_idx}.{field_idx}"),
-    }
+    // The rendering table lives on `Display for Place` so diagnostics and
+    // dumps cannot drift apart.
+    place.to_string()
 }
 
 fn render_raw_value(value: RawValueId) -> String {
@@ -1711,10 +1694,13 @@ fn render_mir_check(check: &MirCheck) -> String {
         ),
         MirCheck::ObligationOverReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
             reason,
-        } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
+        } => format!(
+            "ObligationOverReleased {function} blocks={blocks:?} site={site:?} {name} {reason:?}"
+        ),
         MirCheck::ObligationBalanceUnverified { function, reason } => {
             format!("ObligationBalanceUnverified {function} {reason:?}")
         }
@@ -1940,12 +1926,21 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         ),
         MirDiagnosticKind::ObligationOverReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
             reason,
-        } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
-        MirDiagnosticKind::ObligationBalanceUnverified { function, reason } => {
-            format!("ObligationBalanceUnverified {function} {reason:?}")
+        } => format!(
+            "ObligationOverReleased {function} blocks={blocks:?} site={site:?} {name} {reason:?}"
+        ),
+        MirDiagnosticKind::LoweringInvariant {
+            function,
+            rule,
+            block,
+            detail,
+        } => {
+            let block = block.map_or_else(String::new, |block| format!(" bb{block}"));
+            format!("LoweringInvariant {function}{block} {rule} {detail:?}")
         }
         MirDiagnosticKind::ContextBoundaryViolation {
             function,
@@ -1953,18 +1948,6 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             kind,
             reason,
         } => format!("ContextBoundaryViolation {function} bb{block} {kind} {reason:?}"),
-        MirDiagnosticKind::DischargeAuthorityMissing {
-            function,
-            block,
-            authority,
-            reason,
-        } => format!("DischargeAuthorityMissing {function} bb{block} {authority:?} {reason:?}"),
-        MirDiagnosticKind::DischargeAuthorityDrift {
-            function,
-            block,
-            name,
-            reason,
-        } => format!("DischargeAuthorityDrift {function} bb{block} {name} {reason:?}"),
         MirDiagnosticKind::ContextBindingEscapes { place, block } => {
             format!("ContextBindingEscapes {} bb{block}", render_place(place))
         }

@@ -1,0 +1,33 @@
+// `if let` over an owned call-carrier parameter: the binder aliases the
+// payload slot (no second release at scope exit), and a returned payload
+// transfers out of the slot so the parameter's terminal drop skips it.
+type Bag {
+    items: Vec<string>;
+}
+
+fn count(b: Bag) -> i64 {
+    b.items.len() as i64
+}
+
+fn peek(o: Option<Bag>) -> i64 {
+    if let Some(b) = o {
+        return count(b) + count(b);
+    }
+    0
+}
+
+fn label(o: Option<string>) -> string {
+    if let Some(s) = o {
+        return s;
+    }
+    "none"
+}
+
+fn main() {
+    let items: Vec<string> = Vec.new();
+    items.push("a" + "x");
+    println(f"{peek(Some(Bag { items: items }))}");
+    println(f"{peek(None)}");
+    println(label(Some("v" + "w")));
+    println(label(None));
+}

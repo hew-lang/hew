@@ -5,10 +5,9 @@
 // ownership-transferring use of the binder therefore lowers as a
 // RETAIN-BACKED SHARE (`+1` for the destination, the binder keeps its own
 // count and its body-end release), never as a static consume: the consume
-// suppressed nothing locally, poisoned the dataflow into the
-// "conditionally moved VecIter yield across an abandonment point" NYI wall,
-// and stranded the post-pass share retain without a balancing destination
-// release (`ObligationUnderReleased`).
+// suppressed nothing locally, left the binder conditionally consumed at
+// every later abandonment exit, and stranded the post-pass share retain
+// without a balancing destination release (`ObligationUnderReleased`).
 //
 // Every key is a HEAP string (concatenated) so a regressed count aborts or
 // leaks rather than no-op dropping a static literal.

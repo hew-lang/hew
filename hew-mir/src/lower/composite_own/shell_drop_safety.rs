@@ -16,8 +16,6 @@ use hew_hir::{TypeClassTable, ValueClass};
 use hew_types::ResolvedTy;
 use std::collections::{HashMap, HashSet};
 
-use super::{base_local, BasicBlock, Instr, Place};
-
 /// True when a candidate enum's DIRECT variant payload carries a
 /// lifecycle-registered resource record (the declared-release carve-out
 /// class). Such a payload's shell-drop step is USER code —
@@ -55,44 +53,6 @@ pub(in crate::lower) fn direct_payload_has_registered_resource_record(
             })
         })
     })
-}
-
-/// Exclude a declared-release candidate the moment its payload is handed off.
-///
-/// The neutralize-transfer protocol's soundness claim — "the carrier's guarded
-/// drop releases nothing for a neutralized slot" — is a NULL-SAFETY property
-/// of the payload's drop step: a zeroed string/bytes pointer is a no-op free
-/// and an opaque slot has no drop at all. A declared-release record's drop
-/// step is the user's `close(self)` run by `__hew_record_drop_inplace_<R>`
-/// behind the still-set variant tag, which executes unconditionally over the
-/// zeroed storage — the S2200 double close, resurrected through the consume
-/// path (`Ok(c) => c.close()`) instead of the borrow path. Any
-/// `NeutralizePayloadSlot` on such a candidate's variant slot therefore
-/// excludes the whole candidate, fail-closed: the arm's own consume/close is
-/// then the sole release and the sibling variant leaks, exactly like every
-/// other payload escape.
-pub(super) fn note_declared_release_neutralize_exclusions(
-    blocks: &[BasicBlock],
-    alias_of: &HashMap<u32, u32>,
-    declared_release_payload_candidate_locals: &HashSet<u32>,
-    excluded_roots: &mut HashSet<u32>,
-) {
-    for block in blocks {
-        for instr in &block.instructions {
-            if let Instr::NeutralizePayloadSlot {
-                place: place @ (Place::MachineVariant { .. } | Place::EnumVariant { .. }),
-                ..
-            } = instr
-            {
-                if let Some(root) = base_local(*place)
-                    .and_then(|local| alias_of.get(&local).copied())
-                    .filter(|root| declared_release_payload_candidate_locals.contains(root))
-                {
-                    excluded_roots.insert(root);
-                }
-            }
-        }
-    }
 }
 
 /// True when every heap leaf reachable through a candidate composite `ty` is

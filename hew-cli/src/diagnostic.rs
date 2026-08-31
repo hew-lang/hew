@@ -123,16 +123,23 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
         | hew_mir::MirDiagnosticKind::OutboundModeUnresolved { .. }
         | hew_mir::MirDiagnosticKind::MustConsume { .. }
-        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
-        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
-        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
-        | hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
-        | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. }
-        | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "E_MIR_CHECK",
+        // Internal-compiler-error channel: a lowering invariant failed, or the
+        // compiler's own drop plan does not release an owned value exactly
+        // once. The program is not at fault; the code is distinct so tooling
+        // never files these with the user's ownership errors. `hew-mir`'s
+        // `internal_compiler_error_function` is the authority for the set.
+        hew_mir::MirDiagnosticKind::LoweringInvariant { .. }
+        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. } => "E_MIR_ICE",
+        // A refusal, not a defect and not the user's error: the elaborator
+        // proved nothing wrong, it failed to prove a shape safe and declined
+        // to emit a partial plan. Same family as the aggregate-extraction
+        // refusal beside it.
         hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
+        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
             "E_NOT_YET_IMPLEMENTED"
         }
@@ -595,12 +602,8 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. } => "DropPlanUndetermined",
         hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. } => "ObligationUnderReleased",
         hew_mir::MirDiagnosticKind::ObligationOverReleased { .. } => "ObligationOverReleased",
-        hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. } => {
-            "ObligationBalanceUnverified"
-        }
+        hew_mir::MirDiagnosticKind::LoweringInvariant { .. } => "LoweringInvariant",
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. } => "ContextBoundaryViolation",
-        hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. } => "DischargeAuthorityMissing",
-        hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. } => "DischargeAuthorityDrift",
         hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "ContextBindingEscapes",
         hew_mir::MirDiagnosticKind::UnknownActorStateField { .. } => "UnknownActorStateField",
         hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { .. } => "InvalidActorSpawnArgument",
@@ -679,6 +682,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         }
         hew_mir::MirDiagnosticKind::MustConsume { bind_site, .. } => Some(*bind_site),
         hew_mir::MirDiagnosticKind::ObligationUnderReleased { site, .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { site, .. }
         | hew_mir::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing { site, .. }
         | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
@@ -701,11 +705,8 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
-        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
-        | hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. }
+        | hew_mir::MirDiagnosticKind::LoweringInvariant { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
-        | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. }
-        | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
@@ -804,9 +805,11 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             "remote dispatch to multi-parameter receive fn `{handler}` on actor `{actor}` \
              is not supported: the cross-node codec carries single-value payloads only"
         ),
-        hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, reason } => {
-            format!("drop plan for MIR block {block} could not be determined: {reason}")
-        }
+        hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, reason } => format!(
+            "the compiler cannot yet prove a safe cleanup for every exit of MIR \
+             block {block}, so it refuses to emit a partial one (this is a \
+             current Hew limitation, not your code): {reason}"
+        ),
         hew_mir::MirDiagnosticKind::ObligationUnderReleased {
             function,
             name,
@@ -821,26 +824,35 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
                 format!("owned value `{name}` of type `{local_ty}`")
             };
             format!(
-                "obligation balance in `{function}`: {typed_name} is never \
-                 released on {} exit path(s) (leak): {reason}",
+                "internal compiler error: the drop plan the compiler built for \
+                 `{function}` never releases {typed_name} on {} of its exit \
+                 path(s) (leak): {reason}",
                 blocks.len(),
             )
         }
         hew_mir::MirDiagnosticKind::ObligationOverReleased {
             function,
             name,
+            blocks,
             reason,
             ..
         } => {
             format!(
-                "obligation balance in `{function}`: owned value `{name}` is \
-                 released more than once on an exit path (double-free): {reason}"
+                "internal compiler error: the drop plan the compiler built for \
+                 `{function}` releases owned value `{name}` more than once on \
+                 {} of its exit path(s) (double-free): {reason}",
+                blocks.len(),
             )
         }
-        hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { function, reason } => {
+        hew_mir::MirDiagnosticKind::LoweringInvariant {
+            function,
+            rule,
+            detail,
+            ..
+        } => {
             format!(
-                "obligation balance in `{function}` could not be verified: \
-                 {reason}"
+                "internal compiler error: the ownership lowering of `{function}` \
+                 violates its `{rule}` invariant ({detail})"
             )
         }
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation {
@@ -850,16 +862,6 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             ..
         } => {
             format!("context boundary violation in `{function}` ({kind}): {reason}")
-        }
-        hew_mir::MirDiagnosticKind::DischargeAuthorityMissing {
-            function, reason, ..
-        } => {
-            format!("discharge-authority carriage in `{function}`: {reason}")
-        }
-        hew_mir::MirDiagnosticKind::DischargeAuthorityDrift {
-            function, reason, ..
-        } => {
-            format!("discharge-authority corroboration in `{function}`: {reason}")
         }
         hew_mir::MirDiagnosticKind::ContextBindingEscapes { place, block } => format!(
             "context-bound place `{}` escapes from MIR block {block}",
@@ -1011,6 +1013,27 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
     format!("{}: {message}", mir_diagnostic_prefix(&diagnostic.kind))
 }
 
+/// Notes for the internal-compiler-error channel: the program is not at
+/// fault, so the note says so and asks for a bug report.
+fn push_lowering_invariant_notes(notes: &mut Vec<String>, block: Option<u32>) {
+    if let Some(block) = block {
+        notes.push(format!("block: {block}"));
+    }
+    notes.push(
+        "this is a defect in the Hew compiler, not in your program; please report it at \
+         https://github.com/hew-lang/hew/issues with this message and, if you can, the \
+         source file"
+            .to_string(),
+    );
+}
+
+/// An obligation imbalance rides the internal channel too: the failing exits,
+/// then the same bug-report ask a lowering invariant gets.
+fn push_obligation_notes(notes: &mut Vec<String>, label: &str, blocks: &[u32]) {
+    notes.push(format!("{label} exits: {}", mir_block_list(blocks)));
+    push_lowering_invariant_notes(notes, None);
+}
+
 fn mir_block_list(blocks: &[u32]) -> String {
     blocks
         .iter()
@@ -1085,15 +1108,18 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             notes.push(format!("site: {site}"));
         }
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, .. }
-        | hew_mir::MirDiagnosticKind::ObligationOverReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { block, .. }
-        | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { block, .. }
-        | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { block, .. } => {
             notes.push(format!("block: {block}"));
         }
+        hew_mir::MirDiagnosticKind::LoweringInvariant { block, .. } => {
+            push_lowering_invariant_notes(&mut notes, *block);
+        }
         hew_mir::MirDiagnosticKind::ObligationUnderReleased { blocks, .. } => {
-            notes.push(format!("unreleased exits: {}", mir_block_list(blocks)));
+            push_obligation_notes(&mut notes, "unreleased", blocks);
+        }
+        hew_mir::MirDiagnosticKind::ObligationOverReleased { blocks, .. } => {
+            push_obligation_notes(&mut notes, "double-released", blocks);
         }
         hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { field_index, .. } => {
             notes.push(format!("field index: {field_index}"));
@@ -1102,9 +1128,6 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             key_field, ..
         } => {
             notes.push(format!("coalesce key field: {key_field}"));
-        }
-        hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { function, .. } => {
-            notes.push(format!("function: {function}"));
         }
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
@@ -1562,6 +1585,156 @@ fn line_start_offset(source: &str, line: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lowering-invariant finding is an internal compiler error: it gets
+    /// its own code, asks the user to report it, and names owners only by
+    /// their `Display` identity — never the Rust `Debug` payload.
+    #[test]
+    fn lowering_invariant_renders_as_internal_error_without_debug_identities() {
+        let owner = hew_mir::OwnerId {
+            binding: hew_hir::BindingId(4_294_967_210),
+            generation: 2,
+        };
+        let diagnostic = hew_mir::MirDiagnostic {
+            kind: hew_mir::MirDiagnosticKind::LoweringInvariant {
+                function: "same_projection".to_owned(),
+                rule: "ownership-generation".to_owned(),
+                block: Some(3),
+                detail: format!(
+                    "owner {owner} is minted while another generation of that binding is \
+                     already live at instruction 0"
+                ),
+            },
+            note: "a carried ownership fact disagrees with the fact re-derived from the \
+                   Checked MIR event stream"
+                .to_owned(),
+        };
+
+        assert_eq!(mir_diagnostic_prefix(&diagnostic.kind), "E_MIR_ICE");
+        let message = mir_diagnostic_message(&diagnostic);
+        let notes = mir_context_notes(&diagnostic);
+        let rendered = std::iter::once(message.as_str())
+            .chain(notes.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            message.starts_with("E_MIR_ICE: internal compiler error"),
+            "{message}"
+        );
+        assert!(rendered.contains("`same_projection`"), "{rendered}");
+        assert!(rendered.contains("`ownership-generation`"), "{rendered}");
+        assert!(rendered.contains("b4294967210#2"), "{rendered}");
+        assert!(rendered.contains("block: 3"), "{rendered}");
+        assert!(
+            rendered.contains("not in your program") && rendered.contains("report it"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("OwnerId {") && !rendered.contains("BindingId("),
+            "Debug identities leaked: {rendered}"
+        );
+    }
+
+    /// An obligation imbalance is the compiler disagreeing with the drop plan
+    /// it built, so it renders on the same internal channel: the ICE code, the
+    /// count of failing exits, and the bug-report ask.
+    #[test]
+    fn an_unbalanced_owner_renders_on_the_internal_channel_with_its_exit_count() {
+        let diagnostic = hew_mir::MirDiagnostic {
+            kind: hew_mir::MirDiagnosticKind::ObligationUnderReleased {
+                function: "emit_workflow".to_owned(),
+                blocks: vec![26, 31, 44],
+                site: hew_hir::SiteId(7),
+                name: "__hew_produced_value".to_owned(),
+                local_ty: "WfTask".to_owned(),
+                reason: "the exit plan for the unwind path out of `emit_workflow` omits \
+                         its cleanup"
+                    .to_owned(),
+            },
+            note: "every heap-owning owned value must be released exactly once".to_owned(),
+        };
+
+        assert_eq!(mir_diagnostic_prefix(&diagnostic.kind), "E_MIR_ICE");
+        let message = mir_diagnostic_message(&diagnostic);
+        let notes = mir_context_notes(&diagnostic);
+        let rendered = std::iter::once(message.as_str())
+            .chain(notes.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            message.starts_with("E_MIR_ICE: internal compiler error"),
+            "{message}"
+        );
+        assert!(
+            message.contains("3 of its exit path(s)"),
+            "the exit count travels with the one diagnostic: {message}"
+        );
+        assert!(
+            rendered.contains("unreleased exits: bb26, bb31, bb44"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("not in your program") && rendered.contains("report it"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("OwnerId {") && !rendered.contains("BindingId("),
+            "Debug identities leaked: {rendered}"
+        );
+    }
+
+    /// A double-free joins the same channel; the user-facing ownership errors
+    /// (a consumed binding reused) stay on `E_MIR_CHECK`.
+    #[test]
+    fn a_double_free_is_internal_and_a_use_after_consume_is_not() {
+        let double_free = hew_mir::MirDiagnosticKind::ObligationOverReleased {
+            function: "render".to_owned(),
+            blocks: vec![4],
+            site: hew_hir::SiteId(9),
+            name: "line".to_owned(),
+            reason: "the return path releases it twice".to_owned(),
+        };
+        let use_after_consume = hew_mir::MirDiagnosticKind::UseAfterConsume {
+            binding: hew_hir::BindingId(3),
+            name: "held".to_owned(),
+            consumed_at: hew_hir::SiteId(1),
+            used_at: hew_hir::SiteId(2),
+        };
+
+        assert_eq!(mir_diagnostic_prefix(&double_free), "E_MIR_ICE");
+        assert_eq!(
+            double_free.internal_compiler_error_function(),
+            Some("render")
+        );
+        assert_eq!(mir_diagnostic_prefix(&use_after_consume), "E_MIR_CHECK");
+        assert_eq!(use_after_consume.internal_compiler_error_function(), None);
+    }
+
+    /// The elaborator refusing a shape it cannot prove is a compiler
+    /// limitation, not a fault in the program and not a self-inconsistency:
+    /// it reads on the not-yet-implemented family, like the aggregate
+    /// extraction refusal beside it.
+    #[test]
+    fn an_undetermined_drop_plan_reads_as_a_limitation_not_the_users_error() {
+        let kind = hew_mir::MirDiagnosticKind::DropPlanUndetermined {
+            block: 20,
+            reason: "the composite walk would re-free the field's leaves".to_owned(),
+        };
+        let diagnostic = hew_mir::MirDiagnostic {
+            kind,
+            note: "the elaborator aborts rather than emit a partial drop plan".to_owned(),
+        };
+
+        assert_eq!(
+            mir_diagnostic_prefix(&diagnostic.kind),
+            "E_NOT_YET_IMPLEMENTED"
+        );
+        assert_eq!(diagnostic.kind.internal_compiler_error_function(), None);
+        let message = mir_diagnostic_message(&diagnostic);
+        assert!(message.contains("not your code"), "{message}");
+    }
 
     fn sample_type_error() -> hew_types::TypeError {
         hew_types::TypeError::new(

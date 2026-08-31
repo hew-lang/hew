@@ -8513,15 +8513,15 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     deduplicate_ownership_spines(&mut *blocks, builder);
     canonicalize_release_owner_ids(&mut *blocks);
     materialize_opaque_projected_payload_handoffs(&mut *blocks, builder);
-    // Publish definition-site destructor recipes and materialize assignment
-    // overwrite retirement before any call-carrier query. These are ordinary
-    // Raw/Checked-MIR operations, not sealing-time side effects: a later call
-    // must see the replacement generation as the sole owner at its argument
-    // source, and codegen must receive the same physical overwrite drop that
-    // ownership validation sees.
+    // Materialize late assignment overwrite retirement before any call-carrier
+    // query. Ending the replaced generation can make a previously ambiguous
+    // branch merge into an exact owner Join, so seal that Join before recipes
+    // are published. The one recipe pass then covers both lowering-time owners
+    // and the newly derived Join generation.
     drop_plan::materialize_successor_guard_authority(&mut *blocks);
-    drop_plan::materialize_definition_site_drop_recipes(&mut *blocks, builder);
     drop_plan::materialize_exact_overwrite_releases(&mut *blocks, Some(builder));
+    materialize_exact_owner_join_transfers(&mut *blocks, builder);
+    drop_plan::materialize_definition_site_drop_recipes(&mut *blocks, builder);
     // Call-carrier ownership is authored only after overwrite adoption, typed
     // handoffs, and ownership-phi generations are final. Querying the earlier
     // construction state could see both the retired and replacement

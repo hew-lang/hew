@@ -110,3 +110,94 @@ fn loop_continue_replays_distinct_owner_inputs_into_one_join_generation() {
         );
     }
 }
+
+#[test]
+fn branch_reassignments_join_before_terminal_aggregate_transfer() {
+    let pipeline = pipeline(
+        r#"
+        type Plan { script: string; command: Vec<string>; }
+        type Payload { program: string; args: Vec<string>; }
+
+        fn render(plan: Plan) -> Payload {
+            let args: Vec<string> = Vec.new();
+            var program = "";
+            if plan.script != "" {
+                program = "sh";
+                args.push(plan.script.clone());
+            } else {
+                program = plan.command[0].clone();
+                for i in 1 .. plan.command.len() {
+                    args.push(plan.command[i].clone());
+                }
+            }
+            Payload { program: program, args: args }
+        }
+
+        fn direct(program: string) -> Payload {
+            Payload { program: program, args: Vec.new() }
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "render")
+        .expect("render Raw MIR");
+    let joins = raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| {
+            let hew_mir::Instr::OwnershipEvent(OwnershipEvent::Join {
+                incoming,
+                replacement,
+                place,
+                ..
+            }) = instruction
+            else {
+                return None;
+            };
+            Some((incoming, replacement, place))
+        })
+        .collect::<Vec<_>>();
+    let [(incoming, replacement, place)] = joins.as_slice() else {
+        panic!("the two branch generations must produce one exact Join: {joins:?}");
+    };
+    assert_eq!(incoming.iter().copied().collect::<BTreeSet<_>>().len(), 2);
+    assert!(incoming
+        .iter()
+        .all(|owner| owner.binding == replacement.binding));
+    assert!(raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .any(|instruction| matches!(
+            instruction,
+            hew_mir::Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                owner,
+                from,
+                to_owner: None,
+                ..
+            }) if owner == *replacement && from == *place
+        )));
+
+    let direct = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "direct")
+        .expect("direct Raw MIR");
+    assert!(direct
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .all(|instruction| !matches!(
+            instruction,
+            hew_mir::Instr::OwnershipEvent(OwnershipEvent::Join { .. })
+        )));
+}

@@ -7,15 +7,22 @@ import argparse
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 from typing import NoReturn
+import xml.etree.ElementTree as ET
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "lib"))
 from corpus_nonempty import assert_nonempty  # noqa: E402
-from hew_junit import FAILURE_KINDS, JUnitError, parse as parse_hew_junit  # noqa: E402
+from hew_junit import (  # noqa: E402
+    FAILURE_KINDS,
+    JUnitError,
+    JUnitReport,
+    parse as parse_hew_junit,
+)
 
 
 PARTITION_RE = re.compile(r"^hash:([1-9][0-9]*)/([1-9][0-9]*)$")
@@ -126,6 +133,123 @@ def report_failures(reports_dir: Path, shard_count: int) -> None:
                     f"test={identity} kind={testcase.failure_kind}\n"
                     f"assertion:\n{diagnostic}"
                 )
+
+
+def update_junit_totals(root: ET.Element) -> None:
+    root.set("tests", str(sum(1 for _ in root.iter("testcase"))))
+    root.set("failures", str(sum(1 for _ in root.iter("failure"))))
+    root.set("skipped", str(sum(1 for _ in root.iter("skipped"))))
+    for suite in root.iter("testsuite"):
+        suite.set("tests", str(sum(1 for _ in suite.iter("testcase"))))
+        suite.set("failures", str(sum(1 for _ in suite.iter("failure"))))
+        suite.set("skipped", str(sum(1 for _ in suite.iter("skipped"))))
+
+
+def write_finalization_failure(output_dir: Path, message: str) -> None:
+    root = ET.Element("testsuites", tests="1", failures="1", skipped="0")
+    suite = ET.SubElement(
+        root,
+        "testsuite",
+        name="compiled-hew-finalization",
+        tests="1",
+        failures="1",
+        skipped="0",
+    )
+    testcase = ET.SubElement(
+        suite,
+        "testcase",
+        classname="compiled-hew-finalization",
+        name="report-authority",
+    )
+    failure = ET.SubElement(testcase, "failure", type="launch", message=message)
+    failure.text = message
+    ET.ElementTree(root).write(
+        output_dir / "compiled-hew-finalization.xml",
+        encoding="unicode",
+        xml_declaration=True,
+    )
+
+
+def finalize_reports(
+    reports_dir: Path,
+    output_dir: Path,
+    full_inventory: Path,
+    expected_failures_path: Path,
+    prerequisites_succeeded: bool,
+) -> int:
+    """Prepare the JUnit input for GitHub after raw aggregate gates finish."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    reports = sorted(reports_dir.glob("hew-*-shard-*.xml"))
+    for report in reports:
+        shutil.copy2(report, output_dir / report.name)
+
+    if not prerequisites_succeeded:
+        write_finalization_failure(
+            output_dir,
+            "compiled-Hew raw ratchet or differential gate did not succeed",
+        )
+        return 1
+
+    try:
+        full = set(read_inventory(full_inventory))
+        expected = expected_failures(expected_failures_path, full)
+        actual: dict[str, str] = {}
+        parsed_reports: list[tuple[Path, JUnitReport]] = []
+        for report in reports:
+            parsed = parse_hew_junit(report, REPO_ROOT)
+            parsed_reports.append((report, parsed))
+            if "hew-o0-" not in report.name:
+                continue
+            for testcase in parsed.testcases:
+                identity = normalized_identity(testcase.classname, testcase.name)
+                if identity in actual:
+                    die(f"finalization report has duplicate identity: {identity}")
+                if testcase.failure_kind is not None:
+                    actual[identity] = testcase.failure_kind
+        if set(actual) != set(expected):
+            die("finalization failure set differs from the ratchet")
+        for identity, expected_kind in expected.items():
+            if actual[identity] != expected_kind:
+                die(f"finalization failure kind differs from the ratchet: {identity}")
+
+        for source, parsed in parsed_reports:
+            root = ET.parse(source).getroot()
+            for testcase in root.iter("testcase"):
+                identity = normalized_identity(
+                    testcase.get("classname", ""), testcase.get("name", "")
+                )
+                if identity not in expected:
+                    continue
+                failure = testcase.find("failure")
+                if failure is None or failure.get("type") != expected[identity]:
+                    die(f"finalization cannot normalize expected failure: {identity}")
+                message = failure.get("message", "")
+                text = failure.text or ""
+                testcase.remove(failure)
+                skipped = ET.SubElement(testcase, "skipped")
+                skipped.set(
+                    "message",
+                    f"expected {expected[identity]} failure"
+                    + (f": {message}" if message else ""),
+                )
+                skipped.text = text
+            update_junit_totals(root)
+            ET.ElementTree(root).write(
+                output_dir / source.name,
+                encoding="unicode",
+                xml_declaration=True,
+            )
+    except (JUnitError, SystemExit, ET.ParseError) as error:
+        message = (
+            "compiled-Hew report finalization rejected its ratchet inputs; "
+            "see workflow stderr"
+            if isinstance(error, SystemExit)
+            else str(error)
+        )
+        write_finalization_failure(output_dir, message)
+        print(f"compiled-hew-shards: finalization failed: {message}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def run_command(
@@ -275,7 +399,6 @@ def aggregate(
     o0, o2 = load_shards(reports_dir, full, shard_count)
     label = "hew-suite-tests" if mode == "ratchet" else "o2-differential-outcomes"
     assert_nonempty(label, len(full), context="union of compiled-Hew shards")
-
     if mode == "ratchet":
         expected = expected_failures(expected_failures_path, full)
         actual = {
@@ -342,6 +465,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     report_parser = subcommands.add_parser("report")
     report_parser.add_argument("--reports-dir", type=Path, required=True)
     report_parser.add_argument("--shard-count", type=int, required=True)
+    finalize_parser = subcommands.add_parser("finalize")
+    finalize_parser.add_argument("--reports-dir", type=Path, required=True)
+    finalize_parser.add_argument("--output-dir", type=Path, required=True)
+    finalize_parser.add_argument("--full-inventory", type=Path, required=True)
+    finalize_parser.add_argument(
+        "--expected-failures",
+        type=Path,
+        default=REPO_ROOT / "scripts" / "hew-suite-expected-failures.txt",
+    )
+    finalize_parser.add_argument(
+        "--prerequisites-succeeded",
+        choices=("true", "false"),
+        required=True,
+    )
     return parser.parse_args(argv)
 
 
@@ -356,6 +493,14 @@ def main(argv: list[str]) -> int:
             args.full_inventory,
             args.shard_count,
             args.expected_failures,
+        )
+    elif args.action == "finalize":
+        return finalize_reports(
+            args.reports_dir,
+            args.output_dir,
+            args.full_inventory,
+            args.expected_failures,
+            args.prerequisites_succeeded == "true",
         )
     else:
         report_failures(args.reports_dir, args.shard_count)

@@ -107,8 +107,19 @@ def parse(path: Path, identity_root: Path | None = None) -> JUnitReport:
             )
         identities.add(identity)
 
-        failure = element.find("failure")
-        is_skipped = element.find("skipped") is not None
+        failure_elements = element.findall("failure")
+        skipped_elements = element.findall("skipped")
+        if (
+            len(failure_elements) > 1
+            or len(skipped_elements) > 1
+            or (failure_elements and skipped_elements)
+        ):
+            raise JUnitError(
+                f"JUnit testcase has non-exclusive outcomes: "
+                f"{path}: {classname}::{name}"
+            )
+        failure = failure_elements[0] if failure_elements else None
+        is_skipped = bool(skipped_elements)
         if failure is not None:
             outcome = "FAILED"
             failure_kind = failure.get("type", "")
@@ -148,6 +159,30 @@ def parse(path: Path, identity_root: Path | None = None) -> JUnitReport:
             f"JUnit summary disagrees with testcase elements: {path}: "
             f"declared={declared_totals} counted={counted}"
         )
+    for suite in root.iter("testsuite"):
+        try:
+            declared_suite_totals = (
+                int(suite.get("tests", "")),
+                int(suite.get("failures", "")),
+                int(suite.get("skipped", "")),
+            )
+        except ValueError as error:
+            raise JUnitError(
+                f"JUnit testsuite has non-integer summary attributes: {path}: "
+                f"{suite.get('name', '<unnamed>')}"
+            ) from error
+        suite_testcases = tuple(suite.iter("testcase"))
+        counted_suite_totals = (
+            len(suite_testcases),
+            sum(testcase.find("failure") is not None for testcase in suite_testcases),
+            sum(testcase.find("skipped") is not None for testcase in suite_testcases),
+        )
+        if declared_suite_totals != counted_suite_totals:
+            raise JUnitError(
+                f"JUnit testsuite summary disagrees with testcase elements: {path}: "
+                f"{suite.get('name', '<unnamed>')}: "
+                f"declared={declared_suite_totals} counted={counted_suite_totals}"
+            )
     return JUnitReport(
         testcases=tuple(testcases),
         tests=declared,

@@ -292,3 +292,63 @@ fn wire_layout_json_name_override_preserved() {
         .expect("Cfg should have a wire layout entry");
     assert_eq!(entry.fields[0].json_name, Some("hostname".to_string()));
 }
+
+#[test]
+fn wire_optional_field_requires_semantic_option_type() {
+    let source = r"
+        #[wire]
+        type Invalid { value: string @1 optional }
+
+        #[wire]
+        type RequiredValue { value: string @1 }
+
+        #[wire]
+        type RequiredOption { value: Option<string> @1 }
+
+        #[wire]
+        type OptionalOption { value: Option<string> @1 optional }
+    ";
+    let output = check_source(source);
+    let error = output
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::WireOptionalFieldRequiresOption)
+        .expect("bare optional field must be rejected");
+
+    assert_eq!(
+        error.message,
+        "E_WIRE_OPTIONAL_REQUIRES_OPTION: wire field `value` is marked `optional` but must have type `Option<T>`"
+    );
+    assert_eq!(error.span, 47..54);
+    assert_eq!(
+        output
+            .errors
+            .iter()
+            .filter(|error| error.kind == TypeErrorKind::WireOptionalFieldRequiresOption)
+            .count(),
+        1,
+        "required T, required Option<T>, and optional Option<T> are counterfactual controls: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn wire_optional_field_accepts_option_alias_after_resolution() {
+    let output = check_source(
+        r"
+        type MaybeText = Option<string>;
+
+        #[wire]
+        type Message { body: MaybeText @1 optional }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::WireOptionalFieldRequiresOption),
+        "an alias resolving to Option<T> must be admitted: {:#?}",
+        output.errors
+    );
+}

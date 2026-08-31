@@ -698,6 +698,12 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// A `#[wire]` field marked `optional` does not resolve to `Option<T>`.
+    ///
+    /// This is an admission rule, rather than an encode/decode rule: wire
+    /// codecs may only rely on absence semantics after the field's Hew type
+    /// proves it can represent `None`.
+    WireOptionalFieldRequiresOption,
     /// A supervisor-declaration check failed. `subkind` names the specific
     /// `E_SUPERVISOR_*` diagnostic so JSON `code` / LSP `data.kind` consumers
     /// can differentiate the supervisor family instead of collapsing every
@@ -1415,6 +1421,7 @@ impl TypeErrorKind {
             Self::GenericLayoutCollision => "GenericLayoutCollision",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::WireOptionalFieldRequiresOption => "E_WIRE_OPTIONAL_REQUIRES_OPTION",
             Self::SupervisorError { subkind } => subkind.as_kind_str(),
             Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",
             Self::ArityMismatch => "ArityMismatch",

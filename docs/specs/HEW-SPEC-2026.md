@@ -4201,7 +4201,7 @@ Hew introduces `wire` definitions for network-serializable data.
 A `#[wire] type` / `#[wire] enum`:
 
 - has stable field tags (numeric IDs)
-- has explicit optionality/defaults
+- permits `optional` fields only when their declared type resolves to `Option<T>`
 - supports forward/backward compatibility checks
 
 ### 7.2 Compatibility rules (normative)
@@ -4252,12 +4252,14 @@ Hew wire types map to MessagePack formats as follows:
 
 A `#[wire]` type is encoded as a MessagePack **map**. Field numbers are used as map keys (as MessagePack integers), and values are encoded according to the table above.
 
+<!-- Executable optional-field presence support lands in #3179/#3182. -->
+<!-- doctest: skip -->
 ```hew
 #[wire]
 type User {
     id: u64 @1;
     name: string @2;
-    email: string @3 optional;
+    email: Option<string> @3 optional;
 }
 
 // User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
@@ -4295,11 +4297,13 @@ enum Status { Pending; Active; Completed; }
 
 Optional fields are represented using MessagePack **nil** for `None`:
 
+<!-- Executable optional-field presence support lands in #3179/#3182. -->
+<!-- doctest: skip -->
 ```hew
 #[wire]
 type Config {
     timeout_ms: u64 @1;
-    proxy_url: string @2 optional;
+    proxy_url: Option<string> @2 optional;
 }
 
 // Config { timeout_ms: 5000, proxy_url: None } encodes as:

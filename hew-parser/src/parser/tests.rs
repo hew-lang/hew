@@ -2506,7 +2506,7 @@ fn parse_wire_struct_preserves_since_modifier() {
     let source = "\
 #[wire]
 type Msg {
-    added: String @2 optional since 2 json(\"added\"),
+    added: Option<String> @2 optional since 2 json(\"added\"),
 }
 ";
     let result = parse(source);
@@ -2554,7 +2554,7 @@ fn wire_struct_field_metadata_preserves_number_and_outer_naming_cases() {
 #[json(\"camelCase\")]
 #[yaml(\"snake_case\")]
 type Msg {
-    added: String @2 optional yaml(\"added_name\"),
+    added: Option<String> @2 optional yaml(\"added_name\"),
 }
 ";
     let result = parse(source);

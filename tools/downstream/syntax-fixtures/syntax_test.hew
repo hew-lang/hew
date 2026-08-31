@@ -53,7 +53,7 @@ impl Drawable for Point {
 #[wire]
 type UserMessage {
     name: string @1,
-    age: u32 @2 optional,
+    age: Option<u32> @2 optional,
     email: string @3 deprecated,
 }
 

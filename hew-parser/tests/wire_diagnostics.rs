@@ -39,3 +39,19 @@ type Message {
         result.errors,
     );
 }
+
+#[test]
+fn optional_wire_field_remains_parser_permissive_for_alias_resolution() {
+    let result = parse(
+        r"#[wire]
+type Message {
+    body: MaybeText @1 optional,
+}",
+    );
+
+    assert!(
+        result.errors.is_empty(),
+        "the parser must not reject an alias before semantic Option<T> resolution: {:?}",
+        result.errors
+    );
+}

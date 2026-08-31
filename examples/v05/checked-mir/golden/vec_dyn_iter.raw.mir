@@ -263,6 +263,7 @@ fn main() -> () [conv=default]
     ownership Transfer { owner: OwnerId { binding: BindingId(6), generation: 0 }, from: Local(1), to: None, to_owner: None, to_ty: None }
     _11 = const.i64 0
     _12 = record_init VecIter<dyn Labeled> { .0=_1, .1=_11 }
+    neutralize_payload _1 -> _12 [AggregateMemberConsume]
     _13 = move _12
     ownership Mint { owner: OwnerId { binding: BindingId(9), generation: 0 }, place: Local(13), ty: Named { name: "VecIter", args: [TraitObject { traits: [ResolvedTraitBound { trait_name: "Labeled", args: [], assoc_bindings: [] }] }], builtin: Some(VecIter), is_opaque: false } }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(9), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "VecIter", args: [TraitObject { traits: [ResolvedTraitBound { trait_name: "Labeled", args: [], assoc_bindings: [] }] }], builtin: Some(VecIter), is_opaque: false }, drop_fn: None, kind: VecIterCursor { release: VecOwnedElement }, declaration_order: 5 } }
@@ -423,6 +424,7 @@ fn main() -> () [conv=default]
     ownership Transfer { owner: OwnerId { binding: BindingId(13), generation: 0 }, from: Local(46), to: None, to_owner: None, to_ty: None }
     _54 = const.i64 0
     _55 = record_init VecIter<dyn Labeled> { .0=_46, .1=_54 }
+    neutralize_payload _46 -> _55 [AggregateMemberConsume]
     _56 = move _55
     ownership Mint { owner: OwnerId { binding: BindingId(16), generation: 0 }, place: Local(56), ty: Named { name: "VecIter", args: [TraitObject { traits: [ResolvedTraitBound { trait_name: "Labeled", args: [], assoc_bindings: [] }] }], builtin: Some(VecIter), is_opaque: false } }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(16), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "VecIter", args: [TraitObject { traits: [ResolvedTraitBound { trait_name: "Labeled", args: [], assoc_bindings: [] }] }], builtin: Some(VecIter), is_opaque: false }, drop_fn: None, kind: VecIterCursor { release: VecOwnedElement }, declaration_order: 11 } }

@@ -307,6 +307,7 @@ jobs:
           --shard-count 4
 
       - name: Require every shard to complete
+        id: require-every-shard
         if: always()
         env:
           BUILD_RESULT: ${{ needs.compiled-hew-linux.result }}
@@ -324,11 +325,17 @@ jobs:
           done
 
       - name: List the independent full suite inventory
+        id: full-inventory
         run: |
           "${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew" \
             test tests/hew --list > "${{ runner.temp }}/compiled-hew-full.txt"
 
       - name: Assert shard union and Hew ratchet
+        id: hew-ratchet
+        if: >-
+          always() &&
+          steps.require-every-shard.outcome == 'success' &&
+          steps.full-inventory.outcome == 'success'
         run: >-
           make test-hew-ratchet
           HEW_SHARD_REPORT_DIR="${{ runner.temp }}/compiled-hew-reports"
@@ -336,17 +343,31 @@ jobs:
           HEW_SHARD_COUNT=4
 
       - name: Assert shard union and O2 differential
+        id: o2-differential
+        if: >-
+          always() &&
+          steps.require-every-shard.outcome == 'success' &&
+          steps.full-inventory.outcome == 'success'
         run: >-
           make test-o2-differential
           HEW_SHARD_REPORT_DIR="${{ runner.temp }}/compiled-hew-reports"
           HEW_FULL_INVENTORY="${{ runner.temp }}/compiled-hew-full.txt"
           HEW_SHARD_COUNT=4
 
+      - name: Finalize compiled Hew JUnit reports
+        if: always()
+        run: >-
+          python3 scripts/compiled-hew-shards.py finalize
+          --reports-dir "${{ runner.temp }}/compiled-hew-reports"
+          --output-dir "${{ runner.temp }}/compiled-hew-published"
+          --full-inventory "${{ runner.temp }}/compiled-hew-full.txt"
+          --prerequisites-succeeded "${{ steps.hew-ratchet.outcome == 'success' && steps.o2-differential.outcome == 'success' }}"
+
       - name: Upload compiled Hew test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "${{ runner.temp }}/compiled-hew-reports/hew-*-shard-*.xml"
+          report_paths: "${{ runner.temp }}/compiled-hew-published/*.xml"
           check_name: Compiled Hew Test Results
 
   # ─────────────────────────────────────────────────────────────────────────

@@ -124,11 +124,11 @@ fn temporary_git_repo() -> tempfile::TempDir {
 #[test]
 fn dirty_exact_tag_build_reports_dirty_identity() {
     let repo = temporary_git_repo();
-    run_git(repo.path(), &["tag", "v0.6.0-rc2"]);
+    run_git(repo.path(), &["tag", "v0.6.0-rc3"]);
     fs::write(repo.path().join("tracked.txt"), "dirty\n").expect("make repository dirty");
     assert_eq!(
         build_script::git_version(repo.path(), env!("CARGO_PKG_VERSION")),
-        "0.6.0-rc2+dirty"
+        "0.6.0-rc3+dirty"
     );
 }
 

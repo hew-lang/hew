@@ -3,7 +3,7 @@
   "trace_id": "trace:enum-match",
   "fixture_id": "enum-match",
   "profile": "sandbox.sandbox-vm-export.v0",
-  "hew_version": "0.6.0-rc2",
+  "hew_version": "0.6.0-rc3",
   "sandbox_version": "0.0.0-spec",
   "result": "ok",
   "replay": {

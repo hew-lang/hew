@@ -19,7 +19,7 @@
       ]
     }
   ],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc2",
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc3",
   "functions": [
     {
       "blocks": [
@@ -250,7 +250,7 @@
       "span": "span:24-119"
     }
   ],
-  "hew_version": "0.6.0-rc2",
+  "hew_version": "0.6.0-rc3",
   "layouts": {
     "actors": [],
     "enums": [],

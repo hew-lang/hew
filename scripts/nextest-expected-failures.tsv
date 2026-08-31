@@ -128,6 +128,3 @@ macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consum
 macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consumed_bound_local_no_per_frame_leak_slope	#3095 emits one Vec index ownership handoff
 macos	failure	hew-cli::vec_iter_method_escape_leak_oracle	iter_source_freed_under_cursor_no_uaf_under_malloc_scribble	#3120 makes Vec iterator cleanup path-sensitive
 macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	arena_insert_remove_param_embed_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
-windows	failure	hew-cli::run_e2e	run_generic_vec_into_iter_static_dispatch_outputs_first_value	#3115 tracks the Windows nonzero-exit teardown seam
-windows	failure	hew-cli::run_e2e	var_self_cowvalue_receiver_survives_storeback_without_double_drop	#3115 tracks the Windows nonzero-exit teardown seam
-windows	failure	hew-cli::run_e2e	var_self_generic_static_dispatch_second_next_observes_mutated_receiver	#3115 tracks the Windows nonzero-exit teardown seam

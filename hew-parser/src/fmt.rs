@@ -4567,7 +4567,7 @@ type Msg {
 #[wire]
 type Msg {
     id: i64 @1,
-    name: String @2 optional since 2,
+    name: Option<String> @2 optional since 2,
     tags: Vec<String> @3 repeated,
     reserved @4;
 }

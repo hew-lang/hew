@@ -3132,11 +3132,9 @@ fn main() {
 
 Each field carries a `@N` tag — a stable wire identifier that must never be
 reused, even if the field is later removed (HEW-SPEC-2026.md §7.2). A field
-can also be marked `optional`, which only affects wire-decode behaviour (a
-missing field decodes without error); the field's Hew-level type stays the
-bare element type, not `Option<T>` — see
-[`examples/playground/types/wire_types.hew`](../examples/playground/types/wire_types.hew)
-for that form.
+marked `optional` must have type `Option<T>`; the marker admits only a value
+that can represent absence. This admission rule does not itself define
+encode/decode presence behaviour.
 
 `e.to_json()` and `TypeName.from_json(text)` round-trip a wire type through
 JSON; the latter is a call on the type name itself rather than a source

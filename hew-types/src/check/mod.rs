@@ -612,6 +612,10 @@ impl Checker {
         // alias maps exist) and before body checking + descriptor building (so
         // every member-derived consumer sees the corrected types).
         self.reresolve_member_types_after_imports(program);
+        // `optional` is a wire-schema admission marker, not an implicit
+        // default. Check it only after member re-resolution so aliases and
+        // imports have reached their semantic `Ty` identity.
+        self.validate_wire_optional_field_admission(program);
 
         // Build the actor protocol descriptor side-table BEFORE body checking.
         //

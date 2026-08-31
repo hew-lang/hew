@@ -131,8 +131,8 @@ fn wire_check_rejects_field_repeatedness_change() {
 #[test]
 fn wire_check_warns_optional_to_required() {
     let output = run_wire_check(
-        "#[wire]\ntype Msg { name: String @1; }\n",
-        "#[wire]\ntype Msg { name: String @1 optional; }\n",
+        "#[wire]\ntype Msg { name: Option<string> @1; }\n",
+        "#[wire]\ntype Msg { name: Option<string> @1 optional; }\n",
     );
 
     assert!(
@@ -232,7 +232,7 @@ fn wire_check_rejects_removed_required_field() {
 fn wire_check_allows_removed_optional_field() {
     let stderr = assert_wire_check_ok(
         "#[wire]\ntype Msg { id: String @1; }\n",
-        "#[wire]\ntype Msg { id: String @1; tag: String @2 optional; }\n",
+        "#[wire]\ntype Msg { id: String @1; tag: Option<String> @2 optional; }\n",
     );
     assert!(
         !stderr.contains("removed"),

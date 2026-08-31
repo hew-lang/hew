@@ -2825,6 +2825,82 @@ impl Checker {
         self.suppress_undefined_type_report = prev_suppress;
     }
 
+    /// Admit `optional` wire fields only when their final semantic type is
+    /// `Option<T>`.
+    ///
+    /// This deliberately runs after [`Self::reresolve_member_types_after_imports`].
+    /// The parser cannot make this decision from syntax without rejecting a
+    /// valid alias, and the first registration pass predates import aliases.
+    /// Keeping this as the one checker-side gate means every later consumer
+    /// sees either an admitted `Option<T>` field or a hard type error.
+    pub(super) fn validate_wire_optional_field_admission(&mut self, program: &Program) {
+        if let Some(module_graph) = &program.module_graph {
+            for module_id in &module_graph.topo_order {
+                if *module_id == module_graph.root {
+                    continue;
+                }
+                let Some(module) = module_graph.modules.get(module_id) else {
+                    continue;
+                };
+                self.current_module = Some(module_id.path.join("."));
+                for (item, _) in &module.items {
+                    self.validate_type_decl_wire_optional_fields(item);
+                }
+            }
+        }
+
+        self.current_module = None;
+        for (item, _) in &program.items {
+            self.validate_type_decl_wire_optional_fields(item);
+        }
+        self.current_module_idx = 0;
+    }
+
+    fn validate_type_decl_wire_optional_fields(&mut self, item: &Item) {
+        let Item::TypeDecl(type_decl) = item else {
+            return;
+        };
+        let Some(wire) = &type_decl.wire else {
+            return;
+        };
+
+        let type_def_key = self.authoritative_type_def_key(&type_decl.name);
+        let Some(fields) = self
+            .type_defs
+            .get(&type_def_key)
+            .map(|type_def| type_def.fields.clone())
+        else {
+            return;
+        };
+
+        for metadata in wire.field_meta.iter().filter(|field| field.is_optional) {
+            let field_span = type_decl
+                .body
+                .iter()
+                .find_map(|item| match item {
+                    TypeBodyItem::Field { name, ty, .. } if name == &metadata.field_name => {
+                        Some(ty.1.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or(0..0);
+            let resolved_ty = fields
+                .get(&metadata.field_name)
+                .map(|field_ty| self.normalize_for_use(field_ty));
+
+            if resolved_ty.as_ref().and_then(Ty::as_option).is_none() {
+                self.report_error(
+                    TypeErrorKind::WireOptionalFieldRequiresOption,
+                    &field_span,
+                    format!(
+                        "E_WIRE_OPTIONAL_REQUIRES_OPTION: wire field `{}` is marked `optional` but must have type `Option<T>`",
+                        metadata.field_name
+                    ),
+                );
+            }
+        }
+    }
+
     /// Seed `local_type_defs`/`source_type_defs` with the current scope's own
     /// type names so member re-resolution (a) treats them as locally-defined
     /// (no fresh-var injection) and (b) shadows any same-named import alias —

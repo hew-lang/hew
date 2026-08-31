@@ -93,6 +93,10 @@ jobs:
             rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
             rustup target list --toolchain 1.96.0 --installed | grep -qx wasm32-wasip1
             export MAKE=gmake
+            # The scheduled FreeBSD run is the accounting authority for
+            # FreeBSD-scoped nextest ledger entries. Manual runs retain the
+            # PR-friendly recovery-reporting behavior.
+            export RATCHET_STRICT_RECOVERIES="${{ github.event_name == 'schedule' && '1' || '0' }}"
             /usr/local/llvm22/bin/llvm-config --version
             command -v gdb || command -v lldb || {
               echo "No debugger found: install the FreeBSD gdb package or LLVM's lldb package" >&2

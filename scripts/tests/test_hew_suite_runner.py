@@ -23,6 +23,7 @@ def run(
     *,
     emit_o0_outcomes: Path | None = None,
     ambient_opt_level: str | None = None,
+    strict_recoveries: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         "bash",
@@ -40,6 +41,7 @@ def run(
         "HEW_BIN": str(compiler),
         "HEW_TESTS_DIR": str(fixtures),
         "HEW_JUNIT_STUB_MODE": mode,
+        "RATCHET_STRICT_RECOVERIES": "1" if strict_recoveries else "0",
     }
     if ambient_opt_level is not None:
         environment["HEW_OPT_LEVEL"] = ambient_opt_level
@@ -65,6 +67,14 @@ def make_fixture(work: Path) -> tuple[Path, Path]:
         '    printf \'%s\\n\' \'<testsuites tests="1" failures="0" skipped="0"><testsuite name="sample.hew" tests="1" failures="0" skipped="0"><testcase classname="sample.hew" name="sample"/></testsuite></testsuites>\'\n'
         '    [ "$HEW_JUNIT_STUB_MODE" = pass ] && exit 0\n'
         "    exit 1\n"
+        "    ;;\n"
+        "  skipped)\n"
+        '    printf \'%s\\n\' \'<testsuites tests="1" failures="0" skipped="1"><testsuite name="sample.hew" tests="1" failures="0" skipped="1"><testcase classname="sample.hew" name="sample"><skipped/></testcase></testsuite></testsuites>\'\n'
+        "    exit 0\n"
+        "    ;;\n"
+        "  other-pass)\n"
+        '    printf \'%s\\n\' \'<testsuites tests="1" failures="0" skipped="0"><testsuite name="sample.hew" tests="1" failures="0" skipped="0"><testcase classname="sample.hew" name="other"/></testsuite></testsuites>\'\n'
+        "    exit 0\n"
         "    ;;\n"
         "  failure)\n"
         '    printf \'%s\\n\' \'<testsuites tests="1" failures="1" skipped="0"><testsuite name="sample.hew" tests="1" failures="1" skipped="0"><testcase classname="sample.hew" name="sample"><failure type="compile" message="assertion failed">diagnostic</failure></testcase></testsuite></testsuites>\'\n'
@@ -134,11 +144,51 @@ def test_failure_kind_drift_fails_the_ratchet_without_matching_text() -> None:
                 report,
                 f"failure-kind-drift-{actual_kind}",
             )
-
             assert result.returncode != 0
             assert f"expected=compile actual={actual_kind}" in result.stdout, (
                 result.stdout + result.stderr
             )
+
+
+def test_recovery_is_nonblocking_in_pr_mode_and_strict_in_accounting() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        work = Path(temp)
+        fixtures, compiler = make_fixture(work)
+        expected = work / "expected.txt"
+        expected.write_text("sample.hew::sample compile\n", encoding="utf-8")
+        report = work / "report.xml"
+
+        recovery = run(compiler, fixtures, expected, report, "pass")
+        assert recovery.returncode == 0, recovery.stdout + recovery.stderr
+        assert "NOW-PASSES: sample.hew::sample" in recovery.stdout
+
+        strict = run(
+            compiler,
+            fixtures,
+            expected,
+            report,
+            "pass",
+            strict_recoveries=True,
+        )
+        assert strict.returncode != 0
+        assert "NOW-PASSES: sample.hew::sample" in strict.stdout
+
+
+def test_skips_and_missing_identities_are_not_recoveries() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        work = Path(temp)
+        fixtures, compiler = make_fixture(work)
+        expected = work / "expected.txt"
+        expected.write_text("sample.hew::sample compile\n", encoding="utf-8")
+        report = work / "report.xml"
+
+        skipped = run(compiler, fixtures, expected, report, "skipped")
+        assert skipped.returncode != 0
+        assert "NONPASS-EXPECTED: sample.hew::sample" in skipped.stdout
+
+        absent = run(compiler, fixtures, expected, report, "other-pass")
+        assert absent.returncode != 0
+        assert "MISSING-EXPECTED: sample.hew::sample" in absent.stdout
 
 
 def test_duplicate_failure_identities_are_rejected() -> None:
@@ -226,6 +276,8 @@ def test_runner_status_must_agree_before_report_is_published() -> None:
 if __name__ == "__main__":
     test_valid_failure_report_and_status_one_reach_the_ratchet()
     test_failure_kind_drift_fails_the_ratchet_without_matching_text()
+    test_recovery_is_nonblocking_in_pr_mode_and_strict_in_accounting()
+    test_skips_and_missing_identities_are_not_recoveries()
     test_duplicate_failure_identities_are_rejected()
     test_pass_and_failure_path_aliases_are_rejected()
     test_o0_handoff_ignores_ambient_optimization_level()

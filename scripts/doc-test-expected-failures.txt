@@ -3,7 +3,8 @@
 # These fences currently fail `hew check`. Each entry is tracked here so new
 # failures are always caught, while this known-failing backlog does not block
 # the gate. Remove an entry when the underlying fence is fixed; a fence that
-# was failing but now passes is a ratchet-forward and requires a list update.
+# now passes is reported in PR gates and fails scheduled strict accounting
+# until its list entry is removed.
 #
 # Format: <fence-id> <cksum>  # <root-cause category>: <one-line description>
 #

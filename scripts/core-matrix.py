@@ -15,9 +15,9 @@ class the cell has TODAY:
     NYI-INTERNAL    rejected with compiler internals in the message
     CRASH           aborted, trapped, hung, or failed to link
 
-The gate fails on ANY drift in either direction: a PASS cell that stops
-passing is a regression, and a non-PASS cell that starts passing means the
-table is stale and must be updated (that is the ratchet).
+The gate fails on regressions. A non-PASS cell that starts passing is reported
+as a recovered truth-table entry in PR runs, and is made blocking only by
+--strict-recoveries in scheduled accounting.
 
 Usage:
     python3 scripts/core-matrix.py            # gate against matrix.tsv
@@ -205,6 +205,11 @@ def write_matrix(results):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--record", action="store_true")
+    ap.add_argument(
+        "--strict-recoveries",
+        action="store_true",
+        help="fail when a recorded non-PASS cell now passes",
+    )
     args = ap.parse_args()
 
     if not os.path.exists(HEW):
@@ -268,13 +273,14 @@ def main():
         for r in regressions:
             print(f"  {r}", file=sys.stderr)
     if fixes:
-        ok = False
         print(
-            "cells that now PASS -- update the truth table with --record:",
+            "RECOVERIES: cells now PASS -- update the truth table with --record:",
             file=sys.stderr,
         )
         for r in fixes:
             print(f"  {r}", file=sys.stderr)
+        if args.strict_recoveries:
+            ok = False
 
     counts = {}
     for klass, _ in results.values():

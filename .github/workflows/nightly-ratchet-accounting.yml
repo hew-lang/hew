@@ -1,0 +1,215 @@
+name: Nightly ratchet accounting
+
+on:
+  schedule:
+    # Offset from the sanitizer and coverage nightlies so the heavyweight
+    # compiler build does not contend with their runner provisioning.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+env:
+  LLVM_VERSION: "22.1.5"
+  WASMTIME_VERSION: "v47.0.2"
+  CARGO_TERM_COLOR: always
+  RATCHET_STRICT_RECOVERIES: "1"
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+
+jobs:
+  account-linux:
+    name: Strict global ratchet accounting (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb libssl-dev pkg-config mold zlib1g-dev libzstd-dev
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          targets: "wasm32-unknown-unknown, wasm32-wasip1"
+          tools: nextest@0.9.120
+          cache-shared-key: nightly-ratchet-accounting
+
+      - name: Install wasmtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          WASMTIME_ROOT="${RUNNER_TEMP}/wasmtime"
+          mkdir -p "${WASMTIME_ROOT}"
+          .github/scripts/retry-download.sh \
+            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "${RUNNER_TEMP}" --clobber
+          tar -xJf "${RUNNER_TEMP}/${WASMTIME_DIR}.tar.xz" -C "${WASMTIME_ROOT}"
+          echo "${WASMTIME_ROOT}/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "${WASMTIME_ROOT}/${WASMTIME_DIR}/wasmtime" --version
+
+      - name: Account for global expected-failure ledgers
+        run: make ratchet-accounting
+
+      - name: Upload ratchet JUnit reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
+        with:
+          report_paths: "{target/nextest/ci/ratchet.xml,target/hew-test-reports/hew-suite-ratchet.xml}"
+          check_name: Nightly Ratchet Accounting
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
+
+  # Platform-scoped nextest rows are checked on their native hosts. Keep this
+  # in sync with the ledger selectors: adding a new platform-specific selector
+  # requires a scheduled strict job for that platform.
+  account-macos-nextest:
+    name: Strict nextest accounting (macOS arm64)
+    runs-on: macos-14
+    # This intentionally includes the oracle binaries excluded from ordinary
+    # hosted macOS CI; full native ledger authority needs their outcomes.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          targets: "aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1"
+          tools: nextest@0.9.120
+          cache-shared-key: nightly-ratchet-accounting-macos
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Set macOS deployment target
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
+      - name: Install wasmtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-aarch64-macos"
+          WASMTIME_ROOT="${RUNNER_TEMP}/wasmtime"
+          mkdir -p "${WASMTIME_ROOT}"
+          .github/scripts/retry-download.sh \
+            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "${RUNNER_TEMP}" --clobber
+          tar -xJf "${RUNNER_TEMP}/${WASMTIME_DIR}.tar.xz" -C "${WASMTIME_ROOT}"
+          echo "${WASMTIME_ROOT}/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "${WASMTIME_ROOT}/${WASMTIME_DIR}/wasmtime" --version
+
+      - name: Account for macOS nextest ledger entries
+        run: make ratchet-accounting-nextest
+
+      - name: Upload nextest ratchet report
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
+        with:
+          report_paths: target/nextest/ci/ratchet.xml
+          check_name: Nightly macOS Nextest Ratchet Accounting
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
+
+  account-windows-nextest:
+    name: Strict nextest accounting (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      # aws-lc-sys needs NASM for its Windows MSVC bootstrap. The prebuilt
+      # assembly path is the regular Windows suite's documented prerequisite.
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      # Windows LLVM/codegen compilation reaches its memory envelope with two
+      # concurrent jobs; this matches the regular Windows full-suite gate.
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Setup MSVC environment
+        uses: ./.github/actions/setup-msvc
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          targets: wasm32-wasip1
+          tools: nextest@0.9.120
+          cache-shared-key: nightly-ratchet-accounting-windows
+
+      - name: Install GNU Make
+        shell: pwsh
+        run: choco install make --yes --no-progress
+
+      - name: Install wasmtime
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
+          $archive = Join-Path $env:RUNNER_TEMP "$dir.zip"
+          $root = Join-Path $env:RUNNER_TEMP "wasmtime"
+          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --dir $env:RUNNER_TEMP --clobber
+          if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
+          Expand-Archive -Path $archive -DestinationPath $root -Force
+          $wasmtimeBin = Join-Path $root $dir
+          $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
+          if (-not (Test-Path -LiteralPath $wasmtimeExe)) { throw "wasmtime.exe not found at $wasmtimeExe" }
+          Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin
+          & $wasmtimeExe --version
+          if ($LASTEXITCODE -ne 0) { throw "wasmtime installed but --version exited $LASTEXITCODE" }
+          $wasmLd = Get-Command wasm-ld -ErrorAction SilentlyContinue
+          if (-not $wasmLd) { throw "wasm-ld not found on PATH" }
+          & $wasmLd.Source --version
+          if ($LASTEXITCODE -ne 0) { throw "wasm-ld --version exited $LASTEXITCODE" }
+
+      - name: Account for Windows nextest ledger entries
+        shell: bash
+        run: make SHELL=bash ratchet-accounting-nextest
+
+      - name: Upload nextest ratchet report
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
+        with:
+          report_paths: target/nextest/ci/ratchet.xml
+          check_name: Nightly Windows Nextest Ratchet Accounting
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true

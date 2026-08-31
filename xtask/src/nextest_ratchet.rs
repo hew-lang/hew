@@ -16,6 +16,7 @@ struct Options {
     output: PathBuf,
     platform: String,
     runner_exit: i32,
+    strict_recoveries: bool,
     full_inventory: Option<PathBuf>,
     selected_inventory: Option<PathBuf>,
 }
@@ -145,12 +146,13 @@ type Expected = (Outcome, String);
 #[derive(Debug, Default)]
 struct Evaluation {
     matched: Vec<(Identity, String)>,
+    recoveries: Vec<String>,
     failures: Vec<String>,
     errors: Vec<String>,
 }
 
 impl Evaluation {
-    fn exact(&self) -> bool {
+    fn blocking(&self) -> bool {
         self.failures.is_empty() && self.errors.is_empty()
     }
 }
@@ -244,26 +246,32 @@ pub(super) fn run(args: &[String]) -> Result<()> {
             ..Evaluation::default()
         },
     };
-    write_report(&options.output, &evaluation)?;
-    if evaluation.exact() {
+    write_report(&options.output, &evaluation, options.strict_recoveries)?;
+    if evaluation.blocking() && (!options.strict_recoveries || evaluation.recoveries.is_empty()) {
         println!(
             "nextest ratchet: {} known non-pass outcome(s) matched",
             evaluation.matched.len()
         );
+        for recovery in &evaluation.recoveries {
+            println!("nextest recovery accounting: {recovery}");
+        }
         Ok(())
     } else {
-        Err(evaluation
+        let mut failures = evaluation
             .failures
             .iter()
             .chain(&evaluation.errors)
             .cloned()
-            .collect::<Vec<_>>()
-            .join("\n"))
+            .collect::<Vec<_>>();
+        if options.strict_recoveries {
+            failures.extend(evaluation.recoveries.iter().cloned());
+        }
+        Err(failures.join("\n"))
     }
 }
 
 fn usage() -> &'static str {
-    "usage: cargo run -p xtask -- nextest-ratchet --junit <raw.xml> --ledger <ledger.tsv> --output <ratchet.xml> --platform <name> --runner-exit <code> [--full-inventory <nextest-list.json> --selected-inventory <nextest-list.json>]"
+    "usage: cargo run -p xtask -- nextest-ratchet --junit <raw.xml> --ledger <ledger.tsv> --output <ratchet.xml> --platform <name> --runner-exit <code> [--full-inventory <nextest-list.json> --selected-inventory <nextest-list.json>] [--strict-recoveries]"
 }
 
 fn parse_options(args: &[String]) -> Result<Options> {
@@ -280,8 +288,16 @@ fn parse_options(args: &[String]) -> Result<Options> {
                 | "--runner-exit"
                 | "--full-inventory"
                 | "--selected-inventory"
+                | "--strict-recoveries"
         ) {
             return Err(format!("unknown nextest-ratchet option: {flag}"));
+        }
+        if flag == "--strict-recoveries" {
+            if values.insert(flag, "true").is_some() {
+                return Err(format!("duplicate option: {flag}"));
+            }
+            index += 1;
+            continue;
         }
         let value = args
             .get(index + 1)
@@ -305,6 +321,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
         runner_exit: get("--runner-exit")?
             .parse()
             .map_err(|_| "--runner-exit must be an integer".to_string())?,
+        strict_recoveries: values.contains_key("--strict-recoveries"),
         full_inventory: values
             .get("--full-inventory")
             .map(|value| PathBuf::from(*value)),
@@ -731,17 +748,19 @@ fn evaluate(
         }
         let Some(actual) = case.outcome.ledger_name() else {
             if let Some((outcome, reason)) = wanted {
-                result.failures.push(format!(
-                    "expected {} {} ({}) but it {}",
-                    outcome.ledger_name().unwrap(),
-                    identity.label(),
-                    reason,
-                    if case.outcome == Outcome::Skipped {
-                        "was skipped"
-                    } else {
-                        "passed"
-                    }
-                ));
+                if case.outcome == Outcome::Passed {
+                    result.recoveries.push(format!(
+                        "tracked {} now passes: {} ({reason})",
+                        outcome.ledger_name().unwrap(),
+                        identity.label(),
+                    ));
+                } else {
+                    result.failures.push(format!(
+                        "expected {} {} ({reason}) but it was skipped",
+                        outcome.ledger_name().unwrap(),
+                        identity.label(),
+                    ));
+                }
             }
             continue;
         };
@@ -784,14 +803,18 @@ fn evaluate(
     result
 }
 
-fn write_report(path: &Path, evaluation: &Evaluation) -> Result<()> {
+fn write_report(path: &Path, evaluation: &Evaluation, strict_recoveries: bool) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("create {}: {error}", parent.display()))?;
     }
-    let failures = usize::from(!evaluation.failures.is_empty() && evaluation.errors.is_empty());
+    let failures = usize::from(
+        (!evaluation.failures.is_empty()
+            || (strict_recoveries && !evaluation.recoveries.is_empty()))
+            && evaluation.errors.is_empty(),
+    );
     let errors = usize::from(!evaluation.errors.is_empty());
-    let skipped = evaluation.matched.len();
+    let skipped = evaluation.matched.len() + evaluation.recoveries.len();
     let tests = 1 + skipped;
     let mut xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites name=\"nextest-ratchet\" tests=\"{tests}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\">\n  <testsuite name=\"nextest-ratchet\" tests=\"{tests}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\">\n"
@@ -802,11 +825,11 @@ fn write_report(path: &Path, evaluation: &Evaluation) -> Result<()> {
         messages.extend(evaluation.failures.iter().cloned());
         Some(("error", "ratchet error", messages.join("\n")))
     } else if failures > 0 {
-        Some((
-            "failure",
-            "ratchet mismatch",
-            evaluation.failures.join("\n"),
-        ))
+        let mut messages = evaluation.failures.clone();
+        if strict_recoveries {
+            messages.extend(evaluation.recoveries.iter().cloned());
+        }
+        Some(("failure", "ratchet mismatch", messages.join("\n")))
     } else {
         None
     };
@@ -823,6 +846,13 @@ fn write_report(path: &Path, evaluation: &Evaluation) -> Result<()> {
             xml,
             "    <testcase name=\"{}\" classname=\"nextest-ratchet\"><skipped message=\"{}\"/></testcase>",
             escape(&identity.label()), escape(reason)
+        );
+    }
+    for recovery in &evaluation.recoveries {
+        let _ = writeln!(
+            xml,
+            "    <testcase name=\"recovered ledger entry\" classname=\"nextest-ratchet\"><skipped message=\"{}\"/></testcase>",
+            escape(recovery)
         );
     }
     xml.push_str("  </testsuite>\n</testsuites>\n");
@@ -880,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_failure_matches_and_unexpected_pass_does_not() {
+    fn exact_failure_matches_and_recovery_is_reported_without_blocking() {
         let report = scan(&xml(
             "<testcase name=\"test\"><failure type=\"test failure with exit code 1\"/></testcase>",
             1,
@@ -890,11 +920,13 @@ mod tests {
         ))
         .unwrap();
         let exact = evaluate(&report, ledger("failure"), 100, None);
-        assert!(exact.exact());
+        assert!(exact.blocking());
         assert_eq!(exact.matched.len(), 1);
 
         let pass = scan(&xml("<testcase name=\"test\"/>", 1, 0, 0, 0)).unwrap();
-        assert!(!evaluate(&pass, ledger("failure"), 0, None).exact());
+        let recovery = evaluate(&pass, ledger("failure"), 0, None);
+        assert!(recovery.blocking());
+        assert_eq!(recovery.recoveries.len(), 1);
     }
 
     #[test]
@@ -909,8 +941,8 @@ mod tests {
         .unwrap();
         let changed = evaluate(&report, ledger("failure"), 100, None);
         assert!(changed.failures[0].contains("changed from failure to timeout"));
-        assert!(!evaluate(&report, BTreeMap::new(), 100, None).exact());
-        assert!(!evaluate(&report, ledger("timeout"), 0, None).exact());
+        assert!(!evaluate(&report, BTreeMap::new(), 100, None).blocking());
+        assert!(!evaluate(&report, ledger("timeout"), 0, None).blocking());
     }
 
     #[test]
@@ -1001,7 +1033,7 @@ mod tests {
         )
         .unwrap();
         let filtered = FilteredInventories::new(full.clone(), selected).unwrap();
-        assert!(evaluate(&report, ledger("failure"), 0, Some(&filtered)).exact());
+        assert!(evaluate(&report, ledger("failure"), 0, Some(&filtered)).blocking());
 
         let stale_inventories = FilteredInventories::new(BTreeSet::new(), BTreeSet::new()).unwrap();
         let stale = evaluate(&report, ledger("failure"), 0, Some(&stale_inventories));
@@ -1013,7 +1045,7 @@ mod tests {
             missing.failures[0].contains("expected failure is absent"),
             "a selected test missing from JUnit must not be mistaken for a filter exclusion"
         );
-        assert!(!evaluate(&report, ledger("failure"), 0, None).exact());
+        assert!(!evaluate(&report, ledger("failure"), 0, None).blocking());
     }
 
     #[test]
@@ -1025,14 +1057,16 @@ mod tests {
         )
         .unwrap();
         let available = FilteredInventories::new(full.clone(), full).unwrap();
-        assert!(!evaluate(&pass, ledger("failure"), 0, Some(&available)).exact());
+        let recovery = evaluate(&pass, ledger("failure"), 0, Some(&available));
+        assert!(recovery.blocking());
+        assert_eq!(recovery.recoveries.len(), 1);
 
         let unrelated = scan(&xml("<testcase name=\"selected\"/>", 1, 0, 0, 0)).unwrap();
         for testcase in [("test", true, "matches"), ("test", false, "mismatch")] {
             let unavailable =
                 parse_inventory(&inventory(&[testcase], 1), "counterfactual").unwrap();
             let inventories = FilteredInventories::new(unavailable.clone(), unavailable).unwrap();
-            assert!(!evaluate(&unrelated, ledger("failure"), 0, Some(&inventories)).exact());
+            assert!(!evaluate(&unrelated, ledger("failure"), 0, Some(&inventories)).blocking());
         }
     }
 
@@ -1080,7 +1114,7 @@ mod tests {
             ..Evaluation::default()
         };
         let path = std::env::temp_dir().join(format!("hew-ratchet-{}.xml", std::process::id()));
-        write_report(&path, &evaluation).unwrap();
+        write_report(&path, &evaluation, false).unwrap();
         let report = scan(&fs::read_to_string(&path).unwrap()).unwrap();
         fs::remove_file(path).unwrap();
         assert_eq!(report.counts.tests, 2);

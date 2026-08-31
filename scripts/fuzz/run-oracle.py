@@ -28,17 +28,18 @@ The harness asserts exact stdout match and (if present) exit code.
 Files without these annotations: clean = build-0 + run-0 within bounds.
 
 Ratchet (--regressions mode):
-  tests/fuzz-oracle/expected-failures.txt lists bare filenames from the
-  ratcheted candidate sources (vertical-slice or regressions) that are KNOWN
-  to fail, each annotated with # <root-cause>; issue: #NNNN.
-  - A listed file that PASSES   → unexpected-pass → gate failure.
-  - An unlisted file that FAILS → unexpected-fail → gate failure.
+  tests/fuzz-oracle/expected-failures.txt pins bare filenames from the
+  ratcheted candidate sources (vertical-slice or regressions) to one exact
+  failure classification, each annotated with # <root-cause>; issue: #NNNN.
+  - A listed file observed clean          → recovery report (strict fails).
+  - A listed file with another fail class → class drift → gate failure.
+  - An unlisted file that FAILS           → unexpected-fail → gate failure.
 
 Positive-corpus rejection ratchet:
   scripts/fuzz/expected-reject.txt lists exact repo-relative paths from
   tests/vertical-slice/accept that are currently rejected by the frontend or
   cannot build as standalone programs.
-  - A listed file that stops being rejected → unexpected-pass → gate failure.
+  - A listed file that stops being rejected → recovery report (strict accounting fails).
   - An unlisted file that is rejected       → unexpected-reject → gate failure.
   In --full mode the ratchet is NOT applied to cargo-fuzz corpus files (they
   are raw bytes; classification is advisory only).
@@ -521,15 +522,75 @@ def collect_candidates(
 # ---------------------------------------------------------------------------
 
 
-def _load_expected_failures(expected_failures_path: Path) -> set[str]:
-    """Parse expected-failures.txt and return the set of bare filenames listed."""
+KNOWN_FAILURE_CLASSES = frozenset(
+    {
+        "frontend-reject",
+        "nyi-codegen",
+        "build-ice",
+        "runtime-crash",
+        "runtime-abort",
+        "timeout",
+        "output-cap",
+        "wrong-output",
+    }
+)
+
+
+def _load_expected_failures(expected_failures_path: Path) -> dict[str, str]:
+    """Parse exact `<filename> <failure-class>` expected-failure entries."""
     if not expected_failures_path.exists():
+        return {}
+    expected: dict[str, str] = {}
+    for line_number, line in enumerate(
+        expected_failures_path.read_text().splitlines(), 1
+    ):
+        stripped = line.split("#")[0].strip()
+        if not stripped:
+            continue
+        fields = stripped.split()
+        if len(fields) != 2:
+            raise ValueError(
+                f"{expected_failures_path}:{line_number}: expected "
+                "'<filename> <failure-class>'"
+            )
+        name, classification = fields
+        if Path(name).name != name or not name.endswith(".hew"):
+            raise ValueError(
+                f"{expected_failures_path}:{line_number}: expected a bare .hew filename: {name}"
+            )
+        if classification not in KNOWN_FAILURE_CLASSES:
+            raise ValueError(
+                f"{expected_failures_path}:{line_number}: unsupported failure class "
+                f"{classification!r}"
+            )
+        if name in expected:
+            raise ValueError(
+                f"{expected_failures_path}:{line_number}: duplicate expected failure: {name}"
+            )
+        expected[name] = classification
+    return expected
+
+
+def _load_expected_rejects(expected_rejects_path: Path) -> set[str]:
+    """Parse exact positive-corpus rejection identities."""
+    if not expected_rejects_path.exists():
         return set()
     expected: set[str] = set()
-    for line in expected_failures_path.read_text().splitlines():
-        stripped = line.split("#")[0].strip()
-        if stripped:
-            expected.add(stripped)
+    for line_number, line in enumerate(
+        expected_rejects_path.read_text().splitlines(), 1
+    ):
+        identity = line.split("#")[0].strip()
+        if not identity:
+            continue
+        if len(identity.split()) != 1:
+            raise ValueError(
+                f"{expected_rejects_path}:{line_number}: expected one fixture identity"
+            )
+        if identity in expected:
+            raise ValueError(
+                f"{expected_rejects_path}:{line_number}: duplicate expected rejection: {identity}"
+            )
+        expected.add(identity)
     return expected
 
 
@@ -602,6 +663,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--full",
         action="store_true",
         help="Also scan cargo-fuzz corpus (source 1). Default: regressions mode only.",
+    )
+    p.add_argument(
+        "--strict-recoveries",
+        action="store_true",
+        help="fail when an expected failure or rejection now passes",
     )
     p.add_argument(
         "--min-candidates",
@@ -716,8 +782,12 @@ def main() -> int:
         vertical_slice_dir=args.vertical_slice_dir,
     )
 
-    expected_failure_names = _load_expected_failures(expected_failures_path)
-    expected_reject_paths = _load_expected_failures(expected_rejects_path)
+    try:
+        expected_failures = _load_expected_failures(expected_failures_path)
+        expected_reject_paths = _load_expected_rejects(expected_rejects_path)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
 
     # Floor the ratcheted candidate set. Both gate conditions below are searches
     # over the collected candidates: an empty collection yields no unexpected
@@ -752,8 +822,10 @@ def main() -> int:
     all_verdicts: list[Verdict] = []
     unexpected_fails: list[Verdict] = []
     unexpected_passes: list[Verdict] = []
+    expected_failure_class_drifts: list[tuple[str, str, Verdict]] = []
     unexpected_rejects: list[tuple[str, Verdict]] = []
     unexpected_reject_passes: list[tuple[str, Verdict]] = []
+    missing_expected_entries: list[str] = []
     seen_reject_paths: set[str] = set()
 
     with tempfile.TemporaryDirectory(prefix="hew-oracle-") as tmpdir:
@@ -785,8 +857,15 @@ def main() -> int:
 
                 if apply_ratchet:
                     name = src.name
-                    is_expected_fail = name in expected_failure_names
-                    if (
+                    expected_class = expected_failures.get(name)
+                    if expected_class is not None:
+                        if not verdict.is_fail:
+                            unexpected_passes.append(verdict)
+                        elif verdict.classification != expected_class:
+                            expected_failure_class_drifts.append(
+                                (name, expected_class, verdict)
+                            )
+                    elif (
                         reject_ratchet_root is not None
                         and verdict.classification == "frontend-reject"
                     ):
@@ -798,10 +877,8 @@ def main() -> int:
                         seen_reject_paths.add(identity)
                         if identity not in expected_reject_paths:
                             unexpected_rejects.append((identity, verdict))
-                    elif verdict.is_fail and not is_expected_fail:
+                    elif verdict.is_fail:
                         unexpected_fails.append(verdict)
-                    elif not verdict.is_fail and is_expected_fail:
-                        unexpected_passes.append(verdict)
 
                     if reject_ratchet_root is not None:
                         identity = _fixture_identity(
@@ -844,23 +921,17 @@ def main() -> int:
     all_candidate_names = {p.name for p in regressions} | {
         p.name for p in vertical_slice
     }
-    for name in sorted(expected_failure_names):
+    for name in sorted(expected_failures):
         if name not in all_candidate_names:
-            ghost = Verdict(
-                regressions_dir / name,
-                "clean",  # "passed" in the sense of not being present
-                "expected-failing entry not found in regressions corpus",
+            missing_expected_entries.append(
+                f"expected failure absent from corpus: {name}"
             )
-            unexpected_passes.append(ghost)
 
     for identity in sorted(expected_reject_paths - seen_reject_paths):
         if not any(path == identity for path, _ in unexpected_reject_passes):
-            ghost = Verdict(
-                repo_root / identity,
-                "clean",
-                "expected-reject entry not found in positive corpus",
+            missing_expected_entries.append(
+                f"expected rejection absent from corpus: {identity}"
             )
-            unexpected_reject_passes.append((identity, ghost))
 
     # Summary.
     print()
@@ -878,6 +949,12 @@ def main() -> int:
         print(floor_error, file=sys.stderr)
         gate_ok = False
 
+    if missing_expected_entries:
+        print("\nEXPECTED ENTRIES MISSING FROM CORPUS:")
+        for entry in missing_expected_entries:
+            print(f"  {entry}")
+        gate_ok = False
+
     if unexpected_fails:
         print("\nUNEXPECTED FAILURES (not in expected-failures.txt):")
         for v in unexpected_fails:
@@ -887,11 +964,22 @@ def main() -> int:
             print(f"  UNEXPECTED: {v.path.name}  {v.classification}  {v.detail}")
         gate_ok = False
 
+    if expected_failure_class_drifts:
+        print("\nEXPECTED FAILURE CLASS DRIFT:")
+        for name, expected_class, verdict in expected_failure_class_drifts:
+            detail = f"  {verdict.detail}" if verdict.detail else ""
+            print(
+                f"  CLASS-DRIFT: {name}  expected={expected_class} "
+                f"observed={verdict.classification}{detail}"
+            )
+        gate_ok = False
+
     if unexpected_passes:
         print("\nUNEXPECTED PASSES (listed in expected-failures.txt but passed):")
         for v in unexpected_passes:
             print(f"  NOW-PASSES: {v.path.name}  {v.detail}")
-        gate_ok = False
+        if args.strict_recoveries:
+            gate_ok = False
 
     if unexpected_rejects:
         print("\nUNEXPECTED REJECTIONS (not in expected-reject.txt):")
@@ -905,7 +993,8 @@ def main() -> int:
         for identity, verdict in unexpected_reject_passes:
             detail = f"  {verdict.detail}" if verdict.detail else ""
             print(f"  NOW-PASSES: {identity}{detail}")
-        gate_ok = False
+        if args.strict_recoveries:
+            gate_ok = False
 
     if gate_ok:
         print("ORACLE gate: PASS")
@@ -939,7 +1028,21 @@ def main() -> int:
                 for v in unexpected_fails
             ],
             "unexpected_passes": [
-                {"path": str(v.path), "detail": v.detail} for v in unexpected_passes
+                {
+                    "path": str(v.path),
+                    "expected_classification": expected_failures[v.path.name],
+                    "detail": v.detail,
+                }
+                for v in unexpected_passes
+            ],
+            "expected_failure_class_drifts": [
+                {
+                    "path": name,
+                    "expected_classification": expected_class,
+                    "observed_classification": verdict.classification,
+                    "detail": verdict.detail,
+                }
+                for name, expected_class, verdict in expected_failure_class_drifts
             ],
             "unexpected_rejects": [
                 {
@@ -953,6 +1056,7 @@ def main() -> int:
                 {"path": identity, "detail": verdict.detail}
                 for identity, verdict in unexpected_reject_passes
             ],
+            "missing_expected_entries": missing_expected_entries,
         }
         args.report.write_text(json.dumps(report, indent=2))
         print(f"Report written to {args.report}")

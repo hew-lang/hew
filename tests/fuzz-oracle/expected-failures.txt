@@ -1,13 +1,17 @@
 # tests/fuzz-oracle/expected-failures.txt
 #
-# Ratcheted vertical-slice and regression-corpus entries that are KNOWN to fail.
+# Ratcheted vertical-slice and regression-corpus entries that are KNOWN to fail
+# with the exact class pinned in column two.
 # The oracle enforces (in regressions mode):
-#   - Every filename listed here MUST fail (unexpected pass = gate failure →
-#     forces updating this file to promote the gap to a positive guard).
+#   - Every listed fixture must keep its pinned failure class. A class drift
+#     fails closed in every run; only an observed `clean` outcome is recovery.
+#   - A clean recovery is reported in PR mode and fails strict accounting.
 #   - Every regression file NOT listed here MUST pass (unexpected failure =
 #     gate failure).
 #
-# Format: <filename>  # <root-cause>; issue: #NNNN
+# Format: <filename> <failure-class>  # <root-cause>; issue: #NNNN
+# Failure classes are frontend-reject, nyi-codegen, build-ice, runtime-crash,
+# runtime-abort, timeout, output-cap, and wrong-output.
 # Filenames are bare (no path prefix); they match the oracle's candidate set.
 #
 # When a fix lands for an entry here, REMOVE the entry and add, update, or
@@ -24,41 +28,41 @@
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
 # so the oracle gate does not treat them as unexpected failures.  The ratchet
-# fires in BOTH directions: if any of these starts passing (no longer traps),
-# that is a regression.
+# reports a clean recovery in PRs and fails strict accounting until cleanup;
+# a different non-clean class remains a blocking semantic drift.
 
-assert_eq_fail.hew       # intentional abort: assert_eq(2+2, 5) → SIGABRT; tests assertion failure propagation
-join_branch_trap.hew     # intentional abort: join branch trap propagates as SIGABRT (HEW-SPEC-2026 §4.11.2)
-string_slice_oob_panics.hew  # intentional abort: out-of-bounds string slice calls libc::abort()
-bytes_index_oob_traps.hew    # intentional abort: out-of-bounds bytes index b[i] calls libc::abort() → SIGABRT (signal 6)
-bytes_pop_empty_traps.hew    # intentional abort: empty bytes.pop() calls libc::abort() → SIGABRT
-bytes_set_oob_traps.hew      # intentional abort: out-of-bounds bytes.set() calls libc::abort() → SIGABRT
-string_index_oob_traps.hew   # intentional abort: out-of-bounds string index s[i] calls libc::abort() → SIGABRT (signal 6)
-vec_set_oob_traps.hew        # intentional abort: out-of-bounds Vec.set() calls libc::abort() → SIGABRT (signal 6)
-vec_pop_empty_traps.hew      # intentional abort: empty Vec.pop() calls libc::abort() → SIGABRT (signal 6)
-vec_remove_oob_traps.hew     # intentional abort: out-of-bounds Vec.remove() calls libc::abort() → SIGABRT (signal 6)
-deque_pop_front_empty_traps.hew  # intentional abort: empty Deque.pop_front() routes through runtime_bounds_trap → std::process::abort() (no main-context actor recovery frame) → SIGABRT (signal 6)
-deque_pop_back_empty_traps.hew   # intentional abort: empty Deque.pop_back() routes through runtime_bounds_trap → std::process::abort() (no main-context actor recovery frame) → SIGABRT (signal 6)
+assert_eq_fail.hew runtime-crash       # intentional abort: assert_eq(2+2, 5) → SIGABRT; tests assertion failure propagation
+join_branch_trap.hew runtime-crash     # intentional abort: join branch trap propagates as SIGABRT (HEW-SPEC-2026 §4.11.2)
+string_slice_oob_panics.hew runtime-crash  # intentional abort: out-of-bounds string slice calls libc::abort()
+bytes_index_oob_traps.hew runtime-crash    # intentional abort: out-of-bounds bytes index b[i] calls libc::abort() → SIGABRT (signal 6)
+bytes_pop_empty_traps.hew runtime-crash    # intentional abort: empty bytes.pop() calls libc::abort() → SIGABRT
+bytes_set_oob_traps.hew runtime-crash      # intentional abort: out-of-bounds bytes.set() calls libc::abort() → SIGABRT
+string_index_oob_traps.hew runtime-crash   # intentional abort: out-of-bounds string index s[i] calls libc::abort() → SIGABRT (signal 6)
+vec_set_oob_traps.hew runtime-crash        # intentional abort: out-of-bounds Vec.set() calls libc::abort() → SIGABRT (signal 6)
+vec_pop_empty_traps.hew runtime-crash      # intentional abort: empty Vec.pop() calls libc::abort() → SIGABRT (signal 6)
+vec_remove_oob_traps.hew runtime-crash     # intentional abort: out-of-bounds Vec.remove() calls libc::abort() → SIGABRT (signal 6)
+deque_pop_front_empty_traps.hew runtime-crash  # intentional abort: empty Deque.pop_front() routes through runtime_bounds_trap → std::process::abort() (no main-context actor recovery frame) → SIGABRT (signal 6)
+deque_pop_back_empty_traps.hew runtime-crash   # intentional abort: empty Deque.pop_back() routes through runtime_bounds_trap → std::process::abort() (no main-context actor recovery frame) → SIGABRT (signal 6)
 # Arch-dependent trap signals: SIGILL (132) on x86_64 Linux, SIGTRAP (133) on aarch64/macOS.
-isize_div_by_zero_traps.hew  # intentional trap: isize / 0 → DivideByZero signal (SIGILL x86_64 / SIGTRAP aarch64)
-isize_shift_oob_traps.hew    # intentional trap: isize << 64 → ShiftOutOfRange signal (SIGILL x86_64 / SIGTRAP aarch64)
-vec_element_width_oob_traps.hew  # intentional trap: Vec<i8> index at len → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
-vec_index_assign_oob_traps.hew   # intentional trap: Vec<i64> OOB write v[1] on 1-element vec → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
-vec_index_oob_traps.hew          # intentional trap: Vec<i64> read v[10] on 3-element vec → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
-vec_enum_index_oob_traps.hew     # intentional trap: Vec<enum> read v[i] past end → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
-hashmap_index_absent_traps.hew       # intentional trap: HashMap<string,i64> read m["absent"] on missing key → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
-hashmap_enum_index_absent_traps.hew  # intentional trap: HashMap<string,enum> read m["absent"] on missing key → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
-crash_main_context_diagnostic.hew  # intentional trap: OOB Vec index in main context → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64) + "hew: trap in main context" stderr diagnostic (F1.3)
-wire_cbor_decode_malformed_traps.hew  # intentional trap: decoding malformed CBOR (0xFF filler bytes) through the wire body codec fails closed → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
-wire_cbor_enum_oob_tag_traps.hew  # intentional trap: decoding an out-of-range enum variant tag (well-formed CBOR, unknown tag) through the wire body codec fails closed → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
-wire_cbor_narrow_int_over_range_traps.hew  # intentional trap: decoding a CBOR integer outside a fixed-width field's range (i8 from 300) through the wire body codec fails closed rather than truncating → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
-wire_cbor_enum_arity_mismatch_traps.hew  # intentional trap: decoding an enum payload whose arity exceeds the target variant (Pair(i64) from {1:[10,20]}) through the wire body codec fails closed rather than dropping the surplus → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
-wire_cbor_missing_required_value_traps.hew  # intentional trap: a required scalar rejects an absent CBOR map key → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
-wire_cbor_missing_required_option_traps.hew  # intentional trap: a required Option rejects an absent CBOR map key instead of inferring optional presence from its value shape → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
-wire_cbor_null_required_value_traps.hew  # intentional trap: a required scalar rejects a present CBOR null value → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
-int_negate_runtime_min_traps.hew  # intentional trap: negating a runtime i32::MIN value (-n for non-literal n; literal -<digits> folds at compile time) → IntegerOverflow signal (SIGILL x86_64 / SIGTRAP aarch64)
-receive_gen_fn_fault_trap.hew  # intentional abort: a receive-gen producer that traps mid-stream fault-closes the stream so the consumer observes the fault on its next resume → SIGABRT (signal 6)
-receive_gen_fn_teardown_fault.hew  # intentional abort: a receive-gen producer torn down (actor stopped) while its stream is live and parked fault-closes the stream so the consumer observes the fault → SIGABRT (signal 6)
+isize_div_by_zero_traps.hew runtime-crash  # intentional trap: isize / 0 → DivideByZero signal (SIGILL x86_64 / SIGTRAP aarch64)
+isize_shift_oob_traps.hew runtime-crash    # intentional trap: isize << 64 → ShiftOutOfRange signal (SIGILL x86_64 / SIGTRAP aarch64)
+vec_element_width_oob_traps.hew runtime-crash  # intentional trap: Vec<i8> index at len → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
+vec_index_assign_oob_traps.hew runtime-crash   # intentional trap: Vec<i64> OOB write v[1] on 1-element vec → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
+vec_index_oob_traps.hew runtime-crash          # intentional trap: Vec<i64> read v[10] on 3-element vec → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
+vec_enum_index_oob_traps.hew runtime-crash     # intentional trap: Vec<enum> read v[i] past end → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
+hashmap_index_absent_traps.hew runtime-crash       # intentional trap: HashMap<string,i64> read m["absent"] on missing key → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
+hashmap_enum_index_absent_traps.hew runtime-crash  # intentional trap: HashMap<string,enum> read m["absent"] on missing key → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
+crash_main_context_diagnostic.hew runtime-crash  # intentional trap: OOB Vec index in main context → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64) + "hew: trap in main context" stderr diagnostic (F1.3)
+wire_cbor_decode_malformed_traps.hew runtime-crash  # intentional trap: decoding malformed CBOR (0xFF filler bytes) through the wire body codec fails closed → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
+wire_cbor_enum_oob_tag_traps.hew runtime-crash  # intentional trap: decoding an out-of-range enum variant tag (well-formed CBOR, unknown tag) through the wire body codec fails closed → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
+wire_cbor_narrow_int_over_range_traps.hew runtime-crash  # intentional trap: decoding a CBOR integer outside a fixed-width field's range (i8 from 300) through the wire body codec fails closed rather than truncating → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
+wire_cbor_enum_arity_mismatch_traps.hew runtime-crash  # intentional trap: decoding an enum payload whose arity exceeds the target variant (Pair(i64) from {1:[10,20]}) through the wire body codec fails closed rather than dropping the surplus → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
+wire_cbor_missing_required_value_traps.hew runtime-crash  # intentional trap: a required scalar rejects an absent CBOR map key → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
+wire_cbor_missing_required_option_traps.hew runtime-crash  # intentional trap: a required Option rejects an absent CBOR map key instead of inferring optional presence from its value shape → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
+wire_cbor_null_required_value_traps.hew runtime-crash  # intentional trap: a required scalar rejects a present CBOR null value → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
+int_negate_runtime_min_traps.hew runtime-crash  # intentional trap: negating a runtime i32::MIN value (-n for non-literal n; literal -<digits> folds at compile time) → IntegerOverflow signal (SIGILL x86_64 / SIGTRAP aarch64)
+receive_gen_fn_fault_trap.hew runtime-crash  # intentional abort: a receive-gen producer that traps mid-stream fault-closes the stream so the consumer observes the fault on its next resume → SIGABRT (signal 6)
+receive_gen_fn_teardown_fault.hew runtime-crash  # intentional abort: a receive-gen producer torn down (actor stopped) while its stream is live and parked fault-closes the stream so the consumer observes the fault → SIGABRT (signal 6)
 
 # Actor-isolated crash fixtures (`*_actor_isolated.hew`). Each crashes ONE
 # unsupervised actor and then proves an independent probe actor still answers:
@@ -70,14 +74,14 @@ receive_gen_fn_teardown_fault.hew  # intentional abort: a receive-gen producer t
 # so they are registered here for the same reason as the sibling trap fixtures:
 # the failure is the fixture's correctness proof, and a fixture that stopped
 # reporting it would be the regression.
-bytes_index_oob_actor_isolated.hew       # intentional actor crash: out-of-bounds bytes index inside a receive handler; probe survives, process exits 1
-bytes_pop_empty_actor_isolated.hew       # intentional actor crash: empty bytes.pop() inside a receive handler; probe survives, process exits 1
-bytes_set_oob_actor_isolated.hew         # intentional actor crash: out-of-bounds bytes.set() inside a receive handler; probe survives, process exits 1
-bytes_slice_oob_actor_isolated.hew       # intentional actor crash: out-of-bounds bytes slice inside a receive handler; probe survives, process exits 1
-deque_pop_back_empty_actor_isolated.hew  # intentional actor crash: empty Deque.pop_back() inside a receive handler; probe survives, process exits 1
-deque_pop_front_empty_actor_isolated.hew # intentional actor crash: empty Deque.pop_front() inside a receive handler; probe survives, process exits 1
-string_index_oob_actor_isolated.hew      # intentional actor crash: out-of-bounds string index inside a receive handler; probe survives, process exits 1
-string_slice_oob_actor_isolated.hew      # intentional actor crash: out-of-bounds string slice inside a receive handler; probe survives, process exits 1
-vec_pop_empty_actor_isolated.hew         # intentional actor crash: empty Vec.pop() inside a receive handler; probe survives, process exits 1
-vec_remove_layout_oob_actor_isolated.hew # intentional actor crash: out-of-bounds Vec.remove() on a layout-carrying element type inside a receive handler; probe survives, process exits 1
-vec_remove_oob_actor_isolated.hew        # intentional actor crash: out-of-bounds Vec.remove() inside a receive handler; probe survives, process exits 1
+bytes_index_oob_actor_isolated.hew runtime-abort       # intentional actor crash: out-of-bounds bytes index inside a receive handler; probe survives, process exits 1
+bytes_pop_empty_actor_isolated.hew runtime-abort       # intentional actor crash: empty bytes.pop() inside a receive handler; probe survives, process exits 1
+bytes_set_oob_actor_isolated.hew runtime-abort         # intentional actor crash: out-of-bounds bytes.set() inside a receive handler; probe survives, process exits 1
+bytes_slice_oob_actor_isolated.hew runtime-abort       # intentional actor crash: out-of-bounds bytes slice inside a receive handler; probe survives, process exits 1
+deque_pop_back_empty_actor_isolated.hew runtime-abort  # intentional actor crash: empty Deque.pop_back() inside a receive handler; probe survives, process exits 1
+deque_pop_front_empty_actor_isolated.hew runtime-abort # intentional actor crash: empty Deque.pop_front() inside a receive handler; probe survives, process exits 1
+string_index_oob_actor_isolated.hew runtime-abort      # intentional actor crash: out-of-bounds string index inside a receive handler; probe survives, process exits 1
+string_slice_oob_actor_isolated.hew runtime-abort      # intentional actor crash: out-of-bounds string slice inside a receive handler; probe survives, process exits 1
+vec_pop_empty_actor_isolated.hew runtime-abort         # intentional actor crash: empty Vec.pop() inside a receive handler; probe survives, process exits 1
+vec_remove_layout_oob_actor_isolated.hew runtime-abort # intentional actor crash: out-of-bounds Vec.remove() on a layout-carrying element type inside a receive handler; probe survives, process exits 1
+vec_remove_oob_actor_isolated.hew runtime-abort        # intentional actor crash: out-of-bounds Vec.remove() inside a receive handler; probe survives, process exits 1

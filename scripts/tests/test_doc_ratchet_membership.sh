@@ -140,10 +140,12 @@ run_harness() {
     local expected_file="$1"
     local fail_file="$2"
     local call_log="$3"
+    local strict_recoveries="${4:-0}"
 
     HARNESS_STATUS=0
     HARNESS_OUTPUT="$({
-        HEW_FAIL_IDS="$fail_file" \
+        RATCHET_STRICT_RECOVERIES="$strict_recoveries" \
+            HEW_FAIL_IDS="$fail_file" \
             HEW_CALL_LOG="$call_log" \
             "$HARNESS" doc-fences \
             --expected-failures "$expected_file" \
@@ -296,7 +298,8 @@ assert_contains "$HARNESS_OUTPUT" \
     "OUTCOME DRIFT: $first_failure (exit 139, expected structured diagnostic exit 1)" \
     "abnormal tracked-refusal outcome names the exact fence and status"
 
-# Mutation 1: a listed failure now passes and must be rejected.
+# Mutation 1: a listed failure now passes. PR mode reports it without blocking;
+# strict ledger accounting rejects it.
 first_failure=""
 while IFS= read -r fence_id; do
     [[ -z "$fence_id" ]] && continue
@@ -308,13 +311,34 @@ while IFS= read -r fence_id; do
 done <"$BASELINE_FAIL_IDS"
 
 run_harness "$BASELINE_EXPECTED" "$NOW_PASS_IDS" /dev/null
-if [[ "$HARNESS_STATUS" -ne 0 ]]; then
-    pass "now-pass mutation is rejected"
+if [[ "$HARNESS_STATUS" -eq 0 ]]; then
+    pass "now-pass mutation is reported without blocking"
 else
-    fail "now-pass mutation was accepted"
+    fail "now-pass mutation unexpectedly blocked a PR-mode run"
 fi
 assert_contains "$HARNESS_OUTPUT" "NOW-PASSES: $first_failure" \
     "now-pass mutation names the exact fence"
+
+run_harness "$BASELINE_EXPECTED" "$NOW_PASS_IDS" /dev/null 1
+if [[ "$HARNESS_STATUS" -ne 0 ]]; then
+    pass "strict now-pass mutation is rejected"
+else
+    fail "strict now-pass mutation was accepted"
+fi
+
+# Mutation 1b: a ledger row that is absent from the selected corpus is not a
+# recovery. It must fail closed even in ordinary PR mode.
+MISSING_EXPECTED="$TMP_ROOT/expected-missing-entry.txt"
+cp "$BASELINE_EXPECTED" "$MISSING_EXPECTED"
+printf 'missing-fence 1\n' >>"$MISSING_EXPECTED"
+run_harness "$MISSING_EXPECTED" "$BASELINE_FAIL_IDS" /dev/null
+if [[ "$HARNESS_STATUS" -ne 0 ]]; then
+    pass "missing expected entry is rejected"
+else
+    fail "missing expected entry was treated as a recovery"
+fi
+assert_contains "$HARNESS_OUTPUT" "MISSING-EXPECTED: missing-fence" \
+    "missing expected entry names the absent identity"
 
 # Mutation 2: a previously passing fence fails and must be rejected.
 cp "$BASELINE_FAIL_IDS" "$NEW_FAILURE_IDS"

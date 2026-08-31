@@ -1,0 +1,14 @@
+// Reject: presence metadata does not make Option<Option<T>> representable.
+// The outer None and Some(None) still collapse to the same null/omitted shape,
+// so the optional-field encoder must fail closed before emitting a codec.
+#[wire]
+type NestedOptional {
+    value: Option<Option<i64>> @1 optional,
+}
+
+fn main() {
+    let value = NestedOptional { value: None };
+    // Request the codec so codegen-front validation must classify the nested
+    // null shape; merely constructing a record does not synthesize a codec.
+    let _encoded = value.encode();
+}

@@ -4202,6 +4202,7 @@ A `#[wire] type` / `#[wire] enum`:
 
 - has stable field tags (numeric IDs)
 - permits `optional` fields only when their declared type resolves to `Option<T>`
+- records field presence independently from the field value's null encoding
 - supports forward/backward compatibility checks
 
 ### 7.2 Compatibility rules (normative)
@@ -4211,6 +4212,9 @@ Hew adopts Protobuf-style invariants:
 - **Field numbers (tags) must never be reused**. ([protobuf.dev][4])
 - Deleted fields must have their tags **reserved** to prevent reuse. ([protobuf.dev][5])
 - Changing a tag is treated as delete+add (breaking unless carefully managed). ([protobuf.dev][4])
+- Changing an existing field between required and `optional` is rejected in
+  either direction. It changes both map-key emission and missing-key decode
+  behaviour; no directional compatibility is assumed.
 
 Hew tooling provides:
 
@@ -4220,40 +4224,36 @@ Hew tooling provides:
 
 Hew supports multiple encoding formats. The runtime envelope (actor-to-actor transport) uses CBOR (ratified in R62; the CBOR path is the sole internode encoding, HBF retired and migration complete). The `std.encoding` surface provides user-level wire type serialization for cross-service and file I/O use cases.
 
-#### 7.3.1 MessagePack — Default Binary Encoding
+#### 7.3.1 CBOR — Default Binary Encoding
 
-The MessagePack format is the primary shipped binary wire encoding for Hew wire types. MessagePack is a compact, language-agnostic serialization format that maps Hew types to MessagePack primitives efficiently.
+CBOR is the shipped binary encoding for Hew wire types and actor transport.
+`#[wire]` struct bodies are maps keyed by unsigned field tags; enum bodies are
+bare tags or map-of-one payloads. The exact schema is
+`hew-runtime/schemas/wire-body.cddl`.
 
 Design goals: compact representation, fast encode/decode, language interoperability, forward/backward compatibility.
 
 **Implementation reference:** The canonical type descriptor is defined in `hew-types/src/type_descriptor.rs` (`TypeDescriptor = ResolvedTy`). Wire codec consumers use `TypeDescriptor::canonical_string()` and the wire-kind surface in `hew-types`.
 
-##### 7.3.1.1 Wire Type–to–MessagePack Mapping
+##### 7.3.1.1 Wire Type–to–CBOR Mapping
 
-Hew wire types map to MessagePack formats as follows:
+Hew wire types map to CBOR values as follows:
 
-| Hew Type     | MessagePack Format      | Format Marker(s)           | Notes                            |
-| ------------ | ----------------------- | -------------------------- | -------------------------------- |
-| `bool`       | boolean                 | `0xc3` (true), `0xc2` (false) | Single-byte primitives           |
-| `u8`–`u16`   | u64 (up to 16-bit)     | `0xcc`, `0xcd`             | Variable-length u64 encoding    |
-| `u32`–`u64`  | u64 (up to 64-bit)     | `0xce`, `0xcf`             | Variable-length u64 encoding    |
-| `i8`–`i16`   | i64 (signed, up to 16)  | `0xd0`, `0xd1`             | Variable-length signed encoding  |
-| `i32`–`i64`  | i64 (signed, up to 64)  | `0xd2`, `0xd3`             | Variable-length signed encoding  |
-| `f32`        | float32                 | `0xca`                     | IEEE 754 single precision        |
-| `f64`        | float64                 | `0xcb`                     | IEEE 754 double precision        |
-| `string`     | string                  | `0xa0`–`0xbf`, `0xd9`, ... | Length-prefixed UTF-8 string     |
-| `bytes`      | binary                  | `0xc4`, `0xc5`, `0xc6`     | Length-prefixed raw bytes        |
-| `#[wire] type` | map                     | `0x80`–`0x8f`, `0xde`, ... | Key–value pairs (field number keys) |
-| `#[wire] enum`   | i64 + str (variant)     | Tag + variant index/name   | Encoded as MessagePack integer (variant index) or string (variant name) |
-| Optional     | nil or value            | `0xc0` or type of Some(v)  | `None` encodes as MessagePack nil |
-| List         | array                   | `0x90`–`0x9f`, `0xdc`, ... | Length-prefixed sequence         |
+| Hew type | CBOR representation | Notes |
+| --- | --- | --- |
+| integers, floats, `bool` | corresponding CBOR scalar | fixed-width integer decoders reject out-of-range values |
+| `string` | text string | UTF-8 |
+| `bytes` | byte string | raw bytes |
+| `#[wire] type` | map | unsigned field-tag keys |
+| `#[wire] enum` | unsigned tag or map-of-one | payload variants carry an array |
+| `Option<T>` | null or `T` value | value shape only; field presence is separate |
+| `Vec<T>` | array | element-wise encoding |
 
 ##### 7.3.1.2 Wire Type Map Encoding
 
-A `#[wire]` type is encoded as a MessagePack **map**. Field numbers are used as map keys (as MessagePack integers), and values are encoded according to the table above.
+A `#[wire]` type is encoded as a CBOR **map**. Field numbers are unsigned
+integer keys, and values use the table above.
 
-<!-- Executable optional-field presence support lands in #3179/#3182. -->
-<!-- doctest: skip -->
 ```hew
 #[wire]
 type User {
@@ -4263,23 +4263,24 @@ type User {
 }
 
 // User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
-// MessagePack map: {
-//   1 (i64): 42 (u64),
-//   2 (i64): "alice" (string),
-//   3 (i64): "alice@example.com" (string)
+// CBOR map: {
+//   1 (uint): 42 (uint),
+//   2 (uint): "alice" (text),
+//   3 (uint): "alice@example.com" (text)
 // }
 
 // User { id: 42, name: "alice", email: None } encodes as:
-// MessagePack map: {
-//   1 (i64): 42 (u64),
-//   2 (i64): "alice" (string)
+// CBOR map: {
+//   1 (uint): 42 (uint),
+//   2 (uint): "alice" (text)
 // }
 // (optional field 3 omitted)
 ```
 
 ##### 7.3.1.3 Wire Enum Encoding
 
-Wire enums are encoded as MessagePack **integers** representing the 0-based variant index:
+Unit wire enum variants are encoded as unsigned CBOR tags. Payload variants
+use a single-entry map from tag to positional payload array.
 
 `#[wire] enum` codec lowering is fully implemented: encode and decode are
 emitted alongside the wire type codec path, unified on the CBOR body format.
@@ -4295,10 +4296,8 @@ enum Status { Pending; Active; Completed; }
 
 ##### 7.3.1.4 Optional Field Handling
 
-Optional fields are represented using MessagePack **nil** for `None`:
+Field presence is independent of `Option<T>`'s null/value representation:
 
-<!-- Executable optional-field presence support lands in #3179/#3182. -->
-<!-- doctest: skip -->
 ```hew
 #[wire]
 type Config {
@@ -4307,15 +4306,25 @@ type Config {
 }
 
 // Config { timeout_ms: 5000, proxy_url: None } encodes as:
-// MessagePack map: { 1: 5000 }
+// CBOR map: { 1: 5000 }
 
 // Config { timeout_ms: 5000, proxy_url: Some("http://proxy:8080") } encodes as:
-// MessagePack map: { 1: 5000, 2: "http://proxy:8080" }
+// CBOR map: { 1: 5000, 2: "http://proxy:8080" }
 ```
+
+| Field declaration | Encode | Absent key | Present null |
+| --- | --- | --- | --- |
+| required `T` | emit key and value | reject | reject |
+| required `Option<T>` | emit key; `None` is null | reject | `None` |
+| `optional Option<T>` | omit `None`; emit `Some` | `None` | `None` |
+
+The text codecs use the same table. Their compiler descriptor carries explicit
+required/optional presence for every field and is rejected if that metadata is
+missing. It never derives presence from an `Option<T>` value descriptor.
 
 ##### 7.3.1.5 List (Array) Encoding
 
-Lists are encoded as MessagePack **arrays**. Each element is encoded according to the element type:
+Lists are encoded as CBOR **arrays**. Each element is encoded according to the element type:
 
 ```hew
 #[wire]
@@ -4325,7 +4334,7 @@ type Data {
 }
 
 // Data { values: [1, 2, 3], tags: ["a", "b"] } encodes as:
-// MessagePack map: {
+// CBOR map: {
 //   1: [1, 2, 3] (array of 3 ints),
 //   2: ["a", "b"] (array of 2 strings)
 // }
@@ -4333,7 +4342,7 @@ type Data {
 
 ##### 7.3.1.6 Nested Structure Encoding
 
-Nested `#[wire]` types are encoded recursively as MessagePack maps:
+Nested `#[wire]` types are encoded recursively as CBOR maps:
 
 ```hew
 #[wire]
@@ -4342,7 +4351,7 @@ type Inner { x: i32 @1; }
 type Outer { inner: Inner @1; nested_list: [Inner] @2; }
 
 // Outer { inner: Inner { x: 150 }, nested_list: [Inner { x: 200 }] } encodes as:
-// MessagePack map: {
+// CBOR map: {
 //   1: { 1: 150 } (nested map),
 //   2: [{ 1: 200 }] (array of nested maps)
 // }
@@ -4350,12 +4359,10 @@ type Outer { inner: Inner @1; nested_list: [Inner] @2; }
 
 ##### 7.3.1.7 Forward and Backward Compatibility
 
-Unknown fields are preserved during round-trip encoding/decoding. When a `#[wire]` type carries fields unknown to a decoder, those fields are:
-
-1. Decoded and stored in the decoder's internal unknown-fields store.
-2. Re-encoded when the value is re-serialized.
-
-This enables older code to accept and pass through messages containing fields added in newer schema versions.
+Unknown fields are tolerated and discarded by the decoder. This lets an older
+reader accept a newer sender without pretending that a decoded Hew value owns
+data for fields absent from its type. Re-encoding that value does not preserve
+unknown fields.
 
 ##### 7.3.1.8 Field Ordering and Determinism
 
@@ -4363,7 +4370,7 @@ To enable deterministic encoding (important for hashing, signatures, and compari
 
 - **Encoding:** Fields SHOULD be written in ascending field-number order.
 - **Decoding:** Decoders MUST accept fields in any order.
-- **Repeated fields:** If a field number appears multiple times in the wire, the last value wins (for scalars) or values are concatenated (for repeated fields).
+- **Duplicate fields:** Duplicate CBOR map keys are rejected as ambiguous.
 
 ##### 7.3.1.9 Versioning Guarantees
 
@@ -4386,8 +4393,9 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 | Lists                                  | JSON array                                                  |
 | `#[wire] type`                         | JSON object with field names as keys                        |
 | `#[wire] enum`                         | JSON string (variant name)                                  |
-| Optional None                          | JSON `null` or field omitted                                |
-| Optional Some(v)                       | JSON value of v                                             |
+| required `Option<T>` `None`            | present JSON key with `null`                                |
+| `optional Option<T>` `None`            | field omitted                                                |
+| any `Option<T>` `Some(v)`              | JSON value of `v`                                            |
 
 ##### 7.3.2.2 Field Names
 
@@ -4479,9 +4487,9 @@ enum Status { PendingReview; ActiveNow; Completed; }
 stringifying YAML values. Wire types can also serialize to and from YAML using
 the helper surface below.
 
-The exact normative YAML mapping for wire fields and variants remains deferred
-to the next edition. The current implementation follows the JSON mapping rules
-in §7.3.2 where those rules apply.
+YAML follows the JSON mapping and the same required/optional presence table in
+§7.3.1.4. Missing required fields and null for bare required fields are errors;
+an absent or explicitly-null `optional Option<T>` reconstructs `None`.
 
 #### 7.3.4 Encoding Selection
 
@@ -4499,7 +4507,7 @@ Explicit format selection:
 
 ```hew
 let msg = MyMessage { ... };
-let binary = msg.encode();       // Hew Binary Format bytes
+let binary = msg.encode();       // CBOR bytes
 let json_str = msg.to_json();    // JSON string
 let yaml_str = msg.to_yaml();    // YAML string
 ```
@@ -4508,8 +4516,8 @@ Decoding:
 
 ```hew
 let msg1 = MyMessage.decode(binary);
-let msg2 = MyMessage.from_json(json_str);
-let msg3 = MyMessage.from_yaml(yaml_str);
+let msg2 = MyMessage.from_json(json_str); // Result<MyMessage, string>
+let msg3 = MyMessage.from_yaml(yaml_str); // Result<MyMessage, string>
 ```
 
 Current shipped helper surface, as registered by the type checker:
@@ -4517,14 +4525,11 @@ Current shipped helper surface, as registered by the type checker:
 - `#[wire] type` instance methods: `encode() -> bytes`, `to_json() -> string`,
   `to_yaml() -> string`
 - `#[wire] type` static methods: `MyMessage.decode(bytes) -> MyMessage`,
-  `MyMessage.from_json(string) -> MyMessage`,
-  `MyMessage.from_yaml(string) -> MyMessage`
+  `MyMessage.from_json(string) -> Result<MyMessage, string>`,
+  `MyMessage.from_yaml(string) -> Result<MyMessage, string>`
 - unit-only `#[wire] enum` helpers are JSON/YAML-only:
-  `to_json()`, `to_yaml()`, `from_json(string) -> Self`,
-  `from_yaml(string) -> Self`
-
-These constructors currently return the wire type directly rather than
-`Result<Self, E>`.
+  `to_json()`, `to_yaml()`, `from_json(string) -> Result<Self, string>`,
+  `from_yaml(string) -> Result<Self, string>`
 
 ---
 

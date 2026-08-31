@@ -124,25 +124,36 @@ fn wire_check_rejects_field_repeatedness_change() {
     );
 }
 
-// ── (3) Optional → required change ──────────────────────────────────────────
+// ── (3) Presence changes ────────────────────────────────────────────────────
 
-/// Promoting a previously optional field to required is a warning because old
-/// writers will not supply it, leaving new required readers without a value.
+/// A presence flip changes both key emission and missing-key decode behaviour.
+/// Reject it until both interoperability directions have an explicit proof.
 #[test]
-fn wire_check_warns_optional_to_required() {
+fn wire_check_rejects_optional_to_required() {
     let output = run_wire_check(
         "#[wire]\ntype Msg { name: Option<string> @1; }\n",
         "#[wire]\ntype Msg { name: Option<string> @1 optional; }\n",
     );
 
-    assert!(
-        output.status.success(),
-        "optional→required should be a warning, not an error: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
+    assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("new required field `Msg.name @1` has no default"),
+        stderr.contains("changed field presence for `Msg.name @1`: `optional` -> `required`"),
+        "{stderr}",
+    );
+}
+
+#[test]
+fn wire_check_rejects_required_to_optional() {
+    let output = run_wire_check(
+        "#[wire]\ntype Msg { name: Option<string> @1 optional; }\n",
+        "#[wire]\ntype Msg { name: Option<string> @1; }\n",
+    );
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("changed field presence for `Msg.name @1`: `required` -> `optional`"),
         "{stderr}",
     );
 }

@@ -2649,6 +2649,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_cbor_de_select_optional_key( *mut c_void, u64)",
+        "wasm32-wasip1": "fn hew_cbor_de_select_optional_key( *mut c_void, u64)"
+      },
+      "symbol": "hew_cbor_de_select_optional_key"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "codegen-stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_cbor_de_skip( *mut c_void)",
         "wasm32-wasip1": "fn hew_cbor_de_skip( *mut c_void)"
       },

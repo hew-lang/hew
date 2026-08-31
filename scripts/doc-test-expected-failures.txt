@@ -149,8 +149,8 @@ spec-0108   1721392010   # IMPL-GAP: `pool` as pattern — reserved word clash i
 spec-0110   3534476634   # FRAGMENT: references `prices` from prior fence context — context-dependent
 spec-0111   759184928   # SNIPPET: bare `let` — wire schema illustration
 spec-0112   2109671045   # SNIPPET: bare `match` — wire format pattern illustration
-spec-0123   3678662757   # SNIPPET: bare `let` — wire encode illustration
-spec-0124   866984589   # SNIPPET: bare `let` — wire decode illustration
+spec-0123   3178540149   # SNIPPET: bare `let` — wire encode illustration
+spec-0124   3387341978   # SNIPPET: bare `let` — wire decode illustration
 spec-0125   543939813   # SNIPPET: bare `mailbox` declaration — overflow-policy illustration
 spec-0126   2829887061   # SNIPPET: bare `let` — integer width-mismatch conversion illustration
 spec-0127   570017546   # SNIPPET: bare `let` — explicit usize-to-integer conversion illustration

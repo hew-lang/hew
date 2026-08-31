@@ -95,6 +95,11 @@ WireAttr       = "optional" | "deprecated" | "repeated"
                | "yaml_name" "=" StringLit ; (* per-field YAML key override, assignment form *)
 ReservedDecl   = "reserved" "@" IntLit { "," "@" IntLit } ";" ;
 
+(* Semantic constraint: `optional` requires the field Type to resolve to
+   Option<T>. The marker controls whether the encoded map key may be absent;
+   Option<T> alone controls only null versus value and does not imply optional
+   key presence. Option<Option<T>> is outside the wire-body floor. *)
+
 VariantDecl    = Ident ( "(" TypeList ")" | "{" { StructFieldDecl } "}" )? ";" ;
 TypeList       = Type { "," Type } ;
 

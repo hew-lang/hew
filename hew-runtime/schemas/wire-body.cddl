@@ -43,8 +43,10 @@ wire-body = wire-struct-body / wire-enum-body
 ; tags (`@N`, or a 1-based positional fallback for layout-less records — see
 ; `cbor_field_key`) and whose values are the per-field leaf encodings. Keys are
 ; emitted in canonical (ascending) order. Forward-compatibility: a decoder
-; tolerates extra keys it does not know and treats absent keys as
-; optional/default, so the generic shape is an open map of `uint => value`.
+; tolerates extra keys it does not know. A known absent key is accepted only
+; when checked field-presence metadata marks it optional; required keys fail
+; closed. The generic shape remains an open map of `uint => value`, while each
+; per-type refinement records required and optional occurrences exactly.
 ;
 ; A per-type refinement names each tag explicitly; `wire-point-body` below is the
 ; worked example used by the conformance test and the cross-process fixture.
@@ -57,6 +59,16 @@ wire-struct-body = { * uint => wire-value }
 wire-point-body = {
     1 => int,            ; x  (@1)
     2 => int,            ; y  (@2)
+}
+
+; Presence and Option's null/value shape are independent. In this refinement,
+; key 1 is required bare T, key 2 is required Option<T>, and key 3 is optional
+; Option<T>. Required Option None is a PRESENT `2 => null`; optional None omits
+; key 3. A present `3 => null` is also accepted and reconstructs None.
+wire-presence-body = {
+    1 => int,
+    2 => int / null,
+  ? 3 => int / null,
 }
 
 ; ── Enum body — unit tag OR map-of-one ───────────────────────────────────────
@@ -105,9 +117,11 @@ wire-scalar = int / bool / float
 wire-text  = tstr
 wire-bytes = bstr
 
-; `Option<T>`: `None` → CBOR `null`; `Some(v)` → the inner value's encoding
-; directly (no wrapper). `Option<Option<_>>` is rejected at codegen as ambiguous
-; under this null encoding.
+; `Option<T>` VALUE: `None` → CBOR `null`; `Some(v)` → the inner value's
+; encoding directly (no wrapper). This rule does not grant permission to omit
+; the enclosing field key; only the per-field map occurrence does that.
+; `Option<Option<_>>` is rejected at codegen as ambiguous under this null
+; encoding.
 wire-optional = null / wire-value
 
 ; `Vec<T>` → a CBOR array of element encodings.

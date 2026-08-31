@@ -24,6 +24,17 @@ descriptor and compiler-emitted thunks as `#[wire]` methods and actor
 transport. `from_json` and `from_yaml` are fallible; binary `decode` retains the
 existing trusted-input, trap-on-malformed-data contract of `Type.decode`.
 
+## Field presence
+
+Presence is independent of `Option<T>`'s null/value encoding. Required `T` and
+required `Option<T>` fields always emit their map key and reject absence;
+required `Option<T>::None` uses a present null. A field declared
+`Option<T> @N optional` omits its key for `None`, emits it for `Some`, and
+reconstructs `None` from either an absent key or an explicit null. The JSON and
+YAML bridges use the same matrix and reject descriptors that lack explicit
+presence metadata. Unknown fields remain tolerated. `Option<Option<T>>` remains
+outside the wire-body floor because null cannot preserve all of its states.
+
 The module also holds the canonical opaque `Value` contract shared by the
 stdlib encoding modules.
 

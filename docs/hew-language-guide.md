@@ -3133,8 +3133,18 @@ fn main() {
 Each field carries a `@N` tag — a stable wire identifier that must never be
 reused, even if the field is later removed (HEW-SPEC-2026.md §7.2). A field
 marked `optional` must have type `Option<T>`; the marker admits only a value
-that can represent absence. This admission rule does not itself define
-encode/decode presence behaviour.
+that can represent absence. Presence and value shape are separate contracts:
+
+| Declaration | Encode | Missing key | Explicit `null` |
+| --- | --- | --- | --- |
+| `value: T @1` | key is always emitted | decode error | decode error |
+| `value: Option<T> @1` | key is always emitted; `None` is `null` | decode error | `None` |
+| `value: Option<T> @1 optional` | `None` omits the key; `Some` emits it | `None` | `None` |
+
+`Option<Option<T>>` is rejected because the null encoding cannot distinguish
+its inhabitants. Unknown numeric CBOR tags and unknown JSON/YAML names remain
+tolerated. Changing an existing field between required and `optional` changes
+wire behaviour, so `hew wire check` rejects the change in either direction.
 
 `e.to_json()` and `TypeName.from_json(text)` round-trip a wire type through
 JSON; the latter is a call on the type name itself rather than a source

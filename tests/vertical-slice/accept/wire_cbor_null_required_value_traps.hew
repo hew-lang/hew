@@ -1,0 +1,17 @@
+// Validation (FAIL CLOSED): a present null is valid for required Option<T>,
+// but not for required bare T. The required selector finds the key and the
+// scalar value decoder rejects its null value.
+#[wire]
+type RequiredOption {
+    value: Option<i64> @1,
+}
+
+#[wire]
+type RequiredValue {
+    value: i64 @1,
+}
+
+fn main() -> i64 {
+    let raw = RequiredOption { value: None }.encode();
+    RequiredValue.decode(raw).value
+}

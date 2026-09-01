@@ -86,6 +86,7 @@
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
+.PHONY: sir-coverage sir-parity
 
 help:
 	@$(PYTHON) scripts/make-help.py
@@ -640,7 +641,8 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-leak-oracle-selftest test-opaque-resource-lifecycle-matrix-external \
 	test-ownership-balance-corpus compile-determinism-verify compile-determinism-selftest \
 	test-ownership-balance-runner-selftest stdlib-user-build-clean \
-	test-asan-fixture-selftest hew-fmt-property stdlib-lint
+	test-asan-fixture-selftest hew-fmt-property stdlib-lint \
+	sir-coverage sir-parity
 
 ci-shard-3: mqtt-broker-e2e sandbox-parity \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \
@@ -1141,6 +1143,26 @@ compile-determinism-selftest:
 
 compile-determinism-selftest-build:
 	@:
+
+# ── SIR admission gates (dev-only, until the legacy lowerer is deleted) ──────
+# Until the final ladder's cutover, each function is either taken by SIR or
+# still owned by the legacy HIR->MIR body lowerer. `sir-coverage` inventories
+# every root item over the corpora and compares the admitted percentage with
+# the committed ratchet: a drop fails, a rise prints the new value to record.
+# The corpus list is the ratchet's denominator, so adding a corpus here means
+# re-recording the file in the same change.
+# inputs: scripts/sir-coverage-ratchet.txt hew-cli/src/sir_coverage.rs hew-sir/src/*.rs
+SIR_COVERAGE_CORPORA := tests/vertical-slice/accept tests/hew examples std
+sir-coverage: hew-native ## Test: fail when the SIR admission percentage drops below its ratchet
+	$(DEBUG_HEW) tool sir-coverage --ratchet scripts/sir-coverage-ratchet.txt $(SIR_COVERAGE_CORPORA)
+
+# Every program the strict SIR lane admits is also compiled through the
+# legacy route; both binaries run and their exit status and stdout must be
+# byte-identical. The fixture directory guarantees at least one admitted
+# program so the harness never passes by comparing nothing.
+# inputs: scripts/sir-parity.sh hew-cli/tests/fixtures/sir-parity/*.hew
+sir-parity: hew-native ## Test: run SIR-route and legacy-route binaries and compare their output
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/sir-parity.sh hew-cli/tests/fixtures/sir-parity $(SIR_COVERAGE_CORPORA)
 
 # Dogfood-shaped compile measurement. The raw IR byte ceiling is a real
 # regression gate; timings remain observational. Lint already builds the same

@@ -67,6 +67,7 @@ mod drop_plan;
 mod edge_owner_replay;
 mod expr;
 mod facts;
+mod field_load_poison;
 mod machine_synth;
 mod move_value;
 mod owned_cursor_call;
@@ -12748,28 +12749,7 @@ pub(in crate::lower) fn finalize_body(
 ) -> FinalizedBody {
     let _timing = crate::timing::stage("finalize_body");
     if builder.field_load_classification_poisoned {
-        // A classifier error means the partially accumulated ownership stream
-        // has no sound continuation. Do not splice drops, transfers, or edge
-        // carries over it: discard the partial transaction and retain one
-        // validator-safe body whose only terminator is Unreachable. The
-        // diagnostic itself remains on the Builder for the normal projection
-        // path in `lower_function`.
-        builder.pending_blocks.clear();
-        builder.statements.clear();
-        builder.instructions.clear();
-        builder.pending_outbound_actor_args.clear();
-        builder.pending_owned_call_args.clear();
-        builder.pending_affine_call_consumes.clear();
-        builder.deferred_affine_call_consume_sites.clear();
-        return FinalizedBody {
-            blocks: vec![BasicBlock {
-                id: 0,
-                statements: Vec::new(),
-                instructions: Vec::new(),
-                terminator: Terminator::Unreachable,
-            }],
-            body_statements: Vec::new(),
-        };
+        return builder.take_field_load_classification_poisoned_body();
     }
     let mut blocks = match seal {
         BodySeal::Cursor(terminator) => builder.seal_body_blocks(terminator),

@@ -6877,6 +6877,237 @@ fn failed_actor_sender_transfer_closes_the_prepared_owner() {
 }
 
 #[test]
+fn prepared_half_carrier_drop_keeps_the_typed_direction_operand() {
+    for (name, builtin, direction) in [
+        ("SendHalf", hew_types::BuiltinType::SendHalf, 0_u64),
+        ("RecvHalf", hew_types::BuiltinType::RecvHalf, 1_u64),
+    ] {
+        let ctx = Context::create();
+        let module = ctx.create_module("prepared_half_carrier_cleanup");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "half_cleanup");
+        let half_ty = ResolvedTy::named_builtin(name, builtin, vec![]);
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let slot = fn_ctx
+            .builder
+            .build_alloca(ptr_ty, "local_0")
+            .expect("half carrier slot");
+        fn_ctx.locals.insert(0, (slot, ptr_ty.into()));
+        fn_ctx.local_tys.insert(0, half_ty.clone());
+        let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+            &half_ty,
+            &[],
+            &[],
+            &[],
+            fn_ctx.lifecycle_registry,
+        )
+        .unwrap_or_else(|error| panic!("{name} must have a typed plan: {error:?}"));
+
+        emit_prepared_carrier_drop(
+            &fn_ctx,
+            Place::Local(0),
+            &plan,
+            hew_mir::PreparedCarrierBoundary::Actor,
+        )
+        .unwrap_or_else(|error| panic!("{name} prepared cleanup failed: {error}"));
+        finish_test_fn(&fn_ctx);
+
+        assert!(module.verify().is_ok(), "{name} prepared IR must verify");
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("call i32 @hew_duplex_close_half")
+                && ir.contains(&format!("i32 {direction}")),
+            "{name} prepared close must materialise its descriptor direction; IR:\n{ir}",
+        );
+    }
+}
+
+fn assert_monitor_ref_guarded_drop_cfg(
+    ir: &str,
+    inactive_value: &str,
+    close_block: &str,
+    cont_block: &str,
+) {
+    let predicate = format!("%{inactive_value} = icmp eq i64");
+    let branch = format!("br i1 %{inactive_value}, label %{cont_block}, label %{close_block}");
+    assert!(
+        ir.contains(&predicate),
+        "MonitorRef guard must compare its id with zero; IR:\n{ir}"
+    );
+    assert!(
+        ir.contains(&format!("{predicate} %")) && ir.contains(&format!(", 0\n  {branch}")),
+        "zero/inactive must branch directly to continuation and nonzero/active to close; IR:\n{ir}"
+    );
+
+    let close_marker = format!("\n{close_block}:");
+    let cont_marker = format!("\n{cont_block}:");
+    let close_start = ir
+        .find(&close_marker)
+        .unwrap_or_else(|| panic!("missing MonitorRef close block `{close_block}`; IR:\n{ir}"));
+    let cont_start = ir
+        .find(&cont_marker)
+        .unwrap_or_else(|| panic!("missing MonitorRef continuation `{cont_block}`; IR:\n{ir}"));
+    assert!(
+        close_start < cont_start,
+        "unexpected MonitorRef block order; IR:\n{ir}"
+    );
+    let close_body = &ir[close_start..cont_start];
+    let call_at = close_body
+        .find("call void @hew_actor_demonitor(i64")
+        .unwrap_or_else(|| panic!("active close block must call demonitor; IR:\n{ir}"));
+    let disarm_at = close_body
+        .find("store i64 0")
+        .unwrap_or_else(|| panic!("active close block must disarm the id; IR:\n{ir}"));
+    assert!(
+        call_at < disarm_at && close_body.contains(&format!("br label %{cont_block}")),
+        "active close must call, then disarm, then continue; IR:\n{ir}"
+    );
+
+    let cont_end = ir[cont_start..]
+        .find("\n}")
+        .map_or(ir.len(), |offset| cont_start + offset);
+    let cont_body = &ir[cont_start..cont_end];
+    assert!(
+        !cont_body.contains("call void @hew_actor_demonitor"),
+        "inactive continuation must contain no demonitor call; IR:\n{ir}"
+    );
+}
+
+#[test]
+fn prepared_monitor_ref_drop_guards_inactive_id_and_zeros_active_id() {
+    let ctx = Context::create();
+    let module = ctx.create_module("prepared_monitor_ref_cleanup");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "monitor_cleanup");
+    let ty = ResolvedTy::named_builtin("MonitorRef", hew_types::BuiltinType::MonitorRef, vec![]);
+    let i64_ty = ctx.i64_type();
+    let monitor_ty = ctx.struct_type(&[i64_ty.into()], false);
+    let slot = fn_ctx
+        .builder
+        .build_alloca(monitor_ty, "local_0")
+        .expect("monitor slot");
+    fn_ctx.locals.insert(0, (slot, monitor_ty.into()));
+    fn_ctx.local_tys.insert(0, ty.clone());
+    let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+        &ty,
+        &[],
+        &[],
+        &[],
+        fn_ctx.lifecycle_registry,
+    )
+    .expect("MonitorRef plan");
+    emit_prepared_carrier_drop(
+        &fn_ctx,
+        Place::Local(0),
+        &plan,
+        hew_mir::PreparedCarrierBoundary::Actor,
+    )
+    .expect("prepared MonitorRef cleanup");
+    finish_test_fn(&fn_ctx);
+    assert!(module.verify().is_ok());
+    let ir = module.print_to_string().to_string();
+    assert_monitor_ref_guarded_drop_cfg(
+        &ir,
+        "prepared_monitor_ref_inactive",
+        "prepared_monitor_ref_close",
+        "prepared_monitor_ref_cont",
+    );
+}
+
+#[test]
+fn prepared_monitor_ref_drop_rejects_every_near_miss_predeclared_abi() {
+    for abi in ["nonvoid", "pointer", "varargs"] {
+        let ctx = Context::create();
+        let module = ctx.create_module("prepared_monitor_ref_wrong_abi");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "monitor_cleanup");
+        let ty =
+            ResolvedTy::named_builtin("MonitorRef", hew_types::BuiltinType::MonitorRef, vec![]);
+        let i64_ty = ctx.i64_type();
+        let monitor_ty = ctx.struct_type(&[i64_ty.into()], false);
+        let slot = fn_ctx
+            .builder
+            .build_alloca(monitor_ty, "local_0")
+            .expect("monitor slot");
+        fn_ctx.locals.insert(0, (slot, monitor_ty.into()));
+        fn_ctx.local_tys.insert(0, ty.clone());
+        let fn_ty = match abi {
+            "nonvoid" => ctx.i32_type().fn_type(&[i64_ty.into()], false),
+            "pointer" => ctx
+                .void_type()
+                .fn_type(&[ctx.ptr_type(AddressSpace::default()).into()], false),
+            "varargs" => ctx.void_type().fn_type(&[i64_ty.into()], true),
+            _ => unreachable!(),
+        };
+        module.add_function("hew_actor_demonitor", fn_ty, None);
+        let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+            &ty,
+            &[],
+            &[],
+            &[],
+            fn_ctx.lifecycle_registry,
+        )
+        .expect("MonitorRef plan");
+        let err = emit_prepared_carrier_drop(
+            &fn_ctx,
+            Place::Local(0),
+            &plan,
+            hew_mir::PreparedCarrierBoundary::Actor,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref msg)
+                if msg.contains("exact non-vararg void(i64) ABI")),
+            "prepared MonitorRef must reject {abi}, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn prepared_monitor_ref_drop_rejects_invalid_carrier_layouts() {
+    for layout in ["packed", "wrong-width", "scalar"] {
+        let ctx = Context::create();
+        let module = ctx.create_module("prepared_monitor_ref_wrong_carrier");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "monitor_cleanup");
+        let ty =
+            ResolvedTy::named_builtin("MonitorRef", hew_types::BuiltinType::MonitorRef, vec![]);
+        let slot_ty: BasicTypeEnum<'_> = match layout {
+            "packed" => ctx.struct_type(&[ctx.i64_type().into()], true).into(),
+            "wrong-width" => ctx.struct_type(&[ctx.i32_type().into()], false).into(),
+            "scalar" => ctx.i64_type().into(),
+            _ => unreachable!(),
+        };
+        let slot = fn_ctx
+            .builder
+            .build_alloca(slot_ty, "local_0")
+            .expect("forged MonitorRef carrier slot");
+        fn_ctx.locals.insert(0, (slot, slot_ty));
+        fn_ctx.local_tys.insert(0, ty.clone());
+        let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+            &ty,
+            &[],
+            &[],
+            &[],
+            fn_ctx.lifecycle_registry,
+        )
+        .expect("MonitorRef plan");
+        let err = emit_prepared_carrier_drop(
+            &fn_ctx,
+            Place::Local(0),
+            &plan,
+            hew_mir::PreparedCarrierBoundary::Actor,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref msg)
+                if msg.contains("prepared MonitorRef resource")),
+            "prepared MonitorRef must reject {layout} carrier, got {err:?}"
+        );
+    }
+}
+
+#[test]
 fn aggregate_borrowed_ingress_array_retains_each_string_occurrence() {
     let ctx = Context::create();
     let m = ctx.create_module("aggregate_borrowed_ingress_array");
@@ -17177,6 +17408,174 @@ fn builtin_resource_field_drop_interns_typed_runtime_release() {
             "{name} drop must call its typed runtime release; IR:\n{ir}",
         );
     }
+}
+
+#[test]
+fn aggregate_half_resource_drops_keep_the_typed_direction_operand() {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
+
+    for (name, descriptor, direction) in [
+        ("SendHalf", RuntimeDropDescriptor::SendHalfClose, 0_u64),
+        ("RecvHalf", RuntimeDropDescriptor::RecvHalfClose, 1_u64),
+    ] {
+        let ctx = Context::create();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let parent_st = ctx.struct_type(&[ptr_ty.into()], false);
+        let (llvm_mod, builder, slot, _) =
+            bytes_field_drop_test_harness(&ctx, parent_st, "aggregate_half_resource_drop");
+        let td = host_target_data();
+        let ml = MachineLayoutMap::new();
+        let rs = RecordLayoutMap::new();
+        let w = empty_drop_witnesses(&td, &ml, &rs);
+
+        emit_field_drop_step(
+            &ctx,
+            &llvm_mod,
+            &builder,
+            Some(parent_st),
+            slot,
+            0,
+            &StateFieldCloneKind::Resource {
+                name: name.to_string(),
+                close: ResourceCloseAuthority::Runtime(descriptor),
+            },
+            &w,
+        )
+        .unwrap_or_else(|error| panic!("{name} aggregate drop failed: {error}"));
+        builder
+            .build_return(Some(&ctx.i32_type().const_zero()))
+            .expect("host return");
+
+        assert!(llvm_mod.verify().is_ok(), "{name} aggregate IR must verify");
+        let ir = llvm_mod.print_to_string().to_string();
+        assert!(
+            ir.contains("call i32 @hew_duplex_close_half")
+                && ir.contains(&format!("i32 {direction}")),
+            "{name} aggregate close must materialise its descriptor direction; IR:\n{ir}",
+        );
+    }
+}
+
+#[test]
+fn aggregate_monitor_ref_drop_rejects_every_near_miss_predeclared_abi() {
+    for abi in ["nonvoid", "pointer", "varargs"] {
+        let ctx = Context::create();
+        let i64_ty = ctx.i64_type();
+        let monitor_ty = ctx.struct_type(&[i64_ty.into()], false);
+        let parent_ty = ctx.struct_type(&[monitor_ty.into()], false);
+        let (module, builder, slot, _) =
+            bytes_field_drop_test_harness(&ctx, parent_ty, "monitor_ref_wrong_abi");
+        let fn_ty = match abi {
+            "nonvoid" => ctx.i32_type().fn_type(&[i64_ty.into()], false),
+            "pointer" => ctx
+                .void_type()
+                .fn_type(&[ctx.ptr_type(AddressSpace::default()).into()], false),
+            "varargs" => ctx.void_type().fn_type(&[i64_ty.into()], true),
+            _ => unreachable!(),
+        };
+        module.add_function("hew_actor_demonitor", fn_ty, None);
+        let td = host_target_data();
+        let ml = MachineLayoutMap::new();
+        let rs = RecordLayoutMap::new();
+        let w = empty_drop_witnesses(&td, &ml, &rs);
+
+        let err = emit_field_drop_step(
+            &ctx,
+            &module,
+            &builder,
+            Some(parent_ty),
+            slot,
+            0,
+            &StateFieldCloneKind::Resource {
+                name: "MonitorRef".to_string(),
+                close: ResourceCloseAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeDropDescriptor::MonitorRefClose,
+                ),
+            },
+            &w,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref msg)
+                if msg.contains("exact non-vararg void(i64) ABI")),
+            "aggregate MonitorRef must reject {abi}, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn aggregate_monitor_ref_drop_rejects_packed_inline_layout() {
+    let ctx = Context::create();
+    let packed_monitor_ty = ctx.struct_type(&[ctx.i64_type().into()], true);
+    let parent_ty = ctx.struct_type(&[packed_monitor_ty.into()], false);
+    let (module, builder, slot, _) =
+        bytes_field_drop_test_harness(&ctx, parent_ty, "monitor_ref_packed_layout");
+    let td = host_target_data();
+    let ml = MachineLayoutMap::new();
+    let rs = RecordLayoutMap::new();
+    let w = empty_drop_witnesses(&td, &ml, &rs);
+    let err = emit_field_drop_step(
+        &ctx,
+        &module,
+        &builder,
+        Some(parent_ty),
+        slot,
+        0,
+        &StateFieldCloneKind::Resource {
+            name: "MonitorRef".to_string(),
+            close: ResourceCloseAuthority::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::MonitorRefClose,
+            ),
+        },
+        &w,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, CodegenError::FailClosed(ref msg)
+            if msg.contains("MonitorRef resource drop") && msg.contains("expected exactly inline")),
+        "packed MonitorRef aggregate must fail closed, got {err:?}"
+    );
+}
+
+#[test]
+fn aggregate_monitor_ref_drop_guards_inactive_id_and_zeros_active_id() {
+    let ctx = Context::create();
+    let i64_ty = ctx.i64_type();
+    let monitor_ty = ctx.struct_type(&[i64_ty.into()], false);
+    let parent_ty = ctx.struct_type(&[monitor_ty.into()], false);
+    let (module, builder, slot, _) =
+        bytes_field_drop_test_harness(&ctx, parent_ty, "monitor_ref_active_inactive");
+    let td = host_target_data();
+    let ml = MachineLayoutMap::new();
+    let rs = RecordLayoutMap::new();
+    let w = empty_drop_witnesses(&td, &ml, &rs);
+    emit_field_drop_step(
+        &ctx,
+        &module,
+        &builder,
+        Some(parent_ty),
+        slot,
+        0,
+        &StateFieldCloneKind::Resource {
+            name: "MonitorRef".to_string(),
+            close: ResourceCloseAuthority::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::MonitorRefClose,
+            ),
+        },
+        &w,
+    )
+    .expect("MonitorRef aggregate drop");
+    builder
+        .build_return(Some(&ctx.i32_type().const_zero()))
+        .expect("host return");
+    assert!(module.verify().is_ok());
+    let ir = module.print_to_string().to_string();
+    assert_monitor_ref_guarded_drop_cfg(
+        &ir,
+        "monitor_f0_inactive",
+        "monitor_f0_close",
+        "monitor_f0_cont",
+    );
 }
 
 #[test]

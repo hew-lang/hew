@@ -1829,22 +1829,6 @@ fn classify_named(
     if matches!(builtin, Some(hew_types::BuiltinType::Sender)) {
         return Ok(StateFieldCloneKind::ChannelSender);
     }
-    if matches!(builtin, Some(hew_types::BuiltinType::Receiver)) {
-        return Ok(StateFieldCloneKind::Resource {
-            name: "Receiver".to_string(),
-            close: ResourceCloseAuthority::Runtime(
-                hew_types::runtime_call::RuntimeDropDescriptor::ReceiverClose,
-            ),
-        });
-    }
-    if matches!(builtin, Some(hew_types::BuiltinType::LambdaPid)) {
-        return Ok(StateFieldCloneKind::Resource {
-            name: "LambdaPid".to_string(),
-            close: ResourceCloseAuthority::Runtime(
-                hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
-            ),
-        });
-    }
     if matches!(
         builtin,
         Some(
@@ -1855,6 +1839,45 @@ fn classify_named(
         )
     ) {
         return Ok(StateFieldCloneKind::BitCopy { size_bytes: 0 });
+    }
+
+    // Stream/Sink remain `IoHandle` rather than `Resource`: their close
+    // descriptor is shared with ordinary lexical drops, while actor-state
+    // clone is deliberately refused by the IO-handle protocol.
+    if matches!(builtin, Some(hew_types::BuiltinType::Stream)) {
+        return Ok(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Stream,
+        });
+    }
+    if matches!(builtin, Some(hew_types::BuiltinType::Sink)) {
+        return Ok(StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Sink,
+        });
+    }
+
+    // Runtime-close identity is a closed typed table shared with ordinary
+    // scope-exit drop planning. Do not recover it from `name`: user nominals
+    // with the same leaf arrive with `builtin: None` and retain their own
+    // layout/lifecycle authority below.
+    if let Some((builtin, descriptor)) = builtin.and_then(|builtin| {
+        hew_types::runtime_call::RuntimeDropDescriptor::for_builtin(builtin)
+            .map(|descriptor| (builtin, descriptor))
+    }) {
+        return Ok(StateFieldCloneKind::Resource {
+            name: builtin.canonical_name().to_string(),
+            close: ResourceCloseAuthority::Runtime(descriptor),
+        });
+    }
+
+    // This opaque compiler-internal carrier bears the Resource marker so
+    // untyped paths never copy it, but it has no runtime close descriptor or
+    // source-level constructor. Keep a forged snapshot fail-closed and
+    // distinct from a missing user-record layout; inventing `hew_actor_close`
+    // here would change its unratified ownership contract.
+    if matches!(builtin, Some(hew_types::BuiltinType::BoxedActor)) {
+        return Err(ClassificationError::Unsupported {
+            rendered: "builtin BoxedActor has no runtime lifecycle descriptor".to_string(),
+        });
     }
 
     // Non-opaque user records/enums still shadow builtin *spellings*. A typed
@@ -2001,17 +2024,6 @@ fn classify_named(
     // `.close()` and standalone-binding drop paths use). No dup helper exists,
     // so the clone/restart direction fails closed (handled in the codegen clone
     // step), matching the affine-resource posture.
-    if matches!(builtin, Some(hew_types::BuiltinType::Stream)) {
-        return Ok(StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Stream,
-        });
-    }
-    if matches!(builtin, Some(hew_types::BuiltinType::Sink)) {
-        return Ok(StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Sink,
-        });
-    }
-
     // `Generator<Y, R>` / `AsyncGenerator<Y>` pointer-backed runtime handle.
     // Same posture as Stream/Sink: drop routes to `hew_gen_coro_destroy` (the
     // standalone generator-binding release symbol), no dup helper, clone/restart
@@ -2694,6 +2706,111 @@ mod tests {
     }
 
     #[test]
+    fn runtime_close_builtin_snapshot_inventory_is_typed_and_clone_refusing() {
+        use hew_types::runtime_call::RuntimeDropDescriptor as Drop;
+        use hew_types::BuiltinType;
+
+        let inventory = [
+            (BuiltinType::Duplex, Drop::DuplexClose),
+            (BuiltinType::HewDuplex, Drop::DuplexClose),
+            (BuiltinType::Receiver, Drop::ReceiverClose),
+            (BuiltinType::SendHalf, Drop::SendHalfClose),
+            (BuiltinType::HewSendHalf, Drop::SendHalfClose),
+            (BuiltinType::RecvHalf, Drop::RecvHalfClose),
+            (BuiltinType::HewRecvHalf, Drop::RecvHalfClose),
+            (BuiltinType::LambdaActorHandle, Drop::LambdaActorHandleClose),
+            (BuiltinType::LambdaPid, Drop::LambdaActorHandleClose),
+            (BuiltinType::MonitorRef, Drop::MonitorRefClose),
+        ];
+
+        for (builtin_kind, descriptor) in inventory {
+            let mut visited = HashSet::new();
+            let root =
+                classify_state_field(&builtin(builtin_kind, vec![]), &no_records(), &mut visited)
+                    .unwrap_or_else(|err| panic!("{builtin_kind:?} must classify: {err:?}"));
+            assert_eq!(
+                root,
+                StateFieldCloneKind::Resource {
+                    name: builtin_kind.canonical_name().to_string(),
+                    close: ResourceCloseAuthority::Runtime(descriptor),
+                },
+            );
+            assert!(
+                !ValueSnapshotPlan { root }
+                    .is_clone_total(&[], &[], &[], &registry(&[]))
+                    .unwrap(),
+                "{builtin_kind:?} must retain the actor-state clone refusal",
+            );
+        }
+    }
+
+    #[test]
+    fn every_resource_marker_has_a_closed_lifecycle_disposition() {
+        use hew_types::{builtin_type::BuiltinTypeMarker, BuiltinType};
+
+        for info in hew_types::builtin_types() {
+            if info.kind.marker() != BuiltinTypeMarker::Resource {
+                continue;
+            }
+            let admitted =
+                matches!(
+                    info.kind,
+                    BuiltinType::LocalPid | BuiltinType::HewActor | BuiltinType::BoxedActor
+                ) || hew_types::runtime_call::RuntimeDropDescriptor::for_builtin(info.kind)
+                    .is_some();
+            assert!(
+                admitted,
+                "resource builtin {:?} lacks an explicit lifecycle disposition",
+                info.kind
+            );
+        }
+    }
+
+    #[test]
+    fn stream_sink_and_sender_keep_their_distinct_typed_snapshot_protocols() {
+        let cases = [
+            (
+                hew_types::BuiltinType::Stream,
+                StateFieldCloneKind::IoHandle {
+                    kind: IoHandleKind::Stream,
+                },
+            ),
+            (
+                hew_types::BuiltinType::Sink,
+                StateFieldCloneKind::IoHandle {
+                    kind: IoHandleKind::Sink,
+                },
+            ),
+            (
+                hew_types::BuiltinType::Sender,
+                StateFieldCloneKind::ChannelSender,
+            ),
+        ];
+        for (builtin_kind, expected) in cases {
+            let mut visited = HashSet::new();
+            assert_eq!(
+                classify_state_field(&builtin(builtin_kind, vec![]), &no_records(), &mut visited,),
+                Ok(expected),
+                "{builtin_kind:?} must not be flattened into a generic resource",
+            );
+        }
+    }
+
+    #[test]
+    fn boxed_actor_has_no_forged_snapshot_close_authority() {
+        let mut visited = HashSet::new();
+        assert!(matches!(
+            classify_state_field(
+                &builtin(hew_types::BuiltinType::BoxedActor, vec![]),
+                &no_records(),
+                &mut visited,
+            ),
+            Err(ClassificationError::Unsupported { ref rendered })
+                if rendered.contains("BoxedActor") && rendered.contains("lifecycle descriptor")
+        ));
+    }
+
+    #[test]
     fn net_connection_without_lifecycle_registry_fails_closed_as_opaque() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
@@ -2744,6 +2861,14 @@ mod tests {
             ("Sink", vec![ResolvedTy::I64]),
             ("Generator", vec![ResolvedTy::I64, ResolvedTy::Unit]),
             ("AsyncGenerator", vec![ResolvedTy::I64]),
+            ("Duplex", vec![]),
+            ("Receiver", vec![]),
+            ("SendHalf", vec![]),
+            ("RecvHalf", vec![]),
+            ("LambdaPid", vec![]),
+            ("LambdaActorHandle", vec![]),
+            ("MonitorRef", vec![]),
+            ("HewDuplex", vec![]),
         ];
 
         for (name, args) in collisions {

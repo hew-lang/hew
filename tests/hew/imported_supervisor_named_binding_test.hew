@@ -2,14 +2,20 @@
 //! used as supervised children.
 
 import tests.hew.imported_supervisor_named_binding_support.worker.{Worker};
+
 import tests.hew.imported_supervisor_named_binding_support.worker.{Worker as Renamed};
+
 import std.testing;
 
 supervisor DirectPool {
+    strategy: one_for_one;
+
     child worker: Worker(id: 31) restart: temporary;
 }
 
 supervisor AliasedPool {
+    strategy: one_for_one;
+
     child worker: Renamed(id: 47) restart: temporary;
 }
 
@@ -21,7 +27,6 @@ fn named_and_aliased_actors_run_as_supervised_children() {
         .Err(_) => testing.assert_true(false),
     }
     supervisor_stop(direct);
-
     let aliased = spawn AliasedPool;
     match await aliased.worker.identify() {
         .Ok(id) => testing.assert_eq(id, 47),

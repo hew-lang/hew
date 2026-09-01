@@ -9,6 +9,8 @@ pub actor Worker {
     }
 }
 
-pub supervisor Inner {
+supervisor Inner {
+    strategy: one_for_one;
+
     child worker: Worker(id: 23) restart: temporary;
 }

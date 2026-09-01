@@ -271,7 +271,7 @@ built to preserve.
 ### 2.2 Resolved + Typed HIR (`hew-hir`)
 
 HIR is the authoritative representation of Hew language meaning, not a second
-copy of source syntax. It owns stable `ItemId`/`BindingId`/`SiteId` identities,
+copy of source syntax. It owns `ItemId`/`BindingId`/`SiteId` identities,
 resolved names and overloads, lexical scopes, imports, capability declarations,
 `ResolvedTy` on every semantic expression, generic parameters and resolved
 generic-instance facts, trait and method selection, pattern semantics,
@@ -279,6 +279,11 @@ closure-capture facts, and actor,
 machine, state, event, and method identities. It also retains source-semantic
 ownership intent and diagnostic provenance. **ValueClass** is a resolved type
 fact (see §3), not a layout decision.
+
+Current `SiteId` allocation is monotonic and local to the lowering traversal.
+It is suitable for ordering facts within one artifact, but canonical identity
+stable across reformatting is planned deeper architecture, not a current
+compatibility promise.
 
 No `&` / `&mut` / lifetime syntax appears in Hew's surface; HIR resolves the
 language's semantic intent without inventing surface borrow syntax.
@@ -439,10 +444,16 @@ explicit target-layout contract, and physical value-model operations
 `consume_call`, and `freeze`). It also owns runtime transport/carrier and
 coroutine-frame decisions once their semantic concepts have been lowered.
 
-**Current transitional adapter:** today's `RawLowerer` materializes every SIR
-`ValueId` as `Place::Local` because the current Raw MIR body format expects
-places. That bridge is useful compatibility evidence, but it is not the final
-SIR → MIR contract.
+**Current bounded strict slice:** Raw virtual values are implemented for the
+strict SIR path's no-drop scalar/tuple cases, including tuple construction and
+projection and scalar parameter flow. Those bodies produce fresh Raw, Checked,
+and explicit zero-drop Elaborated MIR. General CFG, calls, and
+materialization/ownership realization remain planned; this is not yet the
+general SIR → MIR contract.
+
+The legacy `RawLowerer` still materializes its HIR path as `Place::Local` for
+the existing body format. That compatibility bridge is separate from the
+bounded strict virtual-value slice.
 
 #### [planned] Virtual-value / `Place` seam (required before general SIR → MIR)
 
@@ -539,19 +550,26 @@ value-cost language (see §4.3).
 at <span> but read at <span>", "two mutations alias the same value", "affine
 resource `c` would be shared across an actor send — consume or materialize".
 
-**Dump:** [current] `hew tool compile --dump-mir checked` (annotation overlay: `// read-share`,
-`// move (last use)`, `// ensure-unique → mutate`, `// materialize`, etc.).
+**Dump:** [current] `hew tool compile --dump-mir checked` renders the checked
+CFG, parameter-boundary facts, checks/cooperation data, and a deterministic
+`decisions:` table of the actual `DecisionFact` fields. It is not a
+source-annotation overlay.
 
 ---
 
 ### 2.7 Elaborated MIR (`hew-mir::elab`)
 
-**Owns:** explicit `Drop(place)` statements on every exit path, explicit
-cleanup basic blocks, panic-edge CFG, cancellation and actor-shutdown cleanup,
-`DropPlan` per scope, and the **DecisionMap**. Raw MIR chooses a coroutine
-frame, layout, and materialized place where representation requires one;
-Elaborated MIR adds lifetime and cleanup obligations over those already chosen
-places. It does not select storage classes or coroutine representation.
+**Current shipped surface:** `ElaboratedMirFunction` carries its existing
+statement compatibility stream, the same `Vec<DecisionFact>` as Checked MIR,
+actual `ElabBlock { id, kind, drops, successor }` records, and existing
+per-exit `DropPlan`s. The dump renders those blocks before `drop_plans` and
+renders the shared decision facts in a deterministic `decisions:` table. It
+does not synthesize cleanup facts or expose a separate `DecisionMap`.
+
+Raw MIR chooses a coroutine frame, layout, and materialized place where
+representation requires one; elaboration adds the lifetime and cleanup
+obligations that the implemented lowering has established. It does not select
+storage classes or coroutine representation.
 
 Every exit `DropPlan` is _derived_ from the Checked-MIR `OwnershipEvent`
 stream (`derive_drop_plans_from_replay`): `required(exit)` is the exact set of
@@ -601,22 +619,22 @@ a producer that hands it onward there without publishing its `Transfer`.
 Releasing that would be a use-after-free, so the leak stays with the producer
 until the mint-site fix lands.
 
-The `DecisionMap` is a deterministic table of
-`DecisionFact { site_id, kind, chosen_strategy, why, cost_class }` keyed by
-stable `SiteId`. It is attached as top-level function metadata on each
-elaborated function and is emitted into IR dumps. `SiteId` is derived from the
-typed-HIR/SIR/MIR structure (function id + canonical CFG path to the operation),
-not from a source span — the table is stable across whitespace and reformat.
+The current decision stream is the shared `Vec<DecisionFact>` with the actual
+fields `{ site, ty, value_class, intent, strategy, why }`; it is attached to
+both Checked and Elaborated MIR and emitted by both dumps. It is not yet a
+separate `DecisionMap`. Current `SiteId` values are traversal-local monotonic
+allocations; canonical structural identity stable across reformatting remains
+planned.
 
 **Must not own:** re-running ownership analysis, LLVM values, span-keyed side
 tables.
 
-**Verifier:** every owning place has exactly one `Drop` on every exit path;
-no `Drop` of a moved-out place; cleanup-block dominance; coroutine frame-slot
-type matches yield value-class; DecisionMap is total and SiteIds are stable.
+**Verifier:** the implemented ownership/drop checks validate the facts and
+plans they carry. DecisionMap totality and canonical reformat-stable SiteIds
+remain planned contracts.
 
-**Dump:** [current] `hew tool compile --dump-mir elab` (includes explicit drop / cleanup-block section
-and DecisionMap).
+**Dump:** [current] `hew tool compile --dump-mir elab` (existing statements,
+actual elaborated blocks, shared decisions, and drop plans).
 
 ---
 
@@ -800,10 +818,12 @@ Internal MIR dumps and the dialect retain the precise vocabulary
 
 ## 4. Ownership Plan Report
 
-The report surfaces every value-model classification to users and compiler
-engineers.
+This report/JSON interface is planned. The current shipped inspection surface
+is the `decisions:` table in Checked and Elaborated MIR dumps; it renders the
+actual six-field `DecisionFact` stream and does not promise canonical SiteId
+stability across reformats.
 
-### 4.1 CLI
+### 4.1 [planned] CLI
 
 ```
 hew explain ownership <file>
@@ -836,7 +856,7 @@ hew explain ownership --filter=cow|materialize|affine|share
 
 Narrows the report.
 
-### 4.2 DecisionFact schema
+### 4.2 [planned] DecisionFact report schema
 
 ```
 DecisionFact {
@@ -862,10 +882,10 @@ DecisionFact {
 }
 ```
 
-`SiteId` is derived from typed-HIR/SIR/MIR structure (function id + canonical
-path through the elaborated CFG), not from a source span. `DecisionFact`s travel
-with Elaborated MIR and its deterministic dump/JSON metadata; they do not
-require a dialect attribute system.
+Canonical `SiteId` derivation from typed-HIR/SIR/MIR structure (function id +
+canonical CFG path) is planned. Today, `SiteId` is allocated monotonically by
+the lowering traversal, and `DecisionFact`s travel in the Checked and
+Elaborated MIR vectors rendered by their textual dumps.
 
 ### 4.3 Hidden-copy budget
 

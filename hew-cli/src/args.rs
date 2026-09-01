@@ -961,6 +961,26 @@ pub enum ToolSubcommand {
     /// against the checked-in `.expected` file.
     #[command(name = "playground-verify")]
     PlaygroundVerify(PlaygroundVerifyArgs),
+    /// Inventory every root item in the given `.hew` files (directories are
+    /// recursed) and report whether SIR admits it or the legacy lowerer still
+    /// owns it, with a coverage total.
+    #[command(name = "sir-coverage")]
+    SirCoverage(SirCoverageArgs),
+}
+
+/// Arguments for `hew tool sir-coverage`.
+#[derive(Debug, Args)]
+pub struct SirCoverageArgs {
+    /// `.hew` files or directories to inventory; directories are recursed.
+    #[arg(required = true, value_name = "PATH")]
+    pub paths: Vec<std::path::PathBuf>,
+    /// Emit the inventory as JSON on stdout instead of one line per item.
+    #[arg(long)]
+    pub json: bool,
+    /// Compare the coverage percentage with the one recorded in FILE and
+    /// fail when it dropped.
+    #[arg(long, value_name = "FILE")]
+    pub ratchet: Option<std::path::PathBuf>,
 }
 
 // ---------------------------------------------------------------------------

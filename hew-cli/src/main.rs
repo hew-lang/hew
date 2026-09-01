@@ -20,6 +20,7 @@
 //! hew add <pkg> / hew install / …  # Package-manager commands (see hew --help)
 //! hew tool compile file.hew        # Run the v0.5 IR ladder and emit native or WASM
 //! hew tool playground-verify       # Verify runnable playground examples
+//! hew tool sir-coverage <paths>    # Report which functions SIR admits
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
 //! hew observe [args...]             # Launch the TUI actor observer (delegates to hew-observe)
@@ -46,6 +47,7 @@ mod router;
 mod run_temp;
 #[cfg(unix)]
 mod signal;
+mod sir_coverage;
 mod target;
 mod test_runner;
 mod util;

@@ -5,7 +5,7 @@
 //! [`ModuleGraph`].  The graph carries a topological ordering so that
 //! downstream passes can process modules in dependency order.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,7 @@ use crate::ast::{ImportSpec, Item, Span, Spanned};
 
 /// Unique identifier for a module, based on its path segments
 /// (e.g. `["std", "net", "http"]` for `std::net::http`).
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ModuleId {
     pub path: Vec<String>,
 }
@@ -126,16 +126,26 @@ impl std::error::Error for CycleError {}
 pub struct ModuleGraph {
     /// All modules in the graph, keyed by their ID.
     ///
+    /// An ordered map on purpose: several consumers iterate it (the topo-order
+    /// DFS seed, collision scans in the checker and HIR lowering, the JSON
+    /// dump), and every one of them must see the same order on every run. A
+    /// hash-seeded map here made function order, `BindingId`s and diagnostic
+    /// order drift between compiles of one unchanged program.
+    ///
     /// Custom serialization converts `ModuleId` keys to strings (JSON requires
     /// string keys).  Format: `"std::net::http"` or `"(root)"` for the root.
     #[serde(
         serialize_with = "serialize_module_map",
         deserialize_with = "deserialize_module_map"
     )]
-    pub modules: HashMap<ModuleId, Module>,
+    pub modules: BTreeMap<ModuleId, Module>,
     /// The root module (entry point).
     pub root: ModuleId,
     /// Topological order for processing (dependencies before dependents).
+    ///
+    /// Where the import DAG leaves freedom (a diamond, unrelated siblings) the
+    /// order is fixed by `ModuleId` ordering of the DFS seeds, so it is the
+    /// same for every graph built from the same modules.
     pub topo_order: Vec<ModuleId>,
     /// Per-item defining source file for each module, keyed by the module's
     /// dotted path and parallel to that module's `items` vector. A directory
@@ -215,7 +225,7 @@ impl ModuleGraph {
     #[must_use]
     pub fn new(root: ModuleId) -> Self {
         Self {
-            modules: HashMap::new(),
+            modules: BTreeMap::new(),
             root,
             topo_order: Vec::new(),
             item_sources: HashMap::new(),
@@ -299,7 +309,7 @@ impl ModuleGraph {
     /// Returns [`DuplicateModule`] if a module with the same id was already
     /// present. The existing entry is left unchanged.
     pub fn add_module(&mut self, module: Module) -> Result<(), DuplicateModule> {
-        use std::collections::hash_map::Entry;
+        use std::collections::btree_map::Entry;
         match self.modules.entry(module.id.clone()) {
             Entry::Vacant(e) => {
                 e.insert(module);
@@ -331,7 +341,7 @@ impl ModuleGraph {
         fn visit(
             id: &ModuleId,
             entry_span: Span,
-            modules: &HashMap<ModuleId, Module>,
+            modules: &BTreeMap<ModuleId, Module>,
             marks: &mut HashMap<ModuleId, Mark>,
             order: &mut Vec<ModuleId>,
             stack: &mut Vec<(ModuleId, Span)>,
@@ -377,7 +387,9 @@ impl ModuleGraph {
         let mut marks: HashMap<ModuleId, Mark> = HashMap::new();
         let mut order: Vec<ModuleId> = Vec::new();
 
-        // Collect keys up-front to avoid borrow issues.
+        // Collect keys up-front to avoid borrow issues. `modules` is ordered,
+        // so the seeds (and with them the order among unrelated modules) are
+        // the same on every run.
         let ids: Vec<ModuleId> = self.modules.keys().cloned().collect();
 
         for id in &ids {
@@ -401,11 +413,11 @@ impl ModuleGraph {
 // ── ModuleId ↔ String map serialization ─────────────────────────────
 //
 // JSON requires object keys to be strings.  `ModuleId` is a struct, so
-// serde_json refuses to serialize `HashMap<ModuleId, _>` by default.
+// serde_json refuses to serialize `BTreeMap<ModuleId, _>` by default.
 // These helpers convert keys via `Display` / `FromStr`-style parsing.
 
 fn serialize_module_map<S>(
-    map: &HashMap<ModuleId, Module>,
+    map: &BTreeMap<ModuleId, Module>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -419,11 +431,11 @@ where
     ser_map.end()
 }
 
-fn deserialize_module_map<'de, D>(deserializer: D) -> Result<HashMap<ModuleId, Module>, D::Error>
+fn deserialize_module_map<'de, D>(deserializer: D) -> Result<BTreeMap<ModuleId, Module>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let string_map: HashMap<String, Module> = HashMap::deserialize(deserializer)?;
+    let string_map: BTreeMap<String, Module> = BTreeMap::deserialize(deserializer)?;
     Ok(string_map
         .into_iter()
         .map(|(k, v)| {
@@ -495,6 +507,33 @@ mod tests {
         assert!(pos("d") < pos("c"));
         assert!(pos("b") < pos("a"));
         assert!(pos("c") < pos("a"));
+    }
+
+    /// A diamond leaves the DFS free to visit `b` or `c` first. That freedom
+    /// must resolve the same way for every graph built from the same modules:
+    /// HIR lowering mints `BindingId`s and orders function bodies by walking
+    /// `topo_order`, so a different order here changes every downstream dump
+    /// and diagnostic. Twenty fresh graphs give a hash-seeded map essentially
+    /// no chance of agreeing by luck.
+    #[test]
+    fn topo_order_diamond_is_identical_across_fresh_graphs() {
+        let orders: Vec<Vec<String>> = (0..20)
+            .map(|_| {
+                let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+                g.add_module(module("a", &["b", "c"])).unwrap();
+                g.add_module(module("b", &["d"])).unwrap();
+                g.add_module(module("c", &["d"])).unwrap();
+                g.add_module(module("d", &[])).unwrap();
+                g.compute_topo_order().unwrap();
+                g.topo_order.iter().map(ModuleId::to_string).collect()
+            })
+            .collect();
+        for order in &orders[1..] {
+            assert_eq!(
+                order, &orders[0],
+                "topological order drifted between graphs"
+            );
+        }
     }
 
     #[test]
@@ -573,8 +612,8 @@ mod tests {
             "dummy 0..0 span must not appear in import_spans: {:?}",
             err.import_spans
         );
-        // Both fixture edge spans must be present. Order is DFS-dependent
-        // (HashMap iteration is non-deterministic), so use contains, not index.
+        // Both fixture edge spans must be present. Their order depends on
+        // which seed the DFS starts from, which this test does not pin.
         assert!(
             err.import_spans.contains(&(10..20)),
             "a→b import span 10..20 must appear in import_spans: {:?}",

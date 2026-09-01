@@ -33,6 +33,7 @@ fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
 }
 
 fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> Result<String, CodegenError> {
+    let pipeline = crate::mir_fixture::complete_stages(pipeline.clone());
     let tmp = std::env::temp_dir().join(format!("hew-machine-layout-{module_name}"));
     std::fs::create_dir_all(&tmp).expect("create scratch dir");
     let options = EmitOptions {
@@ -45,7 +46,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> Result<String, CodegenEr
         opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
-    let artefacts = emit_module(pipeline, &options)?;
+    let artefacts = emit_module(&pipeline, &options)?;
     let ll_path = artefacts
         .ll_path
         .expect("emit_module must produce textual LLVM IR");

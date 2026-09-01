@@ -58,7 +58,7 @@ fn pipeline_const_42() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -81,7 +81,7 @@ fn pipeline_const_42() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A pipeline whose function declares an array return type. Array returns are
@@ -116,7 +116,7 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -139,7 +139,7 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------

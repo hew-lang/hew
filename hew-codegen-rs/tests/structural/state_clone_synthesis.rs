@@ -110,7 +110,7 @@ fn classified_actor(
 }
 
 fn pipeline_with(actors: Vec<ActorLayout>, records: Vec<RecordLayout>) -> IrPipeline {
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![trivial_main()],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -133,7 +133,7 @@ fn pipeline_with(actors: Vec<ActorLayout>, records: Vec<RecordLayout>) -> IrPipe
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn try_emit_to_string(pipeline: &IrPipeline, slug: &str) -> Result<String, CodegenError> {

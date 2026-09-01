@@ -3978,11 +3978,22 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         });
     }
 
+    // Fail closed before any module-wide stage association. A duplicated Raw
+    // key is already a complete lowering diagnostic; letting the parameter-
+    // boundary synchronizer index that invalid set would panic before the
+    // caller can observe the diagnostic.
+    let callable_key_diagnostics = crate::identity::validate_unique_callable_keys(&raw_mir);
+    let callable_keys_are_unique = callable_key_diagnostics.is_empty();
+    diagnostics.extend(callable_key_diagnostics);
+
     // OPM-1: all ordinary, generated, and monomorphised functions are now
     // present. Refine the initial typed parameter modes through the complete
     // module call graph before any checked-MIR consumer or backend capability
-    // snapshot observes them.
-    facts::finalize_param_boundary_modes(&mut raw_mir, &mut checked_mir, &mut elaborated_mir);
+    // snapshot observes them. Association is meaningful only for the unique
+    // key set admitted above.
+    if callable_keys_are_unique {
+        facts::finalize_param_boundary_modes(&mut raw_mir, &mut checked_mir, &mut elaborated_mir);
+    }
 
     // W3.031 Stage 2 — build the deduplicated `dyn Trait` vtable
     // registry from every `Instr::CoerceToDynTrait` reached by any
@@ -4022,12 +4033,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // flattened `<Self>::<method>` mangling, so MIR and codegen agree without
     // translation glue.
     let capabilities = crate::model::ModuleCapabilities::from_raw_mir(&raw_mir, &extern_decls);
-
-    // Fail-closed identity boundary. Every producer above minted a
-    // `MirCallableKey`; if two bodies claim one, the joins that are being moved
-    // onto the key would be as ambiguous as the name comparisons they replace.
-    // Reject here rather than emitting a module with a duplicated identity.
-    diagnostics.extend(crate::identity::validate_unique_callable_keys(&raw_mir));
 
     let pipeline = IrPipeline {
         raw_mir,

@@ -2,6 +2,9 @@
 // Add new pipeline-behaviour tests under `tests/pipeline/`, wire them into this
 // file via #[path] — do not create a new top-level tests/*.rs file.
 
+#[path = "support/mir_fixture.rs"]
+mod mir_fixture;
+
 #[path = "pipeline/dwarf_emitted_object.rs"]
 mod dwarf_emitted_object;
 #[path = "pipeline/dwarf_variable_dies.rs"]

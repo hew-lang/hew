@@ -72,13 +72,13 @@ fn with_required_system_store_counterfactuals(mut pipeline: IrPipeline) -> IrPip
     let checked = pipeline
         .checked_mir
         .iter()
-        .find(|function| function.name == receive.name)
+        .find(|function| function.key == receive.key)
         .expect("checked receive state-store MIR")
         .clone();
     let elaborated = pipeline
         .elaborated_mir
         .iter()
-        .find(|function| function.name == receive.name)
+        .find(|function| function.key == receive.key)
         .expect("elaborated receive state-store MIR")
         .clone();
     let actor_layout_key = match &receive.source_origin {
@@ -98,8 +98,10 @@ fn with_required_system_store_counterfactuals(mut pipeline: IrPipeline) -> IrPip
             "LifecycleWriter__counterfactual_on_down",
         ),
     ] {
+        let key = hew_mir::MirCallableKey::for_test(name);
         let mut system = receive.clone();
         system.name = name.to_string();
+        system.key = key.clone();
         system.source_origin = SourceOrigin::SynthesizedActorHandler {
             kind,
             actor_layout_key: actor_layout_key.clone(),
@@ -108,10 +110,16 @@ fn with_required_system_store_counterfactuals(mut pipeline: IrPipeline) -> IrPip
 
         let mut system_checked = checked.clone();
         system_checked.name = name.to_string();
+        system_checked.key = key.clone();
+        if let Some(ownership_elaboration) = &mut system_checked.ownership_elaboration {
+            ownership_elaboration.name = name.to_string();
+            ownership_elaboration.key = key.clone();
+        }
         pipeline.checked_mir.push(system_checked);
 
         let mut system_elaborated = elaborated.clone();
         system_elaborated.name = name.to_string();
+        system_elaborated.key = key;
         pipeline.elaborated_mir.push(system_elaborated);
     }
     pipeline

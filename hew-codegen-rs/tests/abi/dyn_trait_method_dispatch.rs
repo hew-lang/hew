@@ -60,7 +60,7 @@ fn dyn_trait_ty(trait_name: &str) -> ResolvedTy {
 }
 
 fn empty_pipeline(raw_mir: Vec<RawMirFunction>) -> IrPipeline {
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir,
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -83,7 +83,7 @@ fn empty_pipeline(raw_mir: Vec<RawMirFunction>) -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {

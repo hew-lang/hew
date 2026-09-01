@@ -119,7 +119,7 @@ fn option_some_pipeline() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![maybe_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -142,7 +142,7 @@ fn option_some_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// Build a pipeline with `fn greet() -> Option<string> { Some("hello") }`.
@@ -222,7 +222,7 @@ fn option_string_pipeline() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![greet_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -245,7 +245,7 @@ fn option_string_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// Option<i64> composite return produces valid LLVM IR with aggregate ret.
@@ -361,7 +361,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![send_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -384,7 +384,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// W5.020 — `Envelope<i64>` with a non-param `Message(string)` variant is a
@@ -445,7 +445,7 @@ fn bytes_return_pipeline() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![make_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -468,7 +468,7 @@ fn bytes_return_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A plain top-level `bytes` return is a single heap-owning leaf and must lower
@@ -522,7 +522,7 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![make_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -545,7 +545,7 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A `(bytes,)` tuple return is admitted via the W5.021 tuple drop spine: the
@@ -613,7 +613,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![make_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -636,7 +636,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A generic record instantiation (`Pair<string>`) carrying owned heap reaches

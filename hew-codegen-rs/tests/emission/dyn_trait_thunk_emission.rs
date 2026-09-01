@@ -128,7 +128,7 @@ fn vtable_instance(
 }
 
 fn pipeline_with(raw_mir: Vec<RawMirFunction>, registry: Vec<DynVtableInstance>) -> IrPipeline {
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir,
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -151,7 +151,7 @@ fn pipeline_with(raw_mir: Vec<RawMirFunction>, registry: Vec<DynVtableInstance>)
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {

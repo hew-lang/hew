@@ -57,7 +57,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
             terminator: Terminator::Goto { target: 0 },
         },
     ];
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -110,7 +110,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn loop_pipeline() -> IrPipeline {
@@ -255,12 +255,12 @@ fn loop_back_edge_on_missing_bb_fails_closed() {
 #[test]
 fn missing_checked_mir_function_fails_closed() {
     let mut pipeline = loop_pipeline();
-    pipeline.checked_mir[0].name = "other".to_string();
+    pipeline.checked_mir.clear();
 
     let msg = expect_fail_closed(&pipeline, "missing_checked_mir_function");
 
     assert!(
-        msg.contains("main") && msg.contains("no matching checked MIR"),
+        msg.contains("main") && msg.contains("no matching Checked MIR"),
         "FailClosed must identify the raw_mir function missing checked MIR; got: {msg}"
     );
 }

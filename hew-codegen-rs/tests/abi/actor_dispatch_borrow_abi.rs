@@ -1094,7 +1094,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![handler],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -1117,7 +1117,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 #[test]

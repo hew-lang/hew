@@ -366,7 +366,7 @@ pub fn verify_raw_virtual_value_checked(
     facts: &RawVirtualValueFacts,
 ) -> Result<(), RawVirtualValueError> {
     verify_facts_match_raw(raw, facts)?;
-    if checked.name != raw.name || checked.return_ty != raw.return_ty {
+    if checked.key != raw.key || checked.name != raw.name || checked.return_ty != raw.return_ty {
         return Err(raw_virtual_error(format!(
             "raw virtual-value checked MIR does not match Raw identity for `{}`",
             raw.name
@@ -422,7 +422,8 @@ pub fn verify_raw_virtual_value_elaborated(
     facts: &RawVirtualValueFacts,
 ) -> Result<(), RawVirtualValueError> {
     verify_raw_virtual_value_checked(raw, checked, facts)?;
-    if elaborated.name != raw.name
+    if elaborated.key != raw.key
+        || elaborated.name != raw.name
         || elaborated.return_ty != raw.return_ty
         || elaborated.decisions != checked.decisions
         || !elaborated.statements.is_empty()
@@ -468,35 +469,18 @@ pub fn verify_raw_virtual_value_elaborated(
 /// Verify the mandatory Raw -> Checked -> Elaborated ladder for a virtual Raw
 /// body, returning the canonical facts codegen may use for LLVM realization.
 ///
-/// Legacy storage-oriented Raw MIR deliberately retains its existing optional
-/// stage behavior.  Once a body contains any virtual value, however, both
-/// mirrors are mandatory so a hand-built pipeline cannot bypass ownership or
-/// scheduler admission at codegen.
-///
 /// # Errors
 ///
-/// Returns [`RawVirtualValueError`] when a virtual Raw body is malformed or
-/// either mandatory ladder mirror is missing or not the zero-effect mirror.
+/// Returns [`RawVirtualValueError`] when a virtual Raw body is malformed or a
+/// mandatory ladder mirror is not the zero-effect mirror.
 pub fn verify_raw_virtual_value_ladder(
     raw: &RawMirFunction,
-    checked: Option<&CheckedMirFunction>,
-    elaborated: Option<&ElaboratedMirFunction>,
+    checked: &CheckedMirFunction,
+    elaborated: &ElaboratedMirFunction,
 ) -> Result<Option<RawVirtualValueFacts>, RawVirtualValueError> {
     let Some(facts) = verify_raw_virtual_value_function(raw)? else {
         return Ok(None);
     };
-    let checked = checked.ok_or_else(|| {
-        raw_virtual_error(format!(
-            "raw virtual-value function `{}` requires matching Checked MIR before codegen",
-            raw.name
-        ))
-    })?;
-    let elaborated = elaborated.ok_or_else(|| {
-        raw_virtual_error(format!(
-            "raw virtual-value function `{}` requires matching Elaborated MIR before codegen",
-            raw.name
-        ))
-    })?;
     verify_raw_virtual_value_elaborated(raw, checked, elaborated, &facts)?;
     Ok(Some(facts))
 }

@@ -562,9 +562,11 @@ source-annotation overlay.
 **Current shipped surface:** `ElaboratedMirFunction` carries its existing
 statement compatibility stream, the same `Vec<DecisionFact>` as Checked MIR,
 actual `ElabBlock { id, kind, drops, successor }` records, and existing
-per-exit `DropPlan`s. The dump renders those blocks before `drop_plans` and
-renders the shared decision facts in a deterministic `decisions:` table. It
-does not synthesize cleanup facts or expose a separate `DecisionMap`.
+per-exit `DropPlan`s. The dump renders deterministic shared `decisions:` and
+block *topology* (`id`, `kind`, `successor`) before `drop_plans`. It does not
+print block-local compatibility-projection drops: `DropPlan` is the sole
+rendered release authority. It does not synthesize cleanup facts or expose a
+separate `DecisionMap`.
 
 Raw MIR chooses a coroutine frame, layout, and materialized place where
 representation requires one; elaboration adds the lifetime and cleanup
@@ -634,7 +636,7 @@ plans they carry. DecisionMap totality and canonical reformat-stable SiteIds
 remain planned contracts.
 
 **Dump:** [current] `hew tool compile --dump-mir elab` (existing statements,
-actual elaborated blocks, shared decisions, and drop plans).
+block topology, shared decisions, and authoritative drop plans).
 
 ---
 

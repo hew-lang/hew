@@ -408,7 +408,7 @@ fn sir_lower_virtual_tuple_projection_compiles_and_runs_without_legacy_storage()
     let elaborated_dump = String::from_utf8_lossy(&elaborated.stdout);
     assert!(
         elaborated_dump.contains("blocks:")
-            && elaborated_dump.contains("kind=normal drops:")
+            && elaborated_dump.contains("kind=normal")
             && elaborated_dump.contains("decisions:")
             && elaborated_dump.contains("drop_plans:"),
         "strict tuple Elaborated MIR must expose structural sections:\n{elaborated_dump}"

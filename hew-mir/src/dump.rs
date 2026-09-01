@@ -338,7 +338,9 @@ fn dump_elab_function(out: &mut String, func: &ElaboratedMirFunction) {
     dump_decisions(out, &func.decisions);
     dump_elab_blocks(out, &func.blocks);
 
-    // Drop plans: the surface RC7 (single drop authority) will diff against.
+    // Drop plans remain the sole rendered release authority. Blocks describe
+    // control-flow topology only; their compatibility-projection drops must
+    // not be printed a second time beside the authoritative exit plans.
     if func.drop_plans.is_empty() {
         writeln!(out, "  drop_plans: none").expect("write to string");
     } else {
@@ -362,8 +364,7 @@ fn dump_elab_blocks(out: &mut String, blocks: &[crate::model::ElabBlock]) {
             BlockKind::Normal => "normal",
             BlockKind::Cleanup => "cleanup",
         };
-        writeln!(out, "    id={} kind={kind} drops:", block.id).expect("write to string");
-        dump_elab_drops(out, &block.drops, 6);
+        writeln!(out, "    id={} kind={kind}", block.id).expect("write to string");
         match block.successor {
             Some(successor) => writeln!(out, "      successor: bb{successor}"),
             None => writeln!(out, "      successor: none"),
@@ -2756,12 +2757,15 @@ mod tests {
         );
 
         assert!(
-            dump.contains("id=7 kind=normal drops:")
+            dump.contains("id=7 kind=normal")
                 && dump.contains("successor: bb8")
-                && dump.contains("id=8 kind=cleanup drops:")
-                && dump.contains("drop _0 ty=i64 kind=resource")
+                && dump.contains("id=8 kind=cleanup")
                 && dump.contains("successor: none"),
             "elaborated block structure must remain visible:\n{dump}"
+        );
+        assert!(
+            !dump.contains("drop _0 ty=i64 kind=resource"),
+            "block compatibility projections must not duplicate drop-plan authority:\n{dump}"
         );
         assert!(
             dump.find("blocks:").unwrap() < dump.find("drop_plans: none").unwrap(),

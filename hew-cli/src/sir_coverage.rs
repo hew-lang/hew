@@ -219,7 +219,8 @@ fn check_ratchet(path: &Path, computed: f64) -> i32 {
         }
         return 0;
     }
-    println!(
+    // Stderr, like the other verdicts, so `--json` stdout stays one document.
+    eprintln!(
         "sir-coverage: ratchet holds at {recorded_text}% (`{}`)",
         path.display()
     );
@@ -301,9 +302,9 @@ fn inventory_file(
 
 /// SIR verifier diagnostics keyed by the declaration they are about.
 ///
-/// A diagnostic names the emitted symbol, and the callable table is the one
-/// owner of the symbol → declaration join; a diagnostic that names no
-/// callable is a module-level fact that applies to every lowered body.
+/// A diagnostic carries the `CallableId` it is about, and the callable table
+/// owns the callable → declaration join; a diagnostic about no callable is a
+/// module-level fact that applies to every lowered body.
 struct VerifierFindings {
     by_declaration: Vec<(hew_types::DefId, String)>,
     module_level: Vec<String>,
@@ -314,11 +315,9 @@ impl VerifierFindings {
         let mut by_declaration = Vec::new();
         let mut module_level = Vec::new();
         for diagnostic in diagnostics {
-            let owner = sir
-                .module
-                .callables
-                .iter()
-                .find(|callable| callable.symbol == diagnostic.function);
+            let owner = diagnostic
+                .callable
+                .and_then(|callable| sir.module.callable(callable));
             let text = format!("sir-verifier:{:?}", diagnostic.kind);
             match owner {
                 Some(callable) => by_declaration.push((callable.declaration.clone(), text)),

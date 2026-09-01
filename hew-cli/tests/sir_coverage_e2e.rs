@@ -198,7 +198,9 @@ fn a_file_the_frontend_rejects_is_reported_and_excluded_from_the_total() {
     assert!(
         stdout
             .lines()
-            .any(|line| line == "./broken.hew - frontend-failed"),
+            // The prefix is `.` joined with the file name and renders with
+            // the platform separator, so match the tail only.
+            .any(|line| line.ends_with("broken.hew - frontend-failed")),
         "the failed file must be named in the inventory:\n{stdout}"
     );
     assert!(
@@ -250,7 +252,7 @@ fn ratchet_holds_when_equal_and_reports_a_rise_without_failing() {
         describe_output(&equal)
     );
     assert!(
-        String::from_utf8_lossy(&equal.stdout).contains("ratchet holds at 50.0000%"),
+        String::from_utf8_lossy(&equal.stderr).contains("ratchet holds at 50.0000%"),
         "{}",
         describe_output(&equal)
     );

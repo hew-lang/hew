@@ -163,7 +163,12 @@ pub enum CfgDiscardSafetyReason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SirDiagnostic {
+    /// Display name of the function the finding is about, or `<module>` for
+    /// a module-level finding.
     pub function: String,
+    /// The callable the finding is about; the identity consumers join on.
+    /// `None` for a module-level finding.
+    pub callable: Option<CallableId>,
     pub kind: SirDiagnosticKind,
 }
 
@@ -1506,6 +1511,7 @@ fn record_value(
 fn diag(function: &SemFunction, kind: SirDiagnosticKind) -> SirDiagnostic {
     SirDiagnostic {
         function: function.name.clone(),
+        callable: Some(function.callable),
         kind,
     }
 }
@@ -1513,6 +1519,7 @@ fn diag(function: &SemFunction, kind: SirDiagnosticKind) -> SirDiagnostic {
 fn module_diag(kind: SirDiagnosticKind) -> SirDiagnostic {
     SirDiagnostic {
         function: "<module>".to_string(),
+        callable: None,
         kind,
     }
 }

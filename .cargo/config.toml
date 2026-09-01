@@ -47,13 +47,9 @@ linker = "lld-link"
 #   export SCCACHE_IDLE_TIMEOUT=0
 #   export SCCACHE_CLIENT_SIDE=1
 #
-# WHY opt-in not forced: every developer and CI image would need the sccache
-# binary installed; without it, a forced wrapper makes rustc invocations fail.
-# WHEN obsolete: if this project adopts a managed remote build cache (e.g. GitHub
-# Actions cache with sccache-action) or Cargo's own shared-cache protocol lands, the
-# per-developer opt-in can be promoted to a project-wide default.
-# WHAT the real solution looks like: `RUSTC_WRAPPER=sccache` in the CI action env
-# (one shared server per CI runner) and in team `~/.profile` for local use.
+# WHY opt-in not forced: requiring a compiler wrapper would make every environment
+# with no sccache binary, or an unavailable cache server, fail before rustc runs.
+# CI intentionally leaves this local: a remote compiler cache must not gate a build.
 #
 # Do NOT set build.target-dir here to a shared path: concurrent worktrees need
 # separate Cargo target directories to avoid Cargo lock contention and artifact

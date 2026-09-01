@@ -330,6 +330,10 @@ actor Linker {
     receive fn ping() -> i64 {
         7
     }
+    receive fn crash_local() -> i64 {
+        panic("local Linker crash");
+        0
+    }
 }
 
 actor MonitorProbe {
@@ -1742,6 +1746,17 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
+fn scenario_linker_local_crash() -> i64 {
+    let linker = spawn Linker(policy_sel: 0);
+    match await linker.crash_local() {
+        Result.Ok(_) => {
+            println("FAIL linker_local_crash linker-survived");
+            1
+        },
+        Result.Err(_) => 0,
+    }
+}
+
 fn scenario_server_monitor_close_reclaim() {
     // Registration is derived from the monotonic event counter, not a sampled
     // live count: a sleep-poll can miss a short-lived count==1 window under a
@@ -2099,6 +2114,8 @@ fn run_client(port: string, scenario: string) -> i64 {
                     scenario_stale_incarnation_restart(kv, kx, port)
                 } else if scenario == "remote_ask" {
                     scenario_remote_ask(kv)
+                } else if scenario == "linker_local_crash" {
+                    scenario_linker_local_crash()
                 } else {
                     if scenario == "remote_monitor_clean_exit" {
                         scenario_remote_monitor_clean_exit(kv)

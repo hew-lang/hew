@@ -9,10 +9,11 @@
 // placed alongside words.hew (e.g. words/stopwords.hew) would also merge
 // into this sub-module automatically.
 //
-// Note: character-by-character scanning uses `text.slice(i, i+1)` rather
-// than `text.chars()` because `.chars()` is not yet supported by codegen.
+// Note: this scanner intentionally walks byte offsets with `slice`: `len()`
+// and `slice()` are byte-oriented. For Unicode codepoint iteration, use
+// `std.text.unicode.runes()` instead.
 pub fn word_count(text: string) -> i64 {
-    if text.len() == 0 {
+    if text.is_empty() {
         return 0;
     }
     var count = 1;

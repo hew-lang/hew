@@ -6,9 +6,10 @@
 //   [10, 0, 2, 3]
 //   [8, 11, 0, 1]
 //   [7, 10, 12, 0]
+const INF: i32 = 999999;
+
 fn main() {
     let n = 4;
-    let INF = 999999;
     // Initialize distance matrix (flat n*n)
     let dist: Vec<i32> = Vec.new();
     for i in 0 .. n * n {

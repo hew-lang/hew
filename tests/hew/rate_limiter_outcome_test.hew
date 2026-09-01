@@ -1,0 +1,71 @@
+//! The limiter's business denial and an unavailable limiter are different
+//! outcomes: only a successful `0` reply increments `rejected`.
+//!
+//! The stopped supervisor is a bounded negative control for the `Err` arm. It
+//! produces `AskError.ActorStopped` without crashing the test process, so this
+//! executable test proves the unavailable path remains distinct from a normal
+//! rate-limit denial.
+
+import std.testing;
+
+actor ProbeLimiter {
+    receive fn acquire() -> i64 {
+        0
+    }
+}
+
+supervisor ProbeTree {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child limiter: ProbeLimiter;
+}
+
+actor ProbeWorker {
+    let tree: LocalPid<ProbeTree>;
+    var rejected: i64;
+    var unavailable: i64;
+    receive fn handle_request() -> i64 {
+        let result = await tree.limiter.acquire();
+        match result {
+            .Ok(value) => {
+                if value == 0 {
+                    rejected = rejected + 1;
+                    1
+                } else {
+                    0
+                }
+            },
+            .Err(_) => {
+                unavailable = unavailable + 1;
+                2
+            },
+        }
+    }
+    receive fn outcome_totals() -> i64 {
+        rejected * 10 + unavailable
+    }
+}
+
+#[test]
+fn _rate_limit_denial_does_not_hide_ask_failure() {
+    let tree = spawn ProbeTree;
+    sleep(30ms);
+    let worker = spawn ProbeWorker(tree: tree, rejected: 0, unavailable: 0);
+    match await worker.handle_request() {
+        .Ok(outcome) => testing.assert_eq(outcome, 1),
+        .Err(_) => testing.assert_true(false),
+    }
+    supervisor_stop(tree);
+    sleep(80ms);
+    match await worker.handle_request() {
+        .Ok(outcome) => testing.assert_eq(outcome, 2),
+        .Err(_) => testing.assert_true(false),
+    }
+    // 10 means one legitimate rejection; the ones digit means one separate
+    // unavailable result. If Err were mapped to rejection this would be 20.
+    match await worker.outcome_totals() {
+        .Ok(total) => testing.assert_eq(total, 11),
+        .Err(_) => testing.assert_true(false),
+    }
+}

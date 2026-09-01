@@ -1,48 +1,52 @@
-//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
-//! Description: Chat Client example.
+//! Status: runnable (local TCP; start `examples/chat_server.hew` on port 9000)
+//! Description: TCP chat client with independently owned stream/sink halves.
 //!
-//! A connection is a `#[resource]` with exactly one owner. Handing it to the
-//! link actor transfers it, so the actor — not `main` — drives BOTH
-//! directions: `pump` awaits inbound frames, `say` writes outbound lines.
-//! `main` owns the terminal and forwards typed lines as messages.
+//! A connection is a `#[resource]` with exactly one owner. Splitting it gives
+//! the reader actor and `main` independently owned halves: the actor awaits
+//! inbound TCP chunks while `main` forwards terminal input to the outbound
+//! sink. Closing the sink after `/quit` flushes the disconnect marker; reader
+//! completion reports the peer's terminal state, but `main` remains blocked on
+//! stdin until the user enters `/quit`. Runtime teardown then closes the
+//! actor-owned stream half. The distributed Node API is a separate roadmap
+//! surface; this example uses the stable local TCP API.
 
-import std.net.{Connection};
+import std.channel.channel;
 
 import std.io;
 
+import std.net;
+
 import std.os;
 
-extern "C" {
-    fn hew_bytes_to_string(data: bytes) -> string;
-}
+import std.stream;
 
-actor ChatLink {
-    let conn: Connection;
-
-    /// Inbound pump. `await conn.read()` suspends the handler on the reactor
-    /// instead of blocking a scheduler worker, so `say` messages still
-    /// dispatch while this loop waits for the next frame.
-    receive fn pump(unused: i32) {
-        var running = true;
-        while running {
-            let msg_bytes = await conn.read();
-            let msg = unsafe {
-                hew_bytes_to_string(msg_bytes)
-            };
-            if msg.contains("__HEW_TCP_DISCONNECT__") {
-                println("[client] server disconnected");
-                running = false;
-            } else {
-                println(msg);
+actor ChatReader {
+    let input: stream.Stream<bytes>;
+    let done: channel.Sender<string>;
+    /// The terminal path publishes completion and returns. `main` remains in
+    /// its stdin loop until `/quit`, then closes the sink, waits for this
+    /// status, and exits; runtime teardown closes both handles exactly once.
+    receive fn pump() {
+        var reading = true;
+        while reading {
+            match await input.recv() {
+                .Some(chunk) => {
+                    let msg = chunk.to_string();
+                    if msg.contains("__HEW_TCP_DISCONNECT__") {
+                        done.send("[client] server acknowledged disconnect");
+                        reading = false;
+                    } else {
+                        println(msg);
+                    }
+                },
+                .None => {
+                    // The duplex stream surface reports one terminal `None`
+                    // for peer EOF or a transport read failure; do not claim
+                    // one cause when that public API does not expose it.
+                    done.send("[client] server stream ended");
+                    reading = false;
+                },
             }
-        }
-    }
-
-    /// Outbound write. Only this actor touches the connection.
-    receive fn say(line: string) {
-        match conn.write_string(line) {
-            .Ok(_) => {},
-            .Err(_) => println("[client] send failed"),
         }
     }
 }
@@ -60,7 +64,12 @@ fn main() {
     let addr = f"127.0.0.1:{port}";
     let connect_timeout_sec: i64 = 5;
     let connect_timeout_usec: i64 = 0;
-    let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
+    let conn = match net.try_connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
+        .Ok(conn) => conn,
+        .Err(err) => {
+            panic(f"[client] connect to {addr} failed: {net.net_error_message(err)}");
+        },
+    };
     match conn.set_read_timeout(-1) {
         .Ok(_) => {},
         .Err(_) => {
@@ -71,15 +80,24 @@ fn main() {
     println("=== Hew TCP Chat Client ===");
     println(f"Connected to {addr}");
     println("Type messages and press Enter. Type /quit to exit.");
-    let link = spawn ChatLink(conn: conn);
-    link.pump(0);
+    let (input, output) = conn.into_stream_sink();
+    let (done_tx, done_rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+    let reader = spawn ChatReader(input: input, done: done_tx);
+    reader.pump();
     loop {
         let line = io.read_line();
         if line.contains("/quit") {
-            println("[client] disconnected");
+            // Sink close drains the queued protocol marker before publishing
+            // EOF to the peer, so `/quit` cannot race ahead of disconnect.
+            output.send("__HEW_TCP_DISCONNECT__".to_bytes());
             break;
         }
-        link.say(f"{name}: {line}");
+        output.send(f"{name}: {line}".to_bytes());
     }
-    sleep(50ms);
+    output.close();
+    match done_rx.recv() {
+        .Some(message) => println(message),
+        .None => println("[client] reader closed without a status message"),
+    }
+    done_rx.close();
 }

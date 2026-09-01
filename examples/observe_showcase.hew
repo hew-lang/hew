@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Status: runnable (native; requires the profiler for hew-observe)
 //! Description: observe_showcase.hew — Exemplar program for hew-observe
 
 // observe_showcase.hew — Exemplar program for hew-observe
@@ -13,18 +13,13 @@
 // Exercises the following hew-observe tabs:
 //   ① Overview    — scheduler counters, message rates, memory sparklines
 //   ② Actors      — multiple actor types with different profiles
-//   ⑤ Cluster     — node membership, connections, routing
+//   ⑤ Cluster     — empty for this single-node workload
 //   ⑥ Messages    — trace events: spawns and message sends
 //   ⑦ Timeline    — same events as a time-density view
 //
-// Note: this canonical showcase omits supervisors, so the Supervisors tab
-// stays empty when running it. The reason is a codegen gap: supervised
-// children with init() blocks are not yet started by the supervisor
-// bootstrap, so an init-style tree never boots and never reaches the
-// profiler. A supervisor whose children use default field values +
-// constructor args (no init()) DOES drive the tab. See
-// examples/observe_supervisor_showcase.hew for a live, restartable
-// supervision tree that populates the Supervisors tab.
+// Note: this showcase intentionally omits supervisors, so the Supervisors tab
+// stays empty. See examples/observe_supervisor_showcase.hew for a live,
+// restartable supervision tree.
 
 // ── Actor types ─────────────────────────────────────────────────────
 
@@ -40,8 +35,8 @@ actor Counter {
     }
 }
 
-// Slow worker that simulates processing delay. Messages queue up,
-// showing non-zero mailbox depth in the Actors tab.
+// Slow worker that simulates processing delay, making processing latency
+// visible in the Actors tab.
 actor SlowProcessor {
     let id: i32;
     var processed: i32;
@@ -81,10 +76,6 @@ fn main() {
     println("Run hew-observe in another terminal to inspect this program.");
     println("");
 
-    // Start a distributed node — populates the Cluster tab with
-    // membership, connection, and routing data.
-    Node.start("127.0.0.1:19000");
-
     // Spawn a variety of actors with different workload profiles.
     let c1 = spawn Counter(name: 1, value: 0);
     let c2 = spawn Counter(name: 2, value: 0);
@@ -94,14 +85,11 @@ fn main() {
     let logger = spawn Logger(entries: 0);
     let acc = spawn Accumulator(total: 0);
     sleep(100ms);
-
-    // Register a named actor in the cluster registry.
-    Node.register("main_counter", c1);
     println("7 actors spawned. Running workload for 60 seconds...");
     println("Watch hew-observe tabs: Overview, Actors, Messages, Timeline");
     println("");
 
-    // Run for 60 seconds — fills the 5-minute sparkline history and
+    // Run for 60 seconds — provides a minute of sparkline history and
     // generates a visible timeline of message events.
     var round: i32 = 0;
     while round < 60 {
@@ -158,6 +146,5 @@ fn main() {
     };
     println("");
     println(f"Counter total: {total}");
-    Node.shutdown();
     println("Showcase complete.");
 }

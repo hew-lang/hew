@@ -10,7 +10,7 @@ pub fn char_count(text: string) -> i64 {
 }
 
 pub fn is_empty(text: string) -> bool {
-    text.len() == 0
+    text.is_empty()
 }
 
 pub fn truncate(text: string, max_len: i64) -> string {

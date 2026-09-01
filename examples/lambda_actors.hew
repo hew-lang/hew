@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable
 //! Description: Basic lambda actor
 
 fn main() {
@@ -8,7 +8,10 @@ fn main() {
     let doubler = actor |x: i64| {
         println(x * 2);
     };
-    doubler.send(21);
+    match doubler.send(21) {
+        .Ok(_) => {},
+        .Err(_) => panic("doubler actor rejected its input"),
+    }
     await doubler.close();
 
     // Multiple lambda actors running concurrently
@@ -22,10 +25,22 @@ fn main() {
         println(f"Plus 10: {x + 10}");
     };
     // Send to all concurrently
-    printer.send(100);
-    multiplier.send(7);
-    adder.send(5);
-    printer.send(200);
+    match printer.send(100) {
+        .Ok(_) => {},
+        .Err(_) => panic("printer actor rejected its first input"),
+    }
+    match multiplier.send(7) {
+        .Ok(_) => {},
+        .Err(_) => panic("multiplier actor rejected its input"),
+    }
+    match adder.send(5) {
+        .Ok(_) => {},
+        .Err(_) => panic("adder actor rejected its input"),
+    }
+    match printer.send(200) {
+        .Ok(_) => {},
+        .Err(_) => panic("printer actor rejected its second input"),
+    }
     await printer.close();
     await multiplier.close();
     await adder.close();
@@ -35,16 +50,28 @@ fn main() {
         let scoped_actor = actor |msg: i64| {
             println(f"Scoped: {msg}");
         };
-        scoped_actor.send(42);
+        match scoped_actor.send(42) {
+            .Ok(_) => {},
+            .Err(_) => panic("scoped actor rejected its input"),
+        }
         await scoped_actor.close();
     };
     // Multiple sends to same actor
     let counter = actor |x: i64| {
         println(f"Count: {x}");
     };
-    counter.send(1);
-    counter.send(2);
-    counter.send(3);
+    match counter.send(1) {
+        .Ok(_) => {},
+        .Err(_) => panic("counter actor rejected its first input"),
+    }
+    match counter.send(2) {
+        .Ok(_) => {},
+        .Err(_) => panic("counter actor rejected its second input"),
+    }
+    match counter.send(3) {
+        .Ok(_) => {},
+        .Err(_) => panic("counter actor rejected its third input"),
+    }
     await counter.close();
 
     // Lambda actor with complex body (if/else, function calls)
@@ -57,8 +84,14 @@ fn main() {
         let result = n * 2 + 1;
         println(f"Formula result: {result}");
     };
-    complex_actor.send(5);
-    complex_actor.send(15);
+    match complex_actor.send(5) {
+        .Ok(_) => {},
+        .Err(_) => panic("complex actor rejected its first input"),
+    }
+    match complex_actor.send(15) {
+        .Ok(_) => {},
+        .Err(_) => panic("complex actor rejected its second input"),
+    }
     await complex_actor.close();
 
     // Test actor factory pattern
@@ -71,7 +104,10 @@ fn run_multiplier_actor(factor: i64, value: i64) {
     let worker = actor |x: i64| {
         println(f"Multiplied by {factor}: {x * factor}");
     };
-    worker.send(value);
+    match worker.send(value) {
+        .Ok(_) => {},
+        .Err(_) => panic("multiplier actor rejected its input"),
+    }
     await worker.close();
     return;
 }

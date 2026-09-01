@@ -11,8 +11,7 @@ actor Counter {
     receive fn increment(n: i64) {
         count = count + n;
     }
-    receive fn print_total() -> i64 {
-        println(count);
+    receive fn total() -> i64 {
         count
     }
 }
@@ -22,5 +21,9 @@ fn main() {
     c.increment(10);
     c.increment(20);
     c.increment(12);
-    let _ = await c.print_total();
+    let result = await c.total();
+    match result {
+        .Ok(total) => println(total),
+        .Err(_) => println("ask failed"),
+    }
 }

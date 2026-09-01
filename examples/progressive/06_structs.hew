@@ -1,5 +1,5 @@
-// Test 6: Structs
-// Defining and using structures
+// Lesson 6: Records
+// Defining and using record types with `type`
 type Person {
     age: i64;
     id: i64;

@@ -1,11 +1,11 @@
-// Distributed Counter — replicated state across actor nodes
+// Distributed Counter — replicated state across local actors
 //
-// Models a counter replicated across multiple nodes. Each replica
-// maintains its own state and periodically syncs with a coordinator.
-// Reads are local (fast), writes go through the coordinator (consistent).
+// Models a counter replicated across three actors in one process. Each
+// replica maintains its own state and explicitly syncs with a coordinator.
+// Reads are local (fast); the coordinator's total updates when a sync arrives.
 //
-// This is a simplified CRDT-style pattern: each replica tracks local
-// increments, and the coordinator merges them into a global total.
+// This is a simplified replicated-state pattern: each replica tracks local
+// increments, and the coordinator records the latest report from each one.
 //
 // In Go you'd need channels between goroutines, a sync.Mutex for the
 // coordinator's map, and careful shutdown signalling. In Rust you'd
@@ -16,8 +16,9 @@
 // no locks, no data races — the actor model guarantees it.
 //
 // This example runs all replicas in one process to focus on the replication
-// pattern. A multi-node version would add a #[wire] message envelope and an
-// ActorMsg implementation before using Node.start/register/lookup.
+// pattern. It does not exercise the distributed runtime. A multi-node version
+// would define serializable request/reply types, implement ActorMsg, and use
+// Node.start/register/lookup to obtain RemotePid handles.
 
 // Coordinator — merges replica counts into a global total.
 actor Coordinator {
@@ -87,12 +88,13 @@ fn main() {
     let empty_names: Vec<string> = Vec.new();
     let empty_totals: Vec<i64> = Vec.new();
     let coord = spawn Coordinator(replica_names: empty_names, replica_totals: empty_totals, global_total: 0, sync_count: 0);
-    // Create replicas (in production these would be on separate nodes)
+    // Create process-local replicas (a production deployment could place them
+    // on separate nodes after adding the distributed message protocol).
     // Node.start("0.0.0.0:9000");
     let r1 = spawn Replica(name: "node-1", coordinator: coord, local_count: 0);
     let r2 = spawn Replica(name: "node-2", coordinator: coord, local_count: 0);
     let r3 = spawn Replica(name: "node-3", coordinator: coord, local_count: 0);
-    // Node.register("counter-1", r1);
+    // Node.register("counter-1", r1); // for a RemotePid-based deployment
 
     // Register replicas with coordinator
     coord.register_replica("node-1");

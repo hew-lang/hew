@@ -1,6 +1,8 @@
 // Matrix Chain Multiplication
 // Dimensions: [10, 30, 5, 60] -> minimum operations = 4500
 // Matrices: A1(10x30), A2(30x5), A3(5x60)
+const INF: i32 = 999999;
+
 fn main() {
     let dims: Vec<i32> = Vec.new();
     dims.push(10);
@@ -8,7 +10,6 @@ fn main() {
     dims.push(5);
     dims.push(60);
     let n = dims.len() - 1;
-    let INF = 999999;
     // dp[i][j] = min cost to multiply matrices i..j (0-indexed)
     // Flat array: n x n
     let dp: Vec<i32> = Vec.new();

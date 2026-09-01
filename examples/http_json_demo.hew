@@ -30,7 +30,7 @@
 // fetches; it never frees the parent passed by the caller.
 import std.net.http.http_client;
 
-import std.encoding.json.{Value};
+import std.encoding.json.{self, Value};
 
 // Fetch a URL and return the body string, or None on transport failure.
 fn fetch(url: string) -> Option<string> {
@@ -71,11 +71,8 @@ fn main() {
                     slideshow.free(); // free before root
                     root.free(); // outermost last
                 },
-                .Err(_) => {
-                    // Err(ParseError.Invalid(msg)) is accepted by `hew check`
-                    // but fails at runtime with an undeclared-variable
-                    // error. Use `Err(_)` and a static message instead.
-                    println("json parse failed");
+                .Err(ParseError.Invalid(msg)) => {
+                    println(f"json parse failed: {msg}");
                 },
             }
         },

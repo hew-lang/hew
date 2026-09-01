@@ -1,5 +1,5 @@
-//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
-//! Description: Regex Demo — showcases Hew's stdlib regex support.
+//! Status: runnable
+//! Description: Regex Demo — showcases Hew's std.text.regex support.
 
 // Regex Demo — showcases Hew's stdlib regex support.
 //
@@ -10,6 +10,8 @@
 //   match x { s if pat.is_match(s) => ... } — regex-powered match guards
 //
 // Usage: hew build regex_demo.hew -o regex_demo && ./regex_demo
+import std.text.regex;
+
 fn main() {
     println("=== Regex Demo ===");
     let email_re = re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$";

@@ -565,6 +565,12 @@ impl std::error::Error for TypeError {}
 /// cannot silently collapse into an existing one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorErrorKind {
+    /// `E_SUPERVISOR_UNKNOWN_CHILD_ACTOR`: a child type does not resolve to a
+    /// declaration in the supervisor's lexical scope.
+    UnknownChildActor,
+    /// `E_SUPERVISOR_CHILD_NOT_SUPERVISABLE`: a child type resolves to a
+    /// declaration that is neither an actor nor a nested supervisor.
+    ChildNotSupervisable,
     /// `E_SUPERVISOR_POOL_COUNT_MISSING`: a `pool` child omits the required
     /// `count:` argument.
     PoolCountMissing,
@@ -608,6 +614,8 @@ impl SupervisorErrorKind {
     #[must_use]
     pub fn as_kind_str(self) -> &'static str {
         match self {
+            Self::UnknownChildActor => "SupervisorUnknownChildActor",
+            Self::ChildNotSupervisable => "SupervisorChildNotSupervisable",
             Self::PoolCountMissing => "SupervisorPoolCountMissing",
             Self::PoolCountType => "SupervisorPoolCountType",
             Self::PoolCountNonPositive => "SupervisorPoolCountNonPositive",

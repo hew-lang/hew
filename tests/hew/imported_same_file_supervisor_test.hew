@@ -1,0 +1,8 @@
+//! File-imported supervisors retain their own module as lexical actor authority.
+
+import "imported_same_file_supervisor_support/worker.hew";
+#[test]
+fn imported_supervisor_runs_its_same_file_actor() {
+    let sup = spawn Inner;
+    supervisor_stop(sup);
+}

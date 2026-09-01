@@ -11546,6 +11546,16 @@ impl Checker {
                         continue;
                     }
                     self.register_actor_base(ad, Some(module_short));
+                    if ad.visibility.is_pub() {
+                        if let Some(binding) = import_spec.bare_binding(&ad.name) {
+                            self.publish_stdlib_hew_type_binding(
+                                module_short,
+                                binding,
+                                format!("{module_full_path}.{}", ad.name),
+                                import_spec,
+                            );
+                        }
+                    }
                 }
                 // Register pub consts from C-backed stdlib modules that also
                 // ship Hew source (e.g. `std::misc::log` with `pub const JSON`).
@@ -11778,6 +11788,16 @@ impl Checker {
                                 publication,
                             );
                         }
+                    }
+                }
+                Item::Actor(ad) if ad.visibility.is_pub() => {
+                    if let Some(binding) = publication.bare_binding(&ad.name) {
+                        self.publish_stdlib_hew_type_binding(
+                            module_short,
+                            binding,
+                            format!("{module_full_path}.{}", ad.name),
+                            publication,
+                        );
                     }
                 }
                 _ => {}
@@ -12953,6 +12973,19 @@ impl Checker {
                             .unwrap_or_else(|| ad.name.clone());
                         let source_identity = format!("{module_full_path}.{}", ad.name);
                         self.record_published_bare_type(&binding_name, &source_identity);
+                        // Supervisor declarations retain their source spelling
+                        // through parsing. Publish the same exact lexical
+                        // binding fact every other named/glob type import gives
+                        // HIR, so a child named by either `Worker` or an `as`
+                        // alias reaches the actor's declaration-owned key.
+                        self.import_type_name_aliases.insert(
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding_name.clone(),
+                            ),
+                            source_identity,
+                        );
                         self.unqualified_to_module.insert(
                             (
                                 self.current_module.clone(),

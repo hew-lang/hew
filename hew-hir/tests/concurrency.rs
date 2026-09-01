@@ -23,6 +23,8 @@ mod actor_send_gates;
 mod actor_state_lock_lower;
 #[path = "concurrency/cancellation_token_lower.rs"]
 mod cancellation_token_lower;
+#[path = "concurrency/imported_supervisor_child_identity.rs"]
+mod imported_supervisor_child_identity;
 #[path = "concurrency/spawn_qualified_identity.rs"]
 mod spawn_qualified_identity;
 #[path = "concurrency/supervisor_child_accessor_gates.rs"]

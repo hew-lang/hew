@@ -11,9 +11,12 @@
 //! destination, and init-args are rejected with `NotYetImplemented`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
 use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Place, Terminator};
+use hew_parser::ast::{ImportDecl, ImportName, ImportSpec, Item, Program};
+use hew_parser::module::{Module, ModuleGraph, ModuleId};
 use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
 /// Lower a Hew source program to MIR, asserting no parse or HIR diagnostics.
@@ -42,6 +45,260 @@ fn lower_module_from_source(source: &str) -> hew_mir::IrPipeline {
         hir.diagnostics
     );
     lower_hir_module(&hir.module)
+}
+
+/// Mirror `hew-compile`'s file-import order: type-check the module graph, then
+/// splice the imported declarations into the root source-order stream for HIR.
+fn lower_file_imported_supervisor_to_mir() -> hew_mir::IrPipeline {
+    lower_file_imported_program_to_mir(
+        "pub actor ImportedWorker {\n\
+         \x20   let id: i64;\n\
+         \x20   receive fn identify() -> i64 { id }\n\
+         }\n",
+        "import \"imported_supervisor_child_support/worker.hew\";\n\
+         supervisor ImportedWorkerPool {\n\
+         \x20   child worker: ImportedWorker(id: 17);\n\
+         }\n",
+    )
+}
+
+fn lower_file_imported_program_to_mir(
+    imported_source: &str,
+    root_source: &str,
+) -> hew_mir::IrPipeline {
+    let imported = hew_parser::parse(imported_source);
+    assert!(imported.errors.is_empty(), "{:#?}", imported.errors);
+    let root = hew_parser::parse(root_source);
+    assert!(root.errors.is_empty(), "{:#?}", root.errors);
+
+    let imported_items: Vec<_> = imported
+        .program
+        .items
+        .into_iter()
+        .filter(|(item, _)| !matches!(item, Item::Import(_)))
+        .collect();
+    let worker_path = PathBuf::from("/virtual/imported_supervisor_child_support/worker.hew");
+    let mut root_items = root.program.items;
+    let import = root_items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) if import.file_path.is_some() => Some(import),
+            _ => None,
+        })
+        .expect("root file import");
+    import.resolved_items = Some(imported_items.clone());
+    import.resolved_item_source_paths = vec![worker_path.clone(); imported_items.len()];
+    import.resolved_source_paths = vec![worker_path.clone()];
+
+    let worker_id = ModuleId::new(vec![
+        "imported_supervisor_child_support".to_string(),
+        "worker".to_string(),
+    ]);
+    let root_id = ModuleId::root();
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: worker_id.clone(),
+            items: imported_items.clone(),
+            imports: Vec::new(),
+            source_paths: vec![worker_path],
+            doc: None,
+        })
+        .expect("add worker module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root_items.clone(),
+            imports: Vec::new(),
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .expect("add root module");
+    graph.topo_order = vec![worker_id, root_id];
+
+    let mut program = Program {
+        items: root_items,
+        module_graph: Some(graph),
+        module_doc: root.program.module_doc,
+    };
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    program.items.extend(imported_items);
+    let hir = lower_program(
+        &program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+    lower_hir_module(&hir.module)
+}
+
+fn lower_named_imported_supervisor_to_mir(
+    alias: Option<&str>,
+    binding: &str,
+) -> hew_mir::IrPipeline {
+    let imported = hew_parser::parse(
+        "pub actor Worker {\n\
+         \x20   let id: i64;\n\
+         \x20   receive fn identify() -> i64 { id }\n\
+         }\n",
+    );
+    assert!(imported.errors.is_empty(), "{:#?}", imported.errors);
+    let root = hew_parser::parse(&format!(
+        "supervisor App {{ child worker: {binding}(id: 17) restart: temporary; }}"
+    ));
+    assert!(root.errors.is_empty(), "{:#?}", root.errors);
+    let module_path = ["services", "workers"];
+    let import_item = (
+        Item::Import(ImportDecl {
+            path: module_path.iter().map(ToString::to_string).collect(),
+            spec: Some(ImportSpec::Names(vec![ImportName {
+                name: "Worker".to_string(),
+                alias: alias.map(str::to_string),
+            }])),
+            selection_trailing_comma: false,
+            module_alias: None,
+            file_path: None,
+            resolved_items: Some(imported.program.items.clone()),
+            resolved_item_source_paths: Vec::new(),
+            resolved_source_paths: Vec::new(),
+        }),
+        0..0,
+    );
+    let worker_id = ModuleId::new(module_path.iter().map(ToString::to_string).collect());
+    let root_id = ModuleId::root();
+    let mut root_items = vec![import_item];
+    root_items.extend(root.program.items);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: worker_id.clone(),
+            items: imported.program.items,
+            imports: Vec::new(),
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .expect("add named worker module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root_items.clone(),
+            imports: Vec::new(),
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .expect("add root module");
+    graph.topo_order = vec![worker_id, root_id];
+    let program = Program {
+        items: root_items,
+        module_graph: Some(graph),
+        module_doc: root.program.module_doc,
+    };
+    let mut type_checker = Checker::new(ModuleRegistry::new(vec![]));
+    let checked = type_checker.check_program(&program);
+    assert!(checked.errors.is_empty(), "{:#?}", checked.errors);
+    let hir = lower_program(
+        &program,
+        &checked,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    lower_hir_module(&hir.module)
+}
+
+#[test]
+fn file_imported_supervisor_child_uses_its_actor_layout_key() {
+    let pipeline = lower_file_imported_supervisor_to_mir();
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    let actor = pipeline
+        .actor_layouts
+        .iter()
+        .find(|actor| actor.name.ends_with(".ImportedWorker"))
+        .expect("imported actor layout");
+    let child = pipeline
+        .supervisor_layouts
+        .iter()
+        .find(|supervisor| supervisor.name == "ImportedWorkerPool")
+        .and_then(|supervisor| supervisor.children.first())
+        .expect("imported supervisor child layout");
+    assert_eq!(
+        child.actor_name, actor.name,
+        "supervisor child and actor layout must use the same complete identity key"
+    );
+    assert_eq!(
+        actor.name,
+        "imported_supervisor_child_support.worker.ImportedWorker"
+    );
+}
+
+#[test]
+fn named_and_aliased_supervisor_children_match_the_imported_actor_layout_key() {
+    for (alias, binding) in [(None, "Worker"), (Some("Renamed"), "Renamed")] {
+        let pipeline = lower_named_imported_supervisor_to_mir(alias, binding);
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "`{binding}` MIR diagnostics: {:#?}",
+            pipeline.diagnostics
+        );
+        let actor = pipeline
+            .actor_layouts
+            .iter()
+            .find(|actor| actor.name == "services.workers.Worker")
+            .expect("named-imported actor layout");
+        let child = pipeline
+            .supervisor_layouts
+            .iter()
+            .find(|supervisor| supervisor.name == "App")
+            .and_then(|supervisor| supervisor.children.first())
+            .expect("named-imported supervisor child");
+        assert_eq!(child.actor_name, actor.name);
+    }
+}
+
+#[test]
+fn file_imported_supervisor_child_matches_its_same_file_actor_layout_key() {
+    let pipeline = lower_file_imported_program_to_mir(
+        "pub actor Worker {\n\
+         \x20   let id: i64;\n\
+         \x20   receive fn identify() -> i64 { id }\n\
+         }\n\
+         pub supervisor Inner {\n\
+         \x20   child worker: Worker(id: 23) restart: temporary;\n\
+         }\n",
+        "import \"imported_supervisor_child_support/worker.hew\";",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    let actor = pipeline
+        .actor_layouts
+        .iter()
+        .find(|actor| actor.name == "imported_supervisor_child_support.worker.Worker")
+        .expect("same-file actor layout");
+    let child = pipeline
+        .supervisor_layouts
+        .iter()
+        .find(|supervisor| supervisor.name.ends_with("Inner"))
+        .and_then(|supervisor| supervisor.children.first())
+        .expect("same-file supervisor child");
+    assert_eq!(child.actor_name, actor.name);
 }
 
 /// Lower a Hew source program to MIR, permitting HIR diagnostics for

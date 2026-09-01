@@ -5,6 +5,20 @@
 pub(super) use super::*;
 
 #[test]
+fn nested_supervisor_remains_a_valid_child_target() {
+    let output = check_source(
+        "actor Worker { receive fn ping() {} }\n\
+         supervisor Inner { child worker: Worker; }\n\
+         supervisor Root { child inner: Inner; }",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a nested supervisor is a supervisable child target: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn supervisor_permanent_owned_heap_rejects_vec_field() {
     let output = check_source(
         r"

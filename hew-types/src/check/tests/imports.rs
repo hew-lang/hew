@@ -16,6 +16,27 @@ fn selected_import(names: &[&str]) -> ImportSpec {
     )
 }
 
+fn parsed_import_items(source: &str) -> Vec<Spanned<Item>> {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "import fixture parse errors: {:#?}",
+        parsed.errors
+    );
+    parsed.program.items
+}
+
+fn selected_actor_import(path: &[&str], alias: Option<&str>, actor_source: &str) -> ImportDecl {
+    make_user_import(
+        path,
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Worker".to_string(),
+            alias: alias.map(str::to_string),
+        }])),
+        parsed_import_items(actor_source),
+    )
+}
+
 #[test]
 fn colliding_import_publishes_none_of_its_other_bindings() {
     let first = make_user_import(
@@ -706,6 +727,199 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
             .map(|sig| &sig.return_type),
         Some(&Ty::I32)
     );
+}
+
+#[test]
+fn supervisor_actor_named_and_aliased_imports_publish_exact_identity() {
+    for (alias, binding) in [(None, "Worker"), (Some("Renamed"), "Renamed")] {
+        let import = selected_actor_import(
+            &["services", "workers"],
+            alias,
+            "pub actor Worker { receive fn identify() -> i64 { 17 } }",
+        );
+        let supervisor = hew_parser::parse(&format!(
+            "supervisor App {{ child worker: {binding} restart: temporary; }}"
+        ));
+        assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
+        let mut items = vec![(Item::Import(import), 0..1)];
+        items.extend(supervisor.program.items);
+        let output = check_items(items);
+
+        assert!(
+            output.errors.is_empty(),
+            "`{binding}` supervisor child must typecheck: {:#?}",
+            output.errors
+        );
+        assert_eq!(
+            output
+                .import_type_name_aliases
+                .iter()
+                .find(|((_, _, published), _)| published == binding)
+                .map(|(_, identity)| identity.as_str()),
+            Some("services.workers.Worker"),
+            "the actor import binding must publish its declaration-owned identity"
+        );
+    }
+}
+
+#[test]
+fn supervisor_actor_whole_module_import_uses_exact_identity() {
+    let import = make_user_import(
+        &["support", "worker"],
+        None,
+        parsed_import_items("pub actor Worker { receive fn identify() -> i64 { 17 } }"),
+    );
+    let supervisor =
+        hew_parser::parse("supervisor App { child worker: worker.Worker restart: temporary; }");
+    assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
+    let mut items = vec![(Item::Import(import), 0..1)];
+    items.extend(supervisor.program.items);
+    let output = check_items(items);
+
+    assert!(
+        output.errors.is_empty(),
+        "a whole-module binding must authorize its exact actor: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn selected_actor_alias_does_not_authorize_unbound_canonical_path() {
+    let import = selected_actor_import(
+        &["support", "worker"],
+        Some("Renamed"),
+        "pub actor Worker { receive fn identify() -> i64 { 17 } }",
+    );
+    let supervisor = hew_parser::parse(
+        "supervisor App { child worker: support.worker.Worker restart: temporary; }",
+    );
+    assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
+    let mut items = vec![(Item::Import(import), 0..1)];
+    items.extend(supervisor.program.items);
+    let output = check_items(items);
+
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "the unsupported spelling must stop at one checker diagnostic: {:#?}",
+        output.errors
+    );
+    let error = &output.errors[0];
+    assert!(matches!(
+        error.kind,
+        TypeErrorKind::SupervisorError {
+            subkind: SupervisorErrorKind::UnknownChildActor
+        }
+    ));
+    assert!(error
+        .message
+        .starts_with("E_SUPERVISOR_UNKNOWN_CHILD_ACTOR:"));
+    assert!(
+        !output.errors.iter().any(|error| matches!(
+            error.kind,
+            TypeErrorKind::SupervisorError {
+                subkind: SupervisorErrorKind::ChildNotSupervisable
+            }
+        )),
+        "an unbound module root is unknown, not an alternate declaration: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn local_actor_shadows_same_leaf_import_for_supervisor_child() {
+    let import = selected_actor_import(
+        &["foreign", "workers"],
+        None,
+        "pub actor Worker { let label: string; }",
+    );
+    let root = hew_parser::parse(
+        "actor Worker { receive fn identify() -> i64 { 9 } }\n\
+         supervisor App { child worker: Worker; }",
+    );
+    assert!(root.errors.is_empty(), "{:#?}", root.errors);
+    let mut items = vec![(Item::Import(import), 0..1)];
+    items.extend(root.program.items);
+    let output = check_items(items);
+
+    assert!(
+        output.errors.is_empty(),
+        "the local actor must win over the imported same-leaf binding: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn local_non_actor_shadow_is_not_replaced_by_imported_actor() {
+    let import = selected_actor_import(
+        &["foreign", "workers"],
+        None,
+        "pub actor Worker { receive fn identify() -> i64 { 17 } }",
+    );
+    let root = hew_parser::parse(
+        "type Worker { value: i64; }\n\
+         supervisor App { child worker: Worker; }",
+    );
+    assert!(root.errors.is_empty(), "{:#?}", root.errors);
+    let mut items = vec![(Item::Import(import), 0..1)];
+    items.extend(root.program.items);
+    let output = check_items(items);
+
+    assert!(output.errors.iter().any(|error| matches!(
+        error.kind,
+        TypeErrorKind::SupervisorError {
+            subkind: SupervisorErrorKind::ChildNotSupervisable
+        }
+    )));
+    assert!(!output.errors.iter().any(|error| matches!(
+        error.kind,
+        TypeErrorKind::SupervisorError {
+            subkind: SupervisorErrorKind::UnknownChildActor
+        }
+    )));
+}
+
+#[test]
+fn colliding_actor_import_bindings_stop_before_supervisor_lowering() {
+    let left = selected_actor_import(
+        &["left", "workers"],
+        None,
+        "pub actor Worker { receive fn identify() -> i64 { 1 } }",
+    );
+    let right = selected_actor_import(
+        &["right", "workers"],
+        None,
+        "pub actor Worker { receive fn identify() -> i64 { 2 } }",
+    );
+    let supervisor = hew_parser::parse("supervisor App { child worker: Worker; }");
+    assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
+    let mut items = vec![(Item::Import(left), 0..1), (Item::Import(right), 2..3)];
+    items.extend(supervisor.program.items);
+    let output = check_items(items);
+
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::ImportBindingCollision));
+    assert!(!output.errors.iter().any(|error| {
+        matches!(
+            error.kind,
+            TypeErrorKind::SupervisorError {
+                subkind: SupervisorErrorKind::UnknownChildActor
+            }
+        )
+    }));
+}
+
+#[test]
+fn unknown_supervisor_child_actor_is_rejected_before_mir() {
+    let output = check_source("supervisor App { child missing: Missing; }");
+    assert!(output.errors.iter().any(|error| matches!(
+        error.kind,
+        TypeErrorKind::SupervisorError {
+            subkind: SupervisorErrorKind::UnknownChildActor
+        }
+    )));
 }
 
 #[test]

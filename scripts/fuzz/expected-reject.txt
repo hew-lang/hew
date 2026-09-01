@@ -35,6 +35,7 @@ tests/vertical-slice/accept/imported_actor_msg_discriminants_lib.hew
 tests/vertical-slice/accept/imported_fn_local_shadow/m.hew
 tests/vertical-slice/accept/imported_generics_resolve/lib.hew
 tests/vertical-slice/accept/imported_shadow_errmod.hew
+tests/vertical-slice/accept/imported_supervisor_child_identity_support/worker.hew
 tests/vertical-slice/accept/let_record_destructure_selective_import_module.hew
 tests/vertical-slice/accept/lib/math.hew
 tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew

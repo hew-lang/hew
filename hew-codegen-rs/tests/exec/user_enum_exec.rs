@@ -180,7 +180,7 @@ fn colour_red_pipeline() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![main_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -203,7 +203,7 @@ fn colour_red_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// The tagged-union outer struct must be emitted under the enum type name

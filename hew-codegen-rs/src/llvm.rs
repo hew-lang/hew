@@ -79,11 +79,11 @@ use hew_mir::{
     CallAuthority, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite, DropFnSpec, DropKind,
     DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset,
     FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
-    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, ParamBoundaryMode,
-    ParamLoanStorage, Place, RawMirFunction, RawValueDef, RawValueId, RawValueOp,
-    RawVirtualValueFacts, RecordLayout, RegexLiteral, ResourceCloseAuthority, RuntimeCall,
-    SourceOrigin, StateFieldCloneKind, Strategy, StringRetainCondition, SupervisorChildLayout,
-    SuspendKind, Terminator, TrapKind,
+    LambdaEnvFieldDrop, MachineVariantLayout, MirCallableKey, MirConst, MirConstValue, MirScope,
+    ParamBoundaryMode, ParamLoanStorage, Place, RawMirFunction, RawValueDef, RawValueId,
+    RawValueOp, RawVirtualValueFacts, RecordLayout, RegexLiteral, ResourceCloseAuthority,
+    RuntimeCall, SourceOrigin, StateFieldCloneKind, Strategy, StringRetainCondition,
+    SupervisorChildLayout, SuspendKind, Terminator, TrapKind,
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
@@ -22320,7 +22320,7 @@ fn compute_borrow_taint(func: &RawMirFunction) -> HashSet<u32> {
 /// [`has_unhandled_non_string_borrow_use`] on the live path.
 fn compute_borrow_drop_taint(
     func: &RawMirFunction,
-    elab: Option<&hew_mir::ElaboratedMirFunction>,
+    elab: &hew_mir::ElaboratedMirFunction,
     record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
     enum_layouts: &[EnumLayout],
     machine_layouts: &MachineLayoutMap<'_>,
@@ -22339,16 +22339,14 @@ fn compute_borrow_drop_taint(
             tainted.insert(idx as u32);
         }
     }
-    if let Some(elab) = elab {
-        for base in elab
-            .drop_plans
-            .iter()
-            .flat_map(|(_, plan)| &plan.drops)
-            .filter_map(|drop| place_base_local(&drop.place))
-        {
-            if (base as usize) < func.params.len() {
-                tainted.insert(base);
-            }
+    for base in elab
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter_map(|drop| place_base_local(&drop.place))
+    {
+        if (base as usize) < func.params.len() {
+            tainted.insert(base);
         }
     }
     if tainted.is_empty() {
@@ -23668,7 +23666,7 @@ fn call_destination_has_specialized_crash_cleanup_lifecycle(
 )]
 fn collect_helper_crash_cleanup_descriptors(
     func: &RawMirFunction,
-    elab: Option<&ElaboratedMirFunction>,
+    elab: &ElaboratedMirFunction,
     has_suspend: bool,
     include_unwind_plans: bool,
     record_field_tys: &HashMap<String, Vec<ResolvedTy>>,
@@ -23708,21 +23706,19 @@ fn collect_helper_crash_cleanup_descriptors(
     // mis-marked retire-only and leaked.
     let mut on_back_edge: HashSet<Place> = HashSet::new();
     let mut off_back_edge: HashSet<Place> = HashSet::new();
-    if let Some(elab) = elab {
-        for (exit, plan) in &elab.drop_plans {
-            if !include_unwind_plans && matches!(exit, ExitPath::Unwind { .. }) {
-                continue;
-            }
-            let is_back_edge = matches!(
-                exit,
-                ExitPath::Goto { block, .. } if back_edge_blocks.contains(block)
-            );
-            for drop in &plan.drops {
-                if is_back_edge {
-                    on_back_edge.insert(drop.place);
-                } else {
-                    off_back_edge.insert(drop.place);
-                }
+    for (exit, plan) in &elab.drop_plans {
+        if !include_unwind_plans && matches!(exit, ExitPath::Unwind { .. }) {
+            continue;
+        }
+        let is_back_edge = matches!(
+            exit,
+            ExitPath::Goto { block, .. } if back_edge_blocks.contains(block)
+        );
+        for drop in &plan.drops {
+            if is_back_edge {
+                on_back_edge.insert(drop.place);
+            } else {
+                off_back_edge.insert(drop.place);
             }
         }
     }
@@ -23810,7 +23806,7 @@ fn collect_helper_crash_cleanup_descriptors(
     let mut by_place = HashMap::<Place, usize>::new();
     let mut entry_cancel_unguarded = HashSet::<Place>::new();
     let entry_block_id = func.blocks.first().map(|block| block.id);
-    for (exit, plan) in elab.into_iter().flat_map(|elab| elab.drop_plans.iter()) {
+    for (exit, plan) in &elab.drop_plans {
         if !include_unwind_plans && matches!(exit, ExitPath::Unwind { .. }) {
             continue;
         }
@@ -34477,17 +34473,11 @@ fn validate_context_markers_for_codegen(func: &RawMirFunction) -> Vec<hew_mir::M
 /// Lower one function from `raw_mir`, consuming `elaborated_mir.drop_plans`
 /// to emit LIFO close calls before every exit terminator.
 ///
-/// `elab` is the `ElaboratedMirFunction` whose `name` matches `func.name`.
-/// When `pipeline.elaborated_mir` has no matching entry (e.g. in hand-built
-/// test pipelines that predate elaboration), `elab` may be `None`; in that
-/// case `emit_elab_drops` receives an empty slice and emits nothing — the
-/// inline `Instr::Drop` path in `lower_instruction` still fires for any
-/// `Instr::Drop` entries baked into `raw_mir.blocks`.
-///
-/// `checked` carries the cooperate-site side table computed by the MIR
-/// dataflow pass. Empty/missing checked MIR means no cooperate injection
-/// for legacy hand-built codegen tests; full lowered pipelines always carry
-/// a matching checked function.
+/// `elab` and `checked` are the mandatory artifacts with the same
+/// [`MirCallableKey`] as `func`. Module orchestration validates and indexes all
+/// three stage sets before creating any LLVM definitions, so this function
+/// never guesses identity from linkage/display names and never substitutes an
+/// empty stage.
 ///
 /// `module_uses_runtime` is true when the module declares an actor, declares a
 /// supervisor, or reaches a runtime-owned authority (Node, metrics). When true,
@@ -35814,8 +35804,8 @@ fn apply_optnone_for_debug<'ctx>(ctx: &'ctx Context, func: inkwell::values::Func
 /// independently validate.
 fn virtual_raw_value_facts(
     func: &RawMirFunction,
-    checked: Option<&CheckedMirFunction>,
-    elaborated: Option<&ElaboratedMirFunction>,
+    checked: &CheckedMirFunction,
+    elaborated: &ElaboratedMirFunction,
 ) -> CodegenResult<Option<RawVirtualValueFacts>> {
     verify_raw_virtual_value_ladder(func, checked, elaborated).map_err(|error| {
         CodegenError::FailClosed(format!(
@@ -35838,8 +35828,8 @@ fn lower_function<'ctx>(
     representation_loan_params_by_function: &HashMap<String, Vec<u32>>,
     param_boundary_modes_by_function: &HashMap<String, Vec<Option<ParamBoundaryMode>>>,
     machine_step_symbols: &HashSet<String>,
-    elab: Option<&ElaboratedMirFunction>,
-    checked: Option<&CheckedMirFunction>,
+    elab: &ElaboratedMirFunction,
+    checked: &CheckedMirFunction,
     record_layouts: &RecordLayoutMap<'ctx>,
     actor_layouts: &[ActorLayout],
     machine_layouts: &MachineLayoutMap<'ctx>,
@@ -36722,41 +36712,32 @@ fn lower_function<'ctx>(
     // the PRIOR node on reassignment (`var t = ...; loop { t = ... }`); gating on
     // this set keeps the release fail-closed — it can never fire for a consumed,
     // aliased, or non-owning local, so it cannot introduce a double-free.
-    let indirect_enum_owned_locals: HashSet<u32> = elab
-        .map(|e| {
-            let mut owners = HashSet::new();
-            for (_, plan) in &e.drop_plans {
-                for drop in &plan.drops {
-                    if drop.kind == hew_mir::DropKind::IndirectEnum {
-                        if let Place::Local(l) = drop.place {
-                            owners.insert(l);
-                        }
+    let indirect_enum_owned_locals: HashSet<u32> = {
+        let mut owners = HashSet::new();
+        for (_, plan) in &elab.drop_plans {
+            for drop in &plan.drops {
+                if drop.kind == hew_mir::DropKind::IndirectEnum {
+                    if let Place::Local(l) = drop.place {
+                        owners.insert(l);
                     }
                 }
             }
-            owners
-        })
-        .unwrap_or_default();
+        }
+        owners
+    };
 
-    // Extract drop_plans from the matched elaborated function, or an empty
-    // ('static) slice when no elaborated function is available (hand-built test
-    // pipelines that inline Instr::Drop instead of using drop_plans). Threaded
-    // onto `FnCtx` so the block loop AND `emit_suspend_point` (the shared
-    // suspend-ramp helper) read the same per-function plan set.
-    let drop_plans: &[(ExitPath, hew_mir::DropPlan)] =
-        elab.map(|e| e.drop_plans.as_slice()).unwrap_or(&[]);
+    // Thread the matched stage's mandatory plans onto `FnCtx` so the block
+    // loop and `emit_suspend_point` read the same per-function plan set.
+    let drop_plans: &[(ExitPath, hew_mir::DropPlan)] = &elab.drop_plans;
     // Loop back-edge block ids, so the crash-cleanup collector can recognise a
     // reassigned-`while let` scrutinee snapshot (dropped only on the back-edge
     // Goto) and retire — never drop — it on the return sweep.
     let back_edge_blocks: HashSet<u32> = checked
-        .map(|c| {
-            c.cooperate_sites
-                .iter()
-                .filter(|site| site.kind == CooperateKind::LoopBackEdge)
-                .map(|site| site.bb_id)
-                .collect()
-        })
-        .unwrap_or_default();
+        .cooperate_sites
+        .iter()
+        .filter(|site| site.kind == CooperateKind::LoopBackEdge)
+        .map(|site| site.bb_id)
+        .collect();
     let module_triple = llvm_mod
         .get_triple()
         .as_str()
@@ -36786,13 +36767,10 @@ fn lower_function<'ctx>(
             _ => None,
         })
         .collect::<HashSet<_>>();
-    // Production Checked MIR reaches this point only after the ownership-event
-    // validator has accepted every Join/Rearm. Re-derive physical equivalence
-    // from that immutable event stream, and keep hand-built Raw-only pipelines
-    // fail-closed with no lineage admission.
-    let helper_crash_cleanup_lineages = checked
-        .map(helper_crash_cleanup_owner_lineages)
-        .unwrap_or_default();
+    // Checked MIR reaches this point only after the ownership-event validator
+    // has accepted every Join/Rearm. Re-derive physical equivalence from that
+    // immutable event stream.
+    let helper_crash_cleanup_lineages = helper_crash_cleanup_owner_lineages(checked);
     let mut helper_crash_cleanup_descriptors = collect_helper_crash_cleanup_descriptors(
         func,
         elab,
@@ -36948,8 +36926,7 @@ fn lower_function<'ctx>(
         )));
     }
 
-    let cooperate_sites: &[CooperateSite] =
-        checked.map(|c| c.cooperate_sites.as_slice()).unwrap_or(&[]);
+    let cooperate_sites: &[CooperateSite] = &checked.cooperate_sites;
     let owned_carrier_cancel_drops = collect_owned_carrier_cancel_drops(func)?;
     initialize_owned_carrier_drop_guards(&fn_ctx, &owned_carrier_cancel_drops)?;
     initialize_helper_crash_cleanup_guards(&fn_ctx, func.params.len())?;
@@ -37459,10 +37436,126 @@ fn lower_function<'ctx>(
 // Module-level orchestration
 // ---------------------------------------------------------------------------
 
+/// Exact Raw -> Checked -> Elaborated association for one emission.
+///
+/// The maps own their keys so lookups cannot accidentally fall back to vector
+/// position or presentation/linkage names. Construction is the fail-closed
+/// emission boundary: every stage must contain exactly one artifact for every
+/// callable key, and the matched artifacts must agree on their output name and
+/// return type.
+struct MirStageIndex<'a> {
+    checked: HashMap<MirCallableKey, &'a CheckedMirFunction>,
+    elaborated: HashMap<MirCallableKey, &'a ElaboratedMirFunction>,
+}
+
+fn mir_callable_key_label(key: &MirCallableKey) -> String {
+    format!("{} ({:?})", key.declaration.full_path(), key.instance)
+}
+
+fn validate_and_index_mir_stages(pipeline: &IrPipeline) -> CodegenResult<MirStageIndex<'_>> {
+    if let Some(diagnostic) =
+        hew_mir::identity::validate_unique_callable_keys(&pipeline.raw_mir).first()
+    {
+        let hew_mir::MirDiagnosticKind::CallableKeyCollision {
+            declaration,
+            first_symbol,
+            second_symbol,
+        } = &diagnostic.kind
+        else {
+            unreachable!("callable-key validation emits only collision diagnostics");
+        };
+        return Err(CodegenError::FailClosed(format!(
+            "duplicate Raw MIR callable key {declaration}: symbols `{first_symbol}` and `{second_symbol}` claim one identity"
+        )));
+    }
+    let raw_by_key = pipeline
+        .raw_mir
+        .iter()
+        .map(|raw| (raw.key.clone(), raw))
+        .collect::<HashMap<_, _>>();
+
+    let mut checked_by_key = HashMap::with_capacity(pipeline.checked_mir.len());
+    for checked in &pipeline.checked_mir {
+        if let Some(first) = checked_by_key.insert(checked.key.clone(), checked) {
+            return Err(CodegenError::FailClosed(format!(
+                "duplicate Checked MIR callable key {}: symbols `{}` and `{}` claim one identity",
+                mir_callable_key_label(&checked.key),
+                first.name,
+                checked.name
+            )));
+        }
+    }
+
+    let mut elaborated_by_key = HashMap::with_capacity(pipeline.elaborated_mir.len());
+    for elaborated in &pipeline.elaborated_mir {
+        if let Some(first) = elaborated_by_key.insert(elaborated.key.clone(), elaborated) {
+            return Err(CodegenError::FailClosed(format!(
+                "duplicate Elaborated MIR callable key {}: symbols `{}` and `{}` claim one identity",
+                mir_callable_key_label(&elaborated.key),
+                first.name,
+                elaborated.name
+            )));
+        }
+    }
+
+    for raw in &pipeline.raw_mir {
+        let key_label = mir_callable_key_label(&raw.key);
+        let checked = checked_by_key.get(&raw.key).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "Raw MIR function `{}` with callable key {key_label} has no matching Checked MIR artifact",
+                raw.name
+            ))
+        })?;
+        let elaborated = elaborated_by_key.get(&raw.key).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "Raw MIR function `{}` with callable key {key_label} has no matching Elaborated MIR artifact",
+                raw.name
+            ))
+        })?;
+        if checked.name != raw.name || elaborated.name != raw.name {
+            return Err(CodegenError::FailClosed(format!(
+                "MIR artifacts for callable key {key_label} disagree on linkage/display name: Raw=`{}`, Checked=`{}`, Elaborated=`{}`",
+                raw.name, checked.name, elaborated.name
+            )));
+        }
+        if checked.return_ty != raw.return_ty || elaborated.return_ty != raw.return_ty {
+            return Err(CodegenError::FailClosed(format!(
+                "MIR artifacts for callable key {key_label} disagree on return type for symbol `{}`: Raw=`{}`, Checked=`{}`, Elaborated=`{}`",
+                raw.name, raw.return_ty, checked.return_ty, elaborated.return_ty
+            )));
+        }
+    }
+
+    for checked in &pipeline.checked_mir {
+        if !raw_by_key.contains_key(&checked.key) {
+            return Err(CodegenError::FailClosed(format!(
+                "Checked MIR function `{}` with callable key {} has no matching Raw MIR artifact",
+                checked.name,
+                mir_callable_key_label(&checked.key)
+            )));
+        }
+    }
+    for elaborated in &pipeline.elaborated_mir {
+        if !raw_by_key.contains_key(&elaborated.key) {
+            return Err(CodegenError::FailClosed(format!(
+                "Elaborated MIR function `{}` with callable key {} has no matching Raw MIR artifact",
+                elaborated.name,
+                mir_callable_key_label(&elaborated.key)
+            )));
+        }
+    }
+
+    Ok(MirStageIndex {
+        checked: checked_by_key,
+        elaborated: elaborated_by_key,
+    })
+}
+
 /// Build the LLVM module for a lowered pipeline.
 ///
-/// `checked_mir` is all-or-nothing — if non-empty, every `raw_mir` function
-/// MUST have a matching entry. Fails closed at codegen time if violated.
+/// Every Raw function must have exactly one Checked and one Elaborated artifact
+/// with the same [`MirCallableKey`]. Missing, duplicate, extra, or mismatched
+/// stage artifacts fail before the module creates any LLVM definitions.
 ///
 /// Test-only thin wrapper over [`build_module_for_target`] with no target
 /// machine and no debug info; production emits through
@@ -37560,6 +37653,7 @@ fn build_module_for_target<'ctx>(
     debug: Option<DebugInput<'_>>,
 ) -> CodegenResult<LlvmModule<'ctx>> {
     pipeline.debug_assert_capabilities_current();
+    let mir_stages = validate_and_index_mir_stages(pipeline)?;
     let llvm_mod = ctx.create_module(name);
     let emit_wasm_entry_alias = target_machine.is_some_and(|machine| {
         machine
@@ -38136,27 +38230,20 @@ fn build_module_for_target<'ctx>(
             // through `declare_function`.
             continue;
         }
-        // Match by name: elaborated_mir is parallel to raw_mir when the
-        // full pipeline runs. Hand-built test pipelines may leave
-        // elaborated_mir empty; `find` returns `None` in that case and
-        // `lower_function` falls back to the inline Instr::Drop path.
-        let elab = pipeline.elaborated_mir.iter().find(|e| e.name == func.name);
-        let checked = if pipeline.checked_mir.is_empty() {
-            None
-        } else {
-            Some(
-                pipeline
-                    .checked_mir
-                    .iter()
-                    .find(|c| c.name == func.name)
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(format!(
-                            "function `{}` has no matching checked MIR for cooperate-site lowering",
-                            func.name
-                        ))
-                    })?,
-            )
-        };
+        let elab = *mir_stages.elaborated.get(&func.key).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "validated Elaborated MIR index lost callable key {} for `{}`",
+                mir_callable_key_label(&func.key),
+                func.name
+            ))
+        })?;
+        let checked = *mir_stages.checked.get(&func.key).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "validated Checked MIR index lost callable key {} for `{}`",
+                mir_callable_key_label(&func.key),
+                func.name
+            ))
+        })?;
         lower_function(
             ctx,
             &llvm_mod,

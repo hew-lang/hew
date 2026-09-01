@@ -10,8 +10,8 @@
 //! compared presentation strings. Two callables with equal names — an imported
 //! module's function and a local one, two generic instances whose mangling
 //! collides, a synthesized closure of a same-named parent — are
-//! indistinguishable to such a join, which is why the retain-by-name and
-//! fail-open joins downstream exist at all.
+//! indistinguishable to such a join. Downstream stage association therefore
+//! uses this key exclusively; presentation names remain output metadata.
 //!
 //! The key is deliberately NOT constructible from a symbol string: identity is
 //! minted once and projected here. There is no `From<String>` and no
@@ -176,7 +176,7 @@ impl MirCallableKey {
 
 /// Reject a module whose raw MIR realizes one callable identity twice.
 ///
-/// The key is what every downstream join is being moved onto, so two
+/// The key is the authority for every downstream stage join, so two
 /// functions sharing one key would make that join ambiguous exactly the way
 /// two functions sharing one `name` do today. This is the fail-closed
 /// boundary: a collision is a lowering bug (a producer that minted the same

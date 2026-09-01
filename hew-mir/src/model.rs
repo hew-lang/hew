@@ -8100,8 +8100,8 @@ pub enum MirDiagnosticKind {
     },
     /// Two lowered bodies in one module carry the same [`MirCallableKey`].
     ///
-    /// Callable identity is the key every cross-stage join is being moved
-    /// onto, so a duplicate makes that join ambiguous. Reported with both
+    /// Callable identity is the key every cross-stage join uses, so a
+    /// duplicate makes that join ambiguous. Reported with both
     /// emitted symbols so the author can see which two bodies collided; the
     /// symbols are presentation only — the collision is decided on the key.
     CallableKeyCollision {

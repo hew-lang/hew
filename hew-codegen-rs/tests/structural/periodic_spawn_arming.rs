@@ -141,7 +141,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         state_field_clone_kinds: None,
     };
 
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![spawn_fn, handler_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -164,7 +164,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn emit_ll(pipeline: &IrPipeline, slug: &str) -> String {

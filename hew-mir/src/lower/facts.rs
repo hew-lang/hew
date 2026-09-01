@@ -1493,32 +1493,44 @@ fn sync_param_boundary_modes(
     checked_mir: &mut [CheckedMirFunction],
     elaborated_mir: &mut [ElaboratedMirFunction],
 ) {
-    let boundary_decisions_for = |name: &str| {
-        raw_mir
-            .iter()
-            .find(|raw| raw.name == name)
-            .expect("MIR function has no raw parameter-boundary authority")
+    let mut boundary_decisions_by_key = HashMap::with_capacity(raw_mir.len());
+    for raw in raw_mir {
+        let decisions = raw
             .decisions
             .iter()
             .filter(|decision| matches!(decision.strategy, Strategy::ParamBoundary(_)))
             .cloned()
-            .collect::<Vec<_>>()
-    };
+            .collect::<Vec<_>>();
+        assert!(
+            boundary_decisions_by_key
+                .insert(raw.key.clone(), decisions)
+                .is_none(),
+            "duplicate Raw MIR callable key reached parameter-boundary synchronization"
+        );
+    }
     for checked in checked_mir {
         checked
             .decisions
             .retain(|decision| !matches!(decision.strategy, Strategy::ParamBoundary(_)));
-        checked
-            .decisions
-            .extend(boundary_decisions_for(&checked.name));
+        checked.decisions.extend(
+            boundary_decisions_by_key
+                .get(&checked.key)
+                .expect("Checked MIR has no Raw parameter-boundary authority")
+                .iter()
+                .cloned(),
+        );
     }
     for elaborated in elaborated_mir {
         elaborated
             .decisions
             .retain(|decision| !matches!(decision.strategy, Strategy::ParamBoundary(_)));
-        elaborated
-            .decisions
-            .extend(boundary_decisions_for(&elaborated.name));
+        elaborated.decisions.extend(
+            boundary_decisions_by_key
+                .get(&elaborated.key)
+                .expect("Elaborated MIR has no Raw parameter-boundary authority")
+                .iter()
+                .cloned(),
+        );
     }
 }
 
@@ -1616,7 +1628,7 @@ mod param_boundary_effect_tests {
 
     fn checked(raw: &RawMirFunction) -> CheckedMirFunction {
         CheckedMirFunction {
-            key: crate::model::MirCallableKey::for_test(&raw.name),
+            key: raw.key.clone(),
             name: raw.name.clone(),
             return_ty: raw.return_ty.clone(),
             blocks: raw.blocks.clone(),
@@ -1629,7 +1641,7 @@ mod param_boundary_effect_tests {
 
     fn elaborated(raw: &RawMirFunction) -> ElaboratedMirFunction {
         ElaboratedMirFunction {
-            key: crate::model::MirCallableKey::for_test(&raw.name),
+            key: raw.key.clone(),
             name: raw.name.clone(),
             return_ty: raw.return_ty.clone(),
             statements: vec![],
@@ -1649,7 +1661,15 @@ mod param_boundary_effect_tests {
         let mut checked = raw.iter().map(checked).collect::<Vec<_>>();
         let mut elaborated = raw.iter().map(elaborated).collect::<Vec<_>>();
         finalize_param_boundary_modes(raw, &mut checked, &mut elaborated);
-        for ((raw, checked), elaborated) in raw.iter().zip(&checked).zip(&elaborated) {
+        for raw in raw.iter() {
+            let checked = checked
+                .iter()
+                .find(|checked| checked.key == raw.key)
+                .expect("fixture must retain key-matched Checked MIR");
+            let elaborated = elaborated
+                .iter()
+                .find(|elaborated| elaborated.key == raw.key)
+                .expect("fixture must retain key-matched Elaborated MIR");
             assert_eq!(
                 boundary_decisions(&raw.decisions),
                 boundary_decisions(&checked.decisions)
@@ -1890,7 +1910,8 @@ mod param_boundary_effect_tests {
         // mutation.
         let mut raw = [ResolvedTy::I64, ResolvedTy::String]
             .into_iter()
-            .map(|element_ty| {
+            .enumerate()
+            .map(|(index, element_ty)| {
                 let vec_ty = ResolvedTy::Named {
                     name: "Vec".to_string(),
                     args: vec![element_ty],
@@ -1903,6 +1924,8 @@ mod param_boundary_effect_tests {
                     vec![],
                     call("hew_vec_len"),
                 );
+                let key = format!("fixture.vec_len_reader.{index}");
+                function.key = crate::model::MirCallableKey::for_test(&key);
                 function.params = vec![vec_ty.clone()];
                 function.locals = vec![vec_ty.clone()];
                 function.decisions[0].ty = vec_ty;

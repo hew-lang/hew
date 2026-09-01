@@ -180,12 +180,8 @@ fn supervisor_pipeline() -> IrPipeline {
         }],
     };
 
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![bootstrap_fn.clone(), main_fn.clone()],
-        // Keep `checked_mir` empty — the build_module skip-set bypasses
-        // lower_function for the bootstrap symbol, and `main`'s body has no
-        // cooperate sites. An empty `checked_mir` triggers the
-        // hand-built-test fallback path (see `build_module`).
         checked_mir: vec![],
         elaborated_mir: vec![],
         capabilities: hew_mir::ModuleCapabilities::EMPTY,
@@ -211,7 +207,7 @@ fn supervisor_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn emit_to_string(pipeline: &IrPipeline, slug: &str) -> String {
@@ -503,7 +499,7 @@ fn on_crash_pipeline() -> IrPipeline {
         }],
     };
 
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![on_crash_fn, bootstrap_fn, main_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -526,7 +522,7 @@ fn on_crash_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// When a child's actor has `#[on(crash)]`, the emitted child spec must carry
@@ -845,7 +841,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
         ],
     };
 
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![root_fn, inner_fn, main_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -868,7 +864,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A nested-supervisor child registers through
@@ -1053,7 +1049,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
         ],
     };
 
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![bootstrap_fn, main_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -1076,7 +1072,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A static pool (`pool name: Type(count: N)`) now spawns its N members as

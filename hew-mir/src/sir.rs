@@ -379,7 +379,7 @@ fn verify_strict_sir_raw_checked(
             callable.symbol
         )));
     }
-    if checked.name != raw.name || checked.return_ty != raw.return_ty {
+    if checked.key != raw.key || checked.name != raw.name || checked.return_ty != raw.return_ty {
         return Err(SirMirLoweringError::unsupported(format!(
             "strict SIR raw/checked verifier: checked function identity does not match raw `{}`",
             raw.name
@@ -1090,6 +1090,7 @@ fn zero_drop_elaboration(
     checked: &CheckedMirFunction,
 ) -> Result<ElaboratedMirFunction, SirMirLoweringError> {
     debug_assert_eq!(raw.name, checked.name);
+    debug_assert_eq!(raw.key, checked.key);
     debug_assert_eq!(raw.return_ty, checked.return_ty);
     debug_assert_eq!(raw.blocks, checked.blocks);
     let mut blocks = raw
@@ -3388,12 +3389,17 @@ mod tests {
                     && plan.drops.is_empty()
             }));
         }
-        for ((raw, checked), elaborated) in pipeline
-            .raw_mir
-            .iter()
-            .zip(&pipeline.checked_mir)
-            .zip(&pipeline.elaborated_mir)
-        {
+        for raw in &pipeline.raw_mir {
+            let checked = pipeline
+                .checked_mir
+                .iter()
+                .find(|checked| checked.key == raw.key)
+                .expect("strict SIR pipeline must retain key-matched Checked MIR");
+            let elaborated = pipeline
+                .elaborated_mir
+                .iter()
+                .find(|elaborated| elaborated.key == raw.key)
+                .expect("strict SIR pipeline must retain key-matched Elaborated MIR");
             let cancellation_blocks = checked
                 .cooperate_sites
                 .iter()

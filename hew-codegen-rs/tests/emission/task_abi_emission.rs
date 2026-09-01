@@ -171,7 +171,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         ],
         terminator: Terminator::Return,
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
@@ -260,7 +260,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
@@ -285,7 +285,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         }],
         terminator: Terminator::Return,
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
@@ -374,7 +374,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn pipeline_with_spawn_task_closure() -> IrPipeline {
@@ -420,7 +420,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         }],
         terminator: Terminator::Return,
     };
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
@@ -517,7 +517,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// `hew_task_new` must produce a `declare ptr @hew_task_new()` in the IR

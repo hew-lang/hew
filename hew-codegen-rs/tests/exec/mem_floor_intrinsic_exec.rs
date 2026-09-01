@@ -27,10 +27,7 @@
 #![cfg(unix)]
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
-use hew_mir::{
-    BasicBlock, CheckedMirFunction, ElaboratedMirFunction, FunctionCallConv, Instr, IrPipeline,
-    Place, RawMirFunction, Terminator,
-};
+use hew_mir::{BasicBlock, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, Terminator};
 use hew_types::ResolvedTy;
 
 // ── pipeline builders ──
@@ -240,7 +237,7 @@ fn floor_exec_pipeline() -> IrPipeline {
 }
 
 fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![
             floor_fn(
                 "mem$alloc",
@@ -279,11 +276,8 @@ fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
             ),
             driver,
         ],
-        // Empty checked/elaborated MIR: these functions carry no cooperate
-        // sites and no drop plans, so the codegen loop's per-function lookup
-        // resolves to `None` (the hand-built-pipeline fallback path).
-        checked_mir: vec![] as Vec<CheckedMirFunction>,
-        elaborated_mir: vec![] as Vec<ElaboratedMirFunction>,
+        checked_mir: vec![],
+        elaborated_mir: vec![],
         capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
@@ -303,7 +297,7 @@ fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 // ── WASM parity ────────────────────────────────────────────────────────────

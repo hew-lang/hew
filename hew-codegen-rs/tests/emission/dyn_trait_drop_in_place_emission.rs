@@ -106,7 +106,7 @@ fn pipeline_with(
     registry: Vec<DynVtableInstance>,
     record_layouts: Vec<RecordLayout>,
 ) -> IrPipeline {
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir,
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -129,7 +129,7 @@ fn pipeline_with(
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {

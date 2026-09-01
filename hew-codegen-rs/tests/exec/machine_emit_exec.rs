@@ -184,7 +184,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
 
-    IrPipeline {
+    crate::mir_fixture::complete_stages(IrPipeline {
         raw_mir: vec![step_fn, caller],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -207,7 +207,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// Emit the pipeline to a `.ll` file and return the IR text.

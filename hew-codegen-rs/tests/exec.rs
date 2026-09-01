@@ -2,6 +2,9 @@
 // Add new exec-behaviour tests under `tests/exec/`, wire them into this
 // file via #[path] — do not create a new top-level tests/*.rs file.
 
+#[path = "support/mir_fixture.rs"]
+mod mir_fixture;
+
 use std::process::{Command, Output};
 
 fn run_hew_command(command: &mut Command, label: impl Into<String>) -> Output {

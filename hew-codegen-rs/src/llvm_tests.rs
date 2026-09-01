@@ -424,6 +424,72 @@ fn catalog_ffi_symbols_agree_across_all_shared_symbol_entries() {
     );
 }
 
+fn fixture_stages(raw: &RawMirFunction) -> (CheckedMirFunction, ElaboratedMirFunction) {
+    let elaborated = ElaboratedMirFunction {
+        name: raw.name.clone(),
+        key: raw.key.clone(),
+        return_ty: raw.return_ty.clone(),
+        statements: raw
+            .blocks
+            .iter()
+            .flat_map(|block| block.statements.iter().cloned())
+            .collect(),
+        decisions: raw.decisions.clone(),
+        blocks: raw
+            .blocks
+            .iter()
+            .map(|block| ElabBlock {
+                id: block.id,
+                kind: BlockKind::Normal,
+                drops: Vec::new(),
+                successor: None,
+            })
+            .collect(),
+        drop_plans: Vec::new(),
+        coroutine: None,
+        lambda_captures: Vec::new(),
+    };
+    let checked = CheckedMirFunction {
+        name: raw.name.clone(),
+        key: raw.key.clone(),
+        return_ty: raw.return_ty.clone(),
+        blocks: raw.blocks.clone(),
+        decisions: raw.decisions.clone(),
+        checks: Vec::new(),
+        cooperate_sites: Vec::new(),
+        ownership_elaboration: Some(Box::new(elaborated.clone())),
+    };
+    (checked, elaborated)
+}
+
+fn complete_fixture_stages(mut pipeline: IrPipeline) -> IrPipeline {
+    for raw in &pipeline.raw_mir {
+        let (mut checked, derived_elaborated) = fixture_stages(raw);
+        let elaborated = pipeline
+            .elaborated_mir
+            .iter()
+            .find(|elaborated| elaborated.key == raw.key)
+            .cloned()
+            .unwrap_or(derived_elaborated);
+        if !pipeline
+            .elaborated_mir
+            .iter()
+            .any(|candidate| candidate.key == raw.key)
+        {
+            pipeline.elaborated_mir.push(elaborated.clone());
+        }
+        if !pipeline
+            .checked_mir
+            .iter()
+            .any(|candidate| candidate.key == raw.key)
+        {
+            checked.ownership_elaboration = Some(Box::new(elaborated));
+            pipeline.checked_mir.push(checked);
+        }
+    }
+    pipeline
+}
+
 fn empty_pipeline_with_const_42() -> IrPipeline {
     let return_ty = ResolvedTy::I64;
     let main = RawMirFunction {
@@ -462,7 +528,7 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -485,7 +551,7 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// Raw-MIR fixture for the first value-only ABI proof. The two scalar
@@ -681,8 +747,8 @@ fn virtual_raw_values_require_checked_and_elaborated_mir_at_codegen() {
         panic!("missing virtual Checked MIR must fail closed");
     };
     assert!(
-        message.contains("requires matching Checked MIR"),
-        "missing Checked MIR must be diagnosed at virtual admission: {message}"
+        message.contains("no matching Checked MIR artifact"),
+        "missing Checked MIR must be diagnosed at the stage boundary: {message}"
     );
 
     let ctx = Context::create();
@@ -694,9 +760,127 @@ fn virtual_raw_values_require_checked_and_elaborated_mir_at_codegen() {
         panic!("missing virtual Elaborated MIR must fail closed");
     };
     assert!(
-        message.contains("requires matching Elaborated MIR"),
-        "missing Elaborated MIR must be diagnosed at virtual admission: {message}"
+        message.contains("no matching Elaborated MIR artifact"),
+        "missing Elaborated MIR must be diagnosed at the stage boundary: {message}"
     );
+}
+
+#[test]
+fn mir_stage_join_rejects_same_name_with_different_key() {
+    let mut pipeline = empty_pipeline_with_const_42();
+    pipeline.checked_mir[0].key =
+        MirCallableKey::for_test("fixture.stage.checked.same-name-wrong-key");
+
+    let ctx = Context::create();
+    let error = build_module(&ctx, &pipeline, "same_name_wrong_key")
+        .expect_err("a matching presentation name must not substitute for callable identity");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("same-name/different-key stage join must fail closed");
+    };
+    assert!(
+        message.contains("no matching Checked MIR artifact"),
+        "the stage join must use only MirCallableKey: {message}"
+    );
+}
+
+#[test]
+fn mir_stage_boundary_rejects_duplicate_key_in_every_stage() {
+    let base = empty_pipeline_with_const_42();
+    let mut duplicate_raw = base.clone();
+    duplicate_raw.raw_mir.push(base.raw_mir[0].clone());
+    let mut duplicate_checked = base.clone();
+    duplicate_checked
+        .checked_mir
+        .push(base.checked_mir[0].clone());
+    let mut duplicate_elaborated = base;
+    duplicate_elaborated
+        .elaborated_mir
+        .push(duplicate_elaborated.elaborated_mir[0].clone());
+
+    for (stage, pipeline) in [
+        ("Raw", duplicate_raw),
+        ("Checked", duplicate_checked),
+        ("Elaborated", duplicate_elaborated),
+    ] {
+        let ctx = Context::create();
+        let error = build_module(&ctx, &pipeline, "duplicate_stage_key")
+            .expect_err("duplicate stage artifacts must fail before emission");
+        let CodegenError::FailClosed(message) = error else {
+            panic!("duplicate {stage} key must fail closed");
+        };
+        assert!(
+            message.contains(&format!("duplicate {stage} MIR callable key")),
+            "the duplicate-key diagnostic must name the rejected stage: {message}"
+        );
+    }
+}
+
+#[test]
+fn mir_stage_boundary_rejects_crossed_callable_keys() {
+    let mut first = empty_pipeline_with_const_42();
+    first.raw_mir[0].name = "first_symbol".to_string();
+    first.checked_mir[0].name = "first_symbol".to_string();
+    first.elaborated_mir[0].name = "first_symbol".to_string();
+    let first_key = MirCallableKey::for_test("fixture.stage.first");
+    first.raw_mir[0].key = first_key.clone();
+    first.checked_mir[0].key = first_key.clone();
+    first.elaborated_mir[0].key = first_key;
+
+    let mut second_raw = first.raw_mir[0].clone();
+    second_raw.name = "second_symbol".to_string();
+    second_raw.key = MirCallableKey::for_test("fixture.stage.second");
+    let (second_checked, second_elaborated) = fixture_stages(&second_raw);
+    first.raw_mir.push(second_raw);
+    first.checked_mir.push(second_checked);
+    first.elaborated_mir.push(second_elaborated);
+
+    let checked_first_key = first.checked_mir[0].key.clone();
+    first.checked_mir[0].key = first.checked_mir[1].key.clone();
+    first.checked_mir[1].key = checked_first_key;
+
+    let ctx = Context::create();
+    let error = build_module(&ctx, &first, "crossed_stage_keys")
+        .expect_err("crossed stage identities must not associate by vector position or name");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("crossed callable keys must fail closed");
+    };
+    assert!(
+        message.contains("disagree on linkage/display name"),
+        "wrong stage keys must expose the crossed artifact rather than silently join: {message}"
+    );
+}
+
+#[test]
+fn mir_stage_boundary_rejects_same_key_metadata_drift() {
+    let base = empty_pipeline_with_const_42();
+    let mut wrong_name = base.clone();
+    wrong_name.checked_mir[0].name = "wrong_checked_symbol".to_string();
+    let mut wrong_return = base;
+    wrong_return.elaborated_mir[0].return_ty = ResolvedTy::Unit;
+
+    for (slug, pipeline, expected) in [
+        (
+            "wrong_stage_name",
+            wrong_name,
+            "disagree on linkage/display name",
+        ),
+        (
+            "wrong_stage_return",
+            wrong_return,
+            "disagree on return type",
+        ),
+    ] {
+        let ctx = Context::create();
+        let error = build_module(&ctx, &pipeline, slug)
+            .expect_err("same-key stage metadata drift must fail before emission");
+        let CodegenError::FailClosed(message) = error else {
+            panic!("same-key stage metadata drift must fail closed");
+        };
+        assert!(
+            message.contains(expected),
+            "the mismatch diagnostic must identify the drift: {message}"
+        );
+    }
 }
 
 #[test]
@@ -765,6 +949,8 @@ fn virtual_raw_tuple_return_abi_is_rejected_before_layout_lowering() {
         panic!("fixture instruction 4 must be ReturnAbi materialization");
     };
     *value = RawValueId(2);
+    pipeline.checked_mir[0].return_ty = pipeline.raw_mir[0].return_ty.clone();
+    pipeline.elaborated_mir[0].return_ty = pipeline.raw_mir[0].return_ty.clone();
 
     let ctx = Context::create();
     let error = build_module(&ctx, &pipeline, "virtual_raw_tuple_return")
@@ -1068,6 +1254,8 @@ fn debug_subroutine_keeps_unresolved_parameter_slot_order() {
         dest: Place::ReturnSlot,
         src: Place::Local(1),
     }];
+    pipeline.checked_mir[0].name = handler.name.clone();
+    pipeline.elaborated_mir[0].name = handler.name.clone();
 
     let ctx = Context::create();
     let debug = DebugInput {
@@ -1477,7 +1665,9 @@ fn platform_int_width_probe_pipeline() -> IrPipeline {
         field_tys: vec![ResolvedTy::Usize, ResolvedTy::Isize],
         field_names: vec!["unsigned".to_string(), "signed".to_string()],
     }];
-    pipeline
+    pipeline.checked_mir.clear();
+    pipeline.elaborated_mir.clear();
+    complete_fixture_stages(pipeline)
 }
 
 fn platform_int_width_probe_ir(triple: &str) -> String {
@@ -1878,6 +2068,7 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "call_closure_default_context")
         .expect("default-callconv CallClosure must build with a fallback context");
@@ -1916,7 +2107,7 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         terminator: Terminator::Return,
     };
     let blocks = vec![entry, ret];
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -1971,7 +2162,7 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn hashmap_descriptor_probe_ir(module_name: &str, triple: Option<&str>) -> String {
@@ -2056,7 +2247,7 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         instructions: Vec::new(),
         terminator: Terminator::Return,
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -2104,7 +2295,7 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn vec_descriptor_probe_ir(module_name: &str, triple: Option<&str>) -> String {
@@ -2189,7 +2380,7 @@ fn pipeline_with_user_const_load(
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -2218,7 +2409,7 @@ fn pipeline_with_user_const_load(
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 #[test]
@@ -2326,7 +2517,7 @@ fn pipeline_with_float_return() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -2349,7 +2540,7 @@ fn pipeline_with_float_return() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn unique_codegen_front_artifact_stem(test_name: &str) -> std::path::PathBuf {
@@ -2486,6 +2677,7 @@ fn actor_handler_signature_leads_with_execution_context_pointer() {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let m =
         build_module(&ctx, &pipeline, "handler_ctx_test").expect("actor-handler module must build");
@@ -2574,6 +2766,7 @@ fn context_field_actor_offset_emits_gep_and_load() {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "ctx_field_test")
         .expect("ContextField actor load must build");
@@ -2656,6 +2849,7 @@ fn string_literal_return_builds_and_verifies() {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "string_lit_test").expect("StringLit module must build");
     assert!(m.verify().is_ok(), "StringLit module must pass LLVM verify");
@@ -2916,7 +3110,7 @@ fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeli
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -2939,7 +3133,7 @@ fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeli
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// Stream-next arms allocate their own readiness channel, register
@@ -3133,7 +3327,7 @@ fn pipeline_with_select_arms(
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -3156,7 +3350,7 @@ fn pipeline_with_select_arms(
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 fn pipeline_with_select_actor_handler_arms(
@@ -4271,6 +4465,7 @@ fn generic_enum_local_resolves_by_mangled_key() {
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "generic_enum_mangle_test")
         .expect("Option<i64> local must resolve via mangled key; bare-name lookup is wrong");
@@ -4360,6 +4555,7 @@ fn yield_terminator_lowers_to_coro_suspend_and_publishes_out_pointer() {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
         .expect("Terminator::Yield must lower without error");
@@ -4525,6 +4721,7 @@ fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
         .expect("Terminator::MakeGenerator must lower without error");
@@ -5009,6 +5206,7 @@ fn cancellation_token_is_cancelled_emits_runtime_observation_call() {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "cancel_token_is_cancelled_codegen_test")
         .expect("CancellationToken.is_cancelled must lower to runtime observation call");
@@ -5432,7 +5630,7 @@ fn wasm_exclusion_scan_flags_runtime_duplex_close_in_elab_drop() {
 /// Wrap a single raw-MIR function into an otherwise-empty `IrPipeline` for
 /// the wasm-exclusion-scan regressions.
 fn raw_mir_only_pipeline(body: RawMirFunction) -> IrPipeline {
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![body],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -5455,7 +5653,7 @@ fn raw_mir_only_pipeline(body: RawMirFunction) -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 #[test]
@@ -5579,7 +5777,11 @@ fn native_direct_call_uses_llvm_cleanup_unwind_edge() {
     };
     let mut pipeline = raw_mir_only_pipeline(caller);
     pipeline.raw_mir.insert(0, callee);
+    pipeline
+        .elaborated_mir
+        .retain(|candidate| candidate.key != elab.key);
     pipeline.elaborated_mir.push(elab);
+    let pipeline = complete_fixture_stages(pipeline);
 
     for triple in cleanup_strategy_test_triples() {
         let ctx = Context::create();
@@ -10440,6 +10642,7 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let tmp = tempfile::Builder::new()
         .prefix("hew-dyn-coerce-ok-")
         .tempdir()
@@ -10809,6 +11012,7 @@ fn coerce_to_dyn_trait_fails_closed_when_source_slot_disagrees_with_concrete_typ
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let tmp = tempfile::Builder::new()
         .prefix("hew-dyn-coerce-slot-mismatch-")
         .tempdir()
@@ -10923,6 +11127,7 @@ fn coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry() {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let tmp = tempfile::Builder::new()
         .prefix("hew-dyn-coerce-miss-")
         .tempdir()
@@ -11106,7 +11311,7 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
     };
     let descriptors = collect_helper_crash_cleanup_descriptors(
         &raw,
-        Some(&elab),
+        &elab,
         false,
         true,
         &HashMap::new(),
@@ -11277,7 +11482,7 @@ fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
         };
         let descriptors = collect_helper_crash_cleanup_descriptors(
             &raw,
-            Some(&elab),
+            &elab,
             false,
             true,
             &HashMap::new(),
@@ -11771,7 +11976,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
         };
         let result = collect_helper_crash_cleanup_descriptors(
             &raw,
-            Some(&elab),
+            &elab,
             false,
             true,
             &HashMap::new(),
@@ -12181,6 +12386,7 @@ fn frame_owned_trait_object_drop_with_drop_fn_fails_closed() {
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
+    let pipeline = complete_fixture_stages(pipeline);
     let tmp = tempfile::Builder::new()
         .prefix("hew-frame-owned-drop-fail-")
         .tempdir()
@@ -12295,7 +12501,7 @@ fn single_resource_drop_pipeline(name: &str, resource_ty: ResolvedTy) -> IrPipel
         coroutine: None,
         lambda_captures: vec![],
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![raw],
         checked_mir: vec![],
         elaborated_mir: vec![elab],
@@ -12318,7 +12524,7 @@ fn single_resource_drop_pipeline(name: &str, resource_ty: ResolvedTy) -> IrPipel
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A `CancellationToken` owns a `release` close. Reaching codegen as a
@@ -12679,7 +12885,7 @@ fn minimal_pipeline_with_unit_main(with_actor: bool) -> IrPipeline {
     } else {
         vec![]
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![main],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -12702,7 +12908,7 @@ fn minimal_pipeline_with_unit_main(with_actor: bool) -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// For a native actor-using program, the `main` function's IR must contain
@@ -12909,6 +13115,7 @@ fn on_crash_definition_consumes_trailing_actor_state_pointer() {
         state_drop_fn_symbol: None,
         state_field_clone_kinds: None,
     }];
+    let pipeline = complete_fixture_stages(pipeline);
 
     let ctx = Context::create();
     let module = build_module(&ctx, &pipeline, "crash_state_pointer")
@@ -13057,7 +13264,7 @@ fn pipeline_with_coro_probe() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![probe],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -13080,7 +13287,7 @@ fn pipeline_with_coro_probe() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A function carrying `Terminator::Suspend` lowers to a `presplitcoroutine`
@@ -13269,7 +13476,7 @@ fn pipeline_with_string_stream_send_pump() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![probe],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -13292,7 +13499,7 @@ fn pipeline_with_string_stream_send_pump() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A `string`-typed `SuspendKind::StreamSend` (the receive-gen-fn pump's
@@ -14043,7 +14250,9 @@ fn wasm_string_concat_rearms_cleanup_at_runtime_abi_producer_boundary() {
     };
     let mut pipeline = empty_pipeline_with_const_42();
     pipeline.raw_mir = vec![raw];
+    pipeline.checked_mir.clear();
     pipeline.elaborated_mir = vec![elab];
+    let pipeline = complete_fixture_stages(pipeline);
 
     let ctx = Context::create();
     let machine = target_machine_for_triple("wasm32-wasi")
@@ -14163,7 +14372,9 @@ fn wasm_vec_new_rearms_cleanup_after_complete_handle_publication() {
     };
     let mut pipeline = empty_pipeline_with_const_42();
     pipeline.raw_mir = vec![raw];
+    pipeline.checked_mir.clear();
     pipeline.elaborated_mir = vec![elab];
+    let pipeline = complete_fixture_stages(pipeline);
 
     let ctx = Context::create();
     let machine = target_machine_for_triple("wasm32-wasi")
@@ -14968,7 +15179,7 @@ fn pipeline_with_two_suspends() -> IrPipeline {
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir: vec![probe],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -14991,7 +15202,7 @@ fn pipeline_with_two_suspends() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A coroutine with TWO non-final suspends emits exactly ONE fallthrough
@@ -15188,6 +15399,7 @@ fn non_ptr_logical_return_coro_fn_compiles_as_ptr_ramp() {
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let module = build_module(&ctx, &pipeline, "non_ptr_coro_test").expect(
         "W6.010: a suspend-carrying fn with a non-ptr logical return must \
@@ -15498,7 +15710,7 @@ fn pipeline_with_actor_handlers(
         state_drop_fn_symbol: None,
         state_field_clone_kinds: None,
     };
-    IrPipeline {
+    complete_fixture_stages(IrPipeline {
         raw_mir,
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -15521,7 +15733,7 @@ fn pipeline_with_actor_handlers(
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
-    }
+    })
 }
 
 /// A unit-reply suspendable handler layout (the simplest driver shape: no
@@ -15693,6 +15905,9 @@ fn owned_state_source_transfer_rejection_is_process_fatal_before_live_store() {
         field_tys: vec![ResolvedTy::String],
         field_names: vec!["value".to_string()],
     });
+    pipeline
+        .elaborated_mir
+        .retain(|candidate| candidate.key != hew_mir::MirCallableKey::for_test(symbol));
     pipeline
         .elaborated_mir
         .push(hew_mir::ElaboratedMirFunction {
@@ -19408,6 +19623,7 @@ fn closure_env_free_thunk_ir(ownership: hew_mir::ClosureEnvFieldOwnership, modul
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
+    let pipeline = complete_fixture_stages(pipeline);
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, module).expect("heap-box closure env module must build");
     m.verify().expect("heap-box closure env module must verify");

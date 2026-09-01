@@ -2,6 +2,9 @@
 // Add new abi-behaviour tests under `tests/abi/`, wire them into this
 // file via #[path] — do not create a new top-level tests/*.rs file.
 
+#[path = "support/mir_fixture.rs"]
+mod mir_fixture;
+
 #[path = "abi/abi_offset_parity.rs"]
 mod abi_offset_parity;
 #[path = "abi/actor_dispatch_borrow_abi.rs"]

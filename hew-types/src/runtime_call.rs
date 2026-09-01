@@ -47,7 +47,7 @@
 //! covered by this substrate by design — it is structurally open-set
 //! and clippy-gated.
 
-use crate::ResolvedTy;
+use crate::{BuiltinType, ResolvedTy};
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoEnumIterator};
 
@@ -2746,7 +2746,85 @@ pub enum RuntimeDropDescriptor {
     MonitorRefClose,
 }
 
+/// The exact operand shape consumed by a runtime resource-close descriptor.
+///
+/// This stays coupled to [`RuntimeDropDescriptor`], rather than inferred from
+/// its C symbol: two descriptors may share a symbol while carrying different
+/// typed operands (`SendHalf` versus `RecvHalf`), and `MonitorRef` owns an
+/// inline record slot rather than a pointer handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeDropOperandShape {
+    /// One opaque heap-handle pointer.
+    HandlePtr,
+    /// One opaque half-handle pointer plus the typed duplex direction.
+    DuplexHalf { direction: DuplexHalfDropDirection },
+    /// The `ref_id: i64` field in an inline `MonitorRef` record.
+    MonitorRefId,
+}
+
+/// Direction materialised for the shared `hew_duplex_close_half` ABI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DuplexHalfDropDirection {
+    Send,
+    Recv,
+}
+
+impl DuplexHalfDropDirection {
+    /// Runtime ABI discriminant for `hew_duplex_close_half`.
+    #[must_use]
+    pub const fn runtime_discriminant(self) -> u64 {
+        match self {
+            Self::Send => 0,
+            Self::Recv => 1,
+        }
+    }
+}
+
 impl RuntimeDropDescriptor {
+    /// The typed builtin identity whose scope-exit close this descriptor
+    /// represents. Internal ABI aliases share their public handle family's
+    /// descriptor, so snapshot/drop planning never has to recover lifecycle
+    /// from a presentation name.
+    #[must_use]
+    pub const fn for_builtin(builtin: BuiltinType) -> Option<Self> {
+        match builtin {
+            BuiltinType::Duplex | BuiltinType::HewDuplex => Some(Self::DuplexClose),
+            BuiltinType::Stream => Some(Self::StreamClose),
+            BuiltinType::Sink => Some(Self::SinkClose),
+            BuiltinType::Sender => Some(Self::SenderClose),
+            BuiltinType::Receiver => Some(Self::ReceiverClose),
+            BuiltinType::LambdaActorHandle | BuiltinType::LambdaPid => {
+                Some(Self::LambdaActorHandleClose)
+            }
+            BuiltinType::SendHalf | BuiltinType::HewSendHalf => Some(Self::SendHalfClose),
+            BuiltinType::RecvHalf | BuiltinType::HewRecvHalf => Some(Self::RecvHalfClose),
+            BuiltinType::CancellationToken => Some(Self::CancellationTokenRelease),
+            BuiltinType::MonitorRef => Some(Self::MonitorRefClose),
+            _ => None,
+        }
+    }
+
+    /// The slot/operand ABI required by this close ritual.
+    #[must_use]
+    pub const fn operand_shape(self) -> RuntimeDropOperandShape {
+        match self {
+            Self::SendHalfClose => RuntimeDropOperandShape::DuplexHalf {
+                direction: DuplexHalfDropDirection::Send,
+            },
+            Self::RecvHalfClose => RuntimeDropOperandShape::DuplexHalf {
+                direction: DuplexHalfDropDirection::Recv,
+            },
+            Self::MonitorRefClose => RuntimeDropOperandShape::MonitorRefId,
+            Self::DuplexClose
+            | Self::StreamClose
+            | Self::SinkClose
+            | Self::SenderClose
+            | Self::ReceiverClose
+            | Self::LambdaActorHandleClose
+            | Self::CancellationTokenRelease => RuntimeDropOperandShape::HandlePtr,
+        }
+    }
+
     /// The C-ABI runtime symbol the drop lowers to. NB
     /// [`RuntimeDropDescriptor::SendHalfClose`] and
     /// [`RuntimeDropDescriptor::RecvHalfClose`] share
@@ -3620,6 +3698,80 @@ mod tests {
                 "RuntimeDropDescriptor {d:?} has no entry in the \
                  codegen `runtime_drop_symbol` parity table; add it to \
                  both or remove the variant"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_resource_close_inventory_has_one_typed_descriptor_authority() {
+        use BuiltinType::*;
+
+        let inventory = [
+            (Duplex, Some(RuntimeDropDescriptor::DuplexClose)),
+            (HewDuplex, Some(RuntimeDropDescriptor::DuplexClose)),
+            (Stream, Some(RuntimeDropDescriptor::StreamClose)),
+            (Sink, Some(RuntimeDropDescriptor::SinkClose)),
+            (Sender, Some(RuntimeDropDescriptor::SenderClose)),
+            (Receiver, Some(RuntimeDropDescriptor::ReceiverClose)),
+            (SendHalf, Some(RuntimeDropDescriptor::SendHalfClose)),
+            (HewSendHalf, Some(RuntimeDropDescriptor::SendHalfClose)),
+            (RecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
+            (HewRecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
+            (
+                LambdaActorHandle,
+                Some(RuntimeDropDescriptor::LambdaActorHandleClose),
+            ),
+            (
+                LambdaPid,
+                Some(RuntimeDropDescriptor::LambdaActorHandleClose),
+            ),
+            (
+                CancellationToken,
+                Some(RuntimeDropDescriptor::CancellationTokenRelease),
+            ),
+            (MonitorRef, Some(RuntimeDropDescriptor::MonitorRefClose)),
+            // These marker-bearing internal carriers have no executable
+            // runtime close contract. They must remain unsupported rather
+            // than acquiring one by spelling or marker alone.
+            (LocalPid, None),
+            (HewActor, None),
+            (BoxedActor, None),
+        ];
+
+        for (builtin, expected) in inventory {
+            assert_eq!(
+                RuntimeDropDescriptor::for_builtin(builtin),
+                expected,
+                "typed lifecycle inventory drifted for {builtin:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_resource_drop_operands_are_exhaustively_typed() {
+        use DuplexHalfDropDirection::{Recv, Send};
+        use RuntimeDropDescriptor::*;
+        use RuntimeDropOperandShape::{DuplexHalf, HandlePtr, MonitorRefId};
+
+        let expected = [
+            (DuplexClose, HandlePtr),
+            (StreamClose, HandlePtr),
+            (SinkClose, HandlePtr),
+            (SenderClose, HandlePtr),
+            (ReceiverClose, HandlePtr),
+            (LambdaActorHandleClose, HandlePtr),
+            (SendHalfClose, DuplexHalf { direction: Send }),
+            (RecvHalfClose, DuplexHalf { direction: Recv }),
+            (CancellationTokenRelease, HandlePtr),
+            (MonitorRefClose, MonitorRefId),
+        ];
+
+        assert_eq!(all_runtime_drop_descriptors().len(), expected.len());
+        for (descriptor, shape) in expected {
+            assert_eq!(
+                descriptor.operand_shape(),
+                shape,
+                "operand ABI drifted for {descriptor:?}"
             );
         }
     }

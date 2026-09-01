@@ -1,6 +1,9 @@
-use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{Instr, IrPipeline, OwnershipEvent, Place};
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_hir::{lower_program, BindingId, ResolutionCtx};
+use hew_mir::{
+    CheckedMirFunction, CowHeapRelease, DropKind, ExitPath, Instr, IrPipeline, MirStatement,
+    OwnerId, OwnershipEvent, Place,
+};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
 fn pipeline(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -28,6 +31,97 @@ fn pipeline(source: &str) -> IrPipeline {
         hir.diagnostics
     );
     hew_mir::lower_hir_module(&hir.module)
+}
+
+fn named_binding(function: &CheckedMirFunction, name: &str) -> BindingId {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| block.statements.iter())
+        .find_map(|statement| match statement {
+            MirStatement::Bind {
+                binding,
+                name: candidate,
+                ..
+            } if candidate == name => Some(*binding),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{name} binding"))
+}
+
+fn owner_publication(
+    function: &CheckedMirFunction,
+    binding: BindingId,
+) -> (OwnerId, Place, ResolvedTy) {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .find_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::Mint { owner, place, ty })
+                if owner.binding == binding =>
+            {
+                Some((*owner, *place, ty.clone()))
+            }
+            Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                to: Some(place),
+                to_owner: Some(owner),
+                to_ty: Some(ty),
+                ..
+            }) if owner.binding == binding => Some((*owner, *place, ty.clone())),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("owner publication for {binding:?}"))
+}
+
+fn assert_exact_return_drops(
+    pipeline: &IrPipeline,
+    holder: (Place, &ResolvedTy),
+    extracted: (Place, &ResolvedTy),
+) {
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "field_load_share")
+        .expect("field_load_share Elaborated MIR");
+    let return_plan = elaborated
+        .drop_plans
+        .iter()
+        .find_map(|(exit, plan)| matches!(exit, ExitPath::Return { .. }).then_some(plan))
+        .expect("field_load_share return drop plan");
+    let holder_drops = return_plan
+        .drops
+        .iter()
+        .filter(|drop| {
+            drop.place == holder.0
+                && &drop.ty == holder.1
+                && matches!(drop.kind, DropKind::RecordInPlace)
+        })
+        .count();
+    let extracted_drops = return_plan
+        .drops
+        .iter()
+        .filter(|drop| {
+            drop.place == extracted.0
+                && &drop.ty == extracted.1
+                && matches!(
+                    drop.kind,
+                    DropKind::CowHeap {
+                        release: CowHeapRelease::Bytes
+                    }
+                )
+        })
+        .count();
+    assert_eq!(holder_drops, 1, "the holder root drops exactly once");
+    assert_eq!(
+        extracted_drops, 1,
+        "the retained extracted bytes owner drops exactly once"
+    );
+    assert_eq!(
+        return_plan.drops.len(),
+        2,
+        "the return plan contains no stale or duplicate cleanup"
+    );
 }
 
 #[test]
@@ -107,4 +201,77 @@ fn owned_partner_escape() -> bytes {
                 }) if *from == source
             ))
         ));
+}
+
+#[test]
+fn retained_bytes_field_keeps_the_record_root_and_drops_both_owners_once() {
+    let pipeline = pipeline(
+        r#"
+type Holder { payload: bytes }
+
+fn field_load_share() -> i64 {
+    let holder = Holder { payload: "field-load".to_bytes() };
+    let extracted = holder.payload;
+    extracted.len() + holder.payload.len()
+}
+"#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "{:#?}",
+        pipeline.diagnostics
+    );
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "field_load_share")
+        .expect("field_load_share Checked MIR");
+
+    let holder_binding = named_binding(checked, "holder");
+    let extracted_binding = named_binding(checked, "extracted");
+    let (holder_owner, holder_place, holder_ty) = owner_publication(checked, holder_binding);
+    let (extracted_owner, extracted_place, extracted_ty) =
+        owner_publication(checked, extracted_binding);
+    assert_eq!(extracted_ty, ResolvedTy::Bytes);
+
+    let projected = checked.blocks.iter().find_map(|block| {
+        block
+            .instructions
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instr::RecordFieldLoad { record, dest, .. } if *record == holder_place => {
+                    Some(*dest)
+                }
+                _ => None,
+            })
+    });
+    let projected = projected.expect("bytes field load from the holder owner");
+    assert!(checked.blocks.iter().any(|block| {
+        block.instructions.iter().any(
+            |instruction| matches!(instruction, Instr::BytesRetain { value } if *value == projected),
+        )
+    }));
+    assert!(
+        checked.blocks.iter().all(|block| {
+            block.instructions.iter().all(|instruction| {
+                !matches!(
+                    instruction,
+                    Instr::OwnershipEvent(OwnershipEvent::Transfer {
+                        owner,
+                        from,
+                        to: None,
+                        ..
+                    }) if *owner == holder_owner && *from == holder_place
+                )
+            })
+        }),
+        "a retained bytes projection must not discharge the live record root",
+    );
+    assert_ne!(holder_owner, extracted_owner);
+
+    assert_exact_return_drops(
+        &pipeline,
+        (holder_place, &holder_ty),
+        (extracted_place, &extracted_ty),
+    );
 }

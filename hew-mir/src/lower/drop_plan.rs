@@ -7453,27 +7453,6 @@ pub(super) fn resource_opaque_close_registry(
         .collect()
 }
 
-fn builtin_resource_drop_descriptor(
-    builtin: BuiltinType,
-) -> Option<hew_types::runtime_call::RuntimeDropDescriptor> {
-    use hew_types::runtime_call::RuntimeDropDescriptor;
-    match builtin {
-        BuiltinType::Duplex => Some(RuntimeDropDescriptor::DuplexClose),
-        BuiltinType::Stream => Some(RuntimeDropDescriptor::StreamClose),
-        BuiltinType::Sink => Some(RuntimeDropDescriptor::SinkClose),
-        BuiltinType::Sender => Some(RuntimeDropDescriptor::SenderClose),
-        BuiltinType::Receiver => Some(RuntimeDropDescriptor::ReceiverClose),
-        BuiltinType::LambdaActorHandle | BuiltinType::LambdaPid => {
-            Some(RuntimeDropDescriptor::LambdaActorHandleClose)
-        }
-        BuiltinType::SendHalf => Some(RuntimeDropDescriptor::SendHalfClose),
-        BuiltinType::RecvHalf => Some(RuntimeDropDescriptor::RecvHalfClose),
-        BuiltinType::CancellationToken => Some(RuntimeDropDescriptor::CancellationTokenRelease),
-        BuiltinType::MonitorRef => Some(RuntimeDropDescriptor::MonitorRefClose),
-        _ => None,
-    }
-}
-
 pub(super) fn resource_drop_fn(
     ty: &ResolvedTy,
     type_classes: &hew_hir::TypeClassTable,
@@ -7486,7 +7465,7 @@ pub(super) fn resource_drop_fn(
         ResolvedTy::Named {
             builtin: Some(builtin),
             ..
-        } => builtin_resource_drop_descriptor(*builtin).map(crate::model::DropFnSpec::Runtime),
+        } => RuntimeDropDescriptor::for_builtin(*builtin).map(crate::model::DropFnSpec::Runtime),
         ResolvedTy::Named {
             name,
             builtin: None,
@@ -7941,7 +7920,6 @@ pub(super) fn ty_is_generator_handle(ty: &ResolvedTy) -> bool {
 pub(super) fn stream_handle_drop_descriptor(
     ty: &ResolvedTy,
 ) -> Option<hew_types::runtime_call::RuntimeDropDescriptor> {
-    use hew_types::runtime_call::RuntimeDropDescriptor;
     let ResolvedTy::Named {
         builtin: Some(builtin),
         ..
@@ -7949,11 +7927,12 @@ pub(super) fn stream_handle_drop_descriptor(
     else {
         return None;
     };
-    match builtin {
-        hew_types::BuiltinType::Stream => Some(RuntimeDropDescriptor::StreamClose),
-        hew_types::BuiltinType::Receiver => Some(RuntimeDropDescriptor::ReceiverClose),
-        _ => None,
-    }
+    matches!(
+        builtin,
+        hew_types::BuiltinType::Stream | hew_types::BuiltinType::Receiver
+    )
+    .then(|| hew_types::runtime_call::RuntimeDropDescriptor::for_builtin(*builtin))
+    .flatten()
 }
 /// Whether `ty` is a `Stream<T>` / `Receiver<T>` for-await cursor handle — the
 /// registration gate for `scope_stream_bindings`, mirroring

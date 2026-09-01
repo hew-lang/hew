@@ -95,45 +95,52 @@ impl Builder {
         dest: Place,
         field_ty: &hew_types::ResolvedTy,
         site: SiteId,
-    ) {
-        let authority = self.owned_carrier_authority(aggregate).or_else(|| {
-            let field_ty = self.subst_ty(field_ty);
-            if !scope_exit_tuple_projection_has_null_safe_drop(&field_ty)
-                || self.classify_field_load(&field_ty) != Some(FieldLoadClass::HandleTransfer)
+    ) -> Result<(), crate::state_clone::ClassificationError> {
+        let field_load = self.classify_field_load(field_ty)?;
+        // A registered carrier already owns the aggregate's terminal snapshot
+        // drop. Every field whose snapshot root stays inside that protocol must
+        // therefore carry the root-relative neutralize path: both inline
+        // Product/TaggedUnion loads (ByteCopyAlias) and one-handle transfers.
+        // Retained String/Bytes and heap-free fields stay outside this route.
+        let authority = match self.owned_carrier_authority(aggregate) {
+            Some(authority)
+                if matches!(
+                    field_load,
+                    Some(FieldLoadClass::ByteCopyAlias | FieldLoadClass::HandleTransfer)
+                ) =>
             {
-                return None;
+                Some(authority)
             }
-            self.owned_locals
-                .iter()
-                .find(|entry| {
-                    entry.disposition == Disposition::ScopeExit
-                        && matches!(entry.ty, ResolvedTy::Tuple(_))
-                        && self.binding_locals.get(&entry.binding).copied() == Some(aggregate)
-                })
-                .map(|entry| OwnedCarrierNeutralizeTarget::ScopeExitTuple {
-                    root: aggregate,
-                    owner: (entry.binding, entry.name.clone(), site),
-                })
-        });
+            Some(_) => None,
+            None => {
+                // Seeding a carrier from an ordinary scope-exit tuple is
+                // narrower: only a null-safe, one-handle transfer may clear a
+                // tuple slot. Inline aggregates still use their own composite
+                // drop protocol and must not acquire this fallback authority.
+                let field_ty = self.subst_ty(field_ty);
+                if !scope_exit_tuple_projection_has_null_safe_drop(&field_ty)
+                    || field_load != Some(FieldLoadClass::HandleTransfer)
+                {
+                    None
+                } else {
+                    self.owned_locals
+                        .iter()
+                        .find(|entry| {
+                            entry.disposition == Disposition::ScopeExit
+                                && matches!(entry.ty, ResolvedTy::Tuple(_))
+                                && self.binding_locals.get(&entry.binding).copied()
+                                    == Some(aggregate)
+                        })
+                        .map(|entry| OwnedCarrierNeutralizeTarget::ScopeExitTuple {
+                            root: aggregate,
+                            owner: (entry.binding, entry.name.clone(), site),
+                        })
+                }
+            }
+        };
         let Some(authority) = authority else {
-            return;
+            return Ok(());
         };
-        let record_layouts = outbound_record_layouts(self);
-        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
-            field_ty,
-            &record_layouts,
-            &self.enum_layouts,
-            &self.opaque_handle_names,
-            &self.lifecycle_registry,
-        ) else {
-            return;
-        };
-        if matches!(
-            plan.root(),
-            SnapshotFieldKind::BitCopy { .. } | SnapshotFieldKind::String
-        ) {
-            return;
-        }
         let (root, mut fields, scope_exit_owner) = match authority {
             OwnedCarrierNeutralizeTarget::Whole(root) => (root, Vec::new(), None),
             OwnedCarrierNeutralizeTarget::ScopeExitTuple { root, owner } => {
@@ -154,6 +161,7 @@ impl Builder {
                 scope_exit_owner,
             },
         );
+        Ok(())
     }
 
     /// Register a top-level enum payload binder moved out of `scrutinee_local`.
@@ -561,6 +569,9 @@ impl Builder {
     /// create a second drop authority. Borrow and projection roots bypass this
     /// funnel and continue through `lower_value`.
     pub(crate) fn lower_value_for_move(&mut self, expr: &HirExpr) -> Option<Place> {
+        if self.field_load_classification_poisoned {
+            return None;
+        }
         self.lower_value_with_vec_iter_transfer(expr, true, false)
     }
 
@@ -1243,8 +1254,8 @@ fn projection_root_use_is_invalid(instr: &Instr, root: Place, fields: &[u32]) ->
 
 #[cfg(test)]
 mod scope_exit_tuple_projection_tests {
-    use super::scope_exit_tuple_projection_has_null_safe_drop;
-    use hew_types::{BuiltinType, ResolvedTy};
+    use super::*;
+    use hew_types::BuiltinType;
 
     fn builtin_ty(builtin: BuiltinType) -> ResolvedTy {
         ResolvedTy::named_builtin(builtin.canonical_name(), builtin, vec![ResolvedTy::String])
@@ -1283,5 +1294,117 @@ mod scope_exit_tuple_projection_tests {
                 "{builtin:?} must retain its dedicated ownership protocol"
             );
         }
+    }
+
+    fn registered_carrier() -> Builder {
+        let mut builder = Builder::default();
+        builder.owned_carrier_neutralize.insert(
+            Place::Local(0),
+            OwnedCarrierNeutralizeTarget::Whole(Place::Local(0)),
+        );
+        builder
+    }
+
+    fn projection_of(builder: &Builder, dest: Place) -> Option<(Place, Vec<u32>)> {
+        match builder.owned_carrier_neutralize.get(&dest) {
+            Some(OwnedCarrierNeutralizeTarget::Projection { root, fields, .. }) => {
+                Some((*root, fields.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn registered_carrier_propagates_inline_product_and_tagged_union_fields() {
+        let mut product = registered_carrier();
+        product
+            .note_carrier_projection(
+                Place::Local(0),
+                3,
+                Place::Local(1),
+                &ResolvedTy::Tuple(vec![ResolvedTy::String]),
+                SiteId(1),
+            )
+            .expect("inline product field has a total ownership class");
+        assert_eq!(
+            projection_of(&product, Place::Local(1)),
+            Some((Place::Local(0), vec![3]))
+        );
+
+        let mut tagged = registered_carrier();
+        tagged.enum_layouts.push(crate::model::EnumLayout {
+            name: "Payload".to_string(),
+            tag_width: 1,
+            variants: vec![crate::model::MachineVariantLayout {
+                name: "Value".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec!["value".to_string()],
+            }],
+            is_indirect: false,
+        });
+        tagged
+            .note_carrier_projection(
+                Place::Local(0),
+                4,
+                Place::Local(2),
+                &ResolvedTy::named_user("Payload", vec![]),
+                SiteId(2),
+            )
+            .expect("inline tagged-union field has a total ownership class");
+        assert_eq!(
+            projection_of(&tagged, Place::Local(2)),
+            Some((Place::Local(0), vec![4]))
+        );
+    }
+
+    #[test]
+    fn registered_carrier_excludes_retained_and_heap_free_fields() {
+        let mut builder = registered_carrier();
+        for (field, dest, ty) in [
+            (0, Place::Local(1), ResolvedTy::String),
+            (1, Place::Local(2), ResolvedTy::Bytes),
+            (2, Place::Local(3), ResolvedTy::I64),
+        ] {
+            builder
+                .note_carrier_projection(Place::Local(0), field, dest, &ty, SiteId(field))
+                .expect("retained and heap-free field classes are total");
+            assert!(projection_of(&builder, dest).is_none());
+        }
+    }
+
+    #[test]
+    fn scope_exit_tuple_fallback_stays_handle_transfer_and_null_safe_only() {
+        let mut builder = Builder::default();
+        let tuple = ResolvedTy::Tuple(vec![builtin_ty(BuiltinType::Vec)]);
+        builder.binding_locals.insert(BindingId(1), Place::Local(0));
+        builder.register_owned_local(
+            BindingId(1),
+            "tuple".to_string(),
+            tuple,
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+
+        let vec_ty = builtin_ty(BuiltinType::Vec);
+        builder
+            .note_carrier_projection(Place::Local(0), 0, Place::Local(1), &vec_ty, SiteId(3))
+            .expect("null-safe Vec fallback is a handle transfer");
+        assert!(matches!(
+            builder.owned_carrier_neutralize.get(&Place::Local(1)),
+            Some(OwnedCarrierNeutralizeTarget::Projection {
+                scope_exit_owner: Some(_),
+                ..
+            })
+        ));
+
+        builder
+            .note_carrier_projection(
+                Place::Local(0),
+                0,
+                Place::Local(2),
+                &ResolvedTy::Tuple(vec![ResolvedTy::String]),
+                SiteId(4),
+            )
+            .expect("inline aggregate does not seed a tuple fallback");
+        assert!(projection_of(&builder, Place::Local(2)).is_none());
     }
 }

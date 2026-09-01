@@ -4872,11 +4872,12 @@ fn fresh_string_producer_term_admissible(
 /// The two sides are coupled and MUST move together: codegen retains ONLY
 /// string-typed `*FieldLoad` dests (detected by the dest's `ResolvedTy`), so this
 /// classifier admits ONLY string-typed `*FieldLoad` dests (same type gate). A
-/// non-string field load (`bytes` / `Vec<T>` / nested record) is NOT retained by
-/// codegen and stays a projection alias here — it leaks rather than double-frees,
-/// the safe default, until the retain-on-share spine lands. The type gate uses
-/// the function's `locals` table (the dest local's declared `ResolvedTy`), the
-/// same precise string distinguisher codegen uses.
+/// non-string `Vec<T>` / nested-record field load is NOT retained by codegen and
+/// stays a projection alias here. `bytes` is intentionally different: its
+/// retain-on-share is inserted by MIR's `finalize_bytes_ownership`, not by the
+/// codegen string-retain path this classifier describes. The type gate uses the
+/// function's `locals` table (the dest local's declared `ResolvedTy`), the same
+/// precise string distinguisher codegen uses.
 pub(super) fn string_field_load_producer_dest(
     instr: &Instr,
     locals: &[ResolvedTy],

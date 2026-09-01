@@ -871,9 +871,9 @@ fn register_owned_local_records_classified_ownership_and_scope_exit() {
 }
 
 /// Frozen three-way verdict table for the `let`-bound field-load
-/// classification — the load-bearing double-free boundary. A `string` field retains
-/// (codegen clones), an inline aggregate (record / tuple) byte-copies to an
-/// interior alias, and every single-pointer heap leaf (`Vec` / `bytes` /
+/// classification — the load-bearing double-free boundary. A `string` or
+/// `bytes` field retains, an inline aggregate (record / tuple) byte-copies to
+/// an interior alias, and every remaining single-pointer heap leaf (`Vec` /
 /// `Generator` / indirect-enum node) transfers its one handle. Only
 /// `ByteCopyAlias` dispositions its binder `AliasOf`; the table freezes the
 /// class each shape maps to so a mis-tag (which would admit an owner the
@@ -887,16 +887,19 @@ fn classify_field_load_freezes_the_three_way_verdict_table() {
         vec![("a".to_string(), ResolvedTy::String)],
     );
 
-    // Retained: `string` — codegen `hew_string_clone`s the load.
-    assert_eq!(
-        builder.classify_field_load(&ResolvedTy::String),
-        Some(FieldLoadClass::Retained),
-    );
+    // Retained: `string` and `bytes` each receive a balanced +1 for the load.
+    for (label, ty) in [("string", ResolvedTy::String), ("bytes", ResolvedTy::Bytes)] {
+        assert_eq!(
+            builder.classify_field_load(&ty),
+            Ok(Some(FieldLoadClass::Retained)),
+            "{label} keeps the aggregate root live and owns a retained share",
+        );
+    }
 
     // ByteCopyAlias: inline aggregates — record and tuple.
     assert_eq!(
         builder.classify_field_load(&unregistered_named("Rec")),
-        Some(FieldLoadClass::ByteCopyAlias),
+        Ok(Some(FieldLoadClass::ByteCopyAlias)),
         "a heap-owning record field is byte-copied to an interior alias",
     );
     assert_eq!(
@@ -904,14 +907,13 @@ fn classify_field_load_freezes_the_three_way_verdict_table() {
             ResolvedTy::String,
             ResolvedTy::String,
         ])),
-        Some(FieldLoadClass::ByteCopyAlias),
+        Ok(Some(FieldLoadClass::ByteCopyAlias)),
         "a heap-owning tuple field is byte-copied to an interior alias",
     );
 
     // HandleTransfer: every single-pointer heap leaf.
     for (label, ty) in [
         ("Vec", vec_of_ty(ResolvedTy::String)),
-        ("bytes", ResolvedTy::Bytes),
         (
             "Generator",
             ResolvedTy::named_builtin(
@@ -924,13 +926,216 @@ fn classify_field_load_freezes_the_three_way_verdict_table() {
     ] {
         assert_eq!(
             builder.classify_field_load(&ty),
-            Some(FieldLoadClass::HandleTransfer),
+            Ok(Some(FieldLoadClass::HandleTransfer)),
             "{label} transfers its one owned handle to the binder",
         );
     }
 
     // Heap-free field: no scope-exit drop obligation to classify.
-    assert_eq!(builder.classify_field_load(&ResolvedTy::I64), None);
+    assert_eq!(builder.classify_field_load(&ResolvedTy::I64), Ok(None));
+
+    // A bare unknown has no ownership decision and therefore fails before the
+    // snapshot classifier; it is still an error, never the heap-free answer.
+    assert!(matches!(
+        builder.classify_field_load(&unregistered_named("Unknown")),
+        Err(crate::state_clone::ClassificationError::Unsupported { .. })
+    ));
+
+    // Missing layout is a non-vacuous error, never the heap-free `Ok(None)`
+    // verdict. The owning Vec reaches snapshot planning and exposes the
+    // missing child layout at the field-load source site.
+    assert!(matches!(
+        builder.classify_field_load(&vec_of_ty(unregistered_named("Unknown"))),
+        Err(crate::state_clone::ClassificationError::MissingRecordLayout { ref name })
+            if name == "Unknown"
+    ));
+}
+
+/// A classification failure is an internal lowering invariant at the exact
+/// source site, and it leaves no carrier-projection ownership record behind.
+fn classification_poison_field_load() -> HirExpr {
+    let unknown = unregistered_named("Unknown");
+    let holder = unregistered_named("Holder");
+    let root = HirExpr {
+        node: hew_hir::HirNodeId(1),
+        site: SiteId(76),
+        ty: holder.clone(),
+        value_class: ValueClass::CowValue,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "holder".to_string(),
+            resolved: ResolvedRef::Binding(BindingId(1)),
+        },
+        span: 0..0,
+    };
+    HirExpr {
+        node: hew_hir::HirNodeId(2),
+        site: SiteId(77),
+        ty: unknown,
+        value_class: ValueClass::CowValue,
+        intent: IntentKind::Read,
+        kind: HirExprKind::FieldAccess {
+            object: Box::new(root),
+            field: "payload".to_string(),
+        },
+        span: 0..0,
+    }
+}
+
+fn classification_poison_module() -> hew_hir::HirModule {
+    // Exercise the poison through the ordinary free-function body ramp. This
+    // is deliberately a forged post-checker HIR module: a source program
+    // cannot name the missing `Unknown` layout, while MIR still needs to fail
+    // closed if checker/layout authority ever drifts at this boundary.
+    let unknown = unregistered_named("Unknown");
+    let holder = unregistered_named("Holder");
+    let mut type_classes = hew_hir::TypeClassTable::default();
+    type_classes.insert(
+        "Unknown".to_string(),
+        (hew_hir::ResourceMarker::Resource, Some("close".to_string())),
+    );
+    let function_id = hew_hir::ItemId(2);
+    hew_hir::HirModule {
+        items: vec![
+            hew_hir::HirItem::Record(hew_hir::HirRecordDecl {
+                id: hew_hir::ItemId(1),
+                node: hew_hir::HirNodeId(3),
+                name: "Holder".to_string(),
+                defining_module: None,
+                type_params: Vec::new(),
+                positional_field_tys: Vec::new(),
+                fields: vec![hew_hir::HirField {
+                    name: "payload".to_string(),
+                    ty: unknown.clone(),
+                    default: None,
+                    is_mutable: false,
+                    span: 0..0,
+                }],
+                span: 0..0,
+            }),
+            hew_hir::HirItem::Function(hew_hir::HirFn {
+                id: function_id,
+                node: hew_hir::HirNodeId(4),
+                declaration: hew_types::DefId::for_test("field_load_failure"),
+                name: "field_load_failure".to_string(),
+                type_params: Vec::new(),
+                params: vec![hew_hir::HirBinding {
+                    id: BindingId(1),
+                    name: "holder".to_string(),
+                    ty: holder,
+                    mutable: false,
+                    span: 0..0,
+                    is_consume: false,
+                }],
+                return_ty: ResolvedTy::Unit,
+                body: hew_hir::HirBlock {
+                    node: hew_hir::HirNodeId(5),
+                    scope: hew_hir::ScopeId(1),
+                    statements: vec![hew_hir::HirStmt {
+                        node: hew_hir::HirNodeId(6),
+                        kind: hew_hir::HirStmtKind::Expr(classification_poison_field_load()),
+                        span: 0..0,
+                    }],
+                    tail: None,
+                    ty: ResolvedTy::Unit,
+                    span: 0..0,
+                },
+                span: 0..0,
+                is_generator: false,
+                intrinsic_id: None,
+            }),
+        ],
+        produced_value_facts: std::collections::HashMap::new(),
+        diagnostic_source_modules: std::collections::HashMap::new(),
+        root_item_ids: [function_id].into_iter().collect(),
+        entry_declaration: None,
+        caller_visible_param_projections: std::collections::HashSet::new(),
+        wire_layouts: std::sync::Arc::new(std::collections::HashMap::new()),
+        type_classes,
+        monomorphisations: Vec::new(),
+        call_site_type_args: std::collections::HashMap::new(),
+        vec_generic_element_abi: std::collections::HashMap::new(),
+        record_layouts: Vec::new(),
+        enum_layouts: Vec::new(),
+        machine_instantiations: Vec::new(),
+        supervisor_child_slots: std::collections::HashMap::new(),
+        pool_accessor_sites: std::collections::HashMap::new(),
+        regex_literals: Vec::new(),
+    }
+}
+
+#[test]
+fn field_load_classification_failure_is_diagnostic_and_emits_no_carrier_artifact() {
+    let module = classification_poison_module();
+    let pipeline = super::super::lower_hir_module(&module);
+    assert!(
+        matches!(
+            pipeline.diagnostics.as_slice(),
+            [MirDiagnostic {
+                kind: MirDiagnosticKind::LoweringInvariant {
+                    function,
+                    rule,
+                    block: Some(0),
+                    detail,
+                },
+                ..
+            }] if function == "field_load_failure"
+                && rule == "field-load-classification"
+                && detail.starts_with("site SiteId(77):")
+                && detail.contains("Unknown")
+        ),
+        "unexpected poison diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "field_load_failure")
+        .expect("the ordinary function ramp must retain the poisoned body");
+    assert!(matches!(
+        raw.blocks.as_slice(),
+        [block]
+            if block.statements.is_empty()
+                && block.instructions.is_empty()
+                && matches!(block.terminator, Terminator::Unreachable)
+    ));
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "field_load_failure")
+        .expect("checked MIR must retain the same poisoned body");
+    assert!(matches!(
+        checked.blocks.as_slice(),
+        [block]
+            if block.statements.is_empty()
+                && block.instructions.is_empty()
+                && matches!(block.terminator, Terminator::Unreachable)
+    ));
+}
+
+/// Fresh producers and whole-value rebinds do not enter the field-load seam,
+/// so absent layout facts on their type cannot manufacture an unrelated ICE.
+#[test]
+fn non_projection_initializer_skips_field_load_classification() {
+    let builder = Builder::default();
+    let value = HirExpr {
+        node: hew_hir::HirNodeId(1),
+        site: SiteId(88),
+        ty: unregistered_named("Unknown"),
+        value_class: ValueClass::CowValue,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "whole".to_string(),
+            resolved: ResolvedRef::Binding(BindingId(1)),
+        },
+        span: 0..0,
+    };
+
+    assert_eq!(
+        builder.field_projection_alias_provenance(&value, &value.ty),
+        Ok(None),
+    );
 }
 
 /// A byte-copy aggregate field projection registers its binder `AliasOf`

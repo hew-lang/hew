@@ -87,7 +87,7 @@ use hew_mir::{
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
-    runtime_call::{MathIntrinsic, RuntimeCapability},
+    runtime_call::{MathIntrinsic, RuntimeCapability, RuntimeDropOperandShape},
     wasm_capability_ids, BuiltinType, NumericWidth, ResolvedTy, WasmCapabilityId,
     WireCodecDirection, WireLayoutTable, WireTextFormat,
 };
@@ -7044,6 +7044,29 @@ fn emit_field_clone_step<'ctx>(
     Ok(())
 }
 
+/// Require the exact runtime ABI consumed by an inline `MonitorRef` drop.
+///
+/// `intern_runtime_decl` deliberately adopts declarations already present in
+/// the module, so every MonitorRef consumer must validate all three function
+/// type axes before emitting a call: result, fixed parameter list, and
+/// variadicness. LLVM permits calls through several near-miss declarations
+/// that are individually type-correct IR but disagree with the C ABI.
+fn verify_monitor_ref_close_abi(close_fn: FunctionValue<'_>, context: &str) -> CodegenResult<()> {
+    let fn_ty = close_fn.get_type();
+    let params = fn_ty.get_param_types();
+    let exact_i64_param = matches!(
+        params.as_slice(),
+        [BasicMetadataTypeEnum::IntType(i)] if i.get_bit_width() == 64
+    );
+    if fn_ty.get_return_type().is_some() || fn_ty.is_var_arg() || !exact_i64_param {
+        return Err(CodegenError::FailClosed(format!(
+            "{context}: `{}` must have exact non-vararg void(i64) ABI",
+            close_fn.get_name().to_string_lossy()
+        )));
+    }
+    Ok(())
+}
+
 /// Emit one field's drop step (used by both per-actor and per-record drop
 /// bodies, AND by per-actor clone's rollback chain). Reads
 /// `state.<field_idx>` and invokes the matching runtime drop helper or
@@ -7428,6 +7451,112 @@ pub(crate) fn emit_field_drop_step<'ctx>(
         // close ABI drifted from `void(self)` (e.g. a non-Unit return added an
         // sret param) — fail closed instead of calling with a mismatched ABI.
         StateFieldCloneKind::Resource { name, close } => {
+            // MonitorRef is the sole current inline resource: its close ABI
+            // consumes `ref_id: i64`, not a pointer to the record. Keep that
+            // distinction in RuntimeDropDescriptor::operand_shape rather than
+            // recovering it from a symbol spelling. The slot validation makes
+            // classifier/layout drift fail closed before an opaque-pointer GEP
+            // can address arbitrary bytes.
+            if let ResourceCloseAuthority::Runtime(descriptor) = close {
+                if matches!(
+                    descriptor.operand_shape(),
+                    RuntimeDropOperandShape::MonitorRefId
+                ) {
+                    let field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "MonitorRef resource drop: parent struct {st_ty:?} has no field at \
+                             index {field_idx}"
+                        ))
+                    })?;
+                    let monitor_ty = match field_ty {
+                        BasicTypeEnum::StructType(struct_ty) => struct_ty,
+                        other => {
+                            return Err(CodegenError::FailClosed(format!(
+                                "MonitorRef resource drop: parent field {field_idx} is {other:?}, \
+                             not the inline {{ i64 }} MonitorRef ABI"
+                            )))
+                        }
+                    };
+                    let fields = monitor_ty.get_field_types();
+                    if monitor_ty.is_packed()
+                        || fields.len() != 1
+                        || !matches!(fields[0], BasicTypeEnum::IntType(i) if i.get_bit_width() == 64)
+                    {
+                        return Err(CodegenError::FailClosed(format!(
+                            "MonitorRef resource drop: parent field {field_idx} has layout \
+                             {fields:?}, expected exactly inline {{ i64 }}"
+                        )));
+                    }
+                    let field_ptr = builder
+                        .build_struct_gep(
+                            st_ty,
+                            state,
+                            field_idx,
+                            &format!("drop_monitor_f{field_idx}_ptr"),
+                        )
+                        .llvm_ctx_with(|| format!("drop MonitorRef gep f{field_idx}"))?;
+                    let id_ptr = builder
+                        .build_struct_gep(
+                            monitor_ty,
+                            field_ptr,
+                            0,
+                            &format!("drop_monitor_f{field_idx}_id_ptr"),
+                        )
+                        .llvm_ctx_with(|| format!("drop MonitorRef id gep f{field_idx}"))?;
+                    let i64_ty = ctx.i64_type();
+                    let id = builder
+                        .build_load(i64_ty, id_ptr, &format!("drop_monitor_f{field_idx}_id"))
+                        .llvm_ctx_with(|| format!("drop MonitorRef id load f{field_idx}"))?
+                        .into_int_value();
+                    let parent = builder
+                        .get_insert_block()
+                        .and_then(|bb| bb.get_parent())
+                        .ok_or_else(|| {
+                            CodegenError::Llvm(
+                                "MonitorRef resource drop has no parent function".into(),
+                            )
+                        })?;
+                    let close_bb =
+                        ctx.append_basic_block(parent, &format!("monitor_f{field_idx}_close"));
+                    let cont_bb =
+                        ctx.append_basic_block(parent, &format!("monitor_f{field_idx}_cont"));
+                    let inactive = builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            id,
+                            i64_ty.const_zero(),
+                            &format!("monitor_f{field_idx}_inactive"),
+                        )
+                        .llvm_ctx_with(|| format!("drop MonitorRef inactive check f{field_idx}"))?;
+                    builder
+                        .build_conditional_branch(inactive, cont_bb, close_bb)
+                        .llvm_ctx_with(|| format!("drop MonitorRef branch f{field_idx}"))?;
+                    builder.position_at_end(close_bb);
+                    let mut declarations = RuntimeDeclMap::new();
+                    let close_fn = intern_runtime_decl(
+                        ctx,
+                        llvm_mod,
+                        &mut declarations,
+                        descriptor.c_symbol(),
+                    )?;
+                    verify_monitor_ref_close_abi(close_fn, "MonitorRef resource drop")?;
+                    builder
+                        .build_call(
+                            close_fn,
+                            &[id.into()],
+                            &format!("monitor_f{field_idx}_close_call"),
+                        )
+                        .llvm_ctx_with(|| format!("drop MonitorRef close f{field_idx}"))?;
+                    builder
+                        .build_store(id_ptr, i64_ty.const_zero())
+                        .llvm_ctx_with(|| format!("drop MonitorRef zero store f{field_idx}"))?;
+                    builder
+                        .build_unconditional_branch(cont_bb)
+                        .llvm_ctx_with(|| format!("drop MonitorRef continue f{field_idx}"))?;
+                    builder.position_at_end(cont_bb);
+                    return Ok(());
+                }
+            }
             let (close_fn, close_symbol) = match close {
                 ResourceCloseAuthority::Runtime(descriptor) => {
                     let symbol = descriptor.c_symbol();
@@ -7453,13 +7582,20 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                     (close_fn, symbol)
                 }
             };
-            if close_fn.count_params() != 1 {
+            let expected_params = match close {
+                ResourceCloseAuthority::Runtime(descriptor) => match descriptor.operand_shape() {
+                    RuntimeDropOperandShape::HandlePtr => 1,
+                    RuntimeDropOperandShape::DuplexHalf { .. } => 2,
+                    RuntimeDropOperandShape::MonitorRefId => unreachable!("handled above"),
+                },
+                ResourceCloseAuthority::User(_) => 1,
+            };
+            if close_fn.count_params() != expected_params {
                 return Err(CodegenError::FailClosed(format!(
                     "resource `{name}` field drop: close symbol `{close_symbol}` has \
-                     {} params, expected exactly 1 (the consumed `self` handle). A \
+                     {} params, expected {expected_params} from its typed operand ABI. A \
                      non-Unit return (hidden sret param) or an extra parameter means \
-                     the close ABI drifted from `void(self)` (Q-β-C requires close to \
-                     consume self and return Unit). Refusing to call with a mismatched \
+                     the close ABI drifted. Refusing to call with a mismatched \
                      ABI (LESSONS: boundary-fail-closed, ffi-abi-width-mirror).",
                     close_fn.count_params()
                 )));
@@ -7495,10 +7631,23 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                 .build_conditional_branch(is_null, cont_bb, close_bb)
                 .llvm_ctx_with(|| format!("drop resource branch f{field_idx}"))?;
             builder.position_at_end(close_bb);
+            let close_args: Vec<BasicMetadataValueEnum<'_>> = match close {
+                ResourceCloseAuthority::Runtime(descriptor) => match descriptor.operand_shape() {
+                    RuntimeDropOperandShape::HandlePtr => vec![handle.into()],
+                    RuntimeDropOperandShape::DuplexHalf { direction } => vec![
+                        handle.into(),
+                        ctx.i32_type()
+                            .const_int(direction.runtime_discriminant(), false)
+                            .into(),
+                    ],
+                    RuntimeDropOperandShape::MonitorRefId => unreachable!("handled above"),
+                },
+                ResourceCloseAuthority::User(_) => vec![handle.into()],
+            };
             builder
                 .build_call(
                     close_fn,
-                    &[handle.into()],
+                    &close_args,
                     &format!("resource_f{field_idx}_close_call"),
                 )
                 .llvm_ctx_with(|| format!("drop resource close call f{field_idx}"))?;
@@ -19525,6 +19674,87 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
         }
         StateFieldCloneKind::Resource { close, .. } => {
             let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            if let ResourceCloseAuthority::Runtime(descriptor) = close {
+                if matches!(
+                    descriptor.operand_shape(),
+                    RuntimeDropOperandShape::MonitorRefId
+                ) {
+                    let monitor_ty = match slot_ty {
+                        BasicTypeEnum::StructType(struct_ty) => struct_ty,
+                        other => return Err(CodegenError::FailClosed(format!(
+                            "prepared MonitorRef resource has slot type {other:?}, expected inline {{ i64 }}"
+                        ))),
+                    };
+                    let fields = monitor_ty.get_field_types();
+                    if monitor_ty.is_packed()
+                        || fields.len() != 1
+                        || !matches!(fields[0], BasicTypeEnum::IntType(i) if i.get_bit_width() == 64)
+                    {
+                        return Err(CodegenError::FailClosed(format!(
+                            "prepared MonitorRef resource has layout {fields:?}, expected inline {{ i64 }}"
+                        )));
+                    }
+                    let id_ptr = fn_ctx
+                        .builder
+                        .build_struct_gep(monitor_ty, slot, 0, "prepared_monitor_ref_id_ptr")
+                        .llvm_ctx("prepared MonitorRef id gep")?;
+                    let i64_ty = fn_ctx.ctx.i64_type();
+                    let id = fn_ctx
+                        .builder
+                        .build_load(i64_ty, id_ptr, "prepared_monitor_ref_id")
+                        .llvm_ctx("prepared MonitorRef id load")?;
+                    let parent = fn_ctx
+                        .builder
+                        .get_insert_block()
+                        .and_then(|bb| bb.get_parent())
+                        .ok_or_else(|| {
+                            CodegenError::Llvm(
+                                "prepared MonitorRef resource has no parent function".into(),
+                            )
+                        })?;
+                    let close_bb = fn_ctx
+                        .ctx
+                        .append_basic_block(parent, "prepared_monitor_ref_close");
+                    let cont_bb = fn_ctx
+                        .ctx
+                        .append_basic_block(parent, "prepared_monitor_ref_cont");
+                    let inactive = fn_ctx
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            id.into_int_value(),
+                            i64_ty.const_zero(),
+                            "prepared_monitor_ref_inactive",
+                        )
+                        .llvm_ctx("prepared MonitorRef inactive check")?;
+                    fn_ctx
+                        .builder
+                        .build_conditional_branch(inactive, cont_bb, close_bb)
+                        .llvm_ctx("prepared MonitorRef branch")?;
+                    fn_ctx.builder.position_at_end(close_bb);
+                    let helper = intern_runtime_decl(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &mut fn_ctx.runtime_decls.borrow_mut(),
+                        descriptor.c_symbol(),
+                    )?;
+                    verify_monitor_ref_close_abi(helper, "prepared MonitorRef resource")?;
+                    fn_ctx
+                        .builder
+                        .build_call(helper, &[id.into()], "prepared_monitor_ref_close")
+                        .llvm_ctx("prepared MonitorRef close")?;
+                    fn_ctx
+                        .builder
+                        .build_store(id_ptr, i64_ty.const_zero())
+                        .llvm_ctx("prepared MonitorRef zero store")?;
+                    fn_ctx
+                        .builder
+                        .build_unconditional_branch(cont_bb)
+                        .llvm_ctx("prepared MonitorRef continue")?;
+                    fn_ctx.builder.position_at_end(cont_bb);
+                    return Ok(());
+                }
+            }
             let handle = fn_ctx
                 .builder
                 .build_load(slot_ty, slot, "prepared_resource_handle")
@@ -19545,9 +19775,31 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
                     })?
                 }
             };
+            let args: Vec<BasicMetadataValueEnum<'_>> = match close {
+                ResourceCloseAuthority::Runtime(descriptor) => match descriptor.operand_shape() {
+                    RuntimeDropOperandShape::HandlePtr => vec![handle.into()],
+                    RuntimeDropOperandShape::DuplexHalf { direction } => vec![
+                        handle.into(),
+                        fn_ctx
+                            .ctx
+                            .i32_type()
+                            .const_int(direction.runtime_discriminant(), false)
+                            .into(),
+                    ],
+                    RuntimeDropOperandShape::MonitorRefId => unreachable!("handled above"),
+                },
+                ResourceCloseAuthority::User(_) => vec![handle.into()],
+            };
+            if helper.count_params() != args.len() as u32 {
+                return Err(CodegenError::FailClosed(format!(
+                    "prepared resource close has {} params, expected {} from its typed operand ABI",
+                    helper.count_params(),
+                    args.len(),
+                )));
+            }
             fn_ctx
                 .builder
-                .build_call(helper, &[handle.into()], "prepared_resource_close")
+                .build_call(helper, &args, "prepared_resource_close")
                 .llvm_ctx("prepared resource close")?;
             fn_ctx
                 .builder

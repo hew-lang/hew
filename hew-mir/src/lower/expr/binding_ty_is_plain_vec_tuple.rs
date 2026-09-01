@@ -953,23 +953,13 @@ fn classify_field_load_freezes_the_three_way_verdict_table() {
 
 /// A classification failure is an internal lowering invariant at the exact
 /// source site, and it leaves no carrier-projection ownership record behind.
-#[test]
-fn field_load_classification_failure_is_diagnostic_and_emits_no_carrier_artifact() {
-    let mut builder = Builder {
-        current_function_symbol: "field_load_failure".to_string(),
-        ..Builder::default()
-    };
+fn classification_poison_field_load() -> HirExpr {
     let unknown = unregistered_named("Unknown");
     let holder = unregistered_named("Holder");
-    builder.record_field_orders.insert(
-        "Holder".to_string(),
-        vec![("payload".to_string(), unknown.clone())],
-    );
-    builder.binding_locals.insert(BindingId(1), Place::Local(0));
     let root = HirExpr {
         node: hew_hir::HirNodeId(1),
         site: SiteId(76),
-        ty: holder,
+        ty: holder.clone(),
         value_class: ValueClass::CowValue,
         intent: IntentKind::Read,
         kind: HirExprKind::BindingRef {
@@ -978,7 +968,7 @@ fn field_load_classification_failure_is_diagnostic_and_emits_no_carrier_artifact
         },
         span: 0..0,
     };
-    let field_load = HirExpr {
+    HirExpr {
         node: hew_hir::HirNodeId(2),
         site: SiteId(77),
         ty: unknown,
@@ -989,46 +979,139 @@ fn field_load_classification_failure_is_diagnostic_and_emits_no_carrier_artifact
             field: "payload".to_string(),
         },
         span: 0..0,
-    };
+    }
+}
 
-    assert_eq!(builder.lower_value(&field_load), None);
-    let second_field_load = HirExpr {
-        site: SiteId(78),
-        ..field_load.clone()
-    };
-    assert_eq!(builder.lower_value(&second_field_load), None);
-
-    assert!(builder.instructions.is_empty());
-    assert!(builder.owned_carrier_neutralize.is_empty());
-    assert!(matches!(
-        builder.diagnostics.as_slice(),
-        [MirDiagnostic {
-            kind: MirDiagnosticKind::LoweringInvariant {
-                function,
-                rule,
-                block: Some(0),
-                detail,
-            },
-            ..
-        }] if function == "field_load_failure"
-            && rule == "field-load-classification"
-            && detail.starts_with("site SiteId(77):")
-            && detail.contains("Unknown")
-    ));
-
-    let finalized = super::super::finalize_body(
-        &mut builder,
-        super::super::BodySeal::Cursor(Terminator::Return),
-        super::super::BodyFinalizeSpec::nested_body(),
+fn classification_poison_module() -> hew_hir::HirModule {
+    // Exercise the poison through the ordinary free-function body ramp. This
+    // is deliberately a forged post-checker HIR module: a source program
+    // cannot name the missing `Unknown` layout, while MIR still needs to fail
+    // closed if checker/layout authority ever drifts at this boundary.
+    let unknown = unregistered_named("Unknown");
+    let holder = unregistered_named("Holder");
+    let mut type_classes = hew_hir::TypeClassTable::default();
+    type_classes.insert(
+        "Unknown".to_string(),
+        (hew_hir::ResourceMarker::Resource, Some("close".to_string())),
     );
+    let function_id = hew_hir::ItemId(2);
+    hew_hir::HirModule {
+        items: vec![
+            hew_hir::HirItem::Record(hew_hir::HirRecordDecl {
+                id: hew_hir::ItemId(1),
+                node: hew_hir::HirNodeId(3),
+                name: "Holder".to_string(),
+                defining_module: None,
+                type_params: Vec::new(),
+                positional_field_tys: Vec::new(),
+                fields: vec![hew_hir::HirField {
+                    name: "payload".to_string(),
+                    ty: unknown.clone(),
+                    default: None,
+                    is_mutable: false,
+                    span: 0..0,
+                }],
+                span: 0..0,
+            }),
+            hew_hir::HirItem::Function(hew_hir::HirFn {
+                id: function_id,
+                node: hew_hir::HirNodeId(4),
+                declaration: hew_types::DefId::for_test("field_load_failure"),
+                name: "field_load_failure".to_string(),
+                type_params: Vec::new(),
+                params: vec![hew_hir::HirBinding {
+                    id: BindingId(1),
+                    name: "holder".to_string(),
+                    ty: holder,
+                    mutable: false,
+                    span: 0..0,
+                    is_consume: false,
+                }],
+                return_ty: ResolvedTy::Unit,
+                body: hew_hir::HirBlock {
+                    node: hew_hir::HirNodeId(5),
+                    scope: hew_hir::ScopeId(1),
+                    statements: vec![hew_hir::HirStmt {
+                        node: hew_hir::HirNodeId(6),
+                        kind: hew_hir::HirStmtKind::Expr(classification_poison_field_load()),
+                        span: 0..0,
+                    }],
+                    tail: None,
+                    ty: ResolvedTy::Unit,
+                    span: 0..0,
+                },
+                span: 0..0,
+                is_generator: false,
+                intrinsic_id: None,
+            }),
+        ],
+        produced_value_facts: std::collections::HashMap::new(),
+        diagnostic_source_modules: std::collections::HashMap::new(),
+        root_item_ids: [function_id].into_iter().collect(),
+        entry_declaration: None,
+        caller_visible_param_projections: std::collections::HashSet::new(),
+        wire_layouts: std::sync::Arc::new(std::collections::HashMap::new()),
+        type_classes,
+        monomorphisations: Vec::new(),
+        call_site_type_args: std::collections::HashMap::new(),
+        vec_generic_element_abi: std::collections::HashMap::new(),
+        record_layouts: Vec::new(),
+        enum_layouts: Vec::new(),
+        machine_instantiations: Vec::new(),
+        supervisor_child_slots: std::collections::HashMap::new(),
+        pool_accessor_sites: std::collections::HashMap::new(),
+        regex_literals: Vec::new(),
+    }
+}
+
+#[test]
+fn field_load_classification_failure_is_diagnostic_and_emits_no_carrier_artifact() {
+    let module = classification_poison_module();
+    let pipeline = super::super::lower_hir_module(&module);
+    assert!(
+        matches!(
+            pipeline.diagnostics.as_slice(),
+            [MirDiagnostic {
+                kind: MirDiagnosticKind::LoweringInvariant {
+                    function,
+                    rule,
+                    block: Some(0),
+                    detail,
+                },
+                ..
+            }] if function == "field_load_failure"
+                && rule == "field-load-classification"
+                && detail.starts_with("site SiteId(77):")
+                && detail.contains("Unknown")
+        ),
+        "unexpected poison diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "field_load_failure")
+        .expect("the ordinary function ramp must retain the poisoned body");
     assert!(matches!(
-        finalized.blocks.as_slice(),
+        raw.blocks.as_slice(),
         [block]
             if block.statements.is_empty()
                 && block.instructions.is_empty()
                 && matches!(block.terminator, Terminator::Unreachable)
     ));
-    assert!(finalized.body_statements.is_empty());
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "field_load_failure")
+        .expect("checked MIR must retain the same poisoned body");
+    assert!(matches!(
+        checked.blocks.as_slice(),
+        [block]
+            if block.statements.is_empty()
+                && block.instructions.is_empty()
+                && matches!(block.terminator, Terminator::Unreachable)
+    ));
 }
 
 /// Fresh producers and whole-value rebinds do not enter the field-load seam,

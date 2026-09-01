@@ -1,7 +1,9 @@
-// A full drop_new mailbox reports loss to its sender. Pinning the runtime to
-// one worker keeps this main task running until both sends have completed, so
-// the actor cannot drain the first message before the second send observes the
-// full mailbox.
+// A full drop_new mailbox reports loss to its sender. The sender is itself an
+// actor handler: with one worker, that handler occupies the only thread that
+// could activate LossyWorker, so the first message is still queued when the
+// second send observes the full mailbox. `main` runs on the process main
+// thread, not on a scheduler worker, so sending from `main` would race the
+// worker's wake.
 actor LossyWorker {
     mailbox 1 overflow drop_new;
     receive fn work(value: i64) {
@@ -11,30 +13,36 @@ actor LossyWorker {
     }
 }
 
-fn main() -> i64 {
+actor Driver {
+    receive fn run(worker: LocalPid<LossyWorker>) {
+        match worker.work(1) {
+            .Ok(_) => {},
+            .Err(_) => {
+                println("FIRST_SEND_FAILED");
+                exit(41);
+            },
+        }
+        match worker.work(2) {
+            .Err(error) => match error {
+                SendError.MessageLost => {
+                    println("LOSS_VISIBLE");
+                    exit(42);
+                },
+                _ => {
+                    println("UNEXPECTED_SEND_ERROR");
+                    exit(43);
+                },
+            },
+            .Ok(_) => {
+                println("LOSS_HIDDEN");
+                exit(44);
+            },
+        }
+    }
+}
+
+fn main() {
     let worker = spawn LossyWorker;
-    let first = worker.work(1);
-    match first {
-        .Ok(_) => {},
-        .Err(_) => {
-            println("FIRST_SEND_FAILED");
-            return 41;
-        },
-    }
-    match worker.work(2) {
-        .Err(error) => match error {
-            SendError.MessageLost => {
-                println("LOSS_VISIBLE");
-                42
-            },
-            _ => {
-                println("UNEXPECTED_SEND_ERROR");
-                43
-            },
-        },
-        .Ok(_) => {
-            println("LOSS_HIDDEN");
-            44
-        },
-    }
+    let driver = spawn Driver;
+    driver.run(worker);
 }

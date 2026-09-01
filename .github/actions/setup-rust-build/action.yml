@@ -1,11 +1,9 @@
 name: Setup Rust build environment
 description: >
   Install the stable Rust toolchain, optional cargo tools (via
-  taiki-e/install-action), Swatinem/rust-cache for the registry/deps
-  layer, and mozilla-actions/sccache-action for the workspace-crate
-  compilation cache (GitHub Actions cache backend, content-addressed,
-  disk-safe).  Extracts the repeated setup sequence that every Rust job
-  in ci.yml and release-gate.yml otherwise duplicates.
+  taiki-e/install-action), and Swatinem/rust-cache for the registry/deps
+  layer. Extracts the repeated setup sequence that every Rust job in ci.yml
+  and release-gate.yml otherwise duplicates.
 
 inputs:
   components:
@@ -64,49 +62,12 @@ runs:
       with:
         tool: ${{ inputs.tools }}
 
-    # ── sccache: workspace-crate compilation cache ─────────────────────────
-    # Promotes the .cargo/config.toml opt-in annotation to CI reality.
-    # Uses the GitHub Actions cache backend (content-addressed, no blob
-    # expansion — the ENOSPC cause that led to dropping target/ caching in
-    # e9f65f19 was blob size, not sccache).  Swatinem/rust-cache below
-    # continues to handle the registry/deps layer; sccache handles workspace
-    # crate compilation.  The two compose: sccache caches compiler
-    # invocations; Swatinem caches the registry.  SCCACHE_CACHE_SIZE bounds
-    # the on-disk buffer; the GHA cache has its own 10 GB/repo ceiling.
-    #
-    - name: Install sccache
-      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      with:
-        # Pin the compiler-cache binary as well as the action.
-        version: "v0.17.0"
-
-    - name: Export sccache environment variables
-      shell: bash
-      run: |
-        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-        echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
-        # sccache 0.17's recommended workstation/CI mode performs hashing and
-        # compilation in each client process, avoiding a daemon bottleneck;
-        # the daemon still owns the GHA backend and aggregates job statistics.
-        echo "SCCACHE_CLIENT_SIDE=1" >> "$GITHUB_ENV"
-        # The action's post step emits the cache hit and write-error counters,
-        # but sccache normally stops its server after 600 idle seconds. Test
-        # execution can outlast compilation by much longer, which otherwise
-        # makes the post step start a fresh server and report zeroes. Keep the
-        # per-runner daemon alive until GitHub tears the runner down so those
-        # counters describe the work this job actually performed.
-        echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
-        # Later compilation steps use the wrapper. A cache that cannot be
-        # reached must degrade to a cold compile; it is a cache.
-        echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "$GITHUB_ENV"
-
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       with:
         prefix-key: ${{ inputs.cache-prefix-key }}
         shared-key: ${{ inputs.cache-shared-key }}
-        # Cache Cargo downloads only. Compiled outputs belong to sccache; saving
-        # target/ here would restore a second overlapping compilation cache.
+        # Cache Cargo downloads only. Restoring target/ would retain compiled
+        # outputs across clean hosted runners and increase disk pressure.
         add-rust-environment-hash-key: "false"
         key: deps-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
         cache-targets: "false"

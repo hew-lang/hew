@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable
 //! Description: Lambda Actor Factory Pattern Example
 
 // Lambda Actor Factory Pattern Example
@@ -31,7 +31,10 @@ fn run_multiplier(factor: i64, value: i64) {
     let worker = actor |x: i64| {
         println(f"{factor} * {x} = {x * factor}");
     };
-    worker.send(value);
+    match worker.send(value) {
+        .Ok(_) => {},
+        .Err(_) => panic("multiplier actor rejected its input"),
+    }
     await worker.close();
     return;
 }
@@ -41,7 +44,10 @@ fn run_string_processor(tag: string, value: i64) {
     let worker = actor |x: i64| {
         println(f"[{tag}] {x}");
     };
-    worker.send(value);
+    match worker.send(value) {
+        .Ok(_) => {},
+        .Err(_) => panic("string processor actor rejected its input"),
+    }
     await worker.close();
     return;
 }
@@ -57,8 +63,14 @@ fn run_conditional_processor(check_even: bool, first: i64, second: i64) {
         }
         // else: don't print anything
     };
-    worker.send(first);
-    worker.send(second);
+    match worker.send(first) {
+        .Ok(_) => {},
+        .Err(_) => panic("conditional actor rejected its first input"),
+    }
+    match worker.send(second) {
+        .Ok(_) => {},
+        .Err(_) => panic("conditional actor rejected its second input"),
+    }
     await worker.close();
     return;
 }
@@ -71,7 +83,10 @@ fn run_factory_maker(base: i64, offset: i64) {
         // In a real implementation, this might create and return another actor
         // but that would require more complex type system support
     };
-    worker.send(offset);
+    match worker.send(offset) {
+        .Ok(_) => {},
+        .Err(_) => panic("factory actor rejected its input"),
+    }
     await worker.close();
     return;
 }

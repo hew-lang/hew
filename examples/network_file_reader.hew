@@ -1,8 +1,8 @@
 //! Status: runnable
-//! Description: File reader with actor message passing - Hew language example
+//! Description: File reader with a fallible std.fs read and actor message passing
 
-// File reader with actor message passing - Hew language example  
-// Demonstrates reading a file and printing via actor message passing
+// Demonstrates a fallible file read followed by direct calls to an actor's
+// receive functions. Pass a path after `--`, or use the bundled fixture.
 actor Printer {
     receive fn print_message(msg: i64) {
         println(f"Received value: {msg}");
@@ -19,12 +19,22 @@ fn fibonacci(n: i64) -> i64 {
 
 import std.fs;
 
+import std.os;
+
 fn main() {
     println("=== File Reader + Actor Pipeline ===");
-
-    // Read file contents directly
-    let contents = fs.read("examples/test_input.txt");
-    print(contents);
+    let path = if os.args_count() > 1 {
+        os.args(1)
+    } else {
+        "examples/test_input.txt"
+    };
+    // `try_read` keeps an input-path failure in the program's control flow.
+    // The successful contents are printed unchanged, preserving the simple
+    // stdout stream used by this example.
+    match fs.try_read(path) {
+        .Ok(contents) => print(contents),
+        .Err(error) => println(f"Could not read `{path}`: {fs.io_error_message(error)}"),
+    }
     println("---");
 
     // Send computed results through actor message passing

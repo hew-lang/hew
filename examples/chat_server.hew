@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Status: runnable (local TCP; distributed Node API remains roadmap)
 //! Description: TCP Chat Server — idiomatic Hew actor-based design.
 
 // TCP Chat Server — idiomatic Hew actor-based design.
@@ -25,8 +25,8 @@ actor ChatRoom {
         println(f"{name} joined the chat");
     }
     receive fn unregister(name: string) {
-        var new_handlers: Vec<LocalPid<ClientHandler>> = Vec.new();
-        var new_names: Vec<string> = Vec.new();
+        let new_handlers: Vec<LocalPid<ClientHandler>> = Vec.new();
+        let new_names: Vec<string> = Vec.new();
         for i in 0 .. names.len() {
             if names[i] != name {
                 new_handlers.push(handlers[i]);
@@ -51,30 +51,47 @@ actor ClientHandler {
     let name: string;
     let room: LocalPid<ChatRoom>;
     receive fn start(unused: i32) {
-        let _ = conn.write_string(f"[server] welcome {name}");
+        match conn.write_string(f"[server] welcome {name}") {
+            .Ok(_) => {},
+            .Err(err) => println(f"[server] welcome write failed: {net.write_error_message(err)}"),
+        }
         var running = true;
         while running {
-            let data = conn.read_string();
-            if data.contains("__HEW_TCP_DISCONNECT__") {
-                room.unregister(name.clone());
-                // The connection belongs to this actor's lifetime, not to this
-                // handler: `deliver` stays reachable for as long as the actor
-                // lives, and a broadcast already in flight when the client
-                // disconnects would write to a closed socket. Leaving the
-                // socket in state lets the actor's teardown close it exactly
-                // once, after the last message that could touch it.
-                running = false;
-            } else {
-                let line = f"{name.clone()}: {data}";
-                println(line);
-                room.broadcast(name.clone(), line);
+            match conn.try_read_string() {
+                .Ok(data) => {
+                    if data.is_empty() {
+                        room.unregister(name);
+                        running = false;
+                    } else if data.contains("__HEW_TCP_DISCONNECT__") {
+                        room.unregister(name);
+                        match conn.write_string("__HEW_TCP_DISCONNECT__") {
+                            .Ok(_) => {},
+                            .Err(err) => println(f"[server] disconnect write failed: {net.write_error_message(err)}"),
+                        }
+                        running = false;
+                    } else {
+                        let line = f"{name}: {data}";
+                        println(line);
+                        // ChatRoom uses the default unbounded mailbox, so this unit
+                        // send has no SendError result to discard or handle.
+                        room.broadcast(name, line);
+                    }
+                },
+                .Err(err) => {
+                    println(f"[server] client read failed: {net.net_error_message(err)}");
+                    room.unregister(name);
+                    running = false;
+                },
             }
         }
     }
     receive fn deliver(msg: string) {
         // A slow or disconnected client surfaces as Err here; this demo drops
         // the message rather than applying per-client flow control.
-        let _ = conn.write_string(msg);
+        match conn.write_string(msg) {
+            .Ok(_) => {},
+            .Err(err) => println(f"[server] client write failed: {net.write_error_message(err)}"),
+        }
     }
 }
 
@@ -85,17 +102,20 @@ fn main() {
         port = os.args(1);
     }
     let addr = f"0.0.0.0:{port}";
-    let listener = net.listen(addr);
+    let listener = match net.try_listen(addr) {
+        .Ok(listener) => listener,
+        .Err(err) => panic(f"[server] listen on {addr} failed: {net.net_error_message(err)}"),
+    };
     println("=== Hew TCP Chat Server ===");
     println(f"Listening on {addr}");
     let handlers: Vec<LocalPid<ClientHandler>> = Vec.new();
     let names: Vec<string> = Vec.new();
     let room = spawn ChatRoom(handlers: handlers, names: names);
     var next_id: i32 = 1;
-    var accepting = 1;
-    while accepting == 1 {
+    loop {
         let conn = listener.accept();
         let handler = spawn ClientHandler(conn: conn, name: f"client-{next_id}", room: room);
+        // The default unbounded mailbox makes this a lossless unit send.
         room.register(handler, f"client-{next_id}");
         handler.start(0);
         next_id = next_id + 1;

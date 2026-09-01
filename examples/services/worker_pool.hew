@@ -87,13 +87,12 @@ fn main() {
     w2.crash_test();
     sleep(200ms);
 
-    // Supervisor has already restarted worker 2 — get the fresh handle
-    let w2_new = sup.w2;
+    // ChildRef re-resolves worker 2's current incarnation after restart.
     println("--- Post-crash fan-out ---");
     let (p, q, r, s) = join {
         w0.compute(5),
         w1.compute(5),
-        w2_new.compute(5),
+        w2.compute(5),
         w3.compute(5),
     };
     println(f"Results: {p}, {q}, {r}, {s}  (all workers operational)");

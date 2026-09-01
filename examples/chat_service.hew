@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Status: runnable (local actor path; distributed Node API is native-only)
 //! Description: Distributed chat service — idiomatic Hew networked actors
 
 // Distributed chat service — idiomatic Hew networked actors
@@ -7,9 +7,10 @@
 //   Server node: ChatRoom actor manages connected users
 //   Client node: connects, looks up "room", sends messages
 //
-// The actor code is identical whether local or distributed.
-// Node.start/shutdown/register/lookup typecheck today. Node.connect is
-// runtime-only for now (not a typechecker builtin yet).
+// This runnable path keeps the actor and client on one native process. The
+// Node API is also available for a distributed deployment: start, shutdown,
+// register, connect, and typed lookup are native-only, and lookup returns a
+// Result<RemotePid<T>, LookupError>.
 actor ChatRoom {
     let users: Vec<string>;
     let messages: Vec<string>;
@@ -28,10 +29,8 @@ actor ChatRoom {
     receive fn history() -> i64 {
         let total = messages.len();
         println(f"[room] {total} messages total");
-        var i = 0;
-        while i < total {
-            println(f"  {messages[i]}");
-            i = i + 1;
+        for msg in messages {
+            println(f"  {msg}");
         }
         total
     }
@@ -48,18 +47,22 @@ fn main() {
     // ── Client side (same process for now) ───────────────────
     // In a distributed setup:
     //   Node.start("0.0.0.0:9001");
-    //   Node.connect("127.0.0.1:9000");  // runtime API, not a typechecker builtin yet
-    //   let room = Node.lookup("room");
+    //   Node.connect("127.0.0.1:9000");
+    //   let found: Result<RemotePid<ChatRoom>, LookupError> = Node.lookup("room");
 
-    // These calls are location-transparent — identical syntax
-    // whether room is local or on a remote node:
+    // These are direct calls on the local actor. They are lossless unit sends
+    // for ChatRoom's unbounded mailbox; a RemotePid uses its typed send/ask
+    // methods and returns a Result that callers must handle.
     room.enter("alice");
     room.enter("bob");
     room.say("alice", "hello everyone!");
     room.say("bob", "hey alice!");
     room.say("alice", "how is the weather?");
     room.exit_room("bob");
-    let _ = await room.history();
+    match await room.history() {
+        .Ok(_) => {},
+        .Err(_) => panic("chat history request failed"),
+    }
     // Node.shutdown();
     println("[main] chat demo complete");
 }

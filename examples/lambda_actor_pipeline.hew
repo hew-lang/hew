@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Status: runnable
 //! Description: Lambda Actor Pipeline Example
 
 // Lambda Actor Pipeline Example
@@ -16,7 +16,10 @@ fn main() {
         print("Doubled: ");
         print(doubled);
         print(" -> ");
-        printer.send(doubled);
+        match printer.send(doubled) {
+            .Ok(_) => {},
+            .Err(_) => panic("doubler could not send to printer"),
+        }
     };
     // First stage - adder that sends to doubler
     let adder = actor |x: i32| {
@@ -24,16 +27,25 @@ fn main() {
         print("Added 5: ");
         print(added);
         print(" -> ");
-        doubler.send(added);
+        match doubler.send(added) {
+            .Ok(_) => {},
+            .Err(_) => panic("adder could not send to doubler"),
+        }
     };
     // Start the pipeline
     println("Starting pipeline with input: 10");
-    adder.send(10); // 10 + 5 = 15, then 15 * 2 = 30
+    match adder.send(10) {
+        .Ok(_) => {},
+        .Err(_) => panic("pipeline rejected input 10"),
+    }
     sleep(100ms);
 
     // Another pipeline run
     println("Starting pipeline with input: 3");
-    adder.send(3); // 3 + 5 = 8, then 8 * 2 = 16
+    match adder.send(3) {
+        .Ok(_) => {},
+        .Err(_) => panic("pipeline rejected input 3"),
+    }
     sleep(100ms);
 
     // More complex pipeline - 3 stage transformation
@@ -42,14 +54,32 @@ fn main() {
     };
     let squarer = actor |x: i32| {
         let squared = x * x;
-        formatter.send(squared);
+        match formatter.send(squared) {
+            .Ok(_) => {},
+            .Err(_) => panic("squarer could not send to formatter"),
+        }
     };
     let incrementer = actor |x: i32| {
-        squarer.send(x + 1);
+        match squarer.send(x + 1) {
+            .Ok(_) => {},
+            .Err(_) => panic("incrementer could not send to squarer"),
+        }
     };
     println("Complex pipeline: increment -> square -> format");
-    incrementer.send(4); // 4+1=5, 5*5=25, format 25
-    incrementer.send(9); // 9+1=10, 10*10=100, format 100
+    match incrementer.send(4) { // 4+1=5, 5*5=25, format 25
+        .Ok(_) => {},
+        .Err(_) => panic("complex pipeline rejected input 4"),
+    }
+    match incrementer.send(9) { // 9+1=10, 10*10=100, format 100
+        .Ok(_) => {},
+        .Err(_) => panic("complex pipeline rejected input 9"),
+    }
     sleep(100ms);
+    await adder.close();
+    await doubler.close();
+    await printer.close();
+    await incrementer.close();
+    await squarer.close();
+    await formatter.close();
     println("=== Pipeline Done ===");
 }

@@ -10,8 +10,8 @@
 // with Arc<RwLock<HashMap>>.
 //
 // In Hew the monitor is an actor. Health state is actor state — no
-// locks needed. The check cycle uses `select` with a timeout to detect
-// unresponsive services without blocking forever.
+// locks needed. The check cycle uses `select` with a timeout to classify
+// unresponsive services defensively without blocking forever.
 
 // Service actor — responds to health checks. Can be made unhealthy.
 actor Service {
@@ -59,8 +59,8 @@ actor HealthMonitor {
                 .Some(value) => value,
                 .None => panic("service registry is inconsistent"),
             };
-            // Use select with timeout — if the service doesn't respond
-            // within 500ms, mark it unhealthy.
+            // Use select with a 500ms timeout — an explicit unhealthy
+            // response or a missing response both mark it unhealthy.
             let result = select {
                 r from svc.health_check() => r,
                 after 500ms => -1,
@@ -127,13 +127,25 @@ fn main() {
     println("--- All services healthy ---");
     monitor.check_all();
     sleep(30ms);
-    let _ = await monitor.report();
+    match await monitor.report() {
+        .Ok(_) => {},
+        .Err(_) => panic("[monitor] initial report ask failed"),
+    }
     // ── Normal traffic ──
     println("");
     println("--- Normal traffic ---");
-    let _ = await auth.handle(1);
-    let _ = await api.handle(2);
-    let _ = await cache.handle(3);
+    match await auth.handle(1) {
+        .Ok(_) => {},
+        .Err(_) => panic("[health] auth request 1 ask failed"),
+    }
+    match await api.handle(2) {
+        .Ok(_) => {},
+        .Err(_) => panic("[health] api request 2 ask failed"),
+    }
+    match await cache.handle(3) {
+        .Ok(_) => {},
+        .Err(_) => panic("[health] cache request 3 ask failed"),
+    }
     // ── Make cache unhealthy ──
     println("");
     println("--- Cache goes down ---");
@@ -141,13 +153,22 @@ fn main() {
     sleep(30ms);
     monitor.check_all();
     sleep(600ms);
-    let _ = await monitor.report();
+    match await monitor.report() {
+        .Ok(_) => {},
+        .Err(_) => panic("[monitor] degraded report ask failed"),
+    }
     // ── Remaining services still serve traffic ──
     println("");
     println("--- Healthy services still operational ---");
-    let _ = await auth.handle(4);
-    let _ = await api.handle(5);
+    match await auth.handle(4) {
+        .Ok(_) => {},
+        .Err(_) => panic("[health] auth request 4 ask failed"),
+    }
+    match await api.handle(5) {
+        .Ok(_) => {},
+        .Err(_) => panic("[health] api request 5 ask failed"),
+    }
     println("");
-    println("Health monitoring complete. The select timeout detects");
-    println("unresponsive services without blocking the monitor.");
+    println("Health monitoring complete. The select handles unhealthy");
+    println("responses and defensively times out unresponsive services.");
 }

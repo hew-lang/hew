@@ -816,6 +816,46 @@ fn mir_stage_boundary_rejects_duplicate_key_in_every_stage() {
 }
 
 #[test]
+fn mir_stage_boundary_rejects_unmatched_extra_checked_artifact() {
+    let mut pipeline = empty_pipeline_with_const_42();
+    let mut extra = pipeline.checked_mir[0].clone();
+    extra.name = "orphan_checked_symbol".to_string();
+    extra.key = MirCallableKey::for_test("fixture.stage.orphan.checked");
+    pipeline.checked_mir.push(extra);
+
+    let ctx = Context::create();
+    let error = build_module(&ctx, &pipeline, "orphan_checked_stage")
+        .expect_err("an unmatched Checked artifact must fail before emission");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("an unmatched Checked artifact must fail closed");
+    };
+    assert_eq!(
+        message,
+        "Checked MIR function `orphan_checked_symbol` with callable key fixture.stage.orphan.checked (Monomorphic) has no matching Raw MIR artifact"
+    );
+}
+
+#[test]
+fn mir_stage_boundary_rejects_unmatched_extra_elaborated_artifact() {
+    let mut pipeline = empty_pipeline_with_const_42();
+    let mut extra = pipeline.elaborated_mir[0].clone();
+    extra.name = "orphan_elaborated_symbol".to_string();
+    extra.key = MirCallableKey::for_test("fixture.stage.orphan.elaborated");
+    pipeline.elaborated_mir.push(extra);
+
+    let ctx = Context::create();
+    let error = build_module(&ctx, &pipeline, "orphan_elaborated_stage")
+        .expect_err("an unmatched Elaborated artifact must fail before emission");
+    let CodegenError::FailClosed(message) = error else {
+        panic!("an unmatched Elaborated artifact must fail closed");
+    };
+    assert_eq!(
+        message,
+        "Elaborated MIR function `orphan_elaborated_symbol` with callable key fixture.stage.orphan.elaborated (Monomorphic) has no matching Raw MIR artifact"
+    );
+}
+
+#[test]
 fn mir_stage_boundary_rejects_crossed_callable_keys() {
     let mut first = empty_pipeline_with_const_42();
     first.raw_mir[0].name = "first_symbol".to_string();

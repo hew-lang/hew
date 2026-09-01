@@ -34,9 +34,9 @@
 //! whose `declaration` is reconstructed from the owner's qualified path with
 //! the same `legacy_reconstruct_from_full_path` call. In every case the key
 //! is anchored on the declaration identity hew-hir currently reconstructs,
-//! not on a resolver-native mint; resolver-native minting for all three
-//! (ordinary functions, machines, and the actor/supervisor synthetics) is the
-//! tracked upstream fix — see `.tmp/TODO.md`.
+//! not on a resolver-native mint. Resolver-native provenance for ordinary
+//! functions, machines, and actor/supervisor synthetics remains outside this
+//! stage-association cutover.
 //!
 //! `RawMirFunction::name` (and its Checked/Elaborated twins) stays as the
 //! presentation/linkage alias beside the key.

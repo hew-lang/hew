@@ -1436,6 +1436,25 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/const_ref_forward.hew" \
     'undefined variable `A`' \
     "const_ref_forward"
+# shellcheck disable=SC2016  # backticks are literal Hew type syntax in the diagnostic.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/const_unsigned_underflow.hew" \
+    'constant initializer arithmetic overflows declared type `u8`' \
+    "const_unsigned_underflow"
+# shellcheck disable=SC2016  # backticks are literal Hew type syntax in the diagnostic.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/const_arithmetic_overflow.hew" \
+    'constant initializer arithmetic overflows declared type `i8`' \
+    "const_arithmetic_overflow"
+# shellcheck disable=SC2016  # backticks are literal Hew type syntax in the diagnostic.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/const_nested_unary_overflow.hew" \
+    'constant initializer arithmetic overflows declared type `i8`' \
+    "const_nested_unary_overflow"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/const_division_by_zero.hew" \
+    'constant initializer divides by zero' \
+    "const_division_by_zero"
 
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
@@ -2153,6 +2172,7 @@ grep -q 'LocalPid' "${reject_output}"
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"
+run_accept_expect_stdout "signed_const_arithmetic"
 run_accept_expect_stdout "top_level_type_aliases"
 run_accept_expect_stdout "type_alias_resource_close"
 expect_check_fail_contains \

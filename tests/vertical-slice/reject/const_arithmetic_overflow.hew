@@ -1,0 +1,5 @@
+//! Target-typed arithmetic overflow is distinct from a literal range error.
+
+const BAD: i8 = 127 + 1;
+
+fn main() {}

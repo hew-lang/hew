@@ -706,6 +706,8 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// A module constant initializer failed target-typed integer evaluation.
+    ConstInitializer,
     /// A `#[wire]` field marked `optional` does not resolve to `Option<T>`.
     ///
     /// This is an admission rule, rather than an encode/decode rule: wire
@@ -1429,6 +1431,7 @@ impl TypeErrorKind {
             Self::GenericLayoutCollision => "GenericLayoutCollision",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::ConstInitializer => "E_CONST_INITIALIZER",
             Self::WireOptionalFieldRequiresOption => "E_WIRE_OPTIONAL_REQUIRES_OPTION",
             Self::SupervisorError { subkind } => subkind.as_kind_str(),
             Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",

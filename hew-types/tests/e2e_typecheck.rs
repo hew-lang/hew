@@ -6060,3 +6060,62 @@ fn remote_receive_fn_dispatch_with_channel_handle_refused() {
         output.errors
     );
 }
+
+#[test]
+fn signed_module_const_arithmetic_is_checked_in_its_declared_type() {
+    let output = typecheck_inline(
+        r"
+        const NIL: i64 = 0 - 1;
+        const PAREN: i16 = -(1 + 2);
+        const MIN: i8 = -128;
+        fn main() { println(NIL); }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn invalid_module_const_integer_arithmetic_has_specific_checker_diagnostics() {
+    for (source, expected) in [
+        (
+            "const BAD: u8 = 0 - 1;",
+            "arithmetic overflows declared type `u8`",
+        ),
+        (
+            "const BAD: i8 = 127 + 1;",
+            "arithmetic overflows declared type `i8`",
+        ),
+        (
+            "const BAD: i8 = -(-(-128));",
+            "arithmetic overflows declared type `i8`",
+        ),
+        ("const BAD: i64 = 1 / 0;", "divides by zero"),
+        ("const BAD: u8 = 256;", "does not fit in declared type `u8`"),
+    ] {
+        let output = typecheck_inline(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains(expected)),
+            "expected `{expected}` for `{source}`, got {:#?}",
+            output.errors
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|error| error.kind.as_kind_str() == "NotYetImplemented"),
+            "integer const rejection must not be NYI: {:#?}",
+            output.errors
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind.as_kind_str() == "E_CONST_INITIALIZER"),
+            "integer const rejection must use E_CONST_INITIALIZER: {:#?}",
+            output.errors
+        );
+    }
+}

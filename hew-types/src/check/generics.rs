@@ -1803,7 +1803,17 @@ impl Checker {
         }
         match super::const_eval::eval_const_expr(arg, env) {
             Ok(value) => Some(super::types::MachineConstArgValue::Usize(value)),
-            Err(super::const_eval::ConstEvalError::Overflow) => {
+            // `eval_const_expr` is the machine-`usize` compatibility wrapper
+            // and maps these target-typed classes to `Overflow` before they
+            // reach this call site. Keep an explicit defensive arm so a future
+            // wrapper regression still fails closed with the established
+            // const-generic diagnostic rather than changing the machine domain.
+            Err(
+                super::const_eval::ConstEvalError::Overflow
+                | super::const_eval::ConstEvalError::ArithmeticOverflow
+                | super::const_eval::ConstEvalError::DivisionByZero
+                | super::const_eval::ConstEvalError::OutOfRange,
+            ) => {
                 self.errors.push(crate::error::TypeError::new(
                     crate::error::TypeErrorKind::InvalidOperation,
                     arg.1.clone(),

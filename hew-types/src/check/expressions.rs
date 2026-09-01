@@ -1006,9 +1006,7 @@ impl Checker {
                 continue;
             }
             if let ConstValue::Integer(v) = value {
-                if let Ok(u) = u64::try_from(*v) {
-                    env.insert(name.clone(), u);
-                }
+                env.insert(name.clone(), i128::from(*v));
             }
         }
         env

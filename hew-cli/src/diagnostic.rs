@@ -64,6 +64,7 @@ const ROOT_SOURCE_CONTEXT_UNAVAILABLE: &str =
 pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
     match kind {
         hew_hir::HirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
+        hew_hir::HirDiagnosticKind::ConstIntegerEvaluation { .. } => "E_CONST_INITIALIZER",
         hew_hir::HirDiagnosticKind::TuplePatternArityMismatch { .. }
         | hew_hir::HirDiagnosticKind::TuplePatternNonTupleValue => "E_TUPLE_PATTERN_MISMATCH",
         hew_hir::HirDiagnosticKind::EnumVariantConstructorShapeMismatch { .. }

@@ -18,7 +18,10 @@ pub use analysis::{
     DefUseIndex, Dominators, EdgeRef, RewriteError,
 };
 pub use dump::{dump_lowering, dump_sir};
-pub use lower::{lower_module, LoweredModule, SirLoweringStatus};
+pub use lower::{
+    lower_module, lower_module_with_demand, LoweredModule, SirLoweringDemand, SirLoweringStatus,
+    SirSourceStatus,
+};
 pub use model::{
     BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, EffectSummary,
     FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, SemAbiParam,

@@ -36,13 +36,41 @@ pub enum SirLoweringStatus {
     NotReached,
 }
 
+/// Which bodies a lowering run demands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SirLoweringDemand {
+    /// Demand-driven from the module's resolved entry callable: the strict
+    /// `--sir-lower` compile route. A declaration the entry never reaches is
+    /// reported [`SirLoweringStatus::NotReached`], and so is a declaration
+    /// whose header was refused, because no call can name it.
+    Entry,
+    /// Demand every admitted callable header, entry or not: the coverage
+    /// inventory. A refused header is reported
+    /// [`SirLoweringStatus::Unsupported`] with the refusal reason, because the
+    /// question asked is "would SIR take this body", not "does this program
+    /// need it".
+    EveryCallable,
+}
+
+/// The lowering outcome for one HIR function declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SirSourceStatus {
+    /// Checker-owned identity of the declaration; the key every consumer
+    /// joins on. HIR item order is not a key: an item list zipped positionally
+    /// against a status list drifts the moment one side filters.
+    pub declaration: DefId,
+    /// The emitted HIR name, for display only.
+    pub name: String,
+    pub status: SirLoweringStatus,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoweredModule {
     pub module: SemModule,
     /// One status per HIR function, in source order. A generic HIR definition
     /// is reported as [`SirLoweringStatus::GenericTemplate`] because it never
     /// becomes an abstract SIR body.
-    pub statuses: Vec<(String, SirLoweringStatus)>,
+    pub statuses: Vec<SirSourceStatus>,
     /// Status for every concrete callable header, in `CallableId` order.
     /// This lets strict component selection diagnose a failed concrete generic
     /// instance without pretending that its generic HIR template was a body.
@@ -57,6 +85,16 @@ impl LoweredModule {
             .get(usize::try_from(callable.0).ok()?)
             .filter(|(candidate, _)| *candidate == callable)
             .map(|(_, status)| status)
+    }
+
+    /// Return the source-level lowering result for one HIR function
+    /// declaration.
+    #[must_use]
+    pub fn status_for_declaration(&self, declaration: &DefId) -> Option<&SirLoweringStatus> {
+        self.statuses
+            .iter()
+            .find(|status| status.declaration == *declaration)
+            .map(|status| &status.status)
     }
 }
 
@@ -75,21 +113,38 @@ impl LoweredModule {
 /// A module with no entry callable is not a program: it lowers no bodies.
 #[must_use]
 pub fn lower_module(module: &HirModule) -> LoweredModule {
+    lower_module_with_demand(module, SirLoweringDemand::Entry)
+}
+
+/// Lower SIR bodies under an explicit demand policy.
+///
+/// [`SirLoweringDemand::Entry`] is [`lower_module`].
+/// [`SirLoweringDemand::EveryCallable`] asks for every admitted header's body
+/// so a coverage inventory can say, per declaration, whether SIR takes it.
+/// The strict compile route never asks for that demand, so nothing about it
+/// changes here.
+#[must_use]
+pub fn lower_module_with_demand(module: &HirModule, demand: SirLoweringDemand) -> LoweredModule {
     // The HIR monomorphisation registry remains deliberately unused here.
     // SIR discovers concrete direct-user instances from each resolved call's
     // `SiteId -> call_site_type_args` fact, applies the enclosing semantic
     // substitution, and creates its own closed instance worklist.
-    let mut service = InstanceService::new(module);
-    service.request_entry();
+    let mut service = InstanceService::new(module, demand);
+    match demand {
+        SirLoweringDemand::Entry => service.request_entry(),
+        SirLoweringDemand::EveryCallable => service.request_every_callable(),
+    }
     service.lower_pending();
 
     let statuses = module
         .items
         .iter()
         .filter_map(|item| match item {
-            HirItem::Function(function) => {
-                Some((function.name.clone(), service.source_status(function)))
-            }
+            HirItem::Function(function) => Some(SirSourceStatus {
+                declaration: function.declaration.clone(),
+                name: function.name.clone(),
+                status: service.source_status(function),
+            }),
             _ => None,
         })
         .collect();
@@ -335,6 +390,7 @@ enum CallableState {
 /// `HirModule::monomorphisations` or invokes MIR lowering.
 struct InstanceService<'a> {
     module: &'a HirModule,
+    demand: SirLoweringDemand,
     table: CallableTable<'a>,
     states: Vec<CallableState>,
     statuses: Vec<Option<SirLoweringStatus>>,
@@ -349,11 +405,12 @@ struct InstanceService<'a> {
 }
 
 impl<'a> InstanceService<'a> {
-    fn new(module: &'a HirModule) -> Self {
+    fn new(module: &'a HirModule, demand: SirLoweringDemand) -> Self {
         let table = CallableTable::from_hir(module);
         let count = table.callables.len();
         Self {
             module,
+            demand,
             table,
             states: vec![CallableState::Unreached; count],
             statuses: vec![None; count],
@@ -375,6 +432,23 @@ impl<'a> InstanceService<'a> {
     fn request_entry(&mut self) {
         if let Some(entry) = self.table.entry_callable {
             self.request_body(entry);
+        }
+    }
+
+    /// Seed the worklist with every admitted header, in `CallableId` order.
+    ///
+    /// Generic templates have no header of their own; their instances are
+    /// still minted only by resolved call edges, so an uncalled template stays
+    /// unproven and its status says so.
+    fn request_every_callable(&mut self) {
+        let ids: Vec<CallableId> = self
+            .table
+            .callables
+            .iter()
+            .map(|callable| callable.id)
+            .collect();
+        for id in ids {
+            self.request_body(id);
         }
     }
 
@@ -629,9 +703,20 @@ impl<'a> InstanceService<'a> {
             return self.callable_status(callable);
         }
         // No admitted header: no resolved call can name this declaration, so
-        // the entry closure never demanded a body from it. Why the header was
-        // refused belongs to the call site that wanted it.
-        SirLoweringStatus::NotReached
+        // the entry closure never demanded a body from it. Under entry demand
+        // the refusal belongs to the call site that wanted it; under
+        // every-callable demand the refusal is the answer being asked for.
+        match self.demand {
+            SirLoweringDemand::Entry => SirLoweringStatus::NotReached,
+            SirLoweringDemand::EveryCallable => {
+                self.table.ineligible.get(&function.declaration).map_or(
+                    SirLoweringStatus::NotReached,
+                    |reason| SirLoweringStatus::Unsupported {
+                        reason: reason.clone(),
+                    },
+                )
+            }
+        }
     }
 
     /// The recorded outcome for one admitted callable header.

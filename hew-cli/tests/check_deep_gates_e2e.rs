@@ -457,3 +457,24 @@ fn check_accepts_explicit_integer_widening_cast_i32_to_i64() {
         describe_output(&output),
     );
 }
+
+#[test]
+fn check_rejects_invalid_module_const_arithmetic_without_nyi_or_artifact() {
+    let (dir, path) = write_fixture("const BAD: u8 = 0 - 1;\nfn main() {}\n");
+    let output = run_check(&["check", path.to_str().expect("utf8 fixture path")]);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(!output.status.success(), "{}", describe_output(&output));
+    assert!(
+        stderr.contains("constant initializer arithmetic overflows declared type `u8`"),
+        "expected target-range diagnostic, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("E_NOT_YET_IMPLEMENTED"),
+        "supported const arithmetic must not leak NYI:\n{stderr}"
+    );
+    assert!(
+        !dir.path().join("main").exists(),
+        "failed `hew check` must not emit a native artifact"
+    );
+}

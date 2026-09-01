@@ -1,0 +1,12 @@
+//! Target-typed signed module-constant arithmetic must lower through the
+//! ordinary const path, not a unary-minus spelling exception.
+
+const NIL: i64 = 0 - 1;
+const PAREN: i16 = -(1 + 2);
+
+fn main() {
+    if PAREN != -3 {
+        exit(1);
+    }
+    println(NIL);
+}

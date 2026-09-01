@@ -1,0 +1,5 @@
+//! Each unary negation is evaluated in the declared integer target range.
+
+const TRIPLE: i8 = -(-(-128));
+
+fn main() {}

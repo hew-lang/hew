@@ -2335,6 +2335,65 @@ impl Checker {
         let expected =
             self.resolve_annotation_with_holes(&cd.ty, format!("constant `{}`", cd.name));
         let actual = self.check_against(&cd.value.0, &cd.value.1, &expected);
+        // Module constants are target-typed integer expressions. Route the
+        // accepted AST through the shared evaluator now, at the checker
+        // boundary, so an invalid arithmetic result is a user semantic error
+        // and cannot become a later HIR `E_NOT_YET_IMPLEMENTED`.
+        if let Ok(resolved) = ResolvedTy::from_ty(&self.subst.resolve(&expected)) {
+            if let Some(target) = super::const_eval::ConstIntegerTarget::from_resolved_ty(
+                &resolved,
+                self.pointer_width(),
+            ) {
+                match super::const_eval::eval_integer_const_expr(
+                    &cd.value,
+                    &super::const_eval::ConstEnv::new(),
+                    target,
+                ) {
+                    Ok(_)
+                    | Err(
+                        super::const_eval::ConstEvalError::NotConstant
+                        | super::const_eval::ConstEvalError::UnknownConst(_),
+                    ) => {}
+                    Err(super::const_eval::ConstEvalError::ArithmeticOverflow) => {
+                        self.report_error(
+                            TypeErrorKind::ConstInitializer,
+                            &cd.value.1,
+                            format!(
+                                "constant initializer arithmetic overflows declared type `{}`",
+                                resolved.user_facing()
+                            ),
+                        );
+                    }
+                    Err(super::const_eval::ConstEvalError::DivisionByZero) => {
+                        self.report_error(
+                            TypeErrorKind::ConstInitializer,
+                            &cd.value.1,
+                            "constant initializer divides by zero".to_string(),
+                        );
+                    }
+                    Err(super::const_eval::ConstEvalError::OutOfRange) => {
+                        self.report_error(
+                            TypeErrorKind::ConstInitializer,
+                            &cd.value.1,
+                            format!(
+                                "constant initializer value does not fit in declared type `{}`",
+                                resolved.user_facing()
+                            ),
+                        );
+                    }
+                    // The target evaluator never emits the legacy machine
+                    // wrapper class. Keep an explicit fail-closed arm so a
+                    // future authority regression cannot silently accept it.
+                    Err(super::const_eval::ConstEvalError::Overflow) => {
+                        self.report_error(
+                            TypeErrorKind::ConstInitializer,
+                            &cd.value.1,
+                            "constant initializer overflows its declared integer type".to_string(),
+                        );
+                    }
+                }
+            }
+        }
         // Store compile-time values for default-width numeric consts so later
         // coercion sites can reuse the original literal kind/value instead of
         // depending on synthesis-time i64/f64 defaults.

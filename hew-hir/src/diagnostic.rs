@@ -62,6 +62,14 @@ impl HirDiagnostic {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirDiagnosticKind {
+    /// A target-typed integer module-constant initializer is semantically
+    /// invalid. This is deliberately distinct from `NotYetImplemented`: the
+    /// arithmetic form is supported and must stop before artifact emission.
+    ConstIntegerEvaluation {
+        /// Stable semantic class: `arithmetic-overflow`, `division-by-zero`,
+        /// or `out-of-range`.
+        class: String,
+    },
     /// A syntactic construct that is outside the current vertical slice.
     /// The `construct` names the unsupported form; `owning_pass` says which
     /// slice is planned to add support.  Fail-closed: the driver must stop on

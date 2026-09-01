@@ -1815,6 +1815,55 @@ fn top_level_const_folds_signed_negative_initializers() {
 }
 
 #[test]
+fn top_level_const_folds_signed_binary_subtraction() {
+    let output = lower("const NIL: i64 = 0 - 1; fn main() -> i64 { return NIL; }");
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let value = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Const(item) if item.name == "NIL" => Some(item.value.clone()),
+            _ => None,
+        })
+        .expect("module lowers NIL");
+    assert_eq!(value, hew_hir::HirConstValue::Integer(-1));
+}
+
+#[test]
+fn top_level_const_integer_failures_are_semantic_not_nyi() {
+    for (source, class) in [
+        ("const BAD: u8 = 0 - 1; fn main() {}", "arithmetic-overflow"),
+        (
+            "const BAD: i8 = 127 + 1; fn main() {}",
+            "arithmetic-overflow",
+        ),
+        ("const BAD: i64 = 1 / 0; fn main() {}", "division-by-zero"),
+        ("const BAD: u8 = 256; fn main() {}", "out-of-range"),
+    ] {
+        let output = lower(source);
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                matches!(
+                    &diagnostic.kind,
+                    HirDiagnosticKind::ConstIntegerEvaluation { class: actual } if actual == class
+                )
+            }),
+            "expected {class} for {source}, got {:?}",
+            output.diagnostics
+        );
+        assert!(
+            !output.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                HirDiagnosticKind::NotYetImplemented { .. }
+            )),
+            "integer const failure must not surface as NYI: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
 fn top_level_string_const_folds_literal() {
     let output = lower("const NAME: String = \"hew\"; fn main() -> i64 { return 0; }");
     let value = output

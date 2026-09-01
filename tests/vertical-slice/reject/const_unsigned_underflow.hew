@@ -1,0 +1,6 @@
+//! `0 - 1` is a supported const expression whose value does not fit `u8`.
+//! The checker must reject it semantically, before HIR/MIR artifacts.
+
+const BAD: u8 = 0 - 1;
+
+fn main() {}

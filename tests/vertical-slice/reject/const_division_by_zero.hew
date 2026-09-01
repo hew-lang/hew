@@ -1,0 +1,5 @@
+//! Division by zero in a module constant is a checker error, never an NYI.
+
+const BAD: i64 = 1 / 0;
+
+fn main() {}

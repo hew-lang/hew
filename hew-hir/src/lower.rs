@@ -11322,15 +11322,19 @@ impl LowerCtx {
     /// Fail-closed constant-fold for module-level `const` initializers.
     ///
     /// WHY this shape: integer const-evaluation is delegated wholesale to
-    /// [`hew_types::check::const_eval::eval_const_expr`], the single sanctioned
+    /// [`hew_types::check::const_eval::eval_integer_const_expr`], the single sanctioned
     /// constexpr authority (A620 / Q329 — const-eval must reuse `const_eval.rs`,
     /// not fork a parallel evaluator). Only two things live here: the
     /// string-literal short-circuit (strings are non-arithmetic and `const_eval`
     /// is integer-only, so they legitimately stay HIR-local) and the
-    /// `Result<u64, ConstEvalError>` → [`HirConstValue`] mapping with its
+    /// target-typed result → [`HirConstValue`] mapping with its
     /// fail-closed diagnostics. Const *references* in initializers resolve via
     /// the `ConstEnv`, populated only with same-module integer consts already
     /// folded earlier in source order.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the explicit literal and shared-evaluator error mapping keeps every const failure class fail-closed"
+    )]
     fn fold_const_expr(
         &mut self,
         expr: &Expr,
@@ -11378,29 +11382,6 @@ impl LowerCtx {
                     return crate::node::HirConstValue::Float(0.0);
                 }
             }
-            if let Some(limit) = Self::signed_integer_negative_magnitude_limit(declared_ty) {
-                let env = hew_types::check::const_eval::ConstEnv::new();
-                match hew_types::check::const_eval::eval_const_expr(operand, &env) {
-                    Ok(magnitude) if magnitude <= limit => {
-                        let value = if magnitude == (1u64 << 63) {
-                            i64::MIN
-                        } else {
-                            -i64::try_from(magnitude)
-                                .expect("checked negative magnitude fits in i64")
-                        };
-                        return crate::node::HirConstValue::Integer(value);
-                    }
-                    Ok(_) => {
-                        self.unsupported(
-                            span,
-                            "negative const initializer exceeds the declared signed integer range",
-                            "const-fold",
-                        );
-                        return crate::node::HirConstValue::Integer(0);
-                    }
-                    Err(_) => {}
-                }
-            }
         }
 
         // Delegate integer/arithmetic evaluation to the sanctioned engine.
@@ -11410,30 +11391,60 @@ impl LowerCtx {
         // forward references and unsupported const value shapes.
         let spanned: hew_parser::ast::Spanned<Expr> = (expr.clone(), span.clone());
         let env = self.const_eval_env_from_folded_integer_consts();
-        match hew_types::check::const_eval::eval_const_expr(&spanned, &env) {
-            Ok(u) => match i64::try_from(u) {
+        let target_width = if self.target_arch == TargetArch::Wasm32 {
+            32
+        } else {
+            64
+        };
+        let target = hew_types::check::const_eval::ConstIntegerTarget::from_resolved_ty(
+            declared_ty,
+            target_width,
+        );
+        match target.map(|target| {
+            hew_types::check::const_eval::eval_integer_const_expr(&spanned, &env, target)
+        }) {
+            Some(Ok(value)) => match i64::try_from(value) {
                 Ok(value) => return crate::node::HirConstValue::Integer(value),
                 Err(_) => {
-                    self.unsupported(span, "const integer value exceeds i64 range", "const-fold");
+                    self.const_integer_evaluation_error(
+                        span,
+                        "out-of-range",
+                        "constant initializer value exceeds the supported HIR integer carrier",
+                    );
                 }
             },
-            Err(hew_types::check::const_eval::ConstEvalError::UnknownConst(_)) => {
+            Some(Err(hew_types::check::const_eval::ConstEvalError::UnknownConst(_))) => {
                 self.unsupported(
                     span,
                     "const references in initializers are not yet supported",
                     "const-fold",
                 );
             }
-            Err(hew_types::check::const_eval::ConstEvalError::Overflow) => {
-                self.unsupported(
+            Some(Err(
+                hew_types::check::const_eval::ConstEvalError::ArithmeticOverflow
+                | hew_types::check::const_eval::ConstEvalError::Overflow,
+            )) => {
+                self.const_integer_evaluation_error(
                     span,
-                    "constant arithmetic overflow, division by zero, or unsupported \
-                     negative/out-of-range value (negative const initializers are not \
-                     yet supported)",
-                    "const-fold",
+                    "arithmetic-overflow",
+                    "constant initializer arithmetic overflows its declared integer type",
                 );
             }
-            Err(hew_types::check::const_eval::ConstEvalError::NotConstant) => {
+            Some(Err(hew_types::check::const_eval::ConstEvalError::DivisionByZero)) => {
+                self.const_integer_evaluation_error(
+                    span,
+                    "division-by-zero",
+                    "constant initializer divides by zero",
+                );
+            }
+            Some(Err(hew_types::check::const_eval::ConstEvalError::OutOfRange)) => {
+                self.const_integer_evaluation_error(
+                    span,
+                    "out-of-range",
+                    "constant initializer value does not fit in its declared integer type",
+                );
+            }
+            Some(Err(hew_types::check::const_eval::ConstEvalError::NotConstant)) | None => {
                 self.unsupported(
                     span,
                     "unsupported const initializer expression",
@@ -11455,12 +11466,25 @@ impl LowerCtx {
         }
     }
 
+    fn const_integer_evaluation_error(
+        &mut self,
+        span: std::ops::Range<usize>,
+        class: &str,
+        note: &str,
+    ) {
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::ConstIntegerEvaluation {
+                class: class.to_string(),
+            },
+            span,
+            note,
+        ));
+    }
+
     fn const_eval_env_from_folded_integer_consts(&self) -> hew_types::check::const_eval::ConstEnv {
         let mut env = hew_types::check::const_eval::ConstEnv::new();
         for (name, value) in &self.folded_integer_consts {
-            if let Ok(value) = u64::try_from(*value) {
-                env.insert(name.clone(), value);
-            }
+            env.insert(name.clone(), i128::from(*value));
         }
         env
     }
@@ -11488,20 +11512,6 @@ impl LowerCtx {
             }
             ResolvedTy::F64 => true,
             _ => false,
-        }
-    }
-
-    fn signed_integer_negative_magnitude_limit(ty: &ResolvedTy) -> Option<u64> {
-        match ty {
-            ResolvedTy::I8 => Some(1u64 << 7),
-            ResolvedTy::I16 => Some(1u64 << 15),
-            ResolvedTy::I32 => Some(1u64 << 31),
-            ResolvedTy::I64 => Some(1u64 << 63),
-            #[cfg(target_pointer_width = "32")]
-            ResolvedTy::Isize => Some(1u64 << 31),
-            #[cfg(not(target_pointer_width = "32"))]
-            ResolvedTy::Isize => Some(1u64 << 63),
-            _ => None,
         }
     }
 

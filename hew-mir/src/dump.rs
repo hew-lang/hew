@@ -30,7 +30,7 @@
 use std::fmt::Write as _;
 
 use crate::model::{
-    ActorStateLoadMode, BasicBlock, CheckedMirFunction, ClosureEnvAllocation,
+    ActorStateLoadMode, BasicBlock, BlockKind, CheckedMirFunction, ClosureEnvAllocation,
     ClosureEnvFieldOwnership, ClosureEnvMode, CmpPred, Direction, DropFnSpec, DropKind, DropPlan,
     ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, FunctionCallConv, Instr, IntArithOp,
     IntSignedness, IrPipeline, JoinBranch, LambdaEnvFieldDrop, MirCheck, MirDiagnostic,
@@ -177,6 +177,7 @@ fn dump_checked_function(out: &mut String, func: &CheckedMirFunction) {
     writeln!(out, "fn {} -> {}", func.name, func.return_ty.user_facing()).expect("write to string");
 
     dump_param_boundaries(out, func);
+    dump_decisions(out, &func.decisions);
 
     for block in &func.blocks {
         dump_basic_block(out, block, 2, None);
@@ -198,6 +199,52 @@ fn dump_checked_function(out: &mut String, func: &CheckedMirFunction) {
         for site in &func.cooperate_sites {
             writeln!(out, "    bb{} {:?}", site.bb_id, site.kind).expect("write to string");
         }
+    }
+}
+
+/// Render the actual decision stream shared by Checked and Elaborated MIR.
+///
+/// `DecisionFact` is presently a vector, so a dump must not expose the
+/// producer's traversal order. Site is the primary key; the remaining actual
+/// fact fields make duplicate-site fixtures deterministic without inventing a
+/// future `DecisionMap` schema.
+fn dump_decisions(out: &mut String, decisions: &[crate::model::DecisionFact]) {
+    if decisions.is_empty() {
+        writeln!(out, "  decisions: none").expect("write to string");
+        return;
+    }
+
+    let mut facts = decisions.iter().collect::<Vec<_>>();
+    facts.sort_unstable_by(|left, right| {
+        left.site
+            .cmp(&right.site)
+            .then_with(|| {
+                left.ty
+                    .user_facing()
+                    .to_string()
+                    .cmp(&right.ty.user_facing().to_string())
+            })
+            .then_with(|| {
+                format!("{:?}", left.value_class).cmp(&format!("{:?}", right.value_class))
+            })
+            .then_with(|| format!("{:?}", left.intent).cmp(&format!("{:?}", right.intent)))
+            .then_with(|| format!("{:?}", left.strategy).cmp(&format!("{:?}", right.strategy)))
+            .then_with(|| left.why.cmp(&right.why))
+    });
+
+    writeln!(out, "  decisions:").expect("write to string");
+    for fact in facts {
+        writeln!(
+            out,
+            "    site={} ty={} value_class={:?} intent={:?} strategy={:?} why={:?}",
+            fact.site,
+            fact.ty.user_facing(),
+            fact.value_class,
+            fact.intent,
+            fact.strategy,
+            fact.why,
+        )
+        .expect("write to string");
     }
 }
 
@@ -288,7 +335,12 @@ fn dump_elab_function(out: &mut String, func: &ElaboratedMirFunction) {
         }
     }
 
-    // Drop plans: the surface RC7 (single drop authority) will diff against.
+    dump_decisions(out, &func.decisions);
+    dump_elab_blocks(out, &func.blocks);
+
+    // Drop plans remain the sole rendered release authority. Blocks describe
+    // control-flow topology only; their compatibility-projection drops must
+    // not be printed a second time beside the authoritative exit plans.
     if func.drop_plans.is_empty() {
         writeln!(out, "  drop_plans: none").expect("write to string");
     } else {
@@ -297,6 +349,27 @@ fn dump_elab_function(out: &mut String, func: &ElaboratedMirFunction) {
             writeln!(out, "    {} ->", render_exit_path(exit_path)).expect("write to string");
             dump_drop_plan(out, plan, 6);
         }
+    }
+}
+
+fn dump_elab_blocks(out: &mut String, blocks: &[crate::model::ElabBlock]) {
+    if blocks.is_empty() {
+        writeln!(out, "  blocks: none").expect("write to string");
+        return;
+    }
+
+    writeln!(out, "  blocks:").expect("write to string");
+    for block in blocks {
+        let kind = match block.kind {
+            BlockKind::Normal => "normal",
+            BlockKind::Cleanup => "cleanup",
+        };
+        writeln!(out, "    id={} kind={kind}", block.id).expect("write to string");
+        match block.successor {
+            Some(successor) => writeln!(out, "      successor: bb{successor}"),
+            None => writeln!(out, "      successor: none"),
+        }
+        .expect("write to string");
     }
 }
 
@@ -1745,11 +1818,15 @@ fn render_mir_check(check: &MirCheck) -> String {
 // ---------------------------------------------------------------------------
 
 fn dump_drop_plan(out: &mut String, plan: &DropPlan, indent: usize) {
+    dump_elab_drops(out, &plan.drops, indent);
+}
+
+fn dump_elab_drops(out: &mut String, drops: &[ElabDrop], indent: usize) {
     let pad = " ".repeat(indent);
-    if plan.drops.is_empty() {
+    if drops.is_empty() {
         writeln!(out, "{pad}(none)").expect("write to string");
     } else {
-        for drop in &plan.drops {
+        for drop in drops {
             dump_elab_drop(out, drop, indent);
         }
     }
@@ -2350,6 +2427,24 @@ mod tests {
         }
     }
 
+    fn decision(
+        site: u32,
+        ty: ResolvedTy,
+        value_class: hew_hir::ValueClass,
+        intent: hew_hir::IntentKind,
+        strategy: Strategy,
+        why: &str,
+    ) -> crate::model::DecisionFact {
+        crate::model::DecisionFact {
+            site: hew_hir::SiteId(site),
+            ty,
+            value_class,
+            intent,
+            strategy,
+            why: why.to_string(),
+        }
+    }
+
     /// Stage 1 gate: function header + CFG spine renders correctly.
     #[test]
     fn dump_raw_function_header_and_spine() {
@@ -2411,6 +2506,111 @@ mod tests {
         assert!(
             dump.contains("checks: none"),
             "expected 'checks: none' in checked dump:\n{dump}"
+        );
+        assert!(
+            dump.contains("decisions: none") && !dump.contains("site="),
+            "empty decisions must not fabricate rows:\n{dump}"
+        );
+    }
+
+    #[test]
+    fn decision_rows_are_deterministic_and_shared_by_checked_and_elab() {
+        let facts = vec![
+            decision(
+                9,
+                ResolvedTy::Bytes,
+                hew_hir::ValueClass::CowValue,
+                hew_hir::IntentKind::Read,
+                Strategy::CowShare,
+                "shared read",
+            ),
+            decision(
+                2,
+                ResolvedTy::I64,
+                hew_hir::ValueClass::BitCopy,
+                hew_hir::IntentKind::Consume,
+                Strategy::Move,
+                "last use",
+            ),
+            // Same SiteId as the first fact: this validates the semantic
+            // tie-break rather than relying on the producer's vector order.
+            decision(
+                9,
+                ResolvedTy::I64,
+                hew_hir::ValueClass::BitCopy,
+                hew_hir::IntentKind::Read,
+                Strategy::BorrowRead,
+                "read only",
+            ),
+        ];
+        let raw = minimal_raw_func("facts");
+        let checked = CheckedMirFunction {
+            key: crate::model::MirCallableKey::for_test("facts"),
+            name: "facts".to_string(),
+            return_ty: ResolvedTy::I64,
+            blocks: raw.blocks.clone(),
+            decisions: facts.clone(),
+            checks: vec![],
+            cooperate_sites: vec![],
+            ownership_elaboration: None,
+        };
+        let mut shuffled = facts.clone();
+        shuffled.reverse();
+        let shuffled_checked = CheckedMirFunction {
+            decisions: shuffled.clone(),
+            ..checked.clone()
+        };
+        let elaborated = ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("facts"),
+            name: "facts".to_string(),
+            return_ty: ResolvedTy::I64,
+            statements: vec![],
+            decisions: shuffled,
+            blocks: vec![],
+            drop_plans: vec![],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+
+        let checked_dump = dump_mir(
+            &IrPipeline {
+                checked_mir: vec![checked],
+                ..empty_pipeline()
+            },
+            DumpStage::Checked,
+        );
+        let shuffled_dump = dump_mir(
+            &IrPipeline {
+                checked_mir: vec![shuffled_checked],
+                ..empty_pipeline()
+            },
+            DumpStage::Checked,
+        );
+        let elab_dump = dump_mir(
+            &IrPipeline {
+                elaborated_mir: vec![elaborated],
+                ..empty_pipeline()
+            },
+            DumpStage::Elab,
+        );
+        let rows = |dump: &str| {
+            dump.lines()
+                .filter(|line| line.trim_start().starts_with("site="))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(rows(&checked_dump), rows(&shuffled_dump));
+        assert_eq!(rows(&checked_dump), rows(&elab_dump));
+        assert!(
+            checked_dump.find("site=s2").unwrap() < checked_dump.find("site=s9").unwrap(),
+            "decisions must sort by SiteId:\n{checked_dump}"
+        );
+        assert!(
+            checked_dump.contains(
+                "site=s9 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why=\"read only\""
+            ),
+            "the dump must render the actual DecisionFact fields:\n{checked_dump}"
         );
     }
 
@@ -2509,6 +2709,67 @@ mod tests {
         assert!(
             dump.contains("drop_plans: none"),
             "expected 'drop_plans: none' in elab dump:\n{dump}"
+        );
+        assert!(
+            dump.contains("decisions: none") && !dump.contains("site="),
+            "empty decisions must not fabricate rows:\n{dump}"
+        );
+    }
+
+    #[test]
+    fn dump_elab_renders_normal_and_cleanup_block_structure() {
+        let elab = ElaboratedMirFunction {
+            key: crate::model::MirCallableKey::for_test("blocks"),
+            name: "blocks".to_string(),
+            return_ty: ResolvedTy::I64,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![
+                crate::model::ElabBlock {
+                    id: 7,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: Some(8),
+                },
+                crate::model::ElabBlock {
+                    id: 8,
+                    kind: BlockKind::Cleanup,
+                    drops: vec![ElabDrop {
+                        place: Place::Local(0),
+                        ty: ResolvedTy::I64,
+                        drop_fn: None,
+                        kind: DropKind::Resource,
+                        guard: None,
+                    }],
+                    successor: None,
+                },
+            ],
+            drop_plans: vec![],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let dump = dump_mir(
+            &IrPipeline {
+                elaborated_mir: vec![elab],
+                ..empty_pipeline()
+            },
+            DumpStage::Elab,
+        );
+
+        assert!(
+            dump.contains("id=7 kind=normal")
+                && dump.contains("successor: bb8")
+                && dump.contains("id=8 kind=cleanup")
+                && dump.contains("successor: none"),
+            "elaborated block structure must remain visible:\n{dump}"
+        );
+        assert!(
+            !dump.contains("drop _0 ty=i64 kind=resource"),
+            "block compatibility projections must not duplicate drop-plan authority:\n{dump}"
+        );
+        assert!(
+            dump.find("blocks:").unwrap() < dump.find("drop_plans: none").unwrap(),
+            "elaborated blocks must precede drop plans:\n{dump}"
         );
     }
 

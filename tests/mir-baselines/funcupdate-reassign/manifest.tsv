@@ -1,6 +1,8 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
-# generating-revision: 133a534331
+# historical-origin-revision: 133a534331
+# latest-whole-output-refresh: #3205 frozen candidate based on
+#   1998f2c0fd194af9fab522bb2763695914e00911
 # generating-context: v0.6.0-rc1 integration branch (semantic state; compilation was
 #   unblocked by the follow-up exhaustive Sender classification only)
 #   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
@@ -98,16 +100,30 @@
 #   arithmetic similarly leaves no cursor owner for the later panic, unwind,
 #   or return edges. Only stale drop-plan entries were removed; the CFG,
 #   statements, and values are unchanged.
+#   Whole-output refresh for the #3205 elaborated-MIR decision/topology surface:
+#   all four files were re-dumped wholesale from the same current compiler,
+#   rather than appending current `decisions`/`blocks` sections to historical
+#   statement text. Those hybrid artifacts gave ordinary decision labels and
+#   statement `SiteId`s different allocator histories, so they could not
+#   truthfully represent one source-site identity. The numeric SiteId churn is
+#   therefore required, not semantic drift. A mechanical audit removed only
+#   the newly rendered decisions/blocks sections and normalized allocator IDs
+#   per function; every retained legacy statement, opcode, CFG, and drop-plan
+#   line was identical for each of the four files.
 #
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
 # normalization: three run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both
 #   sides into per-function chunks (column-0 `fn ` lines) and sorts by
-#   signature line; (2) within each chunk, BindingId/SiteId values are
-#   renumbered in first-occurrence order; (3) blank separators after each
+#   signature line; (2) within each chunk, BindingIds and syntactic statement
+#   SiteIds are renumbered with the leading `decisions` `site=sN` label that
+#   names the same ordinary source site. The exact
+#   `strategy=ParamBoundary(` decision form is separately synthetic (an ABI
+#   parameter slot, not a statement source); (3) blank separators after each
 #   function are normalized because the emitter's final empty line otherwise
-#   follows whichever function map iteration emits last. Within-function content
-#   order is preserved, so a reordered drop inside a chunk remains detectable.
+#   follows whichever function map iteration emits last. Within-function
+#   content order is preserved, so a reordered drop inside a chunk remains
+#   detectable.
 #
 # Purpose: the Coarse freshness summary (`compute_fn_returns_fresh_owner` /
 # `return_value_may_alias_borrow`) feeds the destructive-funcupdate base gate

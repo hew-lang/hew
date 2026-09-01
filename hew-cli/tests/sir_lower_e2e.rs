@@ -179,14 +179,21 @@ fn unrelated_effectful() -> i64 {
 }
 ";
 
-fn raw_mir_dump(source: &Path, sir_flag: Option<&str>) -> Output {
+fn mir_dump(source: &Path, stage: &str, sir_flag: Option<&str>) -> Output {
     let mut command = Command::new(hew_binary());
-    command.arg("compile").arg("--dump-mir").arg("raw");
+    command.arg("compile").arg("--dump-mir").arg(stage);
     if let Some(flag) = sir_flag {
         command.arg(flag);
     }
     command.arg(source).current_dir(repo_root());
-    support::run_bounded_command(command, format!("raw MIR dump for {}", source.display()))
+    support::run_bounded_command(
+        command,
+        format!("{stage} MIR dump for {}", source.display()),
+    )
+}
+
+fn raw_mir_dump(source: &Path, sir_flag: Option<&str>) -> Output {
+    mir_dump(source, "raw", sir_flag)
 }
 
 fn sir_dump(source: &Path) -> Output {
@@ -380,6 +387,31 @@ fn sir_lower_virtual_tuple_projection_compiles_and_runs_without_legacy_storage()
         dump_stderr.contains("no legacy MIR bodies were lowered"),
         "strict tuple dump must report that no legacy body was used:\n{}",
         describe_output(&lowered)
+    );
+
+    let checked = mir_dump(&source, "checked", Some("--sir-lower"));
+    assert_success(
+        &checked,
+        "strict SIR virtual tuple checked dump must succeed",
+    );
+    let checked_dump = String::from_utf8_lossy(&checked.stdout);
+    assert!(
+        checked_dump.contains("param_boundaries:") && checked_dump.contains("decisions:"),
+        "strict tuple Checked MIR must expose its structural fact sections:\n{checked_dump}"
+    );
+
+    let elaborated = mir_dump(&source, "elab", Some("--sir-lower"));
+    assert_success(
+        &elaborated,
+        "strict SIR virtual tuple elab dump must succeed",
+    );
+    let elaborated_dump = String::from_utf8_lossy(&elaborated.stdout);
+    assert!(
+        elaborated_dump.contains("blocks:")
+            && elaborated_dump.contains("kind=normal")
+            && elaborated_dump.contains("decisions:")
+            && elaborated_dump.contains("drop_plans:"),
+        "strict tuple Elaborated MIR must expose structural sections:\n{elaborated_dump}"
     );
 
     let mut compile = Command::new(hew_binary());

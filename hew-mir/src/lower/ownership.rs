@@ -4,18 +4,19 @@ use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
     callee_returns_fresh_owner, callee_returns_retained_string_owner,
     hir_expr_contains_synthetic_vec_get_clone, local_is_rewritten_after_current_iteration,
-    machine_layout_ty_matches, monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
-    ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
-    vec_iter_record_layout_key, ActiveIterationOwner, AffineCallConsumeCandidate, BasicBlock,
-    BindingId, Builder, BuiltinType, ClosurePairIngress, CmpPred, DecisionFact, DischargeSite,
-    Disposition, FieldLoadClass, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
-    HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedLocalEntry,
-    OwnerMintOrigin, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
-    ProducedValueOwnership, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
-    Terminator, ValueClass, ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
-    SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
-    SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_WHILE_LET_ITERATION_NAME,
+    machine_layout_ty_matches, monomorphic_user_record_key, named_type_marker,
+    outbound_record_layouts, ty_is_closure_pair, ty_is_heap_owning_enum_composite,
+    ty_is_local_collection_handle, user_record_layout_key, vec_iter_record_layout_key,
+    ActiveIterationOwner, AffineCallConsumeCandidate, BasicBlock, BindingId, Builder, BuiltinType,
+    ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass, HashMap,
+    HashSet, HirBinding, HirBlock, HirExpr, HirExprKind, HirProducedValueRelation, HirStmtKind,
+    Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    OwnedCarrierNeutralizeTarget, OwnedLocalEntry, OwnerMintOrigin, OwnerMintWarrant, OwnershipCtx,
+    OwnershipDecision, Place, PlaceProvenance, ProducedValueOwnership, Projection, ResolvedRef,
+    ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass, ValueOwnership,
+    ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME, SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
+    SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
+    SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3468,12 +3469,13 @@ impl Builder {
     ///
     /// Returns `None` — keeping today's `ScopeExit` ownership — for the other two
     /// load classes the split names, so their behaviour is unchanged:
-    /// [`Retained`](FieldLoadClass::Retained) (a `string` field: codegen
-    /// `hew_string_clone`s the load, so the binder owns a fresh `+1` released by
-    /// its own drop) and [`HandleTransfer`](FieldLoadClass::HandleTransfer) (a
-    /// single-pointer heap leaf — `Vec` / `bytes` / `HashMap` / `HashSet` /
-    /// `Generator` / indirect-enum node: the load transfers the one handle, the
-    /// binder becomes the owner, and the root's whole-root exclusion posture is
+    /// [`Retained`](FieldLoadClass::Retained) (a `string` or `bytes` field: its
+    /// type-specific lowering path materializes a balanced retained share, so
+    /// the binder owns a fresh `+1` released by its own drop while the root keeps
+    /// the original) and [`HandleTransfer`](FieldLoadClass::HandleTransfer)
+    /// (a single-pointer heap leaf — `Vec` / `HashMap` / `HashSet` / `Generator`
+    /// / indirect-enum node: the load transfers the one handle, the binder
+    /// becomes the owner, and the root's whole-root exclusion posture is
     /// correct).
     ///
     /// It also returns `None` for any non-projection RHS (a fresh call result /
@@ -3489,46 +3491,87 @@ impl Builder {
         &self,
         value: &HirExpr,
         binding_ty: &ResolvedTy,
-    ) -> Option<ValueProvenance> {
-        // Only an inline aggregate field is a ByteCopyAlias. `string` (Retained)
-        // and single-pointer handles (HandleTransfer) keep `ScopeExit`
-        // ownership — the exact facts codegen implements (retain vs copy vs
-        // transfer), so the classification cannot admit an owner the binder
-        // also releases (the load-bearing double-free risk).
-        if self.classify_field_load(binding_ty) != Some(FieldLoadClass::ByteCopyAlias) {
-            return None;
-        }
-        // The RHS must be a field projection of a live owner: `root.field` /
-        // `root.N`. A fresh producer (call result / constructor) owns itself.
+    ) -> Result<Option<ValueProvenance>, crate::state_clone::ClassificationError> {
+        // A fresh producer or whole-value rebind is not a field-load seam at
+        // all. Extract that shape first so this authority never asks the
+        // snapshot classifier for layout facts the non-projection path does
+        // not require.
         let (root_binding, projection) = match &value.kind {
             HirExprKind::FieldAccess { object, field } => {
-                let root = binding_ref_target(object)?;
-                let ordinal = self.record_field_ordinal(object, field)?;
+                let (Some(root), Some(ordinal)) = (
+                    binding_ref_target(object),
+                    self.record_field_ordinal(object, field),
+                ) else {
+                    return Ok(None);
+                };
                 (root, Projection::Field(ordinal))
             }
             HirExprKind::TupleIndex { tuple, index } => {
-                let root = binding_ref_target(tuple)?;
+                let Some(root) = binding_ref_target(tuple) else {
+                    return Ok(None);
+                };
                 let ordinal = u32::try_from(*index)
                     .expect("checked tuple projection index must fit the MIR u32 carrier");
                 (root, Projection::Field(ordinal))
             }
-            _ => return None,
+            _ => return Ok(None),
         };
-        let root_place = self.binding_locals.get(&root_binding).copied()?;
-        Some(ValueProvenance::projection(
+        // Only an inline aggregate field is a ByteCopyAlias. `string` / `bytes`
+        // (Retained) and single-pointer handles (HandleTransfer) keep
+        // `ScopeExit` ownership — the exact facts codegen implements (retain vs
+        // copy vs transfer), so the classification cannot admit an owner the
+        // binder also releases (the load-bearing double-free risk).
+        if self.classify_field_load(binding_ty)? != Some(FieldLoadClass::ByteCopyAlias) {
+            return Ok(None);
+        }
+        let Some(root_place) = self.binding_locals.get(&root_binding).copied() else {
+            return Ok(None);
+        };
+        Ok(Some(ValueProvenance::projection(
             PlaceProvenance::from(root_place),
             vec![projection],
-        ))
+        )))
     }
     /// The three-way ownership class of a `let`-bound field LOAD, keyed on the
     /// field type and frozen to mirror exactly what codegen emits for the load.
-    /// Returns `None` for a heap-free field (no drop obligation to classify).
+    /// Returns `Ok(None)` only for a heap-free field (no drop obligation to
+    /// classify). A missing layout or unsupported ownership decision is an
+    /// error, never a conservative-looking no-op: callers must surface it at
+    /// the source site and stop the affected lowering path.
     /// This is the authority the field-projection alias seam and its verdict-
     /// table pin read; misassigning a class here is the load-bearing double-free
     /// risk, so it keys on the same facts codegen implements.
-    pub(crate) fn classify_field_load(&self, ty: &ResolvedTy) -> Option<FieldLoadClass> {
+    pub(crate) fn classify_field_load(
+        &self,
+        ty: &ResolvedTy,
+    ) -> Result<Option<FieldLoadClass>, crate::state_clone::ClassificationError> {
         let ty = self.subst_ty(ty);
         let owned = ValueOwnership::classify(&ty, Place::Local(0), &self.ownership_ctx());
+        match owned.decision() {
+            // Raw scalar/pointer and borrowed values have no field-load
+            // cleanup authority. Do this before snapshot planning: they do not
+            // require record/enum layout facts, so an absent layout cannot
+            // manufacture a false invariant failure.
+            OwnershipDecision::NoHeap | OwnershipDecision::Borrowed { .. } => return Ok(None),
+            OwnershipDecision::InteriorAlias { .. } | OwnershipDecision::Unsupported { .. } => {
+                return Err(crate::state_clone::ClassificationError::Unsupported {
+                    rendered: format!(
+                        "field-load ownership decision for `{}` is {:?}",
+                        ty.user_facing(),
+                        owned.decision()
+                    ),
+                });
+            }
+            OwnershipDecision::OwnsHeap { .. } => {}
+        }
+        let record_layouts = outbound_record_layouts(self);
+        let plan = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+            &ty,
+            &record_layouts,
+            &self.enum_layouts,
+            &self.opaque_handle_names,
+            &self.lifecycle_registry,
+        )?;
         match owned.decision() {
             // Inline aggregate (record / tuple / array / inline-enum): the load
             // byte-copies the member with no retain, so the binder is an
@@ -3536,22 +3579,93 @@ impl Builder {
             OwnershipDecision::OwnsHeap {
                 layout: LayoutClass::Product | LayoutClass::TaggedUnion,
                 ..
-            } => Some(FieldLoadClass::ByteCopyAlias),
-            // Every other heap-owning field is a single release handle. `string`
-            // is the ONE retaining leaf (codegen `hew_string_clone`s the load →
-            // the binder owns a fresh `+1`); every other leaf (`Vec` / `bytes` /
-            // `HashMap` / `HashSet` / `Generator` / indirect-enum node) transfers
-            // its one handle to the binder.
-            OwnershipDecision::OwnsHeap { .. } => {
-                if matches!(ty, ResolvedTy::String) {
-                    Some(FieldLoadClass::Retained)
-                } else {
-                    Some(FieldLoadClass::HandleTransfer)
-                }
+            } => Ok(Some(FieldLoadClass::ByteCopyAlias)),
+            // The shared snapshot authority identifies every field load whose
+            // value is independent of the carrier protocol. String and Bytes
+            // each receive a balanced retain; all remaining heap-owning leaves
+            // (`Vec` / `HashMap` / `HashSet` / `Generator` / indirect-enum
+            // node) transfer their one handle to the binder.
+            OwnershipDecision::OwnsHeap { .. }
+                if super::snapshot_root_outside_carrier_protocol(plan.root()) =>
+            {
+                Ok(Some(FieldLoadClass::Retained))
             }
-            // Heap-free / borrowed / already-an-alias / unsupported: no
-            // scope-exit drop obligation for the field-projection seam to record.
-            _ => None,
+            OwnershipDecision::OwnsHeap { .. } => Ok(Some(FieldLoadClass::HandleTransfer)),
+            OwnershipDecision::NoHeap | OwnershipDecision::Borrowed { .. } => Ok(None),
+            OwnershipDecision::InteriorAlias { .. } | OwnershipDecision::Unsupported { .. } => {
+                unreachable!(
+                    "field-load non-owning classifications return before snapshot planning"
+                )
+            }
+        }
+    }
+
+    /// Surface a failed field-load classification exactly once at its HIR site.
+    /// The classifier is a shared ownership authority; a missing layout here is
+    /// a lowering invariant, so downstream MIR and codegen must not continue.
+    pub(crate) fn report_field_load_classification_failure(
+        &mut self,
+        site: SiteId,
+        ty: &ResolvedTy,
+        error: &crate::state_clone::ClassificationError,
+    ) {
+        // Poisoning is deliberately independent of diagnostic multiplicity.
+        // The first site wins the single LoweringInvariant, but every later
+        // endpoint must still stop instead of treating dedup as success.
+        self.field_load_classification_poisoned = true;
+        let rule = "field-load-classification";
+        if self.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                MirDiagnosticKind::LoweringInvariant {
+                    function,
+                    rule: existing_rule,
+                    ..
+                } if function == &self.current_function_symbol
+                    && existing_rule == rule
+            )
+        }) {
+            return;
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::LoweringInvariant {
+                function: self.current_function_symbol.clone(),
+                rule: rule.to_string(),
+                block: Some(self.current_block_id),
+                detail: format!(
+                    "site {site:?}: field load `{}` has no total ownership classification: {error}",
+                    ty.user_facing()
+                ),
+            },
+            note: "MIR stops this field-load path rather than guessing whether the \
+                   parent or extracted value owns cleanup; no compilation artifact is \
+                   emitted while the lowering invariant is present."
+                .to_string(),
+        });
+    }
+
+    /// Check the actual field/tuple-load boundary before its enclosing
+    /// statement publishes a `Bind` or `Evaluate`. The classifier's `Err`
+    /// becomes the one per-function invariant diagnostic; the boolean is the
+    /// caller's stop signal and therefore does not depend on whether that
+    /// diagnostic was already emitted for an earlier source site.
+    pub(crate) fn field_load_classification_is_valid(&mut self, value: &HirExpr) -> bool {
+        if self.field_load_classification_poisoned {
+            return false;
+        }
+        if !matches!(
+            value.kind,
+            HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
+        ) {
+            return true;
+        }
+        let ty = self.subst_ty(&value.ty);
+        match self.classify_field_load(&ty) {
+            Ok(_) => true,
+            Err(error) => {
+                self.report_field_load_classification_failure(value.site, &ty, &error);
+                false
+            }
         }
     }
 
@@ -3566,14 +3680,14 @@ impl Builder {
         &mut self,
         value: &HirExpr,
         binding_ty: &ResolvedTy,
-    ) {
-        if self.owned_field_projection_move_sites.last() != Some(&value.site)
-            || value.intent != hew_hir::IntentKind::Consume
-            || self.classify_field_load(binding_ty) != Some(FieldLoadClass::HandleTransfer)
+    ) -> Result<(), crate::state_clone::ClassificationError> {
+        if self.owned_field_projection_move_sites.last() == Some(&value.site)
+            && value.intent == hew_hir::IntentKind::Consume
+            && self.classify_field_load(binding_ty)? == Some(FieldLoadClass::HandleTransfer)
         {
-            return;
+            self.publish_projection_source_transfer(value);
         }
-        self.publish_projection_source_transfer(value);
+        Ok(())
     }
 
     /// Publish the aggregate source handoff when an unguarded consuming match
@@ -3589,7 +3703,10 @@ impl Builder {
     /// double free. Ending the root generation here leaves the binder the sole
     /// owner; the root's remaining owned fields are discharged by the escaped-
     /// sibling field splice, so the handoff does not leak them.
-    pub(crate) fn publish_consuming_match_projection(&mut self, value: &HirExpr) {
+    pub(crate) fn publish_consuming_match_projection(
+        &mut self,
+        value: &HirExpr,
+    ) -> Result<(), crate::state_clone::ClassificationError> {
         // A PROJECTION only. `projection_root_binding` also resolves a bare
         // `BindingRef`, so without this the transfer would fire for
         // `match r { .. }` over a whole local and end the generation of a
@@ -3599,15 +3716,16 @@ impl Builder {
             value.kind,
             HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
         ) {
-            return;
+            return Ok(());
         }
-        if self.classify_field_load(&value.ty) != Some(FieldLoadClass::ByteCopyAlias) {
-            return;
+        if self.classify_field_load(&value.ty)? != Some(FieldLoadClass::ByteCopyAlias) {
+            return Ok(());
         }
-        if !self.projected_enum_payload_is_handle_transfer(&value.ty) {
-            return;
+        if !self.projected_enum_payload_is_handle_transfer(&value.ty)? {
+            return Ok(());
         }
         self.publish_projection_source_transfer(value);
+        Ok(())
     }
 
     /// True when the inline enum type `ty` carries a payload the destructure
@@ -3630,21 +3748,27 @@ impl Builder {
     /// aggregate payload carries its own handoff authority. WHAT: recurse this
     /// classification through `ByteCopyAlias` payloads and publish the
     /// transfer for the exact nested leaf rather than the root generation.
-    fn projected_enum_payload_is_handle_transfer(&self, ty: &ResolvedTy) -> bool {
+    fn projected_enum_payload_is_handle_transfer(
+        &self,
+        ty: &ResolvedTy,
+    ) -> Result<bool, crate::state_clone::ClassificationError> {
         let subst = self.subst_ty(ty);
         let ResolvedTy::Named { name, args, .. } = &subst else {
-            return false;
+            return Ok(false);
         };
         let Some(layout) = crate::model::find_enum_layout(name, args, &self.enum_layouts) else {
-            return false;
+            return Ok(false);
         };
-        layout
+        for field_ty in layout
             .variants
             .iter()
             .flat_map(|variant| variant.field_tys.iter())
-            .any(|field_ty| {
-                self.classify_field_load(field_ty) == Some(FieldLoadClass::HandleTransfer)
-            })
+        {
+            if self.classify_field_load(field_ty)? == Some(FieldLoadClass::HandleTransfer) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn publish_projection_source_transfer(&mut self, value: &HirExpr) {

@@ -871,9 +871,9 @@ fn register_owned_local_records_classified_ownership_and_scope_exit() {
 }
 
 /// Frozen three-way verdict table for the `let`-bound field-load
-/// classification — the load-bearing double-free boundary. A `string` field retains
-/// (codegen clones), an inline aggregate (record / tuple) byte-copies to an
-/// interior alias, and every single-pointer heap leaf (`Vec` / `bytes` /
+/// classification — the load-bearing double-free boundary. A `string` or
+/// `bytes` field retains, an inline aggregate (record / tuple) byte-copies to
+/// an interior alias, and every remaining single-pointer heap leaf (`Vec` /
 /// `Generator` / indirect-enum node) transfers its one handle. Only
 /// `ByteCopyAlias` dispositions its binder `AliasOf`; the table freezes the
 /// class each shape maps to so a mis-tag (which would admit an owner the
@@ -887,16 +887,19 @@ fn classify_field_load_freezes_the_three_way_verdict_table() {
         vec![("a".to_string(), ResolvedTy::String)],
     );
 
-    // Retained: `string` — codegen `hew_string_clone`s the load.
-    assert_eq!(
-        builder.classify_field_load(&ResolvedTy::String),
-        Some(FieldLoadClass::Retained),
-    );
+    // Retained: `string` and `bytes` each receive a balanced +1 for the load.
+    for (label, ty) in [("string", ResolvedTy::String), ("bytes", ResolvedTy::Bytes)] {
+        assert_eq!(
+            builder.classify_field_load(&ty),
+            Ok(Some(FieldLoadClass::Retained)),
+            "{label} keeps the aggregate root live and owns a retained share",
+        );
+    }
 
     // ByteCopyAlias: inline aggregates — record and tuple.
     assert_eq!(
         builder.classify_field_load(&unregistered_named("Rec")),
-        Some(FieldLoadClass::ByteCopyAlias),
+        Ok(Some(FieldLoadClass::ByteCopyAlias)),
         "a heap-owning record field is byte-copied to an interior alias",
     );
     assert_eq!(
@@ -904,14 +907,13 @@ fn classify_field_load_freezes_the_three_way_verdict_table() {
             ResolvedTy::String,
             ResolvedTy::String,
         ])),
-        Some(FieldLoadClass::ByteCopyAlias),
+        Ok(Some(FieldLoadClass::ByteCopyAlias)),
         "a heap-owning tuple field is byte-copied to an interior alias",
     );
 
     // HandleTransfer: every single-pointer heap leaf.
     for (label, ty) in [
         ("Vec", vec_of_ty(ResolvedTy::String)),
-        ("bytes", ResolvedTy::Bytes),
         (
             "Generator",
             ResolvedTy::named_builtin(
@@ -924,13 +926,133 @@ fn classify_field_load_freezes_the_three_way_verdict_table() {
     ] {
         assert_eq!(
             builder.classify_field_load(&ty),
-            Some(FieldLoadClass::HandleTransfer),
+            Ok(Some(FieldLoadClass::HandleTransfer)),
             "{label} transfers its one owned handle to the binder",
         );
     }
 
     // Heap-free field: no scope-exit drop obligation to classify.
-    assert_eq!(builder.classify_field_load(&ResolvedTy::I64), None);
+    assert_eq!(builder.classify_field_load(&ResolvedTy::I64), Ok(None));
+
+    // A bare unknown has no ownership decision and therefore fails before the
+    // snapshot classifier; it is still an error, never the heap-free answer.
+    assert!(matches!(
+        builder.classify_field_load(&unregistered_named("Unknown")),
+        Err(crate::state_clone::ClassificationError::Unsupported { .. })
+    ));
+
+    // Missing layout is a non-vacuous error, never the heap-free `Ok(None)`
+    // verdict. The owning Vec reaches snapshot planning and exposes the
+    // missing child layout at the field-load source site.
+    assert!(matches!(
+        builder.classify_field_load(&vec_of_ty(unregistered_named("Unknown"))),
+        Err(crate::state_clone::ClassificationError::MissingRecordLayout { ref name })
+            if name == "Unknown"
+    ));
+}
+
+/// A classification failure is an internal lowering invariant at the exact
+/// source site, and it leaves no carrier-projection ownership record behind.
+#[test]
+fn field_load_classification_failure_is_diagnostic_and_emits_no_carrier_artifact() {
+    let mut builder = Builder {
+        current_function_symbol: "field_load_failure".to_string(),
+        ..Builder::default()
+    };
+    let unknown = unregistered_named("Unknown");
+    let holder = unregistered_named("Holder");
+    builder.record_field_orders.insert(
+        "Holder".to_string(),
+        vec![("payload".to_string(), unknown.clone())],
+    );
+    builder.binding_locals.insert(BindingId(1), Place::Local(0));
+    let root = HirExpr {
+        node: hew_hir::HirNodeId(1),
+        site: SiteId(76),
+        ty: holder,
+        value_class: ValueClass::CowValue,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "holder".to_string(),
+            resolved: ResolvedRef::Binding(BindingId(1)),
+        },
+        span: 0..0,
+    };
+    let field_load = HirExpr {
+        node: hew_hir::HirNodeId(2),
+        site: SiteId(77),
+        ty: unknown,
+        value_class: ValueClass::CowValue,
+        intent: IntentKind::Read,
+        kind: HirExprKind::FieldAccess {
+            object: Box::new(root),
+            field: "payload".to_string(),
+        },
+        span: 0..0,
+    };
+
+    assert_eq!(builder.lower_value(&field_load), None);
+    let second_field_load = HirExpr {
+        site: SiteId(78),
+        ..field_load.clone()
+    };
+    assert_eq!(builder.lower_value(&second_field_load), None);
+
+    assert!(builder.instructions.is_empty());
+    assert!(builder.owned_carrier_neutralize.is_empty());
+    assert!(matches!(
+        builder.diagnostics.as_slice(),
+        [MirDiagnostic {
+            kind: MirDiagnosticKind::LoweringInvariant {
+                function,
+                rule,
+                block: Some(0),
+                detail,
+            },
+            ..
+        }] if function == "field_load_failure"
+            && rule == "field-load-classification"
+            && detail.starts_with("site SiteId(77):")
+            && detail.contains("Unknown")
+    ));
+
+    let finalized = super::super::finalize_body(
+        &mut builder,
+        super::super::BodySeal::Cursor(Terminator::Return),
+        super::super::BodyFinalizeSpec::nested_body(),
+    );
+    assert!(matches!(
+        finalized.blocks.as_slice(),
+        [block]
+            if block.statements.is_empty()
+                && block.instructions.is_empty()
+                && matches!(block.terminator, Terminator::Unreachable)
+    ));
+    assert!(finalized.body_statements.is_empty());
+}
+
+/// Fresh producers and whole-value rebinds do not enter the field-load seam,
+/// so absent layout facts on their type cannot manufacture an unrelated ICE.
+#[test]
+fn non_projection_initializer_skips_field_load_classification() {
+    let builder = Builder::default();
+    let value = HirExpr {
+        node: hew_hir::HirNodeId(1),
+        site: SiteId(88),
+        ty: unregistered_named("Unknown"),
+        value_class: ValueClass::CowValue,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: "whole".to_string(),
+            resolved: ResolvedRef::Binding(BindingId(1)),
+        },
+        span: 0..0,
+    };
+
+    assert_eq!(
+        builder.field_projection_alias_provenance(&value, &value.ty),
+        Ok(None),
+    );
 }
 
 /// A byte-copy aggregate field projection registers its binder `AliasOf`

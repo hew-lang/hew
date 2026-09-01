@@ -1506,6 +1506,9 @@ impl Builder {
                   scatter the panic discipline across helper boundaries"
     )]
     pub(crate) fn stmt(&mut self, stmt: &hew_hir::HirStmt) {
+        if self.field_load_classification_poisoned {
+            return;
+        }
         // Stage 2 (gdb `-g`): every `Instr` this statement lowers is attributed
         // to the statement's source span so gdb steps line-by-line. The cursor
         // stays set across the whole statement, so synthesised instructions
@@ -1517,6 +1520,10 @@ impl Builder {
         match &stmt.kind {
             HirStmtKind::Let(binding, Some(value)) => {
                 let binding_ty = self.subst_ty(&binding.ty);
+                if !self.field_load_classification_is_valid(value) {
+                    self.poisoned_let_bindings.insert(binding.id);
+                    return;
+                }
                 let owned_string_record_key =
                     self.owned_string_record_init_key_for_let(&binding_ty, value);
                 if owned_string_record_key.is_some() {
@@ -1582,6 +1589,14 @@ impl Builder {
                 let diag_len_before_value = self.diagnostics.len();
                 let value_place = self.lower_let_value(binding.id, value);
                 self.suppress_typed_produced_owner_sites.remove(&value.site);
+                // A nested field load may discover the classification error
+                // only while lowering this initializer. Stop before *any*
+                // binding publication or `decide` call; finalization will seal
+                // the whole partial body as Unreachable.
+                if self.field_load_classification_poisoned {
+                    self.poisoned_let_bindings.insert(binding.id);
+                    return;
+                }
                 // Cascade suppression: a `let` whose initializer failed to lower
                 // (`None`) AFTER emitting its own diagnostic poisons the binding,
                 // so a later `BindingRef` to it stays silent instead of stacking
@@ -1861,23 +1876,32 @@ impl Builder {
                         }
                     };
                     if !alias_inheritance_ambiguous {
-                        match self
-                            .field_projection_alias_provenance(value, &binding_ty)
-                            .or(inherited_alias_provenance)
-                        {
-                            Some(provenance) => self.register_owned_local_alias(
-                                binding.id,
-                                binding.name.clone(),
-                                binding_ty.clone(),
-                                provenance,
-                                warrant,
-                            ),
-                            None => self.register_owned_local(
-                                binding.id,
-                                binding.name.clone(),
-                                binding_ty.clone(),
-                                warrant,
-                            ),
+                        match self.field_projection_alias_provenance(value, &binding_ty) {
+                            Ok(projection_alias) => {
+                                match projection_alias.or(inherited_alias_provenance) {
+                                    Some(provenance) => self.register_owned_local_alias(
+                                        binding.id,
+                                        binding.name.clone(),
+                                        binding_ty.clone(),
+                                        provenance,
+                                        warrant,
+                                    ),
+                                    None => self.register_owned_local(
+                                        binding.id,
+                                        binding.name.clone(),
+                                        binding_ty.clone(),
+                                        warrant,
+                                    ),
+                                }
+                            }
+                            Err(error) => {
+                                self.report_field_load_classification_failure(
+                                    value.site,
+                                    &binding_ty,
+                                    &error,
+                                );
+                                return;
+                            }
                         }
                     }
                     // Tag generator/`AsyncGenerator` handle bindings with their
@@ -2070,7 +2094,13 @@ impl Builder {
             }
             HirStmtKind::Let(_, None) => {}
             HirStmtKind::Expr(expr) => {
+                if !self.field_load_classification_is_valid(expr) {
+                    return;
+                }
                 self.lower_expr_statement(expr);
+                if self.field_load_classification_poisoned {
+                    return;
+                }
                 self.statements.push(MirStatement::Evaluate {
                     site: expr.site,
                     ty: self.subst_ty(&expr.ty),
@@ -2078,12 +2108,18 @@ impl Builder {
             }
             HirStmtKind::Assign { target, value } => {
                 self.assign(target, value);
+                if self.field_load_classification_poisoned {
+                    return;
+                }
                 self.statements.push(MirStatement::Evaluate {
                     site: value.site,
                     ty: ResolvedTy::Unit,
                 });
             }
             HirStmtKind::Return(Some(expr)) => {
+                if !self.field_load_classification_is_valid(expr) {
+                    return;
+                }
                 let returned_binding = match &expr.kind {
                     HirExprKind::BindingRef {
                         resolved: ResolvedRef::Binding(binding),
@@ -2092,6 +2128,9 @@ impl Builder {
                     _ => None,
                 };
                 let value_place = self.lower_value_for_move(expr);
+                if self.field_load_classification_poisoned {
+                    return;
+                }
                 self.decide(expr);
                 self.mark_returned_binding_moved(expr);
                 self.statements.push(MirStatement::Return {
@@ -2279,11 +2318,17 @@ impl Builder {
     /// The one publication boundary for expression results. Recursive lowering
     /// returns here before a parent advances to its next argument or field.
     pub(crate) fn lower_value(&mut self, expr: &HirExpr) -> Option<Place> {
+        if self.field_load_classification_poisoned {
+            return None;
+        }
         let expr_ty = self.subst_ty(&expr.ty);
         if self.reject_unsupported_vec_iter_boundary(&expr_ty, expr.site, "an expression value") {
             return None;
         }
         let value = self.lower_value_inner(expr);
+        if self.field_load_classification_poisoned {
+            return None;
+        }
         if let Some(place) = value {
             // Specialised HIR rewrites retain consumed checker children as
             // non-evaluated source anchors. Publish those source occurrences to
@@ -4718,6 +4763,11 @@ impl Builder {
                     });
                     return None;
                 };
+                let field_ty = self.subst_ty(&expr.ty);
+                if let Err(error) = self.classify_field_load(&field_ty) {
+                    self.report_field_load_classification_failure(expr.site, &field_ty, &error);
+                    return None;
+                }
                 self.mark_owned_string_record_field_site(object);
                 let record_place = self.lower_value(object)?;
                 self.finalize_vec_clone_projection_base_owner(object, record_place);
@@ -4727,15 +4777,20 @@ impl Builder {
                     field_offset,
                     dest,
                 });
-                let field_ty = self.subst_ty(&expr.ty);
-                self.note_carrier_projection(
+                if let Err(error) = self.note_carrier_projection(
                     record_place,
                     field_offset.0,
                     dest,
                     &field_ty,
                     expr.site,
-                );
-                self.publish_handle_transfer_projection(expr, &field_ty);
+                ) {
+                    self.report_field_load_classification_failure(expr.site, &field_ty, &error);
+                    return None;
+                }
+                if let Err(error) = self.publish_handle_transfer_projection(expr, &field_ty) {
+                    self.report_field_load_classification_failure(expr.site, &field_ty, &error);
+                    return None;
+                }
                 Some(dest)
             }
             HirExprKind::Scope { body } => Some(self.lower_task_scope(body)),
@@ -4851,6 +4906,11 @@ impl Builder {
                 // additional instructions.  This is the complement of the
                 // `lower_runtime_call` path that stores the output Places into
                 // `tuple_decomp`.
+                let field_ty = self.subst_ty(&expr.ty);
+                if let Err(error) = self.classify_field_load(&field_ty) {
+                    self.report_field_load_classification_failure(expr.site, &field_ty, &error);
+                    return None;
+                }
                 let inner_place = self.lower_value(tuple)?;
                 if let Place::Local(local_idx) = inner_place {
                     if let Some(parts) = self.tuple_decomp.get(&local_idx) {
@@ -4870,8 +4930,16 @@ impl Builder {
                     field_index,
                     dest,
                 });
-                let field_ty = self.subst_ty(&expr.ty);
-                self.note_carrier_projection(inner_place, field_index, dest, &field_ty, expr.site);
+                if let Err(error) = self.note_carrier_projection(
+                    inner_place,
+                    field_index,
+                    dest,
+                    &field_ty,
+                    expr.site,
+                ) {
+                    self.report_field_load_classification_failure(expr.site, &field_ty, &error);
+                    return None;
+                }
                 Some(dest)
             }
             HirExprKind::Index { container, index } => {
@@ -6583,7 +6651,13 @@ impl Builder {
                 // dead cursor block for any lexically-following code. A `return`
                 // diverges, so this expression yields no value (`None`).
                 if let Some(expr_value) = value {
+                    if !self.field_load_classification_is_valid(expr_value) {
+                        return None;
+                    }
                     let value_place = self.lower_value_for_move(expr_value);
+                    if self.field_load_classification_poisoned {
+                        return None;
+                    }
                     self.decide(expr_value);
                     self.mark_returned_binding_moved(expr_value);
                     self.statements.push(MirStatement::Return {

@@ -4785,7 +4785,14 @@ impl Builder {
         if arms.iter().all(|arm| arm.guard.is_none())
             && arms.iter().any(|arm| !arm.bindings.is_empty())
         {
-            self.publish_consuming_match_projection(scrutinee);
+            if let Err(error) = self.publish_consuming_match_projection(scrutinee) {
+                self.report_field_load_classification_failure(
+                    scrutinee.site,
+                    &scrutinee.ty,
+                    &error,
+                );
+                return None;
+            }
         }
         let scrutinee_local = match scrutinee_place {
             Place::Local(n) => n,

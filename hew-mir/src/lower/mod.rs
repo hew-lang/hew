@@ -81,6 +81,9 @@ mod task;
 mod temp_drop;
 mod vec_index;
 
+#[cfg(test)]
+mod synthesized_identity_tests;
+
 use self::edge_owner_replay::{
     lexical_scope_is_closed, materialize_edge_lifecycle_owner_transitions,
     materialize_exact_owner_join_transfers, ownership_join_states,
@@ -1172,6 +1175,12 @@ struct Builder {
     pub(crate) synthetic_borrowed_temp_drop_bindings: HashSet<BindingId>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
     pub(crate) diagnostics: Vec<MirDiagnostic>,
+    /// A failed field-load classification invalidates every ownership fact that
+    /// might follow it. This is a per-body transaction flag, not a diagnostic
+    /// dedup key: it is set before the one-ICE-per-function reporting policy so
+    /// a second failed source site cannot resume lowering merely because it
+    /// produces no second diagnostic.
+    pub(crate) field_load_classification_poisoned: bool,
     /// Per-function de-duplication for W3.029 user-aggregate value-class
     /// diagnostics. Keyed by the same bare/mangled record-layout key used by
     /// `record_field_orders`.
@@ -11815,48 +11824,6 @@ fn canonicalize_release_owner_ids(blocks: &mut [BasicBlock]) {
 }
 
 #[cfg(test)]
-mod synthesized_identity_tests {
-    use super::*;
-
-    #[test]
-    fn a_builder_carrying_a_callable_identity_mints_ordinal_children_of_it() {
-        let parent = crate::model::MirCallableKey::for_test("app.owner");
-        let mut builder = Builder {
-            current_callable_key: Some(parent.clone()),
-            ..Builder::default()
-        };
-
-        let first =
-            builder.mint_synthesized_child_key(crate::model::SynthesizedCallable::GeneratorBody);
-        let second = builder
-            .mint_synthesized_child_key(crate::model::SynthesizedCallable::ClosureInvokeShim);
-
-        assert_eq!(
-            first,
-            parent.child(crate::model::SynthesizedCallable::GeneratorBody(0))
-        );
-        assert_eq!(
-            second,
-            parent.child(crate::model::SynthesizedCallable::ClosureInvokeShim(1)),
-            "one shared per-parent sequence: the second child is ordinal 1 even though it \
-             is the first of its variant"
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "carries no callable identity")]
-    fn a_builder_with_no_callable_identity_refuses_to_mint_a_child_key() {
-        // The negative control for the `current_callable_key: Option<..>`
-        // fail-closed claim. Without it the producer would have to invent an
-        // identity from the emitted symbol — the exact reconstruction this
-        // slice removes — and two synthesized callables could then collide.
-        let mut builder = Builder::default();
-        let _ =
-            builder.mint_synthesized_child_key(crate::model::SynthesizedCallable::GeneratorBody);
-    }
-}
-
-#[cfg(test)]
 mod lexical_scope_join_tests {
     use super::*;
     use crate::model::{OwnerDropRecipe, OwnerId, OwnershipEvent};
@@ -12780,6 +12747,30 @@ pub(in crate::lower) fn finalize_body(
     spec: BodyFinalizeSpec,
 ) -> FinalizedBody {
     let _timing = crate::timing::stage("finalize_body");
+    if builder.field_load_classification_poisoned {
+        // A classifier error means the partially accumulated ownership stream
+        // has no sound continuation. Do not splice drops, transfers, or edge
+        // carries over it: discard the partial transaction and retain one
+        // validator-safe body whose only terminator is Unreachable. The
+        // diagnostic itself remains on the Builder for the normal projection
+        // path in `lower_function`.
+        builder.pending_blocks.clear();
+        builder.statements.clear();
+        builder.instructions.clear();
+        builder.pending_outbound_actor_args.clear();
+        builder.pending_owned_call_args.clear();
+        builder.pending_affine_call_consumes.clear();
+        builder.deferred_affine_call_consume_sites.clear();
+        return FinalizedBody {
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Unreachable,
+            }],
+            body_statements: Vec::new(),
+        };
+    }
     let mut blocks = match seal {
         BodySeal::Cursor(terminator) => builder.seal_body_blocks(terminator),
         BodySeal::AlreadyTerminated => {
@@ -13433,17 +13424,18 @@ enum Disposition {
 /// risk, so it keys on the same facts codegen implements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FieldLoadClass {
-    /// A `string` field: codegen `hew_string_clone`s the load, so the binder
-    /// owns a fresh `+1` released by its own drop; the root keeps the original.
+    /// A `string` or `bytes` field follows its type-specific lowering path to
+    /// materialize a balanced retained share: the binder owns a fresh `+1`
+    /// released by its own drop while the root keeps the original.
     Retained,
     /// An inline aggregate field (record / tuple / array / inline-enum): the load
     /// byte-copies the member with no retain, so the binder is an interior ALIAS
     /// — the projected root's composite drop frees every original exactly once.
     ByteCopyAlias,
-    /// A single-pointer heap leaf (`Vec` / `bytes` / `HashMap` / `HashSet` /
-    /// `Generator` / indirect-enum node): the load transfers the one owned
-    /// handle, so the binder becomes the owner and the root's whole-root
-    /// exclusion posture is correct.
+    /// A single-pointer heap leaf (`Vec` / `HashMap` / `HashSet` / `Generator`
+    /// / indirect-enum node): the load transfers the one owned handle, so the
+    /// binder becomes the owner and the root's whole-root exclusion posture is
+    /// correct.
     HandleTransfer,
 }
 
@@ -14626,6 +14618,10 @@ impl Builder {
         for stmt in &func.body.statements {
             self.stmt(stmt);
         }
+        if self.field_load_classification_poisoned {
+            self.active_scopes.pop();
+            return;
+        }
         if let Some(tail) = &func.body.tail {
             let returned_binding = match &tail.kind {
                 HirExprKind::BindingRef {
@@ -14642,6 +14638,10 @@ impl Builder {
                 u32::try_from(tail.span.end).unwrap_or(u32::MAX),
             ));
             let value_place = self.lower_value_for_move(tail);
+            if self.field_load_classification_poisoned {
+                self.active_scopes.pop();
+                return;
+            }
             self.decide(tail);
             self.mark_returned_binding_moved(tail);
             // A divergent tail leaves the cursor at an unreachable join block.

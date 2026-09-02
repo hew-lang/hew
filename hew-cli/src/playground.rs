@@ -564,6 +564,13 @@ mod tests {
     /// one, it does not suppress a real duplicate-main error.
     #[test]
     fn playground_file_with_genuinely_duplicate_main_fails() {
+        // Without a resolvable toolchain, chunk 1's own compile fails at the
+        // link stage before chunk 2 (the actual duplicate) is ever evaluated
+        // — that would pass this assertion for the wrong reason. Skip
+        // honestly instead of asserting a vacuous pass.
+        if !require_toolchain() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("duplicate_main.hew");
         std::fs::write(&src, "fn main() {}\nfn main() {}\n").unwrap();

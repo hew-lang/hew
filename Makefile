@@ -1379,6 +1379,7 @@ test-doc-examples: hew-native
 # Drive matching and mutated doc-failure sets through the production harness.
 doc-ratchet-selftest:
 	@scripts/tests/test_doc_ratchet_membership.sh
+	@scripts/tests/test_std_doc_fence_extraction.sh
 
 # Shell/python only; no artifacts.
 

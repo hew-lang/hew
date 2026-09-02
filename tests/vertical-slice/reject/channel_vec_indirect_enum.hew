@@ -23,7 +23,7 @@ fn main() {
     tx.close();
     match rx.try_recv() {
         .Some(item) => println(item.len()),
-        None => println("drained"),
+        .None => println("drained"),
     }
     println("done");
 }

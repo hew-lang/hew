@@ -5831,7 +5831,7 @@ fn await_stream_recv_bytes_typechecks() {
          \x20       let input = unsafe { hew_stream_pair_stream_bytes(pair) };\n\
          \x20       unsafe { hew_stream_pair_free(pair); }\n\
          \x20       let item = await input.recv();\n\
-         \x20       match item { Some(v) => {}, None => {}, }\n\
+         \x20       match item { .Some(v) => {}, .None => {}, }\n\
          \x20   }\n\
          }\n\
          fn main() { let r = spawn Runner(); r.go(0); }\n",
@@ -5863,7 +5863,7 @@ fn await_stream_recv_int_element_admitted() {
          \x20       let input = unsafe { hew_stream_pair_stream_i64(pair) };\n\
          \x20       unsafe { hew_stream_pair_free(pair); }\n\
          \x20       let item = await input.recv();\n\
-         \x20       match item { Some(v) => {}, None => {}, }\n\
+         \x20       match item { .Some(v) => {}, .None => {}, }\n\
          \x20   }\n\
          }\n\
          fn main() { let r = spawn Runner(); r.go(0); }\n",

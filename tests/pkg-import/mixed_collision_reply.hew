@@ -13,10 +13,10 @@ fn main() {
     println(root_c.c);
     let s = spawn mixreply.Src(seed: 4);
     match await s.get() {
-        Ok(inner) => match inner {
-            Ok(u) => println(u.u),
-            Err(cc) => println(cc.c),
+        .Ok(inner) => match inner {
+            .Ok(u) => println(u.u),
+            .Err(cc) => println(cc.c),
         },
-        Err(_) => println("askerr"),
+        .Err(_) => println("askerr"),
     }
 }

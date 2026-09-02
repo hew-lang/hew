@@ -23,3 +23,9 @@ fn test_remove_env_rejects_equals_in_name() {
         },
     }
 }
+
+#[test]
+fn test_env_error_display_names_the_rejected_name() {
+    let err = EnvError.InvalidName("HEW=INVALID");
+    testing.assert_eq_str(to_string(err), "invalid environment variable name: `HEW=INVALID`");
+}

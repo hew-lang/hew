@@ -169,6 +169,33 @@ repros/p0c_method_value_failclosed.hew
 # repro-wip (#3104): receive-generator suspension cleanup retains a stale drop
 # after transferring an owned record/enum yield
 
+# ── repros/ladder/ ────────────────────────────────────────────────────────────
+
+# corpus-intentional-refusal: docs/internal/ir-ladder.md's probe corpus
+# (repros/ladder/README.md, outcome column). Each of these programs is
+# deliberately illegal under the current lowerer — the refusal is the
+# behaviour the ladder document quotes, not a bug. A path carries a pinned
+# code only when the check emits exactly one stable `E_*` code; several of
+# these checker-level (not MIR-level) refusals carry no stable code at all,
+# and cond_init.hew and fork_unawaited.hew each now raise two, so those stay
+# unpinned rather than asserting a set the checker output doesn't produce.
+repros/ladder/bind_copy.hew E_MIR_CHECK
+repros/ladder/bytes_clone.hew
+repros/ladder/cap_move.hew
+repros/ladder/closure_mut_share.hew E_MIR
+repros/ladder/closure_rebind.hew E_MIR_CHECK
+repros/ladder/cond_init.hew
+repros/ladder/fork_unawaited.hew
+repros/ladder/gen_rebind.hew E_MIR_CHECK
+repros/ladder/lambda_send_twice.hew
+repros/ladder/let_field_mut.hew
+repros/ladder/let_index_assign.hew
+repros/ladder/resource_early_close.hew
+repros/ladder/resource_send2.hew
+repros/ladder/state_resource_mut.hew
+repros/ladder/state_resource_trait.hew E_MIR
+repros/ladder/vec_resource.hew E_MIR_CHECK
+
 # ── tests/ownership-balance/ ───────────────────────────────────────────────
 
 # corpus-intentional-refusal: the ownership corpus's refusal row. It reads a

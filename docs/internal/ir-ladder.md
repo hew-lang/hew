@@ -1153,9 +1153,12 @@ the uses in consuming position (`destroy_value`, `move`, `fork`,
      a resource state field (`Maybe` at the join; no later read)
    - negative (user, `E_OWN_UNINIT`): `var x: string; if c { x = "a" };
      println(x)` (`repros/ladder/cond_init.hew`; today `E_MIR_CHECK
-     InitialisedBeforeUse`). The checker rule [P1] is the dataflow over HIR
-     bindings; the verifier re-proves places and refuses a use with no
-     defining value.
+     InitialisedBeforeUse` plus two `E_MIR UnresolvedPlace` diagnostics on
+     the same binding — mem2reg gives a maybe-uninitialized `var` no MIR
+     place, so both its assignment and its use are separately unresolvable
+     once the checker has already refused it). The checker rule [P1] is the
+     dataflow over HIR bindings; the verifier re-proves places and refuses a
+     use with no defining value.
    - negative (user, `E_OWN_USE_AFTER_CONSUME`): `if c { conn.close() };
      println(conn.fd)` on a resource state field.
    - negative (internal): a lowering that `load.copy`s a `CowValue` place it
@@ -1278,7 +1281,10 @@ the uses in consuming position (`destroy_value`, `move`, `fork`,
      g(); let ra = await a; let rb = await b` (`b` live across the first
      `Suspend`, destroyed on its cancel edge); `scope { work(); }`;
      negative: `fork t = work(); }` (`repros/ladder/fork_unawaited.hew`, today
-     `E_MIR_CHECK MustConsume`, a normal exit); `let f = || { tx.commit() }`
+     `E_MIR_CHECK MustConsume`, a normal exit, plus an unrelated
+     `E_NOT_YET_IMPLEMENTED`: `fn main` has no execution-context parameter, so
+     `fork` from top-level `main` cannot lower at all yet, independent of
+     whether the forked task is later consumed); `let f = || { tx.commit() }`
      with `tx: #[linear] Tx`; a `#[linear] Tx` live across an `await` inside a
      `scope {}` with no `defer` consumer.
 

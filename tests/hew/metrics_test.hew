@@ -112,3 +112,10 @@ fn test_self_metrics_present_in_scrape() {
     testing.assert_true(scrape.contains("# TYPE hew_metrics_names_dropped_total counter"));
     testing.assert_true(scrape.contains("# TYPE hew_metrics_series_dropped_total counter"));
 }
+
+// ── Display ────────────────────────────────────────────────────────────
+#[test]
+fn test_metrics_error_display_prints_the_rejection_reason() {
+    let err = MetricsError.Rejected("name collides with a built-in metric");
+    testing.assert_eq_str(to_string(err), "name collides with a built-in metric");
+}

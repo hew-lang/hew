@@ -54,6 +54,14 @@ pub enum MetricsError {
     Rejected(string);
 }
 
+impl Display for MetricsError {
+    fn fmt(err: MetricsError) -> string {
+        match err {
+            MetricsError.Rejected(reason) => reason,
+        }
+    }
+}
+
 /// A monotonic counter handle.
 ///
 /// Created by `metrics.counter(name)`. `Copy`: the handle is the registry slot

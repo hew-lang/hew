@@ -47,6 +47,24 @@ pub enum MonitorError {
     ResourceExhausted;
 }
 
+impl Display for MonitorError {
+    fn fmt(err: MonitorError) -> string {
+        match err {
+            MonitorError.NodeNotRunning => "no distributed node runtime is active",
+            MonitorError.InvalidTarget => "the supplied pid is local or otherwise not a valid remote target",
+            MonitorError.Partition => "the route to the monitored peer is unavailable or the peer is suspect",
+            MonitorError.StaleRef => "the monitor refers to an old session or actor incarnation",
+            MonitorError.EncodeFailure => "the monitor control frame could not be encoded",
+            MonitorError.LocalShutdown => "the local node is shutting down before monitor delivery can complete",
+            MonitorError.VersionMismatch => "the peer rejected the monitor because protocol or schema versions differ",
+            MonitorError.Unauthorized => "the peer rejected the monitor because the caller lacks authority",
+            MonitorError.DecodeFailure => "the monitor payload could not be decoded on receipt",
+            MonitorError.MonitorLost => "the monitor channel was lost before a definitive actor failure arrived",
+            MonitorError.ResourceExhausted => "the runtime exhausted its non-reusing monitor-id space",
+        }
+    }
+}
+
 /// Policy for resolving actor operations across network partitions.
 pub enum PartitionPolicy {
     /// Return `Partition` immediately when the route is unavailable or suspect.

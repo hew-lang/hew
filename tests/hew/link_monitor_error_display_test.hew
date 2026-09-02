@@ -1,0 +1,12 @@
+//! Display coverage for std.link_monitor.MonitorError.
+
+import std.link_monitor.{MonitorError};
+
+import std.testing;
+
+#[test]
+fn test_monitor_error_display_formats_each_variant() {
+    testing.assert_eq_str(to_string(MonitorError.NodeNotRunning), "no distributed node runtime is active");
+    testing.assert_eq_str(to_string(MonitorError.Partition), "the route to the monitored peer is unavailable or the peer is suspect");
+    testing.assert_eq_str(to_string(MonitorError.ResourceExhausted), "the runtime exhausted its non-reusing monitor-id space");
+}

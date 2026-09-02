@@ -101,14 +101,25 @@ impl TypeFacts {
         eq: bool,
     ) -> Result<Self, ClassError> {
         let (class, clone) = crate::value_class::classify_ty(ty, decls)?;
+        let send = match ty {
+            ResolvedTy::Closure { .. } => SendFact::DeferredToClosureFacts,
+            // MARKED SHORTCUT - a trait object's send fact is `false` here.
+            // WHY: §6.3 makes it "the bound list contains `Send`", and that is
+            // sound *only* because §1.1's `CoerceToDynTrait` wall refuses a
+            // coercion into a `+ Send` object whose concrete is not `Send`. The
+            // wall does not exist yet, so the bound list would let a
+            // `dyn ... + Send` over an `Rc`-holding concrete be shared between
+            // actors and race a non-atomic count.
+            // WHEN: the coercion wall lands with the closure send facts.
+            // WHAT: this constructor takes the caller's decided fact, which is
+            // then the bound list §6.3 names.
+            ResolvedTy::TraitObject { .. } => SendFact::Known(false),
+            _ => send,
+        };
         Ok(Self {
             class,
             clone,
-            send: if matches!(ty, ResolvedTy::Closure { .. }) {
-                SendFact::DeferredToClosureFacts
-            } else {
-                send
-            },
+            send,
             hash,
             eq,
         })
@@ -639,10 +650,29 @@ mod tests {
         assert_eq!(None, read_as_bool);
     }
 
-    /// A non-closure row keeps the decided fact, so the deferral is not a
+    /// An ordinary row keeps the decided fact, so the deferral is not a
     /// blanket refusal.
     #[test]
-    fn a_trait_object_row_keeps_a_known_send_fact() {
+    fn an_ordinary_row_keeps_a_known_send_fact() {
+        let decls = declarations();
+        let context = ClassContext::new(&decls);
+        let facts = TypeFacts::of_type(
+            &ResolvedTy::String,
+            &context,
+            SendFact::Known(true),
+            false,
+            true,
+        )
+        .expect("a string has a class");
+        assert_eq!(SendFact::Known(true), facts.send);
+    }
+
+    /// A trait object's send fact is not the bound list yet: §6.3 makes that
+    /// reading sound only through §1.1's `CoerceToDynTrait` wall, which has not
+    /// landed, so the row publishes the fail-closed verdict rather than one a
+    /// consumer could act on unsoundly.
+    #[test]
+    fn a_trait_object_row_does_not_publish_a_wall_less_send_fact() {
         let decls = declarations();
         let context = ClassContext::new(&decls);
         let dyn_show = ResolvedTy::TraitObject {
@@ -652,7 +682,7 @@ mod tests {
                 assoc_bindings: vec![],
             }],
         };
-        let facts = TypeFacts::of_type(&dyn_show, &context, SendFact::Known(false), false, false)
+        let facts = TypeFacts::of_type(&dyn_show, &context, SendFact::Known(true), false, false)
             .expect("a trait object has a class");
         assert_eq!(SendFact::Known(false), facts.send);
     }

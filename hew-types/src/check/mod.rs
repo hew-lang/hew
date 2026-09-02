@@ -352,7 +352,13 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         } else {
             DeclarationMarker::None
         };
-        let Some(definition) = self.type_defs.get(name) else {
+        // `type_defs` is keyed by both the qualified path and its bare-name
+        // twin; a resolved type may carry either spelling.
+        let definition = self.type_defs.get(name).or_else(|| {
+            name.split_once('.')
+                .and_then(|(_, leaf)| self.type_defs.get(leaf))
+        });
+        let Some(definition) = definition else {
             // A marker with no field table still decides the class outright.
             return (marker != DeclarationMarker::None).then(|| DeclaredType {
                 marker,
@@ -407,6 +413,16 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             let resolved = ResolvedTy::from_ty(&ty.materialize_literal_defaults()).ok()?;
             members.push(resolved);
         }
+        if definition.fields.is_empty() && definition.variants.is_empty() {
+            // A declaration with no marker, no fields and no variants carries
+            // no evidence at all. `type_defs` holds contentless synthetic rows
+            // for compiler-known names - a `HashMap` entry with no fields would
+            // otherwise join to `BitCopy` under the Aggregate rule - so this
+            // answers `None` and lets the class rule fall to the builtin row,
+            // or refuse. An enum whose variants are all unit still has
+            // variants, so it keeps its own `BitCopy` verdict.
+            return None;
+        }
         Some(DeclaredType {
             marker,
             type_params: definition.type_params.clone(),
@@ -425,6 +441,10 @@ pub(crate) fn class_is_non_owning(
     ty: &Ty,
     declarations: &dyn crate::value_class::ClassDeclarations,
 ) -> bool {
+    // A type the boundary cannot render is a checker-internal state - a leaked
+    // error, an unresolved inference variable, an unresolved associated
+    // projection - and carries an obligation until something proves it does
+    // not. There is no "unresolved therefore Copy" verdict.
     let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
         return false;
     };

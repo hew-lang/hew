@@ -10849,6 +10849,12 @@ impl Checker {
             for source in decl.resolved_source_paths.iter().skip(1) {
                 self.identity.mint_source_file_module(&owner, source);
             }
+            // A file import (`import "helper.hew";`, empty path) flattens its
+            // items into the root's bare nominal namespace. A module import
+            // (`import pkg.alpha;`) does not: its nominals stay qualified by
+            // the owning module, so two modules exporting the same leaf keep
+            // distinct declarations.
+            let bare_nominals = decl.path.is_empty();
             if !self.identity.module_has_declarations(primary) {
                 for (index, (item, span)) in items.iter().enumerate() {
                     let module = decl
@@ -10856,9 +10862,13 @@ impl Checker {
                         .get(index)
                         .and_then(|source| self.identity.module_for_source(source))
                         .unwrap_or(primary);
-                    // File-import items flatten into the root's bare nominal
-                    // namespace.
-                    self.mint_item_declaration_identities(Some(module), true, index, item, span);
+                    self.mint_item_declaration_identities(
+                        Some(module),
+                        bare_nominals,
+                        index,
+                        item,
+                        span,
+                    );
                 }
             }
         }

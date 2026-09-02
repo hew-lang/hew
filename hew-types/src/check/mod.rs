@@ -635,11 +635,20 @@ impl Checker {
         let mut declare = |kind: Kind, ordinal: usize, path: String| {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
-            if self.identity.declare(occurrence, path.clone()).is_err() {
-                // Contradictory source/path axes invalidate the checked
-                // program. Use the established duplicate-definition category
-                // until diagnostics grow a dedicated compiler-boundary kind;
-                // crucially, the conflict can never reach accepted HIR.
+            // `PathAlreadyDeclared` is an ordinary redefinition and semantic
+            // registration owns that diagnostic, so minting stays quiet: the
+            // second declaration gets no identity and nothing downstream can
+            // resolve it, but the message belongs to one reporter.
+            //
+            // `OccurrenceAlreadyDeclared` is one source occurrence claiming
+            // two canonical paths — a contradiction inside the compiler, not a
+            // source defect. Use the established duplicate-definition category
+            // until diagnostics grow a dedicated compiler-boundary kind;
+            // crucially, the conflict can never reach accepted HIR.
+            if let Err(crate::identity::DeclarationIdentityError::OccurrenceAlreadyDeclared {
+                ..
+            }) = self.identity.declare(occurrence, path.clone())
+            {
                 self.errors.push(TypeError::duplicate_definition(
                     span.clone(),
                     &path,

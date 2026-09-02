@@ -1,0 +1,11 @@
+#[resource]
+type Conn { fd: i64 }
+impl Conn {
+    fn close(c: Conn) { println(f"close {c.fd}"); }
+}
+fn mk() -> Conn { Conn { fd: 9 } }
+fn peek(c: Conn) -> i64 { c.fd }
+fn main() {
+    println(peek(mk()));
+    println("after");
+}

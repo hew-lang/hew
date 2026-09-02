@@ -1,0 +1,12 @@
+actor Relay {
+    receive fn go(h: LambdaActorHandle<i64>) {
+        h.send(7);
+    }
+}
+fn main() {
+    let w = actor |x: i64| { println(x); };
+    let r = spawn Relay();
+    r.go(w);
+    r.go(w);
+    w.send(1);
+}

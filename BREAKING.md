@@ -14,7 +14,7 @@ ownership side tables should be treated as transitional until the cutover
 steps that replace those surfaces have landed.
 
 The compiler-foundation reference document is
-[`docs/internal/v05-ir-ladder.md`](docs/internal/v05-ir-ladder.md).
+[`docs/internal/ir-ladder.md`](docs/internal/ir-ladder.md).
 
 ---
 

@@ -1,0 +1,6 @@
+type Point { x: i64; y: i64; }
+fn main() {
+    let p = Point { x: 0, y: 0 };
+    p.x = 10;
+    println(f"{p.x}");
+}

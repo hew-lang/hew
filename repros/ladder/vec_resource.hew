@@ -1,0 +1,13 @@
+#[resource]
+type Conn { fd: i64 }
+impl Conn {
+    fn close(c: Conn) { println(f"close {c.fd}"); }
+}
+fn main() {
+    let v: Vec<Conn> = Vec.new();
+    v.push(Conn { fd: 1 });
+    v.push(Conn { fd: 2 });
+    let w = v;
+    println(w.len());
+    println(v.len());
+}

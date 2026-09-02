@@ -1,0 +1,5 @@
+fn main() {
+    let b: bytes = "abc".to_bytes();
+    let c = clone b;
+    println(f"{c.len()}");
+}

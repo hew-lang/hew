@@ -1,0 +1,29 @@
+#[resource]
+type Conn {
+    fd: i64;
+}
+
+impl Conn {
+    fn close(consuming self) {
+        println(f"close {self.fd}");
+    }
+    fn open(n: i64) -> Conn {
+        Conn { fd: n }
+    }
+}
+
+actor Holder {
+    var conn: Conn = Conn.open(1);
+
+    receive fn cycle() -> i64 {
+        conn.close();
+        conn = Conn.open(2);
+        return conn.fd;
+    }
+}
+
+fn main() {
+    let h = spawn Holder();
+    match await h.cycle() { .Ok(v) => println(f"{v}"), .Err(e) => println("err") };
+    println("after");
+}

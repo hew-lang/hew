@@ -1,0 +1,9 @@
+fn main() {
+    let v: Vec<i64> = Vec.new();
+    v.push(1);
+    let w = actor move |x: i64| {
+        println(v.len() + x);
+    };
+    w.send(1);
+    println(v.len());
+}

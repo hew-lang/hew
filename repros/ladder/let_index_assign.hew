@@ -1,0 +1,6 @@
+fn main() {
+    let v: Vec<i64> = Vec.new();
+    v.push(1);
+    v[0] = 5;
+    println(f"{v[0]}");
+}

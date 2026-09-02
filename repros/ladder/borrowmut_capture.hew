@@ -1,0 +1,7 @@
+fn main() {
+    var n: i64 = 0;
+    let bump = || { n = n + 1; };
+    bump();
+    bump();
+    println(f"{n}");
+}

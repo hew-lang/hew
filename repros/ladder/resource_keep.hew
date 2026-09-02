@@ -1,0 +1,18 @@
+#[resource]
+type Conn { fd: i64 }
+impl Conn {
+    fn close(c: Conn) { println(f"close {c.fd}"); }
+}
+actor Holder {
+    var conn: Option<Conn>;
+    receive fn take(c: Conn) { conn = Some(c); println("kept"); }
+    receive fn show() -> i64 {
+        match conn { Some(c) => c.fd, None => -1 }
+    }
+}
+fn main() {
+    let h = spawn Holder(conn: None);
+    let c = Conn { fd: 7 };
+    h.take(c);
+    match await h.show() { .Ok(n) => println(f"fd {n}"), .Err(_) => println("err") }
+}

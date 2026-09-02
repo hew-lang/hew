@@ -1,0 +1,7 @@
+fn work() -> string { return "x"; }
+fn main() {
+    scope {
+        fork t = work();
+    }
+    println("done");
+}

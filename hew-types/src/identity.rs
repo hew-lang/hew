@@ -116,17 +116,18 @@ impl DeclarationOccurrence {
     pub fn kind(self) -> DeclarationKind {
         self.kind
     }
+
+    /// The parsed item's source span, for diagnostics that point back at an
+    /// already-established declaration.
+    #[must_use]
+    pub fn span(self) -> std::ops::Range<usize> {
+        self.item_start..self.item_end
+    }
 }
 
-/// A declaration claim contradicted the identity already established by the
-/// same source occurrence or canonical path.
+/// Two distinct source declarations claimed one canonical path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeclarationIdentityError {
-    OccurrenceAlreadyDeclared {
-        occurrence: DeclarationOccurrence,
-        established_path: String,
-        conflicting_path: String,
-    },
     PathAlreadyDeclared {
         path: String,
         established_occurrence: DeclarationOccurrence,
@@ -137,16 +138,11 @@ pub enum DeclarationIdentityError {
 impl std::fmt::Display for DeclarationIdentityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::OccurrenceAlreadyDeclared {
-                established_path,
-                conflicting_path,
-                ..
-            } => write!(
-                f,
-                "source declaration was already assigned `{established_path}`, not `{conflicting_path}`"
-            ),
             Self::PathAlreadyDeclared { path, .. } => {
-                write!(f, "declaration path `{path}` was claimed by two source declarations")
+                write!(
+                    f,
+                    "declaration path `{path}` was claimed by two source declarations"
+                )
             }
         }
     }
@@ -424,8 +420,16 @@ impl IdentityTable {
     /// Establish exactly one identity for a source declaration.
     ///
     /// Repeating the same claim is idempotent (the same source may be visited
-    /// through multiple import routes). Either axis disagreeing is rejected;
-    /// there is no alias insertion or reconstruction fallback.
+    /// through multiple import routes). One source occurrence may be reachable
+    /// under more than one canonical path — a directory module's peer file
+    /// publishes its declarations both as `{assembler}.{name}` and, when the
+    /// file is importable in its own right, as `{file}.{name}` — so a second
+    /// spelling of an ESTABLISHED occurrence records another way to look the
+    /// same declaration up. It never mints a second identity, and the
+    /// declaration keeps the path it was first established under.
+    ///
+    /// Two DIFFERENT occurrences claiming one path is the dangerous direction:
+    /// it would equate two declarations, so it is rejected.
     pub(crate) fn declare(
         &mut self,
         occurrence: DeclarationOccurrence,
@@ -433,15 +437,24 @@ impl IdentityTable {
     ) -> Result<DefId, DeclarationIdentityError> {
         let canonical_path = canonical_path.into();
         if let Some(&index) = self.declarations_by_occurrence.get(&occurrence) {
-            let established = &self.declarations[index];
-            if established.declaration.full_path() == canonical_path {
-                return Ok(established.declaration.clone());
+            let established = self.declarations[index].declaration.clone();
+            if established.full_path() == canonical_path {
+                return Ok(established);
             }
-            return Err(DeclarationIdentityError::OccurrenceAlreadyDeclared {
-                occurrence,
-                established_path: established.declaration.full_path().to_string(),
-                conflicting_path: canonical_path,
-            });
+            match self.declarations_by_path.get(&canonical_path) {
+                Some(&claimed) if claimed != index => {
+                    return Err(DeclarationIdentityError::PathAlreadyDeclared {
+                        path: canonical_path,
+                        established_occurrence: self.declarations[claimed].occurrence,
+                        conflicting_occurrence: occurrence,
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    self.declarations_by_path.insert(canonical_path, index);
+                }
+            }
+            return Ok(established);
         }
         if let Some(&index) = self.declarations_by_path.get(&canonical_path) {
             let established = &self.declarations[index];
@@ -726,7 +739,27 @@ mod tests {
     }
 
     #[test]
-    fn contradictory_declaration_claims_fail_closed() {
+    fn a_second_path_for_one_occurrence_is_another_spelling_not_another_identity() {
+        let mut table = IdentityTable::new();
+        let module = table.mint_module("m", &[PathBuf::from("/nonexistent/m.hew")]);
+        let occurrence =
+            DeclarationOccurrence::new(Some(module), &(0..8), DeclarationKind::Function, 0);
+        let established = table.declare(occurrence, "m.run").unwrap();
+        // A peer file reached through its assembler and through its own import
+        // publishes two keys for one physical declaration.
+        assert_eq!(table.declare(occurrence, "pkg.m.run").unwrap(), established);
+        let view = table.freeze();
+        assert_eq!(view.declaration_by_path("m.run"), Some(&established));
+        assert_eq!(view.declaration_by_path("pkg.m.run"), Some(&established));
+        assert_eq!(
+            established.full_path(),
+            "m.run",
+            "the declaration keeps the path it was established under"
+        );
+    }
+
+    #[test]
+    fn two_declarations_claiming_one_path_fail_closed() {
         let mut table = IdentityTable::new();
         let module = table.mint_module("m", &[PathBuf::from("/nonexistent/m.hew")]);
         let first = DeclarationOccurrence::new(Some(module), &(0..8), DeclarationKind::Function, 0);
@@ -734,13 +767,21 @@ mod tests {
             DeclarationOccurrence::new(Some(module), &(9..17), DeclarationKind::Function, 0);
         table.declare(first, "m.run").unwrap();
         assert!(matches!(
-            table.declare(first, "m.stop"),
-            Err(DeclarationIdentityError::OccurrenceAlreadyDeclared { .. })
-        ));
-        assert!(matches!(
             table.declare(second, "m.run"),
             Err(DeclarationIdentityError::PathAlreadyDeclared { .. })
         ));
         assert!(table.freeze().declaration(second).is_none());
+        // A second occurrence must not be able to steal a spelling either.
+        let mut table = IdentityTable::new();
+        let module = table.mint_module("m", &[PathBuf::from("/nonexistent/m.hew")]);
+        let first = DeclarationOccurrence::new(Some(module), &(0..8), DeclarationKind::Function, 0);
+        let second =
+            DeclarationOccurrence::new(Some(module), &(9..17), DeclarationKind::Function, 0);
+        table.declare(first, "m.run").unwrap();
+        table.declare(second, "m.stop").unwrap();
+        assert!(matches!(
+            table.declare(second, "m.run"),
+            Err(DeclarationIdentityError::PathAlreadyDeclared { .. })
+        ));
     }
 }

@@ -795,13 +795,14 @@ fn one_peer_declaration_through_two_routes_resolves_one_contract() {
     );
 }
 
-/// Third-collision oracle: three peer files whose stems all sanitize to one
-/// render (`a-b`, `a+b`, `a.b` -> `a_b`), where the SECOND and THIRD declare
-/// structurally different `Tok`s against one C symbol. A single-application
-/// render disambiguator hands the third file the second's suffixed render,
-/// merging two distinct nominals and silently accepting the divergent ABI.
+/// Peer files of one directory module share the assembled module's namespace:
+/// `pkg/a+b.hew` and `pkg/a.b.hew` both declaring `Tok` against one C symbol
+/// declare `pkg.Tok` twice. Only one of them gets an identity, so the compile
+/// must be refused rather than merge two structurally different nominals onto
+/// one ABI. Paired with the positive control below, which shows the refusal is
+/// the name collision and not peer assembly.
 #[test]
-fn third_render_collision_keeps_peer_nominals_distinct() {
+fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
     use std::path::PathBuf;
     let primary_source = "pub fn unrelated() -> i64 {\n    0\n}\n";
     let inert_source = "pub fn filler() -> i64 {\n    1\n}\n";
@@ -864,12 +865,70 @@ fn third_render_collision_keeps_peer_nominals_distinct() {
         module_doc: None,
     });
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("conflicting declarations")),
-        "divergent same-named nominals in the second and third colliding \
-         files must conflict on one C symbol; errors: {:#?}",
+        !output.errors.is_empty(),
+        "the second `Tok` must be refused, not merged onto the first nominal \
+         and silently accepted against one C symbol"
+    );
+}
+
+/// Positive control for the oracle above: peer files of one directory module
+/// that declare DISTINCT names assemble cleanly, so the refusal there is the
+/// name collision and not peer assembly itself.
+#[test]
+fn distinctly_named_peer_declarations_assemble_without_a_redefinition() {
+    use std::path::PathBuf;
+    let primary_source =
+        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let peer_source =
+        "type Tag {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_yy(t: Tag) -> i64;\n}\n";
+    let primary_file = PathBuf::from("/nonexistent/distinct/pkg/pkg.hew");
+    let peer_file = PathBuf::from("/nonexistent/distinct/pkg/peer.hew");
+
+    let parsed = |source: &str| {
+        let out = hew_parser::parse(source);
+        assert!(out.errors.is_empty(), "parse: {:?}", out.errors);
+        out.program.items
+    };
+    let primary_items = parsed(primary_source);
+    let peer_items = parsed(peer_source);
+
+    let root_id = ModuleId::root();
+    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
+    let mut mg = ModuleGraph::new(root_id.clone());
+
+    let mut items = primary_items.clone();
+    let mut item_sources: Vec<PathBuf> =
+        std::iter::repeat_n(primary_file.clone(), primary_items.len()).collect();
+    item_sources.extend(std::iter::repeat_n(peer_file.clone(), peer_items.len()));
+    items.extend(peer_items);
+    mg.item_sources.insert("pkg".to_string(), item_sources);
+    mg.add_module(Module {
+        id: pkg_id.clone(),
+        items,
+        imports: vec![],
+        source_paths: vec![primary_file, peer_file],
+        doc: None,
+    })
+    .unwrap();
+    mg.add_module(Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.topo_order = vec![pkg_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: vec![],
+        module_graph: Some(mg),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "distinct peer declarations must assemble cleanly; errors: {:#?}",
         output.errors
     );
 }

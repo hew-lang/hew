@@ -496,22 +496,41 @@ impl Checker {
                     continue;
                 };
                 let dotted = module_id.path.join(".");
-                let bare_nominals =
-                    *module_id == graph.root || flat_file_imports.contains(module_id);
+                // Nominals are bare only where the module has no namespace of
+                // its own: the anonymous root unit, and file imports flattened
+                // into it. Checking a file that belongs to a named module (a
+                // directory module's peer, say) makes that MODULE the graph
+                // root, and its nominals stay qualified by it.
+                let bare_nominals = (*module_id == graph.root && dotted.is_empty())
+                    || flat_file_imports.contains(module_id);
+                let assembler = module
+                    .source_paths
+                    .first()
+                    .and_then(|source| self.identity.module_for_source(source))
+                    .or_else(|| self.identity.module_for_path(&dotted))
+                    .or_else(|| {
+                        (*module_id == graph.root)
+                            .then(|| self.identity.root_module())
+                            .flatten()
+                    });
                 for (item_index, (item, span)) in module.items.iter().enumerate() {
                     let source = graph
                         .item_source(module_id, item_index)
                         .or_else(|| module.source_paths.first());
-                    let identity_module = source
+                    // The file is the occurrence axis: two peer files whose
+                    // items share a span must stay distinguishable.
+                    let occurrence_module = source
                         .and_then(|source| self.identity.module_for_source(source))
-                        .or_else(|| self.identity.module_for_path(&dotted))
-                        .or_else(|| {
-                            (*module_id == graph.root)
-                                .then(|| self.identity.root_module())
-                                .flatten()
-                        });
+                        .or(assembler);
+                    // The render axis is the module being assembled, which is
+                    // the module the checker keys by: `pkg/helpers.hew`'s
+                    // `pub fn make` publishes as `pkg.make`. A peer file that
+                    // is ALSO importable in its own right is walked a second
+                    // time as its own module and records `pkg.helpers.make` as
+                    // a second spelling of the same declaration.
                     self.mint_item_declaration_identities(
-                        identity_module,
+                        occurrence_module,
+                        assembler,
                         bare_nominals,
                         item_index,
                         item,
@@ -527,12 +546,12 @@ impl Checker {
             // item on this surface.
             let root = self.identity.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
-                self.mint_item_declaration_identities(root, true, item_index, item, span);
+                self.mint_item_declaration_identities(root, root, true, item_index, item, span);
             }
         } else {
             let root = self.identity.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
-                self.mint_item_declaration_identities(root, true, item_index, item, span);
+                self.mint_item_declaration_identities(root, root, true, item_index, item, span);
             }
         }
     }
@@ -597,6 +616,13 @@ impl Checker {
     )]
     /// Inventory one parsed item's declarations under `module`.
     ///
+    /// `module` is the OCCURRENCE axis: the file the item was parsed from, so
+    /// two files whose items share a span stay distinguishable. `owner` is the
+    /// PATH axis: the module the checker keys the declaration under. They
+    /// differ for a directory module's peer files, whose items are reachable
+    /// as `{assembler}.{name}` even though each file has its own identity;
+    /// `owner` defaults to `module` everywhere else.
+    ///
     /// The declaration path is the spelling the checker keys that declaration
     /// by, so later lookups resolve without a second render:
     /// * free and extern functions are always module-scoped
@@ -609,6 +635,7 @@ impl Checker {
     fn mint_item_declaration_identities(
         &mut self,
         module: Option<crate::ModuleId>,
+        owner: Option<crate::ModuleId>,
         bare_nominals: bool,
         item_ordinal: usize,
         item: &Item,
@@ -616,8 +643,8 @@ impl Checker {
     ) {
         use crate::{DeclarationKind as Kind, DeclarationOccurrence as Occurrence};
 
-        let module_path = module.and_then(|module| {
-            let path = self.identity.module_path(module);
+        let module_path = owner.or(module).and_then(|owner| {
+            let path = self.identity.module_path(owner);
             (path != "#synthetic-root").then(|| path.to_string())
         });
         let fn_path = |leaf: &str| {
@@ -635,26 +662,23 @@ impl Checker {
         let mut declare = |kind: Kind, ordinal: usize, path: String| {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
-            // `PathAlreadyDeclared` is an ordinary redefinition and semantic
-            // registration owns that diagnostic, so minting stays quiet: the
-            // second declaration gets no identity and nothing downstream can
-            // resolve it, but the message belongs to one reporter.
+            // Two source declarations claiming one canonical path do not both
+            // get an identity: the second is refused, so nothing downstream
+            // can resolve it and the compile fails closed at the first
+            // consumer that needs it.
             //
-            // `OccurrenceAlreadyDeclared` is one source occurrence claiming
-            // two canonical paths — a contradiction inside the compiler, not a
-            // source defect. Use the established duplicate-definition category
-            // until diagnostics grow a dedicated compiler-boundary kind;
-            // crucially, the conflict can never reach accepted HIR.
-            if let Err(crate::identity::DeclarationIdentityError::OccurrenceAlreadyDeclared {
-                ..
-            }) = self.identity.declare(occurrence, path.clone())
-            {
-                self.errors.push(TypeError::duplicate_definition(
-                    span.clone(),
-                    &path,
-                    span.clone(),
-                ));
-            }
+            // SHORTCUT: the refusal is silent here, so the message the user
+            // sees comes from whichever consumer asks first — for an ordinary
+            // redefinition that is semantic registration's duplicate-definition
+            // error, but for two peer files of one directory module colliding
+            // in the assembled namespace (registration visits each file
+            // separately and never sees it) the user gets the internal
+            // "identity table has no ... declaration" wording instead.
+            // WHEN OBSOLETE: when diagnostics grow a declaration-boundary kind
+            // this can report directly. WHAT: report the collision here with
+            // both occurrence spans, once reporting it cannot double up with
+            // registration's own message for the same-module case.
+            let _ = self.identity.declare(occurrence, path.clone());
         };
         match item {
             Item::Import(_) | Item::Impl(_) => {}

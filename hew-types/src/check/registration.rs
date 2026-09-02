@@ -1567,6 +1567,7 @@ impl Checker {
         for (item_ordinal, (item, span)) in parsed.program.items.iter().enumerate() {
             self.mint_item_declaration_identities(
                 Some(builtins_module),
+                Some(builtins_module),
                 false,
                 item_ordinal,
                 item,
@@ -8192,15 +8193,16 @@ impl Checker {
             0,
         );
         if let Ok(declaration) = self.identity.declare(occurrence, path.clone()) {
-            Some(declaration)
-        } else {
-            self.errors.push(TypeError::duplicate_definition(
-                method.fn_span.clone(),
-                &path,
-                method.fn_span.clone(),
-            ));
-            None
+            return Some(declaration);
         }
+        // Impl methods are registered per route, and a shipped module reached
+        // through the compiled-in stdlib pass and through the module graph
+        // presents the same method under two occurrences. The canonical path
+        // already names the receiver, the trait and the method, so an
+        // established row for it is that same method: resolve it rather than
+        // mint a second identity. A genuinely duplicated impl method collides
+        // on this path too, and impl registration reports that.
+        self.identity.declaration_by_path(&path).cloned()
     }
 
     /// Substitute trait-side type references into impl-side concrete types.
@@ -10864,6 +10866,7 @@ impl Checker {
                         .unwrap_or(primary);
                     self.mint_item_declaration_identities(
                         Some(module),
+                        Some(primary),
                         bare_nominals,
                         index,
                         item,
@@ -11424,6 +11427,7 @@ impl Checker {
         if !self.identity.module_has_declarations(identity_module) {
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
                 self.mint_item_declaration_identities(
+                    Some(identity_module),
                     Some(identity_module),
                     false,
                     item_ordinal,

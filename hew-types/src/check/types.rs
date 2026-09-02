@@ -3369,6 +3369,11 @@ pub struct Checker {
     /// registry rows' endpoints. One allocator per module keeps every
     /// source-less extern declaration on its own occurrence.
     pub(super) contractless_extern_occurrences: std::collections::HashMap<crate::ModuleId, usize>,
+    /// Declaration paths whose cross-file collision has already been reported.
+    /// One item is inventoried through more than one route (the module-graph
+    /// walk, the root surface, import registration), and a refused path is
+    /// refused on every one of them.
+    pub(super) reported_declaration_collisions: std::collections::HashSet<String>,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -3923,6 +3928,7 @@ impl Checker {
             identity: crate::identity::IdentityTable::new(),
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),
+            reported_declaration_collisions: std::collections::HashSet::new(),
             cross_module_colliding_record_names: HashSet::new(),
             generic_layout_instantiations: HashMap::new(),
             reported_generic_layout_collisions: HashSet::new(),

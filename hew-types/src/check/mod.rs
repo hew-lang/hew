@@ -746,14 +746,17 @@ impl Checker {
             }
             // Everything else is a redefinition. Registration reports the
             // ones it can see, which is one file at a time; a collision
-            // between two peer files of one directory module is invisible
-            // there, because each file registers on its own and only the
-            // ASSEMBLED path collides. Report exactly that case here, naming
-            // both files, so the user never sees the identity table's
-            // internal "no declaration" wording instead of a duplicate
-            // definition.
+            // ACROSS files that share one namespace — two peer files of a
+            // directory module, or a root and the file imports flattened into
+            // it — is invisible there, because each file registers on its own
+            // and only the shared path collides. Report exactly that case
+            // here, naming both files, so the user never sees the identity
+            // table's internal "no declaration" wording instead of a
+            // duplicate definition.
             let established_module = established_occurrence.module();
-            if established_module == module {
+            if established_module == module
+                || !self.reported_declaration_collisions.insert(path.clone())
+            {
                 return;
             }
             let leaf = path.rsplit(['.', ':']).next().unwrap_or(&path).to_string();
@@ -777,8 +780,8 @@ impl Checker {
                 (&established_file, &conflicting_file)
             {
                 error = error.with_suggestion(format!(
-                    "`{established_file}` and `{conflicting_file}` are peer files of one \
-                     module and share its namespace: rename one `{leaf}`"
+                    "`{established_file}` and `{conflicting_file}` contribute to one \
+                     namespace: rename one `{leaf}`"
                 ));
             }
             error.source_module = conflicting_file;

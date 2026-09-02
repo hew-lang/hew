@@ -2566,6 +2566,44 @@ mod tests {
         );
     }
 
+    /// The same rule across the other namespace that assembles from several
+    /// files: a file import flattens into the root, so a name the root and the
+    /// imported file both declare collides there too, and the report must not
+    /// double up when the item is inventoried through more than one route.
+    #[test]
+    fn a_root_and_its_file_import_claiming_one_name_report_one_duplicate() {
+        let dir = tempfile::tempdir().expect("create file-import fixture");
+        write_source(
+            dir.path(),
+            "lib.hew",
+            "type Point { x: i64; }\npub fn lib_point() -> i64 { let p = Point { x: 1 }; p.x }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"lib.hew\";\n\ntype Point { y: i64; }\n\n             fn main() { let p = Point { y: 2 }; println(p.y + lib_point()); }\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("a root and its file import cannot both declare `Point`");
+        let duplicates = failure
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                matches!(
+                    &diagnostic.kind,
+                    FrontendDiagnosticKind::Type(error)
+                        if error.kind == hew_types::error::TypeErrorKind::DuplicateDefinition
+                )
+            })
+            .count();
+        assert_eq!(
+            duplicates, 1,
+            "one collision must produce one report: {:#?}",
+            failure.diagnostics
+        );
+    }
+
     /// Negative control for the rule above: an `extern "C"` symbol declared by
     /// two peer files of one directory module is a redeclaration, not a
     /// redefinition — the linker binds every call to one implementation and

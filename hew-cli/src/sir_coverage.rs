@@ -1,9 +1,9 @@
 //! `hew tool sir-coverage` — the dev-only SIR admission inventory.
 //!
-//! Until the legacy HIR→MIR body lowerer is deleted, every function in the
-//! corpus is either taken by SIR or still routed through the legacy lowerer.
-//! This tool asks that question of every root item in every `.hew` file it is
-//! given and prints one line per item:
+//! Until the legacy HIR→MIR body lowerer is deleted, every function body in
+//! the corpus is either taken by SIR or still routed through the legacy
+//! lowerer. This tool asks that question of every body the cutover must take
+//! in every `.hew` file it is given and prints one line per row:
 //!
 //! ```text
 //! <file> <qualified item> sir
@@ -13,28 +13,27 @@
 //!
 //! "Admitted" means the SIR lowering took the body under every-callable
 //! demand and the SIR verifier accepted it: the same two facts the strict
-//! `--sir-lower` route requires before it will build a component. A
-//! non-function item (actor, machine, record, supervisor, impl block, extern
-//! fn, type declaration, const) has no SIR route at all today and is counted
-//! as `legacy: item-kind:<kind>` so the inventory never omits an item the
-//! cutover still has to take.
+//! `--sir-lower` route requires before it will build a component. Only
+//! function bodies enter `<admitted>/<total>` — free functions, impl methods
+//! (explicit and materialized trait defaults), and actor/machine handler
+//! bodies, none of which SIR can route around today. A bodiless declaration
+//! (record, type, const, extern fn, supervisor) or an impl-block header has
+//! no SIR route to reach 100% under and is printed as an uncounted
+//! `legacy: item-kind:<kind>` inventory line so the corpus is still fully
+//! listed.
 //!
-//! `--ratchet FILE` compares the percentage with the committed one and fails
-//! when it dropped, so the number can only rise until it reaches 100 %.
+//! `--ratchet FILE` compares the admitted body count with the committed one
+//! and fails when it dropped, so the count can only rise.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use hew_hir::ItemId;
 use serde::Serialize;
 
 use crate::args::SirCoverageArgs;
 use crate::{compile, target};
-
-/// Number of decimals the ratchet file carries. Four decimals resolve one
-/// function in a corpus of up to a million, so a one-function drop can never
-/// round to equality.
-const RATCHET_DECIMALS: usize = 4;
 
 #[derive(Debug, Serialize)]
 struct ItemReport {
@@ -42,6 +41,10 @@ struct ItemReport {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// Whether this row is a function body counted toward `admitted`/`total`.
+    /// `false` marks an inventory-only line (a bodiless declaration or an
+    /// impl-block header) that has no SIR route to reach 100% under.
+    counted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +98,9 @@ pub fn cmd_sir_coverage(args: &SirCoverageArgs) -> i32 {
             report.files_failed += 1;
         }
         for item in &file_report.items {
+            if !item.counted {
+                continue;
+            }
             report.total += 1;
             if item.status == "sir" {
                 report.admitted += 1;
@@ -104,7 +110,7 @@ pub fn cmd_sir_coverage(args: &SirCoverageArgs) -> i32 {
     }
     if report.total == 0 {
         eprintln!(
-            "Error: sir-coverage: no items were inventoried across {} file(s); an empty corpus proves nothing",
+            "Error: sir-coverage: no function bodies were inventoried across {} file(s); an empty corpus proves nothing",
             files.len()
         );
         return 2;
@@ -115,7 +121,7 @@ pub fn cmd_sir_coverage(args: &SirCoverageArgs) -> i32 {
         match serde_json::to_string_pretty(&report) {
             Ok(json) => println!("{json}"),
             Err(error) => {
-                eprintln!("Error: sir-coverage: cannot serialise report: {error}");
+                eprintln!("Error: sir-coverage: cannot serialize report: {error}");
                 return 2;
             }
         }
@@ -130,7 +136,7 @@ pub fn cmd_sir_coverage(args: &SirCoverageArgs) -> i32 {
     }
 
     match args.ratchet.as_deref() {
-        Some(ratchet) => check_ratchet(ratchet, report.percent),
+        Some(ratchet) => check_ratchet(ratchet, report.admitted),
         None => 0,
     }
 }
@@ -141,10 +147,6 @@ fn percent(admitted: usize, total: usize) -> f64 {
     let admitted = f64::from(u32::try_from(admitted).unwrap_or(u32::MAX));
     let total = f64::from(u32::try_from(total).unwrap_or(u32::MAX));
     admitted * 100.0 / total
-}
-
-fn format_ratchet(percent: f64) -> String {
-    format!("{percent:.RATCHET_DECIMALS$}")
 }
 
 fn render_text(report: &CoverageReport) -> String {
@@ -172,12 +174,19 @@ fn render_text(report: &CoverageReport) -> String {
     out
 }
 
-/// Compare the computed percentage with the committed one.
+/// Compare the computed admitted-body count with the committed one.
 ///
 /// A drop fails. A rise is reported so the file can be raised; it fails only
 /// under `RATCHET_STRICT_RECOVERIES=1`, the same accounting mode the corpus
 /// ratchets use for unrecorded recoveries.
-fn check_ratchet(path: &Path, computed: f64) -> i32 {
+///
+/// The ratchet is the raw admitted-function count, not a percentage: a
+/// percentage's denominator moves every time the corpus gains or loses a
+/// legacy fixture, so corpus growth alone can lower it with no compiler
+/// regression at all. A count can only rise when a body that used to fail
+/// admission starts passing, or fall when one that used to pass regresses —
+/// exactly what a ratchet is for.
+fn check_ratchet(path: &Path, computed: usize) -> i32 {
     let recorded = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) => {
@@ -188,30 +197,24 @@ fn check_ratchet(path: &Path, computed: f64) -> i32 {
             return 2;
         }
     };
-    let Ok(recorded) = recorded.trim().parse::<f64>() else {
+    let Ok(recorded) = recorded.trim().parse::<usize>() else {
         eprintln!(
-            "Error: sir-coverage: ratchet `{}` must hold one decimal percentage, got `{}`",
+            "Error: sir-coverage: ratchet `{}` must hold one non-negative integer, got `{}`",
             path.display(),
             recorded.trim()
         );
         return 2;
     };
-    // Both sides go through the same fixed-decimal rendering so equality is
-    // a property of the recorded digits, never of float noise.
-    let computed_text = format_ratchet(computed);
-    let recorded_text = format_ratchet(recorded);
-    let computed: f64 = computed_text.parse().expect("fixed-decimal render parses");
-    let recorded: f64 = recorded_text.parse().expect("fixed-decimal render parses");
     if computed < recorded {
         eprintln!(
-            "sir-coverage: ratchet dropped: `{}` records {recorded_text}%, this run measured {computed_text}%",
+            "sir-coverage: ratchet dropped: `{}` records {recorded}, this run measured {computed}",
             path.display()
         );
         return 1;
     }
     if computed > recorded {
         eprintln!(
-            "sir-coverage: ratchet can rise: `{}` records {recorded_text}%, this run measured {computed_text}%; update the file to {computed_text}",
+            "sir-coverage: ratchet can rise: `{}` records {recorded}, this run measured {computed}; update the file to {computed}",
             path.display()
         );
         if std::env::var("RATCHET_STRICT_RECOVERIES").as_deref() == Ok("1") {
@@ -221,7 +224,7 @@ fn check_ratchet(path: &Path, computed: f64) -> i32 {
     }
     // Stderr, like the other verdicts, so `--json` stdout stays one document.
     eprintln!(
-        "sir-coverage: ratchet holds at {recorded_text}% (`{}`)",
+        "sir-coverage: ratchet holds at {recorded} (`{}`)",
         path.display()
     );
     0
@@ -286,18 +289,67 @@ fn inventory_file(
     let sir = hew_sir::lower_module_with_demand(module, hew_sir::SirLoweringDemand::EveryCallable);
     let findings = VerifierFindings::new(&sir, hew_sir::verify_module(&sir.module));
 
+    // Positive record of which materialized trait-default method bodies
+    // belong to a root-local impl block. Explicit impl methods are already
+    // recorded into `root_item_ids` at lowering time (hew-hir/src/lower.rs);
+    // a default method is deliberately excluded from that set because its
+    // body's span indexes the trait's own source, not the root file — a fact
+    // about fail-closed caret rendering that has nothing to do with whether
+    // this compilation owns the body. `HirImplBlock::method_item_ids` lists
+    // every method body (explicit and default) an impl block emits, so an
+    // impl block with at least one explicit root method is proven root-local
+    // and every id in its `method_item_ids` belongs to this compilation.
+    //
+    // WHY this is a shortcut: an impl block whose methods are ALL trait
+    // defaults (no explicit override) has no `method_item_ids` entry in
+    // `root_item_ids` to key off, so it is conservatively treated as
+    // imported and its default bodies are skipped here (undercounting, never
+    // overcounting).
+    // WHEN obsolete: `HirImplBlock` gains its own `defining_module` field
+    // (the same positive-record shape already carried by
+    // `HirActorDecl`/`HirMachineDecl`/`HirRecordDecl`/`HirTypeDecl`).
+    // WHAT the real fix looks like: thread that field through the impl's one
+    // construction site (hew-hir/src/lower.rs) and read it directly here.
+    let root_local_impl_bodies: HashSet<ItemId> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hew_hir::HirItem::Impl(block) if impl_is_root(block, &module.root_item_ids) => {
+                Some(block.method_item_ids.iter().copied())
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect();
+
     let mut items = Vec::new();
     for item in &module.items {
-        let Some(report) = inventory_item(module, &sir, &findings, item) else {
-            continue;
-        };
-        items.push(report);
+        inventory_item(
+            module,
+            &sir,
+            &findings,
+            item,
+            &root_local_impl_bodies,
+            &mut items,
+        );
     }
     FileReport {
         file: display,
         error: None,
         items,
     }
+}
+
+/// Whether an impl block was lowered from the file being inventoried, proven
+/// by at least one of its emitted method bodies appearing in the module's
+/// positive `root_item_ids` record. See the shortcut note in `inventory_file`
+/// for the one case (an impl with no explicit method override) this cannot
+/// prove.
+fn impl_is_root(block: &hew_hir::node::HirImplBlock, root_item_ids: &HashSet<ItemId>) -> bool {
+    block
+        .method_item_ids
+        .iter()
+        .any(|id| root_item_ids.contains(id))
 }
 
 /// SIR verifier diagnostics keyed by the declaration they are about.
@@ -339,58 +391,191 @@ impl VerifierFindings {
     }
 }
 
+/// Push zero or more `ItemReport`s for one top-level HIR item onto `items`.
+///
+/// Function bodies (free fns, impl methods including root-local trait
+/// defaults, and actor/machine handler bodies) are `counted: true` — they are
+/// what `report.admitted`/`report.total` ratchet on. Everything else is an
+/// uncounted inventory line: it has no SIR route to reach 100% under, but
+/// the corpus is still fully listed so no declaration is silently omitted.
 fn inventory_item(
     module: &hew_hir::HirModule,
     sir: &hew_sir::LoweredModule,
     verifier: &VerifierFindings,
     item: &hew_hir::HirItem,
-) -> Option<ItemReport> {
+    root_local_impl_bodies: &HashSet<ItemId>,
+    items: &mut Vec<ItemReport>,
+) {
     use hew_hir::HirItem;
-    let (id, name, kind) = match item {
+    match item {
         HirItem::Function(function) => {
-            // Functions carry a positive root record; imported module bodies
-            // are inventoried when their own file is, never through an
-            // importer.
-            if !module.root_item_ids.contains(&function.id) {
-                return None;
+            // A free function or impl method belongs to this compilation
+            // when it is either a root item outright (free fns and explicit
+            // root impl methods) or a trait-default body proven root-local
+            // through its owning impl block. Imported module bodies are
+            // inventoried when their own file is, never through an importer.
+            let is_local = module.root_item_ids.contains(&function.id)
+                || root_local_impl_bodies.contains(&function.id);
+            if !is_local {
+                return;
             }
             let (status, reason) = classify_function(sir, verifier, &function.declaration);
-            return Some(ItemReport {
+            items.push(ItemReport {
                 name: function.declaration.full_path().to_string(),
                 status,
                 reason,
+                counted: true,
             });
         }
-        HirItem::TypeDecl(decl) => (decl.id, decl.declaration.full_path().to_string(), "type"),
-        HirItem::Machine(decl) => (decl.id, decl.declaration.full_path().to_string(), "machine"),
-        HirItem::Record(decl) => (decl.id, decl.name.clone(), "record"),
-        HirItem::Actor(decl) => (decl.id, decl.name.clone(), "actor"),
-        HirItem::Supervisor(decl) => (decl.id, decl.name.clone(), "supervisor"),
-        HirItem::Impl(block) => (
-            block.id,
-            match &block.trait_name {
+        HirItem::Actor(decl) if decl.defining_module.is_none() => {
+            inventory_actor_bodies(decl, items);
+            items.push(inventory_only(decl.name.clone(), "actor"));
+        }
+        HirItem::Machine(decl) if decl.defining_module.is_none() => {
+            inventory_machine_bodies(decl, items);
+            items.push(inventory_only(
+                decl.declaration.full_path().to_string(),
+                "machine",
+            ));
+        }
+        HirItem::TypeDecl(decl) if decl.defining_module.is_none() => {
+            items.push(inventory_only(
+                decl.declaration.full_path().to_string(),
+                "type",
+            ));
+        }
+        HirItem::Record(decl) if decl.defining_module.is_none() => {
+            items.push(inventory_only(decl.name.clone(), "record"));
+        }
+        HirItem::ExternFn(decl) if matches!(decl.provenance, hew_hir::ExternProvenance::Root) => {
+            items.push(inventory_only(
+                decl.declaration.full_path().to_string(),
+                "extern-fn",
+            ));
+        }
+        HirItem::Impl(block) if impl_is_root(block, &module.root_item_ids) => {
+            let name = match &block.trait_name {
                 Some(trait_name) => format!("impl {trait_name} for {}", block.self_type_name),
                 None => format!("impl {}", block.self_type_name),
-            },
-            "impl",
-        ),
-        HirItem::ExternFn(decl) => (
-            decl.id,
-            decl.declaration.full_path().to_string(),
-            "extern-fn",
-        ),
-        HirItem::Const(decl) => (decl.id, decl.name.clone(), "const"),
-    };
-    // Non-function items have no positive root record; the source-module
-    // attribution map names every imported one.
-    if module.diagnostic_source_modules.contains_key(&id) {
-        return None;
+            };
+            items.push(inventory_only(name, "impl"));
+        }
+        // Imported (non-root) actor/machine/type/record/extern-fn/impl:
+        // inventoried when their own file is, never through an importer.
+        HirItem::Actor(_)
+        | HirItem::Machine(_)
+        | HirItem::TypeDecl(_)
+        | HirItem::Record(_)
+        | HirItem::ExternFn(_)
+        | HirItem::Impl(_) => {}
+        // Supervisors are never emitted from an imported module today (their
+        // cross-module lowering is a tracked follow-up, hew-hir/src/lower.rs)
+        // and carry no executable body of their own — the Rust MIR producer
+        // treats `HirItem::Supervisor` as a no-op tier. Always list, never
+        // filter and never count.
+        HirItem::Supervisor(decl) => {
+            items.push(inventory_only(decl.name.clone(), "supervisor"));
+        }
+        // WHY this shortcut: `HirConst` carries no positive locality field
+        // (unlike Type/Record/Actor/Machine's `defining_module` or
+        // `HirExternFn`'s `ExternProvenance`), so it cannot be filtered by a
+        // proven root/imported fact without reaching for the same
+        // absence-in-a-diagnostics-side-table proxy this tool must not use
+        // (see `HirModule::root_item_ids`'s doc comment). Every const in
+        // scope is listed instead — an imported const's inventory line
+        // repeats once per importing file, which is noise, never a
+        // miscount, because this row is uncounted: it never enters
+        // `report.total`/`admitted`.
+        // WHEN obsolete: `HirConst` gains its own `defining_module` field.
+        // WHAT the real fix looks like: thread it through const lowering the
+        // same way the other declaration kinds carry theirs, then filter
+        // like `HirItem::Record` does above.
+        HirItem::Const(decl) => {
+            items.push(inventory_only(decl.name.clone(), "const"));
+        }
     }
-    Some(ItemReport {
+}
+
+fn inventory_only(name: String, kind: &str) -> ItemReport {
+    ItemReport {
         name,
         status: "legacy",
         reason: Some(format!("item-kind:{kind}")),
-    })
+        counted: false,
+    }
+}
+
+/// SIR lowers no actor body at all today — no `HirItem::Actor` construct
+/// appears anywhere in `hew-sir/src/lower.rs`. Every handler is therefore
+/// `legacy` unconditionally; there is no lowering status to join on.
+///
+/// WHEN obsolete: hew-sir gains actor admission.
+/// WHAT the real fix looks like: mint a `CallableId`/`SirLoweringStatus` per
+/// handler the way free functions already have one, then classify each row
+/// through `classify_function` exactly like an ordinary body.
+fn inventory_actor_bodies(decl: &hew_hir::HirActorDecl, items: &mut Vec<ItemReport>) {
+    const REASON: &str = "no-sir-route:actor-body";
+    if decl.init.is_some() {
+        items.push(no_sir_route(format!("{}::init", decl.name), REASON));
+    }
+    for handler in &decl.receive_handlers {
+        items.push(no_sir_route(
+            format!("{}::receive fn {}", decl.name, handler.name),
+            REASON,
+        ));
+    }
+    for method in &decl.methods {
+        items.push(no_sir_route(
+            format!("{}::{}", decl.name, method.name),
+            REASON,
+        ));
+    }
+    for hook in &decl.lifecycle_hooks {
+        items.push(no_sir_route(
+            format!("{}::on({:?}) {}", decl.name, hook.kind, hook.name),
+            REASON,
+        ));
+    }
+}
+
+/// SIR lowers no machine body today (same absence of `HirItem::Machine` in
+/// `hew-sir/src/lower.rs` as actors); see `inventory_actor_bodies` for the
+/// WHEN/WHAT this shortcut resolves under.
+fn inventory_machine_bodies(decl: &hew_hir::HirMachineDecl, items: &mut Vec<ItemReport>) {
+    const REASON: &str = "no-sir-route:machine-body";
+    let qualified = decl.qualified_name();
+    for state in &decl.states {
+        if state.entry.is_some() {
+            items.push(no_sir_route(
+                format!("{qualified}::{}.entry", state.name),
+                REASON,
+            ));
+        }
+        if state.exit.is_some() {
+            items.push(no_sir_route(
+                format!("{qualified}::{}.exit", state.name),
+                REASON,
+            ));
+        }
+    }
+    for transition in &decl.transitions {
+        items.push(no_sir_route(
+            format!(
+                "{qualified}::on {}: {}->{}",
+                transition.event_name, transition.source_state, transition.target_state
+            ),
+            REASON,
+        ));
+    }
+}
+
+fn no_sir_route(name: String, reason: &str) -> ItemReport {
+    ItemReport {
+        name,
+        status: "legacy",
+        reason: Some(reason.to_string()),
+        counted: true,
+    }
 }
 
 fn classify_function(

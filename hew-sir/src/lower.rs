@@ -43,6 +43,17 @@ pub enum SirLoweringDemand {
     /// `--sir-lower` compile route. A declaration the entry never reaches is
     /// reported [`SirLoweringStatus::NotReached`], and so is a declaration
     /// whose header was refused, because no call can name it.
+    ///
+    /// WHY this shortcut exists: the strict route currently proves only the
+    /// entry-reachable slice of the module, matching `hew_mir`'s closed
+    /// scalar component.
+    /// WHEN obsolete: the final-ladder plan's whole-module admission lands
+    /// (plan §6 — "every function body lowers and verifies whether or not it
+    /// is reachable from an entry; reachability is an optimization input,
+    /// never an admission rule").
+    /// WHAT the real fix looks like: `--sir-lower` demands
+    /// [`Self::EveryCallable`] instead of `Self::Entry`, and this variant is
+    /// deleted once nothing asks for entry-only demand any more.
     Entry,
     /// Demand every admitted callable header, entry or not: the coverage
     /// inventory. A refused header is reported

@@ -169,7 +169,7 @@ fn grep_file(file_path: string, pat: regex.Pattern, cfg: Config, show_label: boo
     let result = fs.try_read(file_path);
     match result {
         .Err(e) => {
-            let msg = fs.io_error_message(e);
+            let msg = to_string(e);
             io.write_err(f"grep: {file_path}: {msg}\n");
             MatchState { found_any: state.found_any, had_error: true }
         },
@@ -196,7 +196,7 @@ fn grep_dir(dir_path: string, pat: regex.Pattern, cfg: Config, state: MatchState
     let entries_result = fs.try_list_dir(dir_path);
     match entries_result {
         .Err(e) => {
-            let msg = fs.io_error_message(e);
+            let msg = to_string(e);
             io.write_err(f"grep: {dir_path}: {msg}\n");
             MatchState { found_any: state.found_any, had_error: true }
         },

@@ -368,7 +368,7 @@ fn test_from_file_scans_real_empty_line_and_eof() {
             }
         },
         .Err(e) => {
-            panic(fs.io_error_message(e));
+            panic(f"{e}");
         },
     }
     let _ = fs.delete(path);

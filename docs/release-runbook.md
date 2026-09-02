@@ -13,9 +13,9 @@ This is the concrete expansion of the `ci-full-run-pre-tag` todo.
 - [ ] CHANGELOG.md has either a populated `[Unreleased]` section or the dated
       `[X.Y.Z]` section for the intended release
 - [ ] Curated GitHub release notes are drafted at `docs/releases/vX.Y.Z.md`
-- [ ] `workspace.package.version` in `Cargo.toml`, `Cargo.lock`, the intended
-      changelog record, and `docs/releases/vX.Y.Z.md` all name the candidate
-      that will be tagged
+- [ ] `workspace.package.version` in `Cargo.toml`, `Cargo.lock`,
+      `docs/syntax-data.json`, the intended changelog record, and
+      `docs/releases/vX.Y.Z.md` all name the candidate that will be tagged
 
 ## Phase 1 — Assemble the candidate
 
@@ -57,9 +57,10 @@ git log --oneline -5  # confirm expected HEAD
 ## Phase 2 — Establish the release identity
 
 > **Prerequisite:** Any required version bump must update `Cargo.toml`'s
-> workspace version, every lockfile, the dated changelog record, and the exact
-> `docs/releases/vX.Y.Z.md` file together. Tagging a commit where any one of
-> those identities differs produces a split release record.
+> workspace version, every lockfile, `docs/syntax-data.json`, the dated
+> changelog record, and the exact `docs/releases/vX.Y.Z.md` file together.
+> Tagging a commit where any one of those identities differs produces a split
+> release record.
 
 ```bash
 # Set the intended version in the root [workspace.package], if needed.
@@ -81,8 +82,8 @@ release_version="$(scripts/workspace-version.py)"
 release_tag="v${release_version}"
 test -f "docs/releases/${release_tag}.md"
 
-git add Cargo.toml Cargo.lock hew-parser/fuzz/Cargo.lock CHANGELOG.md \
-  "docs/releases/${release_tag}.md"
+git add Cargo.toml Cargo.lock hew-parser/fuzz/Cargo.lock docs/syntax-data.json \
+  CHANGELOG.md "docs/releases/${release_tag}.md"
 git commit -m "chore(release): prepare ${release_tag}"
 ```
 

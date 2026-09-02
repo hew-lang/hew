@@ -2,9 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Hew",
   "scopeName": "source.hew",
-  "fileTypes": [
-    "hew"
-  ],
+  "fileTypes": ["hew"],
   "patterns": [
     {
       "include": "#comments"
@@ -254,7 +252,7 @@
         {
           "comment": "Declarations",
           "name": "keyword.declaration.hew",
-          "match": "\\b(as|async|const|enum|extern|fn|gen|impl|import|indirect|let|mut|package|pub|record|super|trait|type|var|where)\\b"
+          "match": "\\b(as|async|const|enum|extern|fn|gen|impl|import|indirect|let|mut|package|pub|trait|type|var|where)\\b"
         },
         {
           "comment": "Actor and concurrency",
@@ -264,7 +262,7 @@
         {
           "comment": "Supervisor",
           "name": "keyword.supervisor.hew",
-          "match": "\\b(budget|child|restart|strategy|supervisor)\\b"
+          "match": "\\b(child|restart|strategy|supervisor)\\b"
         },
         {
           "comment": "Supervisor strategy and overflow policy values",
@@ -326,7 +324,7 @@
         {
           "comment": "Primitive types",
           "name": "storage.type.primitive.hew",
-          "match": "\\b(bool|bytes|char|duration|instant|never|string|void)\\b"
+          "match": "\\b(bool|bytes|char|duration|instant|string)\\b"
         },
         {
           "comment": "Generic / collection types",
@@ -767,7 +765,7 @@
         {
           "comment": "Contextual identifiers (special meaning in specific contexts)",
           "name": "variable.language.contextual.hew",
-          "match": "\\b(block|coalesce|drop_new|drop_old|emits|events|export|fail|fallback|infinity|initial|intensity|json|mailbox|overflow|reenter|repeated|shutdown|wired_to|within|yaml)\\b"
+          "match": "\\b(block|clone|coalesce|consume|drop_new|drop_old|emits|events|export|fail|fallback|infinity|initial|intensity|json|mailbox|overflow|reenter|repeated|shutdown|wired_to|within|yaml)\\b"
         },
         {
           "comment": "Identifier (catch-all for variables, parameters, fields)",

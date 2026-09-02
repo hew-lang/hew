@@ -1340,6 +1340,22 @@ mod tests {
             "all_keywords in syntax-data.json must exactly match the lexer's ALL_KEYWORDS, in order"
         );
 
+        // WHY: nothing generates docs/syntax-data.json's `version` field — it
+        // is hand-maintained and had drifted to a value no release ever
+        // shipped (0.10.0-pre) while the workspace was on 0.6.0-rc3. This
+        // assertion is the authority that keeps it honest; a mismatch means
+        // the JSON's version was hand-edited without checking Cargo.toml.
+        // WHEN: obsolete once a real generator writes this file from the
+        // workspace version at build/sync time.
+        // WHAT: `scripts/sync-downstream.sh` would emit the file instead of
+        // validating a hand-maintained copy.
+        assert_eq!(
+            data["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "syntax-data.json's version field must match the workspace version \
+             (hew-lexer/Cargo.toml uses version.workspace = true)"
+        );
+
         // Verify the union of categorized keywords equals all_keywords.
         let categories = data["keywords"]
             .as_object()

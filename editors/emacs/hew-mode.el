@@ -68,7 +68,7 @@
 (defconst hew-keywords
   '("if" "else" "is" "match" "loop" "for" "in" "while"
     "break" "continue" "return"
-    "let" "var" "const" "mut" "fn" "gen" "type" "record" "indirect" "enum"
+    "let" "var" "const" "mut" "fn" "gen" "type" "indirect" "enum"
     "trait" "impl" "import" "pub" "super" "where"
     "actor" "fork" "receive" "init" "spawn" "async" "move" "await" "await_restart" "this"
     "supervisor" "child" "restart" "budget" "strategy"
@@ -83,7 +83,7 @@
 (defconst hew-builtin-types
   '("i8" "i16" "i32" "i64" "u8" "u16" "u32" "u64"
     "f32" "f64" "isize" "usize"
-    "bool" "char" "string" "bytes" "void" "never" "duration" "instant"
+    "bool" "char" "string" "bytes" "duration" "instant"
     "Result" "Option" "Ok" "Err" "Some" "Vec" "HashMap" "HashSet" "Range"
     "Box" "Arc" "Rc" "Weak"
     "LocalPid" "RemotePid" "LambdaPid" "Task" "Scope"

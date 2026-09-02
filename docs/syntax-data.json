@@ -1,5 +1,5 @@
 {
-  "version": "0.10.0-pre",
+  "version": "0.6.0-rc3",
   "description": "Canonical syntax data exported from the Hew compiler. Used by tree-sitter-hew, vscode-hew, hew.sh, and hew.run to generate syntax highlighting grammars.",
   "keywords": {
     "control_flow": [
@@ -27,7 +27,6 @@
       "pub",
       "import",
       "package",
-      "super",
       "extern",
       "where",
       "type",
@@ -63,7 +62,6 @@
     "supervisor_config": [
       "child",
       "restart",
-      "budget",
       "strategy",
       "permanent",
       "transient",
@@ -99,7 +97,9 @@
       "catch",
       "race",
       "foreign",
-      "cooperate"
+      "cooperate",
+      "super",
+      "budget"
     ]
   },
   "all_keywords": [
@@ -188,6 +188,8 @@
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
     "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
+    "clone": "Prefix clone operator (clone <operand>) when immediately followed by an operand; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
+    "consume": "By-move parameter modifier (fn f(consume x: T)) when leading a parameter declaration; an ordinary identifier otherwise (fn f(consume: T), x.consume()).",
     "events": "Machine input-event vocabulary block header (contextual inside machine body)",
     "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",
     "reenter": "Machine transition self-re-entry modifier (contextual after target state name)",
@@ -273,7 +275,7 @@
     ],
     "path_separators": {
       "primary": ".",
-      "deprecated": ["::"]
+      "removed": ["::"]
     }
   },
   "types": {
@@ -298,8 +300,6 @@
       "char",
       "string",
       "bytes",
-      "void",
-      "never",
       "duration",
       "instant"
     ],

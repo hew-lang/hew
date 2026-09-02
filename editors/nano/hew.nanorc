@@ -1,6 +1,6 @@
 ## Hew syntax highlighting for GNU nano
 ## Generated from syntax-data.json — do not edit by hand.
-## syntax-data.json version: 0.10.0-pre
+## syntax-data.json version: 0.6.0-rc3
 
 syntax "hew" "\.hew$"
 
@@ -41,15 +41,15 @@ color brightwhite "\<(yield|defer|select|join|after|from|await|scope)\>"
 
 # Declaration keywords
 color green "\<(let|var|const|mut|fn|gen|async|pub|import|package)\>"
-color green "\<(super|extern|where|record|type|indirect|enum|trait|impl|as)\>"
+color green "\<(extern|where|type|indirect|enum|trait|impl|as)\>"
 
 # Actor & concurrency
 color brightgreen "\<(actor|supervisor|spawn|receive|init|scope|fork|move|select|join)\>"
 color brightgreen "\<(after|from|await|await_restart|this)\>"
 
 # Supervisor configuration
-color brightgreen "\<(child|restart|budget|strategy|permanent|transient|temporary|brutal_kill|one_for_one|one_for_all)\>"
-color brightgreen "\<(rest_for_one|simple_one_for_one|pool)\>"
+color brightgreen "\<(child|restart|strategy|permanent|transient|temporary|brutal_kill|one_for_one|one_for_all|rest_for_one)\>"
+color brightgreen "\<(simple_one_for_one|pool)\>"
 
 # Wire protocol
 color green "\<(reserved|optional|deprecated|default)\>"
@@ -61,11 +61,11 @@ color green "\<(machine|state|event|on|when|entry|exit|emit)\>"
 color green "\<(dyn|unsafe|is)\>"
 
 # Reserved keywords
-color green "\<(try|catch|race|foreign|cooperate)\>"
+color green "\<(try|catch|race|foreign|cooperate|super|budget)\>"
 
 # Types — primitives
 color brightblue "\<(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize|f32|f64)\>"
-color brightblue "\<(bool|char|string|bytes|void|never|duration|instant)\>"
+color brightblue "\<(bool|char|string|bytes|duration|instant)\>"
 
 # Types — generic / collection / concurrency
 color brightblue "\<(HashMap|HashSet|Vec|Option|Result|Ok|Err|Some|Box|Arc|Rc|Weak|Range)\>"

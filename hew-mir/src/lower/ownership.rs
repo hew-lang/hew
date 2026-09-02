@@ -3938,6 +3938,23 @@ impl Builder {
         binding: BindingId,
         disposition: Disposition,
     ) {
+        self.set_owned_local_disposition_because(
+            binding,
+            disposition,
+            crate::model::AliasDemotionReason::CarrierSnapshotDrop,
+        );
+    }
+
+    /// The same, naming which authority took the release over when the change
+    /// is a demotion to alias. The reason reaches the event stream because the
+    /// projection-adoption pass must tell a carrier alias (whose slot it may
+    /// still clear) from a scrutinee that keeps reading its own (#2523).
+    pub(crate) fn set_owned_local_disposition_because(
+        &mut self,
+        binding: BindingId,
+        disposition: Disposition,
+        reason: crate::model::AliasDemotionReason,
+    ) {
         let demotes_live_owner = disposition == Disposition::AliasOf
             && self
                 .owned_locals
@@ -3960,6 +3977,7 @@ impl Builder {
                             generation,
                         },
                         place,
+                        reason,
                     },
                 ));
             }

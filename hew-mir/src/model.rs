@@ -4733,6 +4733,24 @@ pub enum FloatWidth {
     F64,
 }
 
+/// WHICH authority took over when an [`OwnershipEvent::DemoteToAlias`] retracts
+/// a provisional owner. Both answers mean "this binder releases nothing", but
+/// they disagree about the aliased slot: a carrier's snapshot drop expects the
+/// slot cleared on the path where the binder escapes, while a scrutinee that
+/// stays readable must keep its slot populated — clearing it strands the
+/// scrutinee's own drop on null and hands the next read a null payload (#2523).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AliasDemotionReason {
+    /// An owned call carrier's terminal snapshot drop covers the payload, and
+    /// [`Builder::note_carrier_payload_binder`] clears the variant slot on
+    /// exactly the path where the binder crosses an ownership boundary.
+    CarrierSnapshotDrop,
+    /// The matched storage still schedules the payload's drop and stays
+    /// readable: an owning binding, a re-readable place, a closure-environment
+    /// copy, or the outer value behind a nested transient.
+    ScrutineeRetainsPayload,
+}
+
 /// WHY an [`Instr::NeutralizePayloadSlot`] fires — the closed, compiler-owned
 /// set of discharge authorities (D159/U229). Every neutralize site names its
 /// authority so the fact is carried as data rather than re-derived from the
@@ -4951,9 +4969,12 @@ pub enum OwnershipEvent {
     /// Retract a provisional owner after typed carrier analysis proves that
     /// the place is an interior alias. This ends the generation without
     /// running a destructor; the enclosing carrier remains the sole owner.
+    /// `reason` names which authority took over, because the two answers
+    /// differ in what may still clear the aliased slot.
     DemoteToAlias {
         owner: OwnerId,
         place: Place,
+        reason: AliasDemotionReason,
     },
     Reset {
         previous: OwnerId,

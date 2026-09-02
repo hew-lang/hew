@@ -219,7 +219,11 @@ impl Builder {
         {
             return;
         }
-        self.set_owned_local_disposition(binding, super::Disposition::AliasOf);
+        self.set_owned_local_disposition_because(
+            binding,
+            super::Disposition::AliasOf,
+            crate::model::AliasDemotionReason::ScrutineeRetainsPayload,
+        );
     }
 
     /// Whether a match scrutinee local is an owned call carrier (or projects

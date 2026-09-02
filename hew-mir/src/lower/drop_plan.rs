@@ -1802,7 +1802,7 @@ pub(super) fn validate_ownership_events(checked: &CheckedMirFunction) -> Vec<Mir
                         None
                     }
                 }
-                OwnershipEvent::DemoteToAlias { owner, place } => match live.get(owner) {
+                OwnershipEvent::DemoteToAlias { owner, place, .. } => match live.get(owner) {
                     None => Some(format!(
                         "owner {owner} is demoted after its generation ended"
                     )),

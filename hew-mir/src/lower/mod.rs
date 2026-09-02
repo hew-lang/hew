@@ -10714,18 +10714,25 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
             _ => None,
         })
         .collect::<Vec<_>>();
-    // A destination whose release the stream itself withholds adopts nothing:
-    // the parent keeps the authority over the projected payload and the binder
-    // is a byte-copy view of it, either outright (`DemoteToAlias`) or until the
-    // parent hands over at an overwrite (`Guard { ProjectedPayload }`).
-    // Neutralising the parent slot for such a Mint strands the parent's drop on
-    // null — a leak, and a null payload on any later read of the parent (#2523).
-    let withheld_release_owners = blocks
+    // A destination over storage the SCRUTINEE keeps reading adopts nothing:
+    // the scrutinee's own drop is the authority and the binder is a byte-copy
+    // view of it, either outright (`DemoteToAlias { ScrutineeRetainsPayload }`)
+    // or until the parent hands over at an overwrite
+    // (`Guard { ProjectedPayload }`). Clearing that slot strands the
+    // scrutinee's drop on null — a leak, and a null payload on any later read
+    // of the scrutinee (#2523). A carrier alias is the other case and keeps
+    // this adoption: its snapshot drop expects the slot cleared when the binder
+    // escapes.
+    let scrutinee_retained_owners = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instruction| match instruction {
             Instr::OwnershipEvent(
-                crate::model::OwnershipEvent::DemoteToAlias { owner, .. }
+                crate::model::OwnershipEvent::DemoteToAlias {
+                    owner,
+                    reason: crate::model::AliasDemotionReason::ScrutineeRetainsPayload,
+                    ..
+                }
                 | crate::model::OwnershipEvent::Guard {
                     owner,
                     kind: crate::model::OwnershipGuardKind::ProjectedPayload,
@@ -10750,7 +10757,7 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
                     })),
                 ) if *dest == *place
                     && !matches!(src, Place::Local(_))
-                    && !withheld_release_owners.contains(owner) =>
+                    && !scrutinee_retained_owners.contains(owner) =>
                 {
                     let root = base_local(*src);
                     let parent_count = live

@@ -210,7 +210,10 @@ impl Builder {
                     binding.name.clone(),
                     binding_ty.clone(),
                     warrant,
-                    scrutinee_local,
+                    super::move_value::PayloadBinderScrutinee {
+                        local: scrutinee_local,
+                        retains_payload: scrutinee_origin.scrutinee_retains_payload(),
+                    },
                     scrutinee_owner.as_ref(),
                 );
             }
@@ -652,7 +655,10 @@ impl Builder {
                     binding.name.clone(),
                     binding_ty.clone(),
                     warrant,
-                    pattern_scrutinee_local,
+                    super::move_value::PayloadBinderScrutinee {
+                        local: pattern_scrutinee_local,
+                        retains_payload: scrutinee_origin.scrutinee_retains_payload(),
+                    },
                     scrutinee_owner.as_ref(),
                 );
             }
@@ -1536,7 +1542,10 @@ impl Builder {
                     binding.name.clone(),
                     binding_ty.clone(),
                     warrant,
-                    scrutinee_local,
+                    super::move_value::PayloadBinderScrutinee {
+                        local: scrutinee_local,
+                        retains_payload: scrutinee_origin.scrutinee_retains_payload(),
+                    },
                     scrutinee_owner.as_ref(),
                 );
             }

@@ -32,6 +32,15 @@ fn scope_exit_tuple_projection_has_null_safe_drop(ty: &ResolvedTy) -> bool {
         )
 }
 
+/// The scrutinee side of a `match` / `if let` / `while let` payload binder
+/// registration: the local the payload projects out of, and whether that
+/// storage keeps its own release authority over the payload (#2523).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PayloadBinderScrutinee {
+    pub(crate) local: u32,
+    pub(crate) retains_payload: bool,
+}
+
 impl Builder {
     /// Emit a move-out payload-slot neutralize whose ownership is consumed into
     /// an in-flight expression (no destination local to name as the transferee).
@@ -176,20 +185,29 @@ impl Builder {
     /// clearing the slot at destructure time instead would null the payload
     /// before a guard on the arm has selected it. A fresh call scrutinee keeps
     /// its own arm-release protocol.
+    ///
+    /// [`PayloadBinderScrutinee::retains_payload`] carries the same verdict for
+    /// the ordinary place/binding scrutinees: whenever the matched storage still
+    /// schedules a release of the payload, the binder is an alias of it (#2523).
     pub(crate) fn register_owned_payload_binder(
         &mut self,
         binding: BindingId,
         name: String,
         ty: hew_types::ResolvedTy,
         warrant: super::owner_mint::OwnerMintWarrant,
-        scrutinee_local: u32,
+        scrutinee: PayloadBinderScrutinee,
         call_scrutinee_owner: Option<&(BindingId, hew_types::ResolvedTy)>,
     ) {
+        let PayloadBinderScrutinee {
+            local: scrutinee_local,
+            retains_payload,
+        } = scrutinee;
         self.register_owned_local(binding, name, ty, warrant);
         // A borrowed by-value parameter is released by its caller; a binder
         // over its payload is likewise a byte-copy alias and mints nothing.
         let alias = call_scrutinee_owner.is_none()
-            && (self.scrutinee_is_owned_carrier(scrutinee_local)
+            && (retains_payload
+                || self.scrutinee_is_owned_carrier(scrutinee_local)
                 || self.borrowed_value_param_locals.contains(&scrutinee_local));
         if alias {
             self.set_owned_local_disposition(binding, super::Disposition::AliasOf);

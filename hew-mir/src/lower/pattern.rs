@@ -4782,7 +4782,19 @@ impl Builder {
         // An unguarded match that binds a payload out of an inline field
         // projection takes ownership of that field: the arm binder is minted a
         // scope-exit owner, so the root aggregate must not also release it.
-        if arms.iter().all(|arm| arm.guard.is_none())
+        //
+        // #2523 — that premise holds only where the destructure really hands
+        // the payload over: an owned tuple projection the match consumes below,
+        // or a scrutinee whose storage nobody retains. A borrow of a re-readable
+        // place keeps its own release authority and its binders alias it, so
+        // ending the root generation here would strand the payload (and, in a
+        // loop, re-end a generation that already ended).
+        let projection_hands_payload_over = projected_tuple_owner.is_some()
+            || !self
+                .classify_scrutinee_origin(scrutinee)
+                .scrutinee_retains_payload();
+        if projection_hands_payload_over
+            && arms.iter().all(|arm| arm.guard.is_none())
             && arms.iter().any(|arm| !arm.bindings.is_empty())
         {
             if let Err(error) = self.publish_consuming_match_projection(scrutinee) {
@@ -5295,12 +5307,26 @@ impl Builder {
                 if keep_for_drop_elab {
                     let unguarded_payload_move =
                         call_scrutinee_owner.is_some() && arm.guard.is_none() && keep_for_drop_elab;
+                    // #2523 — the matched storage still schedules a release of
+                    // this payload (an owning binding, a re-readable place, a
+                    // closure-environment copy), so the binder aliases it
+                    // instead of minting a second release authority. A proven
+                    // fresh `(variant, field)` payload and the fresh per-frame
+                    // `Some(x)` arms hand over a sole owner and keep theirs.
+                    let scrutinee_retains_payload = !fresh_active_payload
+                        && !arm_is_fresh_owned_vec_iter_some
+                        && !arm_is_generator_some
+                        && !arm_is_recv_some
+                        && scrutinee_origin.scrutinee_retains_payload();
                     self.register_owned_payload_binder(
                         binding.binding,
                         binding.name.clone(),
                         binding_ty.clone(),
                         warrant,
-                        scrutinee_local,
+                        super::move_value::PayloadBinderScrutinee {
+                            local: scrutinee_local,
+                            retains_payload: scrutinee_retains_payload,
+                        },
                         call_scrutinee_owner.as_ref(),
                     );
                     // A path-complete direct-call carrier release owns every
@@ -5703,6 +5729,11 @@ impl Builder {
                         binding_ty,
                         warrant,
                     );
+                    // #2523 — the outer value keeps the release authority over
+                    // a nested payload: the transient copy this binder projects
+                    // from is not storage anybody hands over. Alias it, so the
+                    // outer composite drop stays the single free.
+                    self.set_owned_local_disposition(binding.binding, super::Disposition::AliasOf);
                 }
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 // #2523 F2 — a NESTED-pattern payload binder is bound from a

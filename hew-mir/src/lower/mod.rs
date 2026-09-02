@@ -10710,6 +10710,21 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
             _ => None,
         })
         .collect::<Vec<_>>();
+    // A destination the stream itself demotes to an alias adopts nothing: the
+    // parent keeps the release authority over the projected payload, and the
+    // binder is only a byte-copy view of it (#2523). Neutralising the parent
+    // slot for such a Mint strands the parent's drop on null — a leak, and a
+    // null payload on any later read of the parent.
+    let demoted_alias_owners = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::DemoteToAlias {
+                owner, ..
+            }) => Some(*owner),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     for block in blocks {
         let mut live = entries.get(&block.id).cloned().unwrap_or_default();
         let mut index = 0;
@@ -10719,9 +10734,14 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
                 (
                     Instr::Move { dest, src },
                     Some(Instr::OwnershipEvent(crate::model::OwnershipEvent::Mint {
-                        place, ..
+                        place,
+                        owner,
+                        ..
                     })),
-                ) if *dest == *place && !matches!(src, Place::Local(_)) => {
+                ) if *dest == *place
+                    && !matches!(src, Place::Local(_))
+                    && !demoted_alias_owners.contains(owner) =>
+                {
                     let root = base_local(*src);
                     let parent_count = live
                         .iter()
@@ -13548,6 +13568,27 @@ enum ProjectedPayloadOrigin {
     /// the safe default is to reject rather than risk aliasing. Borrow-only
     /// matches never reach this arm (they do not consume the binder).
     Reject(ProjectedPayloadRejectReason),
+}
+
+impl ProjectedPayloadOrigin {
+    /// Whether the matched storage keeps a live release authority over the
+    /// payload for as long as the arm binder exists.
+    ///
+    /// `OwnedBinding` (`match b`) leaves `b`'s composite drop scheduled, and
+    /// every `Reject` shape is by construction a copy of storage somebody else
+    /// still owns — a re-readable place, a closure-environment field, the outer
+    /// value behind a nested transient. In all of those the binder is a
+    /// byte-copy ALIAS: minting it a second owner schedules a second release of
+    /// one buffer. Only `EphemeralTemp` hands the arm a fresh sole owner whose
+    /// release nobody else is holding.
+    ///
+    /// A genuine move-out of an aliased binder is not lost by this: the
+    /// consume hook transfers the authority at the move (neutralizing the
+    /// source slot for `OwnedBinding`/`EphemeralTemp`, rejecting fail-closed
+    /// for `Reject`).
+    fn scrutinee_retains_payload(&self) -> bool {
+        matches!(self, Self::OwnedBinding(_) | Self::Reject(_))
+    }
 }
 
 /// The re-readable scrutinee binding behind a [`ProjectedPayloadOrigin::OwnedBinding`],

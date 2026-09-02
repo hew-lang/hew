@@ -53,7 +53,12 @@
       "await_restart",
       "this"
     ],
-    "wire": ["reserved", "optional", "deprecated", "default"],
+    "wire": [
+      "reserved",
+      "optional",
+      "deprecated",
+      "default"
+    ],
     "supervisor_config": [
       "child",
       "restart",
@@ -68,7 +73,10 @@
       "simple_one_for_one",
       "pool"
     ],
-    "logical": ["true", "false"],
+    "logical": [
+      "true",
+      "false"
+    ],
     "machine": [
       "machine",
       "state",
@@ -79,7 +87,11 @@
       "exit",
       "emit"
     ],
-    "other": ["dyn", "unsafe", "is"],
+    "other": [
+      "dyn",
+      "unsafe",
+      "is"
+    ],
     "reserved_unused": [
       "try",
       "catch",
@@ -205,10 +217,34 @@
     "fail": "Overflow policy: reject the send with Full"
   },
   "operators": {
-    "arithmetic": ["+", "-", "*", "/", "%"],
-    "comparison": ["==", "!=", "<", "<=", ">", ">="],
-    "logical": ["&&", "||", "!"],
-    "bitwise": ["&", "|", "^", "~", "<<", ">>"],
+    "arithmetic": [
+      "+",
+      "-",
+      "*",
+      "/",
+      "%"
+    ],
+    "comparison": [
+      "==",
+      "!=",
+      "<",
+      "<=",
+      ">",
+      ">="
+    ],
+    "logical": [
+      "&&",
+      "||",
+      "!"
+    ],
+    "bitwise": [
+      "&",
+      "|",
+      "^",
+      "~",
+      "<<",
+      ">>"
+    ],
     "assignment": [
       "=",
       "+=",
@@ -222,9 +258,21 @@
       "<<=",
       ">>="
     ],
-    "arrow": ["->", "=>"],
-    "range": ["..", "..="],
-    "other": ["?", "@", ".", "::", "#["],
+    "arrow": [
+      "->",
+      "=>"
+    ],
+    "range": [
+      "..",
+      "..="
+    ],
+    "other": [
+      "?",
+      "@",
+      ".",
+      "::",
+      "#["
+    ],
     "path_separators": {
       "primary": ".",
       "removed": ["::"]
@@ -243,18 +291,31 @@
       "isize",
       "usize"
     ],
-    "float": ["f32", "f64"],
+    "float": [
+      "f32",
+      "f64"
+    ],
     "primitive": [
       "bool",
       "char",
       "string",
       "bytes",
-      "void",
       "duration",
       "instant"
     ],
-    "collections": ["HashMap", "HashSet", "Vec"],
-    "option_result": ["Option", "Result", "Ok", "Err", "Some", "None"],
+    "collections": [
+      "HashMap",
+      "HashSet",
+      "Vec"
+    ],
+    "option_result": [
+      "Option",
+      "Result",
+      "Ok",
+      "Err",
+      "Some",
+      "None"
+    ],
     "concurrency": [
       "LocalPid",
       "RemotePid",
@@ -266,10 +327,24 @@
       "Generator",
       "AsyncGenerator"
     ],
-    "marker_traits": ["Send", "Frozen", "Copy", "Arc", "Rc", "Weak"],
-    "other": ["Range"]
+    "marker_traits": [
+      "Send",
+      "Frozen",
+      "Copy",
+      "Arc",
+      "Rc",
+      "Weak"
+    ],
+    "other": [
+      "Range"
+    ]
   },
-  "string_prefixes": ["f", "r", "re", "b"],
+  "string_prefixes": [
+    "f",
+    "r",
+    "re",
+    "b"
+  ],
   "comment_styles": {
     "line": "//",
     "doc": "///",
@@ -278,6 +353,13 @@
     "block_end": "*/"
   },
   "literal_suffixes": {
-    "duration": ["ns", "us", "ms", "s", "m", "h"]
+    "duration": [
+      "ns",
+      "us",
+      "ms",
+      "s",
+      "m",
+      "h"
+    ]
   }
 }

@@ -46,3 +46,12 @@ JOURNEY.md
 # WHY: the generator and prettier disagree about array formatting.
 # WHEN: remove once the generator emits prettier-shaped output itself.
 scripts/cabi-surface.json
+
+# Hand-maintained syntax authority; prettier collapsing its arrays turns a
+# one-keyword edit into a whole-file reflow that buries the real change.
+#
+# WHY: nothing generates this file's shape and prettier disagrees with the
+# hand-maintained array formatting.
+# WHEN: remove once a real generator writes this file and emits
+# prettier-shaped output.
+docs/syntax-data.json

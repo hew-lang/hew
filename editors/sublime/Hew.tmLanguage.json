@@ -252,7 +252,7 @@
         {
           "comment": "Declarations",
           "name": "keyword.declaration.hew",
-          "match": "\\b(as|async|const|enum|extern|fn|gen|impl|import|indirect|let|mut|package|pub|record|trait|type|var|where)\\b"
+          "match": "\\b(as|async|const|enum|extern|fn|gen|impl|import|indirect|let|mut|package|pub|trait|type|var|where)\\b"
         },
         {
           "comment": "Actor and concurrency",
@@ -324,7 +324,7 @@
         {
           "comment": "Primitive types",
           "name": "storage.type.primitive.hew",
-          "match": "\\b(bool|bytes|char|duration|instant|string|void)\\b"
+          "match": "\\b(bool|bytes|char|duration|instant|string)\\b"
         },
         {
           "comment": "Generic / collection types",

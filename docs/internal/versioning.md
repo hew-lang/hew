@@ -149,6 +149,9 @@ the Hew language edition; it governs how the compiler's own source compiles.
 
 - **Workspace `Cargo.toml`** (`[workspace.package] version = "..."`) — the
   source of truth. All crates inherit via `version.workspace = true`.
+- **`docs/syntax-data.json`** — its `version` field is hand-maintained and
+  checked against `CARGO_PKG_VERSION` by a `hew-lexer` test; a release bump
+  that skips it fails `cargo test -p hew-lexer`.
 - **`CHANGELOG.md`** — `[Unreleased]` becomes `[X.Y.Z]` at tag time.
 - **`docs/releases/vX.Y.Z.md`** — curated narrative release notes
   (when the release warrants them; PATCH releases may skip this).

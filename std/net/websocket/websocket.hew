@@ -305,7 +305,7 @@ pub fn last_error() -> string {
 /// fn main() {
 ///     match websocket.connect("ws://127.0.0.1:9001/") {
 ///         .Ok(conn) => conn.close(),
-///         .Err(err) => println(f"connect failed: {net.net_error_message(err)}"),
+///         .Err(err) => println(f"connect failed: {err}"),
 ///     }
 /// }
 /// ```
@@ -345,7 +345,7 @@ pub fn connect(url: string) -> Result<Conn, net.NetError> {
 /// fn main() {
 ///     match websocket.listen("127.0.0.1:0") {
 ///         .Ok(server) => server.close(),
-///         .Err(err) => println(f"listen failed: {net.net_error_message(err)}"),
+///         .Err(err) => println(f"listen failed: {err}"),
 ///     }
 /// }
 /// ```

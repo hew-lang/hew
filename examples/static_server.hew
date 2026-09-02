@@ -75,7 +75,7 @@ fn main() {
             serve_forever(root, server);
         },
         .Err(err) => {
-            let reason = net.net_error_message(err);
+            let reason = to_string(err);
             let detail = http.listen_error();
             println(f"cannot listen on {addr}: {reason} - {detail}");
         },

@@ -1,0 +1,8 @@
+// `net.write_error_message` was replaced by `impl Display for WriteError`;
+// the deleted function name must no longer resolve.
+import std.net;
+
+fn main() {
+    let e = WriteError.Other(0);
+    println(net.write_error_message(e));
+}

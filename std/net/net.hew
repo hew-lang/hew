@@ -97,6 +97,14 @@ pub enum AttachError {
     Refused;
 }
 
+impl Display for AttachError {
+    fn fmt(err: AttachError) -> string {
+        match err {
+            AttachError.Refused => "the runtime refused the active-mode registration",
+        }
+    }
+}
+
 // WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
 /// Map an OS errno integer to a structured `NetError` variant.
 ///
@@ -127,16 +135,18 @@ pub fn net_error_from_errno(errno: i64) -> NetError {
     }
 }
 
-/// Return a human-readable description of a `NetError`.
-pub fn net_error_message(e: NetError) -> string {
-    match e {
-        NetError.ConnectionRefused(code) => f"ConnectionRefused({code})",
-        NetError.AddressInUse(code) => f"AddressInUse({code})",
-        NetError.AddressNotAvailable(code) => f"AddressNotAvailable({code})",
-        NetError.TimedOut(code) => f"TimedOut({code})",
-        NetError.Cancelled(code) => f"Cancelled({code})",
-        NetError.InvalidArgument(detail) => f"InvalidArgument({detail})",
-        NetError.Other(code) => f"Other({code})",
+/// Print a `NetError`'s variant name and raw OS errno.
+impl Display for NetError {
+    fn fmt(e: NetError) -> string {
+        match e {
+            NetError.ConnectionRefused(code) => f"ConnectionRefused({code})",
+            NetError.AddressInUse(code) => f"AddressInUse({code})",
+            NetError.AddressNotAvailable(code) => f"AddressNotAvailable({code})",
+            NetError.TimedOut(code) => f"TimedOut({code})",
+            NetError.Cancelled(code) => f"Cancelled({code})",
+            NetError.InvalidArgument(detail) => f"InvalidArgument({detail})",
+            NetError.Other(code) => f"Other({code})",
+        }
     }
 }
 
@@ -246,7 +256,7 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
 /// fn main() {
 ///     match net.try_parse_endpoint("net.connect_timeout", "[::1]:9000") {
 ///         .Ok(ep) => println(f"{ep.host} {ep.port}"),
-///         .Err(err) => println(net.net_error_message(err)),
+///         .Err(err) => println(err),
 ///     }
 /// }
 /// ```
@@ -378,12 +388,14 @@ pub fn write_error_from_errno(errno: i64) -> WriteError {
     }
 }
 
-/// Return a human-readable description of a `WriteError`.
-pub fn write_error_message(e: WriteError) -> string {
-    match e {
-        WriteError.BackpressureExceeded(code) => f"BackpressureExceeded({code})",
-        WriteError.Disconnected(code) => f"Disconnected({code})",
-        WriteError.Other(code) => f"Other({code})",
+/// Print a `WriteError`'s variant name and raw OS errno.
+impl Display for WriteError {
+    fn fmt(e: WriteError) -> string {
+        match e {
+            WriteError.BackpressureExceeded(code) => f"BackpressureExceeded({code})",
+            WriteError.Disconnected(code) => f"Disconnected({code})",
+            WriteError.Other(code) => f"Other({code})",
+        }
     }
 }
 
@@ -821,14 +833,14 @@ pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Con
     let Endpoint { host, port } = match try_parse_endpoint("net.connect_timeout", addr) {
         .Ok(endpoint) => endpoint,
         .Err(err) => {
-            panic(f"net.connect_timeout failed: {net_error_message(err)}");
+            panic(f"net.connect_timeout failed: {err}");
             Endpoint { host: "", port: 0 }
         },
     };
     let timeout_ms = match try_connect_timeout_ms(timeout_sec, timeout_usec) {
         .Ok(ms) => ms,
         .Err(err) => {
-            panic(f"net.connect_timeout failed: {net_error_message(err)}");
+            panic(f"net.connect_timeout failed: {err}");
             0
         },
     };

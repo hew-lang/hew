@@ -66,7 +66,7 @@ fn test_http_listen_reports_a_bind_failure_instead_of_a_null_backed_server() {
                 },
                 .Err(err) => {
                     held.close();
-                    let reason = net.net_error_message(err);
+                    let reason = to_string(err);
                     testing.assert_true(reason.contains("AddressInUse"));
                 },
             }
@@ -90,7 +90,7 @@ fn test_http_listen_reports_an_unparsable_address_as_a_failure() {
                     testing.assert_eq_str(detail, "http.listen: cannot bind `not an address`: invalid socket address");
                     testing.assert_eq_str(http.listen_error(), detail);
                 },
-                _ => panic(f"expected InvalidArgument, got {net.net_error_message(err)}"),
+                _ => panic(f"expected InvalidArgument, got {err}"),
             }
         },
     }
@@ -161,7 +161,7 @@ fn test_websocket_listen_reports_a_bind_failure_instead_of_a_null_backed_server(
                 },
                 .Err(err) => {
                     held.close();
-                    let reason = net.net_error_message(err);
+                    let reason = to_string(err);
                     testing.assert_true(reason.contains("AddressInUse"));
                 },
             }
@@ -185,7 +185,7 @@ fn test_websocket_listen_reports_an_unparsable_address_as_invalid_argument() {
                     testing.assert_eq_str(detail, "websocket.listen: cannot bind `not an address`");
                     testing.assert_eq_str(websocket.last_error(), detail);
                 },
-                _ => panic(f"expected InvalidArgument, got {net.net_error_message(err)}"),
+                _ => panic(f"expected InvalidArgument, got {err}"),
             }
         },
     }
@@ -207,7 +207,7 @@ fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
                 NetError.ConnectionRefused(_errno) => {
                     testing.assert_true(websocket.last_error().len() > 0);
                 },
-                _ => panic(f"expected ConnectionRefused, got {net.net_error_message(err)}"),
+                _ => panic(f"expected ConnectionRefused, got {err}"),
             }
         },
     }
@@ -226,7 +226,7 @@ fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
                     testing.assert_eq_str(detail, "websocket.connect: HTTP format error: invalid uri character");
                     testing.assert_eq_str(websocket.last_error(), detail);
                 },
-                _ => panic(f"expected InvalidArgument, got {net.net_error_message(err)}"),
+                _ => panic(f"expected InvalidArgument, got {err}"),
             }
         },
     }

@@ -118,7 +118,7 @@ fn main() {
     match conn.write_string(request) {
         .Ok(_) => {},
         .Err(e) => {
-            let err = f"  Error: failed to send request to {addr}: {net.write_error_message(e)}";
+            let err = f"  Error: failed to send request to {addr}: {e}";
             panic(err);
         },
     }

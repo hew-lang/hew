@@ -383,7 +383,7 @@ pub fn listen_error() -> string {
 /// fn main() {
 ///     match http.listen("127.0.0.1:0") {
 ///         .Ok(server) => server.close(),
-///         .Err(err) => println(f"listen failed: {net.net_error_message(err)}"),
+///         .Err(err) => println(f"listen failed: {err}"),
 ///     }
 /// }
 /// ```

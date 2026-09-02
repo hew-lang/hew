@@ -27,7 +27,7 @@ fn main() {
             serve_forever(server);
         },
         .Err(err) => {
-            let reason = net.net_error_message(err);
+            let reason = to_string(err);
             let detail = http.listen_error();
             println(f"cannot listen on 0.0.0.0:18080: {reason} - {detail}");
         },

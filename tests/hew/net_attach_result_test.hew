@@ -51,3 +51,8 @@ fn test_tcp_attach_returns_err_after_closing_refused_connection() {
     client.close();
     listener.close();
 }
+
+#[test]
+fn test_attach_error_display_prints_the_refusal_reason() {
+    testing.assert_eq_str(to_string(AttachError.Refused), "the runtime refused the active-mode registration");
+}

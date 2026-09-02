@@ -1,0 +1,8 @@
+// `net.net_error_message` was replaced by `impl Display for NetError`; the
+// deleted function name must no longer resolve.
+import std.net;
+
+fn main() {
+    let e = NetError.Other(0);
+    println(net.net_error_message(e));
+}

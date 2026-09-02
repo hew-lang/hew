@@ -61,6 +61,7 @@ struct EntryResult {
     outcome: EntryOutcome,
 }
 
+#[derive(Debug)]
 enum EntryOutcome {
     Skipped,
     Verified(VerifyOutcome),
@@ -444,6 +445,74 @@ mod tests {
         assert!(
             matches!(outcome, EntryOutcome::Verified(VerifyOutcome::IoError(_))),
             "expected IoError when expected file is absent"
+        );
+    }
+
+    /// True if this test binary can actually resolve `libhew.a` and drive a
+    /// full native compile — `verify_entry` runs the whole native
+    /// compile+link+execute pipeline, which `cargo test`'s binary layout
+    /// (`target/debug/deps/<hash>`, one directory deeper than the shipped
+    /// `target/debug/hew`) does not always support (see the identical probe
+    /// in `eval::repl::tests::require_toolchain`). Skip rather than fail
+    /// when it can't.
+    fn require_toolchain() -> bool {
+        static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *OK.get_or_init(|| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let bin_name = format!("probe{}", crate::platform::exe_suffix());
+            let bin_path = dir.path().join(bin_name);
+            let source = "fn main() { println(\"ok\"); }\n";
+            let parse_result = hew_parser::parse(source);
+            if !parse_result.errors.is_empty() {
+                eprintln!("playground verify_entry test skipped: probe parse failed");
+                return false;
+            }
+            let ok = crate::compile_native_from_program(
+                parse_result.program,
+                source,
+                "<playground-probe>",
+                &bin_path,
+                &crate::compile::CompileOptions::default(),
+            )
+            .is_ok();
+            if !ok {
+                eprintln!(
+                    "playground verify_entry test skipped: \
+                     in-process compile failed (codegen/runtime not available)"
+                );
+            }
+            ok
+        })
+    }
+
+    #[test]
+    fn verify_entry_passes_for_a_file_defining_its_own_main() {
+        // Regression test: a playground file's sole item is `fn main` itself
+        // (the shape every real playground entry has). Before the
+        // session-eval fix this hit "main is defined multiple times"
+        // because the whole-file eval path always appended a synthetic
+        // `fn main() {}` after the file's own definition.
+        if !require_toolchain() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("test.hew");
+        std::fs::write(&src, "fn main() { println(\"hi\"); }\n").unwrap();
+        let expected = dir.path().join("test.expected");
+        std::fs::write(&expected, "hi\n").unwrap();
+
+        let entry = ManifestEntry {
+            id: "test/own_main".to_string(),
+            source_path: "test.hew".to_string(),
+            expected_path: "test.expected".to_string(),
+            capabilities: Capabilities {
+                wasi: "runnable".to_string(),
+            },
+        };
+        let outcome = verify_entry(&entry, dir.path(), Duration::from_secs(30));
+        assert!(
+            matches!(outcome, EntryOutcome::Verified(VerifyOutcome::Pass)),
+            "expected Pass for a file defining its own main, got: {outcome:?}"
         );
     }
 

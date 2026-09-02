@@ -1118,13 +1118,18 @@ doc_fence_extract_std() {
     local content fline fstripped outfile in_other=0
 
     while IFS= read -r line; do
-        case "$line" in
+        # doc comments on trait/impl members are indented (unlike the
+        # module-level `//!` sources doc_fence_extract handles), so the
+        # comment marker is matched after trimming leading whitespace rather
+        # than only at column 0.
+        local trimmed="${line#"${line%%[![:space:]]*}"}"
+        case "$trimmed" in
         '//!'*)
-            line="${line#//!}"
+            line="${trimmed#//!}"
             line="${line# }"
             ;;
         '///'*)
-            line="${line#///}"
+            line="${trimmed#///}"
             line="${line# }"
             ;;
         *) line="" ;;

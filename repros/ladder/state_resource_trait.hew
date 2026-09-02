@@ -1,0 +1,20 @@
+trait Bump { fn bump(var self); }
+#[resource]
+type Conn { fd: i64 }
+impl Conn {
+    fn close(c: Conn) { println(f"close {c.fd}"); }
+}
+impl Bump for Conn {
+    fn bump(var self) { self.fd = self.fd + 1; }
+}
+actor Holder {
+    var conn: Conn = Conn { fd: 10 };
+    receive fn poke() {
+        conn.bump();
+        println(conn.fd);
+    }
+}
+fn main() {
+    let h = spawn Holder();
+    h.poke();
+}

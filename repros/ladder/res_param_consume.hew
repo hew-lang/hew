@@ -1,0 +1,13 @@
+#[resource]
+type Conn { fd: i64 }
+impl Conn {
+    fn close(c: Conn) { println(f"close {c.fd}"); }
+}
+fn shutdown(c: Conn) {
+    c.close();
+}
+fn main() {
+    let conn = Conn { fd: 3 };
+    shutdown(conn);
+    println("after");
+}

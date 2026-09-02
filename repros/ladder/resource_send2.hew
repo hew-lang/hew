@@ -1,0 +1,14 @@
+#[resource]
+type Conn { fd: i64 }
+impl Conn {
+    fn close(c: Conn) { println(f"close {c.fd}"); }
+}
+actor Holder {
+    receive fn take(c: Conn) { println(f"got {c.fd}"); }
+}
+fn main() {
+    let h = spawn Holder();
+    let c = Conn { fd: 1 };
+    h.take(c);
+    println(f"after {c.fd}");
+}

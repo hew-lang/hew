@@ -1,0 +1,5 @@
+fn main() {
+    let a: Rc<i64> = Rc.new(5);
+    let b = clone a;
+    println(f"{a.strong_count()}");
+}

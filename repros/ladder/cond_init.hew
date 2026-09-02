@@ -1,0 +1,5 @@
+fn main() {
+    var x: string;
+    if true { x = "a"; }
+    println(x);
+}

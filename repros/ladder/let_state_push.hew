@@ -1,0 +1,11 @@
+actor Example {
+    let items: Vec<i64> = Vec.new();
+    receive fn demo() {
+        items.push(1);
+        println(items.len());
+    }
+}
+fn main() {
+    let e = spawn Example();
+    e.demo();
+}

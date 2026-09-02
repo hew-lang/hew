@@ -7,7 +7,7 @@ runtime-hook counters that the native runtime already records.
 This surface also carries a design obligation: any silent adaptive behaviour in
 the runtime or toolchain must be observable in the artifact's output, response,
 or telemetry — see the observable-honesty axiom in the
-[IR ladder reference](internal/ir-ladder.md).
+[IR ladder reference](internal/ir-ladder.md#design-axioms).
 
 There are three primary metric APIs in `std::observe`:
 

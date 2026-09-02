@@ -1,0 +1,13 @@
+gen fn count() -> i64 { yield 1; yield 2; }
+fn main() {
+    let g = count();
+    let h = g;
+    match g.next() {
+        .Some(v) => println(f"{v}"),
+        .None => println("none"),
+    }
+    match h.next() {
+        .Some(v) => println(f"{v}"),
+        .None => println("none"),
+    }
+}

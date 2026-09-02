@@ -1,0 +1,5 @@
+fn main() {
+    let m: HashMap<string, i64> = HashMap.new();
+    m.insert("a", 1);
+    println(f"{m.len()}");
+}

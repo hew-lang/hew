@@ -1,0 +1,24 @@
+trait Show {
+    fn show(val: Self) -> i64;
+}
+
+type Holder {
+    r: Rc<i64>;
+}
+
+impl Show for Holder {
+    fn show(h: Holder) -> i64 {
+        h.r.get()
+    }
+}
+
+fn main() {
+    let h = Holder { r: Rc.new(5) };
+    let w = h.r.downgrade();
+    let d: dyn Show = h;
+    println(f"{d.show()}");
+    match w.upgrade() {
+        Some(v) => println("alive"),
+        None => println("dead"),
+    }
+}

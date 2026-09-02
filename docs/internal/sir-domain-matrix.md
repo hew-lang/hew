@@ -15,10 +15,31 @@ mode" and this document is where the deciding happens — a P-lane implementer
 must never have to arbitrate between this matrix and `docs/internal/ir-ladder.md`.
 
 `ir-ladder.md` moved under this document between the second and third passes
-(it is now **revision 6**, stamped 2026-09-01 20:07). Where the two disagree
-the ladder wins on ops and classes and this matrix follows it — that is what
-the third pass's D-FORK-R and D-NOMODE do. Every line citation into the ladder
-below was re-grepped against revision 6.
+and again in the reconciliation pass (it is now **revision 7**). The third
+pass's D-FORK-R and D-NOMODE are this document following the ladder on ops and
+classes; the reconciliation pass closed the remaining disagreements in both
+directions. Line citations into the ladder were last re-grepped against
+revision 6 and have drifted with revision 7's edits, so read the section and
+row name and re-grep the line (Method, below).
+
+## When these documents disagree
+
+Quoting `hew-orchestration/plans/final-ladder-program.md` §5.1 in full, which
+is the authority for this paragraph and for the identical paragraph in
+`ir-ladder.md` and `runtime-ownership-table.md`:
+
+> `docs/internal/ir-ladder.md` decides SIR ops, ownership kinds, MIR forms, and
+> runtime symbol names; `docs/internal/sir-domain-matrix.md` decides which
+> phase owns a construct; `docs/internal/runtime-ownership-table.md` decides a
+> runtime symbol's parameter and result ownership. This plan decides sequencing
+> and gates. A disagreement inside a document's own domain is a defect in the
+> other document, fixed in the same PR that finds it; none of the four is a
+> fallback for another.
+
+No other precedence rule is in force. This document's domain is the **phase**
+column; every op, class, kind and symbol name in a row below is the ladder's,
+and a row that disagrees with the ladder about one of those is a defect in this
+document.
 
 ### First pass (fourteen findings)
 
@@ -29,9 +50,9 @@ than closed.
 | --- | --- | --- |
 | D-CATALOG | Catalog builtins (`println`, `print`, `assert*`, `to_string_*`, `len_str`, …) have **no** `RuntimeCallFamily` on main and reach codegen only through callee-name interception, which P5 deletes. P1 mints one family per catalog endpoint from its `BuiltinLinkage` symbol and lowers as `rt.call{family}`. This is P1 work, not P5 cleanup: without it P1's own corpus-parity gate cannot run, because P1's programs print | §3.3 rows + decision; §6 first family row; §9 |
 | D-OPTION | A family whose result is `Option<T>` is P2, without exception — the split is by result type, not by family name. `String{CharAt,CharAtUtf8,Find,Get}` and `Bytes{Get}` split out to P2; `Bytes{Pop}` stays P1 because it returns `u8` and aborts on empty. Matches the rule the draft already applied to `TryWidthCast` and `checked_*` | §6 Bytes/String rows + decision |
-| D-FORK | The op is `fork`, not `unchecked_fork`. `string` is never forked; `bytes` is (a runtime no-op that stays an explicit op). **The class precondition this row carried ("`CowValue` only, `E_SIR_ICE` otherwise") and the `BorrowMut` receiver mode it prescribed are both superseded — see D-FORK-R and D-NOMODE in the third pass below.** The spelling half stands | Legend; §2 assign row; §3.3 `RuntimeCollection`/`VarSelfMethodCall`; §6 Vec/Bytes; §7 string/bytes/Vec |
-| D-PLACE | `end_lifetime %p` joins the op set. It is what discharges rule 4 for places, and it was missing from the draft entirely. (**Narrowed by D-NOPLACE below**: two emission sites, not three — the escaping-`var` site does not exist) | Legend; §1 Actor; §3.6 closure/generator envs |
-| D-HANDLE | Three handle types were mistyped and are corrected against code, not against the spec: `RegexLiteralRef` produces an **`O`** cloned `Pattern` (not `N`); `SpawnLambdaActor` produces a **`LambdaPid`** (not a `Duplex`), which has `clone = Retain`; `CancelToken{Retain}` is runtime-internal and is **not** a `copy_value`. `Spawn`'s `LocalPid` stays `N` — here the matrix is right and `ir-ladder.md` §1.3.1 must drop `Spawn` from its `Owned`-producer list | §3.4 Regex; §3.6 lambda actor; §3.8 Spawn; §6 CancelToken; §7 |
+| D-FORK | The op is `fork`, not `unchecked_fork`. `string` is never forked; `bytes` is (a runtime no-op that stays an explicit op). **The class precondition this row carried ("`CowValue` only, `E_SIR_ICE` otherwise") and the `BorrowMut` receiver mode it prescribed are both superseded — see D-FORK-R and D-NOMODE in the third pass below.** The spelling half stands and is now uniform: `ir-ladder.md`, `runtime-ownership-table.md` and `final-ladder-program.md` all spell it `fork` (`grep -n unchecked_fork` over the plan is empty; the plan's op bullet and its MIR mapping both read `fork`) | Legend; §2 assign row; §3.3 `RuntimeCollection`/`VarSelfMethodCall`; §6 Vec/Bytes; §7 string/bytes/Vec |
+| D-PLACE | `end_lifetime %p` joins the op set. It is what discharges rule 4 for places, and it was missing from the draft entirely. (**Narrowed by D-NOPLACE below**: two of the ladder's three emission sites have a producer — the escaping-`var` site is the rule with nothing on `main` to produce it) | Legend; §1 Actor; §3.6 closure/generator envs |
+| D-HANDLE | Three handle types were mistyped and are corrected against code, not against the spec: `RegexLiteralRef` produces an **`O`** cloned `Pattern` (not `N`); `SpawnLambdaActor` produces a **`LambdaPid`** (not a `Duplex`), which has `clone = Retain`; `CancelToken{Retain}` is runtime-internal and is **not** a `copy_value`. `Spawn`'s `LocalPid` stays `N`, and `ir-ladder.md` §1.3.1 (revision 7) has dropped `Spawn` from its `Owned`-producer list and states the rule: a pid is `BitCopy`, spawn produces no `Owned` value, and the owned thing is the state record (or, for a lambda actor, the captured environment) moved in at spawn | §3.4 Regex; §3.6 lambda actor; §3.8 Spawn; §6 CancelToken; §7 |
 
 ### Second pass (nine findings)
 
@@ -41,7 +62,7 @@ citations.
 
 | id | decision | where |
 | --- | --- | --- |
-| D-NOPLACE | **No function-owned `Place` exists on main.** `&mut T` is a hard parse error and `&expr` is not an expression at all, so the sole escape route this document and `ir-ladder.md` both named — "a `var` whose address is taken by an extern `&`/`&mut` parameter" — is unwritable. Every remaining `alloc_place` producer is an env field (P3) or a runtime-owned place (P4). P1 therefore delivers the place op set and verifier rule 4 with **no P1 producer**: P1's "mem2reg + places" reduces to mem2reg, and rule 4's function-owned clause plus `end_lifetime` first bind at P3 | Legend `end_lifetime` note + phase legend item 4; §2 `Let(_, None)` and `Assign` rows; §3.2 escaping-`var` row; §3.6 `Closure{Local}` cite; Counts |
+| D-NOPLACE | **No function-owned `Place` exists on main.** `&mut T` is a hard parse error and `&expr` is not an expression at all, so the sole escape route this document and `ir-ladder.md` both named — "a `var` whose address is taken by an extern `&`/`&mut` parameter" — is unwritable. Every remaining `alloc_place` producer is an env field (P3) or a runtime-owned place (P4). P1 therefore delivers the place op set and verifier rule 4 with **no P1 producer**: P1's "mem2reg + places" reduces to mem2reg, and rule 4's function-owned clause plus `end_lifetime` first bind at P3. **The rule itself stands and this document does not touch it** (plan §6, `ir-ladder.md` §1.3 `alloc_place` row, revision 7): an extern-addressed `var` **is** an ordinary function-owned `alloc_place`, the same rule as any other escaping `var`, and there is no third memory class. What this row decides is the phase — nothing on `main` produces one, so nothing exercises it before P3 | Legend `end_lifetime` note + phase legend item 4; §2 `Let(_, None)` and `Assign` rows; §3.2 escaping-`var` row; §3.6 `Closure{Local}` cite; Counts |
 | D-BYTESLEN | **`bytes.len()` is re-pointed at `hew_bytes_len` in P1, not intercepted in codegen.** On main `b.len()` mints `RuntimeCallFamily::VecLen`, and only a codegen receiver-type intercept reaches the bytes entry — the name-keyed call-site join plan §6 forbids. P1 changes the `std/io.hew` declaration so the symbol→family bijection yields `BytesLen` directly; the intercept and `lower_bytes_len` die with the legacy route. The §6 `Bytes{Len}` row stays P1 | §6 Bytes row + decision; §8 `runtime_builtins.rs` row |
 | D-METRIC | **The `Metric` family group is not P1.** Its registration half is P2 (the `metrics.counter/gauge/histogram` free functions return a record and panic through an interpolated string) and its accessor half is P3 (every accessor lives in a trait impl body over a record receiver). `Observe` stays P1 and moves to its own row | §6 Metric/Observe rows; §9 first row |
 
@@ -63,7 +84,7 @@ phases or citations.
 | --- | --- | --- |
 | D-FORK-R | **`fork`'s class precondition follows `ir-ladder.md` revision 6, not the first pass.** The op admits `class ∈ {CowValue, AffineResource, Linear}` with a heap carrier; `E_SIR_ICE` is `BitCopy`, `View` and `PersistentShare` only. **The class decides the realization, not the legality**: `CowValue` → `ensure_unique`, `AffineResource`/`Linear` → a register move (unique by class). The first pass's "`CowValue` only" left `var v: Vec<Conn>; v.push(c)` — a shape `main` accepts — with no admitted op sequence, because `push` is not a `VarSelfMethodCall` and the move-in/move-back escape does not reach it | Legend `fork` note; §2 `Assign` field/index row; §3.3 `RuntimeCollection`; §6 Vec/Bytes; §7 bytes/Vec |
 | D-NOMODE | **`BorrowMut` is not an operand mode and never appears in a row.** It is a deleted `UseMode` (`ir-ladder.md` §1.3 preamble L187) and a `ClosureCaptureMode` variant, nothing else: the plan's closed mode set is `{Borrow, Copy, Move, Snapshot{Share,DeepCopy,Transfer}}` (plan §1.1 rule 5, `ir-ladder.md` §2.1 rule 5 L1044-1049) and the header set is `ParamMode ∈ {Borrow, Consume, Retain}` (§4.2 L1287). A mutating call on an SSA value is `fork %v` then `borrow{%v'}` around the call; on a place it is `load.take %p` → `fork` → `borrow` → call → `store.init %p` (§1.3 `load.take` row L205, §11 row 12 L2532) | Legend; §3.3 `RuntimeCollection`/`VarSelfMethodCall`; §3.7 `MachineStep`; §6 Bytes/Vec; §7 Vec |
-| D-CATALOG-2 | **D-CATALOG's minting rule is keyed by symbol, not by endpoint.** The endpoint→symbol map is many-to-one (16 print endpoints share `hew_print_value`; `to_string_u16`/`to_string_u32` share `hew_uint_to_string`; `to_string_str`/`clone_str` share `hew_string_clone`), so "one family per endpoint from its linkage symbol" cannot be applied under §6's bijection. P1 mints **one top-level variant per distinct symbol**, parameterized where endpoints share one (the `MathIntrinsic` precedent), and **reuses** the family a symbol already has (`string_concat` → `StringConcat`, `len_vec` → `VecLen`, `len_str` → a new `StringLength`). §6's constraint is restated as symbol↔top-level-variant, which is what `from_c_symbol` needs | §3.3 D-CATALOG; §6 brace-group note; §6 catalog row |
+| D-CATALOG-2 | **The endpoint→symbol map is many-to-one, so the family is keyed by endpoint and the symbol is not a key.** 16 print endpoints share `hew_print_value`; `to_string_u16`/`to_string_u32` share `hew_uint_to_string`; `to_string_str`/`clone_str` share `hew_string_clone`. **Decision** (superseding the third pass's "one variant per distinct symbol", and §6's bijection with it): P1 mints **one `RuntimeCallFamily` per catalog endpoint, keyed by the endpoint id** — the `BuiltinEntry` name, which is unique by construction — and takes the **symbol from that endpoint's `BuiltinLinkage` row**, where the symbol is **not required to be unique** across families. §6's constraint is therefore endpoint↔family, never symbol↔family: `from_c_symbol` stops being a join key for catalog endpoints (it cannot be one — `from_c_symbol("hew_print_value")` has 16 answers), and the lowering joins on the endpoint the checker already resolved. Where a symbol already carries a family, the endpoint reuses it rather than minting a twin (`string_concat` → `StringConcat`, `len_vec` → `VecLen`, `len_str` → a new `StringLength`) | §3.3 D-CATALOG; §6 brace-group note; §6 catalog row |
 | D-STRCMP | **`==`/`!=` and `<`/`<=`/`>`/`>=` on `string`, and `==`/`!=` on `bytes`, get families at P1.** Both `string` forms are codegen `ResolvedTy`-shape intercepts today — exactly what plan §1.4 forbids and §6's last decision row deletes — and the first draft named a symbol (`hew_string_eq`) that does not exist; the `bytes` form is a codegen fail-closed, so it is new P1 work rather than a repoint. P1 mints `StringEquals` (`hew_string_equals`), `StringCompare` (`hew_string_compare`) and `BytesEquals` (`hew_bytes_eq`, exported and today called by nothing outside its own unit tests). Ordered comparison on `string` had no row at all and gets one | §3.1 equality row + new ordering row; §6 String group |
 | D-EXTERN-P1 | **P1's `string`/`bytes` domain is enumerated, not gestured at.** Nineteen of the twenty-four `#[extern_symbol]` methods in `std/string.hew`'s impl block have no `RuntimeCallFamily`, and `bytes::to_string` is a `CanonicalStdlibExternSignature` with `family: None`. All are shipped. They stay open-set `CallTarget::Extern` calls and P1 delivers **their FFI ownership rows**, not twenty new families | §3.3 `Call{Extern}` row; §1 `ExternFn` row; §6 note |
 | D-BYTESIS | **`a is b` on `bytes` becomes a checker wall at P1.** A `bytes` value is a `{ptr, offset, len}` triple, so two distinct values share a `ptr` and pointer identity has no operand; `is_identity_capable` already excludes `string` (the same `CowValue` class) for the same reason it excludes records. P1 drops `Ty::Bytes => true` (`hew-types/src/check/expressions.rs:9757`); the MIR fail-closed disappears with the construct, and no `cmp.identity` row gains a `bytes` case. **This is a tightening** — a program that compiles today and aborts in MIR becomes a checker error — so it needs a `.expected` move, not just a code change | §3.1 `IdentityCompare` row |
@@ -78,31 +99,35 @@ the actor handler's payload disposition (the handler **takes** it — there is n
 envelope-owned form), and the bare `ownership.rs` citations (two files share that
 basename).
 
-### Follow-ups this document cannot land itself
+### D-MATH: `abs`/`min`/`max` route through `MathIntrinsic`, not the catalog row
 
-Four, all blocking P0's gate:
+The first pass left this open and the third pass named where to settle it —
+"by reading where `intrinsic_math_generic_op_for_signature` (`calls.rs:1181`)
+is consumed in `hew-hir`". Read: **they route through §6 `MathIntrinsic`; the
+catalog row (D-CATALOG) never sees them**, so D-CATALOG's endpoint minting owes
+them nothing.
 
-1. `ir-ladder.md` §1.3.1 must drop the `Spawn` handle from its `Owned`
-   producers (D-HANDLE). **Still open in revision 6**: the producer prose names
-   "`Spawn` / `SpawnLambdaActor` handle" at L245.
-2. `final-ladder-program.md:79,162` should adopt the `fork` spelling (D-FORK).
-3. `ir-ladder.md` §1.3 must drop "extern-addressed `var`" from the `alloc_place`
-   (L203), `load.copy` (L204), `load.take` (L205), `store.assign` (L207),
-   `end_lifetime` (L208) and `begin_borrow` (L199) rows, and from §2.1 rule 4
-   (L1004), which calls it a function-owned place (D-NOPLACE). **Still open in
-   revision 6**, at the re-grepped lines above.
-4. `final-ladder-program.md:86` must drop "address taken by FFI" from its
-   memory-ops bullet for the same reason (D-NOPLACE).
+The `GenericMathIntrinsic` rewrite picks the overload before SIR, inside HIR
+lowering. `hew-hir/src/lower.rs:28389-28466` resolves the rewrite through
+`stdlib_catalog::generic_math_intrinsic_callee` (`stdlib_catalog.rs:28-51`),
+which returns `"abs"`/`"min"`/`"max"` for an `I64` operand and
+`"abs_f"`/`"min_f"`/`"max_f"` for `F64`, then rebuilds the node as
+`HirExprKind::Call { target: self.registered_symbol_target(symbol), .. }`.
+`registered_symbol_target` (`lower.rs:12754-12758`) returns
+`CallTarget::Runtime(family)` whenever the registry entry carries a
+`builtin_family`, and the builtin seeding sets it from
+`RuntimeCallFamily::from_c_symbol(builtin.name)` (`lower.rs:10395-10409`) —
+which for all six names is `MathIntrinsic(_)` (`runtime_call.rs:1543-1548`).
+So the HIR the matrix rows describe already carries
+`CallTarget::Runtime(MathIntrinsic(AbsI64 | MinI64 | MaxI64 | AbsF64 | MinF64 |
+MaxF64))`, and SIR emits `rt.call{MathIntrinsic}` like any other row of that
+group. The catalog fallthrough that D-CATALOG covers is only reached by an
+endpoint with **no** family, which these are not.
 
-The reverse direction closed itself: the `fork` class precondition this
-document owed the ladder in the second pass is now the ladder's own rule
-(§1.3 `fork` row L201), and this matrix follows it (D-FORK-R).
-
-One question the first pass surfaced and did **not** close, P1's to settle
-before its brief is written (it is named at the point of use, in §3.3): whether
-`abs`/`min`/`max` lower through the catalog row or through §6 `MathIntrinsic`
-after the `GenericMathIntrinsic` rewrite picks the i64/f64 overload. Both rows
-exist; only the routing is undecided.
+The realization column is unchanged from §6's `MathIntrinsic` row (LLVM
+intrinsic or libm, not an FFI symbol): the catalog linkage for all six is
+`BuiltinLinkage::CalleeNameDispatchOnly` (`stdlib_catalog.rs:583-625`), so
+there is no C symbol and no FFI ownership row to owe. Phase stays P1.
 
 Method (every inventory below is a grep or a parse, not memory):
 
@@ -113,15 +138,12 @@ pass at 19:56), and the second pass's re-grepped lines had drifted by 20 to 250
 lines — far past the "off by a few" this note used to tolerate. Every cite below
 names the section and the table row first and the line second (`ir-ladder.md`
 §1.3 `fork` row, L201); **the row name is the citation and the line is a
-convenience**. Lines were re-grepped against revision 6. A P-lane implementer
-who finds a line wrong must trust the row name and re-grep, and must not
-reconcile a matrix row against a ladder row by line number alone.
-
-Revision 6 also changed two facts this matrix had decided the other way. Where
-the ladder and this matrix disagree on an op, a class or a mode, **the ladder
-wins and this document follows it** — D-FORK-R and D-NOMODE are that following.
-Where they disagree on a *phase*, this document wins: the ladder does not
-phase constructs.
+convenience**. Lines below were last re-grepped against revision 6; revision 7
+moved them again (it inserts a **Design axioms** section and a precedence
+paragraph before §1 and edits §1.3, §1.3.1, §5.1, §5.2, §6.4, §7, §9, §10 and
+§11). Read the row name and re-grep. A P-lane implementer who finds a line
+wrong must trust the row name, and must not reconcile a matrix row against a
+ladder row by line number alone.
 
 Variant counts come from `scratchpad/count_variants.py` (a brace/paren/string/
 comment-aware top-level-comma scan of each `pub enum X { … }` body, printing
@@ -190,10 +212,9 @@ arguments (`bbarg`), `suspend{Kind}` terminator with resume/cancel edges.
 Two op-name notes, because the plan and the ladder spec disagree and rows below
 must not inherit the ambiguity:
 
-- **`fork %v`** is the spelling this document uses, matching `ir-ladder.md`
-  §1.3 `fork` row (L201). `final-ladder-program.md:79,162` spells the same op
-  `unchecked_fork`; that is the older name and the plan text is what changes.
-  The op carries a class precondition the plan's prose omits, and **D-FORK-R
+- **`fork %v`** is the spelling every document uses, matching `ir-ladder.md`
+  §1.3 `fork` row. `unchecked_fork` was the older name and is gone from all
+  four documents. The op carries a class precondition the plan's prose omits, and **D-FORK-R
   restates it from revision 6**: `fork` admits `class ∈ {CowValue,
   AffineResource, Linear}` with a heap carrier, and only `BitCopy`, `View` and
   `PersistentShare` are `E_SIR_ICE` (same row). **The class decides the
@@ -221,13 +242,13 @@ must not inherit the ambiguity:
 - **`end_lifetime %p`** (`ir-ladder.md` §1.3 `end_lifetime` row, L208) is the
   release op for *places*, the counterpart of `destroy_value` for values. The
   first draft omitted it and rule 4 ("every initialized slot is `destroy`ed or
-  `take`n before frame exit") therefore had no op to discharge it. It is
-  emitted at **two** sites, both rows below: actor stop via `hew_drop$State`
+  `take`n before frame exit") therefore had no op to discharge it. The ladder names three
+  emission sites; two of them have rows below — actor stop via `hew_drop$State`
   (§1 Actor, P4) and environment release for a closure / lambda-actor /
-  spawn-task / generator env (§3.6, P3/P4). The ladder row names a third —
-  scope exit of an extern-addressed `var` — and that construct does not exist
-  on main (D-NOPLACE, §3.2). Both places that remain are runtime-owned or
-  env-owned, so **no `end_lifetime` is emitted before P3**, and rule 4's
+  spawn-task / generator env (§3.6, P3/P4) — and the third, scope exit of an
+  extern-addressed `var`, is the rule with no producer on `main` (D-NOPLACE,
+  §3.2). Both sites that have a producer are runtime-owned or env-owned, so
+  **no `end_lifetime` is emitted before P3**, and rule 4's
   function-owned-place clause has nothing to check at P1.
 
 Value ops this matrix adds (each is a P-lane deliverable, named once here):
@@ -435,11 +456,12 @@ double-row constructs the document already covers:
   returns `CallTarget::Runtime(MathIntrinsic(_))`. Rowed at §6 `MathIntrinsic`.
 - `abs`, `min`, `max` — deliberately excluded from that pre-emption
   (`calls.rs:1164-1170`: "never freeze one of the overloads here") and carrying
-  a type-directed `GenericMathIntrinsic` rewrite instead, so they do reach the
-  catalog arm. **Open for P1**: whether they lower through this row or through
-  §6 `MathIntrinsic` after the rewrite picks the i64/f64 overload. Settle it by
-  reading where `intrinsic_math_generic_op_for_signature` (`calls.rs:1181`) is
-  consumed in `hew-hir`.
+  a type-directed `GenericMathIntrinsic` rewrite instead. They reach the catalog
+  arm only in the checker; **HIR lowering resolves the rewrite to a concrete
+  overload symbol and stamps `CallTarget::Runtime(MathIntrinsic(_))` on the
+  call** (`lower.rs:28389-28466` → `registered_symbol_target` `:12754` →
+  `builtin_family` from `from_c_symbol` `:10395`), so they are rowed at §6
+  `MathIntrinsic` and **not** at this row. Decided as D-MATH above.
 - `sleep`, `sleep_until` — rowed at §3.9 as `suspend{Sleep}`/`suspend{SleepUntil}`
   (P4). Their catalog identity is how the callee is named, not how it lowers.
 - `Node::allow_peer`/`connect`/`id`/`identity_key`/`load_keys`/`set_transport`/

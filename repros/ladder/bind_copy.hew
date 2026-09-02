@@ -1,0 +1,10 @@
+fn main() {
+    let s = "hello";
+    let t = s;
+    println(s);
+    println(t);
+    let v: Vec<i64> = Vec.new();
+    let w = v;
+    println(f"{v.len()}");
+    println(f"{w.len()}");
+}

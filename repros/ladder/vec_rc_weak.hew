@@ -1,0 +1,11 @@
+fn main() {
+    let a: Rc<i64> = Rc.new(5);
+    let w = a.downgrade();
+    let v: Vec<Rc<i64>> = Vec.new();
+    v.push(a);
+    println(v.len());
+    match w.upgrade() {
+        Some(r) => println(r.get()),
+        None => println("gone"),
+    }
+}

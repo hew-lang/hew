@@ -1,0 +1,9 @@
+fn main() {
+    let a: Rc<i64> = Rc.new(5);
+    let w = a.downgrade();
+    println(f"{a.get()}");
+    match w.upgrade() {
+        Some(_) => println("alive"),
+        None => println("dead"),
+    }
+}

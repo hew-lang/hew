@@ -1568,7 +1568,7 @@ impl Checker {
             self.mint_item_declaration_identities(
                 Some(builtins_module),
                 Some(builtins_module),
-                false,
+                crate::check::NominalNamespace::Owned,
                 item_ordinal,
                 item,
                 span,
@@ -10857,11 +10857,12 @@ impl Checker {
                 self.identity.mint_source_file_module(&owner, source);
             }
             // A file import (`import "helper.hew";`, empty path) flattens its
-            // items into the root's bare nominal namespace. A module import
+            // items into the root's namespace, so its nominals answer bare as
+            // well as under their own file. A module import
             // (`import pkg.alpha;`) does not: its nominals stay qualified by
             // the owning module, so two modules exporting the same leaf keep
             // distinct declarations.
-            let bare_nominals = decl.path.is_empty();
+            let namespace = crate::check::NominalNamespace::for_import(decl.path.is_empty());
             if !self.identity.module_has_declarations(primary) {
                 for (index, (item, span)) in items.iter().enumerate() {
                     let module = decl
@@ -10872,7 +10873,7 @@ impl Checker {
                     self.mint_item_declaration_identities(
                         Some(module),
                         Some(primary),
-                        bare_nominals,
+                        namespace,
                         index,
                         item,
                         span,
@@ -11431,7 +11432,7 @@ impl Checker {
                 self.mint_item_declaration_identities(
                     Some(identity_module),
                     Some(identity_module),
-                    false,
+                    crate::check::NominalNamespace::Owned,
                     item_ordinal,
                     item,
                     span,

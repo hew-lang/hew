@@ -753,8 +753,8 @@ fn machine_diagram_json_no_wildcard_rows() {
                   \x20   events { Flip; Reset; }\n\
                   \x20   state A;\n\
                   \x20   state B;\n\
-                  \x20   on Flip: A => B { B }\n\
-                  \x20   on Reset: _ => A { A }\n\
+                  \x20   on Flip: A => B { .B }\n\
+                  \x20   on Reset: _ => A { .A }\n\
                   \x20   default { state }\n\
                   }\n";
     let input = dir.path().join("toggle.hew");
@@ -794,8 +794,8 @@ fn machine_diagram_json_event_fields_present() {
                   \x20   events { Send { payload: i64; }; Ack; }\n\
                   \x20   state Idle;\n\
                   \x20   state Waiting;\n\
-                  \x20   on Send: Idle => Waiting { Waiting }\n\
-                  \x20   on Ack: Waiting => Idle { Idle }\n\
+                  \x20   on Send: Idle => Waiting { .Waiting }\n\
+                  \x20   on Ack: Waiting => Idle { .Idle }\n\
                   \x20   default { state }\n\
                   }\n";
     let input = dir.path().join("sender.hew");

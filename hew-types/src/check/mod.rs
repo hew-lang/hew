@@ -93,6 +93,38 @@ pub(super) enum TypeResolutionContext {
     ExternSignature,
 }
 
+/// How one module's nominal declarations are spelled in the identity table.
+///
+/// A nominal (type, trait, record, actor, supervisor, machine, const) has one
+/// PRIMARY spelling — the one `ResolvedTy::Named` carries for it, and the one
+/// every declaration-derived downstream key renders from — plus, in the two
+/// flattened cases, a second spelling recorded on the same occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NominalNamespace {
+    /// The root compilation unit: its nominals are BARE, and the root's own
+    /// module path is the second spelling.
+    RootBare,
+    /// An ordinary graph module: its nominals are owner-qualified and no
+    /// other spelling reaches them.
+    Owned,
+    /// A file import (`import "helper.hew";`) flattened into the root: its
+    /// nominals keep their own file's qualification and are ALSO reachable
+    /// bare, because the flattened items land in the root's namespace.
+    FlattenedFile,
+}
+
+impl NominalNamespace {
+    /// The namespace an import contributes into: a file import
+    /// (empty module path) flattens, a module import does not.
+    pub(super) fn for_import(file_import: bool) -> Self {
+        if file_import {
+            Self::FlattenedFile
+        } else {
+            Self::Owned
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "graph resolution keeps raw facts, validation, type, traversal, and memo state explicit"
@@ -496,23 +528,13 @@ impl Checker {
                     continue;
                 };
                 let dotted = module_id.path.join(".");
-                // The graph root and the file imports flattened into it share
-                // one bare nominal namespace.
-                //
-                // SHORTCUT: checking a file that belongs to a named module (a
-                // directory module's peer) also makes that module the graph
-                // root, and there the checker qualifies its nominals while
-                // this renders them bare, so such a compile is refused
-                // (`checking_directory_module_peer_loads_entry_namespace`).
-                // Keying that case off a non-empty `module_id.path` instead
-                // re-rendered every ordinary root compile and broke MIR site
-                // decisions across the suite, so the discriminating condition
-                // is not "the graph root has a dotted path". WHEN OBSOLETE:
-                // when the root's bare namespace is a property of the entry
-                // rather than of `graph.root`. WHAT: derive it from how the
-                // root was reached, not from the module id.
-                let bare_nominals =
-                    *module_id == graph.root || flat_file_imports.contains(module_id);
+                let namespace = if *module_id == graph.root {
+                    NominalNamespace::RootBare
+                } else if flat_file_imports.contains(module_id) {
+                    NominalNamespace::FlattenedFile
+                } else {
+                    NominalNamespace::Owned
+                };
                 let assembler = module
                     .source_paths
                     .first()
@@ -541,7 +563,7 @@ impl Checker {
                     self.mint_item_declaration_identities(
                         occurrence_module,
                         assembler,
-                        bare_nominals,
+                        namespace,
                         item_index,
                         item,
                         span,
@@ -556,12 +578,26 @@ impl Checker {
             // item on this surface.
             let root = self.identity.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
-                self.mint_item_declaration_identities(root, root, true, item_index, item, span);
+                self.mint_item_declaration_identities(
+                    root,
+                    root,
+                    NominalNamespace::RootBare,
+                    item_index,
+                    item,
+                    span,
+                );
             }
         } else {
             let root = self.identity.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
-                self.mint_item_declaration_identities(root, root, true, item_index, item, span);
+                self.mint_item_declaration_identities(
+                    root,
+                    root,
+                    NominalNamespace::RootBare,
+                    item_index,
+                    item,
+                    span,
+                );
             }
         }
     }
@@ -638,15 +674,14 @@ impl Checker {
     /// * free and extern functions are always module-scoped
     ///   (`{module}.{name}`; the root unit's own path for root functions);
     /// * nominal declarations (types, traits, records, actors, supervisors,
-    ///   machines, consts) are module-scoped in graph modules but BARE when
-    ///   `bare_nominals` is set - the root unit and flattened file imports
-    ///   share one bare nominal namespace, which is also the spelling
-    ///   `ResolvedTy::Named` carries for them downstream.
+    ///   machines, consts) render as [`NominalNamespace`] says, and record
+    ///   the other reachable spelling as a second path on the same
+    ///   occurrence.
     fn mint_item_declaration_identities(
         &mut self,
         module: Option<crate::ModuleId>,
         owner: Option<crate::ModuleId>,
-        bare_nominals: bool,
+        namespace: NominalNamespace,
         item_ordinal: usize,
         item: &Item,
         span: &std::ops::Range<usize>,
@@ -662,32 +697,30 @@ impl Checker {
                 .as_ref()
                 .map_or_else(|| leaf.to_string(), |module| format!("{module}.{leaf}"))
         };
-        let owner_path = |leaf: &str| {
-            if bare_nominals {
-                leaf.to_string()
-            } else {
-                fn_path(leaf)
-            }
+        // The primary render is the spelling `ResolvedTy::Named` carries for
+        // the nominal downstream, because that is what every later
+        // declaration-derived key (`HirTypeDecl::qualified_name`, the MIR
+        // layout tables) renders from.
+        let owner_path = |leaf: &str| match namespace {
+            NominalNamespace::RootBare => leaf.to_string(),
+            NominalNamespace::Owned | NominalNamespace::FlattenedFile => fn_path(leaf),
         };
-        // A nominal in a bare namespace is reachable under TWO canonical
-        // spellings. The bare one is what `ResolvedTy::Named` carries for it
-        // downstream and stays the identity's primary render; the checker's
-        // own registries (`trait_defs`, `type_def_spans`, the visibility
-        // index) additionally key it `{module}.{leaf}`, because a root or
-        // flat-imported file still has an owning module and a lookup through
-        // that owner must reach the same declaration. Recording the second
-        // spelling on the SAME occurrence is what the identity table is for:
-        // one declaration, several ways to name it. It never mints a second
-        // identity, and a spelling another declaration already owns is
-        // refused rather than merged.
-        let nominal_alias = |leaf: &str| {
-            bare_nominals
-                .then(|| {
-                    module_path
-                        .as_ref()
-                        .map(|module| format!("{module}.{leaf}"))
-                })
-                .flatten()
+        // The OTHER spelling the same declaration is reachable under. A root
+        // nominal is bare but its module still owns it, and the checker's own
+        // registries (`trait_defs`, `type_def_spans`, the visibility index)
+        // key it `{module}.{leaf}`; a flat-imported nominal is qualified by
+        // its file but its items were flattened into the root's namespace, so
+        // it also answers bare. Recording the second spelling on the SAME
+        // occurrence is what the identity table is for: one declaration,
+        // several ways to name it. It never mints a second identity, and a
+        // spelling another declaration already owns is refused rather than
+        // merged.
+        let nominal_alias = |leaf: &str| match namespace {
+            NominalNamespace::RootBare => module_path
+                .as_ref()
+                .map(|module| format!("{module}.{leaf}")),
+            NominalNamespace::FlattenedFile => Some(leaf.to_string()),
+            NominalNamespace::Owned => None,
         };
         let mut declare = |kind: Kind, ordinal: usize, path: String| {
             let occurrence =

@@ -2922,6 +2922,29 @@ pub fn lower_program_with_mono_cap(
                         .insert(index, identity_module);
                 }
             }
+            // A span index is allocated per (module, file), so a file that is
+            // BOTH a directory module's peer and importable in its own right
+            // owns two of them — `std/net/http/http_client.hew` is one index
+            // under `std.net.http` and another under
+            // `std.net.http.http_client`. `path_index` keeps only the first,
+            // so map every index the item walk can actually produce, through
+            // the two accessors that own the pairing.
+            for item_idx in 0..module.items.len() {
+                let Some(index) = span_indices.item_index(module_id, item_idx) else {
+                    continue;
+                };
+                let identity_module = program
+                    .module_graph
+                    .as_ref()
+                    .and_then(|graph| graph.item_source(module_id, item_idx))
+                    .or_else(|| module.source_paths.first())
+                    .and_then(|source| ctx.identity.module_for_source(source));
+                if let Some(identity_module) = identity_module {
+                    ctx.declaration_module_by_file_index
+                        .entry(index)
+                        .or_insert(identity_module);
+                }
+            }
         }
     }
     ctx.seed_stdlib_fn_registry();

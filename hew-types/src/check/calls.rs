@@ -1240,7 +1240,16 @@ impl Checker {
         // declaration identity is semantic authority, while the validated ABI
         // symbol is the executable endpoint. Treating them as ordinary User
         // calls loses that endpoint and leaves MIR without a symbol mapping.
-        if let Some(extern_decl) = self.extern_table.declaration(signature_key) {
+        // The identity table is the one name-resolution authority: a
+        // declaration is reachable under several spellings (a peer file that
+        // is also importable in its own right publishes both `pkg.f` and
+        // `pkg.file.f`), and the extern table is keyed by the identity, not by
+        // a spelling. Resolve the key first, then read the extern row.
+        let resolved = self.identity.declaration_by_path(signature_key).cloned();
+        if let Some(extern_decl) = resolved
+            .as_ref()
+            .and_then(|declaration| self.extern_table.declaration(declaration.full_path()))
+        {
             if extern_decl.symbol.is_empty() {
                 return CallTarget::Unsupported {
                     reason: format!(
@@ -1255,8 +1264,7 @@ impl Checker {
             // stays user-provenance even when its spelling collides with an
             // audited runtime endpoint, in either registration order).
             //
-            let Some(declaration) = self.identity.declaration_by_path(signature_key).cloned()
-            else {
+            let Some(declaration) = resolved.clone() else {
                 return CallTarget::Unsupported {
                     reason: format!(
                         "checker identity table has no extern declaration `{signature_key}`"

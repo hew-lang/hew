@@ -35,7 +35,7 @@ checker-hir-fact-relation	checker-relation-use	hew-hir/src/lower.rs	7	stage-2	re
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/expressions.rs	11	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/mod.rs	15	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-variant	hew-types/src/check/types.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	376	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	379	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering and the identity-view reads that resolve an impl receiver's spelling and a peer file's span index
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	5	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory

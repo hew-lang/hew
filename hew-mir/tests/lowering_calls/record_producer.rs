@@ -19,7 +19,7 @@
 ///   assert only on the instruction shape, not on an empty diagnostic list.
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{lower_hir_module, FieldOffset, Instr, IrPipeline, MirDiagnosticKind};
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker};
 
 /// Run the HIR→MIR pipeline without a type-checker. Suitable for `StructInit`
 /// tests where HIR does not consult the checker side-table for field types.
@@ -32,7 +32,7 @@ fn pipeline_no_tc(source: &str) -> IrPipeline {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -246,4 +246,15 @@ fn struct_init_functional_update_loads_base_fields_and_emits_record_init() {
         FieldOffset(1),
         "second field in functional-update RecordInit must be y at offset 1"
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

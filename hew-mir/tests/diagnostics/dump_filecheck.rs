@@ -20,7 +20,6 @@ use support::filecheck::check_directives;
 
 fn compile_to_pipeline(source: &str) -> hew_mir::IrPipeline {
     use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-    use hew_types::TypeCheckOutput;
 
     let parsed = hew_parser::parse(source);
     assert!(
@@ -30,7 +29,7 @@ fn compile_to_pipeline(source: &str) -> hew_mir::IrPipeline {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -179,4 +178,15 @@ fn filecheck_harness_check_not_rejects_matching_pattern() {
         "CHECK-NOT over a dump containing 'trap' must return Err; \
          the harness must reject bad input"
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

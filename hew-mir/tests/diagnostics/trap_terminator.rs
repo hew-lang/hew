@@ -63,7 +63,6 @@ fn trap_fn(kind: TrapKind) -> RawMirFunction {
 /// Run the full source-text MIR pipeline so elaboration output is visible.
 fn pipeline(source: &str) -> IrPipeline {
     use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-    use hew_types::TypeCheckOutput;
 
     let parsed = hew_parser::parse(source);
     assert!(
@@ -73,7 +72,7 @@ fn pipeline(source: &str) -> IrPipeline {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -271,4 +270,15 @@ fn cleanup_block_kind_exists_in_model() {
     let kind = BlockKind::Cleanup;
     assert_eq!(kind, BlockKind::Cleanup);
     assert_ne!(kind, BlockKind::Normal);
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

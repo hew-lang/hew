@@ -8,7 +8,7 @@ use hew_hir::{lower_program, verify_hir, HirModule, ResolutionCtx};
 use hew_mir::{
     build_const_descriptors, is_string_const_ty, lower_hir_module, Instr, MirConstValue,
 };
-use hew_types::{ResolvedTy, TypeCheckOutput};
+use hew_types::ResolvedTy;
 
 /// Lower source to a verified `HirModule` with no HIR diagnostics.
 fn hir(source: &str) -> HirModule {
@@ -20,7 +20,7 @@ fn hir(source: &str) -> HirModule {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -198,4 +198,15 @@ fn lower_hir_module_wires_const_table_and_global_load() {
         })
     });
     assert!(saw_load, "const reference must lower to ConstGlobalLoad");
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

@@ -32,7 +32,7 @@ fn lower_synthetic_task_await(src: &str) -> hew_mir::IrPipeline {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut output = lower_program(
         &parsed.program,
-        &hew_types::TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -158,4 +158,15 @@ fn await_form_lowers_to_task_await_arm() {
         "`t from await task` must produce a SelectArmKind::TaskAwait arm \
          on main's select terminator"
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

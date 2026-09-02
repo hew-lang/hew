@@ -8994,9 +8994,10 @@ mod cow_sole_owner_derivation {
     //! Direct structural tests for `derive_cow_sole_owner` — the fail-closed
     //! layer-1 allow-set. These poke the derivation with synthetic MIR
     //! blocks because the buggy shape (an enum/machine payload-destructure
-    //! binder) cannot be built through the `TypeCheckOutput::default()`
-    //! minimal `elaborate.rs` pipeline (variant literals need populated
-    //! `expr_types`), and the runtime liveness layer would mask a layer-1
+    //! binder) cannot be built through the minimal single-file
+    //! `elaborate.rs` pipeline (variant literals need the element types a
+    //! full compilation resolves), and the runtime liveness layer would mask
+    //! a layer-1
     //! admission anyway. Asserting on the allow-set directly is the only
     //! place the projection-alias-via-`Move` hole is observable.
     use super::*;

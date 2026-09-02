@@ -14,14 +14,14 @@ use hew_mir::{
     lower_hir_module, BlockKind, DropKind, ElaboratedMirFunction, ExitPath, IrPipeline, Place,
     Terminator,
 };
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn pipeline(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -394,9 +394,9 @@ fn if_expression_emits_one_return_exit_with_empty_plan_on_spine() {
 // aliased SOURCE string contributes no extra `CowHeap` release — dropping it
 // in addition to the live owner would double-free the shared `rc==1` buffer.
 //
-// This harness lowers against `TypeCheckOutput::default()` (no checker
-// expr_types), so aggregate-literal alias sites that require checker-
-// authoritative element types — tuple/record/variant construction — are
+// This harness runs the checker only to mint declaration identity and then
+// lowers a single file, so aggregate-literal alias sites that require the
+// full compilation's element types — tuple/record/variant construction — are
 // exercised end-to-end through the full compiler in the runtime fixtures
 // (`hew-cli/tests/run_e2e.rs`, `tests/vertical-slice/accept/`). The cases
 // below drive the Move / call-arg / control-flow-join alias paths that the
@@ -458,4 +458,15 @@ fn call_argument_borrow_keeps_source_and_retained_result() {
         2,
         "the caller source and retained result are both freed"
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

@@ -15,7 +15,6 @@ use hew_mir::{
     lower_hir_module, CaptureKind, ElaboratedMirFunction, IrPipeline, LambdaEnvFieldDrop, Place,
     Terminator,
 };
-use hew_types::TypeCheckOutput;
 
 /// Run the full source → HIR → MIR pipeline. Asserts parser cleanliness
 /// and `verify_hir` cleanliness; tolerates `NotYetImplemented` HIR
@@ -34,7 +33,7 @@ fn pipeline(source: &str) -> IrPipeline {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -386,4 +385,15 @@ fn make() {
         "non-recursive actor-lambda must have zero Weak captures; got {:?}",
         func.lambda_captures
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

@@ -2752,6 +2752,11 @@ grep -qF 'use of moved value `a`' "${reject_output}"
 # carrier to a local first, the shape that already worked, as the control.
 run_accept_expect_stdout "channel_recv_match_result_survives"
 
+# Accept + run: the ASan gate's recv-frame balance fixture also has an ordinary
+# stdout oracle, so a lowering change that drops or duplicates a frame shows up
+# here even on platforms without the sanitizer gate.
+run_accept_expect_stdout "recv_frame_release_balance"
+
 # Accept + run: the channel-Duplex split round-trip delivers the exact value.
 # Split a symmetric pair, send 7 on the send-half, receive it on the recv-half,
 # close both halves; exit code 7 proves the value crossed the split intact.

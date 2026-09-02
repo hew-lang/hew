@@ -1337,9 +1337,10 @@ fn generator_pump_releases_record_yield_value_in_place() {
         .expect("main must lower");
     assert_eq!(
         body_inline_inplace_drop(record_main),
-        Some(hew_mir::InPlaceReleaseKind::Record),
-        "the for-await consuming body must release its fresh decode copy of the \
-         type frame at body end through the record in-place thunk"
+        Some(hew_mir::InPlaceReleaseKind::Enum),
+        "the for-await consuming body releases its fresh decode copy through \
+         the recv carrier's enum in-place thunk, which walks into the record \
+         payload; a `None` here means the frame leaks once per iteration"
     );
 }
 

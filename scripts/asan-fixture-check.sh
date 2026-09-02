@@ -411,6 +411,14 @@ ENUM_PAYLOAD_LOOP_SRC="${ROOT}/tests/vertical-slice/accept/enum_payload_call_loo
 # synthetic owner over the call temp; a double-mint would double-free the payload
 # header — invisible to macOS `leaks`, caught here by ASan. Exits 0, clean.
 CALL_SCRUTINEE_FRESH_SRC="${ROOT}/tests/vertical-slice/accept/call_scrutinee_fresh_forwarder_release.hew"
+# Recv frame release balance (#3127). A channel/stream recv frame is owned by
+# the recv carrier and taken by the arm binder; drop elaboration releases it
+# where the binder's generation ends. Covers the loop back edge, the
+# early-return edge, an identity-callee forward (binder and alias hold one
+# count each), a heap-owning record payload, and the direct
+# `match rx.recv() { ... }` result shape. A withheld release leaks one block per
+# iteration (LSan); a second release underflows a live refcount (ASan).
+RECV_FRAME_BALANCE_SRC="${ROOT}/tests/vertical-slice/accept/recv_frame_release_balance.hew"
 ENUM_RESOURCE_MATCH_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_heap_sibling_asan.hew"
 ENUM_RESOURCE_STATE_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_state_overwrite_asan.hew"
 # Owned-Vec element-store temp-leak (Linux arm of vec_push_temp_leak_oracle.rs):
@@ -486,6 +494,9 @@ compile_asan_fixture "match-scrutinee enum payload (call loop)" "${ENUM_PAYLOAD_
 
 CALL_SCRUTINEE_FRESH_BIN="${WORK_DIR}/call_scrutinee_fresh_forwarder_release"
 compile_asan_fixture "admitted fresh-producer call scrutinee (#2648)" "${CALL_SCRUTINEE_FRESH_SRC}" "${CALL_SCRUTINEE_FRESH_BIN}"
+
+RECV_FRAME_BALANCE_BIN="${WORK_DIR}/recv_frame_release_balance"
+compile_asan_fixture "recv frame release balance (#3127)" "${RECV_FRAME_BALANCE_SRC}" "${RECV_FRAME_BALANCE_BIN}"
 
 ENUM_RESOURCE_MATCH_BIN="${WORK_DIR}/enum_resource_heap_sibling_asan"
 compile_asan_fixture "resource enum match-consume (#2641)" "${ENUM_RESOURCE_MATCH_SRC}" "${ENUM_RESOURCE_MATCH_BIN}"
@@ -617,6 +628,17 @@ fi
 # admit path is leak-clean under ASan; a double-mint (the #2648 double-free) would
 # surface here as a heap-use-after-free on the payload header.
 if run_asan_fixture "admitted fresh-producer call scrutinee (#2648)" "${CALL_SCRUTINEE_FRESH_BIN}" 0; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1))
+fi
+
+# ── Gate 9: recv frame release balance MUST be ASan/LSan-clean (#3127) ────
+# The recv carrier owns each received frame and the arm binder takes it by
+# transfer, so drop elaboration is the only release authority for these shapes.
+# A withheld release leaks one block per iteration; a second release underflows
+# a refcount the program still reads.
+if run_asan_fixture "recv frame release balance (#3127)" "${RECV_FRAME_BALANCE_BIN}" 0; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))

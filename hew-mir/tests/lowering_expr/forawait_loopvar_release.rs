@@ -48,6 +48,10 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
 /// Inline `hew_string_drop` releases in `fn_name`, split by whether the
 /// carrying block ends in `Terminator::Return` (the early-return edge) or not
 /// (the body-end / fall-through release).
+///
+/// This sees only the releases lowering writes into the instruction stream.
+/// An edge whose release is scheduled by drop elaboration instead does not
+/// appear here; ask [`string_releases_on_return_exits`] for that edge.
 fn string_drops_by_edge(pl: &IrPipeline, fn_name: &str) -> (usize, usize) {
     let f = pl
         .raw_mir
@@ -78,6 +82,27 @@ fn string_drops_by_edge(pl: &IrPipeline, fn_name: &str) -> (usize, usize) {
         }
     }
     (on_return_edge, on_fall_through)
+}
+
+/// String releases scheduled on every `Return` exit plan of `fn_name`.
+///
+/// The elaborated drop plan is the release authority for an exit edge: an
+/// owner whose generation is live when control leaves the function is
+/// released by its plan entry, not by an instruction the body wrote. A
+/// released frame therefore shows up here even when the instruction stream
+/// carries no `Instr::Drop` for it.
+fn string_releases_on_return_exits(pl: &IrPipeline, fn_name: &str) -> usize {
+    let f = pl
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .expect("function must be present in elaborated_mir");
+    f.drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Return { .. }))
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|drop| drop.ty == ResolvedTy::String)
+        .count()
 }
 
 fn assert_no_nyi(pl: &IrPipeline) {
@@ -562,9 +587,9 @@ fn forawait_early_return_edge_releases_current_iteration() {
         "#,
     );
     assert_no_nyi(&pl);
-    let (return_edge, _) = string_drops_by_edge(&pl, "main");
     assert_eq!(
-        return_edge, 1,
+        string_releases_on_return_exits(&pl, "main"),
+        1,
         "the early-return edge must release exactly the current iteration's \
          received string (0 = the returning iteration leaks; >1 = a second \
          holder was dropped on the same edge)"
@@ -657,12 +682,14 @@ fn forawait_return_forwarded_via_call_escapes_without_release() {
     );
 }
 
-/// `break`-edge analogue of the identity-forwarding shape: the same ledger
-/// emitter (`emit_generator_yield_value_drops_for_exit_edge`) and the same
-/// escape scan protect `break` as `return` — this proves the fix closes
-/// both exit edges, not just the return edge.
+/// `break`-edge analogue of the identity-forwarding shape. The frame binder
+/// carries its own owner generation, and the identity callee retains on
+/// return (`fn wrap` lowers to `string.retain` before its return move), so
+/// `carry` and the binder hold one count each. The break edge releases the
+/// binder's count exactly once; withholding it leaks one count per iteration,
+/// and a second release underflows the buffer `carry` still reads.
 #[test]
-fn forawait_break_forwarded_via_call_escapes_without_release() {
+fn forawait_break_forwarded_via_call_releases_the_binder_count_once() {
     let pl = pipeline_with_tc(
         r#"
         actor Maker {
@@ -691,10 +718,11 @@ fn forawait_break_forwarded_via_call_escapes_without_release() {
     // assertion independent of `carry`'s expected overwrite release.
     let v_place_drops = string_drops_for_call_arg(&pl, "main", "wrap", 0);
     assert_eq!(
-        v_place_drops, 0,
-        "a loop variable forwarded through an identity callee (`wrap`) before \
-         `break` is not on the verified-borrow list; any emitted release of \
-         `v`'s own place double-frees the buffer `carry` now aliases"
+        v_place_drops, 1,
+        "the frame binder forwarded through an identity callee before `break` \
+         owns one count of its own; the break edge must release it exactly \
+         once (0 leaks a count per iteration, >1 underflows the buffer \
+         `carry` reads)"
     );
 }
 
@@ -800,13 +828,14 @@ fn forawait_break_edge_release_survives_sibling_return_path() {
         "#,
     );
     assert_no_nyi(&pl);
-    let (return_edge, fall_through) = string_drops_by_edge(&pl, "main");
     assert_eq!(
-        return_edge, 1,
+        string_releases_on_return_exits(&pl, "main"),
+        1,
         "the return edge releases the current iteration's received string"
     );
     // Body-end release + break-edge release both live in non-Return blocks;
     // they are CFG-mutually-exclusive per iteration.
+    let (_, fall_through) = string_drops_by_edge(&pl, "main");
     assert!(
         fall_through >= 2,
         "both the body-end release and the break-edge release must survive a \

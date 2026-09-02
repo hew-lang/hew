@@ -152,6 +152,10 @@ fn parses_with_continuation(input: &str) -> bool {
         "\n{\n}\n",
         " i64 {\n}\n",
         "\ni64 {\n}\n",
+        // A bare attribute (`#[wire]`, `#[memo]`, …) or `pub` always attaches
+        // to a following item; probe with a stub function to recognize it as
+        // an incomplete-but-continuable buffer rather than invalid input.
+        "\nfn __hew_repl_probe__() {}\n",
     ];
 
     CONTINUATION_SUFFIXES.iter().any(|suffix| {
@@ -269,6 +273,25 @@ mod tests {
         assert!(!has_unclosed_delimiters("fn foo() {}"));
         assert!(!has_unclosed_delimiters("let x = (1 + 2);"));
         assert!(!has_unclosed_delimiters(r#"let s = "hello {world";"#));
+    }
+
+    /// A bare attribute line always attaches to a following item, so it must
+    /// be reported as an incomplete buffer (keep reading more lines) rather
+    /// than an invalid one — an eager flush here strands the attribute on
+    /// its own and the item it decorates in the next chunk, which then fails
+    /// to parse standalone (`hew tool playground-verify` on a `#[wire]`-typed
+    /// example reproduced this before the fix).
+    #[test]
+    fn bare_attribute_line_is_incomplete() {
+        assert_eq!(input_completeness("#[wire]"), InputCompleteness::Incomplete);
+    }
+
+    /// Negative control: a genuinely invalid fragment with no continuation
+    /// that could complete it must still be reported Invalid, not swallowed
+    /// as Incomplete forever.
+    #[test]
+    fn genuinely_invalid_input_stays_invalid() {
+        assert_eq!(input_completeness("fn 123bad"), InputCompleteness::Invalid);
     }
 
     #[test]

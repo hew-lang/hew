@@ -3,7 +3,7 @@ mod support;
 use std::fs;
 use std::process::Command;
 
-use support::hew_binary;
+use support::{hew_binary, require_codegen};
 
 /// Run `hew` in `dir` with an isolated HOME so a developer's real
 /// package-manager config cannot leak defaults into the scaffold.
@@ -300,6 +300,116 @@ fn init_lib_and_actor_conflict_is_rejected() {
         Some(2),
         "conflicting template flags should be a usage error:\nstderr: {}",
         String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[test]
+fn init_bin_scaffold_runs() {
+    require_codegen();
+    let tmp = support::tempdir();
+    let project_dir = tmp.path().join("bin_runs");
+    let init_out = run_hew(tmp.path(), &["init", "bin_runs"]);
+    assert!(
+        init_out.status.success(),
+        "hew init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    let run_out = run_hew(&project_dir, &["run", "main.hew"]);
+    assert!(
+        run_out.status.success(),
+        "`hew run` failed on the freshly-generated bin scaffold:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&run_out.stdout),
+        String::from_utf8_lossy(&run_out.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&run_out.stdout).contains("Hello from bin_runs!"),
+        "bin scaffold should print its greeting; got:\n{}",
+        String::from_utf8_lossy(&run_out.stdout)
+    );
+}
+
+#[test]
+fn init_lib_scaffold_checks() {
+    let tmp = support::tempdir();
+    let project_dir = tmp.path().join("lib_checks");
+    let init_out = run_hew(tmp.path(), &["init", "lib_checks", "--lib"]);
+    assert!(
+        init_out.status.success(),
+        "hew init --lib failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    // A library scaffold has no `main` fn, so `hew check` (not `hew run`) is
+    // the compile step the CLI's own follow-up hint recommends.
+    let check_out = run_hew(&project_dir, &["check", "lib_checks.hew"]);
+    assert!(
+        check_out.status.success(),
+        "`hew check` failed on the freshly-generated lib scaffold:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&check_out.stdout),
+        String::from_utf8_lossy(&check_out.stderr),
+    );
+}
+
+#[test]
+fn init_actor_scaffold_runs() {
+    require_codegen();
+    let tmp = support::tempdir();
+    let project_dir = tmp.path().join("actor_runs");
+    let init_out = run_hew(tmp.path(), &["init", "actor_runs", "--actor"]);
+    assert!(
+        init_out.status.success(),
+        "hew init --actor failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    let run_out = run_hew(&project_dir, &["run", "main.hew"]);
+    assert!(
+        run_out.status.success(),
+        "`hew run` failed on the freshly-generated actor scaffold:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&run_out.stdout),
+        String::from_utf8_lossy(&run_out.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_out.stdout).trim(),
+        "1\n2\n3",
+        "actor scaffold should print each incremented count; got:\n{}",
+        String::from_utf8_lossy(&run_out.stdout)
+    );
+}
+
+/// Negative control: the actor scaffold used to declare its mutable field
+/// with `let`, which the type checker rejects because `receive fn increment`
+/// reassigns it outside `init`. Prove that regression is caught, not just
+/// that the current scaffold happens to compile.
+#[test]
+fn init_actor_scaffold_with_let_field_fails_to_check() {
+    let tmp = support::tempdir();
+    let project_dir = tmp.path().join("actor_broken");
+    let init_out = run_hew(tmp.path(), &["init", "actor_broken", "--actor"]);
+    assert!(
+        init_out.status.success(),
+        "hew init --actor failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    let main_path = project_dir.join("main.hew");
+    let broken =
+        fs::read_to_string(&main_path)
+            .unwrap()
+            .replacen("var count: i32;", "let count: i32;", 1);
+    fs::write(&main_path, broken).unwrap();
+
+    let check_out = run_hew(&project_dir, &["check", "main.hew"]);
+    assert!(
+        !check_out.status.success(),
+        "an actor scaffold with an immutable `let count` field must fail to \
+         check once `receive fn increment` reassigns it"
+    );
+    let stderr = String::from_utf8_lossy(&check_out.stderr);
+    assert!(
+        stderr.contains("immutable"),
+        "checker should reject the reassignment as an immutable-field write; got:\n{stderr}"
     );
 }
 

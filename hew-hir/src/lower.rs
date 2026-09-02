@@ -5898,10 +5898,16 @@ pub fn lower_program_with_mono_cap(
     admit_declared_opaque_resource_lifecycles(
         &items,
         &ctx.opaque_resource_candidates,
+        &ctx.identity,
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
     );
-    admit_resource_record_lifecycles(&items, &mut ctx.type_classes, &mut ctx.diagnostics);
+    admit_resource_record_lifecycles(
+        &items,
+        &ctx.identity,
+        &mut ctx.type_classes,
+        &mut ctx.diagnostics,
+    );
 
     // The language's entry rule is applied here, once: the root compilation
     // unit's monomorphic `main` declaration. Publishing the resolved `DefId`
@@ -5948,11 +5954,32 @@ pub fn lower_program_with_mono_cap(
     }
 }
 
+/// Whether an inherent impl block's receiver names `declaration`.
+///
+/// `HirImplBlock::self_type_name` is the checker's resolved receiver spelling,
+/// and one declaration answers to more than one: a peer file of a directory
+/// module is reachable as `pkg.Response` and, when the file is importable in
+/// its own right, as `pkg.file.Response`. Which spelling reaches the impl
+/// depends on the import route the program took, so the comparison resolves
+/// through the identity table rather than matching the declaration's own
+/// render.
+fn impl_receiver_is(
+    identity: &hew_types::IdentityView,
+    impl_block: &crate::node::HirImplBlock,
+    declaration: &hew_types::DefId,
+) -> bool {
+    impl_block.self_type_name == declaration.full_path()
+        || identity
+            .declaration_by_path(&impl_block.self_type_name)
+            .is_some_and(|resolved| resolved == declaration)
+}
+
 /// Admit field-bearing resource lifecycles while exact HIR declaration and
 /// body identities are simultaneously available. No downstream stage may
 /// reconstruct a close declaration from a record-layout or symbol spelling.
 fn admit_resource_record_lifecycles(
     items: &[HirItem],
+    identity: &hew_types::IdentityView,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -5972,7 +5999,7 @@ fn admit_resource_record_lifecycles(
             .filter_map(|item| match item {
                 HirItem::Impl(impl_block)
                     if impl_block.trait_name.is_none()
-                        && impl_block.self_type_name == exact_owner =>
+                        && impl_receiver_is(identity, impl_block, &decl.declaration) =>
                 {
                     Some(impl_block)
                 }
@@ -6280,6 +6307,7 @@ fn admit_opaque_resource_lifecycles(
 fn admit_declared_opaque_resource_lifecycles(
     items: &[HirItem],
     graph: &hew_types::OpaqueResourceCandidateGraph,
+    identity: &hew_types::IdentityView,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -6330,7 +6358,7 @@ fn admit_declared_opaque_resource_lifecycles(
             .filter_map(|item| match item {
                 HirItem::Impl(impl_block)
                     if impl_block.trait_name.is_none()
-                        && impl_block.self_type_name == exact_owner =>
+                        && impl_receiver_is(identity, impl_block, &decl.declaration) =>
                 {
                     Some(impl_block)
                 }
@@ -38124,7 +38152,12 @@ impl Widget {
         });
         let mut table = crate::TypeClassTable::default();
         let mut diagnostics = Vec::new();
-        admit_resource_record_lifecycles(&items, &mut table, &mut diagnostics);
+        admit_resource_record_lifecycles(
+            &items,
+            &hew_types::IdentityView::default(),
+            &mut table,
+            &mut diagnostics,
+        );
         assert!(table
             .lifecycle_registry()
             .resource_record(&resource_declaration)
@@ -41231,6 +41264,7 @@ impl Widget {
         admit_declared_opaque_resource_lifecycles(
             &items,
             &graph,
+            &hew_types::IdentityView::default(),
             &mut type_classes,
             &mut diagnostics,
         );

@@ -60,7 +60,19 @@ impl Checker {
             ))
             .cloned()
             .or_else(|| {
-                let declaring_trait = self.trait_ref_lookup_key(trait_name);
+                // `trait_method_ids` is keyed by the trait method's minted
+                // path, so the trait reference has to be resolved to the
+                // trait's own identity first: a `trait_defs` key is a
+                // registry spelling and a flat-imported trait is registered
+                // under its bare name while the declaration renders under the
+                // file that declares it.
+                let lookup_key = self.trait_ref_lookup_key(trait_name);
+                let declaring_trait = self
+                    .identity
+                    .declaration_by_path(&lookup_key)
+                    .map_or(lookup_key, |declaration| {
+                        declaration.full_path().to_string()
+                    });
                 self.trait_method_ids
                     .get(&format!("{declaring_trait}::{method_name}"))
                     .cloned()

@@ -4,7 +4,10 @@
 use std::fmt::Write as _;
 
 use hew_hir::{lower_program_host_target, HirModule, ResolutionCtx};
-use hew_sir::{dump_lowering, lower_module, verify_module, LoweredModule, SirLoweringStatus};
+use hew_sir::{
+    dump_lowering, lower_module, lower_module_with_demand, verify_module, LoweredModule,
+    SirLoweringDemand, SirLoweringStatus,
+};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn lower_hir(source: &str) -> HirModule {
@@ -33,7 +36,7 @@ fn status_of<'a>(lowered: &'a LoweredModule, name: &str) -> &'a SirLoweringStatu
     lowered
         .statuses
         .iter()
-        .find_map(|(candidate, status)| (candidate == name).then_some(status))
+        .find_map(|source| (source.name == name).then_some(&source.status))
         .unwrap_or_else(|| panic!("source must declare `{name}`"))
 }
 
@@ -214,4 +217,85 @@ fn a_module_without_an_entry_lowers_no_bodies_and_says_why() {
             .collect::<Vec<_>>()
     );
     assert!(dump_lowering(&lowered).contains("; no entry callable"));
+}
+
+/// Every-callable demand is the coverage question: it lowers bodies the entry
+/// never reaches and names the refusal for a header the table would not
+/// admit. Entry demand over the same source is the control: it must keep
+/// reporting all three as unreached, because nothing about the compile route
+/// moved.
+#[test]
+fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
+    let source = format!(
+        r"
+        fn stranded_ok(value: i64) -> i64 {{
+            value + 1
+        }}
+
+        fn stranded_bad(value: i64) -> i64 {{
+            {UNSUPPORTED_BODY}
+        }}
+
+        fn refused_header(text: string) -> i64 {{
+            text.len()
+        }}
+
+        fn main() -> i64 {{
+            0
+        }}
+        "
+    );
+    let hir = lower_hir(&source);
+
+    let entry = lower_module(&hir);
+    for name in ["stranded_ok", "stranded_bad", "refused_header"] {
+        assert!(
+            matches!(status_of(&entry, name), SirLoweringStatus::NotReached),
+            "entry demand must leave `{name}` unreached: {:#?}",
+            entry.statuses
+        );
+    }
+
+    let every = lower_module_with_demand(&hir, SirLoweringDemand::EveryCallable);
+    assert!(
+        matches!(status_of(&every, "main"), SirLoweringStatus::Lowered),
+        "{:#?}",
+        every.statuses
+    );
+    assert!(
+        matches!(status_of(&every, "stranded_ok"), SirLoweringStatus::Lowered),
+        "an unreached but admissible body must be lowered on demand: {:#?}",
+        every.statuses
+    );
+    assert!(
+        matches!(
+            status_of(&every, "stranded_bad"),
+            SirLoweringStatus::Unsupported { .. }
+        ),
+        "an unreached body outside the surface must report why: {:#?}",
+        every.statuses
+    );
+    let SirLoweringStatus::Unsupported { reason } = status_of(&every, "refused_header") else {
+        panic!(
+            "a refused header must surface its refusal under every-callable demand: {:#?}",
+            every.statuses
+        );
+    };
+    assert!(
+        reason.contains("string"),
+        "the refusal must name the offending parameter type: {reason}"
+    );
+    let stranded = &every
+        .statuses
+        .iter()
+        .find(|status| status.name == "stranded_ok")
+        .expect("stranded_ok is declared")
+        .declaration;
+    assert!(
+        matches!(
+            every.status_for_declaration(stranded),
+            Some(SirLoweringStatus::Lowered)
+        ),
+        "statuses must be addressable by declaration identity"
+    );
 }

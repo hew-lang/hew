@@ -49,8 +49,8 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
                 lowered
                     .statuses
                     .iter()
-                    .find(|(candidate, _)| candidate == name),
-                Some((_, SirLoweringStatus::Lowered))
+                    .find(|source| source.name == name).map(|source| &source.status),
+                Some(SirLoweringStatus::Lowered)
             )
         }),
         "the selected root call graph must lower even though unrelated stdlib bodies remain unsupported: {:#?}",
@@ -199,8 +199,8 @@ fn scalar_binding_and_explicit_return_transfers_lower_without_erasing_resource_r
         lowered
             .statuses
             .iter()
-            .filter(|(name, _)| name == "f" || name == "main")
-            .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
+            .filter(|source| source.name == "f" || source.name == "main")
+            .all(|source| matches!(source.status, SirLoweringStatus::Lowered)),
         "BitCopy binding/return transfers must be admitted without a legacy fallback: {:#?}",
         lowered.statuses
     );
@@ -240,8 +240,8 @@ fn unit_direct_call_in_an_explicit_return_is_a_control_transfer_not_a_discarded_
         lowered
             .statuses
             .iter()
-            .filter(|(name, _)| name == "unit_helper" || name == "main")
-            .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
+            .filter(|source| source.name == "unit_helper" || source.name == "main")
+            .all(|source| matches!(source.status, SirLoweringStatus::Lowered)),
         "a Unit direct call returned to the caller must not be rejected as a discarded Read: {:#?}",
         lowered.statuses
     );
@@ -297,8 +297,8 @@ fn recursive_scalar_call_resolves_to_its_own_callable_id() {
         lowered
             .statuses
             .iter()
-            .filter(|(name, _)| name == "main" || name == "countdown")
-            .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
+            .filter(|source| source.name == "main" || source.name == "countdown")
+            .all(|source| matches!(source.status, SirLoweringStatus::Lowered)),
         "recursive scalar fixture must lower as a closed SIR graph: {:#?}",
         lowered.statuses
     );
@@ -388,14 +388,12 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
                 lowered
                     .statuses
                     .iter()
-                    .find(|(candidate, _)| candidate == name),
-                Some((
-                    _,
-                    SirLoweringStatus::GenericTemplate {
-                        failed_instances: 0,
-                        ..
-                    }
-                ))
+                    .find(|source| source.name == name)
+                    .map(|source| &source.status),
+                Some(SirLoweringStatus::GenericTemplate {
+                    failed_instances: 0,
+                    ..
+                })
             ),
             "generic HIR origin `{name}` must remain a template, not an abstract SIR body: {:#?}",
             lowered.statuses
@@ -405,8 +403,9 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         lowered
             .statuses
             .iter()
-            .find(|(candidate, _)| candidate == "main"),
-        Some((_, SirLoweringStatus::Lowered))
+            .find(|source| source.name == "main")
+            .map(|source| &source.status),
+        Some(SirLoweringStatus::Lowered)
     ));
     assert_eq!(
         lowered.module.generic_templates.len(),

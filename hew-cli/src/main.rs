@@ -20,6 +20,7 @@
 //! hew add <pkg> / hew install / …  # Package-manager commands (see hew --help)
 //! hew tool compile file.hew        # Run the v0.5 IR ladder and emit native or WASM
 //! hew tool playground-verify       # Verify runnable playground examples
+//! hew tool sir-coverage <paths>    # Report which functions SIR admits
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
 //! hew observe [args...]             # Launch the TUI actor observer (delegates to hew-observe)
@@ -46,6 +47,7 @@ mod router;
 mod run_temp;
 #[cfg(unix)]
 mod signal;
+mod sir_coverage;
 mod target;
 mod test_runner;
 mod util;
@@ -295,7 +297,7 @@ fn lower_verified_hir_to_pipeline(
             let session = compiler_session(target);
             let component = session.lower_sir_module(&sir.module).map_err(|error| {
                 eprintln!("SIR strict lowering failed: {error}");
-                report_strict_sir_missing_body(module, &sir, error.missing_body);
+                report_strict_sir_missing_body(&sir, error.missing_body);
             })?;
             let callables = component.callables().to_vec();
             let pipeline = component.into_pipeline();
@@ -314,9 +316,9 @@ fn lower_verified_hir_to_pipeline(
 /// The resolved [`hew_sir::CallableId`] comes from the component lowerer, not
 /// its display text. This keeps the diagnostic useful for both an unsupported
 /// entry body and an unsupported direct callee while making the no-fallback
-/// policy explicit at the driver boundary.
+/// policy explicit at the driver boundary. The source-level fallback joins on
+/// the callable's declaration identity, never on item position.
 fn report_strict_sir_missing_body(
-    module: &hew_hir::HirModule,
     sir: &hew_sir::LoweredModule,
     missing_body: Option<hew_sir::CallableId>,
 ) {
@@ -326,33 +328,8 @@ fn report_strict_sir_missing_body(
     let Some(callable) = sir.module.callable(missing_body) else {
         return;
     };
-    let reason = match sir.status_for_callable(missing_body) {
-        Some(hew_sir::SirLoweringStatus::Unsupported { reason }) => Some(reason.as_str()),
-        Some(
-            hew_sir::SirLoweringStatus::Lowered
-            | hew_sir::SirLoweringStatus::GenericTemplate { .. }
-            | hew_sir::SirLoweringStatus::NotReached,
-        )
-        | None => module
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                hew_hir::HirItem::Function(function) => Some(function),
-                _ => None,
-            })
-            .zip(&sir.statuses)
-            .find_map(|(function, (_, status))| {
-                if function.id != callable.function {
-                    return None;
-                }
-                match status {
-                    hew_sir::SirLoweringStatus::Unsupported { reason } => Some(reason.as_str()),
-                    hew_sir::SirLoweringStatus::Lowered
-                    | hew_sir::SirLoweringStatus::GenericTemplate { .. }
-                    | hew_sir::SirLoweringStatus::NotReached => None,
-                }
-            }),
-    };
+    let reason = sir_unsupported_reason(sir.status_for_callable(missing_body))
+        .or_else(|| sir_unsupported_reason(sir.status_for_declaration(&callable.declaration)));
     match reason {
         Some(reason) => eprintln!(
             "SIR strict lowering: `{}` is outside the current semantic surface: {reason}; no legacy MIR fallback was used",
@@ -362,6 +339,19 @@ fn report_strict_sir_missing_body(
             "SIR strict lowering: `{}` has no SIR body; no legacy MIR fallback was used",
             callable.symbol
         ),
+    }
+}
+
+/// The refusal text behind a lowering status, when the status is a refusal.
+fn sir_unsupported_reason(status: Option<&hew_sir::SirLoweringStatus>) -> Option<&str> {
+    match status {
+        Some(hew_sir::SirLoweringStatus::Unsupported { reason }) => Some(reason.as_str()),
+        Some(
+            hew_sir::SirLoweringStatus::Lowered
+            | hew_sir::SirLoweringStatus::GenericTemplate { .. }
+            | hew_sir::SirLoweringStatus::NotReached,
+        )
+        | None => None,
     }
 }
 
@@ -1598,13 +1588,18 @@ fn report_sir_lane(report: &SirLaneReport) {
         .sir
         .statuses
         .iter()
-        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::Lowered))
+        .filter(|source| matches!(source.status, hew_sir::SirLoweringStatus::Lowered))
         .count();
     let sir_templates = report
         .sir
         .statuses
         .iter()
-        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::GenericTemplate { .. }))
+        .filter(|source| {
+            matches!(
+                source.status,
+                hew_sir::SirLoweringStatus::GenericTemplate { .. }
+            )
+        })
         .count();
     // Reaching this function means the strict component lowered, so no
     // demanded body failed. What remains to account for is the declarations
@@ -1613,7 +1608,7 @@ fn report_sir_lane(report: &SirLaneReport) {
         .sir
         .statuses
         .iter()
-        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::NotReached))
+        .filter(|source| matches!(source.status, hew_sir::SirLoweringStatus::NotReached))
         .count();
     eprintln!(
         "SIR lower: selected {} verified callable(s) from {sir_lowered} monomorphic HIR body/bodies and {sir_templates} generic template(s) across {} HIR function declaration(s); no legacy MIR bodies were lowered",
@@ -1636,17 +1631,22 @@ fn report_sir_inspection(sir: &hew_sir::LoweredModule) {
     let lowered = sir
         .statuses
         .iter()
-        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::Lowered))
+        .filter(|source| matches!(source.status, hew_sir::SirLoweringStatus::Lowered))
         .count();
     let templates = sir
         .statuses
         .iter()
-        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::GenericTemplate { .. }))
+        .filter(|source| {
+            matches!(
+                source.status,
+                hew_sir::SirLoweringStatus::GenericTemplate { .. }
+            )
+        })
         .count();
     let not_reached = sir
         .statuses
         .iter()
-        .filter(|(_, status)| matches!(status, hew_sir::SirLoweringStatus::NotReached))
+        .filter(|source| matches!(source.status, hew_sir::SirLoweringStatus::NotReached))
         .count();
     eprintln!(
         "SIR inspect: verified {lowered} monomorphic HIR body/bodies and registered {templates} generic template(s) across {} HIR function declaration(s); emitted {} concrete SIR body/bodies; {not_reached} declaration(s) the entry never reached",

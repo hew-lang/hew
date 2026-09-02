@@ -20,6 +20,7 @@ pub(crate) trait CommandDispatcher {
     fn fmt(&mut self, args: &args::FmtArgs);
     fn init(&mut self, args: &args::InitArgs);
     fn playground_verify(&mut self, args: &args::PlaygroundVerifyArgs);
+    fn sir_coverage(&mut self, args: &args::SirCoverageArgs);
     fn completions(&mut self, args: &args::CompletionsArgs);
     fn version(&mut self);
     fn help(&mut self);
@@ -87,6 +88,13 @@ impl CommandDispatcher for MainCommandDispatcher {
         crate::playground::cmd_playground_verify(args);
     }
 
+    fn sir_coverage(&mut self, args: &args::SirCoverageArgs) {
+        let code = crate::sir_coverage::cmd_sir_coverage(args);
+        if code != 0 {
+            std::process::exit(code);
+        }
+    }
+
     fn completions(&mut self, args: &args::CompletionsArgs) {
         crate::cmd_completions(args);
     }
@@ -141,6 +149,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Tool(tool)) => match &tool.command {
             ToolSubcommand::Compile(args) => dispatcher.compile(args),
             ToolSubcommand::PlaygroundVerify(args) => dispatcher.playground_verify(args),
+            ToolSubcommand::SirCoverage(args) => dispatcher.sir_coverage(args),
         },
         Some(Command::Completions(args)) => dispatcher.completions(args),
         Some(Command::Version) => dispatcher.version(),
@@ -313,6 +322,9 @@ mod tests {
                 crate::args::ToolSubcommand::Compile(compile) => compile,
                 crate::args::ToolSubcommand::PlaygroundVerify(_) => {
                     panic!("expected a compile command, got playground-verify")
+                }
+                crate::args::ToolSubcommand::SirCoverage(_) => {
+                    panic!("expected a compile command, got sir-coverage")
                 }
             },
             other => panic!("expected a compile command, got {other:?}"),
@@ -545,6 +557,10 @@ mod tests {
 
         fn playground_verify(&mut self, _args: &crate::args::PlaygroundVerifyArgs) {
             self.calls.push("playground-verify".to_string());
+        }
+
+        fn sir_coverage(&mut self, _args: &crate::args::SirCoverageArgs) {
+            self.calls.push("sir-coverage".to_string());
         }
 
         fn completions(&mut self, args: &CompletionsArgs) {

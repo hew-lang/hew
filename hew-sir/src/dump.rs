@@ -17,11 +17,11 @@ pub fn dump_lowering(lowered: &LoweredModule) -> String {
             "; no entry callable: this module is not a program, so no body was demanded\n",
         );
     }
-    for (name, status) in &lowered.statuses {
-        let SirLoweringStatus::Unsupported { reason } = status else {
+    for source in &lowered.statuses {
+        let SirLoweringStatus::Unsupported { reason } = &source.status else {
             continue;
         };
-        writeln!(out, "; fn {name}").expect("write to String");
+        writeln!(out, "; fn {}", source.name).expect("write to String");
         writeln!(out, "; unsupported: {reason}").expect("write to String");
     }
     // Concrete generic instances have no HIR declaration of their own, so

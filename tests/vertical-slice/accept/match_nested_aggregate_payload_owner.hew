@@ -1,0 +1,69 @@
+// A payload bound out of an inline enum FIELD is the sole owner of that
+// field's heap whatever the payload's SHAPE. #3090 proved the direct handle
+// (`Option<Vec<T>>`); an aggregate payload that owns a handle through a record
+// or a tuple is byte-copied into the binder with no per-leaf retain, so the
+// parent must not release it a second time (#3168).
+//
+// Reading the parent's OTHER field after the destructure leaks it today, on
+// this shape and on the direct-handle shape #3090 already fixed. That is the
+// payload handoff retiring the whole root generation rather than the exact
+// moved leaf; it is a leak, not a double free, and it is tracked separately.
+import std.string;
+
+type Inner { v: Vec<i64>; }
+
+type OuterRecord {
+    other: Vec<i64>;
+    value: Option<Inner>;
+}
+
+type OuterTuple {
+    other: Vec<i64>;
+    value: Option<(Vec<i64>, i64)>;
+}
+
+// A `string` payload is the negative control: it is copy-on-write, so the
+// binder takes a balanced share of its own and the parent KEEPS its cleanup.
+// Suppressing the parent here would leak `other`.
+type Retained { s: string; }
+
+type OuterRetained {
+    other: Vec<i64>;
+    value: Option<Retained>;
+}
+
+fn main() {
+    // Nested record payload: the binder owns `inner.v`, and `other` is still
+    // released exactly once when `p` goes out of scope.
+    let p = OuterRecord { other: [7], value: Some(Inner { v: [1, 2] }) };
+    match p.value {
+        .Some(inner) => println(inner.v[0] + inner.v[1]),
+        .None => println("none"),
+    }
+    println(p.other[0]);
+
+    // Nested tuple payload: same handoff through a tuple rather than a record.
+    let t = OuterTuple { other: [7, 8], value: Some(([1, 2], 9)) };
+    match t.value {
+        .Some(pair) => println(pair.0[0] + pair.0[1] + pair.1),
+        .None => println("none"),
+    }
+    println(t.other[0] + t.other[1]);
+
+    // Retained payload control: the parent still owns everything it started
+    // with, so both its fields survive the destructure.
+    let r = OuterRetained { other: [4, 5], value: Some(Retained { s: string.repeat("z", 40) }) };
+    match r.value {
+        .Some(held) => println(held.s.len()),
+        .None => println("none"),
+    }
+    println(r.other[0] + r.other[1]);
+
+    // The vacant arm hands out no payload at all: the record keeps both fields.
+    let empty = OuterRecord { other: [3], value: None };
+    match empty.value {
+        .Some(inner) => println(inner.v[0]),
+        .None => println("none"),
+    }
+    println(empty.other[0]);
+}

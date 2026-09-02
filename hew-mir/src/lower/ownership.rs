@@ -3739,15 +3739,13 @@ impl Builder {
     /// payload has no retain, so the binder and the parent would otherwise
     /// both release it.
     ///
-    /// SHORTCUT - WHY: only a DIRECT handle payload is proven here. A payload
-    /// that is itself an aggregate owning a handle (`Option<Inner>` where
-    /// `Inner` holds a `Vec`) classifies `ByteCopyAlias` and answers `false`,
-    /// so it keeps today's competing release (#3168). Widening it needs a
-    /// transfer authority for the nested aggregate, not just its root, which
-    /// is more than the reported class asks for. WHEN OBSOLETE: once a nested
-    /// aggregate payload carries its own handoff authority. WHAT: recurse this
-    /// classification through `ByteCopyAlias` payloads and publish the
-    /// transfer for the exact nested leaf rather than the root generation.
+    /// A payload that is itself an inline aggregate (`Option<Inner>` where
+    /// `Inner` holds a `Vec`, `Option<(Vec<i64>, i64)>`) is byte-copied whole
+    /// into the binder with no per-leaf retain, so a handle reached THROUGH
+    /// that aggregate is handed over just as a direct handle payload is. The
+    /// walk therefore recurses through the `ByteCopyAlias` class and stops at
+    /// the first `HandleTransfer` leaf; `Retained` leaves keep their balanced
+    /// share and never make the payload a handoff.
     fn projected_enum_payload_is_handle_transfer(
         &self,
         ty: &ResolvedTy,
@@ -3759,16 +3757,82 @@ impl Builder {
         let Some(layout) = crate::model::find_enum_layout(name, args, &self.enum_layouts) else {
             return Ok(false);
         };
-        for field_ty in layout
+        let payload_tys: Vec<ResolvedTy> = layout
             .variants
             .iter()
             .flat_map(|variant| variant.field_tys.iter())
-        {
-            if self.classify_field_load(field_ty)? == Some(FieldLoadClass::HandleTransfer) {
+            .cloned()
+            .collect();
+        for field_ty in &payload_tys {
+            if self.load_reaches_handle_transfer(field_ty)? {
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+
+    /// Whether loading a value of `ty` out of its carrier moves a bare heap
+    /// handle the carrier no longer owns, directly or through inline
+    /// aggregates.
+    ///
+    /// `HandleTransfer` answers yes at the leaf. `ByteCopyAlias` is a memcpy
+    /// of a record / tuple / array / inline-enum member: the copy performs no
+    /// retain on anything it contains, so the question recurses to the
+    /// members. Every other class (`Retained`, and the heap-free `None`) keeps
+    /// the carrier's cleanup intact and answers no.
+    ///
+    /// The recursion terminates because it descends only inline aggregates,
+    /// whose members are strictly smaller in the layout; an indirect
+    /// (heap-boxed) enum node classifies `HandleTransfer` and stops the walk
+    /// at its own edge rather than opening its variants.
+    fn load_reaches_handle_transfer(
+        &self,
+        ty: &ResolvedTy,
+    ) -> Result<bool, crate::state_clone::ClassificationError> {
+        let subst = self.subst_ty(ty);
+        match self.classify_field_load(&subst)? {
+            Some(FieldLoadClass::HandleTransfer) => return Ok(true),
+            Some(FieldLoadClass::ByteCopyAlias) => {}
+            Some(FieldLoadClass::Retained) | None => return Ok(false),
+        }
+        for member_ty in self.inline_aggregate_member_tys(&subst) {
+            if self.load_reaches_handle_transfer(&member_ty)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The member types a `ByteCopyAlias` aggregate copies as one unit: record
+    /// fields in declaration order, tuple elements, the array element, or
+    /// every inline-enum variant payload. Registry lookups go through the
+    /// shared [`crate::model::MirHeapLayouts`] adapter so this walk reads the
+    /// same record/enum keys the heap-ownership authority does — a generic
+    /// record's fields are found under the mangled key, not missed. An
+    /// unregistered name yields no members, which keeps the recursion above
+    /// conservative in the safe direction: no transfer published, today's
+    /// release posture kept.
+    fn inline_aggregate_member_tys(&self, ty: &ResolvedTy) -> Vec<ResolvedTy> {
+        use crate::model::HeapOwnershipLayouts as _;
+        let layouts = crate::model::MirHeapLayouts {
+            record_field_orders: &self.record_field_orders,
+            enum_layouts: &self.enum_layouts,
+        };
+        match ty {
+            ResolvedTy::Tuple(elems) => elems.clone(),
+            ResolvedTy::Array(elem, _) => vec![(**elem).clone()],
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                ..
+            } => layouts
+                .enum_variant_field_tys(name, args)
+                .map(|variants| variants.into_iter().flatten().collect())
+                .or_else(|| layouts.record_field_tys(name, args, *builtin))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 
     fn publish_projection_source_transfer(&mut self, value: &HirExpr) {

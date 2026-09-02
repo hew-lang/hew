@@ -68,8 +68,8 @@
 //!     let t = template.parse("Hello {{.name}}, age {{.age}}!");
 //!     let result = template.render_try(t, ctx);
 //!     match result {
-//!         Ok(s) => println(s),
-//!         Err(e) => println(e),
+//!         .Ok(s) => println(s),
+//!         .Err(_e) => println("template render failed"),
 //!     }
 //! }
 //! ```
@@ -573,7 +573,12 @@ pub fn new_ctx() -> Ctx {
 /// # Examples
 ///
 /// ```
-/// template.ctx_set_str(ctx, "name", "Alice");
+/// import std.text.template;
+///
+/// fn main() {
+///     let ctx = template.new_ctx();
+///     template.ctx_set_str(ctx, "name", "Alice");
+/// }
 /// ```
 pub fn ctx_set_str(ctx: Ctx, key: string, val: string) {
     ctx.skeys.push(key);
@@ -585,7 +590,12 @@ pub fn ctx_set_str(ctx: Ctx, key: string, val: string) {
 /// # Examples
 ///
 /// ```
-/// template.ctx_set_int(ctx, "count", 42);
+/// import std.text.template;
+///
+/// fn main() {
+///     let ctx = template.new_ctx();
+///     template.ctx_set_int(ctx, "count", 42);
+/// }
 /// ```
 pub fn ctx_set_int(ctx: Ctx, key: string, val: i64) {
     ctx.skeys.push(key);
@@ -597,7 +607,12 @@ pub fn ctx_set_int(ctx: Ctx, key: string, val: i64) {
 /// # Examples
 ///
 /// ```
-/// template.ctx_set_bool(ctx, "active", true);
+/// import std.text.template;
+///
+/// fn main() {
+///     let ctx = template.new_ctx();
+///     template.ctx_set_bool(ctx, "active", true);
+/// }
 /// ```
 pub fn ctx_set_bool(ctx: Ctx, key: string, val: bool) {
     ctx.skeys.push(key);
@@ -615,10 +630,15 @@ pub fn ctx_set_bool(ctx: Ctx, key: string, val: bool) {
 /// # Examples
 ///
 /// ```
-/// let colours: Vec<string> = Vec.new();
-/// colours.push("red");
-/// colours.push("blue");
-/// template.ctx_set_list(ctx, "colours", colours);
+/// import std.text.template;
+///
+/// fn main() {
+///     let ctx = template.new_ctx();
+///     let colours: Vec<string> = Vec.new();
+///     colours.push("red");
+///     colours.push("blue");
+///     template.ctx_set_list(ctx, "colours", colours);
+/// }
 /// ```
 pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
     let n = items.len();
@@ -648,8 +668,8 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
 ///     let t = template.parse("hello {{.who}}!");
 ///     let r = template.render_try(t, ctx);
 ///     match r {
-///         Ok(s) => println(s),    // "hello world!"
-///         Err(_) => println("template error"),
+///         .Ok(s) => println(s),    // "hello world!"
+///         .Err(_) => println("template error"),
 ///     }
 /// }
 /// ```

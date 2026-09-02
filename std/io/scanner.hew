@@ -30,8 +30,8 @@
 //!
 //! fn main() {
 //!     let ls = scanner.lines("foo\nbar\nbaz");
-//!     for i in 0 .. ls.len() {
-//!         println(ls.get(i));
+//!     for l in ls {
+//!         println(l);
 //!     }
 //! }
 //! ```
@@ -48,7 +48,7 @@
 //!
 //! fn main() {
 //!     match scanner.from_file("input.txt") {
-//!         Ok(sc0) => {
+//!         .Ok(sc0) => {
 //!             var sc = sc0;
 //!             sc = scanner.scan(sc);
 //!             while scanner.has_next(sc) {
@@ -56,7 +56,7 @@
 //!                 sc = scanner.scan(sc);
 //!             }
 //!         },
-//!         Err(e) => panic(fs.io_error_message(e)),
+//!         .Err(e) => panic(fs.io_error_message(e)),
 //!     }
 //! }
 //! ```
@@ -156,7 +156,7 @@ pub fn from_file(path: string) -> Result<Scanner, fs.IoError> {
 ///
 /// fn main() {
 ///     var sc = scanner.from_string("one two  three");
-///     sc = scanner.with_split(sc, scanner.SplitWords);
+///     sc = scanner.with_split(sc, scanner.SplitMode.SplitWords);
 ///     sc = scanner.scan(sc);
 ///     while scanner.has_next(sc) {
 ///         println(scanner.text(sc));

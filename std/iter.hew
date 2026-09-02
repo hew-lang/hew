@@ -7,7 +7,17 @@
 //! through chained constructor calls:
 //!
 //! ```
-//! let doubled_first_two = iter.take(iter.map(it, |x: i64| x * 2), 2);
+//! import std.iter;
+//!
+//! fn main() {
+//!     let v: Vec<i64> = Vec.new();
+//!     v.push(1);
+//!     v.push(2);
+//!     v.push(3);
+//!     let it = v.iter();
+//!     let doubled_first_two = iter.take(iter.map(it, |x: i64| x * 2), 2);
+//!     println(iter.collect(doubled_first_two).len());  // 2
+//! }
 //! ```
 //!
 //! `Iterator.next` takes a mutable receiver (`fn next(var self) -> Option<Self.Item>`).

@@ -37,8 +37,8 @@
 //!     tx.close();
 //!
 //!     match rx.recv() {
-//!         Some(msg) => println(msg),  // hello
-//!         None => println("closed"),
+//!         .Some(msg) => println(msg),  // hello
+//!         .None => println("closed"),
 //!     }
 //!     rx.close();
 //! }
@@ -160,9 +160,16 @@ impl ReceiverMethods for Receiver {
 /// # Examples
 ///
 /// ```
-/// let (tx, rx) = channel.new(16);
-/// tx.send("hello");       // infers Sender<string>
-/// println(rx.recv());     // infers Receiver<string>
+/// import std.channel.channel;
+///
+/// fn main() {
+///     let (tx, rx) = channel.new(16);
+///     tx.send("hello");       // infers Sender<string>
+///     match rx.recv() {       // infers Receiver<string>
+///         .Some(v) => println(v),  // hello
+///         .None => println("closed"),
+///     }
+/// }
 /// ```
 pub fn new(capacity: i64) -> (Sender, Receiver) {
     match try_new(capacity) {

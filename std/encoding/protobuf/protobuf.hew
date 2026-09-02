@@ -117,9 +117,13 @@ impl Message {
 /// # Examples
 ///
 /// ```
-/// let msg = protobuf.new();
-/// msg.set_varint(1, 100);
-/// msg.close();
+/// import std.encoding.protobuf;
+///
+/// fn main() {
+///     let msg = protobuf.new();
+///     msg.set_varint(1, 100);
+///     msg.close();
+/// }
 /// ```
 pub fn new() -> Message {
     unsafe {

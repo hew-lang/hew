@@ -176,8 +176,12 @@ impl HistogramMethods for Histogram {
 /// # Examples
 ///
 /// ```
-/// let hits = metrics.counter("app.cache_hits");
-/// hits.inc();
+/// import std.metrics;
+///
+/// fn main() {
+///     let hits = metrics.counter("app.cache_hits");
+///     hits.inc();
+/// }
 /// ```
 pub fn counter(name: string) -> Counter {
     let id = unsafe {

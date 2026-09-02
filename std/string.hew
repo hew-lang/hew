@@ -24,7 +24,11 @@
 /// # Examples
 ///
 /// ```
-/// let s = string.from_int(42);  // "42"
+/// import std.string;
+///
+/// fn main() {
+///     let s = string.from_int(42);  // "42"
+/// }
 /// ```
 pub fn from_int(n: i64) -> string {
     f"{n}"
@@ -49,7 +53,11 @@ pub fn from_bool(b: bool) -> string {
 /// # Examples
 ///
 /// ```
-/// let newline = string.from_char(10);
+/// import std.string;
+///
+/// fn main() {
+///     let newline = string.from_char(10);
+/// }
 /// ```
 pub fn from_char(code: i64) -> string {
     if code < 0 || code > 0x10FFFF || code >= 0xD800 && code <= 0xDFFF {
@@ -73,10 +81,14 @@ pub fn from_char(code: i64) -> string {
 /// # Examples
 ///
 /// ```
-/// let n = string.to_int("42");     // Some(42)
-/// let z = string.to_int("0");      // Some(0)
-/// let m = string.to_int("42abc");  // None — partial numbers do not parse
-/// let e = string.to_int("");       // None
+/// import std.string;
+///
+/// fn main() {
+///     let n = string.to_int("42");     // Some(42)
+///     let z = string.to_int("0");      // Some(0)
+///     let m = string.to_int("42abc");  // None — partial numbers do not parse
+///     let e = string.to_int("");       // None
+/// }
 /// ```
 pub fn to_int(s: string) -> Option<i64> {
     match try_to_int(s) {
@@ -147,9 +159,13 @@ pub fn try_to_int(s: string) -> Result<i64, string> {
 /// # Examples
 ///
 /// ```
-/// let pi = string.to_float("3.14");   // 3.14
-/// let n = string.to_float("-2e3");    // -2000.0
-/// let z = string.to_float("3.14x");   // 0.0
+/// import std.string;
+///
+/// fn main() {
+///     let pi = string.to_float("3.14");   // 3.14
+///     let n = string.to_float("-2e3");    // -2000.0
+///     let z = string.to_float("3.14x");   // 0.0
+/// }
 /// ```
 pub fn to_float(s: string) -> f64 {
     match try_to_float(s) {
@@ -431,8 +447,12 @@ fn digit_to_float(digit: i64) -> f64 {
 /// # Examples
 ///
 /// ```
-/// string.is_empty("")    // true
-/// string.is_empty("hi")  // false
+/// import std.string;
+///
+/// fn main() {
+///     println(string.is_empty(""));   // true
+///     println(string.is_empty("hi"));   // false
+/// }
 /// ```
 pub fn is_empty(s: string) -> bool {
     s.is_empty()
@@ -443,7 +463,11 @@ pub fn is_empty(s: string) -> bool {
 /// # Examples
 ///
 /// ```
-/// let stars = string.repeat("*", 5);  // "*****"
+/// import std.string;
+///
+/// fn main() {
+///     let stars = string.repeat("*", 5);  // "*****"
+/// }
 /// ```
 pub fn repeat(s: string, n: i64) -> string {
     s.repeat(n)
@@ -456,8 +480,12 @@ pub fn repeat(s: string, n: i64) -> string {
 /// # Examples
 ///
 /// ```
-/// string.pad_left("42", 5, " ")   // "   42"
-/// string.pad_left("42", 5, "0")   // "00042"
+/// import std.string;
+///
+/// fn main() {
+///     println(string.pad_left("42", 5, " "));   // "   42"
+///     println(string.pad_left("42", 5, "0"));   // "00042"
+/// }
 /// ```
 pub fn pad_left(s: string, width: i64, pad: string) -> string {
     let pad_len = pad.char_count_utf8();
@@ -478,7 +506,11 @@ pub fn pad_left(s: string, width: i64, pad: string) -> string {
 /// # Examples
 ///
 /// ```
-/// string.pad_right("hi", 5, " ")  // "hi   "
+/// import std.string;
+///
+/// fn main() {
+///     println(string.pad_right("hi", 5, " "));   // "hi   "
+/// }
 /// ```
 pub fn pad_right(s: string, width: i64, pad: string) -> string {
     let pad_len = pad.char_count_utf8();
@@ -499,9 +531,13 @@ pub fn pad_right(s: string, width: i64, pad: string) -> string {
 /// # Examples
 ///
 /// ```
-/// string.is_numeric("123")   // true
-/// string.is_numeric("12a")   // false
-/// string.is_numeric("")      // false
+/// import std.string;
+///
+/// fn main() {
+///     println(string.is_numeric("123"));   // true
+///     println(string.is_numeric("12a"));   // false
+///     println(string.is_numeric(""));   // false
+/// }
 /// ```
 pub fn is_numeric(s: string) -> bool {
     let slen = s.len();
@@ -522,8 +558,12 @@ pub fn is_numeric(s: string) -> bool {
 /// # Examples
 ///
 /// ```
-/// string.count("abcabc", "abc")  // 2
-/// string.count("hello", "x")     // 0
+/// import std.string;
+///
+/// fn main() {
+///     println(string.count("abcabc", "abc"));   // 2
+///     println(string.count("hello", "x"));   // 0
+/// }
 /// ```
 pub fn count(haystack: string, needle: string) -> i64 {
     let nlen = needle.len();
@@ -550,8 +590,12 @@ pub fn count(haystack: string, needle: string) -> i64 {
 /// # Examples
 ///
 /// ```
-/// string.starts_with("hello", "he")   // true
-/// string.starts_with("hello", "lo")   // false
+/// import std.string;
+///
+/// fn main() {
+///     println(string.starts_with("hello", "he"));   // true
+///     println(string.starts_with("hello", "lo"));   // false
+/// }
 /// ```
 pub fn starts_with(s: string, prefix: string) -> bool {
     s.starts_with(prefix)
@@ -562,8 +606,12 @@ pub fn starts_with(s: string, prefix: string) -> bool {
 /// # Examples
 ///
 /// ```
-/// string.ends_with("hello", "lo")   // true
-/// string.ends_with("hello", "he")   // false
+/// import std.string;
+///
+/// fn main() {
+///     println(string.ends_with("hello", "lo"));   // true
+///     println(string.ends_with("hello", "he"));   // false
+/// }
 /// ```
 pub fn ends_with(s: string, suffix: string) -> bool {
     s.ends_with(suffix)
@@ -574,8 +622,12 @@ pub fn ends_with(s: string, suffix: string) -> bool {
 /// # Examples
 ///
 /// ```
-/// string.contains("hello world", "world")  // true
-/// string.contains("hello", "xyz")          // false
+/// import std.string;
+///
+/// fn main() {
+///     println(string.contains("hello world", "world"));   // true
+///     println(string.contains("hello", "xyz"));   // false
+/// }
 /// ```
 pub fn contains(s: string, sub: string) -> bool {
     s.contains(sub)
@@ -586,8 +638,12 @@ pub fn contains(s: string, sub: string) -> bool {
 /// # Examples
 ///
 /// ```
-/// string.is_ascii("hello")  // true
-/// string.is_ascii("héllo")  // false
+/// import std.string;
+///
+/// fn main() {
+///     println(string.is_ascii("hello"));   // true
+///     println(string.is_ascii("héllo"));   // false
+/// }
 /// ```
 pub fn is_ascii(s: string) -> bool {
     let len = s.len();
@@ -626,10 +682,12 @@ pub fn replace(s: string, old: string, new_val: string) -> string {
 /// ```
 /// import std.string;
 ///
-/// let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
-/// let trail = string.split("a,b,", ",");   // ["a", "b", ""]
-/// let chars = string.split("café", "");    // ["c", "a", "f", "é"]
-/// let empty = string.split("", "");        // []
+/// fn main() {
+///     let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
+///     let trail = string.split("a,b,", ",");   // ["a", "b", ""]
+///     let chars = string.split("café", "");    // ["c", "a", "f", "é"]
+///     let empty = string.split("", "");        // []
+/// }
 /// ```
 pub fn split(s: string, sep: string) -> Vec<string> {
     // Delegate to the method, which routes to hew_string_split FFI.
@@ -649,9 +707,11 @@ pub fn split(s: string, sep: string) -> Vec<string> {
 /// ```
 /// import std.string;
 ///
-/// let lines = string.lines("foo\nbar");   // ["foo", "bar"]
-/// let crlf  = string.lines("a\r\nb");    // ["a", "b"]
-/// let trail = string.lines("foo\n");     // ["foo", ""]
+/// fn main() {
+///     let lines = string.lines("foo\nbar");   // ["foo", "bar"]
+///     let crlf  = string.lines("a\r\nb");    // ["a", "b"]
+///     let trail = string.lines("foo\n");     // ["foo", ""]
+/// }
 /// ```
 pub fn lines(s: string) -> Vec<string> {
     let result: Vec<string> = Vec.new();
@@ -689,8 +749,10 @@ pub fn lines(s: string) -> Vec<string> {
 /// ```
 /// import std.string;
 ///
-/// let s = string.join(["a", "b", "c"], ", ");  // "a, b, c"
-/// let e = string.join([], ",");                // ""
+/// fn main() {
+///     let s = string.join(["a", "b", "c"], ", ");  // "a, b, c"
+///     let e = string.join([], ",");                // ""
+/// }
 /// ```
 pub fn join(parts: Vec<string>, sep: string) -> string {
     let n = parts.len();

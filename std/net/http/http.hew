@@ -12,13 +12,13 @@
 //!
 //! fn main() {
 //!     match http.listen(":8080") {
-//!         Ok(server) => {
+//!         .Ok(server) => {
 //!             let req = server.accept();
 //!             req.respond_text(200, "Hello from Hew!");
 //!             req.close();
 //!             server.close();
 //!         },
-//!         Err(_err) => {
+//!         .Err(_err) => {
 //!             println(http.listen_error());
 //!         },
 //!     }
@@ -131,8 +131,19 @@ trait RequestMethods {
     /// # Examples
     ///
     /// ```
-    /// req.respond_text(200, "OK");
-    /// req.respond_text(404, "Not Found");
+    /// import std.net.http;
+    ///
+    /// fn main() {
+    ///     match http.listen(":8080") {
+    ///         .Ok(server) => {
+    ///             let req = server.accept();
+    ///             req.respond_text(200, "OK");
+    ///             req.close();
+    ///             server.close();
+    ///         },
+    ///         .Err(_err) => println(http.listen_error()),
+    ///     }
+    /// }
     /// ```
     fn respond_text(self, status: i64, body: string) -> i64;
 
@@ -147,10 +158,21 @@ trait RequestMethods {
     /// # Examples
     ///
     /// ```
-    /// let body = req.respond_stream(200, "text/plain");
-    /// body.write("chunk 1");
-    /// body.write("chunk 2");
-    /// body.close();
+    /// import std.net.http;
+    ///
+    /// fn main() {
+    ///     match http.listen(":8080") {
+    ///         .Ok(server) => {
+    ///             let req = server.accept();
+    ///             let body = req.respond_stream(200, "text/plain");
+    ///             body.write("chunk 1");
+    ///             body.write("chunk 2");
+    ///             body.close();
+    ///             server.close();
+    ///         },
+    ///         .Err(_err) => println(http.listen_error()),
+    ///     }
+    /// }
     /// ```
     fn respond_stream(self, status: i64, content_type: string) -> Sink<string>;
 
@@ -355,9 +377,14 @@ pub fn listen_error() -> string {
 /// # Examples
 ///
 /// ```
-/// match http.listen("127.0.0.1:0") {
-///     Ok(server) => server.close(),
-///     Err(err) => println(f"listen failed: {net.net_error_message(err)}"),
+/// import std.net;
+/// import std.net.http;
+///
+/// fn main() {
+///     match http.listen("127.0.0.1:0") {
+///         .Ok(server) => server.close(),
+///         .Err(err) => println(f"listen failed: {net.net_error_message(err)}"),
+///     }
 /// }
 /// ```
 pub fn listen(addr: string) -> Result<Server, net.NetError> {

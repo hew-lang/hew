@@ -11,13 +11,13 @@
 //!
 //! fn main() {
 //!     match websocket.connect("ws://localhost:8080/ws") {
-//!         Ok(ws) => {
+//!         .Ok(ws) => {
 //!             ws.send_text("hello");
 //!             let msg = ws.recv();
 //!             msg.close();
 //!             ws.close();
 //!         },
-//!         Err(_err) => {
+//!         .Err(_err) => {
 //!             println(websocket.last_error());
 //!         },
 //!     }
@@ -31,14 +31,14 @@
 //!
 //! fn main() {
 //!     match websocket.listen("0.0.0.0:8080") {
-//!         Ok(server) => {
+//!         .Ok(server) => {
 //!             let conn = server.accept();
 //!             let msg = conn.recv();
 //!             conn.send_text("got it");
 //!             conn.close();
 //!             server.close();
 //!         },
-//!         Err(_err) => {
+//!         .Err(_err) => {
 //!             println(websocket.last_error());
 //!         },
 //!     }
@@ -260,8 +260,10 @@ impl Server {
 /// # Example
 ///
 /// ```
+/// import std.net.websocket;
+///
 /// actor Echo {
-///     let conn: Conn;
+///     let conn: websocket.Conn;
 ///     receive fn on_message(text: string) {
 ///         conn.send_text("echo: " + text);
 ///     }
@@ -297,9 +299,14 @@ pub fn last_error() -> string {
 /// # Examples
 ///
 /// ```
-/// match websocket.connect("ws://127.0.0.1:9001/") {
-///     Ok(conn) => conn.close(),
-///     Err(err) => println(f"connect failed: {net.net_error_message(err)}"),
+/// import std.net;
+/// import std.net.websocket;
+///
+/// fn main() {
+///     match websocket.connect("ws://127.0.0.1:9001/") {
+///         .Ok(conn) => conn.close(),
+///         .Err(err) => println(f"connect failed: {net.net_error_message(err)}"),
+///     }
 /// }
 /// ```
 pub fn connect(url: string) -> Result<Conn, net.NetError> {
@@ -332,9 +339,14 @@ pub fn connect(url: string) -> Result<Conn, net.NetError> {
 /// # Examples
 ///
 /// ```
-/// match websocket.listen("127.0.0.1:0") {
-///     Ok(server) => server.close(),
-///     Err(err) => println(f"listen failed: {net.net_error_message(err)}"),
+/// import std.net;
+/// import std.net.websocket;
+///
+/// fn main() {
+///     match websocket.listen("127.0.0.1:0") {
+///         .Ok(server) => server.close(),
+///         .Err(err) => println(f"listen failed: {net.net_error_message(err)}"),
+///     }
 /// }
 /// ```
 pub fn listen(addr: string) -> Result<Server, net.NetError> {

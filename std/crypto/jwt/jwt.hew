@@ -9,8 +9,8 @@
 //!
 //! fn main() {
 //!     match jwt.try_encode("{\"sub\":\"1234\"}", "secret", "HS256") {
-//!         Ok(token) => println(token),
-//!         Err(err) => println(jwt.error_message(err)),
+//!         .Ok(token) => println(token),
+//!         .Err(err) => println(jwt.error_message(err)),
 //!     }
 //! }
 //! ```
@@ -135,7 +135,13 @@ pub fn decode(token: string, secret: string, algorithm: string) -> string {
 /// # Examples
 ///
 /// ```
-/// let payload = jwt.decode_insecure(token);
+/// import std.crypto.jwt;
+///
+/// fn main() {
+///     let token = jwt.encode("{\"sub\":\"1234\"}", "secret", "HS256");
+///     let payload = jwt.decode_insecure(token);
+///     println(payload);
+/// }
 /// ```
 pub fn decode_insecure(token: string) -> string {
     unsafe {
@@ -150,8 +156,13 @@ pub fn decode_insecure(token: string) -> string {
 /// # Examples
 ///
 /// ```
-/// if jwt.validate(token, "my_secret", "HS256") {
-///     println("valid");
+/// import std.crypto.jwt;
+///
+/// fn main() {
+///     let token = jwt.encode("{\"sub\":\"1234\"}", "my_secret", "HS256");
+///     if jwt.validate(token, "my_secret", "HS256") {
+///         println("valid");
+///     }
 /// }
 /// ```
 pub fn validate(token: string, secret: string, algorithm: string) -> bool {

@@ -14,14 +14,14 @@
 //! ```
 //! import std.net;
 //!
-//! fn dial(addr: string) -> Result<Connection, net.NetError> {
+//! fn dial(addr: string) -> Result<net.Connection, net.NetError> {
 //!     net.try_connect(addr)
 //! }
 //!
 //! fn main() {
 //!     match dial("localhost:9000") {
-//!         Ok(conn) => println("connected"),
-//!         Err(e) => {
+//!         .Ok(conn) => println("connected"),
+//!         .Err(e) => {
 //!             match e {
 //!                 NetError.ConnectionRefused(_) => println("nobody home"),
 //!                 NetError.TimedOut(_)          => println("timed out"),
@@ -243,9 +243,11 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
 /// ```
 /// import std.net;
 ///
-/// match net.try_parse_endpoint("net.connect_timeout", "[::1]:9000") {
-///     Ok(ep) => println(f"{ep.host} {ep.port}"),
-///     Err(err) => println(net.net_error_message(err)),
+/// fn main() {
+///     match net.try_parse_endpoint("net.connect_timeout", "[::1]:9000") {
+///         .Ok(ep) => println(f"{ep.host} {ep.port}"),
+///         .Err(err) => println(net.net_error_message(err)),
+///     }
 /// }
 /// ```
 pub fn try_parse_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
@@ -564,18 +566,23 @@ trait ConnectionMethods {
 /// # Example
 ///
 /// ```
+/// import std.net;
+///
 /// actor InboundLogger {
-///     receive fn start(conn: Connection) {
-///         match conn.attach(this) {
-///             Ok(()) => {},
-///             Err(AttachError.Refused) => println("attach refused"),
-///         }
-///     }
 ///     receive fn on_data(data: bytes) {
 ///         println(f"received {data.len()} bytes");
 ///     }
 ///     receive fn on_close() {
 ///         println("client disconnected");
+///     }
+/// }
+///
+/// fn main() {
+///     let conn = net.connect("localhost:9000");
+///     let handler: LocalPid<InboundLogger> = spawn InboundLogger;
+///     match conn.attach(handler) {
+///         .Ok(()) => {},
+///         .Err(net.AttachError.Refused) => println("attach refused"),
 ///     }
 /// }
 /// ```
@@ -712,7 +719,11 @@ impl Connection {
 /// # Examples
 ///
 /// ```
-/// let listener = net.listen(":9000");
+/// import std.net;
+///
+/// fn main() {
+///     let listener = net.listen(":9000");
+/// }
 /// ```
 pub fn listen(addr: string) -> Listener {
     unsafe {
@@ -729,10 +740,12 @@ pub fn listen(addr: string) -> Listener {
 /// ```
 /// import std.net;
 ///
-/// match net.try_listen(":9000") {
-///     Ok(ln) => { /* accept connections */ },
-///     Err(NetError.AddressInUse(_)) => println("port already taken"),
-///     Err(e) => println("bind failed"),
+/// fn main() {
+///     match net.try_listen(":9000") {
+///         .Ok(ln) => { /* accept connections */ },
+///         .Err(net.NetError.AddressInUse(_)) => println("port already taken"),
+///         .Err(e) => println("bind failed"),
+///     }
 /// }
 /// ```
 pub fn try_listen(addr: string) -> Result<Listener, NetError> {
@@ -755,7 +768,11 @@ pub fn try_listen(addr: string) -> Result<Listener, NetError> {
 /// # Examples
 ///
 /// ```
-/// let conn = net.connect("localhost:9000");
+/// import std.net;
+///
+/// fn main() {
+///     let conn = net.connect("localhost:9000");
+/// }
 /// ```
 pub fn connect(addr: string) -> Connection {
     unsafe {
@@ -772,10 +789,12 @@ pub fn connect(addr: string) -> Connection {
 /// ```
 /// import std.net;
 ///
-/// match net.try_connect("localhost:9000") {
-///     Ok(conn) => { /* use conn */ },
-///     Err(NetError.ConnectionRefused(_)) => println("nothing listening"),
-///     Err(e) => println("connect failed"),
+/// fn main() {
+///     match net.try_connect("localhost:9000") {
+///         .Ok(conn) => { /* use conn */ },
+///         .Err(net.NetError.ConnectionRefused(_)) => println("nothing listening"),
+///         .Err(e) => println("connect failed"),
+///     }
 /// }
 /// ```
 pub fn try_connect(addr: string) -> Result<Connection, NetError> {

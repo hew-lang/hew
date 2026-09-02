@@ -156,6 +156,10 @@ pub enum AskError {
 /// Returned as `Err(TimeoutError.Timeout)` when the deadline fires before an
 /// item arrives.  Distinguishes a timeout from a closed channel (`Ok(None)`).
 ///
+/// Not yet implemented: `await ... | after d` requires a suspendable
+/// actor/closure/task context, so this snippet is illustrative only and does
+/// not compile standalone.
+///
 /// ```hew
 /// match await rx.recv() | after 50ms {
 ///     Ok(Some(v)) => v,       // item received before deadline
@@ -209,6 +213,9 @@ pub trait ActorMsg {
 /// generic `P: Pid` sends are fail-closed unless `P.Msg` is concretely proven
 /// Serializable; local-only dispatch through `LocalPid<T>` keeps the value
 /// model below.
+///
+/// Not yet implemented: the checker cannot express the `P.Msg: Serializable`
+/// projection bound yet (A640), so this snippet does not compile today.
 ///
 /// ```
 /// fn ping<P: Pid>(p: P, msg: P.Msg) -> Result<(), SendError> {
@@ -828,9 +835,11 @@ impl Display for duration {
 /// # Examples
 ///
 /// ```
-/// println(42);
-/// println("hello");
-/// println(true);
+/// fn main() {
+///     println(42);
+///     println("hello");
+///     println(true);
+/// }
 /// ```
 pub fn println(value: dyn Display) {}
 
@@ -839,7 +848,9 @@ pub fn println(value: dyn Display) {}
 /// # Examples
 ///
 /// ```
-/// print("Enter name: ");
+/// fn main() {
+///     print("Enter name: ");
+/// }
 /// ```
 pub fn print(value: dyn Display) {}
 
@@ -851,7 +862,10 @@ pub fn print(value: dyn Display) {}
 /// # Examples
 ///
 /// ```
-/// assert(x > 0);
+/// fn main() {
+///     let x = 5;
+///     assert(x > 0);
+/// }
 /// ```
 pub fn assert(condition: bool) {}
 
@@ -862,7 +876,13 @@ pub fn assert(condition: bool) {}
 /// # Examples
 ///
 /// ```
-/// assert_eq(add(1, 2), 3);
+/// fn add(a: i64, b: i64) -> i64 {
+///     a + b
+/// }
+///
+/// fn main() {
+///     assert_eq(add(1, 2), 3);
+/// }
 /// ```
 pub fn assert_eq(left: dyn Display, right: dyn Display) {}
 
@@ -873,7 +893,11 @@ pub fn assert_eq(left: dyn Display, right: dyn Display) {}
 /// # Examples
 ///
 /// ```
-/// assert_ne(a, b);
+/// fn main() {
+///     let a = 1;
+///     let b = 2;
+///     assert_ne(a, b);
+/// }
 /// ```
 pub fn assert_ne(left: dyn Display, right: dyn Display) {}
 
@@ -885,7 +909,9 @@ pub fn assert_ne(left: dyn Display, right: dyn Display) {}
 /// # Examples
 ///
 /// ```
-/// let x = abs(-5);  // 5
+/// fn main() {
+///     let x = abs(-5);  // 5
+/// }
 /// ```
 pub fn abs(x: i32) -> i32 {
     0 as i32
@@ -896,7 +922,9 @@ pub fn abs(x: i32) -> i32 {
 /// # Examples
 ///
 /// ```
-/// let r = sqrt(9.0);  // 3.0
+/// fn main() {
+///     let r = sqrt(9.0);  // 3.0
+/// }
 /// ```
 pub fn sqrt(x: f64) -> f64 {
     0.0
@@ -913,6 +941,9 @@ pub fn max(a: i32, b: i32) -> i32 {
 }
 
 /// Convert an integer to a floating-point number.
+///
+/// Not yet implemented: the checker admits the call but cannot lower it to
+/// an executable target yet, so this snippet does not compile today.
 ///
 /// # Examples
 ///
@@ -931,7 +962,9 @@ pub fn to_float(x: i32) -> f64 {
 /// # Examples
 ///
 /// ```
-/// let full = string_concat("hello ", "world");
+/// fn main() {
+///     let full = string_concat("hello ", "world");
+/// }
 /// ```
 pub fn string_concat(a: string, b: string) -> string {
     ""
@@ -950,9 +983,11 @@ pub fn string_length(s: string) -> i32 {
 /// # Examples
 ///
 /// ```
-/// let s = to_string(42);     // "42"
-/// let t = to_string(true);   // "true"
-/// let u = to_string('x');    // "x"
+/// fn main() {
+///     let s = to_string(42);     // "42"
+///     let t = to_string(true);   // "true"
+///     let u = to_string('x');    // "x"
+/// }
 /// ```
 pub fn to_string(value: dyn Display) -> string {
     ""
@@ -975,6 +1010,9 @@ pub fn string_equals(a: string, b: string) -> bool {
 
 /// Convert an integer to a string.
 ///
+/// Not yet implemented: the checker admits the call but cannot lower it to
+/// an executable target yet, so this snippet does not compile today.
+///
 /// # Examples
 ///
 /// ```
@@ -995,6 +1033,9 @@ pub fn string_starts_with(s: string, prefix: string) -> bool {
 }
 
 /// Extract a substring by byte indices `[start, end)`.
+///
+/// Not yet implemented: the checker admits the call but cannot lower it to
+/// an executable target yet, so this snippet does not compile today.
 ///
 /// # Examples
 ///
@@ -1036,9 +1077,11 @@ pub fn string_trim(s: string) -> string {
 /// # Examples
 ///
 /// ```
-/// sleep(10ms);   // sleep for 10 milliseconds
-/// sleep(2s);     // sleep for 2 seconds
-/// sleep(500ms);  // sleep for 500 milliseconds
+/// fn main() {
+///     sleep(10ms);   // sleep for 10 milliseconds
+///     sleep(2s);     // sleep for 2 seconds
+///     sleep(500ms);  // sleep for 500 milliseconds
+/// }
 /// ```
 pub fn sleep(d: duration) {}
 
@@ -1048,8 +1091,10 @@ pub fn sleep(d: duration) {}
 /// `instant + duration` to construct a future `instant`:
 ///
 /// ```
-/// let deadline = instant.now() + 10ms;
-/// sleep_until(deadline);   // wait until 10 ms from now
+/// fn main() {
+///     let deadline = instant.now() + 10ms;
+///     sleep_until(deadline);   // wait until 10 ms from now
+/// }
 /// ```
 ///
 /// The `instant + duration` operation adds a duration offset to a monotonic
@@ -1059,14 +1104,16 @@ pub fn sleep(d: duration) {}
 /// # Examples
 ///
 /// ```
-/// let deadline = instant.now();
-/// // ... do work ...
-/// sleep_until(deadline);   // wait until the deadline if not yet reached
+/// fn main() {
+///     let deadline = instant.now();
+///     // ... do work ...
+///     sleep_until(deadline);   // wait until the deadline if not yet reached
 ///
-/// // Sleep for exactly 50 ms from a fixed reference point:
-/// let t0 = instant.now();
-/// // ... do work ...
-/// sleep_until(t0 + 50ms);  // accounts for time already spent
+///     // Sleep for exactly 50 ms from a fixed reference point:
+///     let t0 = instant.now();
+///     // ... do work ...
+///     sleep_until(t0 + 50ms);  // accounts for time already spent
+/// }
 /// ```
 pub fn sleep_until(target: instant) {}
 
@@ -1085,6 +1132,8 @@ pub fn exit(code: i32) {}
 /// # Examples
 ///
 /// ```
-/// panic("something went wrong");
+/// fn main() {
+///     panic("something went wrong");
+/// }
 /// ```
 pub fn panic(message: string) {}

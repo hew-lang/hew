@@ -20,7 +20,11 @@
 /// # Examples
 ///
 /// ```
-/// let html = markdown.to_html("**bold** text");
+/// import std.encoding.markdown;
+///
+/// fn main() {
+///     let html = markdown.to_html("**bold** text");
+/// }
 /// ```
 pub fn to_html(md: string) -> string {
     unsafe {
@@ -36,7 +40,11 @@ pub fn to_html(md: string) -> string {
 /// # Examples
 ///
 /// ```
-/// let safe = markdown.to_html_safe("Click <script>alert(1)</script>");
+/// import std.encoding.markdown;
+///
+/// fn main() {
+///     let safe = markdown.to_html_safe("Click <script>alert(1)</script>");
+/// }
 /// ```
 pub fn to_html_safe(md: string) -> string {
     unsafe {

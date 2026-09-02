@@ -23,8 +23,12 @@
 /// # Examples
 ///
 /// ```
-/// let id = uuid.v4();
-/// // e.g. "550e8400-e29b-41d4-a716-446655440000"
+/// import std.misc.uuid;
+///
+/// fn main() {
+///     let id = uuid.v4();
+///     // e.g. "550e8400-e29b-41d4-a716-446655440000"
+/// }
 /// ```
 pub fn v4() -> string {
     unsafe {
@@ -39,7 +43,11 @@ pub fn v4() -> string {
 /// # Examples
 ///
 /// ```
-/// let id = uuid.v7();
+/// import std.misc.uuid;
+///
+/// fn main() {
+///     let id = uuid.v7();
+/// }
 /// ```
 pub fn v7() -> string {
     unsafe {
@@ -52,8 +60,12 @@ pub fn v7() -> string {
 /// # Examples
 ///
 /// ```
-/// uuid.is_valid("550e8400-e29b-41d4-a716-446655440000")  // true
-/// uuid.is_valid("not-a-uuid")                             // false
+/// import std.misc.uuid;
+///
+/// fn main() {
+///     println(uuid.is_valid("550e8400-e29b-41d4-a716-446655440000"));   // true
+///     println(uuid.is_valid("not-a-uuid"));   // false
+/// }
 /// ```
 pub fn is_valid(s: string) -> bool {
     unsafe {

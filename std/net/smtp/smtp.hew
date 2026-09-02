@@ -131,9 +131,13 @@ fn smtp_err(fallback: string) -> string {
 /// # Examples
 ///
 /// ```
-/// match smtp.connect("smtp.example.com", 587, "user", "pass") {
-///     Ok(conn) => conn.close(),
-///     Err(reason) => println(f"connect failed: {reason}"),
+/// import std.net.smtp;
+///
+/// fn main() {
+///     match smtp.connect("smtp.example.com", 587, "user", "pass") {
+///         .Ok(conn) => conn.close(),
+///         .Err(reason) => println(f"connect failed: {reason}"),
+///     }
 /// }
 /// ```
 pub fn connect(host: string, port: i64, username: string, password: string) -> Result<Conn, string> {
@@ -159,9 +163,13 @@ pub fn connect(host: string, port: i64, username: string, password: string) -> R
 /// # Examples
 ///
 /// ```
-/// match smtp.connect_tls("smtp.example.com", 465, "user", "pass") {
-///     Ok(conn) => conn.close(),
-///     Err(reason) => println(f"connect failed: {reason}"),
+/// import std.net.smtp;
+///
+/// fn main() {
+///     match smtp.connect_tls("smtp.example.com", 465, "user", "pass") {
+///         .Ok(conn) => conn.close(),
+///         .Err(reason) => println(f"connect failed: {reason}"),
+///     }
 /// }
 /// ```
 pub fn connect_tls(host: string, port: i64, username: string, password: string) -> Result<Conn, string> {

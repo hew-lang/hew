@@ -18,7 +18,7 @@
 //!
 //! fn main() {
 //!     // Char classification
-//!     let cp = unicode.codepoint_at("café", 3);   // Some(233) ('é')
+//!     let cp = unicode.codepoint_at("café", 3).unwrap_or(0);  // 233 ('é')
 //!     println(unicode.is_lower(cp));              // true
 //!     println(unicode.is_upper(cp));              // false
 //!     println(unicode.to_upper(cp));              // 201 ('É')
@@ -47,10 +47,14 @@ extern "C" {
 /// # Examples
 ///
 /// ```
-/// unicode.is_valid_rune(65)        // true  ('A')
-/// unicode.is_valid_rune(0x10FFFF)  // true  (highest scalar)
-/// unicode.is_valid_rune(0xD800)    // false (surrogate)
-/// unicode.is_valid_rune(-1)        // false
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.is_valid_rune(65));   // true  ('A')
+///     println(unicode.is_valid_rune(0x10FFFF));   // true  (highest scalar)
+///     println(unicode.is_valid_rune(0xD800));   // false (surrogate)
+///     println(unicode.is_valid_rune(-1));   // false
+/// }
 /// ```
 pub fn is_valid_rune(cp: i64) -> bool {
     match cp {
@@ -68,9 +72,13 @@ pub fn is_valid_rune(cp: i64) -> bool {
 /// # Examples
 ///
 /// ```
-/// unicode.is_upper(65)   // true  ('A')
-/// unicode.is_upper(97)   // false ('a')
-/// unicode.is_upper(201)  // true  ('É', U+00C9)
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.is_upper(65));   // true  ('A')
+///     println(unicode.is_upper(97));   // false ('a')
+///     println(unicode.is_upper(201));   // true  ('É', U+00C9)
+/// }
 /// ```
 pub fn is_upper(cp: i64) -> bool {
     if !is_valid_rune(cp) {
@@ -88,9 +96,13 @@ pub fn is_upper(cp: i64) -> bool {
 /// # Examples
 ///
 /// ```
-/// unicode.is_lower(97)   // true  ('a')
-/// unicode.is_lower(65)   // false ('A')
-/// unicode.is_lower(233)  // true  ('é', U+00E9)
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.is_lower(97));   // true  ('a')
+///     println(unicode.is_lower(65));   // false ('A')
+///     println(unicode.is_lower(233));   // true  ('é', U+00E9)
+/// }
 /// ```
 pub fn is_lower(cp: i64) -> bool {
     if !is_valid_rune(cp) {
@@ -109,9 +121,13 @@ pub fn is_lower(cp: i64) -> bool {
 /// # Examples
 ///
 /// ```
-/// unicode.is_digit(48)  // true  ('0')
-/// unicode.is_digit(57)  // true  ('9')
-/// unicode.is_digit(65)  // false ('A')
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.is_digit(48));   // true  ('0')
+///     println(unicode.is_digit(57));   // true  ('9')
+///     println(unicode.is_digit(65));   // false ('A')
+/// }
 /// ```
 pub fn is_digit(cp: i64) -> bool {
     if !is_valid_rune(cp) {
@@ -130,9 +146,13 @@ pub fn is_digit(cp: i64) -> bool {
 /// # Examples
 ///
 /// ```
-/// unicode.is_space(32)  // true  (space)
-/// unicode.is_space(9)   // true  (\t)
-/// unicode.is_space(65)  // false ('A')
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.is_space(32));   // true  (space)
+///     println(unicode.is_space(9));   // true  (\t)
+///     println(unicode.is_space(65));   // false ('A')
+/// }
 /// ```
 pub fn is_space(cp: i64) -> bool {
     if !is_valid_rune(cp) {
@@ -151,9 +171,13 @@ pub fn is_space(cp: i64) -> bool {
 /// # Examples
 ///
 /// ```
-/// unicode.is_letter(65)      // true  ('A')
-/// unicode.is_letter(0x65E5)  // true  ('日')
-/// unicode.is_letter(48)      // false ('0')
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.is_letter(65));   // true  ('A')
+///     println(unicode.is_letter(0x65E5));   // true  ('日')
+///     println(unicode.is_letter(48));   // false ('0')
+/// }
 /// ```
 pub fn is_letter(cp: i64) -> bool {
     if !is_valid_rune(cp) {
@@ -172,9 +196,13 @@ pub fn is_letter(cp: i64) -> bool {
 /// # Examples
 ///
 /// ```
-/// unicode.is_alnum(65)   // true  ('A')
-/// unicode.is_alnum(48)   // true  ('0')
-/// unicode.is_alnum(32)   // false (space)
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.is_alnum(65));   // true  ('A')
+///     println(unicode.is_alnum(48));   // true  ('0')
+///     println(unicode.is_alnum(32));   // false (space)
+/// }
 /// ```
 pub fn is_alnum(cp: i64) -> bool {
     if !is_valid_rune(cp) {
@@ -190,9 +218,13 @@ pub fn is_alnum(cp: i64) -> bool {
 /// # Examples
 ///
 /// ```
-/// unicode.is_punct(33)      // true  ('!')
-/// unicode.is_punct(0x3002)  // true  (IDEOGRAPHIC FULL STOP)
-/// unicode.is_punct(65)      // false ('A')
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.is_punct(33));   // true  ('!')
+///     println(unicode.is_punct(0x3002));   // true  (IDEOGRAPHIC FULL STOP)
+///     println(unicode.is_punct(65));   // false ('A')
+/// }
 /// ```
 ///
 /// Punctuation is the Unicode general category group `P*` — `Pc`, `Pd`, `Ps`,
@@ -219,9 +251,13 @@ pub fn is_punct(cp: i64) -> bool {
 /// # Examples
 ///
 /// ```
-/// unicode.to_upper(97)   // 65   ('a' -> 'A')
-/// unicode.to_upper(65)   // 65   ('A' unchanged)
-/// unicode.to_upper(233)  // 201  ('é' -> 'É')
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.to_upper(97));   // 65   ('a' -> 'A')
+///     println(unicode.to_upper(65));   // 65   ('A' unchanged)
+///     println(unicode.to_upper(233));   // 201  ('é' -> 'É')
+/// }
 /// ```
 pub fn to_upper(cp: i64) -> i64 {
     if !is_valid_rune(cp) {
@@ -241,9 +277,13 @@ pub fn to_upper(cp: i64) -> i64 {
 /// # Examples
 ///
 /// ```
-/// unicode.to_lower(65)   // 97   ('A' -> 'a')
-/// unicode.to_lower(97)   // 97   ('a' unchanged)
-/// unicode.to_lower(201)  // 233  ('É' -> 'é')
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.to_lower(65));   // 97   ('A' -> 'a')
+///     println(unicode.to_lower(97));   // 97   ('a' unchanged)
+///     println(unicode.to_lower(201));   // 233  ('É' -> 'é')
+/// }
 /// ```
 pub fn to_lower(cp: i64) -> i64 {
     if !is_valid_rune(cp) {
@@ -262,9 +302,13 @@ pub fn to_lower(cp: i64) -> i64 {
 /// # Examples
 ///
 /// ```
-/// unicode.to_title(97)   // 65   ('a' -> 'A')
-/// unicode.to_title(233)  // 201  ('é' -> 'É')
-/// unicode.to_title(49)   // 49   ('1' unchanged)
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.to_title(97));   // 65   ('a' -> 'A')
+///     println(unicode.to_title(233));   // 201  ('é' -> 'É')
+///     println(unicode.to_title(49));   // 49   ('1' unchanged)
+/// }
 /// ```
 pub fn to_title(cp: i64) -> i64 {
     to_upper(cp)
@@ -279,9 +323,13 @@ pub fn to_title(cp: i64) -> i64 {
 /// # Examples
 ///
 /// ```
-/// unicode.codepoint_at("café", 3)  // Some(233) ('é', U+00E9)
-/// unicode.codepoint_at("ABC", 1)   // Some(66)  ('B')
-/// unicode.codepoint_at("hi", 5)    // None      (out of bounds)
+/// import std.text.unicode;
+///
+/// fn main() {
+///     unicode.codepoint_at("café", 3);  // Some(233) ('é', U+00E9)
+///     unicode.codepoint_at("ABC", 1);   // Some(66)  ('B')
+///     unicode.codepoint_at("hi", 5);    // None      (out of bounds)
+/// }
 /// ```
 pub fn codepoint_at(s: string, i: i64) -> Option<i64> {
     s.codepoint_at_utf8(i)
@@ -292,8 +340,12 @@ pub fn codepoint_at(s: string, i: i64) -> Option<i64> {
 /// # Examples
 ///
 /// ```
-/// unicode.try_codepoint_at("café", 3)  // Ok(233)
-/// unicode.try_codepoint_at("hi", 2)    // Err(...)
+/// import std.text.unicode;
+///
+/// fn main() {
+///     unicode.try_codepoint_at("café", 3);  // Ok(233)
+///     unicode.try_codepoint_at("hi", 2);    // Err(...)
+/// }
 /// ```
 pub fn try_codepoint_at(s: string, i: i64) -> Result<i64, string> {
     match codepoint_at(s, i) {
@@ -311,10 +363,14 @@ pub fn try_codepoint_at(s: string, i: i64) -> Result<i64, string> {
 /// # Examples
 ///
 /// ```
-/// unicode.rune_count("hello")  // 5
-/// unicode.rune_count("café")   // 4
-/// unicode.rune_count("日本語")  // 3
-/// unicode.rune_count("")       // 0
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.rune_count("hello"));   // 5
+///     println(unicode.rune_count("café"));   // 4
+///     println(unicode.rune_count("日本語"));   // 3
+///     println(unicode.rune_count(""));   // 0
+/// }
 /// ```
 pub fn rune_count(s: string) -> i64 {
     s.char_count_utf8()
@@ -325,10 +381,14 @@ pub fn rune_count(s: string) -> i64 {
 /// # Examples
 ///
 /// ```
-/// unicode.rune_len(65)      // 1
-/// unicode.rune_len(233)     // 2
-/// unicode.rune_len(0x65E5)  // 3
-/// unicode.rune_len(-1)      // -1
+/// import std.text.unicode;
+///
+/// fn main() {
+///     println(unicode.rune_len(65));   // 1
+///     println(unicode.rune_len(233));   // 2
+///     println(unicode.rune_len(0x65E5));   // 3
+///     println(unicode.rune_len(-1));   // -1
+/// }
 /// ```
 pub fn rune_len(cp: i64) -> i64 {
     match try_rune_len(cp) {
@@ -342,9 +402,13 @@ pub fn rune_len(cp: i64) -> i64 {
 /// # Examples
 ///
 /// ```
-/// unicode.try_rune_len(65)      // Ok(1)
-/// unicode.try_rune_len(0x1F642) // Ok(4)
-/// unicode.try_rune_len(-1)      // Err(...)
+/// import std.text.unicode;
+///
+/// fn main() {
+///     unicode.try_rune_len(65);      // Ok(1)
+///     unicode.try_rune_len(0x1F642); // Ok(4)
+///     unicode.try_rune_len(-1);      // Err(...)
+/// }
 /// ```
 pub fn try_rune_len(cp: i64) -> Result<i64, string> {
     match cp {
@@ -364,14 +428,18 @@ pub fn try_rune_len(cp: i64) -> Result<i64, string> {
 /// # Examples
 ///
 /// ```
-/// let cps = unicode.runes("AB");
-/// // cps == [65, 66]
+/// import std.text.unicode;
 ///
-/// let cps2 = unicode.runes("日");
-/// // cps2.get(0) == 0x65E5
+/// fn main() {
+///     let cps = unicode.runes("AB");
+///     // cps == [65, 66]
 ///
-/// let empty = unicode.runes("");
-/// // empty.len() == 0
+///     let cps2 = unicode.runes("日");
+///     // cps2.get(0) == 0x65E5
+///
+///     let empty = unicode.runes("");
+///     // empty.len() == 0
+/// }
 /// ```
 pub fn runes(s: string) -> Vec<i64> {
     let n = s.char_count_utf8();

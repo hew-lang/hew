@@ -46,9 +46,13 @@ trait PatternMethods {
     /// # Examples
     ///
     /// ```
-    /// let re = regex.new("^[a-z]+$");
-    /// assert(re.is_match("hello"));
-    /// re.close();
+    /// import std.text.regex;
+    ///
+    /// fn main() {
+    ///     let re = regex.new("^[a-z]+$");
+    ///     assert(re.is_match("hello"));
+    ///     re.close();
+    /// }
     /// ```
     fn is_match(self, input: string) -> bool;
 
@@ -68,10 +72,14 @@ trait PatternMethods {
     /// # Examples
     ///
     /// ```
-    /// let re = regex.new("[0-9]+");
-    /// let result = re.replace("abc123def456", "N");
-    /// // result == "abcNdefN"
-    /// re.close();
+    /// import std.text.regex;
+    ///
+    /// fn main() {
+    ///     let re = regex.new("[0-9]+");
+    ///     let result = re.replace("abc123def456", "N");
+    ///     // result == "abcNdefN"
+    ///     re.close();
+    /// }
     /// ```
     fn replace(self, input: string, replacement: string) -> string;
 
@@ -253,8 +261,12 @@ impl CaptureMatchesMethods for CaptureMatches {
 /// # Examples
 ///
 /// ```
-/// let email_re = regex.new("[a-z]+@[a-z]+\\.[a-z]+");
-/// email_re.close();
+/// import std.text.regex;
+///
+/// fn main() {
+///     let email_re = regex.new("[a-z]+@[a-z]+\\.[a-z]+");
+///     email_re.close();
+/// }
 /// ```
 pub fn new(pattern: string) -> Pattern {
     unsafe {

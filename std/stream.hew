@@ -18,8 +18,9 @@
 //! Current stdlib scope:
 //! - `bytes_pipe()` is the canonical in-memory constructor
 //! - `pipe()` remains the text convenience constructor
-//! - `from_file()` / `to_file()` remain `Stream<string>` / `Sink<string>`
-//! - `lines()` remains a `Stream<string>` adapter today
+//! - `from_file()` / `to_file()` remain `Stream<string>` / `Sink<string>`;
+//!   `from_file()` yields fixed-size chunks, not lines — split with
+//!   `string.lines()` on an accumulated buffer if you need line boundaries
 //!
 //! # Example
 //!
@@ -139,8 +140,20 @@ pub fn try_bytes_pipe(capacity: i64) -> Result<(Sink<bytes>, Stream<bytes>), str
 /// # Examples
 ///
 /// ```
-/// let file = stream.from_file("data.txt")?;
-/// for await line in file.lines() { println(line); }
+/// import std.stream;
+///
+/// fn run() -> Result<(), string> {
+///     let file = stream.from_file("data.txt")?;
+///     for await chunk in file { println(chunk); }
+///     Ok(())
+/// }
+///
+/// fn main() {
+///     match run() {
+///         .Ok(()) => {},
+///         .Err(e) => println(e),
+///     }
+/// }
 /// ```
 pub fn from_file(path: string) -> Result<Stream<string>, string> {
     unsafe {
@@ -187,9 +200,21 @@ pub fn try_from_file(path: string) -> Result<Stream<string>, fs.IoError> {
 /// # Examples
 ///
 /// ```
-/// let sink = stream.to_file("output.txt")?;
-/// sink.write("hello");
-/// // sink auto-closes when dropped
+/// import std.stream;
+///
+/// fn run() -> Result<(), string> {
+///     let sink = stream.to_file("output.txt")?;
+///     sink.write("hello");
+///     // sink auto-closes when dropped
+///     Ok(())
+/// }
+///
+/// fn main() {
+///     match run() {
+///         .Ok(()) => {},
+///         .Err(e) => println(e),
+///     }
+/// }
 /// ```
 pub fn to_file(path: string) -> Result<Sink<string>, string> {
     unsafe {
@@ -232,9 +257,26 @@ pub fn try_to_file(path: string) -> Result<Sink<string>, fs.IoError> {
 /// # Examples
 ///
 /// ```
-/// let file = stream.from_file("data.txt")?;
-/// let body = req.respond_stream(200, "text/plain")?;
-/// stream.forward(file, body);  // streams file directly to HTTP response
+/// import std.net.http;
+/// import std.stream;
+///
+/// fn main() {
+///     match http.listen(":8080") {
+///         .Ok(server) => {
+///             let req = server.accept();
+///             match stream.from_file("data.txt") {
+///                 .Ok(file) => {
+///                     let body = req.respond_stream(200, "text/plain");
+///                     stream.forward(file, body);  // streams file directly to HTTP response
+///                 },
+///                 .Err(e) => println(e),
+///             }
+///             req.close();
+///             server.close();
+///         },
+///         .Err(_err) => println(http.listen_error()),
+///     }
+/// }
 /// ```
 pub fn forward(consume source: Stream<string>, consume dest: Sink<string>) {
     unsafe {

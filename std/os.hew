@@ -30,8 +30,12 @@ pub fn args_count() -> i64 {
 /// # Examples
 ///
 /// ```
-/// let program = os.args(0);
-/// let first_arg = os.args(1);
+/// import std.os;
+///
+/// fn main() {
+///     let program = os.args(0);
+///     let first_arg = os.args(1);
+/// }
 /// ```
 pub fn args(index: i64) -> string {
     let count = args_count();
@@ -50,7 +54,11 @@ pub fn args(index: i64) -> string {
 /// # Examples
 ///
 /// ```
-/// let path = os.env("PATH");
+/// import std.os;
+///
+/// fn main() {
+///     let path = os.env("PATH");
+/// }
 /// ```
 pub fn env(name: string) -> string {
     unsafe {
@@ -138,8 +146,12 @@ pub fn pid() -> i64 {
 /// # Examples
 ///
 /// ```
-/// let tmp = os.temp_dir();
-/// let path = tmp + "/myfile.txt";
+/// import std.os;
+///
+/// fn main() {
+///     let tmp = os.temp_dir();
+///     let path = tmp + "/myfile.txt";
+/// }
 /// ```
 pub fn temp_dir() -> string {
     unsafe {

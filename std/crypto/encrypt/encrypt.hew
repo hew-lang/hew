@@ -5,14 +5,15 @@
 //! # Examples
 //!
 //! ```
+//! import std.crypto.crypto;
 //! import std.crypto.encrypt;
 //!
 //! fn main() {
 //!     let key = crypto.random_bytes(32);
 //!     let ciphertext = encrypt.seal(key, "hello world");
 //!     match encrypt.try_open(key, ciphertext) {
-//!         Ok(plaintext) => println(plaintext),
-//!         Err(err) => println(encrypt.error_message(err)),
+//!         .Ok(plaintext) => println(plaintext),
+//!         .Err(err) => println(encrypt.error_message(err)),
 //!     }
 //! }
 //! ```

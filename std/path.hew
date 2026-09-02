@@ -115,7 +115,11 @@ impl GlobResult {
 /// # Examples
 ///
 /// ```
-/// let files = path.glob("src/**/*.hew");
+/// import std.path;
+///
+/// fn main() {
+///     let files = path.glob("src/**/*.hew");
+/// }
 /// ```
 pub fn glob(pattern: string) -> GlobResult {
     unsafe {
@@ -139,9 +143,13 @@ pub fn glob(pattern: string) -> GlobResult {
 /// # Examples
 ///
 /// ```
-/// match path.try_glob("src/**/*.hew") {
-///     Ok(files) => println(f"{files.len()} match(es)"),
-///     Err(err) => println(path.path_error_message(err)),
+/// import std.path;
+///
+/// fn main() {
+///     match path.try_glob("src/**/*.hew") {
+///         .Ok(files) => println(f"{files.len()} match(es)"),
+///         .Err(err) => println(path.path_error_message(err)),
+///     }
 /// }
 /// ```
 pub fn try_glob(pattern: string) -> Result<GlobResult, PathError> {
@@ -166,7 +174,11 @@ pub fn try_glob(pattern: string) -> Result<GlobResult, PathError> {
 /// # Examples
 ///
 /// ```
-/// path.combine("/home/user", "file.txt")  // "/home/user/file.txt"
+/// import std.path;
+///
+/// fn main() {
+///     println(path.combine("/home/user", "file.txt"));   // "/home/user/file.txt"
+/// }
 /// ```
 pub fn combine(a: string, b: string) -> string {
     if b.starts_with("/") {
@@ -190,7 +202,11 @@ pub fn combine(a: string, b: string) -> string {
 /// # Examples
 ///
 /// ```
-/// path.dirname("/home/user/file.txt")  // "/home/user"
+/// import std.path;
+///
+/// fn main() {
+///     println(path.dirname("/home/user/file.txt"));   // "/home/user"
+/// }
 /// ```
 pub fn dirname(p: string) -> string {
     let s = strip_trailing_slash(p);
@@ -209,7 +225,11 @@ pub fn dirname(p: string) -> string {
 /// # Examples
 ///
 /// ```
-/// path.basename("/home/user/file.txt")  // "file.txt"
+/// import std.path;
+///
+/// fn main() {
+///     println(path.basename("/home/user/file.txt"));   // "file.txt"
+/// }
 /// ```
 pub fn basename(p: string) -> string {
     let s = strip_trailing_slash(p);
@@ -233,7 +253,11 @@ pub fn basename(p: string) -> string {
 /// # Examples
 ///
 /// ```
-/// path.extension("photo.jpg")  // "jpg"
+/// import std.path;
+///
+/// fn main() {
+///     println(path.extension("photo.jpg"));   // "jpg"
+/// }
 /// ```
 pub fn extension(p: string) -> string {
     let base = basename(p);
@@ -292,10 +316,12 @@ pub fn absolute(p: string) -> string {
 /// ```
 /// import std.path;
 ///
-/// path.normalize("/var/www/../../etc/passwd")  // "/etc/passwd"
-/// path.normalize("a/./b/../c")                 // "a/c"
-/// path.normalize("../../etc/passwd")           // "../../etc/passwd"
-/// path.normalize("")                           // "."
+/// fn main() {
+///     path.normalize("/var/www/../../etc/passwd");  // "/etc/passwd"
+///     path.normalize("a/./b/../c");                 // "a/c"
+///     path.normalize("../../etc/passwd");           // "../../etc/passwd"
+///     path.normalize("");                           // "."
+/// }
 /// ```
 pub fn normalize(p: string) -> string {
     if p == "" {

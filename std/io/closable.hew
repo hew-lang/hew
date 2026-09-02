@@ -13,7 +13,7 @@
 //! fn serve_one(addr: string) -> Result<(), closable.CloseError> {
 //!     let listener = net.listen(addr);
 //!     let conn = listener.accept();
-//!     conn.write("hello\n");
+//!     let _ = conn.write_string("hello\n");
 //!     listener.close()
 //! }
 //! ```
@@ -58,10 +58,31 @@ pub trait Closable {
 /// # Pattern matching
 ///
 /// ```
-/// match handle.close() {
-///     Ok(()) => {},
-///     Err(CloseError.Io(e)) => println(fs.io_error_message(e)),
-///     Err(CloseError.AlreadyClosed) => {},
+/// import std.fs;
+/// import std.io.closable;
+///
+/// type Handle {
+///     already_closed: bool;
+/// }
+///
+/// impl closable.Closable for Handle {
+///     fn close(val: Self) -> Result<(), closable.CloseError> {
+///         if val.already_closed {
+///             return Err(closable.CloseError.AlreadyClosed);
+///         }
+///         Ok(())
+///     }
+/// }
+///
+/// fn main() {
+///     let handle = Handle { already_closed: false };
+///     match handle.close() {
+///         .Ok(_) => {},
+///         .Err(err) => match err {
+///             closable.CloseError.Io(e) => println(fs.io_error_message(e)),
+///             closable.CloseError.AlreadyClosed => {},
+///         },
+///     }
 /// }
 /// ```
 pub enum CloseError {

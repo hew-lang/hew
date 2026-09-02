@@ -128,8 +128,12 @@ impl Expr {
 /// # Examples
 ///
 /// ```
-/// let every_minute = cron.parse("* * * * *");
-/// let weekdays_9am = cron.parse("0 9 * * 1-5");
+/// import std.time.cron;
+///
+/// fn main() {
+///     let every_minute = cron.parse("* * * * *");
+///     let weekdays_9am = cron.parse("0 9 * * 1-5");
+/// }
 /// ```
 pub fn parse(expr: string) -> Expr {
     unsafe {

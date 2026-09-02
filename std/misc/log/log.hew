@@ -14,6 +14,8 @@
 //! # Usage — module-level
 //!
 //! ```
+//! import std.misc.log;
+//!
 //! fn main() {
 //!     log.setup();   // set global level to INFO
 //!     log.info("server starting");
@@ -25,6 +27,8 @@
 //! # Usage — Logger value
 //!
 //! ```
+//! import std.misc.log;
+//!
 //! fn main() {
 //!     let lg = log.new_logger(log.DEBUG, log.JSON);
 //!     log.logger_info(lg, "startup", [log.field("svc", "auth")]);
@@ -51,12 +55,12 @@
 //! # Output formats
 //!
 //! TEXT (0) — coloured timestamp + level + message + fields to stderr:
-//! ```
+//! ```text
 //! 12:34:56.789 INFO  server starting  port=8080
 //! ```
 //!
 //! JSON (1) — single-line NDJSON to stderr:
-//! ```
+//! ```text
 //! {"ts":1234567890.123,"level":"INFO","msg":"server starting","port":"8080"}
 //! ```
 
@@ -95,8 +99,12 @@ pub const JSON: i64 = 1;
 /// # Example
 ///
 /// ```
-/// let lg = log.new_logger(log.DEBUG, log.JSON);
-/// log.logger_info(lg, "ready", [log.field_int("port", 8080)]);
+/// import std.misc.log;
+///
+/// fn main() {
+///     let lg = log.new_logger(log.DEBUG, log.JSON);
+///     log.logger_info(lg, "ready", [log.field_int("port", 8080)]);
+/// }
 /// ```
 pub type Logger {
     level: i64;
@@ -139,8 +147,12 @@ pub fn logger_format(lg: Logger) -> i64 {
 /// # Example
 ///
 /// ```
-/// let f = log.field("env", "production");    // "env=production"
-/// let g = log.field("user", "John Doe");     // user="John Doe"  (quoted)
+/// import std.misc.log;
+///
+/// fn main() {
+///     let f = log.field("env", "production");    // "env=production"
+///     let g = log.field("user", "John Doe");     // user="John Doe"  (quoted)
+/// }
 /// ```
 pub fn field(key: string, val: string) -> string {
     let encoded = unsafe {
@@ -154,7 +166,11 @@ pub fn field(key: string, val: string) -> string {
 /// # Example
 ///
 /// ```
-/// let f = log.field_int("port", 8080);  // "port=8080"
+/// import std.misc.log;
+///
+/// fn main() {
+///     let f = log.field_int("port", 8080);  // "port=8080"
+/// }
 /// ```
 pub fn field_int(key: string, val: i64) -> string {
     key + "=" + string.from_int(val)
@@ -165,7 +181,11 @@ pub fn field_int(key: string, val: i64) -> string {
 /// # Example
 ///
 /// ```
-/// let f = log.field_float("ratio", 0.75);  // "ratio=0.75"
+/// import std.misc.log;
+///
+/// fn main() {
+///     let f = log.field_float("ratio", 0.75);  // "ratio=0.75"
+/// }
 /// ```
 pub fn field_float(key: string, val: f64) -> string {
     key + "=" + string.from_float(val)
@@ -176,7 +196,11 @@ pub fn field_float(key: string, val: f64) -> string {
 /// # Example
 ///
 /// ```
-/// let f = log.field_bool("debug", true);  // "debug=true"
+/// import std.misc.log;
+///
+/// fn main() {
+///     let f = log.field_bool("debug", true);  // "debug=true"
+/// }
 /// ```
 pub fn field_bool(key: string, val: bool) -> string {
     key + "=" + string.from_bool(val)
@@ -221,7 +245,11 @@ pub fn setup() {
 /// # Examples
 ///
 /// ```
-/// log.set_level(log.DEBUG);
+/// import std.misc.log;
+///
+/// fn main() {
+///     log.set_level(log.DEBUG);
+/// }
 /// ```
 pub fn set_level(level: i64) {
     unsafe {
@@ -243,8 +271,12 @@ pub fn get_level() -> i64 {
 /// # Examples
 ///
 /// ```
-/// log.set_format(log.JSON);
-/// log.info_with("structured", [log.field("service", "api")]);
+/// import std.misc.log;
+///
+/// fn main() {
+///     log.set_format(log.JSON);
+///     log.info_with("structured", [log.field("service", "api")]);
+/// }
 /// ```
 pub fn set_format(format: i64) {
     unsafe {
@@ -271,7 +303,11 @@ pub fn error(msg: string) {
 /// # Example
 ///
 /// ```
-/// log.error_with("request failed", [log.field_int("status", 500), log.field("path", "/api")]);
+/// import std.misc.log;
+///
+/// fn main() {
+///     log.error_with("request failed", [log.field_int("status", 500), log.field("path", "/api")]);
+/// }
 /// ```
 pub fn error_with(msg: string, fields: Vec<string>) {
     let full = compose(msg, fields);
@@ -307,7 +343,11 @@ pub fn info(msg: string) {
 /// # Example
 ///
 /// ```
-/// log.info_with("server started", [log.field_int("port", 8080)]);
+/// import std.misc.log;
+///
+/// fn main() {
+///     log.info_with("server started", [log.field_int("port", 8080)]);
+/// }
 /// ```
 pub fn info_with(msg: string, fields: Vec<string>) {
     let full = compose(msg, fields);
@@ -372,8 +412,12 @@ pub fn logger_warn(lg: Logger, msg: string, fields: Vec<string>) {
 /// # Example
 ///
 /// ```
-/// let lg = log.new_logger(log.INFO, log.JSON);
-/// log.logger_info(lg, "ready", [log.field("svc", "auth")]);
+/// import std.misc.log;
+///
+/// fn main() {
+///     let lg = log.new_logger(log.INFO, log.JSON);
+///     log.logger_info(lg, "ready", [log.field("svc", "auth")]);
+/// }
 /// ```
 pub fn logger_info(lg: Logger, msg: string, fields: Vec<string>) {
     let full = compose(msg, fields);

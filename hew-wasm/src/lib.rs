@@ -961,10 +961,6 @@ fn run_analysis(source: &str) -> AnalysisResult {
 
 #[cfg(test)]
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the curated manifest smoke keeps path, parse, diagnostic, and compilation checks together"
-)]
 fn curated_playground_manifest_smoke() {
     use std::path::Path;
 
@@ -1073,21 +1069,12 @@ fn curated_playground_manifest_smoke() {
                 panic!("expected diagnostics array for {id} ({source_path_rel}): {analysis_json}")
             });
 
-        let unexpected_diagnostics: Vec<_> = diagnostics
-            .iter()
-            .filter(|diagnostic| {
-                !matches!(
-                    diagnostic.get("kind").and_then(serde_json::Value::as_str),
-                    // The expression form is a hard error since v0.6.0, so a
-                    // curated source carrying one is a real playground
-                    // regression; only the pattern deprecation is tolerated.
-                    Some("E_BARE_VARIANT_PATTERN")
-                )
-            })
-            .collect();
+        // Both bare-variant rules refuse since v0.6.0, so no diagnostic is
+        // tolerated here: a curated source that trips either one is a
+        // playground regression, not a spelling the migrator will absolve.
         assert!(
-            unexpected_diagnostics.is_empty(),
-            "expected no non-migration diagnostics for {id} ({source_path_rel}), got {analysis_json}"
+            diagnostics.is_empty(),
+            "expected no diagnostics for {id} ({source_path_rel}), got {analysis_json}"
         );
     }
 }

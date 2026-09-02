@@ -83,11 +83,32 @@ pub fn input_completeness(input: &str) -> InputCompleteness {
         return InputCompleteness::Complete;
     }
 
-    if has_unclosed_delimiters(trimmed) || parses_with_continuation(trimmed) {
+    if has_unclosed_delimiters(trimmed)
+        || parses_with_continuation(trimmed)
+        || ends_with_bare_attribute(trimmed)
+    {
         return InputCompleteness::Incomplete;
     }
 
     InputCompleteness::Invalid
+}
+
+/// True if `input` is a syntactically complete attribute list (`#[wire]`,
+/// stacked `#[a]\n#[b]`, …) with no item yet attached to it.
+///
+/// An attribute alone has balanced delimiters (so `has_unclosed_delimiters`
+/// says "complete") and does not parse in any standalone context (so
+/// `parses_in_any_context` says "no"), which without this check falls
+/// through to `Invalid` — surfacing a parse error on the attribute line
+/// instead of buffering for the item it decorates.
+fn ends_with_bare_attribute(input: &str) -> bool {
+    if parses_as_item(input) {
+        // Already a complete item (with or without its own attributes) —
+        // nothing left to wait for.
+        return false;
+    }
+    let probe = format!("{input}\nfn __hew_repl_attr_probe__() {{}}\n");
+    parses_as_item(&probe)
 }
 
 /// Parse a REPL command string (after the leading `:`).
@@ -307,6 +328,23 @@ mod tests {
         assert_eq!(
             input_completeness(r#""hello"#),
             InputCompleteness::Incomplete
+        );
+    }
+
+    #[test]
+    fn input_completeness_buffers_bare_attribute_awaiting_its_item() {
+        // A standalone attribute line has balanced delimiters and parses in
+        // no context on its own — it must be buffered for the item that
+        // follows, not surfaced as a parse error.
+        assert_eq!(input_completeness("#[wire]"), InputCompleteness::Incomplete);
+        assert_eq!(
+            input_completeness("#[wire]\n#[other]"),
+            InputCompleteness::Incomplete
+        );
+        // Once the decorated item is appended, the buffer is complete.
+        assert_eq!(
+            input_completeness("#[wire]\ntype UserMessage { name: string @1, }"),
+            InputCompleteness::Complete
         );
     }
 

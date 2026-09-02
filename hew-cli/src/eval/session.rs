@@ -142,10 +142,16 @@ impl Session {
 
         match &kind {
             InputKind::Item => {
-                // The new item goes at the top level; we still need a main.
+                // The new item goes at the top level; we still need a main —
+                // unless the input already defines one itself (e.g. evaluating
+                // a whole file, such as `hew playground verify`, whose sole
+                // item is its own `fn main`). Appending a synthetic empty
+                // `fn main() {}` in that case duplicates the definition.
                 source.push_str(input);
                 source.push('\n');
-                source.push_str("fn main() {}\n");
+                if !defines_main(input) {
+                    source.push_str("fn main() {}\n");
+                }
             }
             InputKind::Statement => {
                 source.push_str("fn main() {\n    ");
@@ -256,6 +262,23 @@ impl SessionItem {
             summary: source_preview(source),
         }
     }
+}
+
+/// True if `input` (a fresh item-kind eval input, not accumulated session
+/// state) itself defines a top-level `fn main`. Parse failures are treated as
+/// "no" — the synthetic `fn main() {}` wrapper is still appended, and the
+/// resulting duplicate-parse-error path is unchanged from before this check
+/// existed.
+fn defines_main(input: &str) -> bool {
+    let parse_result = hew_parser::parse(input);
+    if !parse_result.errors.is_empty() {
+        return false;
+    }
+    parse_result
+        .program
+        .items
+        .iter()
+        .any(|(item, _)| matches!(item, Item::Function(decl) if decl.name == "main"))
 }
 
 fn session_items_from_source(source: &str) -> Vec<SessionItem> {
@@ -461,6 +484,29 @@ mod tests {
         let session = Session::new();
         let prog = session.build_program("fn foo() -> i32 { 42 }");
         assert_eq!(prog.kind, InputKind::Item);
+        assert!(prog.source.contains("fn main() {}\n"));
+    }
+
+    #[test]
+    fn item_input_defining_main_is_not_duplicated() {
+        // A whole-file eval (e.g. `hew playground verify` on a program whose
+        // sole item is its own `fn main`) must not get a second synthetic
+        // `fn main() {}` appended — that duplicate definition is a compile
+        // error the user's file never had.
+        let session = Session::new();
+        let prog = session.build_program("fn main() {\n    println(\"hi\");\n}");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert_eq!(prog.source.matches("fn main").count(), 1);
+    }
+
+    #[test]
+    fn item_input_not_defining_main_still_gets_synthetic_main() {
+        // Negative control for the above: an item that is NOT `fn main`
+        // still needs the synthetic empty main appended so the program has
+        // an entry point.
+        let session = Session::new();
+        let prog = session.build_program("fn foo() -> i32 { 42 }");
+        assert_eq!(prog.source.matches("fn main").count(), 1);
         assert!(prog.source.contains("fn main() {}\n"));
     }
 

@@ -142,10 +142,16 @@ impl Session {
 
         match &kind {
             InputKind::Item => {
-                // The new item goes at the top level; we still need a main.
+                // The new item goes at the top level. Only synthesise an
+                // empty `fn main() {}` driver when the item itself does not
+                // already define one — an input that is itself `fn main`
+                // (a whole-file eval/playground-verify run) must not get a
+                // second, duplicate main appended after it.
                 source.push_str(input);
                 source.push('\n');
-                source.push_str("fn main() {}\n");
+                if !item_declares_main(input) {
+                    source.push_str("fn main() {}\n");
+                }
             }
             InputKind::Statement => {
                 source.push_str("fn main() {\n    ");
@@ -256,6 +262,31 @@ impl SessionItem {
             summary: source_preview(source),
         }
     }
+}
+
+/// True when `input` parses as item(s) that already include a top-level
+/// `fn main` definition.
+///
+/// The `InputKind::Item` branch of [`Session::build_program_with_kind_and_auto_print`]
+/// otherwise always appends a synthetic `fn main() {}` driver after the new
+/// item so the resulting program has an entry point. That is correct for a
+/// bare declaration (`fn helper() {}`) evaluated on its own, but when the
+/// item chunk being evaluated is itself the program's real `fn main` (e.g.
+/// a whole `.hew` file run through `hew playground verify`, chunked by the
+/// REPL evaluator), appending another `fn main() {}` produces a duplicate
+/// definition. A parse failure here is not fatal — it is reported by the
+/// caller's own parse of the full synthesised program, so this simply falls
+/// back to the pre-existing "always append" behaviour.
+fn item_declares_main(input: &str) -> bool {
+    let parse_result = hew_parser::parse(input);
+    if !parse_result.errors.is_empty() {
+        return false;
+    }
+    parse_result
+        .program
+        .items
+        .iter()
+        .any(|(item, _)| matches!(item, Item::Function(decl) if decl.name == "main"))
 }
 
 fn session_items_from_source(source: &str) -> Vec<SessionItem> {
@@ -462,6 +493,63 @@ mod tests {
         let prog = session.build_program("fn foo() -> i32 { 42 }");
         assert_eq!(prog.kind, InputKind::Item);
         assert!(prog.source.contains("fn main() {}\n"));
+    }
+
+    /// An item chunk that already defines `fn main` (a whole-file eval, as
+    /// used by `hew playground verify`) must not get a synthetic `fn main`
+    /// appended after it — that would produce a duplicate definition.
+    #[test]
+    fn item_input_declaring_main_gets_no_synthetic_main() {
+        let session = Session::new();
+        let prog = session.build_program("fn main() { println(\"hi\"); }");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert_eq!(
+            prog.source.matches("fn main").count(),
+            1,
+            "expected exactly one fn main in: {}",
+            prog.source
+        );
+    }
+
+    /// Negative control for the above: an item that is NOT `fn main` still
+    /// gets the synthetic driver appended, proving the check is specific to
+    /// items that declare `main` rather than suppressing the driver for all
+    /// items.
+    #[test]
+    fn item_input_not_declaring_main_still_gets_synthetic_main() {
+        let session = Session::new();
+        let prog = session.build_program("fn helper() -> i32 { 42 }");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert_eq!(
+            prog.source.matches("fn main").count(),
+            1,
+            "expected the synthetic driver to still be appended: {}",
+            prog.source
+        );
+    }
+
+    /// A prior accumulated item (e.g. a helper function from an earlier
+    /// chunk) followed by a chunk that is itself `fn main` — the shape
+    /// `hew playground verify` produces for a multi-item playground file —
+    /// must still parse to exactly one `main`.
+    #[test]
+    fn accumulated_item_then_own_main_has_single_main() {
+        let mut session = Session::new();
+        session.add_item("fn fib(n: i64) -> i64 { n }");
+        let prog = session.build_program("fn main() { println(fib(1)); }");
+        let parsed = hew_parser::parse(&prog.source);
+        assert!(
+            parsed.errors.is_empty(),
+            "expected clean parse: {:?}",
+            parsed.errors
+        );
+        let main_count = parsed
+            .program
+            .items
+            .iter()
+            .filter(|(item, _)| matches!(item, Item::Function(decl) if decl.name == "main"))
+            .count();
+        assert_eq!(main_count, 1, "expected exactly one fn main definition");
     }
 
     #[test]

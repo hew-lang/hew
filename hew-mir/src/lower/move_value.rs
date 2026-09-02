@@ -1130,10 +1130,54 @@ impl Builder {
                         arg.kind,
                         HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
                     )
-                    && hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee_symbol)
-                        .is_some_and(hew_types::runtime_call::RuntimeCallFamily::consumes_receiver)
                 {
-                    return Some(self.transfer_owned_carrier_value(arg, value));
+                    if hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee_symbol)
+                        .is_some_and(hew_types::runtime_call::RuntimeCallFamily::consumes_receiver)
+                    {
+                        return Some(self.transfer_owned_carrier_value(arg, value));
+                    }
+                    // A `#[resource]` RECORD leaf is the same hand-off with no
+                    // null to hand back: its release is user code, so clearing
+                    // the composite's slot would not make the composite's field
+                    // walk skip it — the walk would run `close(self)` over zeroed
+                    // storage. The composite must stop owning the leaf instead,
+                    // which is the same retirement the enum shell takes when its
+                    // payload moves into a binder.
+                    //
+                    // SHORTCUT — WHY: the retirement is whole-root, so a sibling
+                    // resource field the program does not close itself leaks
+                    // instead of being closed by the walk. The reduction is
+                    // `type Two { a: Slot, b: Slot }` with only `t.a.close()`:
+                    // it runs clean and frees `a` once, and `b`'s block is never
+                    // freed. That is the fail-closed direction (leak, never
+                    // double free) and it is what the walk already does for every
+                    // other partially moved composite; before this the same
+                    // program double-freed `a`. WHEN OBSOLETE: when a record root
+                    // carries per-field release state rather than one generation.
+                    // WHAT: discharge the untouched siblings at the retirement the
+                    // way the escaped-sibling splice does for an escaping binder.
+                    if matches!(
+                        super::resource_drop_fn(&arg_ty, &self.type_classes),
+                        Some(crate::model::DropFnSpec::UserClose(ref symbol))
+                            if symbol == callee_symbol
+                    ) {
+                        // Retire the root through the ordinary consume seam so a
+                        // record whose SECOND resource field is closed too
+                        // (`t.a.close(); t.b.close()`) does not transfer a
+                        // generation that already ended — the ownership-generation
+                        // invariant reports that as an ICE.
+                        if let Some(root) = Self::projection_root_binding(arg) {
+                            let retired = self.owned_locals.iter().any(|entry| {
+                                entry.binding == root
+                                    && matches!(entry.disposition, Disposition::ConsumedAt { .. })
+                            });
+                            if !retired {
+                                self.publish_projection_source_transfer(arg);
+                                self.mark_binding_moved(root);
+                            }
+                        }
+                        return Some(value);
+                    }
                 }
                 Some(value)
             })

@@ -21,6 +21,11 @@
 //
 //   untouched binder — the same arm without reading the payload, proving the
 //   field read is not what discharges the shell.
+//
+//   two resource fields — closed by the program and closed by the walk, the two
+//   ends of the record retirement. Closing only ONE of two is deliberately
+//   absent: that shape leaks its untouched sibling by design (the retirement is
+//   whole-root), so it belongs in a run assertion, not in a zero-findings gate.
 extern "C" {
     fn malloc(size: i64) -> i64;
     fn free(addr: i64);
@@ -42,6 +47,11 @@ impl Slot {
 type Pair {
     slot: Slot;
     tag: i64;
+}
+
+type Two {
+    a: Slot;
+    b: Slot;
 }
 
 fn acquire() -> Slot {
@@ -70,6 +80,23 @@ fn record_field_close() {
 fn record_scope_exit_close() {
     let p = Pair { slot: acquire(), tag: 9 };
     let _ = p.tag;
+}
+
+// Both resource fields closed by the program: the composite retires once and
+// each leaf frees exactly once. A second retirement of the same root would be
+// an ownership-generation ICE, not a runtime finding, so this shape is also the
+// compile-side control.
+fn two_fields_both_closed() {
+    let t = Two { a: acquire(), b: acquire() };
+    t.a.close();
+    t.b.close();
+}
+
+// Neither field closed: the composite's own field walk is the sole closer for
+// both leaves.
+fn two_fields_scope_exit_close() {
+    let t = Two { a: acquire(), b: acquire() };
+    let _ = t;
 }
 
 // Enum payload bound by an unguarded arm, with a bit-copy field read.
@@ -112,6 +139,8 @@ fn main() -> i64 {
     for _i in 0..64 {
         record_field_close();
         record_scope_exit_close();
+        two_fields_both_closed();
+        two_fields_scope_exit_close();
         let addr = enum_payload_read();
         if addr == 0 {
             return 70;

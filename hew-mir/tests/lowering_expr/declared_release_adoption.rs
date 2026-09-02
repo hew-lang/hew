@@ -264,8 +264,8 @@ fn assert_declared_close_handoff(
         .iter()
         .find(|block| block.id == close_next)
         .expect("close normal successor must exist");
-    let transfer_index = |owner| {
-        let indices = close_success
+    let transfers = |block: &hew_mir::BasicBlock, owner: OwnerId| -> Vec<usize> {
+        block
             .instructions
             .iter()
             .enumerate()
@@ -280,43 +280,63 @@ fn assert_declared_close_handoff(
                 )
                 .then_some(index)
             })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            indices.len(),
-            1,
-            "owner {owner:?} must transfer exactly once"
-        );
-        indices[0]
+            .collect()
     };
-    let child_transfer = transfer_index(child);
-    let parent_transfer = transfer_index(parent);
+
+    // The shell retires where its payload LEAVES it, not where the close
+    // returns: the arm's `PayloadBindingTransfer` neutralize is the hand-off,
+    // and after it the binder is the sole owner on this path.
+    let neutralize = close_block
+        .instructions
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot {
+                    transferee: Some(_),
+                    authority: hew_mir::NeutralizeAuthority::PayloadBindingTransfer,
+                    ..
+                }
+            )
+        })
+        .expect("the selected arm must hand its payload to the binder");
+    let parent_transfers = transfers(close_block, parent);
+    assert_eq!(
+        parent_transfers.len(),
+        1,
+        "the shell must retire exactly once, in the arm that took its payload: {:#?}",
+        close_block.instructions
+    );
     assert!(
-        child_transfer < parent_transfer,
-        "the child close must commit before its parent shell retires: {:#?}",
+        parent_transfers[0] > neutralize,
+        "the shell may only retire after the hand-off that emptied it: {:#?}",
+        close_block.instructions
+    );
+    assert!(
+        transfers(close_success, parent).is_empty(),
+        "the close's successor must not retire a shell that is already retired: {:#?}",
         close_success.instructions
     );
-    assert!(
-        close_block.instructions.iter().all(|instruction| !matches!(
-            instruction,
-            Instr::OwnershipEvent(OwnershipEvent::Transfer {
-                owner: candidate,
-                ..
-            }) if *candidate == parent
-        )),
-        "the pre-call edge must keep the shell owner for early failure"
+
+    // The child commits on the close's normal edge, as every consuming call
+    // argument does.
+    assert_eq!(
+        transfers(close_success, child).len(),
+        1,
+        "the closed payload must commit exactly once on the call's normal edge: {:#?}",
+        close_success.instructions
     );
+
+    // Unwinding out of the close destroys the BINDER, which owns the payload
+    // from the hand-off onward. Re-running the shell's walk there would close
+    // the same handle a second time over the zeroed variant slot.
+    let unwind = ExitPath::Unwind {
+        block: close_block.id,
+        callee: "Handle::close".to_string(),
+    };
     assert!(
-        exit_has_drop(
-            p,
-            "main",
-            &ExitPath::Unwind {
-                block: close_block.id,
-                callee: "Handle::close".to_string(),
-            },
-            parent_place,
-            DropKind::EnumInPlace,
-        ),
-        "an unwind before the close commits must retain shell cleanup"
+        !exit_has_drop(p, "main", &unwind, parent_place, DropKind::EnumInPlace),
+        "an unwind after the hand-off must not close the shell's emptied payload"
     );
     assert!(
         !exit_has_drop(

@@ -5163,6 +5163,116 @@ fn run_bound_tuple_field_close_drops_each_handle_once() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "tuple-field-ok\n");
 }
 
+// ── `#[resource]`-record FIELD of a plain record (#3070) ────────────────
+//
+// A `#[resource]` record leaf has no null representation, so clearing the
+// composite's slot cannot make its `RecordInPlace` field walk skip it: the walk
+// would run the user `close(self)` over zeroed storage. The composite stops
+// owning the leaf instead, which retires the WHOLE root — the boundary these
+// three pin from all sides.
+
+/// Shared prelude: a `#[resource]` record over a real `malloc` block, so a
+/// second close is a genuine double free rather than only an extra line.
+const RESOURCE_FIELD_PRELUDE: &str = "\
+extern \"C\" {\n\
+    fn malloc(size: i64) -> i64;\n\
+    fn free(addr: i64);\n\
+}\n\
+#[resource]\n\
+type Slot { addr: i64 }\n\
+impl Slot {\n\
+    fn close(self) { println(\"close\"); unsafe { free(self.addr) }; }\n\
+}\n\
+fn acquire() -> Slot { Slot { addr: unsafe { malloc(64) } } }\n\
+type Two { a: Slot, b: Slot }\n";
+
+fn run_resource_field_program(name: &str, body: &str) -> std::process::Output {
+    let dir = support::tempdir();
+    let hew_src = dir.path().join(name);
+    std::fs::write(&hew_src, format!("{RESOURCE_FIELD_PRELUDE}{body}")).unwrap();
+    run_bounded_hew_run(&hew_src, repo_root())
+}
+
+/// Both fields closed by the program. Each close must retire the root at most
+/// once: a second transfer of an already-ended generation is reported as an
+/// ownership-generation ICE, so this also pins the compile side.
+#[test]
+fn run_record_resource_fields_both_closed_close_once_each() {
+    require_codegen();
+    let output = run_resource_field_program(
+        "resource_field_both.hew",
+        "fn main() {\n\
+         \x20   let t = Two { a: acquire(), b: acquire() };\n\
+         \x20   t.a.close();\n\
+         \x20   t.b.close();\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "closing both resource fields must run cleanly; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "close\nclose\ndone\n"
+    );
+}
+
+/// Neither field closed: the composite's own field walk is the sole closer, so
+/// both leaves still close. The leak control for the retirement.
+#[test]
+fn run_record_resource_fields_untouched_close_once_each() {
+    require_codegen();
+    let output = run_resource_field_program(
+        "resource_field_untouched.hew",
+        "fn main() {\n\
+         \x20   let t = Two { a: acquire(), b: acquire() };\n\
+         \x20   let _ = t;\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "an untouched record of resource fields must run cleanly; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "done\nclose\nclose\n"
+    );
+}
+
+/// The documented leak edge: closing ONE of two resource fields retires the
+/// whole root, so the untouched sibling is never closed. Pre-fix this program
+/// closed `a` twice; the trade is a leak, and this pins which side of it we are
+/// on so a future per-field retirement is a deliberate change.
+#[test]
+fn run_record_resource_field_partial_close_leaks_the_sibling() {
+    require_codegen();
+    let output = run_resource_field_program(
+        "resource_field_partial.hew",
+        "fn main() {\n\
+         \x20   let t = Two { a: acquire(), b: acquire() };\n\
+         \x20   t.a.close();\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "closing one of two resource fields must not double free; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "close\ndone\n",
+        "exactly one close: `a` through the program, `b` leaked by the whole-root retirement"
+    );
+}
+
 // ── `#[resource]`-record payload of an enum carrier (#3070) ──────────────
 //
 // A `#[resource]` RECORD payload has no null representation, so the shell's

@@ -3771,7 +3771,7 @@ impl Builder {
         Ok(false)
     }
 
-    fn publish_projection_source_transfer(&mut self, value: &HirExpr) {
+    pub(crate) fn publish_projection_source_transfer(&mut self, value: &HirExpr) {
         let Some(root_binding) = Self::projection_root_binding(value) else {
             return;
         };
@@ -6226,7 +6226,7 @@ impl Builder {
         }
     }
 
-    fn projection_root_binding(expr: &HirExpr) -> Option<BindingId> {
+    pub(crate) fn projection_root_binding(expr: &HirExpr) -> Option<BindingId> {
         match &expr.kind {
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(id),

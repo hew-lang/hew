@@ -420,61 +420,6 @@ impl Builder {
         matches!(&scrutinee.kind, HirExprKind::GeneratorNext { .. })
     }
 
-    /// True when the match scrutinee is a stream/channel recv call returning
-    /// `Option<T>` whose `Some` payload owns heap. This covers every recv shape
-    /// that surfaces through `lower_match_enum_tag`: the for-await desugar's
-    /// synthetic `match channel.recv(__hew_for_iter_X) { Some(item) => body,
-    /// None => break }` and source-level `match await rx.recv() { ... }` /
-    /// `match rx.try_recv() { ... }` whose scrutinee lowers to the same direct
-    /// `Call { callee: hew_channel_*_layout / hew_stream_*_layout }` shape.
-    ///
-    /// Each recv hands the consumer a FRESH, solely-owned heap value (the
-    /// runtime allocates an `alloc_cstring_data` block per frame for `string`,
-    /// a fresh bytes header for `Bytes`). The `Some(item)` arm payload binding
-    /// owns exactly one reference whose only release path is the consuming
-    /// body's per-iteration drop — identical ownership shape to a generator
-    /// yield. Without that release every received frame leaks one heap block
-    /// per iteration (every `Stream<string>` recv loop, every `Receiver<T>::recv`
-    /// drain), which is the leak this fix closes.
-    ///
-    /// The detector matches structurally on the HIR `Call` callee `BindingRef`
-    /// name — the same identity codegen uses to intercept the call and
-    /// materialise `Option<T>` from the runtime's null-ptr-on-EOF return —
-    /// rather than on the MIR terminator shape, so this fires before MIR
-    /// lowering decides between `Terminator::Call` (blocking) and
-    /// `Terminator::SuspendingChannelRecv` (suspending in execution-context
-    /// callers). Both terminator shapes feed the same Option<T> wrapper into
-    /// the match; the per-iteration drop discipline is identical.
-    pub(crate) fn is_recv_next_scrutinee(scrutinee: &HirExpr) -> bool {
-        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
-            return false;
-        };
-        let HirExprKind::BindingRef { name, .. } = &callee.kind else {
-            return false;
-        };
-        // Every recv-result-producing runtime symbol (returns `Option<T>` or
-        // a result codegen wraps into `Option<T>`) that can appear as a match
-        // scrutinee in a `match recv()` / `match next()` shape:
-        //   * channel recv: the layout-witness `hew_channel_recv_layout` /
-        //     `hew_channel_try_recv_layout` entries (one symbol per operation
-        //     for every describable element type).
-        //   * stream next: the layout-witness `hew_stream_next_layout` /
-        //     `hew_stream_try_next_layout` entries.
-        //   * duplex recv: `hew_duplex_recv` / `hew_duplex_try_recv` and the
-        //     half-duplex `hew_duplex_recv_half` — all produce an `Option<T>`
-        //     payload in the same shape.
-        matches!(
-            name.as_str(),
-            "hew_channel_recv_layout"
-                | "hew_channel_try_recv_layout"
-                | "hew_stream_next_layout"
-                | "hew_stream_try_next_layout"
-                | "hew_duplex_recv"
-                | "hew_duplex_recv_half"
-                | "hew_duplex_try_recv"
-        )
-    }
-
     /// The classified release verdict for a generator-yielded (or
     /// channel-received) `Some(x)` payload of type `ty`:
     /// [`ReleaseSymbolVerdict::Wired`] carries the C-ABI symbol the
@@ -4715,7 +4660,6 @@ impl Builder {
             }
         }
         let generator_next_scrutinee = Self::is_generator_next_scrutinee(scrutinee);
-        let recv_next_scrutinee = Self::is_recv_next_scrutinee(scrutinee);
         // Iterator clone-out is element-type agnostic: the synthetic Vec/Get
         // call returns a fresh owner for scalar, retained, and descriptor-backed
         // element classes alike.
@@ -4767,8 +4711,7 @@ impl Builder {
         // release authority for the ephemeral result shell/payload. Do not
         // also mint the generic typed-publication owner for that same
         // generation while lowering the scrutinee.
-        let specialised_scrutinee_owner =
-            generator_next_scrutinee || recv_next_scrutinee || vec_iter_next_scrutinee;
+        let specialised_scrutinee_owner = generator_next_scrutinee || vec_iter_next_scrutinee;
         if specialised_scrutinee_owner {
             self.suppress_typed_produced_owner_sites
                 .insert(scrutinee.site);
@@ -5163,17 +5106,6 @@ impl Builder {
             );
             let arm_is_generator_some = generator_next_scrutinee && arm_is_some;
             let arm_is_fresh_owned_vec_iter_some = vec_iter_next_scrutinee && arm_is_some;
-            // Recv-call scrutinee `Some` arm: the runtime hands the consumer a
-            // FRESH, solely-owned heap value per frame (an `alloc_cstring_data`
-            // block for `string`, a fresh `Bytes` header for `bytes`). The
-            // payload binding's only release path is the consuming body's
-            // per-iteration drop — identical ownership shape to a generator
-            // yield (the coro `.next()` drive returns the same kind of fresh
-            // owned value). Without this drop every received frame leaks a
-            // heap block per iteration: the leak this fix closes for
-            // `for await item in rx` / `match channel.recv(...) { ... }` /
-            // `match stream.recv() { ... }`.
-            let arm_is_recv_some = recv_next_scrutinee && arm_is_some;
             let call_carrier_needs_skipped_payload_owner = call_scrutinee_owner.is_some()
                 && match &self.subst_ty(&scrutinee.ty) {
                     ResolvedTy::Named { name, args, .. } => crate::model::find_enum_layout(
@@ -5420,7 +5352,7 @@ impl Builder {
                 // hazard. Routing it through default-deny would falsely reject
                 // that transfer as a re-readable-place move-out. Skip it.
                 let is_fresh_owned_frame_payload =
-                    arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some;
+                    arm_is_fresh_owned_vec_iter_some || arm_is_generator_some;
                 if !is_fresh_owned_frame_payload && !payload_binding_transfer_committed {
                     // A binder that took the contextual `Sink` handoff is still a
                     // projected payload and must route its consumes through the
@@ -5448,7 +5380,7 @@ impl Builder {
                         keep_for_drop_elab,
                     );
                 }
-                if arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some {
+                if arm_is_fresh_owned_vec_iter_some || arm_is_generator_some {
                     // The picker verdict is consulted HERE, before this
                     // binding can be retracted from `owned_locals` — the
                     // fail-closed check therefore covers every binding that

@@ -2679,18 +2679,7 @@ run_accept_expect_stdout "actor_multi_arg_ask"
 # the worker drains and closes it. Pins the recursive handle predicate: before
 # the fix the tuple arg was lowered as Read (not Consume), and a later
 # `rx.close()` in the caller compiled and double-closed the channel at runtime.
-run_accept_expect_status "actor_nested_handle_tuple_transfer" 0
-if diff -u "${ROOT}/tests/vertical-slice/accept/actor_nested_handle_tuple_transfer.expected" \
-    "${stdout_output}" >/dev/null; then
-    echo "actor_nested_handle_tuple_transfer: #3127 is fixed; remove this known-failure ratchet" >&2
-    exit 1
-fi
-if [[ "$(cat "${stdout_output}")" != $'worker got payload: \ndone' ]]; then
-    echo "actor_nested_handle_tuple_transfer: #3127 changed from the exact empty-payload failure" >&2
-    cat "${stdout_output}" >&2
-    exit 1
-fi
-echo "KNOWN actor_nested_handle_tuple_transfer (#3127: actor message loses the nested string payload)"
+run_accept_expect_stdout "actor_nested_handle_tuple_transfer"
 
 # Accept + run: user records named `Sender` and `Receiver` are not builtin
 # channel handles. They must keep ordinary actor-send treatment and emit CBOR
@@ -2754,6 +2743,14 @@ fi
 # shellcheck disable=SC2016  # backticks are literal — they match the
 # diagnostic's pretty-printed `a` binding name.
 grep -qF 'use of moved value `a`' "${reject_output}"
+
+# Accept + run: the value a `match` over a channel `recv()` produces survives
+# the match. The recv is a codegen-intercepted layout-witness call; before the
+# fix its `Option<T>` carrier got no owner, the arm binder became sole owner of
+# the payload, and its body-end release canonicalized onto the match result -
+# nulling the string the match had just produced. The second half binds the
+# carrier to a local first, the shape that already worked, as the control.
+run_accept_expect_stdout "channel_recv_match_result_survives"
 
 # Accept + run: the channel-Duplex split round-trip delivers the exact value.
 # Split a symmetric pair, send 7 on the send-half, receive it on the recv-half,

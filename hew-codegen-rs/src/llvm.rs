@@ -23619,6 +23619,27 @@ fn runtime_family_uses_runtime_abi_tail(
     family.is_mir_emitter_family() && !runtime_family_preempts_runtime_abi_tail(family)
 }
 
+/// The layout-witness recv entries: `stream.recv()` / `stream.try_recv()` over
+/// a `Stream<T>` and `rx.recv()` / `rx.try_recv()` over a `std::channel`
+/// `Receiver<T>`. Codegen intercepts the `Terminator::Call` for these and
+/// materialises the `Option<T>` carrier from the runtime's out-parameter and
+/// status code instead of taking the generic runtime-ABI tail.
+///
+/// One predicate shared by the emitter dispatch and the crash-cleanup
+/// admission catalog below, so the set that gets the specialised emitter and
+/// the set that gets its post-write rearm cannot drift.
+fn runtime_family_is_layout_recv(family: hew_types::runtime_call::RuntimeCallFamily) -> bool {
+    use hew_types::runtime_call::RuntimeCallFamily as Family;
+
+    matches!(
+        family,
+        Family::StreamNextLayout
+            | Family::StreamTryNextLayout
+            | Family::ChannelRecvLayout
+            | Family::ChannelTryRecvLayout
+    )
+}
+
 /// Whether a specialised `Terminator::Call` emitter brackets its destination
 /// publication with the same deactivate/arm lifecycle as the generic call
 /// tail.
@@ -23635,6 +23656,11 @@ fn call_destination_has_specialized_crash_cleanup_lifecycle(
     match authority {
         hew_mir::CallAuthority::Runtime(family) => {
             runtime_family_uses_runtime_abi_tail(family)
+                // The layout-witness recv intercept publishes the whole
+                // `Option<T>` carrier — payload slot then tag — before it
+                // rearms, so its destination carries the same lifecycle as a
+                // generic runtime-ABI tail destination.
+                || runtime_family_is_layout_recv(family)
                 || matches!(
                     family,
                     Family::VecGet(hew_types::runtime_call::VecGetElem::Clone)
@@ -31439,15 +31465,7 @@ fn lower_terminator<'ctx>(
             // element directly into the Option's Some payload slot and the
             // return code selects the tag. Dispatch on the carried family,
             // mirroring the `Node::lookup` / `hew_remote_pid_send` precedent.
-            if matches!(
-                builtin,
-                Some(
-                    RtFamily::StreamNextLayout
-                        | RtFamily::StreamTryNextLayout
-                        | RtFamily::ChannelRecvLayout
-                        | RtFamily::ChannelTryRecvLayout
-                )
-            ) {
+            if builtin.is_some_and(runtime_family_is_layout_recv) {
                 let [handle_arg] = args.as_slice() else {
                     return Err(CodegenError::FailClosed(format!(
                         "{callee} expects exactly 1 argument (the handle), got {}",
@@ -31468,6 +31486,18 @@ fn lower_terminator<'ctx>(
                 let handle_ptr =
                     load_duplex_handle(fn_ctx, *handle_arg, &format!("{callee} handle"))?;
                 store_recv_option_via_layout(fn_ctx, handle_ptr, *dest_local, callee, &elem_ty)?;
+                // The carrier is complete here: `store_recv_option_via_layout`
+                // writes the payload slot and then selects the tag from the
+                // runtime status, so nothing after this point can observe a
+                // half-built `Option<T>`. The generic call tail deactivated the
+                // destination before the write; rearm it at this producer
+                // boundary — the same bracket every MIR-emitter family gets —
+                // so a crash or cancellation after the receive still releases
+                // the frame the runtime just handed us. Without the rearm the
+                // destination has no cleanup lifecycle and MIR must withhold
+                // the carrier owner entirely, which is what dropped the payload
+                // a `match rx.recv()` had just produced.
+                emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
                 let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
                     CodegenError::FailClosed(format!("{callee} next bb{next} missing"))
                 })?;

@@ -1,5 +1,5 @@
 fn record_tail(Packet) -> i64 [conv=default]
-  key: record_tail [mono]
+  key: pattern_param_tail_owned_project.record_tail [mono]
   locals:
     _0: Packet
     _1: i64
@@ -50,7 +50,7 @@ fn record_tail(Packet) -> i64 [conv=default]
     goto bb1
 
 fn record_nontail(Packet) -> i64 [conv=default]
-  key: record_nontail [mono]
+  key: pattern_param_tail_owned_project.record_nontail [mono]
   locals:
     _0: Packet
     _1: i64
@@ -105,7 +105,7 @@ fn record_nontail(Packet) -> i64 [conv=default]
     goto bb1
 
 fn tuple_tail((string, string)) -> i64 [conv=default]
-  key: tuple_tail [mono]
+  key: pattern_param_tail_owned_project.tuple_tail [mono]
   locals:
     _0: (string, string)
     _1: i64
@@ -156,7 +156,7 @@ fn tuple_tail((string, string)) -> i64 [conv=default]
     goto bb1
 
 fn tuple_nontail((string, string)) -> i64 [conv=default]
-  key: tuple_nontail [mono]
+  key: pattern_param_tail_owned_project.tuple_nontail [mono]
   locals:
     _0: (string, string)
     _1: i64
@@ -211,7 +211,7 @@ fn tuple_nontail((string, string)) -> i64 [conv=default]
     goto bb1
 
 fn borrow_record(Packet) -> i64 [conv=default]
-  key: borrow_record [mono]
+  key: pattern_param_tail_owned_project.borrow_record [mono]
   locals:
     _0: Packet
     _1: i64
@@ -231,7 +231,7 @@ fn borrow_record(Packet) -> i64 [conv=default]
     trap(ExhaustivenessFallthrough)
 
 fn borrow_tuple((string, string)) -> i64 [conv=default]
-  key: borrow_tuple [mono]
+  key: pattern_param_tail_owned_project.borrow_tuple [mono]
   locals:
     _0: (string, string)
     _1: i64
@@ -251,7 +251,7 @@ fn borrow_tuple((string, string)) -> i64 [conv=default]
     trap(ExhaustivenessFallthrough)
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: pattern_param_tail_owned_project.main [mono]
   locals:
     _0: string
     _1: string

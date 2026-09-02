@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: hashmap_ops.main [mono]
   locals:
     _0: HashMap<string, i64>
     _1: HashMap<string, i64>

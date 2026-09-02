@@ -1,5 +1,5 @@
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: vec_element_widths.main [mono]
   locals:
     _0: Vec<i8>
     _1: Vec<i8>

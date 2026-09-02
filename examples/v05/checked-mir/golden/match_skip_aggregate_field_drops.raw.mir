@@ -1,5 +1,5 @@
 fn skip_record_field(i64) -> i64 [conv=default]
-  key: skip_record_field [mono]
+  key: match_skip_aggregate_field_drops.skip_record_field [mono]
   locals:
     _0: i64
     _1: string
@@ -45,7 +45,7 @@ fn skip_record_field(i64) -> i64 [conv=default]
     goto bb2
 
 fn skip_tuple_field(i64) -> i64 [conv=default]
-  key: skip_tuple_field [mono]
+  key: match_skip_aggregate_field_drops.skip_tuple_field [mono]
   locals:
     _0: i64
     _1: string
@@ -92,7 +92,7 @@ fn skip_tuple_field(i64) -> i64 [conv=default]
     goto bb2
 
 fn skip_enum_field(i64) -> i64 [conv=default]
-  key: skip_enum_field [mono]
+  key: match_skip_aggregate_field_drops.skip_enum_field [mono]
   locals:
     _0: i64
     _1: Shade
@@ -141,7 +141,7 @@ fn skip_enum_field(i64) -> i64 [conv=default]
     goto bb2
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: match_skip_aggregate_field_drops.main [mono]
   locals:
     _0: i64
     _1: i64

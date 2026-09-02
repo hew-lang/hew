@@ -1,5 +1,5 @@
 fn make() -> Outer [conv=default]
-  key: make [mono]
+  key: pattern_nested_record_rest.make [mono]
   locals:
     _0: string
     _1: string
@@ -43,7 +43,7 @@ fn make() -> Outer [conv=default]
     return
 
 fn probe() -> i64 [conv=default]
-  key: probe [mono]
+  key: pattern_nested_record_rest.probe [mono]
   locals:
     _0: Outer
     _1: Outer
@@ -104,7 +104,7 @@ fn probe() -> i64 [conv=default]
     return
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: pattern_nested_record_rest.main [mono]
   locals:
     _0: i64
     _1: i64

@@ -1,5 +1,5 @@
 fn build() -> Weak<Node> [conv=default]
-  key: build [mono]
+  key: rc_weak_graph.build [mono]
   locals:
     _0: string
     _1: Option<Weak<Node>>
@@ -82,7 +82,7 @@ fn build() -> Weak<Node> [conv=default]
     return
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: rc_weak_graph.main [mono]
   locals:
     _0: Weak<Node>
     _1: Weak<Node>

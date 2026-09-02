@@ -1,5 +1,5 @@
 fn mkItems() -> Vec<string> [conv=default]
-  key: mkItems [mono]
+  key: vec_index_assign_consumed_move.mkItems [mono]
   locals:
     _0: Vec<string>
     _1: Vec<string>
@@ -34,7 +34,7 @@ fn mkItems() -> Vec<string> [conv=default]
     return
 
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: vec_index_assign_consumed_move.main [mono]
   locals:
     _0: Vec<Holder>
     _1: Vec<Holder>

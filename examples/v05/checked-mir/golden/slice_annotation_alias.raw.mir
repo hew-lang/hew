@@ -1,5 +1,5 @@
 fn takes(Vec<i32>) -> i64 [conv=default]
-  key: takes [mono]
+  key: slice_annotation_alias.takes [mono]
   locals:
     _0: Vec<i32>
     _1: i64
@@ -12,7 +12,7 @@ fn takes(Vec<i32>) -> i64 [conv=default]
     return
 
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: slice_annotation_alias.main [mono]
   locals:
     _0: Vec<i32>
     _1: Vec<i32>

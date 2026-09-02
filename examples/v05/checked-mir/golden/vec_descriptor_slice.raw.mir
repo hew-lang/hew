@@ -1,5 +1,5 @@
 fn checked_mir_colour_tag(CheckedMirColour) -> i64 [conv=default]
-  key: checked_mir_colour_tag [mono]
+  key: vec_descriptor_slice.checked_mir_colour_tag [mono]
   locals:
     _0: CheckedMirColour
     _1: i64
@@ -51,7 +51,7 @@ fn checked_mir_colour_tag(CheckedMirColour) -> i64 [conv=default]
     branch _9 ? bb4 : bb5
 
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: vec_descriptor_slice.main [mono]
   locals:
     _0: Vec<CheckedMirColour>
     _1: Vec<CheckedMirColour>

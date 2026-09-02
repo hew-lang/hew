@@ -1,5 +1,5 @@
 fn skip_string_record(i64) -> i64 [conv=default]
-  key: skip_string_record [mono]
+  key: match_skip_leaf_field_drops.skip_string_record [mono]
   locals:
     _0: i64
     _1: string
@@ -43,7 +43,7 @@ fn skip_string_record(i64) -> i64 [conv=default]
     goto bb2
 
 fn skip_string_tuple(i64) -> i64 [conv=default]
-  key: skip_string_tuple [mono]
+  key: match_skip_leaf_field_drops.skip_string_tuple [mono]
   locals:
     _0: i64
     _1: string
@@ -87,7 +87,7 @@ fn skip_string_tuple(i64) -> i64 [conv=default]
     goto bb2
 
 fn skip_vec_record(i64) -> i64 [conv=default]
-  key: skip_vec_record [mono]
+  key: match_skip_leaf_field_drops.skip_vec_record [mono]
   locals:
     _0: i64
     _1: Vec<string>
@@ -160,7 +160,7 @@ fn skip_vec_record(i64) -> i64 [conv=default]
     goto bb4
 
 fn skip_bytes_record(i64) -> i64 [conv=default]
-  key: skip_bytes_record [mono]
+  key: match_skip_leaf_field_drops.skip_bytes_record [mono]
   locals:
     _0: i64
     _1: string
@@ -214,7 +214,7 @@ fn skip_bytes_record(i64) -> i64 [conv=default]
     goto bb2
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: match_skip_leaf_field_drops.main [mono]
   locals:
     _0: i64
     _1: i64

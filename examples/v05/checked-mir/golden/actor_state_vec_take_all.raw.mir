@@ -15,7 +15,7 @@ fn Tag::label_size(Tag) -> i64 [conv=default]
     return
 
 fn make_tag(string) -> dyn Labeled [conv=default]
-  key: make_tag [mono]
+  key: actor_state_vec_take_all.make_tag [mono]
   locals:
     _0: string
     _1: Tag
@@ -299,7 +299,7 @@ fn Registry__recv__plugin_count() -> i64 [conv=actor_handler]
     return
 
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: actor_state_vec_take_all.main [mono]
   locals:
     _0: Registry
     _1: Vec<dyn Labeled>

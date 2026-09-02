@@ -28,7 +28,7 @@ fn SlowWorker__recv__compute(i64) -> i64 [conv=actor_handler]
     return
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: actor_ask_race.main [mono]
   locals:
     _0: LocalPid<FastWorker>
     _1: LocalPid<SlowWorker>

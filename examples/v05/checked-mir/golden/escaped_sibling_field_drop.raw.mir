@@ -1,5 +1,5 @@
 fn extract() -> Inner [conv=default]
-  key: extract [mono]
+  key: escaped_sibling_field_drop.extract [mono]
   locals:
     _0: string
     _1: string
@@ -52,7 +52,7 @@ fn extract() -> Inner [conv=default]
     return
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: escaped_sibling_field_drop.main [mono]
   locals:
     _0: Inner
     _1: Inner

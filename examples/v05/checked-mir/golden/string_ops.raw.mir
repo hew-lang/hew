@@ -1,5 +1,5 @@
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: string_ops.main [mono]
   locals:
     _0: string
     _1: string

@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: hashset_ops.main [mono]
   locals:
     _0: HashSet<i64>
     _1: HashSet<i64>

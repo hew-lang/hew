@@ -6,7 +6,7 @@ fn Probe__recv__ping() -> () [conv=actor_handler]
     return
 
 fn link(LocalPid<Probe>, LocalPid<Probe>) -> () [conv=default]
-  key: link [mono]
+  key: user_fn_shadows_builtin_name.link [mono]
   locals:
     _0: LocalPid<Probe>
     _1: LocalPid<Probe>
@@ -14,7 +14,7 @@ fn link(LocalPid<Probe>, LocalPid<Probe>) -> () [conv=default]
     return
 
 fn monitor(LocalPid<Probe>, LocalPid<Probe>) -> () [conv=default]
-  key: monitor [mono]
+  key: user_fn_shadows_builtin_name.monitor [mono]
   locals:
     _0: LocalPid<Probe>
     _1: LocalPid<Probe>
@@ -22,7 +22,7 @@ fn monitor(LocalPid<Probe>, LocalPid<Probe>) -> () [conv=default]
     return
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: user_fn_shadows_builtin_name.main [mono]
   locals:
     _0: LocalPid<Probe>
     _1: LocalPid<Probe>

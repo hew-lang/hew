@@ -1,5 +1,5 @@
 fn make() -> Pair [conv=default]
-  key: make [mono]
+  key: pattern_record_let_wildcard.make [mono]
   locals:
     _0: string
     _1: string
@@ -34,7 +34,7 @@ fn make() -> Pair [conv=default]
     return
 
 fn probe() -> i64 [conv=default]
-  key: probe [mono]
+  key: pattern_record_let_wildcard.probe [mono]
   locals:
     _0: Pair
     _1: Pair
@@ -82,7 +82,7 @@ fn probe() -> i64 [conv=default]
     return
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: pattern_record_let_wildcard.main [mono]
   locals:
     _0: i64
     _1: i64

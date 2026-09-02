@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: math_intrinsics.main [mono]
   locals:
     _0: f64
     _1: f64

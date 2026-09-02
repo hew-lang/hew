@@ -1,5 +1,5 @@
 fn identity(i64) -> i64 [conv=default]
-  key: identity [mono]
+  key: vec_family_matrix.identity [mono]
   locals:
     _0: i64
   bb0:
@@ -9,7 +9,7 @@ fn identity(i64) -> i64 [conv=default]
     return
 
 fn shared_families() -> () [conv=default]
-  key: shared_families [mono]
+  key: vec_family_matrix.shared_families [mono]
   locals:
     _0: Vec<i64>
     _1: Vec<i64>
@@ -99,7 +99,7 @@ fn shared_families() -> () [conv=default]
     return
 
 fn i8_families() -> () [conv=default]
-  key: i8_families [mono]
+  key: vec_family_matrix.i8_families [mono]
   locals:
     _0: Vec<i8>
     _1: Vec<i8>
@@ -156,7 +156,7 @@ fn i8_families() -> () [conv=default]
     return
 
 fn u8_families() -> () [conv=default]
-  key: u8_families [mono]
+  key: vec_family_matrix.u8_families [mono]
   locals:
     _0: Vec<u8>
     _1: Vec<u8>
@@ -213,7 +213,7 @@ fn u8_families() -> () [conv=default]
     return
 
 fn i16_families() -> () [conv=default]
-  key: i16_families [mono]
+  key: vec_family_matrix.i16_families [mono]
   locals:
     _0: Vec<i16>
     _1: Vec<i16>
@@ -270,7 +270,7 @@ fn i16_families() -> () [conv=default]
     return
 
 fn u16_families() -> () [conv=default]
-  key: u16_families [mono]
+  key: vec_family_matrix.u16_families [mono]
   locals:
     _0: Vec<u16>
     _1: Vec<u16>
@@ -327,7 +327,7 @@ fn u16_families() -> () [conv=default]
     return
 
 fn i32_families() -> () [conv=default]
-  key: i32_families [mono]
+  key: vec_family_matrix.i32_families [mono]
   locals:
     _0: Vec<i32>
     _1: Vec<i32>
@@ -383,7 +383,7 @@ fn i32_families() -> () [conv=default]
     return
 
 fn i64_families() -> () [conv=default]
-  key: i64_families [mono]
+  key: vec_family_matrix.i64_families [mono]
   locals:
     _0: Vec<i64>
     _1: Vec<i64>
@@ -441,7 +441,7 @@ fn i64_families() -> () [conv=default]
     return
 
 fn f32_families() -> () [conv=default]
-  key: f32_families [mono]
+  key: vec_family_matrix.f32_families [mono]
   locals:
     _0: Vec<f32>
     _1: Vec<f32>
@@ -498,7 +498,7 @@ fn f32_families() -> () [conv=default]
     return
 
 fn f64_families() -> () [conv=default]
-  key: f64_families [mono]
+  key: vec_family_matrix.f64_families [mono]
   locals:
     _0: Vec<f64>
     _1: Vec<f64>
@@ -556,7 +556,7 @@ fn f64_families() -> () [conv=default]
     return
 
 fn string_families() -> () [conv=default]
-  key: string_families [mono]
+  key: vec_family_matrix.string_families [mono]
   locals:
     _0: Vec<string>
     _1: Vec<string>
@@ -626,7 +626,7 @@ fn string_families() -> () [conv=default]
     return
 
 fn pointer_families() -> () [conv=default]
-  key: pointer_families [mono]
+  key: vec_family_matrix.pointer_families [mono]
   locals:
     _0: Vec<fn(i64) -> i64>
     _1: Vec<fn(i64) -> i64>
@@ -680,7 +680,7 @@ fn pointer_families() -> () [conv=default]
     return
 
 fn __hew_named_fn_invoke_identity(*const (), i64) -> i64 [conv=closure_invoke]
-  key: pointer_families [mono] -> named_fn_invoke#0
+  key: vec_family_matrix.pointer_families [mono] -> named_fn_invoke#0
   locals:
     _0: *const ()
     _1: i64

@@ -33,7 +33,7 @@ fn Counter__recv__total() -> i64 [conv=actor_handler]
     return
 
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: actor_counter_ask.main [mono]
   locals:
     _0: Counter
     _1: i64

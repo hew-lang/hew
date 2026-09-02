@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: vec_owned_elems.main [mono]
   locals:
     _0: Vec<string>
     _1: Vec<string>

@@ -1013,6 +1013,8 @@ pub fn string_equals(a: string, b: string) -> bool {
 /// Not yet implemented: the checker admits the call but cannot lower it to
 /// an executable target yet, so this snippet does not compile today.
 ///
+/// # Examples
+///
 /// ```
 /// let s = string_from_int(42);  // "42"
 /// ```
@@ -1034,6 +1036,8 @@ pub fn string_starts_with(s: string, prefix: string) -> bool {
 ///
 /// Not yet implemented: the checker admits the call but cannot lower it to
 /// an executable target yet, so this snippet does not compile today.
+///
+/// # Examples
 ///
 /// ```
 /// let s = substring("hello", 0, 3);  // "hel"

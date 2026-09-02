@@ -42,8 +42,11 @@ FIXTURE_STD_DIR="$TMP_ROOT/std-fixture"
 mkdir -p "$FIXTURE_STD_DIR"
 
 # One module-level (`//!`) fence, one item-level (`///`) fence, a `text`
-# -tagged fence that must be excluded, and a further `///` fence directly
-# after it — the tooth that catches an in_other regression.
+# -tagged fence that must be excluded, a further `///` fence directly after
+# it — the tooth that catches an in_other regression — and an indented `///`
+# fence on a trait member — the tooth that catches an indented-marker
+# regression (doc comments on trait/impl members are indented, unlike the
+# column-0 module-level `//!` sources).
 cat >"$FIXTURE_STD_DIR/example.hew" <<'FIXTURE_EOF'
 //! Module doc.
 //!
@@ -70,6 +73,15 @@ pub fn noop() {}
 /// let c = 3;
 /// ```
 pub fn another() {}
+
+pub trait Greeter {
+    /// A trait member doc with an indented example.
+    ///
+    /// ```
+    /// let d = 4;
+    /// ```
+    fn greet();
+}
 FIXTURE_EOF
 
 FAKE_HEW="$TMP_ROOT/hew"
@@ -92,10 +104,10 @@ DOC_FENCE_STD_DIR="$FIXTURE_STD_DIR" \
 
 mapfile -t FIXTURE_OUTFILES < <(find "$OUTDIR" -name '*example*.hew' | LC_ALL=C sort)
 
-if ((${#FIXTURE_OUTFILES[@]} == 3)); then
-    pass "fixture yields exactly 3 hew fences (the text-tagged fence is excluded)"
+if ((${#FIXTURE_OUTFILES[@]} == 4)); then
+    pass "fixture yields exactly 4 hew fences (the text-tagged fence is excluded)"
 else
-    fail "fixture yielded ${#FIXTURE_OUTFILES[@]} fences, expected 3 (got: ${FIXTURE_OUTFILES[*]:-none})"
+    fail "fixture yielded ${#FIXTURE_OUTFILES[@]} fences, expected 4 (got: ${FIXTURE_OUTFILES[*]:-none})"
 fi
 
 if ((${#FIXTURE_OUTFILES[@]} >= 1)) &&
@@ -127,6 +139,17 @@ if ! grep -rq 'hew wire check' "$OUTDIR"/*example*.hew 2>/dev/null; then
     pass "the text-tagged fence itself is never extracted as a hew fence"
 else
     fail "the text-tagged fence's content leaked into an extracted hew fence"
+fi
+
+# The pinned bug this fixture tooth catches: without trimming leading
+# whitespace before matching the `///` marker, an indented trait-member doc
+# comment is never recognized as a doc comment at all, so its fence is
+# silently dropped instead of extracted.
+if ((${#FIXTURE_OUTFILES[@]} >= 4)) &&
+    grep -qxF 'let d = 4;' "${FIXTURE_OUTFILES[3]}" 2>/dev/null; then
+    pass "fourth fence (indented trait-member /// doc) extracts its own content"
+else
+    fail "fourth fence content mismatch: $(cat "${FIXTURE_OUTFILES[3]:-/dev/null}" 2>/dev/null || echo MISSING)"
 fi
 
 echo ""

@@ -1,0 +1,8 @@
+// `jwt.error_message` was replaced by `impl Display for JwtError`; the
+// deleted function name must no longer resolve.
+import std.crypto.jwt;
+
+fn main() {
+    let e = JwtError.InvalidKey;
+    println(jwt.error_message(e));
+}

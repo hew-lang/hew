@@ -13,10 +13,10 @@ fn test_try_encode_and_try_decode_round_trip_payload() {
             testing.assert_true(token.len() > 0);
             match jwt.try_decode(token, secret, "HS256") {
                 .Ok(decoded) => testing.assert_eq_str(decoded, payload),
-                .Err(err) => panic(jwt.error_message(err)),
+                .Err(err) => panic(f"{err}"),
             }
         },
-        .Err(err) => panic(jwt.error_message(err)),
+        .Err(err) => panic(f"{err}"),
     }
 }
 
@@ -51,10 +51,10 @@ fn test_hs384_try_encode_and_try_decode_round_trip_payload() {
             testing.assert_true(token.len() > 0);
             match jwt.try_decode(token, secret, "HS384") {
                 .Ok(decoded) => testing.assert_eq_str(decoded, payload),
-                .Err(err) => panic(jwt.error_message(err)),
+                .Err(err) => panic(f"{err}"),
             }
         },
-        .Err(err) => panic(jwt.error_message(err)),
+        .Err(err) => panic(f"{err}"),
     }
 }
 
@@ -73,10 +73,10 @@ fn test_hs512_try_encode_and_try_decode_round_trip_payload() {
             testing.assert_true(token.len() > 0);
             match jwt.try_decode(token, secret, "HS512") {
                 .Ok(decoded) => testing.assert_eq_str(decoded, payload),
-                .Err(err) => panic(jwt.error_message(err)),
+                .Err(err) => panic(f"{err}"),
             }
         },
-        .Err(err) => panic(jwt.error_message(err)),
+        .Err(err) => panic(f"{err}"),
     }
 }
 
@@ -98,7 +98,7 @@ fn test_try_decode_rejects_token_signed_with_different_algorithm() {
         .Ok(_) => panic("cross-algorithm decode must not silently succeed"),
         .Err(err) => match err {
             JwtError.SignatureInvalid => testing.assert_true(true),
-            _ => panic(f"expected SignatureInvalid, got: {jwt.error_message(err)}"),
+            _ => panic(f"expected SignatureInvalid, got: {err}"),
         },
     }
 }
@@ -121,7 +121,7 @@ fn test_try_decode_malformed_token_surfaces_token_malformed() {
         .Ok(_) => panic("malformed token must not decode as Ok"),
         .Err(err) => match err {
             JwtError.TokenMalformed => testing.assert_true(true),
-            _ => panic(f"expected TokenMalformed, got: {jwt.error_message(err)}"),
+            _ => panic(f"expected TokenMalformed, got: {err}"),
         },
     }
 }
@@ -133,7 +133,14 @@ fn test_last_error_is_token_malformed_after_malformed_decode() {
         .Err(_) => match jwt.last_error() {
             JwtError.TokenMalformed => testing.assert_true(true),
             JwtError.None => panic("last_error must not read None after a failed decode"),
-            other => panic(f"expected TokenMalformed, got: {jwt.error_message(other)}"),
+            other => panic(f"expected TokenMalformed, got: {other}"),
         },
     }
+}
+
+#[test]
+fn test_jwt_error_display_formats_each_variant() {
+    testing.assert_eq_str(to_string(JwtError.None), "no error");
+    testing.assert_eq_str(to_string(JwtError.AlgorithmUnsupported), "JWT algorithm is not supported");
+    testing.assert_eq_str(to_string(JwtError.TokenMalformed), "JWT payload or token is malformed");
 }

@@ -3374,6 +3374,14 @@ pub struct Checker {
     /// walk, the root surface, import registration), and a refused path is
     /// refused on every one of them.
     pub(super) reported_declaration_collisions: std::collections::HashSet<String>,
+    /// Import spellings that name a module reached under a different
+    /// canonical owner, mapped to that owner.
+    ///
+    /// `import std.channel.channel;` names the primary file of the directory
+    /// module `std.channel`, and registration keys the module's items by the
+    /// spelling the import used while the declarations were minted under the
+    /// canonical owner. Declaration lookup resolves the one through the other.
+    pub(super) canonical_module_spellings: std::collections::HashMap<String, String>,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -3929,6 +3937,7 @@ impl Checker {
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),
             reported_declaration_collisions: std::collections::HashSet::new(),
+            canonical_module_spellings: std::collections::HashMap::new(),
             cross_module_colliding_record_names: HashSet::new(),
             generic_layout_instantiations: HashMap::new(),
             reported_generic_layout_collisions: HashSet::new(),

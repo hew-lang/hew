@@ -3,7 +3,7 @@ use std::path::Path;
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
 use hew_mir::MirDiagnosticKind;
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn emit_ll_for_source(src: &str, module_name: &str) -> String {
     let parsed = hew_parser::parse(src);
@@ -63,7 +63,7 @@ fn pipeline_rejects_nested_named_type_before_codegen() {
 
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &crate::mir_fixture::checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -96,7 +96,7 @@ fn pipeline_accepts_bool_literal_return() {
 
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &crate::mir_fixture::checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -126,7 +126,7 @@ fn pipeline_accepts_float_literal_in_mir() {
 
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &crate::mir_fixture::checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );

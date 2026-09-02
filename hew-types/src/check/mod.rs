@@ -463,6 +463,7 @@ impl Checker {
     /// borrowing a display-name namespace.
     fn mint_module_identities(&mut self, program: &Program) {
         self.identity = crate::identity::IdentityTable::new();
+        self.canonical_module_spellings.clear();
         let Some(module_graph) = &program.module_graph else {
             self.identity.mint_synthetic_root();
             return;
@@ -480,6 +481,15 @@ impl Checker {
                 &dotted,
                 &module.source_paths,
             );
+            // `import std.channel.channel;` names the primary file of the
+            // directory module `std.channel`, and registration keys that
+            // module's items by the spelling the import used. Record the pair
+            // now, while both are in hand, so declaration lookup can resolve
+            // one through the other.
+            if canonical != dotted {
+                self.canonical_module_spellings
+                    .insert(dotted.clone(), canonical.clone());
+            }
             self.identity.mint_module(&canonical, &module.source_paths);
         }
         // Second pass — per-file identities for directory modules' peer
@@ -611,7 +621,24 @@ impl Checker {
                     .as_deref()
                     .and_then(|module| self.identity.module_for_path(module))
             })
+            .or_else(|| {
+                // The module may be keyed by an import spelling that is not
+                // its canonical owner; the identities were minted under the
+                // owner.
+                self.current_module
+                    .as_deref()
+                    .and_then(|module| self.canonical_module_spellings.get(module))
+                    .and_then(|canonical| self.identity.module_for_path(canonical))
+            })
             .or_else(|| self.identity.root_module())
+    }
+
+    /// Rewrite a declaration path whose module part is an import spelling of
+    /// a differently-owned module into that module's canonical spelling.
+    fn canonical_spelling_of(&self, path: &str) -> Option<String> {
+        let (module, leaf) = path.rsplit_once('.')?;
+        let canonical = self.canonical_module_spellings.get(module)?;
+        Some(format!("{canonical}.{leaf}"))
     }
 
     pub(super) fn require_declaration_path(
@@ -620,6 +647,17 @@ impl Checker {
         span: &std::ops::Range<usize>,
     ) -> Option<crate::DefId> {
         if let Some(declaration) = self.identity.declaration_by_path(path) {
+            return Some(declaration.clone());
+        }
+        // A module reached under an import spelling that is not its canonical
+        // owner keys its registrations by that spelling, while its
+        // declarations were minted under the owner. Resolve the one through
+        // the other rather than leaving the lookup to fail closed on a name
+        // the checker itself produced.
+        if let Some(declaration) = self
+            .canonical_spelling_of(path)
+            .and_then(|canonical| self.identity.declaration_by_path(&canonical))
+        {
             return Some(declaration.clone());
         }
         self.errors.push(TypeError::new(

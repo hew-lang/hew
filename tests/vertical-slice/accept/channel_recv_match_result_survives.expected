@@ -1,0 +1,4 @@
+direct: [direct]
+via local: [via local]
+yielded: [gen-1]
+consumed: [gen-2]

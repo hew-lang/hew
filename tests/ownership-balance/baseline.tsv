@@ -25,6 +25,12 @@
 # argument evaluates; early exit releases it in the caller, while the completed
 # call transfers it to the callee.
 #
+# match_result_payload_transfer.hew pins both halves of the specialised-scrutinee
+# arm decision. A `.Some(s) => s` arm hands the frame to the match result, where
+# the result's owner releases it once; a `.Some(s) => s.len()` arm keeps the
+# frame arm-local, where the per-frame body-end release is the only one. Over-
+# release on the first shape and under-release on the second are both findings.
+#
 # fixture	under_release	other_blocking_mir	exit_code	runtime
 cross_module_result/main.hew	0	0	0	check
 direct_call_terminal_carriers.hew	0	0	0	clean
@@ -33,6 +39,7 @@ escaping_direct_call_binding.hew	0	0	0	check
 g_rearm_no_predecessor.hew	0	0	0	check
 j_join_successor.hew	0	0	0	check
 many_return_blocks.hew	0	0	0	check
+match_result_payload_transfer.hew	0	0	0	clean
 pF.hew	0	0	0	check
 pG.hew	0	0	0	check
 pH.hew	0	0	0	check

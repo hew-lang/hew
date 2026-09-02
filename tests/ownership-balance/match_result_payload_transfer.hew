@@ -1,0 +1,73 @@
+import std.channel.channel;
+import std.string;
+
+// A `match` arm body that IS the payload binder transfers the frame's release
+// obligation into the match's composite result slot. The arm must not also
+// release it there: doing so freed the value the match had just produced (a
+// premature release that read back as an empty string), and skipping the
+// release altogether would strand one heap block per frame.
+//
+// Both specialised scrutinees are driven here, each against the sibling shape
+// that keeps the arm-local release: a body that consumes the binder in place
+// must still free its frame on every iteration, which is the per-frame
+// discipline the transfer path must not disable.
+
+gen fn labels(k: i64) -> string {
+    yield "gen-" + string.from_int(k);
+    yield "gen-" + string.from_int(k + 1);
+}
+
+// The transfer shape: the payload leaves the arm as the match result.
+fn recv_moved_out(k: i64) -> i64 {
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    tx.send("frame-" + string.from_int(k));
+    tx.close();
+    let msg = match rx.recv() {
+        .Some(s) => s,
+        .None => "empty",
+    };
+    let n = msg.len();
+    rx.close();
+    n
+}
+
+// The arm-local shape: the payload dies inside the body.
+fn recv_consumed_in_body(k: i64) -> i64 {
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    tx.send("frame-" + string.from_int(k));
+    tx.close();
+    let n = match rx.recv() {
+        .Some(s) => s.len(),
+        .None => 0,
+    };
+    rx.close();
+    n
+}
+
+fn gen_moved_out(k: i64) -> i64 {
+    let g = labels(k);
+    let first = match g.next() {
+        .Some(s) => s,
+        .None => "empty",
+    };
+    first.len()
+}
+
+fn gen_consumed_in_body(k: i64) -> i64 {
+    let g = labels(k);
+    match g.next() {
+        .Some(s) => s.len(),
+        .None => 0,
+    }
+}
+
+fn main() {
+    var total = 0;
+    for k in 0..200000 {
+        total = total + recv_moved_out(k);
+        total = total + recv_consumed_in_body(k);
+        total = total + gen_moved_out(k);
+        total = total + gen_consumed_in_body(k);
+    }
+    println(total);
+}

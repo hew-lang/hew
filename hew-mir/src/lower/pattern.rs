@@ -128,6 +128,18 @@ pub(super) fn project_match_ownership_mode(
     }
 }
 
+/// Where one match arm's body begins, and where its value leaves the arm.
+///
+/// The block/instruction pair bounds the body-shape escape scan; `result_place`
+/// is the arm's exit edge into the join, which that scan must not mistake for an
+/// intra-body ownership handoff.
+#[derive(Clone, Copy)]
+struct ArmBodyRelease {
+    body_start_block_id: u32,
+    body_start_instr_len: usize,
+    result_place: Place,
+}
+
 impl Builder {
     /// Lower an `HirExprKind::Match` expression to a tag-dispatch CFG.
     ///
@@ -701,10 +713,14 @@ impl Builder {
         binding: BindingId,
         place: Place,
         ty: &ResolvedTy,
-        body_start_block_id: u32,
-        body_start_instr_len: usize,
         site: hew_hir::SiteId,
+        arm: ArmBodyRelease,
     ) {
+        let ArmBodyRelease {
+            body_start_block_id,
+            body_start_instr_len,
+            result_place,
+        } = arm;
         // Only a Wired / WiredInPlace verdict reaches this emitter: the
         // binding-registration gate schedules a body-end drop for those shapes
         // alone (Unwired is a fail-closed compile diagnostic there; NoDropPath
@@ -737,6 +753,26 @@ impl Builder {
         let drop_place = self
             .generator_yield_linear_handoff_owner(body_start_block_id, body_start_instr_len, local)
             .unwrap_or(place);
+        // The chase ended on the match's own composite result slot. That slot
+        // is the arm's exit edge, not an intra-body handoff destination: the
+        // join block and everything downstream read it, so the value is live
+        // after this arm and a body-end release here frees what the match just
+        // produced (the `.Some(s) => s` shape, on every specialised scrutinee —
+        // recv, generator drive, and VecIter clone-out alike).
+        //
+        // The join publication is the one authority for a value that reaches
+        // the result slot: `composite_join_relocated_owners` ends this binder's
+        // generation at its arm Move and mints the sole owner of the slot. It
+        // can only see a live scope-exit owner, and the registration gate
+        // pre-emptively dispositioned this binder `BodyEndReleased` before the
+        // arm body revealed where its value goes. Restore the scope-exit
+        // disposition and emit no drop, so exactly one authority releases the
+        // value. The binder's own slot is neutralized by the result Move, so a
+        // residual scope-exit release over it is a no-op on the emptied slot.
+        if drop_place == result_place {
+            self.set_owned_local_disposition(binding, super::Disposition::ScopeExit);
+            return;
+        }
         let drop_local = base_local(drop_place).unwrap_or(local);
         if self.generator_yield_binding_drop_safe(
             body_start_block_id,
@@ -5054,9 +5090,12 @@ impl Builder {
                         *binding,
                         Place::Local(scrutinee_local),
                         ty,
-                        carrier_body_start_block,
-                        carrier_body_start_instr,
                         wildcard.body.site,
+                        ArmBodyRelease {
+                            body_start_block_id: carrier_body_start_block,
+                            body_start_instr_len: carrier_body_start_instr,
+                            result_place,
+                        },
                     );
                 }
             }
@@ -5927,9 +5966,12 @@ impl Builder {
                         binding,
                         place,
                         &ty,
-                        body_start_block_id,
-                        body_start_instr_len,
                         site,
+                        ArmBodyRelease {
+                            body_start_block_id,
+                            body_start_instr_len,
+                            result_place,
+                        },
                     );
                 }
             }

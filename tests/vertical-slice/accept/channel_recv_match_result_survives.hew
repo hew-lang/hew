@@ -1,0 +1,64 @@
+// Accept + run: the value a `match` produces must survive the match when the
+// arm body is the payload binder itself (`.Some(s) => s`).
+//
+// A recv call and a generator drive are both "specialised" match scrutinees:
+// the arm binder owns the fresh payload and is released at the end of the
+// consuming body. When the body IS the binder, the arm's result Move carries
+// that payload into the match's composite result slot, and the body-end release
+// followed it there — freeing and nulling the string the match had just
+// produced. The program saw `Some("")` where the producer wrote a non-empty
+// string.
+//
+// Each half is paired with a control that already worked and must keep working:
+// binding the carrier to a local first mints the ordinary call-scrutinee owner,
+// and consuming the binder inside the body leaves the result untouched.
+import std.channel.channel;
+
+gen fn labels() -> string {
+    yield f"gen-{1}";
+    yield f"gen-{2}";
+}
+
+fn main() {
+    // Direct match on a recv call: the defect.
+    let (tx1, rx1): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    tx1.send("direct");
+    tx1.close();
+    let direct = match rx1.recv() {
+        .Some(s) => s,
+        .None => "empty",
+    };
+    println(f"direct: [{direct}]");
+    rx1.close();
+
+    // Control: a let-bound carrier mints the call-scrutinee owner instead.
+    let (tx2, rx2): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    tx2.send("via local");
+    tx2.close();
+    let carrier = rx2.recv();
+    let via_local = match carrier {
+        .Some(s) => s,
+        .None => "empty",
+    };
+    println(f"via local: [{via_local}]");
+    rx2.close();
+
+    // The same shape over a generator drive, the sibling specialised scrutinee.
+    let g = labels();
+    let yielded = match g.next() {
+        .Some(s) => s,
+        .None => "empty",
+    };
+    println(f"yielded: [{yielded}]");
+
+    // Control: a body that consumes the binder rather than producing it keeps
+    // the per-frame release, so the second yield is still delivered whole.
+    match g.next() {
+        .Some(s) => {
+            println(f"consumed: [{s}]");
+        },
+        .None => {
+            println("consumed: [empty]");
+        },
+    }
+}

@@ -14,7 +14,7 @@ Hew compiles through an explicit IR ladder. Each layer has a distinct owner, a
 verifier or diagnostic class, and a deterministic text dump. Ownership is proven
 in Checked MIR (a fail-closed gate); the Rust/Inkwell backend lowers proven MIR
 facts directly into LLVM IR and re-derives no semantics. See
-[`docs/internal/v05-ir-ladder.md`](internal/v05-ir-ladder.md) for the per-layer
+[`docs/internal/ir-ladder.md`](internal/ir-ladder.md) for the per-layer
 contracts.
 
 ```mermaid

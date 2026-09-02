@@ -150,6 +150,75 @@ fn exit_has_drop(
         })
 }
 
+/// Assert one canonical recipe for a named binding and return every block that
+/// releases it, WITHOUT requiring the ratifying `ScopeExit` to sit in the same
+/// block.
+///
+/// An enum shell that hands its payload to a binder retires on that arm, so its
+/// release is path-specialized: the elaborator sinks it into the only arm where
+/// the shell is still live, while the lexical `ScopeExit` marker stays at the
+/// shared join carrying an empty owner list (nothing to release there on either
+/// path). [`owner_lifecycle`] keeps the strict same-block rule for binders,
+/// whose release and scope exit are always co-located.
+fn owner_release_blocks(
+    p: &IrPipeline,
+    fn_name: &str,
+    binding_name: &str,
+    expected_kind: DropKind,
+) -> Vec<u32> {
+    let function = p
+        .checked_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"));
+    let owner = owner_for_binding(function, binding_name);
+    let recipes: Vec<&DropKind> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::OwnershipEvent(OwnershipEvent::DropRecipe {
+                owner: candidate,
+                recipe,
+            }) if *candidate == owner => Some(&recipe.kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        recipes,
+        vec![&expected_kind],
+        "{binding_name} must carry exactly one {expected_kind:?} recipe and no competing kind"
+    );
+    function
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let releases = block
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(
+                        instruction,
+                        Instr::OwnershipEvent(OwnershipEvent::Release {
+                            owner: candidate,
+                            ..
+                        }) if *candidate == owner
+                    )
+                })
+                .count();
+            if releases == 0 {
+                return None;
+            }
+            assert_eq!(
+                releases, 1,
+                "{binding_name} must release at most once in block {}: {:#?}",
+                block.id, block.instructions
+            );
+            Some(block.id)
+        })
+        .collect()
+}
+
 /// Assert one canonical owner generation and recipe for a named binding, then
 /// return every block that releases it through the matching lexical `ScopeExit`.
 /// Static release sites may be mutually exclusive match arms; unlike summing
@@ -494,11 +563,14 @@ fn a_declared_release_payload_over_a_direct_extern_mints_once_and_releases_once(
          declares a release for the value it builds, so the enum carrying it is \
          a domestic owner and the scrutinee earns EXACTLY one mint"
     );
-    let scrutinee_releases = owner_lifecycle(&p, "main", SYNTHETIC_TEMP_ARG, DropKind::EnumInPlace);
+    let scrutinee_releases =
+        owner_release_blocks(&p, "main", SYNTHETIC_TEMP_ARG, DropKind::EnumInPlace);
     assert_eq!(
         scrutinee_releases.len(),
         1,
-        "the two match arms rejoin before the scrutinee's one normal release"
+        "the shell releases on the ONE arm that did not take its payload; the \
+         `Loaded` arm retired it at the hand-off, so a second release site there \
+         would close the handle twice"
     );
     assert_eq!(
         owner_lifecycle(&p, "main", "h", DropKind::Resource).len(),
@@ -638,7 +710,7 @@ fn a_declared_release_payload_over_a_wrapper_still_mints_once() {
     );
     assert_eq!(scrutinee_binds(&p, "main"), 1);
     assert_eq!(
-        owner_lifecycle(&p, "main", SYNTHETIC_TEMP_ARG, DropKind::EnumInPlace).len(),
+        owner_release_blocks(&p, "main", SYNTHETIC_TEMP_ARG, DropKind::EnumInPlace).len(),
         1
     );
     assert_eq!(

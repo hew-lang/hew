@@ -134,12 +134,25 @@ impl Builder {
                 {
                     None
                 } else {
+                    // A RECORD root is admitted only for a leaf whose release is
+                    // a CLOSE (`resource_drop_fn`). That is the leaf the record's
+                    // own `RecordInPlace` field walk would close a second time —
+                    // the reported defect. A `Vec` field of a record has no close;
+                    // its competing authority is the send/COW snapshot discipline,
+                    // which owns that decision and clones instead of transferring,
+                    // so seeding a projection carrier for it makes an ordinary
+                    // `boxed.payload` re-read look like a use after consume. A
+                    // tuple root keeps the whole null-safe set it was proven for.
+                    let record_root_admits = |ty: &ResolvedTy| {
+                        self.is_owned_aggregate_record_ty(ty)
+                            && super::resource_drop_fn(&field_ty, &self.type_classes).is_some()
+                    };
                     self.owned_locals
                         .iter()
                         .find(|entry| {
                             entry.disposition == Disposition::ScopeExit
                                 && (matches!(entry.ty, ResolvedTy::Tuple(_))
-                                    || self.is_owned_aggregate_record_ty(&entry.ty))
+                                    || record_root_admits(&entry.ty))
                                 && self.binding_locals.get(&entry.binding).copied()
                                     == Some(aggregate)
                         })

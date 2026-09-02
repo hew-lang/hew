@@ -32,6 +32,21 @@ fn scope_exit_tuple_projection_has_null_safe_drop(ty: &ResolvedTy) -> bool {
         )
 }
 
+/// Whether this neutralize chain is rooted in an ordinary scope-exit owner
+/// rather than a registered call carrier. A carrier's terminal snapshot drop
+/// tolerates every slot it emptied; an ordinary owner's composite drop does
+/// not, so a chain rooted here may clear only the null-safe leaves above.
+fn authority_roots_in_scope_exit_owner(authority: &OwnedCarrierNeutralizeTarget) -> bool {
+    matches!(
+        authority,
+        OwnedCarrierNeutralizeTarget::ScopeExitTuple { .. }
+            | OwnedCarrierNeutralizeTarget::Projection {
+                scope_exit_owner: Some(_),
+                ..
+            }
+    )
+}
+
 impl Builder {
     /// Emit a move-out payload-slot neutralize whose ownership is consumed into
     /// an in-flight expression (no destination local to name as the transferee).
@@ -102,7 +117,31 @@ impl Builder {
         // therefore carry the root-relative neutralize path: both inline
         // Product/TaggedUnion loads (ByteCopyAlias) and one-handle transfers.
         // Retained String/Bytes and heap-free fields stay outside this route.
+        let subst_field_ty = self.subst_ty(field_ty);
+        // A one-handle leaf may CLEAR the slot it was loaded from, but only
+        // when its structural drop accepts the emptied representation.
+        let clears_a_slot = field_load == Some(FieldLoadClass::HandleTransfer)
+            && scope_exit_tuple_projection_has_null_safe_drop(&subst_field_ty);
+        // A TUPLE member clears nothing itself. It is a HOP: the load
+        // byte-copies the tuple, so a handle one level deeper (`r.pair.0`,
+        // #3124) must name the owner's ORIGINAL slot rather than the copied
+        // temp, and only the root-relative path carries that. An inline ENUM
+        // member is deliberately excluded: its destructure has its own payload
+        // handoff, and a chain here would compete with it.
+        let extends_the_path = field_load == Some(FieldLoadClass::ByteCopyAlias)
+            && matches!(subst_field_ty, ResolvedTy::Tuple(_));
         let authority = match self.owned_carrier_authority(aggregate) {
+            // A chain rooted in an ordinary scope-exit owner has no terminal
+            // snapshot drop to tolerate an emptied slot, so it keeps the same
+            // narrow rule the fallback below seeds it under.
+            Some(authority) if authority_roots_in_scope_exit_owner(&authority) => {
+                (extends_the_path || clears_a_slot).then_some(authority)
+            }
+            // A registered call carrier already owns the aggregate's terminal
+            // snapshot drop. Every field whose snapshot root stays inside that
+            // protocol carries the root-relative neutralize path: both inline
+            // Product/TaggedUnion loads and one-handle transfers. Retained
+            // String/Bytes and heap-free fields stay outside this route.
             Some(authority)
                 if matches!(
                     field_load,
@@ -113,21 +152,17 @@ impl Builder {
             }
             Some(_) => None,
             None => {
-                // Seeding a carrier from an ordinary scope-exit tuple is
-                // narrower: only a null-safe, one-handle transfer may clear a
-                // tuple slot. Inline aggregates still use their own composite
-                // drop protocol and must not acquire this fallback authority.
-                let field_ty = self.subst_ty(field_ty);
-                if !scope_exit_tuple_projection_has_null_safe_drop(&field_ty)
-                    || field_load != Some(FieldLoadClass::HandleTransfer)
-                {
+                // Seeding a chain from an ordinary scope-exit owner: a tuple
+                // whose null-safe handle leaf transfers, or any owner whose
+                // tuple member is a hop toward such a leaf.
+                if !clears_a_slot && !extends_the_path {
                     None
                 } else {
                     self.owned_locals
                         .iter()
                         .find(|entry| {
                             entry.disposition == Disposition::ScopeExit
-                                && matches!(entry.ty, ResolvedTy::Tuple(_))
+                                && (extends_the_path || matches!(entry.ty, ResolvedTy::Tuple(_)))
                                 && self.binding_locals.get(&entry.binding).copied()
                                     == Some(aggregate)
                         })
@@ -1396,15 +1431,108 @@ mod scope_exit_tuple_projection_tests {
             })
         ));
 
+        // A retained leaf keeps its own balanced share and clears nothing.
         builder
             .note_carrier_projection(
                 Place::Local(0),
                 0,
                 Place::Local(2),
-                &ResolvedTy::Tuple(vec![ResolvedTy::String]),
+                &ResolvedTy::String,
                 SiteId(4),
             )
-            .expect("inline aggregate does not seed a tuple fallback");
+            .expect("a retained field class is total");
         assert!(projection_of(&builder, Place::Local(2)).is_none());
+
+        // A handle leaf whose drop protocol rejects the emptied representation
+        // must not clear a scope-exit owner's slot either.
+        builder
+            .note_carrier_projection(
+                Place::Local(0),
+                0,
+                Place::Local(3),
+                &builtin_ty(BuiltinType::Generator),
+                SiteId(5),
+            )
+            .expect("a non-null-safe handle field class is total");
+        assert!(projection_of(&builder, Place::Local(3)).is_none());
+    }
+
+    #[test]
+    fn scope_exit_owner_tuple_member_extends_the_path_to_a_nested_leaf() {
+        // `r.pair.0`: the tuple member is a byte-copy hop that clears nothing
+        // itself, so the nested handle names the OWNER's slot (`fields=[0, 0]`)
+        // rather than the copied temp — the record keeps its composite drop for
+        // every sibling it still owns (#3124).
+        let mut builder = Builder::default();
+        let vec_ty = builtin_ty(BuiltinType::Vec);
+        let pair_ty = ResolvedTy::Tuple(vec![vec_ty.clone(), ResolvedTy::I64]);
+        builder.record_field_orders.insert(
+            "T".to_string(),
+            vec![
+                ("pair".to_string(), pair_ty.clone()),
+                ("tag".to_string(), ResolvedTy::String),
+            ],
+        );
+        builder.binding_locals.insert(BindingId(1), Place::Local(0));
+        builder.register_owned_local(
+            BindingId(1),
+            "record".to_string(),
+            ResolvedTy::named_user("T", vec![]),
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+
+        builder
+            .note_carrier_projection(Place::Local(0), 0, Place::Local(1), &pair_ty, SiteId(1))
+            .expect("a tuple member's field class is total");
+        assert_eq!(
+            projection_of(&builder, Place::Local(1)),
+            Some((Place::Local(0), vec![0])),
+            "the tuple member seeds the owner-rooted path without clearing anything"
+        );
+
+        builder
+            .note_carrier_projection(Place::Local(1), 0, Place::Local(2), &vec_ty, SiteId(2))
+            .expect("the nested handle's field class is total");
+        assert_eq!(
+            projection_of(&builder, Place::Local(2)),
+            Some((Place::Local(0), vec![0, 0])),
+            "the nested handle clears the owner's original slot, not the copy"
+        );
+    }
+
+    #[test]
+    fn scope_exit_owner_enum_member_leaves_the_payload_handoff_alone() {
+        // An inline enum member is destructured by its own payload handoff. A
+        // neutralize chain here would compete with that authority and strand
+        // the record's remaining fields.
+        let mut builder = Builder::default();
+        builder.enum_layouts.push(crate::model::EnumLayout {
+            name: "Payload".to_string(),
+            tag_width: 1,
+            variants: vec![crate::model::MachineVariantLayout {
+                name: "Value".to_string(),
+                field_tys: vec![builtin_ty(BuiltinType::Vec)],
+                field_names: vec!["value".to_string()],
+            }],
+            is_indirect: false,
+        });
+        builder.binding_locals.insert(BindingId(1), Place::Local(0));
+        builder.register_owned_local(
+            BindingId(1),
+            "record".to_string(),
+            ResolvedTy::named_user("T", vec![]),
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+
+        builder
+            .note_carrier_projection(
+                Place::Local(0),
+                0,
+                Place::Local(1),
+                &ResolvedTy::named_user("Payload", vec![]),
+                SiteId(1),
+            )
+            .expect("an inline enum field class is total");
+        assert!(projection_of(&builder, Place::Local(1)).is_none());
     }
 }

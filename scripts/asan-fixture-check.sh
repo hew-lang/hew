@@ -451,6 +451,12 @@ VEC_RECEIVER_DROP_ONLY_SRC="${ROOT}/tests/vertical-slice/accept/vec_receiver_dro
 # Sender is cloneable, so this companion fixture exercises the descriptor's
 # clone thunk plus both Vec destructors and the paired receiver close.
 VEC_SENDER_CLONE_DROP_SRC="${ROOT}/tests/vertical-slice/accept/vec_sender_clone_drop_asan.hew"
+# An owned leaf moved out of an aggregate the program still holds: a nested
+# record or tuple payload bound out of an inline enum field, and a tuple
+# element read out of a record field. Without the handoff the binder and the
+# parent's composite drop release the same allocation (ASan: invalid free);
+# retiring the parent's remaining fields instead leaks them (LSan).
+PROJECTED_FIELD_TRANSFER_SRC="${ROOT}/tests/vertical-slice/accept/projected_owned_field_transfer_asan.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -518,6 +524,9 @@ compile_asan_fixture "drop-only Receiver Vec lifecycle" "${VEC_RECEIVER_DROP_ONL
 
 VEC_SENDER_CLONE_DROP_BIN="${WORK_DIR}/vec_sender_clone_drop_asan"
 compile_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_SRC}" "${VEC_SENDER_CLONE_DROP_BIN}"
+
+PROJECTED_FIELD_TRANSFER_BIN="${WORK_DIR}/projected_owned_field_transfer_asan"
+compile_asan_fixture "projected owned field transfer" "${PROJECTED_FIELD_TRANSFER_SRC}" "${PROJECTED_FIELD_TRANSFER_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -683,6 +692,12 @@ else
 fi
 
 if run_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_BIN}" 0; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1))
+fi
+
+if run_asan_fixture "projected owned field transfer" "${PROJECTED_FIELD_TRANSFER_BIN}" 0; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))

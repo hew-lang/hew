@@ -15,7 +15,6 @@ linux,macos,freebsd	failure	hew-cli::measured_os_io_string_retention_canary	ship
 *	failure	hew-cli::branch_divergent_return_drop_ir	normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice	#3118 releases branch-local siblings on normal edges
 linux,macos,freebsd	failure	hew-cli::divergent_return_resource_leak_oracle	raw_and_elaborated_mir_attribute_only_unselected_resource_members	#3079 derives return-arm resource drops from exact owner states
 linux,macos,freebsd	failure	hew-cli::divergent_selection_arm_ownership_oracle	source_read_after_selection_does_not_over_release	#3079 makes selected-arm ownership path-sensitive
-linux,macos	failure	hew-cli::funcupdate_consume_semantics	accept_carry_nested_and_collection_bearing_tuples	#3124 transfers nested owned projections out of parent cleanup
 linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
 linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
 linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	captured_binding_borrow_only_is_valid	#2523 preserves captured borrow-only payload authority

@@ -8,10 +8,12 @@
 //! # Examples
 //!
 //! ```
+//! import std.random;
+//!
 //! fn main() {
 //!     random.seed(42);
-//!     let r = random.random();   // ≈ 0.6394267984578837
-//!     let n = random.randint(0, 10);
+//!     println(random.random());   // ≈ 0.6394267984578837
+//!     println(random.randint(0, 10));
 //! }
 //! ```
 

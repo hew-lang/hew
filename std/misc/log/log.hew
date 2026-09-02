@@ -14,6 +14,8 @@
 //! # Usage — module-level
 //!
 //! ```
+//! import std.misc.log;
+//!
 //! fn main() {
 //!     log.setup();   // set global level to INFO
 //!     log.info("server starting");
@@ -25,6 +27,8 @@
 //! # Usage — Logger value
 //!
 //! ```
+//! import std.misc.log;
+//!
 //! fn main() {
 //!     let lg = log.new_logger(log.DEBUG, log.JSON);
 //!     log.logger_info(lg, "startup", [log.field("svc", "auth")]);
@@ -51,12 +55,12 @@
 //! # Output formats
 //!
 //! TEXT (0) — coloured timestamp + level + message + fields to stderr:
-//! ```
+//! ```text
 //! 12:34:56.789 INFO  server starting  port=8080
 //! ```
 //!
 //! JSON (1) — single-line NDJSON to stderr:
-//! ```
+//! ```text
 //! {"ts":1234567890.123,"level":"INFO","msg":"server starting","port":"8080"}
 //! ```
 

@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! ```
+//! ```text
 //!  ┌──────────────────────────────────────────────────────────┐
 //!  │ QUICEndpoint                                             │
 //!  │  bound to a local UDP address (client or server)         │
@@ -27,6 +27,7 @@
 //! ## Server
 //!
 //! ```
+//! import std.net;
 //! import std.net.quic;
 //!
 //! fn main() {
@@ -36,11 +37,11 @@
 //!     let data = stream.recv();
 //!     match stream.send(data) {
 //!         .Ok(_) => {},
-//!         .Err(err) => panic(err),
+//!         .Err(err) => panic(net.net_error_message(err)),
 //!     }
 //!     match stream.finish() {
 //!         .Ok(_) => {},
-//!         .Err(err) => panic(err),
+//!         .Err(err) => panic(net.net_error_message(err)),
 //!     }
 //!     stream.close();
 //!     // Drain connection events so the peer has received all in-flight data
@@ -52,7 +53,7 @@
 //!     let ev2 = conn.on_event(); ev2.close();
 //!     match conn.disconnect() {
 //!         .Ok(_) => {},
-//!         .Err(err) => panic(err),
+//!         .Err(err) => panic(net.net_error_message(err)),
 //!     }
 //!     ep.close();
 //! }
@@ -61,6 +62,7 @@
 //! ## Client
 //!
 //! ```
+//! import std.net;
 //! import std.net.quic;
 //!
 //! fn main() {
@@ -69,12 +71,12 @@
 //!     let stream = conn.open_stream();
 //!     match stream.send(b"hello quic") {
 //!         .Ok(_) => {},
-//!         .Err(err) => panic(err),
+//!         .Err(err) => panic(net.net_error_message(err)),
 //!     }
 //!     let reply = stream.recv();
 //!     match stream.finish() {
 //!         .Ok(_) => {},
-//!         .Err(err) => panic(err),
+//!         .Err(err) => panic(net.net_error_message(err)),
 //!     }
 //!     // Drain to EOF before closing.  Without this recv() the local close
 //!     // can race the server's final STREAM_FIN frame and the reply may be
@@ -83,7 +85,7 @@
 //!     stream.close();
 //!     match conn.disconnect() {
 //!         .Ok(_) => {},
-//!         .Err(err) => panic(err),
+//!         .Err(err) => panic(net.net_error_message(err)),
 //!     }
 //!     ep.close();
 //! }

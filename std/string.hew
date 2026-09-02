@@ -682,10 +682,12 @@ pub fn replace(s: string, old: string, new_val: string) -> string {
 /// ```
 /// import std.string;
 ///
-/// let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
-/// let trail = string.split("a,b,", ",");   // ["a", "b", ""]
-/// let chars = string.split("café", "");    // ["c", "a", "f", "é"]
-/// let empty = string.split("", "");        // []
+/// fn main() {
+///     let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
+///     let trail = string.split("a,b,", ",");   // ["a", "b", ""]
+///     let chars = string.split("café", "");    // ["c", "a", "f", "é"]
+///     let empty = string.split("", "");        // []
+/// }
 /// ```
 pub fn split(s: string, sep: string) -> Vec<string> {
     // Delegate to the method, which routes to hew_string_split FFI.
@@ -705,9 +707,11 @@ pub fn split(s: string, sep: string) -> Vec<string> {
 /// ```
 /// import std.string;
 ///
-/// let lines = string.lines("foo\nbar");   // ["foo", "bar"]
-/// let crlf  = string.lines("a\r\nb");    // ["a", "b"]
-/// let trail = string.lines("foo\n");     // ["foo", ""]
+/// fn main() {
+///     let lines = string.lines("foo\nbar");   // ["foo", "bar"]
+///     let crlf  = string.lines("a\r\nb");    // ["a", "b"]
+///     let trail = string.lines("foo\n");     // ["foo", ""]
+/// }
 /// ```
 pub fn lines(s: string) -> Vec<string> {
     let result: Vec<string> = Vec.new();
@@ -745,8 +749,10 @@ pub fn lines(s: string) -> Vec<string> {
 /// ```
 /// import std.string;
 ///
-/// let s = string.join(["a", "b", "c"], ", ");  // "a, b, c"
-/// let e = string.join([], ",");                // ""
+/// fn main() {
+///     let s = string.join(["a", "b", "c"], ", ");  // "a, b, c"
+///     let e = string.join([], ",");                // ""
+/// }
 /// ```
 pub fn join(parts: Vec<string>, sep: string) -> string {
     let n = parts.len();

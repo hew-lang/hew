@@ -38,7 +38,12 @@ pub fn now_secs() -> i64 {
 /// # Examples
 ///
 /// ```
-/// let s = datetime.format(now, "%Y-%m-%d");
+/// import std.time.datetime;
+///
+/// fn main() {
+///     let now = datetime.now_ms();
+///     let s = datetime.format(now, "%Y-%m-%d");
+/// }
 /// ```
 pub fn format(epoch_ms: i64, fmt: string) -> string {
     match try_format(epoch_ms, fmt) {

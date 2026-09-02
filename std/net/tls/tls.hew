@@ -13,11 +13,11 @@
 //! fn main() {
 //!     let stream = tls.connect("example.com", 443);
 //!     let request = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
-//!     match tls.try_write(stream, hew_string_to_bytes(request)) {
+//!     match tls.try_write(stream, request.to_bytes()) {
 //!         .Ok(_) => {},
 //!         .Err(err) => panic(net.net_error_message(err)),
 //!     }
-//!     let response = match tls.read(stream, 4096) {
+//!     let _response = match tls.read(stream, 4096) {
 //!         .Ok(data) => data,
 //!         .Err(err) => panic(net.net_error_message(err)),
 //!     };

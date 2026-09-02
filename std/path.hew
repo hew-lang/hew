@@ -143,9 +143,13 @@ pub fn glob(pattern: string) -> GlobResult {
 /// # Examples
 ///
 /// ```
-/// match path.try_glob("src/**/*.hew") {
-///     Ok(files) => println(f"{files.len()} match(es)"),
-///     Err(err) => println(path.path_error_message(err)),
+/// import std.path;
+///
+/// fn main() {
+///     match path.try_glob("src/**/*.hew") {
+///         .Ok(files) => println(f"{files.len()} match(es)"),
+///         .Err(err) => println(path.path_error_message(err)),
+///     }
 /// }
 /// ```
 pub fn try_glob(pattern: string) -> Result<GlobResult, PathError> {
@@ -312,10 +316,12 @@ pub fn absolute(p: string) -> string {
 /// ```
 /// import std.path;
 ///
-/// path.normalize("/var/www/../../etc/passwd")  // "/etc/passwd"
-/// path.normalize("a/./b/../c")                 // "a/c"
-/// path.normalize("../../etc/passwd")           // "../../etc/passwd"
-/// path.normalize("")                           // "."
+/// fn main() {
+///     path.normalize("/var/www/../../etc/passwd");  // "/etc/passwd"
+///     path.normalize("a/./b/../c");                 // "a/c"
+///     path.normalize("../../etc/passwd");           // "../../etc/passwd"
+///     path.normalize("");                           // "."
+/// }
 /// ```
 pub fn normalize(p: string) -> string {
     if p == "" {

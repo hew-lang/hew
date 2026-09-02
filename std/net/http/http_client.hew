@@ -139,11 +139,15 @@ fn content_type_headers(content_type: string) -> Vec<(string, string)> {
 /// # Examples
 ///
 /// ```
-/// let headers: Vec<(string, string)> = Vec.new();
-/// headers.push(("Accept", "application/json"));
-/// let resp = http_client.request("GET", "https://example.com", "", headers);
-/// println(resp.status());
-/// resp.close();
+/// import std.net.http.http_client;
+///
+/// fn main() {
+///     let headers: Vec<(string, string)> = Vec.new();
+///     headers.push(("Accept", "application/json"));
+///     let resp = http_client.request("GET", "https://example.com", "", headers);
+///     println(resp.status());
+///     resp.close();
+/// }
 /// ```
 pub fn request(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Response {
     unsafe {
@@ -161,10 +165,14 @@ pub fn request(method: string, url: string, body: string, headers: Vec<(string, 
 /// # Examples
 ///
 /// ```
-/// let headers: Vec<(string, string)> = Vec.new();
-/// match http_client.request_string("GET", "https://example.com", "", headers) {
-///     Some(body) => println(body),
-///     None => println("request failed"),
+/// import std.net.http.http_client;
+///
+/// fn main() {
+///     let headers: Vec<(string, string)> = Vec.new();
+///     match http_client.request_string("GET", "https://example.com", "", headers) {
+///         .Some(body) => println(body),
+///         .None => println("request failed"),
+///     }
 /// }
 /// ```
 pub fn request_string(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Option<string> {
@@ -227,9 +235,13 @@ pub fn last_error() -> string {
 /// # Examples
 ///
 /// ```
-/// let resp = http_client.get("https://example.com");
-/// println(resp.status());
-/// resp.close();
+/// import std.net.http.http_client;
+///
+/// fn main() {
+///     let resp = http_client.get("https://example.com");
+///     println(resp.status());
+///     resp.close();
+/// }
 /// ```
 pub fn get(url: string) -> Response {
     request("GET", url, "", empty_headers())
@@ -240,8 +252,12 @@ pub fn get(url: string) -> Response {
 /// # Examples
 ///
 /// ```
-/// let resp = http_client.post("https://api.example.com/data", "application/json", "{}");
-/// resp.close();
+/// import std.net.http.http_client;
+///
+/// fn main() {
+///     let resp = http_client.post("https://api.example.com/data", "application/json", "{}");
+///     resp.close();
+/// }
 /// ```
 pub fn post(url: string, content_type: string, body: string) -> Response {
     request("POST", url, body, content_type_headers(content_type))
@@ -259,9 +275,13 @@ pub fn post(url: string, content_type: string, body: string) -> Response {
 /// # Examples
 ///
 /// ```
-/// match http_client.get_string("https://example.com") {
-///     Some(body) => println(body),
-///     None => println("request failed"),
+/// import std.net.http.http_client;
+///
+/// fn main() {
+///     match http_client.get_string("https://example.com") {
+///         .Some(body) => println(body),
+///         .None => println("request failed"),
+///     }
 /// }
 /// ```
 pub fn get_string(url: string) -> Option<string> {
@@ -277,13 +297,17 @@ pub fn get_string(url: string) -> Option<string> {
 /// # Examples
 ///
 /// ```
-/// match http_client.post_string(
-///     "https://api.example.com/submit",
-///     "application/json",
-///     "{\"key\": \"value\"}",
-/// ) {
-///     Some(body) => println(body),
-///     None => println("request failed"),
+/// import std.net.http.http_client;
+///
+/// fn main() {
+///     match http_client.post_string(
+///         "https://api.example.com/submit",
+///         "application/json",
+///         "{\"key\": \"value\"}",
+///     ) {
+///         .Some(body) => println(body),
+///         .None => println("request failed"),
+///     }
 /// }
 /// ```
 pub fn post_string(url: string, content_type: string, body: string) -> Option<string> {

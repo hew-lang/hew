@@ -70,8 +70,8 @@ check "final release beats an rc of the same version" \
 0.6.0" \
     "0.6.0"
 
-# 0.6.0-rc10 beats 0.6.0-rc9 — catches substr(\$4, 3) losing its + 0 numeric
-# coercion and comparing "10" < "9" lexically.
+# 0.6.0-rc10 beats 0.6.0-rc9 — catches the sprintf("%06d", ...) padding being
+# dropped and comparing "10" < "9" lexically.
 check "rc10 beats rc9" \
     "0.6.0-rc9
 0.6.0-rc10" \

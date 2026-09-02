@@ -2407,12 +2407,20 @@ impl Builder {
                     })
                 })
                 .collect::<Vec<_>>();
-            let active_scope_exit_owners = active
+            // Every live binder over the old payload blocks the overwrite,
+            // whether it holds its own scope-exit release or merely aliases the
+            // storage the parent still drops (#2523). Reading only the
+            // scope-exit ones would let a record or `Vec` payload alias fall
+            // through to a silent leak instead of the refusal below.
+            let live_payload_alias_binders = active
                 .iter()
                 .filter(|(payload_binding, _)| {
                     self.owned_locals.iter().any(|entry| {
                         entry.binding == *payload_binding
-                            && entry.disposition == Disposition::ScopeExit
+                            && matches!(
+                                entry.disposition,
+                                Disposition::ScopeExit | Disposition::AliasOf
+                            )
                     })
                 })
                 .count();
@@ -2500,7 +2508,7 @@ impl Builder {
                     self.finish_current_block(Terminator::Goto { target: cont_bb });
                     self.start_block(cont_bb);
                 }
-            } else if active_scope_exit_owners != 0 {
+            } else if live_payload_alias_binders != 0 {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
                         construct: "enum overwrite with a live non-string payload alias"
@@ -5307,26 +5315,12 @@ impl Builder {
                 if keep_for_drop_elab {
                     let unguarded_payload_move =
                         call_scrutinee_owner.is_some() && arm.guard.is_none() && keep_for_drop_elab;
-                    // #2523 — the matched storage still schedules a release of
-                    // this payload (an owning binding, a re-readable place, a
-                    // closure-environment copy), so the binder aliases it
-                    // instead of minting a second release authority. A proven
-                    // fresh `(variant, field)` payload and the fresh per-frame
-                    // `Some(x)` arms hand over a sole owner and keep theirs.
-                    let scrutinee_retains_payload = !fresh_active_payload
-                        && !arm_is_fresh_owned_vec_iter_some
-                        && !arm_is_generator_some
-                        && !arm_is_recv_some
-                        && scrutinee_origin.scrutinee_retains_payload();
                     self.register_owned_payload_binder(
                         binding.binding,
                         binding.name.clone(),
                         binding_ty.clone(),
                         warrant,
-                        super::move_value::PayloadBinderScrutinee {
-                            local: scrutinee_local,
-                            retains_payload: scrutinee_retains_payload,
-                        },
+                        scrutinee_local,
                         call_scrutinee_owner.as_ref(),
                     );
                     // A path-complete direct-call carrier release owns every
@@ -5473,6 +5467,17 @@ impl Builder {
                         origin,
                         keep_for_drop_elab,
                     );
+                    // #2523 — the matched storage still schedules a release of
+                    // this payload (an owning binding, a re-readable place, a
+                    // closure-environment copy), so the binder aliases it
+                    // instead of minting a second release authority.
+                    if keep_for_drop_elab
+                        && !transferred_sink
+                        && !fresh_active_payload
+                        && scrutinee_origin.scrutinee_retains_payload()
+                    {
+                        self.alias_retained_payload_binder(binding.binding);
+                    }
                 }
                 if arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some {
                     // The picker verdict is consulted HERE, before this
@@ -5729,11 +5734,6 @@ impl Builder {
                         binding_ty,
                         warrant,
                     );
-                    // #2523 — the outer value keeps the release authority over
-                    // a nested payload: the transient copy this binder projects
-                    // from is not storage anybody hands over. Alias it, so the
-                    // outer composite drop stays the single free.
-                    self.set_owned_local_disposition(binding.binding, super::Disposition::AliasOf);
                 }
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 // #2523 F2 — a NESTED-pattern payload binder is bound from a
@@ -5755,6 +5755,14 @@ impl Builder {
                     ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::NestedDestructure),
                     keep_for_drop_elab,
                 );
+                // #2523 — a nested binder over a scrutinee that retains its
+                // payload views the outer value's storage; the outer composite
+                // drop is the single free. An ephemeral scrutinee hands its
+                // payload over and its nested binder keeps the owner a later
+                // move-out transfers.
+                if keep_for_drop_elab && scrutinee_origin.scrutinee_retains_payload() {
+                    self.alias_retained_payload_binder(binding.binding);
+                }
             }
             // Failure falls through to `fallthrough_bb` (re-try next arm).
             if let Some(guard) = &arm.guard {

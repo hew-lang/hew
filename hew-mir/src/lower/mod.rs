@@ -10710,18 +10710,24 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
             _ => None,
         })
         .collect::<Vec<_>>();
-    // A destination the stream itself demotes to an alias adopts nothing: the
-    // parent keeps the release authority over the projected payload, and the
-    // binder is only a byte-copy view of it (#2523). Neutralising the parent
-    // slot for such a Mint strands the parent's drop on null — a leak, and a
-    // null payload on any later read of the parent.
-    let demoted_alias_owners = blocks
+    // A destination whose release the stream itself withholds adopts nothing:
+    // the parent keeps the authority over the projected payload and the binder
+    // is a byte-copy view of it, either outright (`DemoteToAlias`) or until the
+    // parent hands over at an overwrite (`Guard { ProjectedPayload }`).
+    // Neutralising the parent slot for such a Mint strands the parent's drop on
+    // null — a leak, and a null payload on any later read of the parent (#2523).
+    let withheld_release_owners = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instruction| match instruction {
-            Instr::OwnershipEvent(crate::model::OwnershipEvent::DemoteToAlias {
-                owner, ..
-            }) => Some(*owner),
+            Instr::OwnershipEvent(
+                crate::model::OwnershipEvent::DemoteToAlias { owner, .. }
+                | crate::model::OwnershipEvent::Guard {
+                    owner,
+                    kind: crate::model::OwnershipGuardKind::ProjectedPayload,
+                    ..
+                },
+            ) => Some(*owner),
             _ => None,
         })
         .collect::<HashSet<_>>();
@@ -10740,7 +10746,7 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
                     })),
                 ) if *dest == *place
                     && !matches!(src, Place::Local(_))
-                    && !demoted_alias_owners.contains(owner) =>
+                    && !withheld_release_owners.contains(owner) =>
                 {
                     let root = base_local(*src);
                     let parent_count = live

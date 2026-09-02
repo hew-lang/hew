@@ -210,10 +210,7 @@ impl Builder {
                     binding.name.clone(),
                     binding_ty.clone(),
                     warrant,
-                    super::move_value::PayloadBinderScrutinee {
-                        local: scrutinee_local,
-                        retains_payload: scrutinee_origin.scrutinee_retains_payload(),
-                    },
+                    scrutinee_local,
                     scrutinee_owner.as_ref(),
                 );
             }
@@ -237,6 +234,12 @@ impl Builder {
                     scrutinee_origin.clone(),
                     keep_for_drop_elab,
                 );
+                // #2523 — the matched storage still schedules a release of this
+                // payload, so the binder aliases it instead of minting a second
+                // release authority.
+                if keep_for_drop_elab && scrutinee_origin.scrutinee_retains_payload() {
+                    self.alias_retained_payload_binder(binding.binding);
+                }
             }
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
@@ -287,6 +290,12 @@ impl Builder {
                 ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::NestedDestructure),
                 keep_for_drop_elab,
             );
+            // #2523 — a nested binder over a scrutinee that retains its payload
+            // views the outer value's storage; the outer composite drop is the
+            // single free.
+            if keep_for_drop_elab && scrutinee_origin.scrutinee_retains_payload() {
+                self.alias_retained_payload_binder(binding.binding);
+            }
         }
         // Aggregate-payload destructure (`Ok((n, s))`): the prelude `Let`
         // statements project the synthetic `__payload_*` temp into the leaf
@@ -655,10 +664,7 @@ impl Builder {
                     binding.name.clone(),
                     binding_ty.clone(),
                     warrant,
-                    super::move_value::PayloadBinderScrutinee {
-                        local: pattern_scrutinee_local,
-                        retains_payload: scrutinee_origin.scrutinee_retains_payload(),
-                    },
+                    pattern_scrutinee_local,
                     scrutinee_owner.as_ref(),
                 );
             }
@@ -695,6 +701,12 @@ impl Builder {
                     scrutinee_origin.clone(),
                     keep_for_drop_elab,
                 );
+                // #2523 — the matched storage still schedules a release of this
+                // payload, so the binder aliases it instead of minting a second
+                // release authority.
+                if keep_for_drop_elab && scrutinee_origin.scrutinee_retains_payload() {
+                    self.alias_retained_payload_binder(binding.binding);
+                }
             }
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
@@ -753,6 +765,12 @@ impl Builder {
                 ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::NestedDestructure),
                 keep_for_drop_elab,
             );
+            // #2523 — a nested binder over a scrutinee that retains its payload
+            // views the outer value's storage; the outer composite drop is the
+            // single free.
+            if keep_for_drop_elab && scrutinee_origin.scrutinee_retains_payload() {
+                self.alias_retained_payload_binder(binding.binding);
+            }
         }
 
         self.active_scopes.push(body.scope);
@@ -1542,10 +1560,7 @@ impl Builder {
                     binding.name.clone(),
                     binding_ty.clone(),
                     warrant,
-                    super::move_value::PayloadBinderScrutinee {
-                        local: scrutinee_local,
-                        retains_payload: scrutinee_origin.scrutinee_retains_payload(),
-                    },
+                    scrutinee_local,
                     scrutinee_owner.as_ref(),
                 );
             }
@@ -1574,6 +1589,12 @@ impl Builder {
                     scrutinee_origin.clone(),
                     keep_for_drop_elab,
                 );
+                // #2523 — the matched storage still schedules a release of this
+                // payload, so the binder aliases it instead of minting a second
+                // release authority.
+                if keep_for_drop_elab && scrutinee_origin.scrutinee_retains_payload() {
+                    self.alias_retained_payload_binder(binding.binding);
+                }
             }
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
@@ -1629,6 +1650,12 @@ impl Builder {
                 ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::NestedDestructure),
                 keep_for_drop_elab,
             );
+            // #2523 — a nested binder over a scrutinee that retains its payload
+            // views the outer value's storage; the outer composite drop is the
+            // single free.
+            if keep_for_drop_elab && scrutinee_origin.scrutinee_retains_payload() {
+                self.alias_retained_payload_binder(binding.binding);
+            }
         }
 
         self.active_scopes.push(body.scope);

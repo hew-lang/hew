@@ -32,15 +32,6 @@ fn scope_exit_tuple_projection_has_null_safe_drop(ty: &ResolvedTy) -> bool {
         )
 }
 
-/// The scrutinee side of a `match` / `if let` / `while let` payload binder
-/// registration: the local the payload projects out of, and whether that
-/// storage keeps its own release authority over the payload (#2523).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PayloadBinderScrutinee {
-    pub(crate) local: u32,
-    pub(crate) retains_payload: bool,
-}
-
 impl Builder {
     /// Emit a move-out payload-slot neutralize whose ownership is consumed into
     /// an in-flight expression (no destination local to name as the transferee).
@@ -186,32 +177,49 @@ impl Builder {
     /// before a guard on the arm has selected it. A fresh call scrutinee keeps
     /// its own arm-release protocol.
     ///
-    /// [`PayloadBinderScrutinee::retains_payload`] carries the same verdict for
-    /// the ordinary place/binding scrutinees: whenever the matched storage still
-    /// schedules a release of the payload, the binder is an alias of it (#2523).
     pub(crate) fn register_owned_payload_binder(
         &mut self,
         binding: BindingId,
         name: String,
         ty: hew_types::ResolvedTy,
         warrant: super::owner_mint::OwnerMintWarrant,
-        scrutinee: PayloadBinderScrutinee,
+        scrutinee_local: u32,
         call_scrutinee_owner: Option<&(BindingId, hew_types::ResolvedTy)>,
     ) {
-        let PayloadBinderScrutinee {
-            local: scrutinee_local,
-            retains_payload,
-        } = scrutinee;
         self.register_owned_local(binding, name, ty, warrant);
         // A borrowed by-value parameter is released by its caller; a binder
         // over its payload is likewise a byte-copy alias and mints nothing.
         let alias = call_scrutinee_owner.is_none()
-            && (retains_payload
-                || self.scrutinee_is_owned_carrier(scrutinee_local)
+            && (self.scrutinee_is_owned_carrier(scrutinee_local)
                 || self.borrowed_value_param_locals.contains(&scrutinee_local));
         if alias {
             self.set_owned_local_disposition(binding, super::Disposition::AliasOf);
         }
+    }
+
+    /// #2523 — alias a payload binder onto storage the matched value retains.
+    ///
+    /// A binder projected out of an enum/machine payload is a byte-copy view of
+    /// the scrutinee's slot. Where the scrutinee's own drop still covers that
+    /// slot, minting the binder a second release authority puts two owners on
+    /// one buffer, and the projection-adoption pass then resolves the conflict
+    /// by nulling the scrutinee's slot — which frees the payload at the end of
+    /// the arm and leaves the scrutinee dangling. Aliasing the binder leaves the
+    /// composite drop as the single free; a genuine move-out transfers the
+    /// authority at the move through the consume hook.
+    ///
+    /// A binder that already carries the flag-guarded delayed-release protocol
+    /// (`projected_payload_overwrite_flags`) is left alone: that flag encodes
+    /// the same "the parent owns it until it hands over" fact with a runtime
+    /// guard, and the overwrite authority hands the old generation to it.
+    pub(crate) fn alias_retained_payload_binder(&mut self, binding: BindingId) {
+        if self
+            .projected_payload_overwrite_flags
+            .contains_key(&binding)
+        {
+            return;
+        }
+        self.set_owned_local_disposition(binding, super::Disposition::AliasOf);
     }
 
     /// Whether a match scrutinee local is an owned call carrier (or projects

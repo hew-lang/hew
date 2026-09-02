@@ -162,7 +162,17 @@ impl Builder {
                         .iter()
                         .find(|entry| {
                             entry.disposition == Disposition::ScopeExit
-                                && (extends_the_path || matches!(entry.ty, ResolvedTy::Tuple(_)))
+                                && match &entry.ty {
+                                    // A tuple owner's own element may clear its
+                                    // slot directly.
+                                    ResolvedTy::Tuple(_) => clears_a_slot,
+                                    // A record owner reaches its nested handles
+                                    // only through the tuple hop; its direct
+                                    // handle fields keep the field-projection
+                                    // transfer they already had.
+                                    ResolvedTy::Named { .. } => extends_the_path,
+                                    _ => false,
+                                }
                                 && self.binding_locals.get(&entry.binding).copied()
                                     == Some(aggregate)
                         })

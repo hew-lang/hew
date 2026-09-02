@@ -37,8 +37,8 @@
 //!     tx.close();
 //!
 //!     match rx.recv() {
-//!         Some(msg) => println(msg),  // hello
-//!         None => println("closed"),
+//!         .Some(msg) => println(msg),  // hello
+//!         .None => println("closed"),
 //!     }
 //!     rx.close();
 //! }

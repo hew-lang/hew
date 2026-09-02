@@ -828,9 +828,11 @@ impl Display for duration {
 /// # Examples
 ///
 /// ```
-/// println(42);
-/// println("hello");
-/// println(true);
+/// fn main() {
+///     println(42);
+///     println("hello");
+///     println(true);
+/// }
 /// ```
 pub fn println(value: dyn Display) {}
 
@@ -839,7 +841,9 @@ pub fn println(value: dyn Display) {}
 /// # Examples
 ///
 /// ```
-/// print("Enter name: ");
+/// fn main() {
+///     print("Enter name: ");
+/// }
 /// ```
 pub fn print(value: dyn Display) {}
 
@@ -885,7 +889,9 @@ pub fn assert_ne(left: dyn Display, right: dyn Display) {}
 /// # Examples
 ///
 /// ```
-/// let x = abs(-5);  // 5
+/// fn main() {
+///     let x = abs(-5);  // 5
+/// }
 /// ```
 pub fn abs(x: i32) -> i32 {
     0 as i32
@@ -896,7 +902,9 @@ pub fn abs(x: i32) -> i32 {
 /// # Examples
 ///
 /// ```
-/// let r = sqrt(9.0);  // 3.0
+/// fn main() {
+///     let r = sqrt(9.0);  // 3.0
+/// }
 /// ```
 pub fn sqrt(x: f64) -> f64 {
     0.0
@@ -931,7 +939,9 @@ pub fn to_float(x: i32) -> f64 {
 /// # Examples
 ///
 /// ```
-/// let full = string_concat("hello ", "world");
+/// fn main() {
+///     let full = string_concat("hello ", "world");
+/// }
 /// ```
 pub fn string_concat(a: string, b: string) -> string {
     ""
@@ -950,9 +960,11 @@ pub fn string_length(s: string) -> i32 {
 /// # Examples
 ///
 /// ```
-/// let s = to_string(42);     // "42"
-/// let t = to_string(true);   // "true"
-/// let u = to_string('x');    // "x"
+/// fn main() {
+///     let s = to_string(42);     // "42"
+///     let t = to_string(true);   // "true"
+///     let u = to_string('x');    // "x"
+/// }
 /// ```
 pub fn to_string(value: dyn Display) -> string {
     ""
@@ -1036,9 +1048,11 @@ pub fn string_trim(s: string) -> string {
 /// # Examples
 ///
 /// ```
-/// sleep(10ms);   // sleep for 10 milliseconds
-/// sleep(2s);     // sleep for 2 seconds
-/// sleep(500ms);  // sleep for 500 milliseconds
+/// fn main() {
+///     sleep(10ms);   // sleep for 10 milliseconds
+///     sleep(2s);     // sleep for 2 seconds
+///     sleep(500ms);  // sleep for 500 milliseconds
+/// }
 /// ```
 pub fn sleep(d: duration) {}
 
@@ -1048,8 +1062,10 @@ pub fn sleep(d: duration) {}
 /// `instant + duration` to construct a future `instant`:
 ///
 /// ```
-/// let deadline = instant.now() + 10ms;
-/// sleep_until(deadline);   // wait until 10 ms from now
+/// fn main() {
+///     let deadline = instant.now() + 10ms;
+///     sleep_until(deadline);   // wait until 10 ms from now
+/// }
 /// ```
 ///
 /// The `instant + duration` operation adds a duration offset to a monotonic
@@ -1059,14 +1075,16 @@ pub fn sleep(d: duration) {}
 /// # Examples
 ///
 /// ```
-/// let deadline = instant.now();
-/// // ... do work ...
-/// sleep_until(deadline);   // wait until the deadline if not yet reached
+/// fn main() {
+///     let deadline = instant.now();
+///     // ... do work ...
+///     sleep_until(deadline);   // wait until the deadline if not yet reached
 ///
-/// // Sleep for exactly 50 ms from a fixed reference point:
-/// let t0 = instant.now();
-/// // ... do work ...
-/// sleep_until(t0 + 50ms);  // accounts for time already spent
+///     // Sleep for exactly 50 ms from a fixed reference point:
+///     let t0 = instant.now();
+///     // ... do work ...
+///     sleep_until(t0 + 50ms);  // accounts for time already spent
+/// }
 /// ```
 pub fn sleep_until(target: instant) {}
 
@@ -1085,6 +1103,8 @@ pub fn exit(code: i32) {}
 /// # Examples
 ///
 /// ```
-/// panic("something went wrong");
+/// fn main() {
+///     panic("something went wrong");
+/// }
 /// ```
 pub fn panic(message: string) {}

@@ -12,13 +12,13 @@
 //!
 //! fn main() {
 //!     match http.listen(":8080") {
-//!         Ok(server) => {
+//!         .Ok(server) => {
 //!             let req = server.accept();
 //!             req.respond_text(200, "Hello from Hew!");
 //!             req.close();
 //!             server.close();
 //!         },
-//!         Err(_err) => {
+//!         .Err(_err) => {
 //!             println(http.listen_error());
 //!         },
 //!     }

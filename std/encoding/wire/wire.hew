@@ -14,8 +14,8 @@
 //!     let e = UserCreated { id: 42, name: "ada" };
 //!     let j = e.to_json();          // {"id":42,"name":"ada"}
 //!     match UserCreated.from_json(j) {
-//!         Ok(back) => println(back.name),   // ada
-//!         Err(_) => println("parse failed"),
+//!         .Ok(back) => println(back.name),   // ada
+//!         .Err(_) => println("parse failed"),
 //!     }
 //! }
 //! ```

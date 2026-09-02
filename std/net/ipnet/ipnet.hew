@@ -59,8 +59,12 @@ pub fn is_private(addr: string) -> bool {
 /// # Examples
 ///
 /// ```
-/// ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3")  // true
-/// ipnet.cidr_contains("10.0.0.0/8", "172.16.0.1") // false
+/// import std.net.ipnet;
+///
+/// fn main() {
+///     println(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3"));   // true
+///     println(ipnet.cidr_contains("10.0.0.0/8", "172.16.0.1"));   // false
+/// }
 /// ```
 pub fn cidr_contains(cidr: string, ip: string) -> bool {
     let contains = unsafe {
@@ -77,7 +81,11 @@ pub fn cidr_contains(cidr: string, ip: string) -> bool {
 /// # Examples
 ///
 /// ```
-/// ipnet.cidr_network("192.168.1.0/24")  // "192.168.1.0"
+/// import std.net.ipnet;
+///
+/// fn main() {
+///     println(ipnet.cidr_network("192.168.1.0/24"));   // "192.168.1.0"
+/// }
 /// ```
 pub fn cidr_network(cidr: string) -> string {
     unsafe {
@@ -90,7 +98,11 @@ pub fn cidr_network(cidr: string) -> string {
 /// # Examples
 ///
 /// ```
-/// ipnet.cidr_broadcast("192.168.1.0/24")  // "192.168.1.255"
+/// import std.net.ipnet;
+///
+/// fn main() {
+///     println(ipnet.cidr_broadcast("192.168.1.0/24"));   // "192.168.1.255"
+/// }
 /// ```
 pub fn cidr_broadcast(cidr: string) -> string {
     unsafe {
@@ -103,7 +115,11 @@ pub fn cidr_broadcast(cidr: string) -> string {
 /// # Examples
 ///
 /// ```
-/// ipnet.cidr_hosts("192.168.1.0/24")  // 254
+/// import std.net.ipnet;
+///
+/// fn main() {
+///     println(ipnet.cidr_hosts("192.168.1.0/24"));   // 254
+/// }
 /// ```
 pub fn cidr_hosts(cidr: string) -> i64 {
     let hosts = unsafe {

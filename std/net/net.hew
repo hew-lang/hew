@@ -20,8 +20,8 @@
 //!
 //! fn main() {
 //!     match dial("localhost:9000") {
-//!         Ok(conn) => println("connected"),
-//!         Err(e) => {
+//!         .Ok(conn) => println("connected"),
+//!         .Err(e) => {
 //!             match e {
 //!                 NetError.ConnectionRefused(_) => println("nobody home"),
 //!                 NetError.TimedOut(_)          => println("timed out"),
@@ -567,8 +567,8 @@ trait ConnectionMethods {
 /// actor InboundLogger {
 ///     receive fn start(conn: Connection) {
 ///         match conn.attach(this) {
-///             Ok(()) => {},
-///             Err(AttachError.Refused) => println("attach refused"),
+///             .Ok(()) => {},
+///             .Err(AttachError.Refused) => println("attach refused"),
 ///         }
 ///     }
 ///     receive fn on_data(data: bytes) {
@@ -712,7 +712,11 @@ impl Connection {
 /// # Examples
 ///
 /// ```
-/// let listener = net.listen(":9000");
+/// import std.net;
+///
+/// fn main() {
+///     let listener = net.listen(":9000");
+/// }
 /// ```
 pub fn listen(addr: string) -> Listener {
     unsafe {
@@ -755,7 +759,11 @@ pub fn try_listen(addr: string) -> Result<Listener, NetError> {
 /// # Examples
 ///
 /// ```
-/// let conn = net.connect("localhost:9000");
+/// import std.net;
+///
+/// fn main() {
+///     let conn = net.connect("localhost:9000");
+/// }
 /// ```
 pub fn connect(addr: string) -> Connection {
     unsafe {

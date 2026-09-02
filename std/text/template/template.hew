@@ -68,8 +68,8 @@
 //!     let t = template.parse("Hello {{.name}}, age {{.age}}!");
 //!     let result = template.render_try(t, ctx);
 //!     match result {
-//!         Ok(s) => println(s),
-//!         Err(e) => println(e),
+//!         .Ok(s) => println(s),
+//!         .Err(e) => println(e),
 //!     }
 //! }
 //! ```
@@ -648,8 +648,8 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
 ///     let t = template.parse("hello {{.who}}!");
 ///     let r = template.render_try(t, ctx);
 ///     match r {
-///         Ok(s) => println(s),    // "hello world!"
-///         Err(_) => println("template error"),
+///         .Ok(s) => println(s),    // "hello world!"
+///         .Err(_) => println("template error"),
 ///     }
 /// }
 /// ```

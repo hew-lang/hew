@@ -26,9 +26,13 @@ import std.string;
 /// # Examples
 ///
 /// ```
-/// fmt.to_hex(255)   // "ff"
-/// fmt.to_hex(0)     // "0"
-/// fmt.to_hex(-16)   // "-10"
+/// import std.fmt;
+///
+/// fn main() {
+///     println(fmt.to_hex(255));   // "ff"
+///     println(fmt.to_hex(0));   // "0"
+///     println(fmt.to_hex(-16));   // "-10"
+/// }
 /// ```
 pub fn to_hex(n: i64) -> string {
     if n == 0 {
@@ -63,9 +67,13 @@ pub fn to_hex(n: i64) -> string {
 /// # Examples
 ///
 /// ```
-/// fmt.to_binary(10)   // "1010"
-/// fmt.to_binary(0)    // "0"
-/// fmt.to_binary(-5)   // "-101"
+/// import std.fmt;
+///
+/// fn main() {
+///     println(fmt.to_binary(10));   // "1010"
+///     println(fmt.to_binary(0));   // "0"
+///     println(fmt.to_binary(-5));   // "-101"
+/// }
 /// ```
 pub fn to_binary(n: i64) -> string {
     if n == 0 {
@@ -100,9 +108,13 @@ pub fn to_binary(n: i64) -> string {
 /// # Examples
 ///
 /// ```
-/// fmt.to_octal(8)    // "10"
-/// fmt.to_octal(0)    // "0"
-/// fmt.to_octal(-9)   // "-11"
+/// import std.fmt;
+///
+/// fn main() {
+///     println(fmt.to_octal(8));   // "10"
+///     println(fmt.to_octal(0));   // "0"
+///     println(fmt.to_octal(-9));   // "-11"
+/// }
 /// ```
 pub fn to_octal(n: i64) -> string {
     if n == 0 {
@@ -163,8 +175,12 @@ fn hex_digit(d: i64) -> string {
 /// # Examples
 ///
 /// ```
-/// fmt.pad_left("42", 5, " ")   // "   42"
-/// fmt.pad_left("42", 5, "0")   // "00042"
+/// import std.fmt;
+///
+/// fn main() {
+///     println(fmt.pad_left("42", 5, " "));   // "   42"
+///     println(fmt.pad_left("42", 5, "0"));   // "00042"
+/// }
 /// ```
 pub fn pad_left(s: string, width: i64, fill: string) -> string {
     string.pad_left(s, width, fill)
@@ -179,7 +195,11 @@ pub fn pad_left(s: string, width: i64, fill: string) -> string {
 /// # Examples
 ///
 /// ```
-/// fmt.pad_right("hi", 5, ".")   // "hi..."
+/// import std.fmt;
+///
+/// fn main() {
+///     println(fmt.pad_right("hi", 5, "."));   // "hi..."
+/// }
 /// ```
 pub fn pad_right(s: string, width: i64, fill: string) -> string {
     string.pad_right(s, width, fill)
@@ -190,8 +210,12 @@ pub fn pad_right(s: string, width: i64, fill: string) -> string {
 /// # Examples
 ///
 /// ```
-/// fmt.repeat("ab", 3)   // "ababab"
-/// fmt.repeat("*", 5)    // "*****"
+/// import std.fmt;
+///
+/// fn main() {
+///     println(fmt.repeat("ab", 3));   // "ababab"
+///     println(fmt.repeat("*", 5));   // "*****"
+/// }
 /// ```
 pub fn repeat(s: string, count: i64) -> string {
     s.repeat(count)

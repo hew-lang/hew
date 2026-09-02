@@ -11,13 +11,13 @@
 //!
 //! fn main() {
 //!     match websocket.connect("ws://localhost:8080/ws") {
-//!         Ok(ws) => {
+//!         .Ok(ws) => {
 //!             ws.send_text("hello");
 //!             let msg = ws.recv();
 //!             msg.close();
 //!             ws.close();
 //!         },
-//!         Err(_err) => {
+//!         .Err(_err) => {
 //!             println(websocket.last_error());
 //!         },
 //!     }
@@ -31,14 +31,14 @@
 //!
 //! fn main() {
 //!     match websocket.listen("0.0.0.0:8080") {
-//!         Ok(server) => {
+//!         .Ok(server) => {
 //!             let conn = server.accept();
 //!             let msg = conn.recv();
 //!             conn.send_text("got it");
 //!             conn.close();
 //!             server.close();
 //!         },
-//!         Err(_err) => {
+//!         .Err(_err) => {
 //!             println(websocket.last_error());
 //!         },
 //!     }

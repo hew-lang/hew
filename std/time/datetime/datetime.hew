@@ -179,8 +179,12 @@ pub fn diff_secs(a: i64, b: i64) -> i64 {
 /// # Examples
 ///
 /// ```
-/// let iso = datetime.to_iso8601(datetime.now_ms());
-/// // e.g. "2025-07-10T14:30:00Z"
+/// import std.time.datetime;
+///
+/// fn main() {
+///     let iso = datetime.to_iso8601(datetime.now_ms());
+///     // e.g. "2025-07-10T14:30:00Z"
+/// }
 /// ```
 pub fn to_iso8601(epoch_ms: i64) -> string {
     format(epoch_ms, "%Y-%m-%dT%H:%M:%SZ")

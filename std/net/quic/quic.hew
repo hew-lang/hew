@@ -35,12 +35,12 @@
 //!     let stream = conn.accept_stream();
 //!     let data = stream.recv();
 //!     match stream.send(data) {
-//!         Ok(_) => {},
-//!         Err(err) => panic(err),
+//!         .Ok(_) => {},
+//!         .Err(err) => panic(err),
 //!     }
 //!     match stream.finish() {
-//!         Ok(_) => {},
-//!         Err(err) => panic(err),
+//!         .Ok(_) => {},
+//!         .Err(err) => panic(err),
 //!     }
 //!     stream.close();
 //!     // Drain connection events so the peer has received all in-flight data
@@ -51,8 +51,8 @@
 //!     let ev1 = conn.on_event(); ev1.close();
 //!     let ev2 = conn.on_event(); ev2.close();
 //!     match conn.disconnect() {
-//!         Ok(_) => {},
-//!         Err(err) => panic(err),
+//!         .Ok(_) => {},
+//!         .Err(err) => panic(err),
 //!     }
 //!     ep.close();
 //! }
@@ -68,13 +68,13 @@
 //!     let conn = ep.connect("127.0.0.1:4433", "localhost");
 //!     let stream = conn.open_stream();
 //!     match stream.send(b"hello quic") {
-//!         Ok(_) => {},
-//!         Err(err) => panic(err),
+//!         .Ok(_) => {},
+//!         .Err(err) => panic(err),
 //!     }
 //!     let reply = stream.recv();
 //!     match stream.finish() {
-//!         Ok(_) => {},
-//!         Err(err) => panic(err),
+//!         .Ok(_) => {},
+//!         .Err(err) => panic(err),
 //!     }
 //!     // Drain to EOF before closing.  Without this recv() the local close
 //!     // can race the server's final STREAM_FIN frame and the reply may be
@@ -82,8 +82,8 @@
 //!     let eof = stream.recv();
 //!     stream.close();
 //!     match conn.disconnect() {
-//!         Ok(_) => {},
-//!         Err(err) => panic(err),
+//!         .Ok(_) => {},
+//!         .Err(err) => panic(err),
 //!     }
 //!     ep.close();
 //! }
@@ -420,8 +420,12 @@ impl QUICEvent {
 /// # Examples
 ///
 /// ```
-/// let ep = quic.new_client();
-/// let conn = ep.connect("node2.example.com:4433", "node2.example.com");
+/// import std.net.quic;
+///
+/// fn main() {
+///     let ep = quic.new_client();
+///     let conn = ep.connect("node2.example.com:4433", "node2.example.com");
+/// }
 /// ```
 pub fn new_client() -> QUICEndpoint {
     unsafe {
@@ -446,8 +450,12 @@ pub fn new_client_with_ca(ca_pem: string) -> QUICEndpoint {
 /// # Examples
 ///
 /// ```
-/// let ep = quic.new_server(":4433");
-/// let conn = ep.accept();
+/// import std.net.quic;
+///
+/// fn main() {
+///     let ep = quic.new_server(":4433");
+///     let conn = ep.accept();
+/// }
 /// ```
 pub fn new_server(addr: string) -> QUICEndpoint {
     unsafe {

@@ -26,9 +26,13 @@
 /// # Examples
 ///
 /// ```
-/// mime.from_path("photo.jpg")   // "image/jpeg"
-/// mime.from_path("style.css")   // "text/css"
-/// mime.from_path("data.json")   // "application/json"
+/// import std.net.mime;
+///
+/// fn main() {
+///     println(mime.from_path("photo.jpg"));   // "image/jpeg"
+///     println(mime.from_path("style.css"));   // "text/css"
+///     println(mime.from_path("data.json"));   // "application/json"
+/// }
 /// ```
 pub fn from_path(path: string) -> string {
     let ext = extract_extension(path);
@@ -40,8 +44,12 @@ pub fn from_path(path: string) -> string {
 /// # Examples
 ///
 /// ```
-/// mime.from_ext("html")  // "text/html"
-/// mime.from_ext("png")   // "image/png"
+/// import std.net.mime;
+///
+/// fn main() {
+///     println(mime.from_ext("html"));   // "text/html"
+///     println(mime.from_ext("png"));   // "image/png"
+/// }
 /// ```
 pub fn from_ext(ext: string) -> string {
     // Text

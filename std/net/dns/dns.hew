@@ -28,7 +28,11 @@ import std.net;
 /// # Examples
 ///
 /// ```
-/// let addrs = dns.resolve("localhost");  // ["127.0.0.1", "::1"]
+/// import std.net.dns;
+///
+/// fn main() {
+///     let addrs = dns.resolve("localhost");  // ["127.0.0.1", "::1"]
+/// }
 /// ```
 pub fn resolve(hostname: string) -> Vec<string> {
     unsafe {
@@ -61,7 +65,11 @@ pub fn try_resolve(hostname: string) -> Result<Vec<string>, net.NetError> {
 /// # Examples
 ///
 /// ```
-/// let ip = dns.lookup_host("localhost");  // "127.0.0.1"
+/// import std.net.dns;
+///
+/// fn main() {
+///     let ip = dns.lookup_host("localhost");  // "127.0.0.1"
+/// }
 /// ```
 pub fn lookup_host(hostname: string) -> string {
     unsafe {
@@ -96,7 +104,11 @@ pub fn try_lookup_host(hostname: string) -> Result<string, net.NetError> {
 /// # Examples
 ///
 /// ```
-/// let addrs = dns.resolve_timed("slow.example.com", 500);
+/// import std.net.dns;
+///
+/// fn main() {
+///     let addrs = dns.resolve_timed("slow.example.com", 500);
+/// }
 /// ```
 pub fn resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string> {
     unsafe {

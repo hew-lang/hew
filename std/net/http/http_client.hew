@@ -19,8 +19,8 @@
 //!
 //! fn main() {
 //!     match http_client.get_string("https://example.com") {
-//!         Some(body) => println(body),
-//!         None => println("request failed"),
+//!         .Some(body) => println(body),
+//!         .None => println("request failed"),
 //!     }
 //!
 //!     let headers: Vec<(string, string)> = Vec.new();

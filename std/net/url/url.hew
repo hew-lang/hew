@@ -12,8 +12,8 @@
 //!     let u = url.parse("https://example.com:8080/path?key=val#frag");
 //!     println(u.host());
 //!     match u.port() {
-//!         Some(port) => println(port),
-//!         None => println("no port"),
+//!         .Some(port) => println(port),
+//!         .None => println("no port"),
 //!     }
 //!     u.close();
 //! }
@@ -146,7 +146,11 @@ impl Url {
 /// # Examples
 ///
 /// ```
-/// let u = url.parse("https://example.com/api/v1");
+/// import std.net.url;
+///
+/// fn main() {
+///     let u = url.parse("https://example.com/api/v1");
+/// }
 /// ```
 pub fn parse(s: string) -> Url {
     unsafe {

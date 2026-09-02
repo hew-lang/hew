@@ -20,8 +20,8 @@
 //!
 //! fn main() {
 //!     match load_config("config.toml") {
-//!         Ok(data) => println(data),
-//!         Err(e) => {
+//!         .Ok(data) => println(data),
+//!         .Err(e) => {
 //!             match e {
 //!                 IoError.NotFound(_) => println("missing"),
 //!                 _ => println("i/o error"),
@@ -185,7 +185,11 @@ fn last_io_error() -> IoError {
 /// # Examples
 ///
 /// ```
-/// let src = fs.read("main.hew");
+/// import std.fs;
+///
+/// fn main() {
+///     let src = fs.read("main.hew");
+/// }
 /// ```
 pub fn read(path: string) -> string {
     unsafe {
@@ -273,8 +277,12 @@ pub fn try_append(file_path: string, content: string) -> Result<i64, IoError> {
 /// # Examples
 ///
 /// ```
-/// if fs.exists("config.toml") {
-///     println("found config");
+/// import std.fs;
+///
+/// fn main() {
+///     if fs.exists("config.toml") {
+///         println("found config");
+///     }
 /// }
 /// ```
 pub fn exists(path: string) -> bool {
@@ -317,8 +325,12 @@ pub fn size(path: string) -> i64 {
 /// # Examples
 ///
 /// ```
-/// let data = fs.read_bytes("image.png");
-/// println(data.len());
+/// import std.fs;
+///
+/// fn main() {
+///     let data = fs.read_bytes("image.png");
+///     println(data.len());
+/// }
 /// ```
 pub fn read_bytes(path: string) -> bytes {
     unsafe {
@@ -422,9 +434,13 @@ pub fn try_mkdir_all(dir_path: string) -> Result<i64, IoError> {
 /// # Examples
 ///
 /// ```
-/// let entries = fs.list_dir("/tmp");
-/// for entry in entries {
-///     println(entry);
+/// import std.fs;
+///
+/// fn main() {
+///     let entries = fs.list_dir("/tmp");
+///     for entry in entries {
+///         println(entry);
+///     }
 /// }
 /// ```
 pub fn list_dir(path: string) -> Vec<string> {

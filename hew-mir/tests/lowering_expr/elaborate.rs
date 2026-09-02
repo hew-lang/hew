@@ -394,9 +394,7 @@ fn if_expression_emits_one_return_exit_with_empty_plan_on_spine() {
 // aliased SOURCE string contributes no extra `CowHeap` release — dropping it
 // in addition to the live owner would double-free the shared `rc==1` buffer.
 //
-// This harness runs the checker only to mint declaration identity and then
-// lowers a single file, so aggregate-literal alias sites that require the
-// full compilation's element types — tuple/record/variant construction — are
+// Aggregate-literal alias sites — tuple/record/variant construction — are
 // exercised end-to-end through the full compiler in the runtime fixtures
 // (`hew-cli/tests/run_e2e.rs`, `tests/vertical-slice/accept/`). The cases
 // below drive the Move / call-arg / control-flow-join alias paths that the

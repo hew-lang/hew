@@ -496,11 +496,21 @@ impl Checker {
                     continue;
                 };
                 let dotted = module_id.path.join(".");
-                // Nominals are bare only where the module has no namespace of
-                // its own: the anonymous root unit, and file imports flattened
-                // into it. Checking a file that belongs to a named module (a
-                // directory module's peer, say) makes that MODULE the graph
-                // root, and its nominals stay qualified by it.
+                // The graph root and the file imports flattened into it share
+                // one bare nominal namespace.
+                //
+                // SHORTCUT: checking a file that belongs to a named module (a
+                // directory module's peer) also makes that module the graph
+                // root, and there the checker qualifies its nominals while
+                // this renders them bare, so such a compile is refused
+                // (`checking_directory_module_peer_loads_entry_namespace`).
+                // Keying that case off a non-empty `module_id.path` instead
+                // re-rendered every ordinary root compile and broke MIR site
+                // decisions across the suite, so the discriminating condition
+                // is not "the graph root has a dotted path". WHEN OBSOLETE:
+                // when the root's bare namespace is a property of the entry
+                // rather than of `graph.root`. WHAT: derive it from how the
+                // root was reached, not from the module id.
                 let bare_nominals =
                     *module_id == graph.root || flat_file_imports.contains(module_id);
                 let assembler = module

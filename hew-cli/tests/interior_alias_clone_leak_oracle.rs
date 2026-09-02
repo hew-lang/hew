@@ -77,7 +77,7 @@ fn run() {\n\
 \x20   let first = rows.get(0);\n\
 \x20   match first {\n\
 \x20       Some(r) => { let copied = r.name.to_upper(); print(copied); }\n\
-\x20       None => { print(\"none\"); }\n\
+\x20       .None => { print(\"none\"); }\n\
 \x20   }\n\
 }\n\
 \n\
@@ -126,7 +126,7 @@ fn interior_clone_loop_source(frames: usize) -> String {
          \x20   var got: i64 = 0;\n\
          \x20   match first {{\n\
          \x20       Some(r) => {{ let copied = r.name.to_upper(); if copied.len() > 0 {{ got = copied.len(); }} }}\n\
-         \x20       None => {{}}\n\
+         \x20       .None => {{}}\n\
          \x20   }}\n\
          \x20   got\n\
          }}\n\

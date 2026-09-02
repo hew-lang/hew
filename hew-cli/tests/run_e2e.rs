@@ -4688,7 +4688,7 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
          \x20       await sink.send(unsafe { hew_string_to_bytes(\"a\") });\n\
          \x20       sink.close();\n\
          \x20       let item = await input.recv();\n\
-         \x20       match item { Some(v) => {}, None => {}, }\n\
+         \x20       match item { Some(v) => {}, .None => {}, }\n\
          \x20   }\n\
          }\n\
          fn main() { let r = spawn Runner(); r.go(0); }\n",
@@ -4815,7 +4815,7 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
          \x20   let found: Result<RemotePid<Echo>, LookupError> = Node.lookup(\"echo\");\n\
          \x20   match found {\n\
          \x20       Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
-         \x20       Err(_) => {},\n\
+         \x20       .Err(_) => {},\n\
          \x20   }\n\
          }\n",
     );

@@ -106,7 +106,7 @@ fn actor_nested_vec_source(rows: usize) -> String {
          \x20   sleep(500ms);\n\
          \x20   match await buckets.count() {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -143,7 +143,7 @@ fn actor_nested_vec_iterate_source(rows: usize) -> String {
          \x20   sleep(500ms);\n\
          \x20   match await buckets.sum_firsts() {{\n\
          \x20       Ok(_) => 0,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -174,7 +174,7 @@ fn actor_nested_hashmap_source(rows: usize) -> String {
          \x20   sleep(500ms);\n\
          \x20   match await reg.total() {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )

@@ -455,7 +455,7 @@ fn actor_request_carrier_source(frames: usize) -> String {
          actor Coordinator {{\n\
          \x20   let scorer: LocalPid<Scorer>;\n\
          \x20   receive fn ask_score(tag: i64, tree: Tree) -> i64 {{\n\
-         \x20       match await scorer.score(tag, tree) {{ Ok(value) => value, Err(_) => -1, }}\n\
+         \x20       match await scorer.score(tag, tree) {{ Ok(value) => value, .Err(_) => -1, }}\n\
          \x20   }}\n\
          \x20   receive fn select_score(tag: i64, tree: Tree) -> i64 {{\n\
          \x20       select {{ reply from scorer.score(tag, tree) => reply, after 5s => -2, }}\n\
@@ -497,7 +497,7 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
          actor Coordinator {{\n\
          \x20   let scorer: LocalPid<Scorer>;\n\
          \x20   receive fn ask_score(tag: i64, value: i64) -> i64 {{\n\
-         \x20       match await scorer.score(tag, value) {{ Ok(result) => result, Err(_) => -1, }}\n\
+         \x20       match await scorer.score(tag, value) {{ Ok(result) => result, .Err(_) => -1, }}\n\
          \x20   }}\n\
          \x20   receive fn select_score(tag: i64, value: i64) -> i64 {{\n\
          \x20       select {{ reply from scorer.score(tag, value) => reply, after 5s => -2, }}\n\
@@ -671,8 +671,8 @@ actor Driver {\n\
 \x20   var slow: LocalPid<SlowReplier>;\n\
 \x20   receive fn run() -> i64 {\n\
 \x20       match await slow.fetch() {\n\
-\x20           Ok(t) => { val(t) }\n\
-\x20           Err(e) => { let _ = e; 0 }\n\
+\x20           .Ok(t) => { val(t) }\n\
+\x20           .Err(e) => { let _ = e; 0 }\n\
 \x20       }\n\
 \x20   }\n\
 }\n\
@@ -681,7 +681,7 @@ fn main() -> i64 {\n\
 \x20   let driver = spawn Driver(slow: slow);\n\
 \x20   match await driver.run() {\n\
 \x20       Ok(v) => { print(\"${v}\"); }\n\
-\x20       Err(e) => { let _ = e; }\n\
+\x20       .Err(e) => { let _ = e; }\n\
 \x20   }\n\
 \x20   0\n\
 }\n";

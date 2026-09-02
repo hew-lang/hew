@@ -109,7 +109,7 @@ fn main() {\n\
 \x20       let row = rows[r];\n\
 \x20       match row.get(key) {\n\
 \x20           Some(v) => { out = out + f\"{v}\" + \"|\"; },\n\
-\x20           None => { out = out + \"MISSING|\"; },\n\
+\x20           .None => { out = out + \"MISSING|\"; },\n\
 \x20       }\n\
 \x20   }\n\
 \x20   print(out);\n\

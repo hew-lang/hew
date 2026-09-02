@@ -462,7 +462,7 @@ fn await_recv_source(frames: usize) -> String {
          \x20           let opt = await rx.recv();\n\
          \x20           match opt {{\n\
          \x20               Some(item) => println(item),\n\
-         \x20               None => {{ keep_going = false; }},\n\
+         \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -498,7 +498,7 @@ fn try_recv_source(frames: usize) -> String {
          \x20           let opt = rx.try_recv();\n\
          \x20           match opt {{\n\
          \x20               Some(item) => println(item),\n\
-         \x20               None => {{ keep_going = false; }},\n\
+         \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -541,7 +541,7 @@ fn try_recv_continue_source(frames: usize) -> String {
          \x20                   println(\"got\");\n\
          \x20                   continue;\n\
          \x20               }},\n\
-         \x20               None => {{ keep_going = false; }},\n\
+         \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -584,7 +584,7 @@ fn await_recv_continue_source(frames: usize) -> String {
          \x20                   println(\"got\");\n\
          \x20                   continue;\n\
          \x20               }},\n\
-         \x20               None => {{ keep_going = false; }},\n\
+         \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -1228,7 +1228,7 @@ fn carry_continue_escape_source() -> String {
      \x20                   carry = item;\n\
      \x20                   continue;\n\
      \x20               },\n\
-     \x20               None => { keep_going = false; },\n\
+     \x20               .None => { keep_going = false; },\n\
      \x20           }\n\
      \x20       }\n\
      \x20       println(carry);\n\
@@ -1269,7 +1269,7 @@ fn carry_fallthrough_escape_source() -> String {
      \x20                   carry = item;\n\
      \x20                   keep_going = false;\n\
      \x20               },\n\
-     \x20               None => { keep_going = false; },\n\
+     \x20               .None => { keep_going = false; },\n\
      \x20           }\n\
      \x20       }\n\
      \x20       println(carry);\n\

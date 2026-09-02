@@ -116,7 +116,7 @@ fn main() -> i64 {\n\
 \x20   }\n\
 \x20   let n = match await w.count() {\n\
 \x20       Ok(v) => v,\n\
-\x20       Err(_) => -1,\n\
+\x20       .Err(_) => -1,\n\
 \x20   };\n\
 \x20   if n == 5 {\n\
 \x20       print(\"k\");\n\

@@ -133,7 +133,7 @@ fn overwrite_source(frames: usize) -> String {
          \x20   sleep(2000ms);\n\
          \x20   match await store.get_len() {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -329,7 +329,7 @@ fn usercall_transient_get_source(frames: usize) -> String {
          \x20   while i < {frames} {{\n\
          \x20       match mk().get(0) {{\n\
          \x20           Some(_b) => {{ total = total + 1; }}\n\
-         \x20           None => {{}}\n\
+         \x20           .None => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\

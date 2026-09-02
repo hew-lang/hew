@@ -107,7 +107,7 @@ fn collection_overwrite_source(frames: usize) -> String {
          \x20   sleep(2000ms);\n\
          \x20   match await c.size() {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -167,7 +167,7 @@ fn record_functional_update_source(frames: usize) -> String {
          \x20   sleep(2000ms);\n\
          \x20   match await k.count() {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -211,8 +211,8 @@ fn nested_record_alias_source(frames: usize) -> String {
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
          \x20   match await keeper.size() {{\n\
-         \x20       Ok(n) => n,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Ok(n) => n,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -264,8 +264,8 @@ fn enum_payload_alias_source(frames: usize) -> String {
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
          \x20   match await keeper.size() {{\n\
-         \x20       Ok(n) => n,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Ok(n) => n,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -312,7 +312,7 @@ fn enum_overwrite_source(frames: usize) -> String {
          \x20   sleep(2000ms);\n\
          \x20   match await t.code() {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -353,7 +353,7 @@ fn string_inspect_overwrite_source(frames: usize) -> String {
          \x20   sleep(2000ms);\n\
          \x20   match await h.size() {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -399,7 +399,7 @@ fn collection_iterate_source(frames: usize) -> String {
          \x20   sleep(2000ms);\n\
          \x20   match await h.size() {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )

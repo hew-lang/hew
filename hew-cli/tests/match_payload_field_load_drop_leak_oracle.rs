@@ -50,7 +50,7 @@ fn run() {\n\
 \x20   let opt = make(1);\n\
 \x20   match opt {\n\
 \x20       Some(r) => { let name = r.name.to_upper(); if !name.is_empty() { print(\"m\"); } }\n\
-\x20       None => { print(\"e\"); }\n\
+\x20       .None => { print(\"e\"); }\n\
 \x20   }\n\
 }\n\
 \n\
@@ -73,7 +73,7 @@ fn run() {\n\
 \x20   let opt = make(1);\n\
 \x20   match opt {\n\
 \x20       Some(r) => { let name = r.name; if !name.is_empty() { print(\"m\"); } }\n\
-\x20       None => { print(\"e\"); }\n\
+\x20       .None => { print(\"e\"); }\n\
 \x20   }\n\
 }\n\
 \n\
@@ -99,7 +99,7 @@ fn match_field_clone_loop_source(frames: usize) -> String {
          \x20   var got: i64 = 0;\n\
          \x20   match opt {{\n\
          \x20       Some(r) => {{ let name = r.name.to_upper(); if !name.is_empty() {{ got = name.len(); }} }}\n\
-         \x20       None => {{}}\n\
+         \x20       .None => {{}}\n\
          \x20   }}\n\
          \x20   got\n\
          }}\n\

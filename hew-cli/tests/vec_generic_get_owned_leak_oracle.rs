@@ -68,8 +68,8 @@ fn main() {\n\
 \x20   let vn: Vec<Name> = Vec.new();\n\
 \x20   vn.push(Name { label: \"owned-ok\" });\n\
 \x20   let got = match first(vn) {\n\
-\x20       Some(g) => g,\n\
-\x20       None => { print(\"none\"); return; }\n\
+\x20       .Some(g) => g,\n\
+\x20       .None => { print(\"none\"); return; }\n\
 \x20   };\n\
 \x20   print(got.label);\n\
 }\n";
@@ -97,8 +97,8 @@ fn generic_get_loop_source(frames: usize) -> String {
          \x20   let vn: Vec<Name> = Vec.new();\n\
          \x20   vn.push(Name {{ label: \"owned-ok\".to_upper() }});\n\
          \x20   let got = match first(vn) {{\n\
-         \x20       Some(g) => g,\n\
-         \x20       None => {{ return 0; }}\n\
+         \x20       .Some(g) => g,\n\
+         \x20       .None => {{ return 0; }}\n\
          \x20   }};\n\
          \x20   got.label.len()\n\
          }}\n\

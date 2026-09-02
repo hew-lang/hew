@@ -411,7 +411,7 @@ actor Relay {\n\
 \x20   let consumer: LocalPid<Consumer>;\n\
 \x20   var seen: i64;\n\
 \x20   receive fn forward(value: string) -> i64 {\n\
-\x20       let delivered = match await consumer.take(value) { Ok(n) => n, Err(_) => -1 };\n\
+\x20       let delivered = match await consumer.take(value) { .Ok(n) => n, Err(_) => -1 };\n\
 \x20       seen = seen + 1;\n\
 \x20       delivered\n\
 \x20   }\n\
@@ -422,12 +422,12 @@ fn main() -> i64 {\n\
 \x20   let relay = spawn Relay(consumer: consumer, seen: 0);\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 40 {\n\
-\x20       let delivered = match await relay.forward(\"forward\".to_upper()) { Ok(n) => n, Err(_) => -1 };\n\
+\x20       let delivered = match await relay.forward(\"forward\".to_upper()) { .Ok(n) => n, Err(_) => -1 };\n\
 \x20       if delivered < 0 { return 82; }\n\
 \x20       i = i + 1;\n\
 \x20   }\n\
-\x20   let relayed = match await relay.count() { Ok(n) => n, Err(_) => -1 };\n\
-\x20   let consumed = match await consumer.total() { Ok(n) => n, Err(_) => -1 };\n\
+\x20   let relayed = match await relay.count() { .Ok(n) => n, Err(_) => -1 };\n\
+\x20   let consumed = match await consumer.total() { .Ok(n) => n, Err(_) => -1 };\n\
 \x20   if relayed == 40 && consumed == 40 { 0 } else { 81 }\n\
 }\n";
 

@@ -348,7 +348,7 @@ fn main() {{
     for _ in 0..{frames} {{
         let crasher = spawn Crasher(gate: gate);
         match await crasher.go(0) {{
-            Ok(_) => panic("crasher unexpectedly returned"),
+            .Ok(_) => panic("crasher unexpectedly returned"),
             .Err(_) => println("crash-fallback"),
         }}
     }}

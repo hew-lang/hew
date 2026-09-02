@@ -50,7 +50,7 @@ fn main() {{
         let weak = build_dead_graph();
         match weak.upgrade() {{
             Some(_) => panic("dead upgrade returned Some"),
-            None => {{
+            .None => {{
                 dead = dead + 1;
             }},
         }}

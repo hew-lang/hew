@@ -111,7 +111,7 @@ impl ActivePayload {
             Self::ErrUnconsumed => {
                 "match make(false) {\n\
                  \x20   Ok(value) => { value.close(); return 75; },\n\
-                 \x20   Err(_) => {},\n\
+                 \x20   .Err(_) => {},\n\
                  };"
             }
         }

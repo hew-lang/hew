@@ -69,8 +69,8 @@ fn make(n: i64) -> Option<string> {\n\
 fn run() {\n\
 \x20   let opt = make(1);\n\
 \x20   match opt {\n\
-\x20       Some(s) => { if !s.is_empty() { print(\"m\"); } }\n\
-\x20       None => { print(\"e\"); }\n\
+\x20       .Some(s) => { if !s.is_empty() { print(\"m\"); } }\n\
+\x20       .None => { print(\"e\"); }\n\
 \x20   }\n\
 }\n\
 \n\
@@ -131,8 +131,8 @@ fn match_bound_loop_source(frames: usize) -> String {
          \x20   let opt = make(n);\n\
          \x20   var got: i64 = 0;\n\
          \x20   match opt {{\n\
-         \x20       Some(s) => {{ if !s.is_empty() {{ got = 1; }} }}\n\
-         \x20       None => {{}}\n\
+         \x20       .Some(s) => {{ if !s.is_empty() {{ got = 1; }} }}\n\
+         \x20       .None => {{}}\n\
          \x20   }}\n\
          \x20   got\n\
          }}\n\

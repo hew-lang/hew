@@ -2879,12 +2879,12 @@ fn run_result_ok_err_ctors_and_match_arms_dispatch_per_variant() {
          \x20   let r1 = parse_positive(42);\n\
          \x20   let r2 = parse_positive(7);\n\
          \x20   match r1 {\n\
-         \x20       Ok(n) => println(n),\n\
-         \x20       Err(e) => println(e),\n\
+         \x20       .Ok(n) => println(n),\n\
+         \x20       .Err(e) => println(e),\n\
          \x20   }\n\
          \x20   match r2 {\n\
-         \x20       Ok(n) => println(n),\n\
-         \x20       Err(e) => println(e),\n\
+         \x20       .Ok(n) => println(n),\n\
+         \x20       .Err(e) => println(e),\n\
          \x20   }\n\
          }\n",
     )
@@ -2924,7 +2924,7 @@ fn match_wrong_variant_against_result_scrutinee_is_compile_time_type_error() {
         "fn main() {\n\
          \x20   let r: Result<i64, string> = Ok(1);\n\
          \x20   match r {\n\
-         \x20       Some(x) => println(x),\n\
+         \x20       .Some(x) => println(x),\n\
          \x20       None => println(0),\n\
          \x20   }\n\
          }\n",
@@ -3169,8 +3169,8 @@ fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
          fn main() {\n\
          \x20   var p = Pair { left: 77, right: 88 };\n\
          \x20   match p.next() {\n\
-         \x20       Some(x) => println(x),\n\
-         \x20       None => println(-1),\n\
+         \x20       .Some(x) => println(x),\n\
+         \x20       .None => println(-1),\n\
          \x20   }\n\
          }\n",
     )
@@ -3226,12 +3226,12 @@ fn var_self_concrete_receiver_trait_dispatch_option_abi_and_writeback() {
          fn main() {\n\
          \x20   var c = Counter { current: 77, step: 88 };\n\
          \x20   match c.next() {\n\
-         \x20       Some(x) => println(x),\n\
-         \x20       None => println(-1),\n\
+         \x20       .Some(x) => println(x),\n\
+         \x20       .None => println(-1),\n\
          \x20   }\n\
          \x20   match c.next() {\n\
-         \x20       Some(x) => println(x),\n\
-         \x20       None => println(-1),\n\
+         \x20       .Some(x) => println(x),\n\
+         \x20       .None => println(-1),\n\
          \x20   }\n\
          }\n",
     )

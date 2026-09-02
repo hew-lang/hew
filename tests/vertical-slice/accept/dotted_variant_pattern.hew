@@ -1,0 +1,33 @@
+//! Accept: the dotted spelling of every pattern position the bare form is
+//! refused in.
+//!
+//! The counterfactual is reject/bare_variant_pattern.hew, which is this
+//! program with the dots removed. Each arm shape has to keep working: a tuple
+//! arm, a struct-variant arm, a unit arm, and a `let`-position tag test.
+
+enum Choice {
+    Present(i64);
+    Absent;
+    Named { count: i64 }
+}
+
+fn read(value: Choice) -> i64 {
+    match value {
+        .Present(number) => number,
+        .Named { count } => count,
+        .Absent => 0,
+    }
+}
+
+fn tag_test(value: Choice) -> i64 {
+    let .Absent = value else { return 1 };
+    0
+}
+
+fn main() {
+    println(f"{read(.Present(7))}");
+    println(f"{read(.Named { count: 9 })}");
+    println(f"{read(.Absent)}");
+    println(f"{tag_test(.Absent)}");
+    println(f"{tag_test(.Present(1))}");
+}

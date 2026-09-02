@@ -1,0 +1,34 @@
+//! Reject: a variant matched by its bare name in every pattern position.
+//!
+//! A variant is named contextually (`.Present`) or by its owner
+//! (`Choice.Present`). The bare name is not a pattern, and since v0.6.0 the
+//! checker refuses it with E_BARE_VARIANT_PATTERN rather than warning. All
+//! four pattern shapes report: a tuple arm, a struct-variant arm, a unit arm,
+//! and a `let`-position tag test, which binds nothing and so never reaches the
+//! binder that checks the other three.
+//!
+//! The accept twin is accept/dotted_variant_pattern.hew, which writes the same
+//! program with the dot.
+
+enum Choice {
+    Present(i64);
+    Absent;
+    Named { count: i64 }
+}
+
+fn read(value: Choice) -> i64 {
+    match value {
+        Present(number) => number,
+        Named { count } => count,
+        Absent => 0,
+    }
+}
+
+fn tag_test(value: Choice) -> i64 {
+    let Absent = value else { return 1 };
+    0
+}
+
+fn main() {
+    println(f"{read(.Present(7)) + tag_test(.Absent)}");
+}

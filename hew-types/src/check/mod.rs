@@ -725,23 +725,64 @@ impl Checker {
         let mut declare = |kind: Kind, ordinal: usize, path: String| {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
-            // Two source declarations claiming one canonical path do not both
-            // get an identity: the second is refused, so nothing downstream
-            // can resolve it and the compile fails closed at the first
-            // consumer that needs it.
-            //
-            // SHORTCUT: the refusal is silent here, so the message the user
-            // sees comes from whichever consumer asks first — for an ordinary
-            // redefinition that is semantic registration's duplicate-definition
-            // error, but for two peer files of one directory module colliding
-            // in the assembled namespace (registration visits each file
-            // separately and never sees it) the user gets the internal
-            // "identity table has no ... declaration" wording instead.
-            // WHEN OBSOLETE: when diagnostics grow a declaration-boundary kind
-            // this can report directly. WHAT: report the collision here with
-            // both occurrence spans, once reporting it cannot double up with
-            // registration's own message for the same-module case.
-            let _ = self.identity.declare(occurrence, path.clone());
+            let Err(error) = self.identity.declare(occurrence, path.clone()) else {
+                return;
+            };
+            let crate::identity::DeclarationIdentityError::PathAlreadyDeclared {
+                established_occurrence,
+                ..
+            } = &error;
+            // An `extern "C"` symbol is the one declaration form where two
+            // occurrences under one path are genuinely one declaration: the
+            // linker binds every call to a single implementation, the checker
+            // keys every declaration of the symbol by the same fn-sig path,
+            // and the extern table resolves the redeclaration against the
+            // established ABI contract. Peer files of one directory module
+            // routinely re-declare a runtime symbol, so binding the further
+            // occurrence is what keeps their declarations resolvable.
+            if kind == Kind::ExternFunction {
+                self.identity.bind_redeclaration(occurrence, &path);
+                return;
+            }
+            // Everything else is a redefinition. Registration reports the
+            // ones it can see, which is one file at a time; a collision
+            // between two peer files of one directory module is invisible
+            // there, because each file registers on its own and only the
+            // ASSEMBLED path collides. Report exactly that case here, naming
+            // both files, so the user never sees the identity table's
+            // internal "no declaration" wording instead of a duplicate
+            // definition.
+            let established_module = established_occurrence.module();
+            if established_module == module {
+                return;
+            }
+            let leaf = path.rsplit(['.', ':']).next().unwrap_or(&path).to_string();
+            let established_file = established_module
+                .and_then(|module| self.identity.module_source(module))
+                .map(|source| source.display().to_string());
+            let conflicting_file = module
+                .and_then(|module| self.identity.module_source(module))
+                .map(|source| source.display().to_string());
+            let mut error = TypeError::new(
+                TypeErrorKind::DuplicateDefinition,
+                span.clone(),
+                format!("`{leaf}` is defined multiple times"),
+            )
+            .with_note_source(
+                established_occurrence.span(),
+                "previous definition here",
+                established_file.clone(),
+            );
+            if let (Some(established_file), Some(conflicting_file)) =
+                (&established_file, &conflicting_file)
+            {
+                error = error.with_suggestion(format!(
+                    "`{established_file}` and `{conflicting_file}` are peer files of one \
+                     module and share its namespace: rename one `{leaf}`"
+                ));
+            }
+            error.source_module = conflicting_file;
+            self.errors.push(error);
         };
         match item {
             Item::Import(_) | Item::Impl(_) => {}

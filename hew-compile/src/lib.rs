@@ -2498,6 +2498,114 @@ mod tests {
         );
     }
 
+    /// Two peer files of one directory module that claim the same assembled
+    /// name are a duplicate definition. The module graph rejects a duplicate
+    /// PUB name before checking, but a private one reaches the checker — where
+    /// registration visits each file on its own and never sees the collision,
+    /// because only the ASSEMBLED path collides. The identity table is the
+    /// only place that can report it, and it must: otherwise the user gets the
+    /// internal "identity table has no declaration" wording from whichever
+    /// consumer asks for the refused declaration first.
+    #[test]
+    fn directory_module_peers_claiming_one_name_report_a_duplicate_definition() {
+        let dir = tempfile::tempdir().expect("create directory-module fixture");
+        let module_dir = dir.path().join("shapes");
+        fs::create_dir(&module_dir).expect("create module directory");
+        write_source(
+            &module_dir,
+            "shapes.hew",
+            "type Point { x: i64; }\npub fn ax() -> i64 { let p = Point { x: 1 }; p.x }\n",
+        );
+        write_source(
+            &module_dir,
+            "circle.hew",
+            "type Point { y: i64; }\npub fn by() -> i64 { let p = Point { y: 2 }; p.y }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import shapes;\n\nfn main() { println(shapes.ax() + shapes.by()); }\n",
+        );
+
+        let failure = check_file(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(dir.path().to_path_buf()),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect_err("two peers claiming `shapes.Point` must not type-check");
+        let duplicates: Vec<&FrontendDiagnostic> = failure
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                matches!(
+                    &diagnostic.kind,
+                    FrontendDiagnosticKind::Type(error)
+                        if error.kind == hew_types::error::TypeErrorKind::DuplicateDefinition
+                )
+            })
+            .collect();
+        assert_eq!(
+            duplicates.len(),
+            1,
+            "the collision must be reported exactly once: {:#?}",
+            failure.diagnostics
+        );
+        let rendered = format!("{duplicates:#?}");
+        assert!(
+            rendered.contains("`Point` is defined multiple times")
+                && rendered.contains("shapes.hew")
+                && rendered.contains("circle.hew"),
+            "the diagnostic must name both peer files: {rendered}"
+        );
+        assert!(
+            !format!("{:#?}", failure.diagnostics).contains("identity table has no"),
+            "the internal refusal wording must not reach the user: {:#?}",
+            failure.diagnostics
+        );
+    }
+
+    /// Negative control for the rule above: an `extern "C"` symbol declared by
+    /// two peer files of one directory module is a redeclaration, not a
+    /// redefinition — the linker binds every call to one implementation and
+    /// the extern table resolves the second against the established contract.
+    /// It must keep type-checking, and both declarations must resolve.
+    #[test]
+    fn directory_module_peers_may_redeclare_one_extern_symbol() {
+        let dir = tempfile::tempdir().expect("create directory-module fixture");
+        let module_dir = dir.path().join("clock");
+        fs::create_dir(&module_dir).expect("create module directory");
+        write_source(
+            &module_dir,
+            "clock.hew",
+            "extern \"C\" {\n    fn hew_time_now_millis() -> i64;\n}\n             pub fn now() -> i64 { unsafe { hew_time_now_millis() } }\n",
+        );
+        write_source(
+            &module_dir,
+            "stamp.hew",
+            "extern \"C\" {\n    fn hew_time_now_millis() -> i64;\n}\n             pub fn stamp() -> i64 { unsafe { hew_time_now_millis() } }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import clock;\n\nfn main() { println(clock.now() + clock.stamp()); }\n",
+        );
+
+        let result = check_file(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(dir.path().to_path_buf()),
+                ..FrontendOptions::default()
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "one C symbol declared by two peers is a redeclaration: {:#?}",
+            result.err()
+        );
+    }
+
     #[test]
     fn migration_frontend_does_not_relax_the_ordinary_frontend() {
         let dir = tempfile::tempdir().expect("create migration frontend fixture");

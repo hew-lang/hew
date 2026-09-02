@@ -210,6 +210,10 @@ struct ModuleEntry {
     /// identity the same file would carry when imported (its file stem), so
     /// root and import compiles of one source mint one spelling.
     canonical_path: String,
+    /// The interned source this identity was minted from, when it has one.
+    /// Diagnostics that must name the actual FILE — a directory module's peer
+    /// files share one assembled render — read it back here.
+    canonical_source: Option<PathBuf>,
 }
 
 const SYNTHETIC_ROOT_PATH: &str = "#synthetic-root";
@@ -329,11 +333,14 @@ impl IdentityTable {
         let id = ModuleId(
             u32::try_from(self.entries.len()).expect("more than u32::MAX modules in one compile"),
         );
-        if let Some(key) = canonical_source {
+        if let Some(key) = canonical_source.clone() {
             self.by_source.insert(key, id);
         }
         self.by_path.insert(canonical_path.clone(), id);
-        self.entries.push(ModuleEntry { canonical_path });
+        self.entries.push(ModuleEntry {
+            canonical_path,
+            canonical_source,
+        });
         id
     }
 
@@ -474,6 +481,38 @@ impl IdentityTable {
         self.declarations_by_occurrence.insert(occurrence, index);
         self.declarations_by_path.insert(canonical_path, index);
         Ok(declaration)
+    }
+
+    /// The source file a minted module identity was established from.
+    #[must_use]
+    pub(crate) fn module_source(&self, id: ModuleId) -> Option<&Path> {
+        self.entries[id.0 as usize].canonical_source.as_deref()
+    }
+
+    /// Bind a FURTHER occurrence to the declaration already established under
+    /// `canonical_path`.
+    ///
+    /// [`Self::declare`] refuses two occurrences claiming one path because
+    /// that would equate two declarations. An `extern "C"` symbol is the one
+    /// place where they ARE one: the linker binds every call to a single
+    /// implementation, peer files of one directory module routinely
+    /// re-declare a runtime symbol, and the checker keys every declaration of
+    /// it by the same fn-sig path — so the extern table resolves the
+    /// redeclaration against the established ABI contract rather than minting
+    /// a second one. Binding never creates a path or a declaration: it
+    /// answers `None` when nothing owns `canonical_path`, and it leaves an
+    /// occurrence that already resolves untouched.
+    pub(crate) fn bind_redeclaration(
+        &mut self,
+        occurrence: DeclarationOccurrence,
+        canonical_path: &str,
+    ) -> Option<DefId> {
+        let index = *self.declarations_by_path.get(canonical_path)?;
+        let bound = *self
+            .declarations_by_occurrence
+            .entry(occurrence)
+            .or_insert(index);
+        Some(self.declarations[bound].declaration.clone())
     }
 
     /// Resolve an exact source occurrence while the checker still owns the

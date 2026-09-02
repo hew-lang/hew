@@ -13239,6 +13239,7 @@ impl LowerCtx {
                 span.clone(),
                 &type_params,
                 Some(&symbol_self_name),
+                None,
             ) else {
                 continue;
             };
@@ -13374,17 +13375,17 @@ impl LowerCtx {
                         // bodies degrades to a bare fail-closed line (never a false
                         // caret against the root source). This is the exact producer
                         // an absence-from-a-foreign-set proxy misclassified.
-                        let Some(mut hir_method) = self.lower_fn_with_name_and_impl_params(
+                        let Some(hir_method) = self.lower_fn_with_name_and_impl_params(
                             &fn_decl,
                             &symbol,
                             span.clone(),
                             &type_params,
                             Some(&symbol_self_name),
+                            synthetic_default_declaration.clone(),
                         ) else {
                             continue;
                         };
                         if let Some(declaration) = &synthetic_default_declaration {
-                            hir_method.declaration = declaration.clone();
                             if self.validate_impl_body_plan(declaration, &symbol, &span) {
                                 self.impl_method_body_symbols
                                     .entry(declaration.clone())
@@ -13455,7 +13456,7 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
     ) -> Option<HirFn> {
-        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None)
+        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None, None)
     }
 
     fn lower_imported_fn_with_name(
@@ -13674,6 +13675,7 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
         impl_type_params: &[String],
         impl_self_type_name: Option<&str>,
+        known_declaration: Option<hew_types::DefId>,
     ) -> Option<HirFn> {
         // Use the stable ItemId pre-allocated during the first pass.
         let id = self
@@ -13686,7 +13688,13 @@ impl LowerCtx {
         // already checker-published under their emitted symbol; ordinary
         // functions use the exact defining-module context active while their
         // source body is lowered, never a reverse parse of the linker name.
-        let declaration = if let Some(declaration) = self.impl_method_declaration_ids.get(name) {
+        // A materialised trait default has no source `fn` in the impl AST, so
+        // the checker never inventoried one: its identity is minted at the
+        // synthesis boundary and handed in here. Everything else resolves
+        // through the checker's own tables.
+        let declaration = if let Some(declaration) = known_declaration {
+            declaration
+        } else if let Some(declaration) = self.impl_method_declaration_ids.get(name) {
             declaration.clone()
         } else {
             self.source_declaration(&span, hew_types::DeclarationKind::Function, 0)?

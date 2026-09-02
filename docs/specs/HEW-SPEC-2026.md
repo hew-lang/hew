@@ -3071,6 +3071,7 @@ machine Name {
     events {
         EventX;                            // event with no payload
         EventY { payload: Type; }          // event with payload
+        EventZ;
     }
 
     // Output vocabulary — optional; lists events this machine may `emit`
@@ -3083,7 +3084,7 @@ machine Name {
     state StateB { field: Type; }         // state with data
 
     // Transitions: on Event: Source => Target { body }
-    on EventX: StateA => StateB { .StateB } // explicit body returns target value
+    on EventZ: StateB => StateA { .StateA } // explicit body returns target value
     on EventY: StateA => StateB { StateB { field: event.payload } }
 
     // Head binding: name payload fields at the rule site
@@ -3228,7 +3229,7 @@ on Work: Active => Active { count: state.count + event.amount }
 constructs the target state's zero-field (unit) variant automatically:
 
 ```hew
-on Toggle: Off => On;   // equivalent to: on Toggle: Off => On { On }
+on Toggle: Off => On;   // equivalent to: on Toggle: Off => On { .On }
 ```
 
 **State names are not variants (normative).** The name after `=>` in a

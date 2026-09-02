@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Prove that successful stdlib checks cannot hide bare variant diagnostics.
+# Prove that a bare-variant refusal in a stdlib source fails the stdlib ratchet.
+#
+# Both bare-variant rules are hard errors, so a stdlib file carrying one exits
+# non-zero and must land in the unexpected-failure set rather than being
+# absorbed by a clean run. The counterfactual is the clean mode: the same
+# harness over the same tree with no refusal must pass.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS="$REPO_ROOT/scripts/corpus-ratchet.sh"
-# shellcheck source=scripts/lib/bare-variant-ratchet.sh
-# shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hew-stdlib-deprecation-test.XXXXXX")"
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hew-stdlib-bare-variant-test.XXXXXX")"
 
 cleanup() {
     rm -rf "$TMP_ROOT"
@@ -26,8 +28,9 @@ set -euo pipefail
 [[ $# -eq 2 && "$1" == "check" ]] || exit 64
 
 if [[ "${FAKE_HEW_MODE:-clean}" == "bare-variants" && "${2##*/}" == "arena.hew" ]]; then
-    printf '%s:1:1: warning: E_BARE_VARIANT_PATTERN: bare variant pattern is deprecated\n' "$2" >&2
-    printf '%s:1:1: warning: E_BARE_VARIANT_EXPR: bare variant is deprecated\n' "$2" >&2
+    printf '%s:1:1: error: E_BARE_VARIANT_PATTERN: bare variant pattern `Some` is not a pattern\n' "$2" >&2
+    printf '%s:1:1: error: E_BARE_VARIANT_EXPR: bare variant `Some` is not an expression\n' "$2" >&2
+    exit 1
 fi
 FAKE_HEW_EOF
 chmod +x "$FAKE_HEW"
@@ -56,16 +59,16 @@ bare_variant_output="$(
 printf '%s\n' "$bare_variant_output" | sed 's/^/CF-[bare-variant-check] /'
 
 if (( bare_variant_status == 0 )); then
-    echo "FAIL: a successful check with bare variant diagnostics passed" >&2
+    echo "FAIL: a stdlib source with a bare-variant refusal passed the ratchet" >&2
     exit 1
 fi
-if [[ "$bare_variant_output" != *"$(bare_variant_ratchet_failure_message 2)"* ]]; then
-    echo "FAIL: rejection did not report both bare variant diagnostics" >&2
+if [[ "$bare_variant_output" != *"std/arena.hew"* ]]; then
+    echo "FAIL: rejection did not name the refusing stdlib source" >&2
     exit 1
 fi
-if [[ "$bare_variant_output" != *"E_BARE_VARIANT_PATTERN"* || "$bare_variant_output" != *"E_BARE_VARIANT_EXPR"* ]]; then
-    echo "FAIL: rejection did not preserve both bare variant diagnostics" >&2
+if [[ "$bare_variant_output" != *"E_BARE_VARIANT_PATTERN"* ]]; then
+    echo "FAIL: rejection did not surface the pattern diagnostic" >&2
     exit 1
 fi
 
-echo "PASS: a successful check with bare variant diagnostics fails the stdlib ratchet"
+echo "PASS: a bare-variant refusal fails the stdlib ratchet"

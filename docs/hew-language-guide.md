@@ -1159,6 +1159,8 @@ fn main() {
 
 Use `EnumName.Variant` to qualify construction or disambiguate across modules. In a match, use the contextual `.Variant` pattern when the scrutinee type selects the enum.
 
+The bare spelling — a variant name with neither the dot nor the type qualifier — is not the language. Since v0.6.0 it is rejected in expression position with `E_BARE_VARIANT_EXPR` and in pattern position with `E_BARE_VARIANT_PATTERN`, each with a fix-it that inserts the dot. `hew fmt --migrate` applies both across a source tree.
+
 ### Self-referential recursive enum (indirect)
 
 ```hew
@@ -1775,10 +1777,10 @@ reenter { state }`), so the compiler forces you to make each one a
 grammatical things and they take different spellings.
 
 The **source** is a pattern matched against the machine's current state. It is
-never evaluated, has no expected type, and carries no bare-variant lint. Write it
-bare (`Off`), as a qualified path into a composite (`Connected.Active`, which
-resolves to the leaf `Active`), or as the wildcard `_`. A leading `.` is rejected
-there:
+never evaluated, has no expected type, and is the one pattern position exempt from
+`E_BARE_VARIANT_PATTERN`. Write it bare (`Off`), as a qualified path into a
+composite (`Connected.Active`, which resolves to the leaf `Active`), or as the
+wildcard `_`. A leading `.` is rejected there:
 
 ```
 on Toggle: .Off => .On;

@@ -15,7 +15,8 @@ mod support;
 use std::process::Command;
 
 use payload_handoff_mir::{
-    drop_plan_counts, function_section, retained_payload_locals, unique_drop_locals,
+    drop_plan_counts, function_section, projected_payload_binder_is_alias, retained_payload_locals,
+    unique_drop_locals,
 };
 use support::leak_slope::{
     compile_to_native, measure_leaks_exact, run_probe_witness, run_under_malloc_scribble,
@@ -135,7 +136,13 @@ fn mir_pins_retain_and_noncompeting_drop_authorities() {
             "{name} must have one transferred payload owner and one retained owner:\n\
              {raw_section}"
         );
-        for local in payload_locals {
+        // The projected binder aliases the scrutinee's slot, so the parent
+        // composite authority asserted above is the single release of that
+        // buffer and the binder carries none. The retained owner still has its
+        // own share to release (#2523).
+        let binder_is_alias = projected_payload_binder_is_alias(raw_section);
+        for (index, local) in payload_locals.iter().enumerate() {
+            let expected_releases = usize::from(!(binder_is_alias && index == 0));
             let raw_normal = raw_section
                 .matches(&format!("drop {local} ty=bytes fn=release(hew_bytes_drop)"))
                 .count();
@@ -143,10 +150,18 @@ fn mir_pins_retain_and_noncompeting_drop_authorities() {
             let (planned_normal, exceptional, max_per_plan) = drop_plan_counts(section, &marker);
             assert_eq!(
                 raw_normal + planned_normal,
-                1,
-                "{name} must release {local} exactly once on successful normal flow:\n\
-                 raw:\n{raw_section}\nelaborated:\n{section}"
+                expected_releases,
+                "{name} must release {local} exactly {expected_releases} time(s) on successful \
+                 normal flow:\nraw:\n{raw_section}\nelaborated:\n{section}"
             );
+            if expected_releases == 0 {
+                assert_eq!(
+                    exceptional, 0,
+                    "{name} must not clean the aliased binder {local} on an exceptional exit \
+                     either — the parent composite drop owns every exit:\n{section}"
+                );
+                continue;
+            }
             assert!(
                 exceptional > 0 && max_per_plan == 1,
                 "{name} must give {local} one cleanup in each applicable mutually exclusive \
@@ -168,6 +183,8 @@ fn mir_pins_retain_and_noncompeting_drop_authorities() {
         "the direct payload transfer must create no retained share:\n{direct_raw}"
     );
     let local = direct_locals[0];
+    let direct_binder_is_alias = projected_payload_binder_is_alias(direct_raw);
+    let expected_direct_releases = usize::from(!direct_binder_is_alias);
     let raw_normal = direct_raw
         .matches(&format!("drop {local} ty=bytes fn=release(hew_bytes_drop)"))
         .count();
@@ -175,15 +192,23 @@ fn mir_pins_retain_and_noncompeting_drop_authorities() {
     let (planned_normal, exceptional, max_per_plan) = drop_plan_counts(direct, &marker);
     assert_eq!(
         raw_normal + planned_normal,
-        1,
-        "the direct payload owner must release exactly once on successful normal flow:\n\
-         raw:\n{direct_raw}\nelaborated:\n{direct}"
+        expected_direct_releases,
+        "the direct payload binder must release exactly {expected_direct_releases} time(s) on \
+         successful normal flow:\nraw:\n{direct_raw}\nelaborated:\n{direct}"
     );
-    assert!(
-        exceptional > 0 && max_per_plan == 1,
-        "the direct payload owner must have one cleanup on each applicable exceptional exit:\n\
-         {direct}"
-    );
+    if expected_direct_releases == 0 {
+        assert_eq!(
+            exceptional, 0,
+            "the aliased direct binder must leave every exit to the parent composite drop:\n\
+             {direct}"
+        );
+    } else {
+        assert!(
+            exceptional > 0 && max_per_plan == 1,
+            "the direct payload owner must have one cleanup on each applicable exceptional exit:\n\
+             {direct}"
+        );
+    }
 }
 
 #[cfg_attr(

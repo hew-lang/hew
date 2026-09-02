@@ -20,14 +20,38 @@ pub fn unique_drop_locals<'a>(section: &'a str, marker: &str) -> Vec<&'a str> {
     locals
 }
 
+/// The payload binder is the destination of the arm's projection move
+/// (`_13 = move mvar6.0.0`) — the one local that holds the enum/machine
+/// payload for the arm. Reading it off the move, rather than off a
+/// neutralize, keeps this helper independent of whether the binder took the
+/// payload's release authority or aliases the scrutinee's (#2523).
+fn projected_payload_local<'a>(lines: &[&'a str], section: &str) -> &'a str {
+    lines
+        .iter()
+        .find_map(|line| {
+            let (dest, source) = line.trim().split_once(" = move ")?;
+            (source.starts_with("mvar") || source.starts_with("evar")).then_some(dest)
+        })
+        .unwrap_or_else(|| panic!("missing projected payload binder:\n{section}"))
+}
+
+/// Whether the raw stream demotes the projected payload binder to an alias of
+/// the scrutinee's payload slot. The parent's composite drop is then the single
+/// release authority for that buffer and the binder carries none; a binder that
+/// keeps a release of its own (a `string` payload, whose flag-guarded delayed
+/// release the enum-overwrite authority promotes to) is not demoted (#2523).
+pub fn projected_payload_binder_is_alias(section: &str) -> bool {
+    let lines = section.lines().collect::<Vec<_>>();
+    let payload = projected_payload_local(&lines, section);
+    let place = format!("place: Local({})", payload.trim_start_matches('_'));
+    lines
+        .iter()
+        .any(|line| line.contains("DemoteToAlias") && line.contains(&place))
+}
+
 pub fn retained_payload_locals<'a>(section: &'a str, retain: &str) -> Vec<&'a str> {
     let lines = section.lines().collect::<Vec<_>>();
-    let payload = lines
-        .iter()
-        .find(|line| line.contains("[PayloadBindingTransfer]"))
-        .and_then(|line| line.split_once(" -> "))
-        .and_then(|(_, tail)| tail.split_whitespace().next())
-        .unwrap_or_else(|| panic!("missing payload-transfer owner:\n{section}"));
+    let payload = projected_payload_local(&lines, section);
     let mut locals = vec![payload];
     for (index, line) in lines.iter().enumerate() {
         let Some(source) = line.trim().strip_prefix(retain) else {

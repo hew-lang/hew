@@ -15,7 +15,8 @@ mod support;
 use std::process::Command;
 
 use payload_handoff_mir::{
-    drop_plan_counts, function_section, retained_payload_locals, unique_drop_locals,
+    drop_plan_counts, function_section, projected_payload_binder_is_alias, retained_payload_locals,
+    unique_drop_locals,
 };
 use support::leak_slope::{
     compile_to_native, measure_leaks_exact, run_probe_witness, run_under_malloc_scribble,
@@ -131,7 +132,12 @@ fn assert_payload_drop_authority(
         expected_payload_owners,
         "{name} must track exactly {expected_payload_owners} payload owner(s):\n{raw_section}"
     );
-    for local in payload_locals {
+    // A `string` payload binder keeps its own flag-guarded release, so it is
+    // not demoted here; the check is shared with the `bytes` oracle so both
+    // read the release authority off the stream rather than assuming one (#2523).
+    let binder_is_alias = projected_payload_binder_is_alias(raw_section);
+    for (index, local) in payload_locals.iter().enumerate() {
+        let expected_releases = usize::from(!(binder_is_alias && index == 0));
         let raw_normal = raw_section
             .matches(&format!(
                 "drop {local} ty=string fn=release(hew_string_drop)"
@@ -142,10 +148,18 @@ fn assert_payload_drop_authority(
             drop_plan_counts(elaborated_section, &marker);
         assert_eq!(
             raw_normal + planned_normal,
-            1,
-            "{name} must release {local} exactly once on successful normal flow:\n\
-             raw:\n{raw_section}\nelaborated:\n{elaborated_section}"
+            expected_releases,
+            "{name} must release {local} exactly {expected_releases} time(s) on successful \
+             normal flow:\nraw:\n{raw_section}\nelaborated:\n{elaborated_section}"
         );
+        if expected_releases == 0 {
+            assert_eq!(
+                exceptional, 0,
+                "{name} must leave every exit of the aliased binder {local} to the parent \
+                 composite drop:\n{elaborated_section}"
+            );
+            continue;
+        }
         assert!(
             exceptional > 0 && max_per_plan == 1,
             "{name} must clean {local} on each applicable exceptional exit without duplicating \

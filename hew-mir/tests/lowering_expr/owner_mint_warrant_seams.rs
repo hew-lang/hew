@@ -226,14 +226,21 @@ fn assert_shell_plan_paths(paths: &[&ExitPath], expected_cancel: usize, expected
     );
 }
 
-fn assert_payload_plan_paths(paths: &[&ExitPath]) {
-    assert_eq!(paths.len(), 4);
-    assert!(
-        paths
-            .iter()
-            .all(|exit| matches!(exit, ExitPath::Unwind { .. })),
-        "the payload binder's remaining plans are exactly its four unwind paths: {paths:?}"
-    );
+/// Whether the stream demotes `owner` to an alias of the storage it was minted
+/// over — the mint published a provenance answer, and the destructure then
+/// recorded that the scrutinee keeps the release authority (#2523).
+fn owner_is_demoted_to_alias(function: &RawMirFunction, owner: OwnerId) -> bool {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .any(|instruction| {
+            matches!(
+                instruction,
+                Instr::OwnershipEvent(OwnershipEvent::DemoteToAlias { owner: demoted, .. })
+                    if *demoted == owner
+            )
+        })
 }
 
 fn assert_domestic_payload_release_paths(
@@ -256,6 +263,14 @@ fn assert_domestic_payload_release_paths(
         1,
         "normal loop fallthrough releases the shell exactly once"
     );
+    // The arm only READS the payload, and the shell's `EnumInPlace` release
+    // above already covers it. The binder therefore publishes its provenance
+    // answer and is immediately demoted to an alias: no release of its own on
+    // any exit, and no projection adoption clearing the shell's slot (#2523).
+    assert!(
+        owner_is_demoted_to_alias(raw, payload_owner),
+        "a borrow-only payload binder over a live shell must be demoted to an alias"
+    );
     assert_eq!(
         inline_in_place_drop_release_count(
             raw,
@@ -263,8 +278,8 @@ fn assert_domestic_payload_release_paths(
             payload_place,
             InPlaceReleaseKind::Record,
         ),
-        1,
-        "the selected arm releases its payload binder exactly once"
+        0,
+        "an aliased payload binder must not release the shell's payload"
     );
 
     let payload_transfers = raw
@@ -283,8 +298,8 @@ fn assert_domestic_payload_release_paths(
         })
         .count();
     assert_eq!(
-        payload_transfers, 1,
-        "the payload projection must transfer into its domestic binder exactly once"
+        payload_transfers, 0,
+        "nothing transfers the payload out, so the shell's slot must stay populated"
     );
 
     let elaborated = p
@@ -295,7 +310,10 @@ fn assert_domestic_payload_release_paths(
     let shell_paths = drop_paths(elaborated, shell_place, DropKind::EnumInPlace);
     assert_shell_plan_paths(&shell_paths, expected_shell_cancel, expected_shell_panic);
     let payload_paths = drop_paths(elaborated, payload_place, DropKind::RecordInPlace);
-    assert_payload_plan_paths(&payload_paths);
+    assert!(
+        payload_paths.is_empty(),
+        "an aliased payload binder carries no exit plan of its own: {payload_paths:?}"
+    );
 }
 
 /// The same declarations every round-5 fixture uses, so the only variable
@@ -713,11 +731,12 @@ fn a_match_payload_binder_over_a_proven_foreign_scrutinee_mints_no_owner() {
     assert_eq!(cow_heap_drops(&p, "main"), 0);
 }
 
-/// The domestic control: the payload binder and its enum shell retain one owner
-/// each. Normal cleanup is inline; live unwind, panic, and cancel edges retain
-/// their typed plans.
+/// The domestic control: the shell keeps its owner and its typed plans on every
+/// live unwind, panic and cancel edge, and the borrow-only payload binder over
+/// it publishes a warrant and then aliases the shell rather than opening a
+/// second release authority for one buffer.
 #[test]
-fn a_match_payload_binder_over_a_domestic_scrutinee_keeps_its_releases() {
+fn a_match_payload_binder_over_a_domestic_scrutinee_aliases_the_shell() {
     let p = in_loop(DOMESTIC_MK, MATCH_BODY);
     assert_domestic_payload_release_paths(&p, 2, 2);
 }
@@ -731,8 +750,9 @@ fn an_if_let_payload_binder_over_a_proven_foreign_scrutinee_mints_no_owner() {
     assert_eq!(cow_heap_drops(&p, "main"), 0);
 }
 
+/// The same for the `if let` binder, whose mint site is a separate registrar.
 #[test]
-fn an_if_let_payload_binder_over_a_domestic_scrutinee_keeps_its_releases() {
+fn an_if_let_payload_binder_over_a_domestic_scrutinee_aliases_the_shell() {
     let p = in_loop(DOMESTIC_MK, IF_LET_BODY);
     assert_domestic_payload_release_paths(&p, 1, 1);
 }

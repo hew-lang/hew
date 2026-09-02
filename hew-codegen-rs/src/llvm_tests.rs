@@ -14776,20 +14776,28 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
                     "{triple}: the enclosing Pair must retain its independent \
                      Cancel/Return cleanup escrow for the residual string:\n{helper}"
                 );
+                // #2523 — the projected Witness binder aliases the carrier's
+                // variant slot rather than taking a release authority of its
+                // own: it discharges at its explicit `close()`, with the slot
+                // neutralized first (asserted above), and owns nothing across
+                // the call boundary. So the carrier's escrow is the only one,
+                // and a second escrowed owner here would be the double-release
+                // this shape used to carry.
+                let escrowed_owners = helper
+                    .match_indices("helper_crash_cleanup_token_")
+                    .filter_map(|(index, _)| {
+                        helper[index..]
+                            .split_whitespace()
+                            .next()
+                            .map(|token| token.trim_end_matches(|c: char| !c.is_ascii_digit()))
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
                 assert_eq!(
-                    helper.contains("helper_crash_cleanup_token_8"),
-                    cleanup.includes_unwind_plans,
-                    "{triple}: only a fallback target with reachable native unwind plans \
-                     may escrow the projected Witness through its call boundary:\n{helper}"
+                    escrowed_owners.len(),
+                    1,
+                    "{triple}: the carrier is the only escrowed owner; the aliased projected \
+                     binder must not escrow a second:\n{helper}"
                 );
-                if cleanup.includes_unwind_plans {
-                    assert_registry_cleanup_uses_typed_drop(
-                        &module,
-                        &helper,
-                        "call i8 @\"Witness::close\"",
-                        &triple,
-                    );
-                }
             }
         }
         assert!(

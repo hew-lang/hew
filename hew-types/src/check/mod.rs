@@ -669,6 +669,26 @@ impl Checker {
                 fn_path(leaf)
             }
         };
+        // A nominal in a bare namespace is reachable under TWO canonical
+        // spellings. The bare one is what `ResolvedTy::Named` carries for it
+        // downstream and stays the identity's primary render; the checker's
+        // own registries (`trait_defs`, `type_def_spans`, the visibility
+        // index) additionally key it `{module}.{leaf}`, because a root or
+        // flat-imported file still has an owning module and a lookup through
+        // that owner must reach the same declaration. Recording the second
+        // spelling on the SAME occurrence is what the identity table is for:
+        // one declaration, several ways to name it. It never mints a second
+        // identity, and a spelling another declaration already owns is
+        // refused rather than merged.
+        let nominal_alias = |leaf: &str| {
+            bare_nominals
+                .then(|| {
+                    module_path
+                        .as_ref()
+                        .map(|module| format!("{module}.{leaf}"))
+                })
+                .flatten()
+        };
         let mut declare = |kind: Kind, ordinal: usize, path: String| {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
@@ -692,7 +712,12 @@ impl Checker {
         };
         match item {
             Item::Import(_) | Item::Impl(_) => {}
-            Item::Const(decl) => declare(Kind::Const, 0, owner_path(&decl.name)),
+            Item::Const(decl) => {
+                declare(Kind::Const, 0, owner_path(&decl.name));
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Const, 0, alias);
+                }
+            }
             Item::Function(decl) => declare(Kind::Function, 0, fn_path(&decl.name)),
             Item::ExternBlock(block) => {
                 for (index, decl) in block.functions.iter().enumerate() {
@@ -702,6 +727,9 @@ impl Checker {
             Item::TypeDecl(decl) => {
                 let owner = owner_path(&decl.name);
                 declare(Kind::Type, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Type, 0, alias);
+                }
                 for (index, method) in decl
                     .body
                     .iter()
@@ -715,11 +743,24 @@ impl Checker {
                     declare(Kind::TypeMethod, index, format!("{owner}::{}", method.name));
                 }
             }
-            Item::TypeAlias(decl) => declare(Kind::TypeAlias, 0, owner_path(&decl.name)),
-            Item::Record(decl) => declare(Kind::Record, 0, owner_path(&decl.name)),
+            Item::TypeAlias(decl) => {
+                declare(Kind::TypeAlias, 0, owner_path(&decl.name));
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::TypeAlias, 0, alias);
+                }
+            }
+            Item::Record(decl) => {
+                declare(Kind::Record, 0, owner_path(&decl.name));
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Record, 0, alias);
+                }
+            }
             Item::Trait(decl) => {
                 let owner = owner_path(&decl.name);
                 declare(Kind::Trait, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Trait, 0, alias);
+                }
                 for (index, method) in decl
                     .items
                     .iter()
@@ -739,6 +780,9 @@ impl Checker {
             Item::Actor(decl) => {
                 let owner = owner_path(&decl.name);
                 declare(Kind::Actor, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Actor, 0, alias);
+                }
                 if decl.init.is_some() {
                     declare(Kind::ActorInit, 0, format!("{owner}::<init>"));
                 }
@@ -760,6 +804,9 @@ impl Checker {
             Item::Supervisor(decl) => {
                 let owner = owner_path(&decl.name);
                 declare(Kind::Supervisor, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Supervisor, 0, alias);
+                }
                 declare(
                     Kind::SupervisorBootstrap,
                     0,
@@ -769,6 +816,9 @@ impl Checker {
             Item::Machine(decl) => {
                 let owner = owner_path(&decl.name);
                 declare(Kind::Machine, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Machine, 0, alias);
+                }
                 for (index, state) in decl.states.iter().enumerate() {
                     let state_owner = format!("{owner}::state {}", state.name);
                     declare(Kind::MachineState, index, state_owner.clone());

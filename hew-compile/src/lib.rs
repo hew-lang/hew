@@ -3069,8 +3069,12 @@ fn main() {
             hir.diagnostics
         );
         let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
+        // The root unit's declarations carry its own module identity — the
+        // entry file's stem — not a bare leaf; only the EMITTED symbol stays
+        // bare. Pinning the identity here is what keeps a same-leaf pair from
+        // sharing a body symbol.
         let expected = [
-            (hew_types::DefId::for_test("root_first"), "root_first"),
+            (hew_types::DefId::for_test("main.root_first"), "root_first"),
             (
                 hew_types::DefId::for_test("file_helpers.file_first"),
                 "file_helpers$file_first",

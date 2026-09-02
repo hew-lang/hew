@@ -27,8 +27,8 @@ type Capture {
 
 fn upgraded(edge: Weak<i64>) -> i64 {
     match edge.upgrade() {
-        Some(value) => value.get(),
-        None => -1,
+        .Some(value) => value.get(),
+        .None => -1,
     }
 }
 
@@ -51,8 +51,8 @@ fn complete(root: Rc<i64>, i: i64) {
     var seen: i64 = 0;
     loop {
         match g.next() {
-            Some(value) => { seen = seen + value; },
-            None => { break; },
+            .Some(value) => { seen = seen + value; },
+            .None => { break; },
         }
     }
     if seen <= 0 { panic("complete values"); }
@@ -70,8 +70,8 @@ fn suspend(root: Rc<i64>, i: i64) {
         panic("suspend live counts");
     }
     match g.next() {
-        Some(value) => { if value <= 0 { panic("suspend value"); } },
-        None => panic("suspend missing value"),
+        .Some(value) => { if value <= 0 { panic("suspend value"); } },
+        .None => panic("suspend missing value"),
     }
 }
 
@@ -103,8 +103,8 @@ fn anonymous(root: Rc<i64>, i: i64) {
     }
     loop {
         match g.next() {
-            Some(value) => { if value <= 0 { panic("anonymous value"); } },
-            None => { break; },
+            .Some(value) => { if value <= 0 { panic("anonymous value"); } },
+            .None => { break; },
         }
     }
 }
@@ -156,8 +156,8 @@ type Capture {
 
 fn upgraded(edge: Weak<i64>) -> i64 {
     match edge.upgrade() {
-        Some(value) => value.get(),
-        None => -1,
+        .Some(value) => value.get(),
+        .None => -1,
     }
 }
 
@@ -185,8 +185,8 @@ fn closure_complete(root: Rc<i64>, i: i64) {
     }
     loop {
         match g.next() {
-            Some(value) => { if value <= 0 { panic("closure complete value"); } },
-            None => { break; },
+            .Some(value) => { if value <= 0 { panic("closure complete value"); } },
+            .None => { break; },
         }
     }
 }
@@ -204,8 +204,8 @@ fn closure_suspend(root: Rc<i64>, i: i64) {
         panic("closure suspend live counts");
     }
     match g.next() {
-        Some(value) => { if value <= 0 { panic("closure suspend value"); } },
-        None => panic("closure suspend missing value"),
+        .Some(value) => { if value <= 0 { panic("closure suspend value"); } },
+        .None => panic("closure suspend missing value"),
     }
 }
 
@@ -236,8 +236,8 @@ fn closure_repeat(root: Rc<i64>, i: i64) {
         let g = make();
         loop {
             match g.next() {
-                Some(value) => { if value <= 0 { panic("closure repeat value"); } },
-                None => { break; },
+                .Some(value) => { if value <= 0 { panic("closure repeat value"); } },
+                .None => { break; },
             }
         }
         calls = calls + 1;
@@ -310,8 +310,8 @@ fn noncapturing_generator() {
     var total: i64 = 0;
     loop {
         match g.next() {
-            Some(value) => { total = total + value; },
-            None => { break; },
+            .Some(value) => { total = total + value; },
+            .None => { break; },
         }
     }
     if total != 3 {
@@ -359,8 +359,8 @@ fn main() {
             let g = rows(capture);
             loop {
                 match g.next() {
-                    Some(value) => { if value <= 0 { panic("control complete"); } },
-                    None => { break; },
+                    .Some(value) => { if value <= 0 { panic("control complete"); } },
+                    .None => { break; },
                 }
             }
         }
@@ -368,8 +368,8 @@ fn main() {
         {
             let g = rows(capture);
             match g.next() {
-                Some(value) => { if value <= 0 { panic("control suspend"); } },
-                None => panic("control missing"),
+                .Some(value) => { if value <= 0 { panic("control suspend"); } },
+                .None => panic("control missing"),
             }
         }
         suspended = suspended + 1;
@@ -379,8 +379,8 @@ fn main() {
             let g = gen { yield capture.root; };
             loop {
                 match g.next() {
-                    Some(value) => { if value <= 0 { panic("control anon"); } },
-                    None => { break; },
+                    .Some(value) => { if value <= 0 { panic("control anon"); } },
+                    .None => { break; },
                 }
             }
         }
@@ -477,8 +477,8 @@ actor Streamer {
             i = 1;
         }
         let tree_kind = match tree {
-            Leaf(_) => 1,
-            Node(_, _) => 2,
+            .Leaf(_) => 1,
+            .Node(_, _) => 2,
         };
         while i < n {
             yield payload.label.len() + payload.data.len()
@@ -490,8 +490,8 @@ actor Streamer {
         yield payload.label.len() + payload.data.len()
             + payload.pair.0.len() + state.len();
         let tree_kind = match tree {
-            Leaf(_) => 1,
-            Node(_, _) => 2,
+            .Leaf(_) => 1,
+            .Node(_, _) => 2,
         };
         var i: i64 = 1;
         loop {
@@ -552,8 +552,8 @@ actor Streamer {
         yield payload.label.len() + payload.data.len()
             + payload.pair.0.len() + state.len();
         let tree_kind = match tree {
-            Leaf(_) => 1,
-            Node(_, _) => 2,
+            .Leaf(_) => 1,
+            .Node(_, _) => 2,
         };
         var i: i64 = 1;
         loop {
@@ -585,8 +585,8 @@ fn main() {
     let stream = streamer.endless(payload, tree);
     let first = await stream.recv();
     match first {
-        Some(value) => print(f"{value}:"),
-        None => print("missing:"),
+        .Some(value) => print(f"{value}:"),
+        .None => print("missing:"),
     }
     supervisor_stop(sup);
     print("OK");

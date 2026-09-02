@@ -395,8 +395,8 @@ fn fungible_single_ask_submits_owner_scoped_never_raw_pointer() {
             let sup = spawn App;
             let worker = sup.worker;
             let blocking = match await worker.score(11) {
-                Ok(v) => v,
-                Err(_) => 0,
+                .Ok(v) => v,
+                .Err(_) => 0,
             };
             supervisor_stop(sup);
             blocking

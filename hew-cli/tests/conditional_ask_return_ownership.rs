@@ -34,12 +34,12 @@ fn main() -> i64 {
     let forwarder = spawn Forwarder(recipient: recipient);
 
     let false_len = match await forwarder.forward("false-path".to_bytes(), false) {
-        Ok(data) => data.len() as i64,
-        Err(_) => -100,
+        .Ok(data) => data.len() as i64,
+        .Err(_) => -100,
     };
     let true_len = match await forwarder.forward("true-path".to_bytes(), true) {
-        Ok(data) => data.len() as i64,
-        Err(_) => -100,
+        .Ok(data) => data.len() as i64,
+        .Err(_) => -100,
     };
 
     if false_len == 10 && true_len == 9 { 0 } else { 1 }

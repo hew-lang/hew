@@ -53,10 +53,10 @@ fn direct(i: i64) -> i64 {
     var opt = Box.Full(f"direct-{i}");
     var n = 0;
     match opt {
-        Full(s) => {
+        .Full(s) => {
             n = s.len();
         },
-        Empty => {},
+        .Empty => {},
     }
     opt = Box.Empty;
     n
@@ -67,10 +67,10 @@ fn nested(i: i64) -> i64 {
     var n = 0;
     {
         match opt {
-            Full(s) => {
+            .Full(s) => {
                 n = s.len();
             },
-            Empty => {},
+            .Empty => {},
         }
     }
     opt = Box.Empty;
@@ -80,8 +80,8 @@ fn nested(i: i64) -> i64 {
 fn expression_arm(i: i64) -> i64 {
     var opt = Box.Full(f"expression-{i}");
     let n = match opt {
-        Full(s) => s.len(),
-        Empty => 0,
+        .Full(s) => s.len(),
+        .Empty => 0,
     };
     opt = Box.Empty;
     n
@@ -92,18 +92,18 @@ fn joined(i: i64) -> i64 {
     var n = 0;
     if i % 2 == 0 {
         match opt {
-            Full(s) => {
+            .Full(s) => {
                 n = s.len();
             },
-            Empty => {},
+            .Empty => {},
         }
     } else {
         {
             match opt {
-                Full(s) => {
+                .Full(s) => {
                     n = s.len();
                 },
-                Empty => {},
+                .Empty => {},
             }
         }
     }
@@ -115,8 +115,8 @@ fn fresh_nonempty(i: i64) -> i64 {
     var opt = Box.Full(f"old-{i}");
     opt = Box.Full(f"new-{i}");
     match opt {
-        Full(s) => s.len(),
-        Empty => 0,
+        .Full(s) => s.len(),
+        .Empty => 0,
     }
 }
 
@@ -125,29 +125,29 @@ fn guarded(i: i64) -> i64 {
     if i < 0 {
         let moved = opt;
         return match moved {
-            Full(s) => s.len(),
-            Empty => 0,
+            .Full(s) => s.len(),
+            .Empty => 0,
         };
     }
     opt = Box.Full(f"guard-new-{i}");
     match opt {
-        Full(s) => s.len(),
-        Empty => 0,
+        .Full(s) => s.len(),
+        .Empty => 0,
     }
 }
 
 fn whole_forward(i: i64) -> i64 {
     var opt = Outer.Full(Inner.Text(f"forward-{i}"));
     match opt {
-        Full(inner) => {
+        .Full(inner) => {
             let owner = inner;
             opt = Outer.Empty;
             match owner {
-                Text(s) => s.len(),
-                Empty => 0,
+                .Text(s) => s.len(),
+                .Empty => 0,
             }
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
@@ -155,10 +155,10 @@ fn scalar(i: i64) -> i64 {
     var opt = ScalarBox.Full(i);
     var n = 0;
     match opt {
-        Full(v) => {
+        .Full(v) => {
             n = v;
         },
-        Empty => {},
+        .Empty => {},
     }
     opt = ScalarBox.Empty;
     n
@@ -190,50 +190,50 @@ enum PairBox {
 fn live_alias(i: i64) -> i64 {
     var opt = Box.Full(f"live-{i}");
     match opt {
-        Full(s) => {
+        .Full(s) => {
             opt = Box.Empty;
             s.len()
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn live_alias_return(i: i64) -> i64 {
     var opt = Box.Full(f"return-{i}");
     match opt {
-        Full(s) => {
+        .Full(s) => {
             opt = Box.Empty;
             return s.len();
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn repeated_live_alias(i: i64) -> i64 {
     var opt = Box.Full(f"repeat-old-{i}");
     match opt {
-        Full(s) => {
+        .Full(s) => {
             opt = Box.Full(f"repeat-one-{i}");
             opt = Box.Full(f"repeat-two-{i}");
             let old_len = s.len();
             let new_len = match opt {
-                Full(current) => current.len(),
-                Empty => 0,
+                .Full(current) => current.len(),
+                .Empty => 0,
             };
             old_len + new_len
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn multiple_live_aliases(i: i64) -> i64 {
     var opt = PairBox.Both(f"left-{i}", f"right-{i}");
     match opt {
-        Both(left, right) => {
+        .Both(left, right) => {
             opt = PairBox.Empty;
             left.len() + right.len()
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
@@ -258,8 +258,8 @@ fn self_alias(i: i64) -> i64 {
     var opt = Box.Full(f"self-{i}");
     opt = opt;
     match opt {
-        Full(s) => s.len(),
-        Empty => 0,
+        .Full(s) => s.len(),
+        .Empty => 0,
     }
 }
 
@@ -282,14 +282,14 @@ enum Box {
 fn exercise(take: bool, i: i64) -> string {
     var opt = Box.Full(f"conditional-consume-{i}");
     match opt {
-        Full(s) => {
+        .Full(s) => {
             opt = Box.Empty;
             if take {
                 return s;
             }
             f"fallback-{i}"
         },
-        Empty => f"empty-{i}",
+        .Empty => f"empty-{i}",
     }
 }
 
@@ -314,11 +314,11 @@ fn main() {
     let values: Vec<i64> = Vec.new();
     var opt = Mixed.Full(f"mixed", values);
     match opt {
-        Full(s, xs) => {
+        .Full(s, xs) => {
             opt = Mixed.Empty;
             s.len() + xs.len();
         },
-        Empty => {},
+        .Empty => {},
     }
 }
 "#,
@@ -332,11 +332,11 @@ enum Box { Full(Row); Empty }
 fn main() {
     var opt = Box.Full(Row { text: f"record" });
     match opt {
-        Full(row) => {
+        .Full(row) => {
             opt = Box.Empty;
             row.text.len();
         },
-        Empty => {},
+        .Empty => {},
     }
 }
 "#,
@@ -350,14 +350,14 @@ enum Outer { Full(Inner); Empty }
 fn main() {
     var opt = Outer.Full(Inner.Text(f"nested"));
     match opt {
-        Full(inner) => {
+        .Full(inner) => {
             opt = Outer.Empty;
             match inner {
-                Text(s) => { s.len(); },
-                Empty => {},
+                .Text(s) => { s.len(); },
+                .Empty => {},
             }
         },
-        Empty => {},
+        .Empty => {},
     }
 }
 "#,
@@ -370,7 +370,7 @@ enum Box { Full(string); Empty }
 fn main() {
     var opt = Box.Full(f"guard");
     let n = match opt {
-        Full(s) if {
+        .Full(s) if {
             opt = Box.Empty;
             false
         } => s.len(),

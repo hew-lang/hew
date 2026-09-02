@@ -131,30 +131,30 @@ fn bytes_get_method_returns_option() {
             b.push(200);
             b.push(1);
             match b.get(0) {
-                Some(high) => {
+                .Some(high) => {
                     if high == 200 {
                         print("A");
                     }
                 },
-                None => {
+                .None => {
                     print("x");
                 },
             }
             match b.get(1) {
-                Some(low) => {
+                .Some(low) => {
                     if low == 1 {
                         print("B");
                     }
                 },
-                None => {
+                .None => {
                     print("x");
                 },
             }
             match b.get(9) {
-                Some(_) => {
+                .Some(_) => {
                     print("x");
                 },
-                None => {
+                .None => {
                     print("C");
                 },
             }

@@ -124,8 +124,8 @@ fn complete(c: Capture) {
     let g = rows(c);
     loop {
         match g.next() {
-            Some(v) => { if v <= 0 { panic("complete value"); } },
-            None => { break; },
+            .Some(v) => { if v <= 0 { panic("complete value"); } },
+            .None => { break; },
         }
     }
 }
@@ -133,8 +133,8 @@ fn complete(c: Capture) {
 fn suspended(c: Capture) {
     let g = rows(c);
     match g.next() {
-        Some(v) => { if v <= 0 { panic("suspended value"); } },
-        None => panic("suspended missing"),
+        .Some(v) => { if v <= 0 { panic("suspended value"); } },
+        .None => panic("suspended missing"),
     }
 }
 

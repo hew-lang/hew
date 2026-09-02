@@ -20,8 +20,8 @@ import std.path;
 
 fn main() {
     match path.try_glob("std/*.hew") {
-        Ok(matches) => matches.close(),
-        Err(_) => (),
+        .Ok(matches) => matches.close(),
+        .Err(_) => (),
     }
 }
 "#;

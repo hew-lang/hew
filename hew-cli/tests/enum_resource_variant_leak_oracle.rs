@@ -96,8 +96,8 @@ actor Crasher {
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match await helper.ping() {
-            Ok(value) => value,
-            Err(_) => 0,
+            .Ok(value) => value,
+            .Err(_) => 0,
         };
         let pair = Pair.Both(xml.parse("<x/>"), "hi");
         consume(pair, trigger) + seed
@@ -108,12 +108,12 @@ fn main() {
     let helper = spawn Helper;
     let crasher = spawn Crasher(helper: helper);
     match await crasher.run(0) {
-        Ok(value) => println(f"ok={value}"),
-        Err(_) => println("bad"),
+        .Ok(value) => println(f"ok={value}"),
+        .Err(_) => println("bad"),
     }
     match await crasher.run(1) {
-        Ok(value) => println(f"unexpected={value}"),
-        Err(_) => println("handled-crash"),
+        .Ok(value) => println(f"unexpected={value}"),
+        .Err(_) => println("handled-crash"),
     }
     println("survived");
 }
@@ -140,8 +140,8 @@ actor Runner {
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match await gate.tick() {
-            Ok(value) => value,
-            Err(_) => 0,
+            .Ok(value) => value,
+            .Err(_) => 0,
         };
         clear_then_maybe_crash(trigger) + seed
     }
@@ -151,12 +151,12 @@ fn main() {
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
     match await runner.run(0) {
-        Ok(value) => println(f"ok={value}"),
-        Err(_) => println("bad"),
+        .Ok(value) => println(f"ok={value}"),
+        .Err(_) => println("bad"),
     }
     match await runner.run(1) {
-        Ok(value) => println(f"unexpected={value}"),
-        Err(_) => println("handled-crash"),
+        .Ok(value) => println(f"unexpected={value}"),
+        .Err(_) => println("handled-crash"),
     }
     println("survived");
 }
@@ -187,8 +187,8 @@ actor Runner {
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match await gate.tick() {
-            Ok(value) => value,
-            Err(_) => 0,
+            .Ok(value) => value,
+            .Err(_) => 0,
         };
         let packet = build_packet(trigger);
         packet.len() + seed
@@ -199,12 +199,12 @@ fn main() {
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
     match await runner.run(0) {
-        Ok(value) => println(f"ok={value}"),
-        Err(_) => println("bad"),
+        .Ok(value) => println(f"ok={value}"),
+        .Err(_) => println("bad"),
     }
     match await runner.run(1) {
-        Ok(value) => println(f"unexpected={value}"),
-        Err(_) => println("handled-crash"),
+        .Ok(value) => println(f"unexpected={value}"),
+        .Err(_) => println("handled-crash"),
     }
     println("survived");
 }

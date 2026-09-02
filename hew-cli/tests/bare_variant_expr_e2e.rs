@@ -71,8 +71,8 @@ const BARE_PATTERN: &str = r"enum Choice {
 
 fn main() {
     match Choice.Absent {
-        Present(number) => println(number),
-        Absent => println(0),
+        .Present(number) => println(number),
+        .Absent => println(0),
     }
 }
 ";

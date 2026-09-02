@@ -3481,8 +3481,8 @@ pub struct Checker {
     ///
     /// The migrator rewrites a source using the checker's own resolution, so
     /// it can only fix a legacy spelling the checker was willing to resolve.
-    /// When `true`, the graduated bare-variant expression rule
-    /// (`E_BARE_VARIANT_EXPR`) reports at warning severity instead of error,
+    /// When `true`, both bare-variant rules (`E_BARE_VARIANT_EXPR` and
+    /// `E_BARE_VARIANT_PATTERN`) report at warning severity instead of error,
     /// which is what lets `hew fmt --migrate` rewrite a source that `hew check`
     /// now refuses. Set only by the migration frontend entry point.
     pub(super) migration_mode: bool,

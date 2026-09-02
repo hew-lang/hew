@@ -180,8 +180,8 @@ fn construct_and_match_imported_ioerror_variant_round_trips() {
         }
         fn main() {
             match make_err() {
-                Ok(v) => println(f"ok: {v}"),
-                Err(e) => match e {
+                .Ok(v) => println(f"ok: {v}"),
+                .Err(e) => match e {
                     IoError.NotFound(code) => println(f"not_found {code}"),
                     _ => println("other"),
                 },
@@ -216,8 +216,8 @@ fn net_try_connect_error_match_round_trips() {
         import std.net;
         fn main() {
             match net.try_connect("127.0.0.1:1") {
-                Ok(_) => println("connected"),
-                Err(e) => match e {
+                .Ok(_) => println("connected"),
+                .Err(e) => match e {
                     NetError.ConnectionRefused(_) => println("refused"),
                     _ => println("other"),
                 },
@@ -253,8 +253,8 @@ fn imported_enum_owned_string_payload_round_trips() {
         import std.encoding.json;
         fn main() {
             match json.try_parse("{ not valid") {
-                Ok(_) => println("parsed"),
-                Err(e) => match e {
+                .Ok(_) => println("parsed"),
+                .Err(e) => match e {
                     ParseError.Invalid(msg) => println(f"invalid: {msg}"),
                 },
             }

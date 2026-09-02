@@ -685,8 +685,8 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
             I: Iterator<Item = i64>,
         {
             match it.next() {
-                Some(x) => x,
-                None => 0,
+                .Some(x) => x,
+                .None => 0,
             }
         }
 
@@ -1191,8 +1191,8 @@ fn main() {
     var total = 0;
     loop {
         match cd.next() {
-            Some(v) => { total = total + v; },
-            None => { break; },
+            .Some(v) => { total = total + v; },
+            .None => { break; },
         }
     }
     println(total);
@@ -1237,8 +1237,8 @@ fn main() {
     var c = Counter { n: 0 };
     let _first = c.next();
     match c.next() {
-        Some(v2) => { println(v2); },
-        None => { println(-1); },
+        .Some(v2) => { println(v2); },
+        .None => { println(-1); },
     }
 }
 ",
@@ -1318,8 +1318,8 @@ fn main() {
     var c = Counter { n: 1 };
     let _first = c.next();
     match c.next() {
-        Some(v2) => { println(v2); },
-        None => { println(-1); },
+        .Some(v2) => { println(v2); },
+        .None => { println(-1); },
     }
 }
 ",
@@ -1412,8 +1412,8 @@ fn main() {
     var s = Slot<i64> { x: 0, n: 0 };
     let _first = s.next();
     match s.next() {
-        Some(v2) => { println(v2); },
-        None => { println(-1); },
+        .Some(v2) => { println(v2); },
+        .None => { println(-1); },
     }
 }
 ",
@@ -5996,8 +5996,8 @@ indirect enum Tree {
 
 fn tree_sum(tree: Tree) -> i64 {
     match tree {
-        Leaf(value) => value,
-        Node(left, right) => tree_sum(left) + tree_sum(right),
+        .Leaf(value) => value,
+        .Node(left, right) => tree_sum(left) + tree_sum(right),
     }
 }
 

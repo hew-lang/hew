@@ -85,8 +85,8 @@ actor Runner {
         let gate_pid = gate;
         let delayed_identity = |value: string| {
             let _ = match await gate_pid.tick() {
-                Ok(n) => n,
-                Err(_) => 0,
+                .Ok(n) => n,
+                .Err(_) => 0,
             };
             value
         };
@@ -186,8 +186,8 @@ fn main() {
     peer.close();
     listener.close();
     match result {
-        Ok(_) => println("unexpected-ok"),
-        Err(_) => println("crash-fallback"),
+        .Ok(_) => println("unexpected-ok"),
+        .Err(_) => println("crash-fallback"),
     }
     println("main-done");
     println(observe.read("coroutines.frame_bytes_live") - frame_baseline);
@@ -234,19 +234,19 @@ fn main() {
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     let result = await reader.go(0);
     match result {
-        Ok(_) => println("unexpected-ok"),
-        Err(_) => println("crash-fallback"),
+        .Ok(_) => println("unexpected-ok"),
+        .Err(_) => println("crash-fallback"),
     }
     let peer = listener.accept();
     match peer.try_read() {
-        Ok(buf) => {
+        .Ok(buf) => {
             if buf.len() == 0 {
                 println("peer-eof");
             } else {
                 println("peer-data");
             }
         },
-        Err(_) => println("peer-error"),
+        .Err(_) => println("peer-error"),
     }
     peer.close();
     listener.close();
@@ -429,8 +429,8 @@ fn main() {
     for _ in 0..__FRAMES__ {
         let runner = spawn Runner(gate: gate);
         match await runner.go() {
-            Ok(_) => println("unexpected"),
-            Err(_) => println("crashed"),
+            .Ok(_) => println("unexpected"),
+            .Err(_) => println("crashed"),
         }
     }
 }
@@ -471,8 +471,8 @@ actor Runner {
         let root_nested = make_root_nested("root-nested-owner".to_upper());
         let resume_then_crash = |value: string| {
             let _ = match await gate_pid.tick() {
-                Ok(n) => n,
-                Err(_) => 0,
+                .Ok(n) => n,
+                .Err(_) => 0,
             };
             if trigger >= 0 {
                 panic("crash after child resume");
@@ -498,8 +498,8 @@ fn main() {
     let runner = spawn Runner(gate: gate);
     let r = await runner.go(0);
     match r {
-        Ok(_) => println("unexpected-ok"),
-        Err(_) => println("crash-fallback"),
+        .Ok(_) => println("unexpected-ok"),
+        .Err(_) => println("crash-fallback"),
     }
     println("main-done");
     println(observe.read("coroutines.frame_bytes_live") - frame_baseline);
@@ -555,8 +555,8 @@ actor Crasher {
                 panic("crash before first child await");
             }
             let _ = match await child_gate.tick() {
-                Ok(n) => n,
-                Err(_) => 0,
+                .Ok(n) => n,
+                .Err(_) => 0,
             };
             child_string.len()
                 + child_bytes.len()
@@ -573,8 +573,8 @@ fn main() {
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
         match await crasher.run() {
-            Ok(_) => panic("pre-await child crash unexpectedly returned"),
-            Err(_) => println("restarted"),
+            .Ok(_) => panic("pre-await child crash unexpectedly returned"),
+            .Err(_) => println("restarted"),
         }
     }
 }
@@ -604,8 +604,8 @@ actor Crasher {
                 panic("crash after child-owner reassignment");
             }
             let _ = match await child_gate.tick() {
-                Ok(n) => n,
-                Err(_) => 0,
+                .Ok(n) => n,
+                .Err(_) => 0,
             };
             child_string.len()
         };
@@ -618,8 +618,8 @@ fn main() {
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
         match await crasher.run() {
-            Ok(_) => panic("reassigned child crash unexpectedly returned"),
-            Err(_) => println("restarted"),
+            .Ok(_) => panic("reassigned child crash unexpectedly returned"),
+            .Err(_) => println("restarted"),
         }
     }
 }
@@ -662,8 +662,8 @@ actor Crasher {
             };
             let child_nested = make_child_nested("child-nested-owner".to_upper());
             let _ = match await child_gate.tick() {
-                Ok(n) => n,
-                Err(_) => 0,
+                .Ok(n) => n,
+                .Err(_) => 0,
             };
             if child_string.len()
                 + child_bytes.len()
@@ -684,8 +684,8 @@ fn main() {
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
         match await crasher.run() {
-            Ok(_) => panic("child-owner crash unexpectedly returned"),
-            Err(_) => println("restarted"),
+            .Ok(_) => panic("child-owner crash unexpectedly returned"),
+            .Err(_) => println("restarted"),
         }
     }
 }
@@ -717,8 +717,8 @@ actor Crasher {
                 let inner = |inner_gate: LocalPid<Gate>, inner_value: string| {
                     panic("nested synchronous ramp crash");
                     let _ = match await inner_gate.tick() {
-                        Ok(n) => n,
-                        Err(_) => 0,
+                        .Ok(n) => n,
+                        .Err(_) => 0,
                     };
                     inner_value
                 };
@@ -741,8 +741,8 @@ fn main() {
             panic("nested crash left coroutine-frame bytes live");
         }
         match result {
-            Ok(_) => panic("nested crash unexpectedly returned"),
-            Err(_) => println("restarted"),
+            .Ok(_) => panic("nested crash unexpectedly returned"),
+            .Err(_) => println("restarted"),
         }
     }
 }
@@ -775,8 +775,8 @@ actor Crasher {
                     if inner_owner == "unreachable" { panic("inner capture guard"); }
                     panic("nested synchronous ramp crash");
                     let _ = match await inner_gate.tick() {
-                        Ok(n) => n,
-                        Err(_) => 0,
+                        .Ok(n) => n,
+                        .Err(_) => 0,
                     };
                     inner_owner
                 };
@@ -794,8 +794,8 @@ fn main() {
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
         match await crasher.run() {
-            Ok(_) => panic("nested crash unexpectedly returned"),
-            Err(_) => println("restarted"),
+            .Ok(_) => panic("nested crash unexpectedly returned"),
+            .Err(_) => println("restarted"),
         }
     }
 }

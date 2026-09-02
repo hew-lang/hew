@@ -88,8 +88,8 @@ extern "C" {
 fn cancellation_window() -> i64 {
     let result = net.try_parse_endpoint("nested-enum-cancel", "missing-port");
     match result {
-        Ok(endpoint) => endpoint.port,
-        Err(err) => {
+        .Ok(endpoint) => endpoint.port,
+        .Err(err) => {
             let message = to_string(err);
             let _ = unsafe { usleep(300000) };
             message.len()

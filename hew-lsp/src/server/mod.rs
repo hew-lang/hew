@@ -3099,7 +3099,7 @@ machine Traffic {
             enum Colour { Red; Blue; }
             fn label(colour: Colour) -> string {
                 match colour {
-                    Red => "red",
+                    .Red => "red",
                 }
             }
         "#;

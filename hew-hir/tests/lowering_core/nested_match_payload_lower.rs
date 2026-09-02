@@ -55,9 +55,9 @@ fn variant_payload_literal_lowers_to_pending_payload_predicate() {
 enum Maybe { Some(i64); None }
 fn classify(x: Maybe) -> i64 {
     match x {
-        Some(0) => 1,
-        Some(_) => 2,
-        None => 3,
+        .Some(0) => 1,
+        .Some(_) => 2,
+        .None => 3,
     }
 }",
     );
@@ -86,8 +86,8 @@ fn variant_payload_bindings_still_lower_to_arm_bindings() {
 enum List { Cons(i64, i64); Nil }
 fn sum_pair(x: List) -> i64 {
     match x {
-        Cons(h, t) => h + t,
-        Nil => 0,
+        .Cons(h, t) => h + t,
+        .Nil => 0,
     }
 }",
     );
@@ -331,8 +331,8 @@ enum Packet {
 
 fn sum(p: Packet) -> i64 {
     match p {
-        Data { value: (a, b) } => a + b,
-        Empty => 0,
+        .Data { value: (a, b) } => a + b,
+        .Empty => 0,
     }
 }",
     );
@@ -380,8 +380,8 @@ enum P {
 
 fn sum(v: P) -> i64 {
     match v {
-        D { q: (c, d), p: (a, b) } => a + b + c + d,
-        E => 0,
+        .D { q: (c, d), p: (a, b) } => a + b + c + d,
+        .E => 0,
     }
 }",
     );
@@ -418,8 +418,8 @@ enum Box<T> {
 
 fn sum(b: Box<i64>) -> i64 {
     match b {
-        Pair { both: (a, c) } => a + c,
-        Empty => 0,
+        .Pair { both: (a, c) } => a + c,
+        .Empty => 0,
     }
 }",
     );

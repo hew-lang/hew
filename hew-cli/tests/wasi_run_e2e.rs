@@ -186,8 +186,8 @@ fn actor_panic_is_module_fatal_on_production_wasi() {
 fn main() {
     let crasher = spawn Crasher;
     match await crasher.fail() {
-        Ok(_) => println("contained"),
-        Err(_) => println("contained"),
+        .Ok(_) => println("contained"),
+        .Err(_) => println("contained"),
     }
     println("survived");
 }
@@ -289,8 +289,8 @@ actor Driver {
 fn main() -> i64 {
     let driver = spawn Driver;
     match await driver.run() {
-        Ok(value) => value - 7,
-        Err(_error) => 1,
+        .Ok(value) => value - 7,
+        .Err(_error) => 1,
     }
 }
 "#,
@@ -408,10 +408,10 @@ fn main() {
     tx.send("msg-3");
     tx.close();
 
-    match rx.try_recv() { Some(s) => println(s), None => println("empty-1") }
-    match rx.try_recv() { Some(s) => println(s), None => println("empty-2") }
-    match rx.try_recv() { Some(s) => println(s), None => println("empty-3-DROPPED") }
-    match rx.try_recv() { Some(s) => println(s), None => println("drained") }
+    match rx.try_recv() { .Some(s) => println(s), .None => println("empty-1") }
+    match rx.try_recv() { .Some(s) => println(s), .None => println("empty-2") }
+    match rx.try_recv() { .Some(s) => println(s), .None => println("empty-3-DROPPED") }
+    match rx.try_recv() { .Some(s) => println(s), .None => println("drained") }
     rx.close();
 }
 "#,
@@ -460,25 +460,25 @@ fn main() {
     println(f"len={n}");
     let hit = m.get(Point { x: 1, y: 2 });
     match hit {
-        Some(got) => println(f"get_present={got}"),
-        None => println("get_present=None"),
+        .Some(got) => println(f"get_present={got}"),
+        .None => println("get_present=None"),
     }
     let miss = m.get(Point { x: 9, y: 9 });
     match miss {
-        Some(got) => println(f"get_absent={got}"),
-        None => println("get_absent=None"),
+        .Some(got) => println(f"get_absent={got}"),
+        .None => println("get_absent=None"),
     }
     let has = m.contains_key(Point { x: 3, y: 4 });
     println(f"contains={has}");
     let rm = m.remove(Point { x: 1, y: 2 });
     match rm {
-        Some(v) => println(f"remove={v}"),
-        None => println("remove=None"),
+        .Some(v) => println(f"remove={v}"),
+        .None => println("remove=None"),
     }
     let rm_again = m.remove(Point { x: 1, y: 2 });
     match rm_again {
-        Some(v) => println(f"remove_again={v}"),
-        None => println("remove_again=None"),
+        .Some(v) => println(f"remove_again={v}"),
+        .None => println("remove_again=None"),
     }
     let n2 = m.len();
     println(f"len_after_remove={n2}");
@@ -590,26 +590,26 @@ const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
     m.insert("alpha", "third");
     let a = m.get("alpha");
     match a {
-        Some(val) => println(f"alpha={val}"),
-        None => println("alpha=None"),
+        .Some(val) => println(f"alpha={val}"),
+        .None => println("alpha=None"),
     }
     // The untouched entry must still read its original value.
     let bv = m.get("beta");
     match bv {
-        Some(val) => println(f"beta={val}"),
-        None => println("beta=None"),
+        .Some(val) => println(f"beta={val}"),
+        .None => println("beta=None"),
     }
 
     // Remove releases beta's key+value buffers.
     let removed = m.remove("beta");
     match removed {
-        Some(val) => println(f"removed={val}"),
-        None => println("removed=None"),
+        .Some(val) => println(f"removed={val}"),
+        .None => println("removed=None"),
     }
     let b = m.get("beta");
     match b {
-        Some(val) => println(f"beta_after={val}"),
-        None => println("beta_after=None"),
+        .Some(val) => println(f"beta_after={val}"),
+        .None => println("beta_after=None"),
     }
     let n = m.len();
     println(f"map_len={n}");

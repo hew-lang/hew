@@ -142,7 +142,7 @@ fn numeric_branch_joins_normalize_if_and_if_let_arms() {
             let unsigned = if flag { narrow_unsigned } else { wide_unsigned };
             let float = if flag { narrow_signed } else { 4.5 };
             let value: Option<i64> = Some(1);
-            let signed_if_let = if let Some(_) = value {
+            let signed_if_let = if let .Some(_) = value {
                 narrow_signed
             } else {
                 wide_signed

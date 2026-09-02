@@ -462,11 +462,11 @@ fn main() {
     let removed: Option<i64> = m.remove("a");
     let missing: Option<i64> = m.remove("a");
     match removed {
-        Some(_) => match missing {
-            Some(_) => {}
-            None => println("ok"),
+        .Some(_) => match missing {
+            .Some(_) => {}
+            .None => println("ok"),
         },
-        None => {}
+        .None => {}
     }
 }
 "#,
@@ -2518,13 +2518,13 @@ fn http_respond_three_arg_typechecks() {
 
         fn main() {
             match http.listen(":8080") {
-                Ok(server) => {
+                .Ok(server) => {
                     let req = server.accept();
                     req.respond(200, "text/plain", "Hello, Hew!");
                     req.close();
                     server.close();
                 },
-                Err(_err) => {},
+                .Err(_err) => {},
             }
         }
         "#,
@@ -2547,13 +2547,13 @@ fn http_respond_four_arg_rejected() {
 
         fn main() {
             match http.listen(":8080") {
-                Ok(server) => {
+                .Ok(server) => {
                     let req = server.accept();
                     req.respond(200, "text/plain", 11, "Hello, Hew!");
                     req.close();
                     server.close();
                 },
-                Err(_err) => {},
+                .Err(_err) => {},
             }
         }
         "#,
@@ -2859,8 +2859,8 @@ fn builtin_string_to_int_typechecks_as_int() {
         fn parse() -> i64 {
             let value: Option<i64> = string.to_int("9223372036854775807");
             match value {
-                Some(n) => n,
-                None => 0,
+                .Some(n) => n,
+                .None => 0,
             }
         }
         "#,
@@ -4698,7 +4698,7 @@ fn rc_param_iflet_body_trailing_expr_errors() {
     let output = typecheck_inline(
         r"
         fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
-            if let Some(_v) = opt {
+            if let .Some(_v) = opt {
                 r
             } else {
                 Rc.new(0)
@@ -4724,7 +4724,7 @@ fn rc_param_iflet_else_trailing_expr_errors() {
     let output = typecheck_inline(
         r"
         fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
-            if let Some(_v) = opt {
+            if let .Some(_v) = opt {
                 Rc.new(0)
             } else {
                 r
@@ -4749,7 +4749,7 @@ fn rc_param_iflet_both_branches_trailing_expr_errors() {
     let output = typecheck_inline(
         r"
         fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
-            if let Some(_v) = opt {
+            if let .Some(_v) = opt {
                 r
             } else {
                 r
@@ -4801,7 +4801,7 @@ fn rc_param_iflet_shadow_only_suppresses_inner_scope() {
     let output = typecheck_inline(
         r"
         fn shadow_then_escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
-            if let Some(v) = opt {
+            if let .Some(v) = opt {
                 let r = Rc.new(v);
                 r
             } else {
@@ -5704,7 +5704,7 @@ fn deferred_channel_send_int_constrained_after_call() {
 
         fn relay() {
             let (tx, rx) = channel.new(4);
-            if let Some(v) = rx.recv() {
+            if let .Some(v) = rx.recv() {
                 tx.send(v);
             }
             let _: Option<i64> = rx.recv();

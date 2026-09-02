@@ -32,33 +32,33 @@ enum Blob {
 fn same_scope(i: i64) -> i64 {
     let b = Blob.Data(f"same-{i}".to_bytes());
     match b {
-        Data(data) => {
+        .Data(data) => {
             let inner = data;
             inner.len() + data.len()
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn nested_scope(i: i64) -> i64 {
     let b = Blob.Data(f"nested-{i}".to_bytes());
     match b {
-        Data(data) => {
+        .Data(data) => {
             let n = {
                 let inner = data;
                 inner.len()
             };
             n + data.len()
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn direct(i: i64) -> i64 {
     let b = Blob.Data(f"direct-{i}".to_bytes());
     match b {
-        Data(data) => data.len(),
-        Empty => 0,
+        .Data(data) => data.len(),
+        .Empty => 0,
     }
 }
 

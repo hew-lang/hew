@@ -2562,8 +2562,8 @@ fn block_wrapped_await_actor_ask_types_as_result() {
         fn main() {
             let doubler = spawn Doubler;
             let r = match await { doubler.process(5) } {
-                Ok(v) => v,
-                Err(_) => -1,
+                .Ok(v) => v,
+                .Err(_) => -1,
             };
         }
         ",
@@ -2591,8 +2591,8 @@ fn bare_await_actor_ask_in_match_still_types_as_result() {
         fn main() {
             let doubler = spawn Doubler;
             let r = match await doubler.process(5) {
-                Ok(v) => v,
-                Err(_) => -1,
+                .Ok(v) => v,
+                .Err(_) => -1,
             };
         }
         ",
@@ -2861,11 +2861,11 @@ fn builtin_nested_option_variant_constructors_retain_builtin_identity() {
             let inner: Option<i64> = Some(5);
             let outer: Option<Option<i64>> = Some(inner);
             match outer {
-                Some(v) => match v {
-                    Some(n) => n,
-                    None => 0,
+                .Some(v) => match v {
+                    .Some(n) => n,
+                    .None => 0,
                 },
-                None => -1,
+                .None => -1,
             }
         }
         ",

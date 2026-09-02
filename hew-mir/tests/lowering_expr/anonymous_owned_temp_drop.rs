@@ -455,7 +455,7 @@ fn next(i: i64, cap: i64) -> Result<string, string> {
 fn run(cap: i64) -> i64 {
     var i = 0;
     var total = 0;
-    while let Ok(value) = next(i, cap) {
+    while let .Ok(value) = next(i, cap) {
         total = total + value.len();
         i = i + 1;
     }
@@ -489,7 +489,7 @@ fn next() -> Result<string, string> {
 }
 
 fn run() -> i64 {
-    while let Ok(value) = next() {
+    while let .Ok(value) = next() {
         if value.len() > 0 {
             return 7;
         }
@@ -522,11 +522,11 @@ fn run() -> i64 {
     var total = 0;
     for i in 0..3 {
         match next(i) {
-            Some(value) => {
+            .Some(value) => {
                 total = total + value.len();
                 continue;
             },
-            None => {},
+            .None => {},
         }
     }
     total
@@ -651,7 +651,7 @@ fn next() -> Result<string, string> {
 
 fn run() -> i64 {
     var carry = "";
-    while let Ok(value) = next() {
+    while let .Ok(value) = next() {
         carry = value;
         break;
     }

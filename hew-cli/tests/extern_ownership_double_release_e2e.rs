@@ -172,7 +172,7 @@ fn mkopt(i: i64) -> Option<string> {
 fn main() -> i64 {
     var i: i64 = 0;
     while i < 8 {
-        if let Some(s) = mkopt(i) {
+        if let .Some(s) = mkopt(i) {
             unsafe { spy_retain(s); }
         }
         i = i + 1;
@@ -271,7 +271,7 @@ fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 8 {
-        if let Some(s) = mkopt(i) {
+        if let .Some(s) = mkopt(i) {
             total = total + consume(s);
         }
         i = i + 1;
@@ -296,8 +296,8 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < 8 {
         match attempt(i) {
-            Ok(_) => {}
-            Err(e) => { println(f"err={e}"); }
+            .Ok(_) => {}
+            .Err(e) => { println(f"err={e}"); }
         }
         i = i + 1;
     }
@@ -647,8 +647,8 @@ fn main() -> i64 {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
     tx.send(f"ready-{1}");
     match rx.try_recv() {
-        Some(msg) => { println(f"got={msg}"); }
-        None => { println("empty"); }
+        .Some(msg) => { println(f"got={msg}"); }
+        .None => { println("empty"); }
     }
     0
 }
@@ -1167,8 +1167,8 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < 8 {
         match wrap() {
-            Some(h) => { total = total + h.label.len(); }
-            None => {}
+            .Some(h) => { total = total + h.label.len(); }
+            .None => {}
         }
         i = i + 1;
     }
@@ -1251,11 +1251,11 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < 8 {
         match mkopt(i) {
-            Some(s) => {
+            .Some(s) => {
                 unsafe { spy_retain(s); }
                 total = total + 1;
             }
-            None => {}
+            .None => {}
         }
         i = i + 1;
     }

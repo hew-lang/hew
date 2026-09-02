@@ -820,8 +820,8 @@ fn actor_receive_gen_indirect_enum_param_relinquishes_shell_drop() {
         actor Streamer {
             receive gen fn emit(tree: Tree) -> i64 {
                 match tree {
-                    Leaf(label) => yield label.len(),
-                    Node(_, _) => yield 2,
+                    .Leaf(label) => yield label.len(),
+                    .Node(_, _) => yield 2,
                 }
             }
         }
@@ -899,8 +899,8 @@ fn cloned_indirect_enum_generator_capture_fails_closed() {
         gen fn walk(tree: Tree) -> i64 {
             yield 1;
             match tree {
-                Leaf(value) => yield value,
-                Node(_, _) => yield 2,
+                .Leaf(value) => yield value,
+                .Node(_, _) => yield 2,
             }
         }
         fn main() {
@@ -915,8 +915,8 @@ fn cloned_indirect_enum_generator_capture_fails_closed() {
             let _stream = gen {
                 yield 1;
                 match tree {
-                    Leaf(value) => yield value,
-                    Node(_, _) => yield 2,
+                    .Leaf(value) => yield value,
+                    .Node(_, _) => yield 2,
                 }
             };
         }
@@ -1437,7 +1437,7 @@ fn gen_block_fn_valued_pattern_payload_fails_closed() {
             Some(|x: i64| x + n)
         }
         fn main() {
-            if let Some(f) = make_opt(2) {
+            if let .Some(f) = make_opt(2) {
                 let g = gen { yield f(1); };
             }
         }

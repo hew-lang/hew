@@ -5,27 +5,64 @@
 use super::*;
 
 impl Checker {
-    /// Reject a bare variant used in expression position.
+    /// Reject a bare variant in expression position.
     ///
     /// The dotted spellings (`.Variant`, `Type.Variant`) are the language, so
-    /// this is a hard error from v0.6.0. The syntax migrator is the sanctioned
-    /// way past it, and the migrator can only rewrite a source the checker
-    /// resolved, so migration mode keeps the pre-0.6.0 warning severity — the
-    /// one entry point that is allowed to see a legacy source through.
+    /// this is a hard error from v0.6.0. `replacement` is the spelling the
+    /// fix-it names: the contextual `.Variant` where an expected type selects
+    /// the enum, the owner-qualified `Type.Variant` where it does not.
     pub(super) fn report_bare_variant_expr(&mut self, name: &str, replacement: &str, span: &Span) {
+        self.report_bare_variant(
+            TypeErrorKind::BareVariantExpr,
+            format!(
+                "E_BARE_VARIANT_EXPR: bare variant `{name}` is not an expression; use `.{name}` when the surrounding type selects the enum, or qualify the variant with its type"
+            ),
+            format!("replace `{name}` with `{replacement}`"),
+            span,
+        );
+    }
+
+    /// Reject a bare variant in pattern position.
+    ///
+    /// A pattern always has a scrutinee type, so the contextual `.Variant` is
+    /// always available and is the only fix-it offered. A hard error from
+    /// v0.6.0, on the same footing as the expression form.
+    pub(super) fn report_bare_variant_pattern(&mut self, name: &str, span: &Span) {
+        self.report_bare_variant(
+            TypeErrorKind::BareVariantPattern,
+            format!(
+                "E_BARE_VARIANT_PATTERN: bare variant pattern `{name}` is not a pattern; use `.{name}` when the scrutinee type selects the enum, or qualify the variant with its type"
+            ),
+            format!("replace `{name}` with `.{name}`"),
+            span,
+        );
+    }
+
+    /// One authority for both bare-variant refusals, so the two spellings keep
+    /// the same severity rule and the same machine-applicable fix-it shape.
+    ///
+    /// The syntax migrator is the sanctioned way past both, and it can only
+    /// rewrite a source the checker resolved, so migration mode reports at
+    /// warning severity — the one entry point allowed to see a legacy source
+    /// through. `hew fmt --migrate` reads these warnings to place its edits.
+    fn report_bare_variant(
+        &mut self,
+        kind: TypeErrorKind,
+        message: String,
+        suggestion: String,
+        span: &Span,
+    ) {
         let diagnostic = TypeError {
             severity: if self.migration_mode {
                 crate::error::Severity::Warning
             } else {
                 crate::error::Severity::Error
             },
-            kind: TypeErrorKind::BareVariantExpr,
+            kind,
             span: span.clone(),
-            message: format!(
-                "E_BARE_VARIANT_EXPR: bare variant `{name}` is not an expression; use `.{name}` when the surrounding type selects the enum, or qualify the variant with its type"
-            ),
+            message,
             notes: Vec::new(),
-            suggestions: vec![format!("replace `{name}` with `{replacement}`")],
+            suggestions: vec![suggestion],
             source_module: self.current_module.clone(),
         };
         if self.migration_mode {
@@ -33,20 +70,6 @@ impl Checker {
         } else {
             self.errors.push(diagnostic);
         }
-    }
-
-    pub(super) fn warn_bare_variant_pattern(&mut self, name: &str, span: &Span) {
-        self.warnings.push(TypeError {
-            severity: crate::error::Severity::Warning,
-            kind: TypeErrorKind::BareVariantPattern,
-            span: span.clone(),
-            message: format!(
-                "E_BARE_VARIANT_PATTERN: bare variant pattern `{name}` is deprecated; use `.{name}` when the scrutinee type selects the enum, or qualify the variant with its type"
-            ),
-            notes: Vec::new(),
-            suggestions: vec![format!("replace `{name}` with `.{name}`")],
-            source_module: self.current_module.clone(),
-        });
     }
 
     /// Emit warnings for functions that are never called (dead code).

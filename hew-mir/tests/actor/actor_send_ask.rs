@@ -62,8 +62,8 @@ fn actor_send_ask_lower_to_mir_terminators_and_state_access() {
             let counter = spawn Counter(count: 0);
             counter.increment(10);
             match await counter.total() {
-                Ok(v) => v,
-                Err(_e) => 0,
+                .Ok(v) => v,
+                .Err(_e) => 0,
             }
         }
         ",

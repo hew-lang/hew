@@ -3092,8 +3092,8 @@ mod tests {
                 receive fn go(unused: i64) {
                     let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
                     match found {
-                        Ok(peer) => { let reply = peer.ask(7, 1000); },
-                        Err(_) => {},
+                        .Ok(peer) => { let reply = peer.ask(7, 1000); },
+                        .Err(_) => {},
                     }
                 }
             }

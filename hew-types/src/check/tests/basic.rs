@@ -65,16 +65,21 @@ fn contextual_variant_reports_ambiguous_expected_owner() {
     }));
 }
 
-/// The expression form is rejected since v0.6.0; the pattern form is a
-/// separate spelling and keeps its deprecation warning.
+/// Both spellings are refused since v0.6.0. The pattern form covers every
+/// place a variant can be matched: a unit arm, a tuple arm, a struct-variant
+/// arm, and a `let`-position tag test.
 #[test]
-fn bare_variant_expression_errors_while_the_pattern_form_warns() {
+fn bare_variant_patterns_error_in_every_pattern_position() {
     let output = check_source(
         r"
-enum Choice { Present(i64); Absent }
+enum Choice { Present(i64); Absent; Named { value: i64 } }
 fn make() -> Choice { Present(7) }
 fn read(value: Choice) -> i64 {
-    match value { Present(number) => number, Absent => 0 }
+    match value { Present(number) => number, Named { value } => value, Absent => 0 }
+}
+fn tag_test(value: Choice) -> i64 {
+    let Absent = value else { return 1 };
+    0
 }
 ",
     );
@@ -82,24 +87,86 @@ fn read(value: Choice) -> i64 {
         .errors
         .iter()
         .any(|error| error.kind == TypeErrorKind::BareVariantExpr));
-    assert!(output
-        .warnings
+    let pattern_names = output
+        .errors
         .iter()
-        .all(|warning| warning.kind != TypeErrorKind::BareVariantExpr));
-    assert!(output
-        .warnings
-        .iter()
-        .any(|warning| warning.kind == TypeErrorKind::BareVariantPattern));
+        .filter(|error| error.kind == TypeErrorKind::BareVariantPattern)
+        .flat_map(|error| error.suggestions.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    for expected in [
+        "replace `Present` with `.Present`",
+        "replace `Named` with `.Named`",
+        "replace `Absent` with `.Absent`",
+    ] {
+        assert!(
+            pattern_names.iter().any(|s| s == expected),
+            "missing fix-it `{expected}`, got: {pattern_names:#?}"
+        );
+    }
+    // Negative control: the deprecation path is gone, so nothing may report
+    // either bare-variant spelling at warning severity outside migration mode.
+    assert!(output.warnings.iter().all(|warning| !matches!(
+        warning.kind,
+        TypeErrorKind::BareVariantPattern | TypeErrorKind::BareVariantExpr
+    )));
+}
+
+/// A dotted pattern in the same positions is the language and must check
+/// clean — the positive control for
+/// `bare_variant_patterns_error_in_every_pattern_position`.
+#[test]
+fn dotted_variant_patterns_check_in_every_pattern_position() {
+    let output = check_source(
+        r"
+enum Choice { Present(i64); Absent; Named { value: i64 } }
+fn read(value: Choice) -> i64 {
+    match value { .Present(number) => number, .Named { value } => value, .Absent => 0 }
+}
+fn tag_test(value: Choice) -> i64 {
+    let .Absent = value else { return 1 };
+    0
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "dotted variant patterns must check: {:#?}",
+        output.errors
+    );
+}
+
+/// A record destructure shares `Pattern::Struct` with a struct-variant
+/// pattern. Its name is a type, not a variant, so it must not be refused.
+#[test]
+fn record_destructure_is_not_a_bare_variant_pattern() {
+    let output = check_source(
+        r"
+type Point { x: i64, y: i64 }
+fn sum(p: Point) -> i64 {
+    match p { Point { x, y } => x + y }
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "record destructure must check: {:#?}",
+        output.errors
+    );
 }
 
 /// The migrator resolves its rewrites from the checker's own output, so the
-/// downgraded severity must still carry the same kind and suggestions.
+/// downgraded severity must still carry the same kind and suggestions — for
+/// the pattern form as much as the expression form.
 #[test]
-fn migration_mode_downgrades_the_bare_variant_expression_to_a_warning() {
+fn migration_mode_downgrades_both_bare_variant_spellings_to_warnings() {
     let parse_result = hew_parser::parse(
         r"
-enum Choice { Present(i64) }
+enum Choice { Present(i64); Absent }
 fn contextual() -> Choice { Present(7) }
+fn read(value: Choice) -> i64 {
+    match value { Present(number) => number, Absent => 0 }
+}
 ",
     );
     assert!(
@@ -115,10 +182,16 @@ fn contextual() -> Choice { Present(7) }
         "migration mode must still type-check a legacy source: {:#?}",
         output.errors
     );
-    assert!(output
-        .warnings
-        .iter()
-        .any(|warning| warning.kind == TypeErrorKind::BareVariantExpr));
+    for kind in [
+        TypeErrorKind::BareVariantExpr,
+        TypeErrorKind::BareVariantPattern,
+    ] {
+        assert!(
+            output.warnings.iter().any(|warning| warning.kind == kind),
+            "migration mode must report {kind:?} as a warning: {:#?}",
+            output.warnings
+        );
+    }
 }
 
 #[test]
@@ -203,9 +276,10 @@ fn read(value: i64) -> i64 {
     );
     assert!(output.errors.is_empty());
     assert!(output
-        .warnings
+        .errors
         .iter()
-        .all(|warning| warning.kind != TypeErrorKind::BareVariantPattern));
+        .chain(output.warnings.iter())
+        .all(|diagnostic| diagnostic.kind != TypeErrorKind::BareVariantPattern));
 }
 
 #[test]
@@ -1101,7 +1175,7 @@ fn numeric_branch_joins_accept_checker_selected_common_types() {
             let unsigned = if flag { narrow_unsigned } else { wide_unsigned };
             let float = if flag { narrow_signed } else { 4.5 };
             let present: Option<i64> = Some(1);
-            let signed_if_let = if let Some(_) = present {
+            let signed_if_let = if let .Some(_) = present {
                 narrow_signed
             } else {
                 wide_signed
@@ -1865,8 +1939,8 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         "}\n",
         "fn unwrap_or(r: Result, fallback: i64) -> i64 {\n",
         "    match r {\n",
-        "        Ok(v) => v,\n",
-        "        Err(_) => fallback,\n",
+        "        .Ok(v) => v,\n",
+        "        .Err(_) => fallback,\n",
         "    }\n",
         "}\n"
     );

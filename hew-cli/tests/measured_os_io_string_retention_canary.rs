@@ -33,30 +33,30 @@ fn all_measured_wrappers() -> i64 {
     let all = io.read_all();
     let direct_file = fs.read("/tmp/hew-os-io-retention-input.txt");
     let streamed_file = match fs.try_read("/tmp/hew-os-io-retention-input.txt") {
-        Ok(text) => text,
-        Err(error) => to_string(error),
+        .Ok(text) => text,
+        .Err(error) => to_string(error),
     };
     let absolute = path.absolute(".");
     let glob_len = match path.try_glob("/tmp/hew-os-io-retention-*.txt") {
-        Ok(matches) => {
+        .Ok(matches) => {
             let entry = matches.try_get(0);
             matches.close();
             match entry {
-                Some(text) => text.len(),
-                None => 0,
+                .Some(text) => text.len(),
+                .None => 0,
             }
         },
-        Err(error) => to_string(error).len(),
+        .Err(error) => to_string(error).len(),
     };
     let dns_direct = dns.lookup_host("127.0.0.1");
     let dns_timed = dns.lookup_host_timed("127.0.0.1", 1000);
     let compressed_reason = match compress.try_gzip_decompress("not-a-gzip".to_bytes(), 1024) {
-        Ok(data) => data.len(),
-        Err(reason) => reason.len(),
+        .Ok(data) => data.len(),
+        .Err(reason) => reason.len(),
     };
     let process_len = match process.try_run("printf stdout; printf stderr >&2") {
-        Ok(output) => output.stdout.len() + output.stderr.len(),
-        Err(_) => 0,
+        .Ok(output) => output.stdout.len() + output.stderr.len(),
+        .Err(_) => 0,
     };
     arg.len() + env.len() + cwd.len() + home.len() + host.len() + temp.len() + line.len() + all.len() + direct_file.len() + streamed_file.len() + absolute.len() + glob_len + dns_direct.len() + dns_timed.len() + compressed_reason + process_len
 }

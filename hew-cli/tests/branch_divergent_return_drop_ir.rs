@@ -18,8 +18,8 @@ fn choose(take_x: bool) -> Result<string, string> {
 
 fn main() -> i64 {
     match choose(true) {
-        Ok(y) => y.len(),
-        Err(x) => x.len(),
+        .Ok(y) => y.len(),
+        .Err(x) => x.len(),
     }
 }
 "#;

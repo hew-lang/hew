@@ -462,7 +462,7 @@ fn params_only_mixed_args_publish_checker_fresh_fact() {
         type Holder { b: string; }
         fn wrap2(a: string, b: string) -> Result<string, string> { Ok(a) }
         fn use_it(h: Holder) -> i64 {
-            match wrap2("lit", h.b) { Ok(_) => 1, Err(_) => 0 }
+            match wrap2("lit", h.b) { .Ok(_) => 1, .Err(_) => 0 }
         }
     "#;
     let p = pipeline(src);
@@ -561,12 +561,12 @@ fn extern_result_bound_module_fn_publishes_retained_fact() {
         fn try_encode(payload: string) -> Result<string, string> {
             let token = ext_encode(payload);
             match last_err() {
-                Ok(_) => Ok(token),
+                .Ok(_) => Ok(token),
                 err => err,
             }
         }
         fn use_it() -> i64 {
-            match try_encode("{}") { Ok(_) => 1, Err(_) => 0 }
+            match try_encode("{}") { .Ok(_) => 1, .Err(_) => 0 }
         }
     "#;
     let p = pipeline(src);
@@ -598,7 +598,7 @@ fn fresh_producer_match_publishes_fresh_fact() {
     let src = r#"
         fn make_fresh() -> Result<string, string> { Ok("x") }
         fn use_it() -> i64 {
-            match make_fresh() { Ok(_) => 1, Err(_) => 0 }
+            match make_fresh() { .Ok(_) => 1, .Err(_) => 0 }
         }
     "#;
     let p = pipeline(src);
@@ -697,8 +697,8 @@ fn local_sink_payload_without_a_measured_variant_summary_is_refused() {
 
         fn use_it() {
             match make() {
-                Ok(_sink) => {},
-                Err(_) => {},
+                .Ok(_sink) => {},
+                .Err(_) => {},
             }
         }
     "#;
@@ -782,7 +782,7 @@ fn opaque_only_module_fn_completes_foreign_no_owner_and_mints_no_release() {
         }
         fn wrap() -> Result<string, string> { ext_make() }
         fn use_it() -> i64 {
-            match wrap() { Ok(_) => 1, Err(_) => 0 }
+            match wrap() { .Ok(_) => 1, .Err(_) => 0 }
         }
     "#;
     let p = pipeline(src);
@@ -800,7 +800,7 @@ fn direct_heap_extern_scrutinee_completes_foreign_no_owner_and_mints_no_release(
             fn ext_make() -> Result<string, string>;
         }
         fn use_it() -> i64 {
-            match ext_make() { Ok(_) => 1, Err(_) => 0 }
+            match ext_make() { .Ok(_) => 1, .Err(_) => 0 }
         }
     "#;
     let p = pipeline(src);
@@ -816,7 +816,7 @@ fn spoofed_recv_symbol_extern_acquires_no_delivery_owner() {
             fn hew_channel_recv_layout(ch: i64) -> Result<string, string>;
         }
         fn use_it() -> i64 {
-            match hew_channel_recv_layout(0) { Ok(_) => 1, Err(_) => 0 }
+            match hew_channel_recv_layout(0) { .Ok(_) => 1, .Err(_) => 0 }
         }
     "#;
     let p = pipeline(src);
@@ -865,12 +865,12 @@ fn fresh_call_result_payload_move_is_admitted() {
         fn make() -> Result<Vec<i64>, Vec<i64>> { Ok(seed()) }
         fn use_it() -> i64 {
             match make() {
-                Ok(payload) => {
+                .Ok(payload) => {
                     var moved = payload;
                     moved = seed();
                     moved.len()
                 },
-                Err(payload) => payload.len(),
+                .Err(payload) => payload.len(),
             }
         }
     ";
@@ -886,7 +886,7 @@ fn owned_record_getter_move_out_publishes_clone_fact() {
         type Rec { s: string; }
         fn take(r: Rec) -> i64 { 1 }
         fn use_it(ys: Vec<Rec>) -> i64 {
-            match ys.get(0) { Some(v) => take(v), None => 0 }
+            match ys.get(0) { .Some(v) => take(v), .None => 0 }
         }
     ";
     let p = pipeline(src);
@@ -904,7 +904,7 @@ fn opaque_only_module_fn_move_out_binds_payload_without_release() {
         fn wrap() -> Result<string, string> { ext_make() }
         fn sink(s: string) -> i64 { 1 }
         fn use_it() -> i64 {
-            match wrap() { Ok(inner) => sink(inner), Err(_) => 0 }
+            match wrap() { .Ok(inner) => sink(inner), .Err(_) => 0 }
         }
     "#;
     let p = pipeline(src);
@@ -927,7 +927,7 @@ fn method_call_forwarder_move_out_uses_borrowed_authority() {
         }
         fn sink(s: string) -> i64 { 1 }
         fn use_it(h: Holder, r: Result<string, string>) -> i64 {
-            match h.forward(r) { Ok(inner) => sink(inner), Err(_) => 0 }
+            match h.forward(r) { .Ok(inner) => sink(inner), .Err(_) => 0 }
         }
     ";
     let p = pipeline(src);
@@ -943,8 +943,8 @@ fn closure_match_forwarder_over_capture_clones_the_capture_for_the_owning_callee
         fn runner(s: Vec<i64>) {
             let f = || {
                 match wrap(s) {
-                    Ok(_) => match Ok(1) { Ok(_) => {}, Err(_) => {} },
-                    Err(_) => {},
+                    .Ok(_) => match Ok(1) { .Ok(_) => {}, .Err(_) => {} },
+                    .Err(_) => {},
                 }
             };
             f();
@@ -962,7 +962,7 @@ fn closure_match_literal_arg_publishes_fresh_fact() {
         fn wrap(s: string) -> Result<string, string> { Ok(s) }
         fn use_it() -> i64 {
             let f = || {
-                match wrap("lit") { Ok(_) => 1, Err(_) => 0 }
+                match wrap("lit") { .Ok(_) => 1, .Err(_) => 0 }
             };
             f()
         }
@@ -979,7 +979,7 @@ fn closure_local_arg_publishes_fresh_fact() {
         fn use_it() -> i64 {
             let f = || {
                 let v = "x";
-                match wrap(v) { Ok(_) => 1, Err(_) => 0 }
+                match wrap(v) { .Ok(_) => 1, .Err(_) => 0 }
             };
             f()
         }
@@ -1062,7 +1062,7 @@ fn generator_body_calls_publish_checker_fresh_facts() {
             var total = 0;
             for v in gen {
                 let s = "x";
-                let n = match wrap(s) { Ok(_) => 1, Err(_) => 0 };
+                let n = match wrap(s) { .Ok(_) => 1, .Err(_) => 0 };
                 yield n;
             } {
                 total = total + v;
@@ -1079,7 +1079,7 @@ fn generator_body_calls_publish_checker_fresh_facts() {
         fn use_it() -> i64 {
             var total = 0;
             for v in gen {
-                let n = match wrap("lit") { Ok(_) => 1, Err(_) => 0 };
+                let n = match wrap("lit") { .Ok(_) => 1, .Err(_) => 0 };
                 yield n;
             } {
                 total = total + v;
@@ -1103,7 +1103,7 @@ fn guard_buried_return_forwarder_publishes_retained_fact() {
             if d > 0 { Ok("fresh") } else { Ok("fresh") }
         }
         fn use_it(p: Result<string, string>) -> i64 {
-            match evil(p, 0) { Ok(_) => 1, Err(_) => 0 }
+            match evil(p, 0) { .Ok(_) => 1, .Err(_) => 0 }
         }
     "#;
     let p = pipeline(src);
@@ -1117,7 +1117,7 @@ fn indirect_function_value_scrutinee_stays_unknown_and_fails_closed() {
         fn make(s: string) -> Result<string, string> { Ok(s) }
         fn use_it() -> i64 {
             let f = make;
-            match f("x") { Ok(_) => 1, Err(_) => 0 }
+            match f("x") { .Ok(_) => 1, .Err(_) => 0 }
         }
     "#;
     let p = pipeline(src);

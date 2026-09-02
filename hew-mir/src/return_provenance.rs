@@ -5371,7 +5371,7 @@ pub(crate) mod tests {
                 if flag { a } else { b }
             }
             fn viamatch(r: Result<string, string>) -> string {
-                match r { Ok(v) => v, Err(e) => e }
+                match r { .Ok(v) => v, .Err(e) => e }
             }
             fn nested(a: string) -> string {
                 let x = a;
@@ -6342,7 +6342,7 @@ pub(crate) mod tests {
             r#"
             fn produce() -> Result<string, string> { Ok("x") }
             fn unwrap_or_default() -> string {
-                match produce() { Ok(v) => v, Err(e) => e }
+                match produce() { .Ok(v) => v, .Err(e) => e }
             }
             "#,
         );

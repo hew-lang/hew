@@ -357,7 +357,7 @@ fn if_let_resource_payload_keeps_arm_scope_close_drop() {
         }
 
         fn main() {
-            if let Ok(probe) = make() {
+            if let .Ok(probe) = make() {
                 let fd = probe.fd;
             }
         }

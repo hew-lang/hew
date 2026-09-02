@@ -106,19 +106,19 @@ fn main() {
     let _weak_alias = weak.clone();
     print(rc.weak_count());
     match weak.upgrade() {
-        Some(upgraded) => {
+        .Some(upgraded) => {
             print(upgraded.get());
             print(upgraded.strong_count());
         },
-        None => print(99),
+        .None => print(99),
     }
     print(rc.strong_count());
     rc.set(9);
     print(alias.get());
     let dead = expired();
     print(match dead.upgrade() {
-        Some(_) => 9,
-        None => 0,
+        .Some(_) => 9,
+        .None => 0,
     });
 }
 "#,

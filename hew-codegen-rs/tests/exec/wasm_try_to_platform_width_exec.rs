@@ -59,21 +59,21 @@ const HEW_SOURCE: &str = r#"fn main() {
     let smax: isize = (all_ones >> 1) as isize;
 
     match smax.try_to_i32() {
-        Some(v) => {
+        .Some(v) => {
             if v == 2147483647 { println("smax_i32=ok") } else { println("smax_i32=wrong") }
         }
-        None => println("smax_i32=none"),
+        .None => println("smax_i32=none"),
     }
 
     match all_ones.try_to_i32() {
-        Some(_) => println("umax_i32=some"),
-        None => println("umax_i32=none"),
+        .Some(_) => println("umax_i32=some"),
+        .None => println("umax_i32=none"),
     }
     match all_ones.try_to_u64() {
-        Some(v) => {
+        .Some(v) => {
             if v == 4294967295 as u64 { println("umax_u64=ok") } else { println("umax_u64=wrong") }
         }
-        None => println("umax_u64=none"),
+        .None => println("umax_u64=none"),
     }
 }
 "#;

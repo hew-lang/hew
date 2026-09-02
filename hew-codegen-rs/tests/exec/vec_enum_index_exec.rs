@@ -149,19 +149,19 @@ fn main() {
     let s1 = v[1];
     let s2 = v[2];
     match s0 {
-        Circle(r) => println(f"Circle({r})"),
-        Square(w, h) => println(f"Square({w},{h})"),
-        Dot => println("Dot"),
+        .Circle(r) => println(f"Circle({r})"),
+        .Square(w, h) => println(f"Square({w},{h})"),
+        .Dot => println("Dot"),
     }
     match s1 {
-        Circle(r) => println(f"Circle({r})"),
-        Square(w, h) => println(f"Square({w},{h})"),
-        Dot => println("Dot"),
+        .Circle(r) => println(f"Circle({r})"),
+        .Square(w, h) => println(f"Square({w},{h})"),
+        .Dot => println("Dot"),
     }
     match s2 {
-        Circle(r) => println(f"Circle({r})"),
-        Square(w, h) => println(f"Square({w},{h})"),
-        Dot => println("Dot"),
+        .Circle(r) => println(f"Circle({r})"),
+        .Square(w, h) => println(f"Square({w},{h})"),
+        .Dot => println("Dot"),
     }
 }
         "#,

@@ -308,8 +308,8 @@ fn unbound_where_clause_assoc_projection_remains_type_error() {
             I: Iterator,
         {
             match it.next() {
-                Some(x) => x,
-                None => 0,
+                .Some(x) => x,
+                .None => 0,
             }
         }
         ",
@@ -330,8 +330,8 @@ fn call_site_rejects_assoc_binding_mismatch() {
             I: Iterator<Item = i64>,
         {
             match it.next() {
-                Some(x) => x,
-                None => 0,
+                .Some(x) => x,
+                .None => 0,
             }
         }
 
@@ -1663,7 +1663,7 @@ fn count_needless_match(diags: &[TypeError]) -> usize {
 #[test]
 fn needless_match_flags_some_none_empty() {
     let (errors, warnings) = parse_and_check(
-        "fn f(o: Option<i64>) { match o { Some(x) => { let _ = x; } None => {} } }",
+        "fn f(o: Option<i64>) { match o { .Some(x) => { let _ = x; } .None => {} } }",
     );
     assert!(
         errors.is_empty(),
@@ -1732,7 +1732,7 @@ fn needless_match_not_flagged_in_value_position() {
 #[test]
 fn needless_match_deny_routes_to_errors() {
     let out = check_with_lint_level(
-        "fn f(o: Option<i64>) { match o { Some(x) => { let _ = x; } None => {} } }",
+        "fn f(o: Option<i64>) { match o { .Some(x) => { let _ = x; } .None => {} } }",
         LintId::NeedlessMatchToIfLet,
         LintLevel::Deny,
     );
@@ -1747,7 +1747,7 @@ fn needless_match_deny_routes_to_errors() {
 
 #[test]
 fn needless_match_suppressed_by_directive() {
-    const SOURCE: &str = "fn f(o: Option<i64>) {\n    // hew:allow(needless_match_to_if_let)\n    match o { Some(x) => { let _ = x; } None => {} }\n}";
+    const SOURCE: &str = "fn f(o: Option<i64>) {\n    // hew:allow(needless_match_to_if_let)\n    match o { .Some(x) => { let _ = x; } .None => {} }\n}";
     let out = check_with_lint_level(SOURCE, LintId::NeedlessMatchToIfLet, LintLevel::Warn);
     assert_eq!(
         count_needless_match(&out.warnings),

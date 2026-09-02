@@ -1338,10 +1338,10 @@ fn main() {
                 let result = monitor(worker);
                 link(worker);
                 match result {
-                    Ok(m) => {
+                    .Ok(m) => {
                         let _ = m.close();
                     },
-                    Err(_) => {},
+                    .Err(_) => {},
                 }
             }
         "
@@ -1371,11 +1371,11 @@ fn main() {
             fn main() {
                 let worker = spawn Worker;
                 match monitor(worker) {
-                    Ok(m) => {
+                    .Ok(m) => {
                         let _ = m.close();
                         let _ = m.close();
                     },
-                    Err(_) => {},
+                    .Err(_) => {},
                 }
             }
         "
@@ -1391,10 +1391,10 @@ fn main() {
                 let remote: RemotePid<Worker>;
                 let result: Result<MonitorRef, MonitorError> = monitor(remote);
                 match result {
-                    Ok(m) => {
+                    .Ok(m) => {
                         m.close();
                     },
-                    Err(_) => {},
+                    .Err(_) => {},
                 }
             }
         "

@@ -60,13 +60,13 @@ fn run_case(seed: i64, fill: bool, exit_early: bool) -> i64 {
         owner = pair.0;
         checksum = checksum + pair.2;
         match pair.1 {
-            Filled(v) => {
+            .Filled(v) => {
                 checksum = checksum + v;
                 if exit_early {
                     break;
                 }
             },
-            Empty => {
+            .Empty => {
                 done = true;
             },
         }
@@ -154,10 +154,10 @@ fn main() {
         owner = pair.0;
         sibling = pair.2;
         match pair.1 {
-            Filled(v) => {
+            .Filled(v) => {
                 checksum = checksum + v;
             },
-            Empty => {
+            .Empty => {
                 done = true;
             },
         }
@@ -226,7 +226,7 @@ fn helper(i: i64) -> i64 {
 
     let rebound = carrier;
     let payload_score = match rebound {
-        Some(payload) => {
+        .Some(payload) => {
             if payload.values[0] != "transferred"
                 || payload.label != "tag"
                 || payload.values.len() != 1 {
@@ -235,7 +235,7 @@ fn helper(i: i64) -> i64 {
                 payload.values[0].len() + payload.label.len() + payload.values.len()
             }
         },
-        None => {
+        .None => {
             7
         },
     };

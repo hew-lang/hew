@@ -60,39 +60,39 @@ enum TupleOuter {
 fn whole(i: i64) -> i64 {
     let outer = Outer.Wrap(Inner.Text(f"whole-{i}"));
     match outer {
-        Wrap(st) => {
+        .Wrap(st) => {
             let w = st;
             match w {
-                Text(s) => s.len(),
-                Empty => 0,
+                .Text(s) => s.len(),
+                .Empty => 0,
             }
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn direct(i: i64) -> i64 {
     let outer = Outer.Wrap(Inner.Text(f"direct-{i}"));
     match outer {
-        Wrap(st) => match st {
-            Text(s) => s.len(),
-            Empty => 0,
+        .Wrap(st) => match st {
+            .Text(s) => s.len(),
+            .Empty => 0,
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn depth_two(i: i64) -> i64 {
     let outer = DeepOuter.Wrap(Middle.Wrap(Inner.Text(f"deep-{i}")));
     match outer {
-        Wrap(mid) => match mid {
-            Wrap(st) => match st {
-                Text(s) => s.len(),
-                Empty => 0,
+        .Wrap(mid) => match mid {
+            .Wrap(st) => match st {
+                .Text(s) => s.len(),
+                .Empty => 0,
             },
-            Empty => 0,
+            .Empty => 0,
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
@@ -102,28 +102,28 @@ fn record_field(i: i64) -> i64 {
         sibling: i,
     });
     match outer {
-        Wrap(st) => {
+        .Wrap(st) => {
             let w = st.value;
             match w {
-                Text(s) => s.len() + st.sibling,
-                Empty => st.sibling,
+                .Text(s) => s.len() + st.sibling,
+                .Empty => st.sibling,
             }
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn tuple_field(i: i64) -> i64 {
     let outer = TupleOuter.Wrap((Inner.Text(f"tuple-{i}"), i));
     match outer {
-        Wrap(st) => {
+        .Wrap(st) => {
             let w = st.0;
             match w {
-                Text(s) => s.len() + st.1,
-                Empty => st.1,
+                .Text(s) => s.len() + st.1,
+                .Empty => st.1,
             }
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 

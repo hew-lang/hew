@@ -13797,8 +13797,8 @@ actor Probe {
     receive fn run() -> i64 {
         let child = |child_gate: LocalPid<Gate>, value: string| {
             let waited = match await child_gate.tick() {
-                Ok(n) => n,
-                Err(_) => 0,
+                .Ok(n) => n,
+                .Err(_) => 0,
             };
             value.len() + waited
         };
@@ -13859,8 +13859,8 @@ actor Probe {
         let root_bytes = "root-bytes".to_bytes();
         let child = |child_gate: LocalPid<Gate>| {
             let value = match await child_gate.tick() {
-                Ok(n) => n,
-                Err(_) => 0,
+                .Ok(n) => n,
+                .Err(_) => 0,
             };
             panic("crash after resume");
             value
@@ -14603,8 +14603,8 @@ actor Runner {
     let gate: LocalPid<Gate>;
     receive fn run(trigger: i64) -> i64 {
         let seed = match await gate.tick() {
-            Ok(value) => value,
-            Err(_) => 0,
+            .Ok(value) => value,
+            .Err(_) => 0,
         };
         let pair = Pair.Both(
             Witness {
@@ -14815,8 +14815,8 @@ actor Runner {
     let gate: LocalPid<Gate>;
     receive fn run(trigger: i64) -> i64 {
         let seed = match await gate.tick() {
-            Ok(value) => value,
-            Err(_) => 0,
+            .Ok(value) => value,
+            .Err(_) => 0,
         };
         clear_then_maybe_crash(trigger) + seed
     }
@@ -16721,8 +16721,8 @@ actor Coordinator {
     receive fn run(n: i64) -> i64 {
         let r = await worker.compute(n);
         match r {
-            Ok(v) => v,
-            Err(_) => -1,
+            .Ok(v) => v,
+            .Err(_) => -1,
         }
     }
 }
@@ -16732,8 +16732,8 @@ fn main() {
     let c = spawn Coordinator(worker: w);
     let r = await c.run(7);
     let _final = match r {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
 }
 ";
@@ -16767,8 +16767,8 @@ actor Streamer {
     receive gen fn emit(tree: Tree) -> i64 {
         yield 1;
         match tree {
-            Leaf(value) => yield value,
-            Node(_, _) => yield 2,
+            .Leaf(value) => yield value,
+            .Node(_, _) => yield 2,
         }
     }
 }

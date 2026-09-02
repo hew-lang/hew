@@ -165,10 +165,10 @@ fn vec_iter_owned_yields_and_first_class_cursors_balance_exact_counts() {
             for weak in weak_values.iter() {
                 if root.weak_count() != 4 { panic("Weak yield count"); }
                 match weak.upgrade() {
-                    Some(owner) => {
+                    .Some(owner) => {
                         if owner.get() != 7 { panic("Weak upgraded value"); }
                     },
-                    None => panic("Weak unexpectedly expired"),
+                    .None => panic("Weak unexpectedly expired"),
                 }
             }
             if root.weak_count() != 2 { panic("Weak loop exit count"); }

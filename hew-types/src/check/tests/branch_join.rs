@@ -76,8 +76,8 @@ fn close_in_every_match_arm_is_accepted() {
         fn probe(r: Result<i64, string>) {
             let held = Socket { fd: 1 };
             match r {
-                Ok(_) => { held.close(); },
-                Err(_) => { held.close(); },
+                .Ok(_) => { held.close(); },
+                .Err(_) => { held.close(); },
             }
         }
         ",
@@ -92,8 +92,8 @@ fn move_in_every_match_arm_is_accepted() {
         fn probe(r: Result<i64, string>) {
             let held = Socket { fd: 1 };
             match r {
-                Ok(_) => { let _ = held.detach(); },
-                Err(_) => { let _ = held.detach(); },
+                .Ok(_) => { let _ = held.detach(); },
+                .Err(_) => { let _ = held.detach(); },
             }
         }
         ",
@@ -139,7 +139,7 @@ fn close_in_both_if_let_arms_is_accepted() {
         r"
         fn probe(o: Option<i64>) {
             let held = Socket { fd: 1 };
-            if let Some(_v) = o {
+            if let .Some(_v) = o {
                 held.close();
             } else {
                 held.close();
@@ -173,8 +173,8 @@ fn consume_in_a_diverging_match_arm_does_not_leak_into_the_other_arms() {
         fn probe(r: Result<i64, string>) -> i64 {
             let held = Socket { fd: 1 };
             match r {
-                Ok(_) => { return held.detach(); },
-                Err(_) => { held.detach() },
+                .Ok(_) => { return held.detach(); },
+                .Err(_) => { held.detach() },
             }
         }
         ",
@@ -188,7 +188,7 @@ fn let_else_diverging_branch_does_not_leak_its_consume() {
         r"
         fn probe(o: Option<i64>) -> i64 {
             let held = Socket { fd: 1 };
-            let Some(_v) = o else { return held.detach(); };
+            let .Some(_v) = o else { return held.detach(); };
             held.detach()
         }
         ",
@@ -225,8 +225,8 @@ fn use_after_a_join_where_every_arm_consumed_is_rejected() {
         fn probe(r: Result<i64, string>) -> i64 {
             let held = Socket { fd: 1 };
             match r {
-                Ok(_) => { held.close(); },
-                Err(_) => { held.close(); },
+                .Ok(_) => { held.close(); },
+                .Err(_) => { held.close(); },
             }
             held.detach()
         }
@@ -413,9 +413,9 @@ fn a_guard_consume_still_rejects_a_consume_in_a_later_arm() {
         fn probe(r: Result<i64, string>) -> i64 {
             let held = Socket { fd: 1 };
             match r {
-                Ok(_) if held.detach() > 0 => { 10 },
-                Err(_) => { held.detach() },
-                Ok(_) => { 20 },
+                .Ok(_) if held.detach() > 0 => { 10 },
+                .Err(_) => { held.detach() },
+                .Ok(_) => { 20 },
             }
         }
         ",
@@ -433,9 +433,9 @@ fn a_returning_guard_does_not_move_the_binding_for_later_arms() {
         fn probe(r: Result<i64, string>) -> i64 {
             let held = Socket { fd: 1 };
             match r {
-                Ok(_) if { return held.detach(); } => 10,
-                Err(_) => held.detach(),
-                Ok(_) => 20,
+                .Ok(_) if { return held.detach(); } => 10,
+                .Err(_) => held.detach(),
+                .Ok(_) => 20,
             }
         }
         ",
@@ -453,7 +453,7 @@ fn a_panicking_guard_keeps_its_unreachable_body_out_of_the_join() {
         fn probe(r: Result<i64, string>) -> i64 {
             let held = Socket { fd: 1 };
             match r {
-                Ok(_) if panic("stop") => held.detach(),
+                .Ok(_) if panic("stop") => held.detach(),
                 _ => 20,
             }
             held.detach()

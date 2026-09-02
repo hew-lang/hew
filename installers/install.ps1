@@ -19,10 +19,19 @@
       irm https://hew.sh/install.ps1 | iex
 
 .PARAMETER Version
-    Specific version to install (e.g. "0.1.0"). Defaults to latest.
+    Specific version to install (e.g. "0.1.0"). Default: newest release
+    including release candidates.
+
+.PARAMETER Stable
+    Install the newest final (non-rc) release instead of the newest release
+    candidate.
 
 .PARAMETER Prefix
     Installation directory. Defaults to $env:HEW_HOME or $env:USERPROFILE\.hew
+
+.PARAMETER DryRun
+    Resolve the version and print what would be installed, without
+    downloading or installing anything.
 
 .PARAMETER Help
     Show this help message.
@@ -34,14 +43,34 @@
     .\install.ps1 -Version 0.1.0
 
 .EXAMPLE
+    .\install.ps1 -Stable
+
+.EXAMPLE
     .\install.ps1 -Prefix C:\tools\hew
 #>
 
+# Version policy: until v0.6.0 ships as a final release, the default install
+# picks the newest published release *including release candidates*, so
+# `irm | iex` tracks the pre-release ladder during the v0.6.0 stabilization
+# window. Pass -Stable to install the newest tagged final release instead —
+# matches install.sh's --stable (#3214) and the `hew@stable` Homebrew
+# formula. Once a final v0.6.0 ships, the two policies agree until the next
+# pre-release window.
+
 param(
     [string]$Version,
+    [switch]$Stable,
     [string]$Prefix,
+    [switch]$DryRun,
     [switch]$Help
 )
+
+if ($Version -and $Stable) {
+    Write-Host ""
+    Write-Host "  error: -Version and -Stable are mutually exclusive" -ForegroundColor Red
+    Write-Host ""
+    exit 1
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -100,13 +129,19 @@ function Show-Help {
     Write-Host "    install.ps1 [OPTIONS]"
     Write-Host ""
     Write-Host "  OPTIONS:" -ForegroundColor White
-    Write-Host "    -Version <ver>   Install a specific version (e.g. 0.1.0). Default: latest"
+    Write-Host "    -Version <ver>   Install a specific version (e.g. 0.1.0). Default: newest"
+    Write-Host "                     release including release candidates"
+    Write-Host "    -Stable          Install the newest final (non-rc) release instead of"
+    Write-Host "                     the newest release candidate"
     Write-Host "    -Prefix  <dir>   Installation directory. Default: `$env:HEW_HOME or `$env:USERPROFILE\.hew"
+    Write-Host "    -DryRun          Resolve the version and print what would be installed,"
+    Write-Host "                     without installing it"
     Write-Host "    -Help            Show this help message"
     Write-Host ""
     Write-Host "  EXAMPLES:" -ForegroundColor White
     Write-Host "    irm https://hew.sh/install.ps1 | iex"
     Write-Host "    .\install.ps1 -Version 0.1.0"
+    Write-Host "    .\install.ps1 -Stable"
     Write-Host "    .\install.ps1 -Prefix C:\tools\hew"
     Write-Host ""
 }
@@ -204,28 +239,91 @@ $BinDir = Join-Path $InstallDir "bin"
 
 # ---------------------------------------------------------------------------
 # Resolve version
+#
+# Picks the newest tag by semver (major.minor.patch[-rcN]), not by GitHub's
+# release-creation order, since a hotfix tagged later could otherwise shadow
+# a newer version. Both the default (rc-inclusive) and -Stable pick from the
+# same /releases listing so there is one authority for "what tags exist";
+# -Stable just drops any tag containing '-', mirroring how the release
+# workflow itself decides final vs. pre-release, and how install.sh's
+# --stable behaves.
+#
+# SHORTCUT: the semver comparison below only understands this repo's actual
+# tag scheme, `vX.Y.Z` or `vX.Y.Z-rcN` — WHY: that is the only scheme the
+# release workflow emits (release.yml sets `prerelease` from `contains(tag,
+# '-rc')`); WHEN this breaks: a tag with any other prerelease label (e.g.
+# `-beta1`) would sort incorrectly; WHAT the real fix looks like: a full
+# SemVer 2.0.0 §11 precedence comparison if the tag scheme ever grows more
+# prerelease kinds.
 # ---------------------------------------------------------------------------
+
+function Select-NewestTag {
+    param([string[]]$Tags)
+    # $Tags: 'X.Y.Z' or 'X.Y.Z-rcN' strings, no leading 'v'.
+    $best = $null
+    $bestKey = $null
+    foreach ($tag in $Tags) {
+        if ($tag -notmatch '^(\d+)\.(\d+)\.(\d+)(-rc(\d+))?$') { continue }
+        $major = [int]$Matches[1]
+        $minor = [int]$Matches[2]
+        $patch = [int]$Matches[3]
+        # A final release outranks any rc of the same major.minor.patch.
+        $rc = if ($Matches[4]) { [int]$Matches[5] } else { 999999 }
+        $key = "{0:D6}.{1:D6}.{2:D6}.{3:D6}" -f $major, $minor, $patch, $rc
+        if (-not $bestKey -or $key -gt $bestKey) {
+            $bestKey = $key
+            $best = $tag
+        }
+    }
+    return $best
+}
 
 if (-not $Version) {
     Write-Step -Label "Fetching version" -NoNewline
     try {
-        $releaseUrl = "https://api.github.com/repos/${GITHUB_ORG}/${GITHUB_REPO}/releases/latest"
+        # per_page=100 is a SHORTCUT: WHY — the repo has well under 100
+        # release tags today, so one unpaginated page covers every
+        # candidate; WHEN this breaks — release count crosses 100; WHAT the
+        # real fix looks like — follow the API's Link: rel="next" header
+        # across pages.
+        $releasesUrl = "https://api.github.com/repos/${GITHUB_ORG}/${GITHUB_REPO}/releases?per_page=100"
         $headers = @{ "Accept" = "application/vnd.github.v3+json" }
         if ($env:GITHUB_TOKEN) {
             $headers["Authorization"] = "token $env:GITHUB_TOKEN"
         }
-        $release = Invoke-RestMethod -Uri $releaseUrl -Headers $headers -UseBasicParsing
-        $Version = $release.tag_name -replace '^v', ''
+        $releases = Invoke-RestMethod -Uri $releasesUrl -Headers $headers -UseBasicParsing
+        $tags = $releases | ForEach-Object { $_.tag_name -replace '^v', '' } | Where-Object { $_ -match '^\d' }
+
+        if ($Stable) {
+            # Final releases only, matching the workflow's own final-vs-rc test.
+            $tags = $tags | Where-Object { $_ -notmatch '-' }
+        }
+
+        $Version = Select-NewestTag -Tags $tags
+        if (-not $Version) {
+            Write-Host "failed" -ForegroundColor Red
+            Write-ErrorAndExit "Could not determine a version to install from GitHub releases"
+        }
         Write-Host "done" -ForegroundColor Green
     }
     catch {
         Write-Host "failed" -ForegroundColor Red
-        Write-ErrorAndExit "Failed to fetch latest version from GitHub: $_"
+        Write-ErrorAndExit "Failed to fetch releases from GitHub: $_"
     }
 }
 else {
     # Strip leading 'v' if provided
     $Version = $Version -replace '^v', ''
+}
+
+if ($DryRun) {
+    $dryBaseUrl = "https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/v${Version}"
+    Write-Host ""
+    Write-Host "  tag:      v${Version}"
+    Write-Host "  platform: ${platform}"
+    Write-Host "  archive:  ${dryBaseUrl}/hew-v${Version}-${platform}.zip (or .tar.gz)"
+    Write-Host "  prefix:   ${InstallDir}"
+    exit 0
 }
 
 Write-Host "  Installing Hew v${Version} (${platform})" -ForegroundColor White

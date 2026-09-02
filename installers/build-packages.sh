@@ -21,7 +21,6 @@
 #   docker    Container image     (requires Docker)
 #   shell     Syntax-check install.sh
 #   ps1       Syntax-check install.ps1 (requires pwsh)
-#   homebrew  Syntax-check homebrew/hew.rb (requires ruby)
 #   nix       Syntax-check nix/default.nix (requires nix-instantiate)
 #
 # OUTPUT
@@ -658,24 +657,6 @@ check_ps1() {
     fi
 }
 
-check_homebrew() {
-    _should_build "homebrew" || {
-        _record_skip "homebrew" "not selected"
-        return 0
-    }
-    _has_cmd ruby || {
-        _record_skip "homebrew" "ruby not available"
-        return 0
-    }
-
-    step "Syntax-checking homebrew/hew.rb"
-    if ruby -c "${SCRIPT_DIR}/homebrew/hew.rb" 2>&1; then
-        _record_ok "homebrew" "hew.rb syntax OK"
-    else
-        _record_fail "homebrew" "hew.rb has syntax errors"
-    fi
-}
-
 check_nix() {
     _should_build "nix" || {
         _record_skip "nix" "not selected"
@@ -730,7 +711,6 @@ main() {
     build_docker
     check_shell
     check_ps1
-    check_homebrew
     check_nix
 
     print_summary

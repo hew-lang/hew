@@ -10716,29 +10716,28 @@ fn materialize_explicit_projection_adoptions(blocks: &mut [BasicBlock], builder:
         .collect::<Vec<_>>();
     // A destination over storage the SCRUTINEE keeps reading adopts nothing:
     // the scrutinee's own drop is the authority and the binder is a byte-copy
-    // view of it, either outright (`DemoteToAlias { ScrutineeRetainsPayload }`)
-    // or until the parent hands over at an overwrite
-    // (`Guard { ProjectedPayload }`). Clearing that slot strands the
-    // scrutinee's drop on null — a leak, and a null payload on any later read
-    // of the scrutinee (#2523). A carrier alias is the other case and keeps
-    // this adoption: its snapshot drop expects the slot cleared when the binder
-    // escapes.
+    // view of it, so clearing that slot strands the scrutinee's drop on null —
+    // a leak, and a null payload on any later read of the scrutinee (#2523).
+    // A carrier alias is the other demotion and keeps this adoption: its
+    // snapshot drop expects the slot cleared when the binder escapes.
+    //
+    // SHORTCUT. WHY: a `string` payload binder is not demoted at all — it keeps
+    // an owner whose release a `Guard { ProjectedPayload }` flag arms only when
+    // the enum-overwrite authority hands the old generation over — so it still
+    // takes this unconditional adoption, and a borrow-only `string` payload
+    // read in a loop still reads the nulled slot (issue #3252). WHEN: once the
+    // projected-payload guard covers the neutralize as well as the release.
+    // WHAT: emit the adoption under the same flag the release is guarded by, so
+    // the slot is cleared on exactly the paths that hand the payload over.
     let scrutinee_retained_owners = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instruction| match instruction {
-            Instr::OwnershipEvent(
-                crate::model::OwnershipEvent::DemoteToAlias {
-                    owner,
-                    reason: crate::model::AliasDemotionReason::ScrutineeRetainsPayload,
-                    ..
-                }
-                | crate::model::OwnershipEvent::Guard {
-                    owner,
-                    kind: crate::model::OwnershipGuardKind::ProjectedPayload,
-                    ..
-                },
-            ) => Some(*owner),
+            Instr::OwnershipEvent(crate::model::OwnershipEvent::DemoteToAlias {
+                owner,
+                reason: crate::model::AliasDemotionReason::ScrutineeRetainsPayload,
+                ..
+            }) => Some(*owner),
             _ => None,
         })
         .collect::<HashSet<_>>();

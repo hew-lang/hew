@@ -1,0 +1,13 @@
+//! Display coverage for std.time.cron.CronError.
+
+import std.testing;
+
+import std.time.cron;
+
+#[test]
+fn test_cron_error_display_prints_the_carried_detail() {
+    let a = CronError.InvalidInput("cron: invalid field count");
+    testing.assert_eq_str(to_string(a), "cron: invalid field count");
+    let b = CronError.NoNextOccurrence("cron: no future match");
+    testing.assert_eq_str(to_string(b), "cron: no future match");
+}

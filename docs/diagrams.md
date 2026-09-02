@@ -2,9 +2,10 @@
 
 Visual documentation of the Hew compilation pipeline, runtime architecture, and
 protocol formats using Mermaid diagrams. Every diagram reflects the current
-compiler pipeline; the `LADDER` program (final IR ladder, legacy lowerer
-deleted, `v0.7.0`) replaces the strict lane below with the sole route — see
-the orchestration registry's `MONIKERS.md`.
+compiler pipeline. The `LADDER` program (final IR ladder, legacy lowerer
+deleted, `v0.7.0`) tracks this pipeline's evolution; its `P5-CUTOVER` phase
+deletes the `--sir-lower` flag shown below — see the orchestration registry's
+`MONIKERS.md`.
 
 > **Rendering:** These diagrams use [Mermaid](https://mermaid.js.org/) syntax. GitHub renders them natively in Markdown. For local viewing, use a Mermaid-compatible Markdown previewer or the [Mermaid Live Editor](https://mermaid.live/).
 

@@ -3,7 +3,8 @@
 A running log of breaking changes to Hew's compiler internals, runtime ABI,
 and standard library, by release.
 
-v0.6.0 is the surface freeze and working front door on the current lowerer.
+v0.6.0 is the surface freeze and working front door on the current lowerer,
+with the ownership-generation ICEs documented as fail-closed limits.
 v0.7.0 is the final ladder release, with the legacy lowerer deleted.
 
 ## Distributed identity and remote PIDs in v0.6.0-rc1

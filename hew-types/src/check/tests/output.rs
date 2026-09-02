@@ -703,7 +703,7 @@ fn broken_dependency_cannot_publish_owned_or_inflate_final_roots() {
         &checker.produced_value_dependencies,
         &leaves,
         &expr_types,
-        &checker.registry,
+        &checker.class_declarations(),
         &invalid,
         &mut visiting,
         &mut memo,

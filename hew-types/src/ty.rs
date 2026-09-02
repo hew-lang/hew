@@ -1447,17 +1447,6 @@ impl Ty {
             || matches!(self, Ty::Bool | Ty::Char | Ty::Unit | Ty::Duration)
     }
 
-    /// Check if this type is implicitly copied (value semantics).
-    #[must_use]
-    pub fn is_copy(&self) -> bool {
-        if self.is_primitive() {
-            return true;
-        }
-        matches!(self, Ty::Never | Ty::Pointer { .. })
-            || matches!(self, Ty::Tuple(elems) if elems.iter().all(Ty::is_copy))
-            || matches!(self, Ty::Array(elem, _) if elem.is_copy())
-    }
-
     /// Check if this type contains a specific type variable (occurs check).
     #[must_use]
     pub fn contains_var(&self, v: TypeVar) -> bool {
@@ -1979,16 +1968,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_copy() {
-        assert!(Ty::I32.is_copy());
-        assert!(Ty::Bool.is_copy());
-        assert!(Ty::IntLiteral.is_copy());
-        assert!(!Ty::String.is_copy());
-        assert!(Ty::Tuple(vec![Ty::I32, Ty::Bool]).is_copy());
-        assert!(!Ty::Tuple(vec![Ty::I32, Ty::String]).is_copy());
-    }
-
-    #[test]
     fn test_contains_var() {
         let v = TypeVar::fresh();
         let ty = Ty::Tuple(vec![Ty::I32, Ty::Var(v)]);
@@ -2337,12 +2316,6 @@ mod tests {
         let v = TypeVar::fresh();
         let ty = Ty::option(Ty::Var(v));
         assert!(ty.contains_var(v));
-    }
-
-    #[test]
-    fn test_is_copy_array() {
-        assert!(Ty::Array(Box::new(Ty::I32), 10).is_copy());
-        assert!(!Ty::Array(Box::new(Ty::String), 10).is_copy());
     }
 
     #[test]

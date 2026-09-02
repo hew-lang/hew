@@ -91,7 +91,38 @@ pub struct DeclaredType {
     pub members: Vec<ResolvedTy>,
 }
 
-static NO_DECLARATIONS: BTreeMap<String, DeclaredType> = BTreeMap::new();
+/// Where the §1.1 Aggregate rule gets a declaration's marker and members.
+///
+/// A borrowed lookup rather than an owned map so the checker can answer from
+/// its own registry and `type_defs` without copying them, and a unit test can
+/// answer from a hand-built map.
+pub trait ClassDeclarations {
+    /// The declaration's facts, or `None` when this lookup does not carry it.
+    ///
+    /// `None` is a refusal: the class rule turns it into
+    /// [`ClassError::UnknownDeclaration`] and the caller fails closed. A
+    /// lookup that cannot render one of a declaration's member types must
+    /// answer `None` rather than an aggregate over the members it managed.
+    fn declared_type(&self, name: &str) -> Option<DeclaredType>;
+}
+
+impl ClassDeclarations for BTreeMap<String, DeclaredType> {
+    fn declared_type(&self, name: &str) -> Option<DeclaredType> {
+        self.get(name).cloned()
+    }
+}
+
+/// The lookup [`ClassContext::empty`] answers from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoDeclarations;
+
+impl ClassDeclarations for NoDeclarations {
+    fn declared_type(&self, _name: &str) -> Option<DeclaredType> {
+        None
+    }
+}
+
+static NO_DECLARATIONS: NoDeclarations = NoDeclarations;
 
 /// The declaration facts §1.1 needs beyond the type itself: the
 /// `#[resource]`/`#[linear]` marker and, for the Aggregate rule, the field and
@@ -113,14 +144,20 @@ static NO_DECLARATIONS: BTreeMap<String, DeclaredType> = BTreeMap::new();
 ///
 /// Deliberately not `Copy`: every §1.1 entry point takes it by reference, so
 /// the class rule reads one context rather than silently duplicating it.
-#[derive(Debug, Clone)]
+#[derive(Clone, Copy)]
 pub struct ClassContext<'a> {
-    declarations: &'a BTreeMap<String, DeclaredType>,
+    declarations: &'a dyn ClassDeclarations,
+}
+
+impl std::fmt::Debug for ClassContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClassContext")
+    }
 }
 
 impl<'a> ClassContext<'a> {
     #[must_use]
-    pub const fn new(declarations: &'a BTreeMap<String, DeclaredType>) -> Self {
+    pub const fn new(declarations: &'a dyn ClassDeclarations) -> Self {
         Self { declarations }
     }
 
@@ -138,8 +175,8 @@ impl<'a> ClassContext<'a> {
     }
 
     #[must_use]
-    pub fn declaration(&self, name: &str) -> Option<&'a DeclaredType> {
-        self.declarations.get(name)
+    pub fn declaration(&self, name: &str) -> Option<DeclaredType> {
+        self.declarations.declared_type(name)
     }
 }
 

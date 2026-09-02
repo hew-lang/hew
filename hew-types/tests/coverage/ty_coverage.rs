@@ -543,47 +543,6 @@ fn is_numeric_covers_all_numeric_types() {
 }
 
 // ===========================================================================
-// is_copy — extended cases
-// ===========================================================================
-
-#[test]
-fn is_copy_never_and_pointer() {
-    assert!(Ty::Never.is_copy());
-    assert!(Ty::Pointer {
-        is_mutable: false,
-        pointee: Box::new(Ty::I32),
-    }
-    .is_copy());
-    assert!(Ty::Pointer {
-        is_mutable: true,
-        pointee: Box::new(Ty::String),
-    }
-    .is_copy());
-}
-
-#[test]
-fn is_copy_nested_tuple() {
-    // Tuple of copy types is copy
-    assert!(Ty::Tuple(vec![Ty::I32, Ty::Tuple(vec![Ty::Bool, Ty::F64])]).is_copy());
-    // Tuple containing non-copy type is not copy
-    assert!(!Ty::Tuple(vec![Ty::I32, Ty::Tuple(vec![Ty::String])]).is_copy());
-}
-
-#[test]
-fn is_copy_non_copy_types() {
-    assert!(!Ty::String.is_copy());
-    assert!(!Ty::Bytes.is_copy());
-    assert!(!named("Vec").is_copy());
-    assert!(!Ty::Slice(Box::new(Ty::I32)).is_copy());
-    assert!(!Ty::Error.is_copy());
-    assert!(!Ty::Function {
-        params: vec![],
-        ret: Box::new(Ty::Unit),
-    }
-    .is_copy());
-}
-
-// ===========================================================================
 // contains_var — through all composite types
 // ===========================================================================
 

@@ -589,7 +589,7 @@ mod tests {
         let expected = [
             (
                 BuiltinType::LocalPid,
-                ResourceMarker::Resource,
+                ResourceMarker::BitCopy,
                 None,
                 BuiltinTypeShape::Opaque,
                 Some(BuiltinHandleFamily::ActorPid),

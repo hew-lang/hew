@@ -7996,10 +7996,7 @@ impl Checker {
 
         let key = SpanKey::in_module(span, self.current_module_idx);
         let resolved_result = self.subst.resolve(result_ty).materialize_literal_defaults();
-        let non_owning = resolved_result.is_copy()
-            || self
-                .registry
-                .implements_marker(&resolved_result, MarkerTrait::Copy);
+        let non_owning = self.ty_is_non_owning(&resolved_result);
         let rewrite = self.method_call_rewrites.get(&key);
         let dyn_call = self.dyn_trait_method_calls.get(&key);
         let resolved_call = self.resolved_calls.get(&key);
@@ -8211,9 +8208,7 @@ impl Checker {
                         .expr_types
                         .get(&SpanKey::in_module(&arg.expr().1, self.current_module_idx))
                         .map(|ty| self.subst.resolve(ty));
-                    if arg_ty.as_ref().is_some_and(|ty| {
-                        ty.is_copy() || self.registry.implements_marker(ty, MarkerTrait::Copy)
-                    }) {
+                    if arg_ty.as_ref().is_some_and(|ty| self.ty_is_non_owning(ty)) {
                         Boundary::Borrow
                     } else {
                         Boundary::Unknown

@@ -1492,10 +1492,7 @@ impl Checker {
             })
             .collect();
         let resolved_result_ty = self.subst.resolve(result_ty).materialize_literal_defaults();
-        let non_owning = resolved_result_ty.is_copy()
-            || self
-                .registry
-                .implements_marker(&resolved_result_ty, MarkerTrait::Copy);
+        let non_owning = self.ty_is_non_owning(&resolved_result_ty);
         let builtin_result_ownership =
             crate::stdlib_catalog_identity::monomorphic_callable_identity(signature_key)
                 .and_then(crate::runtime_call::RuntimeCallFamily::from_c_symbol)
@@ -1732,10 +1729,7 @@ impl Checker {
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
             let result_ty = self.variant_nominal_ty(type_name, resolved_args);
-            let non_owning = result_ty.is_copy()
-                || self
-                    .registry
-                    .implements_marker(&result_ty, MarkerTrait::Copy);
+            let non_owning = self.ty_is_non_owning(&result_ty);
             let arguments = args
                 .iter()
                 .map(|arg| {
@@ -1743,9 +1737,7 @@ impl Checker {
                         .expr_types
                         .get(&SpanKey::in_module(&arg.expr().1, self.current_module_idx))
                         .map(|ty| self.subst.resolve(ty));
-                    if ty.as_ref().is_some_and(|ty| {
-                        ty.is_copy() || self.registry.implements_marker(ty, MarkerTrait::Copy)
-                    }) {
+                    if ty.as_ref().is_some_and(|ty| self.ty_is_non_owning(ty)) {
                         crate::runtime_call::ProducedArgumentBoundary::Borrow
                     } else {
                         crate::runtime_call::ProducedArgumentBoundary::Transfer
@@ -2585,10 +2577,7 @@ impl Checker {
                     .subst
                     .resolve(&result_ty)
                     .materialize_literal_defaults();
-                let non_owning = resolved_result_ty.is_copy()
-                    || self
-                        .registry
-                        .implements_marker(&resolved_result_ty, MarkerTrait::Copy);
+                let non_owning = self.ty_is_non_owning(&resolved_result_ty);
                 let call_key = SpanKey::in_module(span, self.current_module_idx);
                 self.produced_call_arities
                     .insert(call_key.clone(), (false, args.len()));

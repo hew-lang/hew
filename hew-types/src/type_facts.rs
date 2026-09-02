@@ -467,6 +467,65 @@ mod tests {
         }
     }
 
+    /// §1.1's marker correction, stated as the property it buys: `marker()`
+    /// and the class table agree by construction, so no consumer can read one
+    /// and get the other's answer.
+    #[test]
+    fn builtin_marker_and_the_class_table_agree() {
+        use crate::builtin_type::BuiltinTypeMarker;
+
+        let decls = declarations();
+        let context = ClassContext::new(&decls);
+        for info in builtin_types() {
+            let ty = named(
+                info.canonical_name,
+                Some(info.kind),
+                match info.arity {
+                    0 => vec![],
+                    1 => vec![ResolvedTy::I64],
+                    _ => vec![ResolvedTy::I64, ResolvedTy::String],
+                },
+            );
+            let classed = ValueClass::of_ty(&ty, &context);
+            // RECORDED EXCEPTION — `HewActor`.
+            // §1.1 gives it the same BitCopy row as `LocalPid`, and the class
+            // table above already does. Its `marker()` cannot follow yet:
+            // `HewActor` carries `close_method() = Some("close")` and
+            // `hew-hir/src/builtin_type_classes.rs:331` asserts that a BitCopy
+            // builtin registers no close method. Flipping the marker without
+            // moving the close row fails that assertion in every test that
+            // seeds the builtin class table.
+            if info.kind == BuiltinType::HewActor {
+                assert_eq!(Ok(ValueClass::BitCopy), classed);
+                assert_eq!(BuiltinTypeMarker::Resource, info.kind.marker());
+                continue;
+            }
+            match info.kind.marker() {
+                BuiltinTypeMarker::BitCopy => assert_eq!(
+                    Ok(ValueClass::BitCopy),
+                    classed,
+                    "`{}` carries marker BitCopy",
+                    info.canonical_name
+                ),
+                BuiltinTypeMarker::Resource => assert_eq!(
+                    Ok(ValueClass::AffineResource),
+                    classed,
+                    "`{}` carries marker Resource",
+                    info.canonical_name
+                ),
+                // `Linear` is carried only by the two compiler-internal payload
+                // carriers, which are never the type of a value.
+                BuiltinTypeMarker::Linear => assert_eq!(
+                    Err(ClassError::NotAValueType { builtin: info.kind }),
+                    classed,
+                    "`{}` carries marker Linear",
+                    info.canonical_name
+                ),
+                BuiltinTypeMarker::None => {}
+            }
+        }
+    }
+
     /// The four cases the §10 exit gate names by hand.
     #[test]
     fn exit_gate_aggregate_cases_join_through_their_elements() {

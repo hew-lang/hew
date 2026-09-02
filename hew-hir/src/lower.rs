@@ -38932,7 +38932,7 @@ impl Widget {
         assert_eq!(binding.name, "worker");
         assert_eq!(
             init.value_class,
-            ValueClass::AffineResource,
+            ValueClass::BitCopy,
             "LocalPid<Worker> must resolve through the builtin type marker registry"
         );
     }
